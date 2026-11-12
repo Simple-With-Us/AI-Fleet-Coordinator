@@ -1,7 +1,7 @@
 """`simple-chat letter`:  an Operator session letter, and the title "<letter>: <Title>", for every Claude Code chat
 on the Mac and on the server (AFC-564, owner request Oct 28, 2026).
 
-    letter hook                        the Claude Code hook:  SessionStart, UserPromptSubmit and SessionEnd
+    letter hook                        the Claude Code hook:  SessionStart, UserPromptSubmit, Stop and SessionEnd
     letter show [--session-id S]       this chat's letter from its local note;  no network
     letter install [--location L]      add the hooks to ~/.claude/settings.json (--check, --remove)
     letter registry OP ...             the registry side:  register, title, touch or close one chat
@@ -30,6 +30,11 @@ What the hook does.
   reaches the title), retries a registration or a title the registry did not take (at most every ten minutes), and marks
   the chat seen at most every half hour, whatever the title did.  When the Operator reissues a different pair, the model is
   told the new one as well as the title.
+- Stop, at the end of every turn (AFC-702), reports what the turn touched:  the Linear issues its new transcript lines
+  and its folder's branch name go to the registry (only when the set of ids changed), and the Zulip topics it posted to
+  are kept in the chat's note (`platform_letter.end_of_turn`).  So the last turn of a chat is recorded without a next
+  prompt.  UserPromptSubmit runs the same scan from the same point, as the fallback for a turn whose Stop never ran.
+  Stop prints nothing and never blocks the turn from ending.
 - SessionEnd closes the registration when the chat is replaced by `/clear` or logged out, which frees its letter
   (CLOSE_REASONS).  Any other end keeps the letter:  an exit at the prompt, a `/resume`, and `other`, which Claude Code
   sends for an archive but also when the app quits or an ssh connection drops, so it cannot tell an archive apart.
@@ -99,6 +104,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -127,7 +133,7 @@ SOURCE = "claude-letter-hook"
 MANAGED_SOURCES = (SOURCE, "claude-chat-start")
 ENTRYPOINTS = ("cli", "claude-desktop")
 LOCATIONS = ("mac", "server")
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd")
 TITLE_SOURCES = (
     "startup",
     "resume",
@@ -1738,6 +1744,33 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
     return 0
 
 
+def on_stop(chat: Chat, data: Mapping[str, Any]) -> int:
+    """The end of a turn (AFC-702):  report the Linear issues and Zulip topics the turn touched, through the shared
+    end-of-turn entry, so the registry has the last turn of a chat without waiting for its next prompt.  Prints
+    nothing (any Stop output could keep the turn going) and is silent on every failure;  a registry that does not
+    answer is asked again no sooner than RETRY_SECONDS."""
+    note = chat.read()
+    if not note or note.get("state") != "open" or not note.get("label"):
+        return 0
+    from . import platform_letter as PL
+
+    home = str(chat.env.get("HOME") or os.path.expanduser("~"))
+    before = copy.deepcopy(note)
+    PL.end_of_turn(
+        note,
+        data,
+        os.path.join(home, ".claude"),
+        chat.now,
+        lambda text: chat.registry("issues", issues=text),
+    )
+    # The registry call can take seconds:  only the report's own keys go back, onto the note as it is now, so a
+    # SessionEnd or a prompt that wrote it meanwhile is never undone by this stale copy.
+    merged = PL.turn_note(before, note, chat.read())
+    if merged is not None:
+        chat.write(merged)
+    return 0
+
+
 def on_end(chat: Chat, data: Mapping[str, Any]) -> int:
     """Close the registration when the chat ends for good (CLOSE_REASONS:  `/clear` or logout), which frees its letter;
     any other end keeps it for a resume (an archive is the archive sweep's to find).  Every end reason is kept in the
@@ -1804,6 +1837,8 @@ def hook(
         return on_start(chat, data, stdout, home)
     if event == "UserPromptSubmit":
         return on_prompt(chat, data, stdout)
+    if event == "Stop":
+        return on_stop(chat, data)
     return on_end(chat, data)
 
 
@@ -1832,8 +1867,9 @@ def show(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
 # --------------------------------------------------------------------------------------------
 
 #: The hook events and their timeouts in seconds.  SessionEnd's default budget is 1.5 seconds, too short for the
-#: ssh round trip from the server, so every entry names its own.
-HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "SessionEnd": 15}
+#: ssh round trip from the server, so every entry names its own.  Stop (AFC-702) makes at most one registry call,
+#: inside REMOTE_TIMEOUT.
+HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "Stop": 15, "SessionEnd": 15}
 HOOK_MARK = " letter hook"
 
 
@@ -1856,7 +1892,7 @@ def _write_private(path: str, data: bytes, mode: int) -> None:
 
 
 def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`letter install [--location server|mac] [--remote DEST] [--check | --remove]`:  add the three hook entries
+    """`letter install [--location server|mac] [--remote DEST] [--check | --remove]`:  add the four hook entries
     (and, when named, CLAUDE_LETTER_LOCATION and CLAUDE_LETTER_REMOTE) to ~/.claude/settings.json, keeping a dated
     0600 backup, or check or remove them;  --remove takes the two settings out as well.  Running it twice changes
     nothing.  The command names this host's own simple-chat wrapper by absolute path."""

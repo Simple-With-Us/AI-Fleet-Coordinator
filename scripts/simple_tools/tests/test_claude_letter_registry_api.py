@@ -162,6 +162,43 @@ class ApiSide(unittest.TestCase):
         code, closed = self.registry("issues", "--location", "mac", "--session-id", SID, "--issues=[]")
         self.assertEqual((code, closed.get("retired")), (0, True))
 
+    # ---- AFC-702:  the end-of-turn report on the API transport ----
+
+    def stop_hook(self, env: dict, transcript: str, now: float) -> str:
+        out = io.StringIO()
+        payload = {"hook_event_name": "Stop", "session_id": SID, "transcript_path": transcript}
+        CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=no_runner, now=now, platform="linux")
+        return out.getvalue()
+
+    def server_chat(self) -> tuple[dict, str]:
+        env = dict(self.api_env, CLAUDE_LETTER_LOCATION="server", CLAUDE_CODE_ENTRYPOINT="cli")
+        out = io.StringIO()
+        start = {"hook_event_name": "SessionStart", "session_id": SID, "source": "startup"}
+        CL.hook(env, io.StringIO(json.dumps(start)), out, runner=no_runner, now=time.time(), platform="linux")
+        folder = os.path.join(self.home, ".claude", "projects", "p")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "t.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": "please look at AFC-1"}}) + "\n")
+        return env, path
+
+    def test_a_stop_on_the_api_transport_reaches_the_server_registry(self) -> None:
+        env, path = self.server_chat()
+        self.assertEqual(self.stop_hook(env, path, time.time()), "")
+        label = OR.SessionRegistry(self.db).lookup("claude", "server", "default", SID)["label"]
+        found = OR.resolve_label(self.db, "claude", label)
+        self.assertEqual([i["id"] for i in found.get("issues", [])], ["AFC-1"])
+
+    def test_a_stop_with_the_api_unreachable_is_silent_and_inside_its_budget(self) -> None:
+        env, path = self.server_chat()
+        self.server.close()  # the registry API is gone:  the one call fails
+        began = time.monotonic()
+        self.assertEqual(self.stop_hook(env, path, time.time()), "")
+        self.assertLess(time.monotonic() - began, CL.HOOK_TIMEOUTS["Stop"])
+        note = CL.Chat(env, "CLAUDE", "server", SID, runner=no_runner, now=time.time()).read()
+        self.assertIn("issues_failed_at", note)
+        self.assertNotIn("issues_sent", note)
+
     def test_a_chat_that_comes_back_after_close_reopens(self) -> None:
         _, first = self.registry("register", "--location", "mac", "--session-id", SID)
         self.registry("close", "--location", "mac", "--session-id", SID)

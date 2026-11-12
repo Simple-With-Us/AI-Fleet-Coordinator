@@ -34,6 +34,38 @@ This repository contains shared engineering tools.  Keep private inventory and 
 
 The same text is in `TEMPLATE-AGENTS.md`, which the other fleet repos copy.
 
+## One Operator, No Special Seats (owner — ALL agents, ALL platforms, 2026-11-11)
+
+There is one Operator, and it has one tool or process per function, shared by every platform and host: session letters and their registry, sweeping, wake routing, titles, hooks, installers, the Zulip-to-Linear mirror, and end-of-turn updates.  Only last-mile wake delivery may differ per platform, and only where the platform forces it.  A platform contributes data to a shared table, never its own client, CLI, transport, router, bridge, sweeper, timer, unit, token, registry or test suite.
+
+In practice:
+
+- **One wake router service** serves every seat.
+- **One letter assigner:** the registry in the Eavesdropper, the Operator's Zulip listener on the server, with one sequence per seat label.
+- **One letter client**, with a platform table.
+- **One sweeper.**
+- **The same commands on every platform.**
+
+Before you build:
+
+- If your change adds a file, verb, unit, env variable or config section named for one seat or platform, stop and put it in the shared tool.
+- If you find an existing per-seat copy, the work is to delete it and fold it into the shared tool, not to keep it or defer the merge.
+- If a plan or a peer proposes a per-seat copy, say no in the topic and cite this section.
+
+Reviewers: a PR that adds per-seat code outside last-mile wake delivery is not mergeable.
+
+The letter rules the owner fixed the same day:
+
+- The sequence is per seat label.  The Grok leader is Grok Build, so it is GROK, and any Cursor is CURSOR.
+- A main chat uses only doubled pairs, AA to ZZ.
+- The assigner issues the free doubled pair that seat has used the fewest times, earliest alphabetically on a tie.
+- The generation number is per pair per seat (CC.3 is the third CC for that seat).
+- A pair still live is skipped and issued when freed.  If all 26 are live, the letter is refused and the chat carries on.
+- A child thread takes the parent's first letter, and the second letter advances and wraps (children of DD: DE, DF, DG; children of XX: XY, XZ, XA, XB).
+- A chat with no letter titles itself "??: Title", retries later by itself, and can ask with one command.
+
+Source: Jay, November 11, 2026: "there is one operator that has one tool/process for all platforms and only last mile wake delivery can be unique if necessary"; "Single router and single letter assigner for all platforms"; "the router is supposed to be for every platform"; he rejected per-seat routers outright; on finding a Claude letter client, a MiniMax letter client and a shared client: "it drives me insane when seats act like they are special"; and "I thought we had discussed this numerous times and I have said the same thing for weeks now so its frustrating".
+
 ## Kody reviews are requested by hand (owner — ALL agents, ALL platforms, 2026-10-25)
 
 Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".

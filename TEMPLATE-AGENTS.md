@@ -51,6 +51,10 @@ Owner preference, 2026-08-06.
 
 Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Gemini, Grok, Monet, Copilot, …).  Owner ruling, 2026-10-21.
 
+## One Operator, No Special Seats (owner — ALL agents, ALL platforms, 2026-11-11)
+
+No seat or platform gets its own copy of a fleet tool.  There is one shared tool per function (the Operator's router, letter assigner and sweeper are the examples), and a platform adds data to its platform table, never its own client, router, bridge, sweeper, timer, unit, token or registry.  Only last-mile wake delivery may differ, and only where the platform forces it.  Source: Jay, November 11, 2026: "there is one operator that has one tool/process for all platforms and only last mile wake delivery can be unique if necessary".
+
 ## Kody reviews are requested by hand (owner — ALL agents, ALL platforms, 2026-10-25)
 
 Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".

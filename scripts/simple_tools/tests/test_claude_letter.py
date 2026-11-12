@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from simple_tools import claude_app_lineage as AL
 from simple_tools import claude_letter as CL
 from simple_tools import operator_registry as OR
+from simple_tools import platform_letter as PL
 
 
 class Base(unittest.TestCase):
@@ -1633,6 +1634,109 @@ class HookTests(Base):
         self.assertIsNone(self.turn(OldMac(self), now=later))
         self.assertEqual([i["id"] for i in self.note("s-0001")["issues"]], ["AFC-694"])
 
+    # ---- AFC-702:  the end of a turn reports its issues and topics without a next prompt ----
+
+    def stop(self, runner=None, now: float | None = None, **extra) -> dict | None:
+        return self.hook({"hook_event_name": "Stop", "session_id": "s-0001", "stop_hook_active": False, **extra},
+                         runner=runner, now=now)
+
+    def test_a_stop_records_the_turns_issue_and_topic_without_a_further_prompt(self) -> None:
+        self.titled()
+        path = self.transcript(
+            {"type": "user", "message": {"role": "user", "content": "please look at AFC-1"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": 'simple-chat post --topic "OPS-7 wake tests" --body x'}},
+                {"type": "tool_use", "id": "t2", "name": "mcp__fleet__zulip_reply",
+                 "input": {"channel": "Work-In-Progress", "topic": "Operator plan", "content": "x"}},
+                {"type": "tool_use", "id": "t3", "name": "Bash",
+                 "input": {"command": 'simple-chat read --topic "Not mine"'}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1",
+                 "content": "posted id 9 to #Work-In-Progress › OPS-7 wake tests"},
+                {"type": "tool_result", "tool_use_id": "t2", "content": "{\"id\": 10}"},
+                {"type": "tool_result", "tool_use_id": "t3", "content": "posted id 4 to #Work-In-Progress › Peer"}]}},
+        )
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.stop(ssh, transcript_path=path))  # a Stop prints nothing:  the turn ends as it would
+        self.assertEqual(self.registry_ops(ssh), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-1", "OPS-7"])  # the row has them with no prompt after the turn
+        note = self.note("s-0001")
+        self.assertEqual([t["topic"] for t in note["topics"]], ["OPS-7 wake tests", "Operator plan"])
+        self.assertEqual(note["issues_scan"]["offset"], os.path.getsize(path))
+        # The next prompt is only the fallback:  the turn was read once, so it finds nothing new and sends nothing.
+        self.turn(ssh, transcript_path=path)
+        self.assertEqual(self.registry_ops(ssh), ["issues"])
+
+    def test_a_stop_on_the_mac_writes_the_registry_in_process(self) -> None:
+        def no_ssh(*a, **k):
+            raise AssertionError("the Mac never uses ssh")
+
+        self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                  env=self.env(), runner=no_ssh, platform="darwin")
+        path = self.transcript({"type": "assistant", "message": {"content": "done with AFC-1"}})
+        out = self.hook({"hook_event_name": "Stop", "session_id": "m-0001", "transcript_path": path},
+                        env=self.env(), runner=no_ssh, platform="darwin")
+        self.assertIsNone(out)
+        record = OR.resolve_label(self.db, CL.PLATFORM, "AA")
+        self.assertEqual([i["id"] for i in record["issues"]], ["AFC-1"])
+
+    def test_a_stop_with_the_registry_unreachable_returns_inside_its_timeout(self) -> None:
+        self.titled()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-1"}})
+        start = time.time()
+        down = FakeSsh(self, fail=subprocess.TimeoutExpired("ssh", CL.REMOTE_TIMEOUT))
+        began = time.monotonic()
+        self.assertIsNone(self.stop(down, now=start, transcript_path=path))
+        self.assertLess(time.monotonic() - began, CL.HOOK_TIMEOUTS["Stop"])
+        # The worst case, by arithmetic (the fake above fails at once):  the branch read, then the one registry call
+        # Stop makes, over ssh or the registry API, all inside the hook's own budget.
+        worst = PL.ISSUE_GIT_TIMEOUT + max(CL.REMOTE_TIMEOUT, PL._API_TIMEOUT)
+        self.assertLess(worst, CL.HOOK_TIMEOUTS["Stop"])
+        self.assertEqual(self.registry_ops(down), ["issues"])
+        note = self.note("s-0001")
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-1"])
+        self.assertNotIn("issues_sent", note)
+        # Neither the next Stop nor the next prompt asks again inside the wait, and the one after it does.
+        self.stop(down, now=start + 60, transcript_path=path)
+        self.turn(down, now=start + 90, transcript_path=path)
+        self.assertEqual(self.registry_ops(down), ["issues"])
+        up = FakeSsh(self)
+        self.stop(up, now=start + CL.RETRY_SECONDS + 5, transcript_path=path)
+        self.assertEqual(self.registry_ops(up), ["issues"])
+        self.assertEqual(self.issues_held(), ["AFC-1"])
+
+    def test_a_stop_for_a_chat_without_a_letter_does_nothing(self) -> None:
+        path = self.transcript({"type": "user", "message": {"content": "AFC-1"}})
+        ssh = FakeSsh(self)
+        self.assertIsNone(self.stop(ssh, transcript_path=path))  # no note:  the chat never started here
+        self.assertEqual(ssh.calls, [])
+        self.titled()
+        self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
+        ssh = FakeSsh(self)
+        self.stop(ssh, transcript_path=path)  # closed:  nothing to report to
+        self.assertEqual(ssh.calls, [])
+
+    def test_a_chat_closed_while_its_stop_waits_on_the_registry_stays_closed(self) -> None:
+        self.titled()
+        path = self.transcript({"type": "user", "message": {"content": "AFC-1"}})
+        test = self
+
+        class ClosedMeanwhile(FakeSsh):
+            """The registry answers slowly, and the chat's SessionEnd (a `/clear`) runs before it does."""
+
+            def __call__(self, cmd, **kwargs):
+                answer = super().__call__(cmd, **kwargs)
+                if shlex.split(cmd[8])[3] == "issues":
+                    test.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "clear"})
+                return answer
+
+        self.stop(ClosedMeanwhile(self), transcript_path=path)
+        note = self.note("s-0001")
+        self.assertNotEqual(note["state"], "open")  # the stale copy Stop read never reopens the chat
+        self.assertIn("ended", note)
+        self.assertEqual([i["id"] for i in note["issues"]], ["AFC-1"])  # and the report's own keys are kept
+
     def replace_the_registry(self) -> None:
         """The store moves under the chats:  a registry that has never heard of any of them (the API's, after the cutover)."""
         for suffix in ("", "-wal", "-shm"):
@@ -2017,7 +2121,8 @@ class HookTests(Base):
         code, out = run("--location", "server", "--remote", "mac")
         self.assertEqual(
             sorted(out["changed"]),
-            ["CLAUDE_LETTER_LOCATION", "CLAUDE_LETTER_REMOTE", "SessionEnd", "SessionStart", "UserPromptSubmit"],
+            ["CLAUDE_LETTER_LOCATION", "CLAUDE_LETTER_REMOTE", "SessionEnd", "SessionStart", "Stop",
+             "UserPromptSubmit"],
         )
         self.assertEqual(os.stat(out["backup"]).st_mode & 0o777, 0o600)  # a backup is private whatever the source
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o640)  # settings.json keeps its own mode
@@ -2031,6 +2136,8 @@ class HookTests(Base):
         ours = settings["hooks"]["SessionEnd"][0]["hooks"][0]
         self.assertEqual(ours["command"], os.path.join(self.home, ".local", "bin", "simple-chat") + " letter hook")
         self.assertEqual(ours["timeout"], 15)
+        stop = settings["hooks"]["Stop"][0]["hooks"][0]  # AFC-702:  the end-of-turn report
+        self.assertEqual((stop["command"], stop["timeout"]), (ours["command"], 15))
         self.assertEqual(run("--location", "server", "--remote", "mac")[1]["changed"], [])
         self.assertEqual(run("--check")[0], 0)
         self.assertEqual(run("--remote=-oProxyCommand=x")[0], 2)  # the form that gets past argparse

@@ -63,7 +63,11 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 169th and 170th are simple_tools/thread_registry.py (the Operator chat-thread registry the listener
 # keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
 # modules), added for that review.
-MAX_FILES = 170
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
+# registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
+# fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
+MAX_FILES = 180
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
