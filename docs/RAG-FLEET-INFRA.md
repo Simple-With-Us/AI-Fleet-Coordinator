@@ -575,6 +575,68 @@ explicitly enumerated nightly run — `recall ingest --source board,effort-log,d
 apple-note --prune` — waits too.  Keying them differently let a health-attesting run be locked
 out, and the two predicates are now one (`_attests_health`).
 
+## Weekly Collection Report
+
+A plain read-only job writes a JSON report and a Markdown report for the configured collection.  It does not call an embedding model or any other model.  It does not upsert, delete, or change a payload.  See [AFC-762](https://linear.app/simple-with-us/issue/AFC-762).
+
+The script is `scripts/fleet_rag/collection_health.py`.  The units are `scripts/systemd/fleet-rag-collection-health.service` and `scripts/systemd/fleet-rag-collection-health.timer`.  The example environment is `scripts/systemd/fleet-rag-collection-health.env.example`.
+
+The timer fires Sunday at 06:30 America/Chicago.  `Persistent=true` runs a missed week after boot.  Copying the unit does not enable the timer.  The service file has no install section.  The process runs only when `/etc/fleet/rag-collection-health.env` exists and `FLEET_RAG_COLLECTION_HEALTH` is exactly `1`.  Any other value exits 0 and leaves the last report in place.
+
+Each enabled run takes `~/.local/state/fleet-rag-collection-health/report.lock`.  A busy lock exits 0 and does not replace the report.  The report files are `latest.json` and `latest.md` in that directory (mode 0600).  `FLEET_RAG_COLLECTION_HEALTH_DIR` overrides the directory.  A failed read writes `last-error.json` and leaves the last successful report in place.
+
+The report counts points and distinct `doc_id` values per `source`, plus the oldest and newest `updated_at` per source.  It scrolls with payload fields `source`, `doc_id`, and `updated_at` only, and with vectors off, so chunk text never enters the report.
+
+Orphaned chunks are points whose `doc_id` is absent from the latest ingest state file, `~/apps/fleet-rag/state/ingest-state.json`.  `FLEET_RAG_INGEST_STATE` overrides that path.  Keys that are not document rows, including `_linear_sync`, are not document ids.  When that file is missing, unreadable, or a symlink, the report still finishes and records orphans as unavailable.  A point with no `doc_id` counts as an orphan point and is not treated as a document.  The ingest sentinel `meta/ingest-status` is not an ingest state row, so it counts as an orphan when it is present.  Contributions, and any other point the ingest state does not name, show up the same way.
+
+Growth is the difference in points and documents, overall and per source, against the previous `latest.json`.  The first run records growth as unavailable.  Orphan growth is included when both reports had a manifest.
+
+The job reads Qdrant with the read-only key when that key is present, through the same recall service token the nightly job uses (`FLEET_RECALL_INFISICAL_TOKEN_FILE`).  It does not request an embedding key.  It does not read a Linear token, and it does not post to Zulip.  A machine-identity variable in the environment refuses the run.  The unit asks systemd to start `code-main-sync` first, the same way the nightly unit does, and still writes the report if that sync did not succeed.
+
+Install it on the host the same way as the nightly job.  This repository does not run these commands.
+
+```bash
+sudo install -d -m 0755 /etc/fleet
+sudo install -m 0644 scripts/systemd/fleet-rag-collection-health.service /etc/systemd/system/
+sudo install -m 0644 scripts/systemd/fleet-rag-collection-health.timer /etc/systemd/system/
+sudo install -m 0600 scripts/systemd/fleet-rag-collection-health.env.example /etc/fleet/rag-collection-health.env
+```
+
+Add the account drop-in with `sudo systemctl edit fleet-rag-collection-health.service`:
+
+```ini
+[Service]
+User=<account>
+Group=<account>
+```
+
+Confirm the clock before the flag is turned on:
+
+```bash
+systemd-analyze calendar 'Sun *-*-* 06:30:00 America/Chicago'
+```
+
+Reload and start once before the flag is turned on.  The process exits without writing a report.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start fleet-rag-collection-health.service
+```
+
+Set `FLEET_RAG_COLLECTION_HEALTH=1` in the env file, then enable the timer:
+
+```bash
+sudo systemctl enable --now fleet-rag-collection-health.timer
+```
+
+Roll back by setting `FLEET_RAG_COLLECTION_HEALTH=0`.  The next start exits 0 before any Qdrant read.  To unload the timer:
+
+```bash
+sudo systemctl disable --now fleet-rag-collection-health.timer
+```
+
+This job is separate from the BotFleet Oracle weekly digest in the routines table.  That digest still calls a model.  This report does not.
+
 ## Observability (added 2026-09-10)
 
 Prompted by a Sentry review that found **zero** instrumentation in this package (the only "rag"
@@ -744,7 +806,7 @@ Consequences:
 ## Files
 
 - `scripts/fleet_rag/` — `core` (creds, embed, rerank, Qdrant client), `scrub`, `chunk`,
-  `sources`, `ingest`, `qdrant_snapshot`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`,
+  `sources`, `ingest`, `qdrant_snapshot`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`, `collection_health`,
   `eval`, `telemetry` (optional Sentry reporting, see *Observability*), `golden.jsonl`, `tests/`
 - `scripts/hooks/` — the Claude Code SessionStart and Stop hooks
 - `scripts/fleet-recall-service/` — the Hetzner-side recall service (`server.py`, `bootstrap.sh`,
