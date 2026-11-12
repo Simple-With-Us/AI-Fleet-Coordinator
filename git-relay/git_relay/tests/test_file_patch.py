@@ -25,7 +25,7 @@ class PatchTests(unittest.TestCase):
         )
         replies = [
             dict(default_branch="main"),
-            dict(object=dict(sha=SHA)),
+            dict(ref="refs/heads/feature/x", object=dict(sha=SHA)),
             dict(sha=SHA, tree=dict(sha="b" * 40)),
             dict(
                 type="file",
