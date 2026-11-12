@@ -83,6 +83,8 @@ class ApiBase(unittest.TestCase):
         os.makedirs(os.path.dirname(self.server_db))
         OR.SessionRegistry(self.server_db).close_db()
         service = LREG.RegistryService(self.server_db, {"OPERATOR": KEY})
+        # The one stale sweeper (AFC-721), which the API's sweep op runs with its own window.
+        LREG.Sweeper(service, interval_minutes=15, stale_after_hours=36)
         handler = type("BoundStub", (_StubHandler,), {"service": service})
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.addCleanup(self.httpd.shutdown)
@@ -267,6 +269,18 @@ class OperatorCliTests(ApiBase):
 
     def test_sweep_runs_over_the_api_and_never_touches_a_local_file(self) -> None:
         old_id, _new_id = self.seed_minimax_pair()
+        # The API runs the one sweep with the Eavesdropper's 36 hour window (AFC-721), whatever
+        # --stale-after-minutes says, so the old chat is made older than that.
+        conn = sqlite3.connect(self.server_db)
+        try:
+            stamp = (datetime.now(UTC) - timedelta(hours=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            with conn:
+                conn.execute(
+                    "UPDATE sessions SET last_seen_at = ? WHERE native_session_id = 'mm-old'",
+                    (stamp,),
+                )
+        finally:
+            conn.close()
         code, answer = self.run_cli(
             [
                 "sweep",
