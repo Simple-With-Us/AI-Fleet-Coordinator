@@ -5785,26 +5785,40 @@ class RouterHealthTests(Base):
         self.assertNotIn(self.SECRET_WORD, text)
 
     def test_refusals_and_unavailable_states(self):
-        code, mac_target = self.plan_health(argv=["server", "router-health", "mac", "--plan", "--json"])
+        code, mac_target = self.plan_health(
+            argv=["server", "router-health", "mac", "--plan", "--json"]
+        )
         self.assertEqual((code, mac_target["result"]), (2, "refused"))
         code, darwin_ans = self.plan_health(platform="darwin")
         self.assertEqual((code, darwin_ans["result"]), (2, "refused"))
         for err_code in foc.ROUTER_HEALTH_UNAVAILABLE:
             with self.subTest(errorCode=err_code):
                 code, ans = self.plan_health(doc=None, reason=err_code)
-                self.assertEqual((code, ans["ok"], ans["result"], ans["errorCode"]), (1, False, "unavailable", err_code))
+                self.assertEqual(
+                    (code, ans["ok"], ans["result"], ans["errorCode"]),
+                    (1, False, "unavailable", err_code),
+                )
         code, bad_doc = self.plan_health(doc={"healthy": True, "seats": "not-a-dict"})
-        self.assertEqual((code, bad_doc["ok"], bad_doc["result"], bad_doc["errorCode"]), (1, False, "unavailable", "not_json"))
+        self.assertEqual(
+            (code, bad_doc["ok"], bad_doc["result"], bad_doc["errorCode"]),
+            (1, False, "unavailable", "not_json"),
+        )
         self.assertEqual(self.audit_rows(), [])
-        code, yes_ans = self.plan_health(argv=["server", "router-health", "server", "--yes", "--json"])
+        code, yes_ans = self.plan_health(
+            argv=["server", "router-health", "server", "--yes", "--json"]
+        )
         self.assertEqual((code, yes_ans["result"]), (2, "refused"))
         rows = self.audit_rows()
-        self.assertEqual([(r["verb"], r["result"]) for r in rows], [("server router-health", "refused")])
+        self.assertEqual(
+            [(r["verb"], r["result"]) for r in rows], [("server router-health", "refused")]
+        )
 
     def test_ssh_forced_command_accepts_router_health(self):
         words = foc.parse_ssh_command("server router-health server --plan --json")
         self.assertEqual(words, ["server", "router-health", "server", "--plan", "--json"])
-        ctx = self.ctx(environ={"SSH_ORIGINAL_COMMAND": "server router-health server --plan --json"})
+        ctx = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": "server router-health server --plan --json"}
+        )
         ctx.router_health = lambda: (self.health_document(), None)
         out = io.StringIO()
         code = foc.main(["--from-ssh"], ctx=ctx, out=out)
@@ -5817,7 +5831,11 @@ class RouterHealthTests(Base):
         import socketserver
         import threading
 
-        state = {"status": 200, "body": b'{"healthy": true, "seats": {"CLAUDE": {"healthy": true, "delivery": true}}}', "headers": {}}
+        state = {
+            "status": 200,
+            "body": b'{"healthy": true, "seats": {"CLAUDE": {"healthy": true, "delivery": true}}}',
+            "headers": {},
+        }
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
