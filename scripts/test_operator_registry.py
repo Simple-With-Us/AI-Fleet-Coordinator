@@ -217,7 +217,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(again["label"], first["label"])
         self.assertFalse(again["created"])
 
-    # ---- the pick:  the lowest free letter, or the one unused the longest ----
+    # ---- a pick names nothing in the pair space:  one order for every seat (owner, Nov 11 2026) ----
 
     def _pair(self, native, pick="lowest", parent=""):
         return self.reg.resolve_or_register(
@@ -230,25 +230,28 @@ class RegistryTest(unittest.TestCase):
             )
         )
 
-    def test_the_default_pick_is_the_lowest_free_letter(self):
-        a = self._pair("n-1")
-        self.reg.close(a["record_id"])
-        self.assertEqual((a["label"], self._pair("n-2")["label"]), ("AA", "AA"))
+    def test_a_released_pair_is_not_handed_out_again_whatever_the_pick(self):
+        # "Keep advancing":  a freed AA is not the next chat's because it is free and first in the alphabet.
+        for pick in ("lowest", "oldest", "primary"):
+            with self.subTest(pick=pick):
+                self.tearDown()
+                self.setUp()
+                a = self._pair("n-1", pick)
+                self.reg.close(a["record_id"])
+                self.assertEqual(
+                    [a["label"]] + [self._pair(n, pick)["label"] for n in ("n-2", "n-3")],
+                    ["AA", "BB", "CC"],
+                )
 
-    def test_the_oldest_pick_leaves_a_retired_letter_alone_while_unused_ones_remain(self):
-        a = self._pair("n-1", "oldest")
-        self.reg.close(a["record_id"])
-        self.assertEqual([self._pair(n, "oldest")["label"] for n in ("n-2", "n-3")], ["AB", "AC"])
-
-    def test_the_oldest_pick_takes_the_longest_retired_letter_once_every_letter_was_used(self):
-        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB", "AC")}):
+    def test_the_next_generation_runs_in_the_same_order_whenever_the_pairs_were_retired(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "BB", "CC")}):
             made = [self._pair("n-%d" % i, "oldest") for i in (1, 2, 3)]
-            self.assertEqual([m["label"] for m in made], ["AA", "AB", "AC"])
-            for step, index in enumerate((2, 0, 1)):  # retired in this order:  AC first, AB last
+            self.assertEqual([m["label"] for m in made], ["AA", "BB", "CC"])
+            for step, index in enumerate((2, 0, 1)):  # retired in this order:  CC first, BB last
                 self.reg.close(made[index]["record_id"], at="2026-10-01T00:00:0%d.000Z" % step)
             again = [self._pair("n-%d" % i, "oldest") for i in (4, 5, 6)]
         self.assertEqual(
-            [(a["label"], a["generation"]) for a in again], [("AC", 2), ("AA", 2), ("AB", 2)]
+            [(a["label"], a["generation"]) for a in again], [("AA", 2), ("BB", 2), ("CC", 2)]
         )
 
     def test_exhaustion_says_which_space_was_full(self):
@@ -322,15 +325,15 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self.reg.reopen(single["record_id"], pick="oldest")[0], "A")
 
     def test_reopen_allocates_in_the_space_of_the_letter_it_held(self):
-        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "AB")}):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "BB")}):
             held = self._pair("n-1", "oldest")  # AA
             self.reg.close(held["record_id"])
-            self._pair("n-2", "oldest")  # AB
+            self._pair("n-2", "oldest")  # BB
             self._pair("n-3", "oldest")  # AA again, generation 2
             other = self.reg.lookup("claude", "mac-1", "simplewithus", "n-2")
-            self.reg.close(other["record_id"])  # AB is free now
+            self.reg.close(other["record_id"])  # BB is free now
             letter, generation, previous = self.reg.reopen(held["record_id"], pick="oldest")
-        self.assertEqual((letter, previous), ("AB", "AA"))  # a pair, not a single letter
+        self.assertEqual((letter, previous), ("BB", "AA"))  # a pair, not a single letter
         self.assertEqual(generation, 2)
 
     # ---- main chats take AA, BB ... ZZ in order;  a subthread takes the pair after its parent's (owner, Oct 29) ----
@@ -338,32 +341,27 @@ class RegistryTest(unittest.TestCase):
     def _labels(self, natives, pick="primary", parent=""):
         return [self._pair(n, pick, parent)["label"] for n in natives]
 
-    def test_the_primary_order_is_the_doubled_pairs_then_each_rows_last_slots_first(self):
+    def test_the_primary_order_is_only_the_26_doubled_pairs_in_the_alphabet(self):
         order = R.PRIMARY_ORDER
-        self.assertEqual((len(order), len(set(order))), (676, 676))
-        self.assertEqual(order[:3], ("AA", "BB", "CC"))
-        self.assertEqual(order[:26], tuple(a + a for a in R.LETTERS))
-        # Past the doubled pairs, the pair just before each row's letter (the last a subthread reaches) goes first.
-        self.assertEqual(order[26:29], ("AZ", "BA", "CB"))
-        # and the first slot of every row (AB, BC ... ZA) goes last.
-        self.assertEqual(
-            order[-26:], tuple(R.LETTERS[i] + R.LETTERS[(i + 1) % 26] for i in range(26))
-        )
-        self.assertEqual(sorted(order), sorted(R.LETTER_SPACES["double"]))
+        self.assertEqual((len(order), len(set(order))), (26, 26))
+        self.assertEqual(order, tuple(a + a for a in R.LETTERS))
 
     def test_main_chats_take_the_doubled_pairs_in_order(self):
         self.assertEqual(self._labels(["n-1", "n-2", "n-3"]), ["AA", "BB", "CC"])
 
-    def test_a_freed_doubled_pair_is_the_next_main_chat_s(self):
+    def test_a_freed_doubled_pair_is_not_the_next_main_chat_s(self):
         first = self._pair("n-1", "primary")
         self._labels(["n-2", "n-3"])  # BB, CC
         self.reg.close(first["record_id"])
-        # Sequentially means the lowest free doubled pair, so a freed AA is taken before DD.
-        self.assertEqual(self._labels(["n-4", "n-5"]), ["AA", "DD"])
+        # Keep advancing (owner, Nov 11 2026):  AA was issued in this generation, so DD comes next, then EE.
+        self.assertEqual(self._labels(["n-4", "n-5"]), ["DD", "EE"])
 
-    def test_main_chats_past_the_26_doubled_pairs_take_the_last_slot_of_each_row(self):
+    def test_a_main_chat_never_takes_a_non_doubled_pair_even_when_every_doubled_one_is_live(self):
         self.assertEqual(self._labels(["n-%d" % i for i in range(26)])[-1], "ZZ")
-        self.assertEqual(self._labels(["x-1", "x-2", "x-3"]), ["AZ", "BA", "CB"])
+        # All 26 live:  LabelExhausted, no spill into AB, AC ... ("ok just refuse actually is fine")
+        with self.assertRaises(R.LabelExhausted) as caught:
+            self._pair("x-1", "primary")
+        self.assertEqual(caught.exception.space, "double")
 
     def test_a_pick_of_primary_in_the_single_space_is_the_lowest_letter(self):
         labels = [
@@ -434,32 +432,29 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(self._labels(["z-1", "z-2"], parent="n-25"), ["ZA", "ZB"])
 
     def test_a_subthread_never_takes_a_doubled_pair_even_when_one_is_free(self):
-        self._labels(["n-%d" % i for i in range(26)])
-        parent = self._pair("p", "primary")  # AZ, the first main chat past the doubled pairs
-        self.assertEqual(parent["label"], "AZ")
-        self.reg.close(
-            self.reg.lookup("claude", "mac-1", "simplewithus", "n-0")["record_id"]
-        )  # AA is free
-        # Past Z the row wraps to A, which would be AA, the row's doubled pair:  it is skipped for AB.
-        self.assertEqual(self._pair("p-1", "primary", "p")["label"], "AB")
-        self.assertEqual(
-            self._pair("n-new", "primary")["label"], "AA"
-        )  # and a main chat still gets it
+        self._labels(["a"])  # AA
+        row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
+        self.assertEqual(row[-1], "AZ")
+        self.reg.close(self.reg.lookup("claude", "mac-1", "simplewithus", "a")["record_id"])  # AA is free
+        # A child of AZ wraps past Z to A, which would be AA, the row's doubled pair:  it is skipped, the rest of row A
+        # is live, so the subthread takes the main-chat pair, BB, and not AA.
+        child = self._pair("p-1", "primary", "a-24")
+        self.assertEqual((child["label"], child["placed_after"]), ("BB", ""))
 
     def test_an_unknown_closed_single_or_own_parent_is_no_parent(self):
         parent = self._pair("p", "primary")  # AA
         self.reg.close(parent["record_id"])
-        self.assertEqual(self._pair("k-1", "primary", "p")["label"], "AA")  # a closed parent
-        self.assertEqual(self._pair("k-2", "primary", "nobody")["label"], "BB")  # an unknown one
+        self.assertEqual(self._pair("k-1", "primary", "p")["label"], "BB")  # a closed parent
+        self.assertEqual(self._pair("k-2", "primary", "nobody")["label"], "CC")  # an unknown one
         single = self.reg.resolve_or_register(
             ident(platform="claude", native="s")
         )  # A, a single letter
         self.assertEqual(single["label"], "A")
         self.assertEqual(
-            self._pair("k-3", "primary", "s")["label"], "CC"
+            self._pair("k-3", "primary", "s")["label"], "DD"
         )  # a parent with a single letter
         self.assertEqual(
-            self._pair("k-4", "primary", "k-4")["label"], "DD"
+            self._pair("k-4", "primary", "k-4")["label"], "EE"
         )  # a chat is not its own parent
 
     def test_the_parent_is_found_on_any_host(self):
@@ -510,11 +505,15 @@ class RegistryTest(unittest.TestCase):
         )
         self.assertEqual((letter, previous), ("CE", "CD"))
 
-    def test_a_reopened_main_chat_takes_the_next_doubled_pair_when_its_own_is_gone(self):
-        first = self._pair("n-1", "primary")  # AA
-        self.reg.close(first["record_id"])
-        self._labels(["n-2"])  # AA again
-        self.assertEqual(self.reg.reopen(first["record_id"], pick="primary")[0], "BB")
+    def test_a_reopened_main_chat_takes_the_next_pair_in_order_when_its_own_is_gone(self):
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "BB", "CC")}):
+            first = self._pair("n-1", "primary")  # AA
+            self.reg.close(first["record_id"])
+            self._labels(["n-2", "n-3"])  # BB, CC:  AA is not handed out again in generation 1
+            self.assertEqual(self._pair("n-4", "primary")["label"], "AA")  # generation 2 starts at AA
+            self.reg.close(self.reg.lookup("claude", "mac-1", "simplewithus", "n-2")["record_id"])
+            letter, generation, previous = self.reg.reopen(first["record_id"], pick="primary")
+        self.assertEqual((letter, generation, previous), ("BB", 2, "AA"))
 
     def _by_letter(self, native, letter, **kw):
         return self.reg.resolve_or_register(
@@ -630,12 +629,188 @@ class RegistryTest(unittest.TestCase):
         )
         self.assertEqual(plain["label"], "AD")
 
-    def test_the_oldest_pick_still_follows_a_parent_first(self):
+    def test_any_pick_still_follows_a_parent_first(self):
         self._pair("a", "oldest")  # AA
         self.assertEqual(self._pair("k-1", "oldest", "a")["label"], "AB")
         self.assertEqual(
-            self._pair("k-2", "oldest")["label"], "AC"
-        )  # a chat with no parent keeps the old order
+            self._pair("k-2", "oldest")["label"], "BB"
+        )  # a chat with no parent takes the next main-chat pair
+
+    # ---- one rule for every seat's main chats (owner, Nov 11 2026):  "keep advancing even if eventually that means
+    # not necessarily alphabetical or even if sometimes we may skip a DD if there is a prior generation DD still active
+    # and then later on will make a DD once it has been freed up and if never freed up sometimes a generation will just
+    # miss out on having a particular pair";  "after ZZ it should go to the next generation if all double letters in
+    # alphabet were used";  "it is okay to make the generation be generation of CC's for that platform";  "ok just
+    # refuse actually is fine" ----
+
+    def _seat_pair(self, native, platform="muse", parent="", pick="primary"):
+        return self.reg.resolve_or_register(
+            ident(
+                seat=platform.upper(),
+                platform=platform,
+                native=native,
+                letter_space="double",
+                letter_pick=pick,
+                parent_session_id=parent,
+            )
+        )
+
+    def _close_native(self, native, platform="muse"):
+        self.reg.close(self.reg.lookup(platform, "mac-1", "simplewithus", native)["record_id"])
+
+    def _issue(self, prefix, count, platform="muse"):
+        return [self._seat_pair("%s-%d" % (prefix, i), platform=platform) for i in range(count)]
+
+    def _labelled(self, made):
+        return [(m["label"], m["generation"]) for m in made]
+
+    def _all_but_dd_closed(self):
+        made = self._issue("g1", 26)
+        for m in made:
+            if m["label"] != "DD":
+                self.reg.close(m["record_id"])
+        return made
+
+    def test_keep_advancing_mc_last_got_cc_so_the_next_is_dd_even_when_aa_and_bb_were_released(self):
+        self.assertEqual([m["label"] for m in self._issue("mc", 3)], ["AA", "BB", "CC"])
+        self._close_native("mc-0")  # AA released
+        self._close_native("mc-1")  # BB released
+        out = self._seat_pair("mc-3", pick="lowest")  # whatever the caller asks for
+        self.assertEqual((out["label"], out["generation"]), ("DD", 1))
+
+    def test_after_zz_it_should_go_to_the_next_generation_if_all_double_letters_were_used(self):
+        self._issue("mc", 26)  # AA.1 ... ZZ.1
+        for i in range(10):
+            self._close_native("mc-%d" % i)  # AA ... JJ archived
+        # Never AB:  main chats take only doubled pairs, the fewest-issued free one, so AA.2 then BB.2.
+        self.assertEqual(self._labelled(self._issue("next", 2)), [("AA", 2), ("BB", 2)])
+
+    def test_we_may_skip_a_dd_if_there_is_a_prior_generation_dd_still_active(self):
+        self._all_but_dd_closed()
+        self.assertEqual(
+            self._labelled(self._issue("g2", 4)), [("AA", 2), ("BB", 2), ("CC", 2), ("EE", 2)]
+        )
+
+    def test_and_then_later_on_will_make_a_dd_once_it_has_been_freed_up_late_in_lap_2(self):
+        self._all_but_dd_closed()
+        self._issue("g2", 20)  # AA.2 ... UU.2, DD skipped
+        self._close_native("g1-3")  # DD's generation 1 chat ends late in lap 2
+        # DD has the fewest issues, so it is the very next one:  "not necessarily alphabetical".
+        self.assertEqual(self._labelled(self._issue("g2b", 2)), [("DD", 2), ("VV", 2)])
+
+    def test_if_never_freed_up_in_lap_2_dd_freed_during_lap_3_still_gets_dd_2(self):
+        made = self._all_but_dd_closed()
+        g2 = self._issue("g2", 25)  # every doubled pair but DD, generation 2
+        self.assertNotIn("DD", [m["label"] for m in g2])
+        self.assertEqual({m["generation"] for m in g2}, {2})
+        for m in g2:
+            self.reg.close(m["record_id"])
+        first_of_3 = self._seat_pair("g3-0")  # lap 2 is over:  DD was live through all of it
+        self.assertEqual((first_of_3["label"], first_of_3["generation"]), ("AA", 3))
+        self.reg.close(made[3]["record_id"])  # DD freed during lap 3
+        # Its generation counts its own issues ("generation of CC's for that platform"):  DD.2, and it goes first.
+        self.assertEqual(self._labelled(self._issue("g3b", 2)), [("DD", 2), ("BB", 3)])
+
+    def test_ok_just_refuse_when_all_26_doubled_pairs_are_live(self):
+        self._issue("g1", 26)
+        with self.assertRaises(R.LabelExhausted) as caught:
+            self._seat_pair("one-too-many")
+        self.assertEqual(caught.exception.space, "double")
+        self.assertIn("'muse'", str(caught.exception))
+        self.assertIn("at most 26 live main chats", str(caught.exception))
+        self._close_native("g1-12")  # MM.1 archived:  the next chat takes it
+        self.assertEqual(self._labelled(self._issue("after", 1)), [("MM", 2)])
+
+    def test_two_seats_advance_independently(self):
+        self.assertEqual([m["label"] for m in self._issue("mc", 3)], ["AA", "BB", "CC"])
+        self.assertEqual(self._seat_pair("cx-0", platform="codex")["label"], "AA")
+        self._close_native("mc-0")
+        self.assertEqual(self._seat_pair("mc-3")["label"], "DD")
+        self.assertEqual(self._seat_pair("cx-1", platform="codex")["label"], "BB")
+
+    def test_child_of_dd_is_de_df_dg_and_of_xx_is_xy_xz_xa_xb(self):
+        parents = self._issue("p", 24)  # AA ... XX
+        self.assertEqual((parents[3]["label"], parents[23]["label"]), ("DD", "XX"))
+        kids = [self._seat_pair("d-%d" % i, parent="p-3") for i in range(3)]
+        self.assertEqual(self._labelled(kids), [("DE", 1), ("DF", 1), ("DG", 1)])
+        kids = [self._seat_pair("x-%d" % i, parent="p-23") for i in range(4)]
+        self.assertEqual([k["label"] for k in kids], ["XY", "XZ", "XA", "XB"])
+
+    def test_a_child_never_takes_a_live_pair_and_numbers_its_pair_per_pair(self):
+        self._seat_pair("mc-0")  # AA
+        first = self._seat_pair("k-1", parent="mc-0")  # AB
+        self._seat_pair("k-2", parent="mc-0")  # AC
+        self.reg.close(first["record_id"])
+        third = self._seat_pair("k-3", parent="mc-0")
+        self.assertEqual((third["label"], third["generation"]), ("AB", 2))  # the first free pair after AA, as before
+        fourth = self._seat_pair("k-4", parent="mc-0")
+        self.assertEqual(fourth["label"], "AD")  # AB and AC are live
+        dupes = self.reg._conn.execute(
+            "SELECT letter, COUNT(*) AS n FROM alias_assignments"
+            " WHERE platform = 'muse' AND retired_at IS NULL GROUP BY letter HAVING n > 1"
+        ).fetchall()
+        self.assertEqual(dupes, [])
+
+    def test_the_unique_index_refuses_a_second_live_holder(self):
+        self._seat_pair("mc-0")  # AA
+        with self.assertRaises(sqlite3.IntegrityError):
+            with self.reg._conn:
+                self.reg._conn.execute(
+                    "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                    " VALUES ('muse', 'AA', 2, 'other-record', '2026-11-11T00:00:00.000Z')"
+                )
+
+    def test_concurrent_registrations_never_share_a_pair(self):
+        out: list[str] = []
+        errors: list[BaseException] = []
+        lock = threading.Lock()
+
+        def work(index: int) -> None:
+            reg = R.SessionRegistry(self.db)  # one connection per thread, as two processes would hold
+            try:
+                for n in range(5):
+                    got = reg.resolve_or_register(
+                        ident(
+                            seat="MUSE",
+                            platform="muse",
+                            native="c-%d-%d" % (index, n),
+                            letter_space="double",
+                        )
+                    )
+                    with lock:
+                        out.append(got["label"])
+            except BaseException as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+            finally:
+                reg.close_db()
+
+        threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(out), 20)
+        self.assertEqual(len(set(out)), 20)  # no pair handed out twice
+        self.assertEqual(sorted(out), sorted(R.PRIMARY_ORDER[:20]))  # and the losers took the next ones in order
+
+    def test_legacy_rows_count_each_pairs_issues(self):
+        # History the old lowest-first pick left behind:  AA issued 4 times, BB twice, DD once, CC never.  The fewest
+        # issued free pair goes first, the earlier on a tie, and each takes its own count plus one.
+        rows = [("AA", 1), ("AA", 2), ("AA", 3), ("AA", 4), ("BB", 1), ("BB", 2), ("DD", 1)]
+        old = self.reg.resolve_or_register(ident(seat="MUSE", platform="muse", native="old"))  # a single letter
+        with self.reg._conn:
+            for letter, generation in rows:
+                self.reg._conn.execute(
+                    "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at, retired_at)"
+                    " VALUES ('muse', ?, ?, ?, '2026-10-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z')",
+                    (letter, generation, old["record_id"]),
+                )
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA", "BB", "CC", "DD")}):
+            made = [self._seat_pair("n-%d" % i, pick="lowest") for i in range(4)]
+        self.assertEqual(self._labelled(made), [("CC", 1), ("DD", 2), ("BB", 3), ("AA", 5)])
+        # In the full space every never-issued doubled pair comes before the ones the old pick recycled.
+        self.assertEqual(self._seat_pair("n-full")["label"], "EE")
 
     def _register(self, native, platform="claude", **kw):
         return R.register_session(
@@ -667,11 +842,11 @@ class RegistryTest(unittest.TestCase):
             [self._register("cu-000%d" % i, platform="cursor")["label"] for i in (1, 2)],
             ["A", "B"],
         )
-        # and a caller that does name a space is obeyed
+        # and a caller that does name a space is obeyed, but a pick does not change the pair order
         self.assertEqual(self._register("thread-0003", letter_space="single")["label"], "A")
         self.assertEqual(
             self._register("thread-0004", letter_space="double", letter_pick="lowest")["label"],
-            "AB",
+            "CC",
         )
 
     # ---- relabel:  a live session moves into another letter space (AFC-586) ----

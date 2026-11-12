@@ -6,11 +6,12 @@ its live label;  a fork or a new native session id is a new registration.
 
 Labels are per-platform letters with one namespace across all hosts:  one letter (A-Z) or a pair
 (AA-ZZ), the pair being what a chat takes on every platform that letters a thread (Claude, and
-MiniMax since the owner's ruling of Nov 1 2026).  RECYCLE is on (owner 2026-10-20, option B):
-allocation takes the lowest letter with no active assignment, wrapping after Z back to A, and a
-reused letter gets the next generation.  A platform may ask for pairs
-(AA to ZZ, `letter_space`) and for how a free one is picked (`letter_pick`):  the lowest (the default), the one
-unused the longest, or "primary", the order a main chat takes (the doubled pairs AA, BB ... ZZ first).  A session
+MiniMax since the owner's ruling of Nov 1 2026).  A single letter is the lowest free one (or, with
+`letter_pick` "oldest", the one unused the longest), and a reused letter gets the next generation.
+A main chat's pair follows one rule for every seat (owner, Nov 11 2026):  only the doubled pairs
+AA, BB ... ZZ, the free one issued the fewest times first (alphabetical on a tie), so the seat keeps
+advancing and starts AA.2 only after ZZ.1;  all 26 live refuses the letter;  a caller's pick does not
+change it (see PRIMARY_ORDER and SessionRegistry._allocate).  A session
 another session started names its parent (`parent_session_id`) and takes the first free pair after the parent's in
 the same row, wrapping past Z (parent CC, child CD;  parent XX, children XY, XZ, XA, XB).  Cross-seat references to a
 generation > 1 letter must carry the generation:  "MM A (gen 2)".
@@ -108,16 +109,18 @@ LETTER_SPACES = {
     "double": tuple(a + b for a in LETTERS for b in LETTERS),
 }
 ALL_LETTERS = tuple(sorted(set(LETTERS) | set(LETTER_SPACES["double"])))
-# The pairs a main (primary) chat takes, in order (owner, Oct 29, 2026):  the doubled pairs AA, BB ... ZZ first.  Each
-# one heads a row of 25 pairs for its subthreads (AA: AB, AC ... AZ;  XX: XY, XZ, XA, XB ...).  Once all 26 doubled
-# pairs are live the owner allows any other pair, so the rest go to the pair a row's subthreads would reach last:  the
-# one just before the doubled letter (AZ, BA, CB ... ZY), then the one before that, and so on back to the first (AB,
-# BC ... ZA).  A main chat there costs its row's subthreads their last slot, and the first ones are kept the longest.
-PRIMARY_ORDER = tuple(a + a for a in LETTERS) + tuple(
-    LETTERS[i] + LETTERS[(i + k) % 26] for k in range(25, 0, -1) for i in range(26)
-)
-# How a free letter is chosen:  the lowest in the alphabet, the one unused the longest, or (pairs only) the next of a
-# main chat's PRIMARY_ORDER.
+# The pairs a main chat takes, for every seat (owner, Nov 11 2026):  only the 26 doubled pairs AA, BB ... ZZ.  "after ZZ
+# it should go to the next generation if all double letters in alphabet were used."  A generation is the number in a
+# post header ("MC: CC.1.M" is Muse Code, pair CC, 1st generation, on the Mac), counted per pair per seat:  "it is okay
+# to make the generation be generation of CC's for that platform".  The other 650 pairs are a subthread's
+# (pairs_after), never a main chat's.  _allocate applies this for every main chat of every seat, whatever the caller
+# asks for:  the rule lives in the one assigner.
+PRIMARY_ORDER = tuple(a + a for a in LETTERS)
+# How a free letter is chosen in the single space:  the lowest in the alphabet or the one unused the longest.  In the
+# double space the pick is not the caller's:  every main chat takes the free doubled pair issued the fewest times (see
+# _allocate), so
+# a pick a caller names there is accepted and ignored.  "primary" stays a known value so the callers that still send
+# it are not refused.
 LETTER_PICKS = ("lowest", "oldest", "primary")
 # The space and pick a platform gets when its caller names none (register_session, the register CLI).  A Claude chat
 # takes a pair in the main-chat order whoever registers it, the hook or the Operator's own ask-and-answer path, so a
@@ -670,23 +673,44 @@ class SessionRegistry:
         pick: str = "lowest",
         after: str = "",
     ) -> tuple[str, int]:
-        """Lowest letter with no active assignment, wrapping after Z to A (RECYCLE on).  A reused
-        letter gets the next generation.  Raises LabelExhausted when the space is full.
+        """The next letter for one session, never one that is live.  A letter's generation is its own issue count on
+        the platform plus one (MAX(generation) + 1 for that letter):  CC.3 is the third time CC was issued for the
+        seat.  Raises LabelExhausted when no letter can be issued.
 
-        The space is chosen by the caller:  "single" for a main conversation, "double"
-        for a subthread.  The pick is "lowest" (the default, first in the alphabet),
-        "oldest" (the letter that has gone unused the longest, never-issued letters first,
-        which keeps a retired letter from being reused for as long as the space allows) or,
-        in the double space, "primary" (the next free pair of PRIMARY_ORDER:  the doubled pairs
-        AA, BB ... ZZ, then, once those are all live, the pairs a row's subthreads reach last).
+        The double space (pairs) follows one rule for every seat (owner, Nov 11 2026), and the caller's pick does not
+        change it.  A main chat takes only a doubled pair (AA, BB ... ZZ):  the one that is not live and was issued the
+        fewest times on the platform, the earlier in the alphabet on a tie.  That keeps advancing (AA.1 ... ZZ.1 in
+        order, a released AA not reused while later pairs are un-issued, then AA.2 onward after ZZ), skips a pair still
+        live when its turn comes, issues it next once it is freed (it has the fewest issues then), and leaves it out of
+        a lap it stays live through.  When all 26 are live the letter is refused ("ok just refuse actually is fine")
+        and the chat carries on unlettered.
 
-        `after` is the pair its parent chat holds, for a chat that another chat started:  the first free pair
-        after the parent's (pairs_after) comes first, and when none is free the pick decides as it does for any
-        chat.  It applies only in the double space."""
+        `after` is the pair its parent chat holds, for a subthread:  the first pair after the parent's (pairs_after,
+        the owner's Oct 29 naming:  DD's children DE, DF, DG;  XX's XY, XZ, XA, XB;  never the doubled pair) that is not
+        live is taken, as before this rule;  when none is free, the subthread takes the main-chat pair.
+
+        The single space keeps its old rule:  "lowest" (first in the alphabet) or "oldest" (unused the longest)."""
         candidates = LETTER_SPACES.get(space, LETTERS)
         members = frozenset(candidates)
-        if pick == "primary" and space == "double":
-            candidates = tuple(p for p in PRIMARY_ORDER if p in members)
+        live = {
+            r["letter"]
+            for r in conn.execute(
+                "SELECT letter FROM alias_assignments WHERE platform = ? AND retired_at IS NULL",
+                (platform,),
+            )
+        }
+        issued = {
+            r["letter"]: r["g"] or 0
+            for r in conn.execute(
+                "SELECT letter, MAX(generation) AS g FROM alias_assignments WHERE platform = ? GROUP BY letter",
+                (platform,),
+            )
+        }
+        if space == "double":
+            doubled = tuple(p for p in PRIMARY_ORDER if p in members)
+            main = sorted((p for p in doubled if p not in live), key=lambda p: (issued.get(p, 0), p))
+            follow = [p for p in pairs_after(after) if p in members and p not in live] if after else []
+            candidates = follow + [p for p in main if p not in follow]
         elif pick == "oldest":
             last_use = {
                 r["letter"]: r["last_use"]
@@ -697,32 +721,32 @@ class SessionRegistry:
                 )
             }
             candidates = sorted(candidates, key=lambda letter: (last_use.get(letter, ""), letter))
-        if after and space == "double":
-            follow = tuple(p for p in pairs_after(after) if p in members)
-            candidates = follow + tuple(c for c in candidates if c not in follow)
         for letter in candidates:
-            live = conn.execute(
-                "SELECT 1 FROM alias_assignments"
-                " WHERE platform = ? AND letter = ? AND retired_at IS NULL",
-                (platform, letter),
-            ).fetchone()
-            if live:
+            if letter in live:
                 continue
-            row = conn.execute(
-                "SELECT MAX(generation) AS g FROM alias_assignments WHERE platform = ? AND letter = ?",
-                (platform, letter),
-            ).fetchone()
-            generation = (row["g"] or 0) + 1
-            conn.execute(
-                "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (platform, letter, generation, record_id, now),
-            )
+            generation = issued.get(letter, 0) + 1
+            try:
+                conn.execute(
+                    "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (platform, letter, generation, record_id, now),
+                )
+            except sqlite3.IntegrityError:
+                # Another writer holds it now (the unique index on a live letter, or the same generation):
+                # the writes are serialised by BEGIN IMMEDIATE, so this is a second guard, and the loser takes
+                # the next pair rather than failing the registration.
+                continue
             return letter, generation
-        exhausted = LabelExhausted(
-            f"all {len(LETTER_SPACES.get(space, LETTERS))} letters are active on"
-            f" platform {platform!r}"
-        )
+        if space == "double":
+            # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
+            limit = len(tuple(p for p in PRIMARY_ORDER if p in members))
+            message = (
+                f"all {limit} letters are active on platform {platform!r}:  a seat holds at most {limit} live"
+                " main chats (the doubled pairs AA to ZZ), so this one is refused a letter"
+            )
+        else:
+            message = f"all {len(candidates)} letters are active on platform {platform!r}"
+        exhausted = LabelExhausted(message)
         exhausted.space = space if space in LETTER_SPACES else "single"
         raise exhausted
 
