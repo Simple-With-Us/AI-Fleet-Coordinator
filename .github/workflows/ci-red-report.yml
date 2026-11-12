@@ -1,9 +1,8 @@
 name: CI red streak report
 
-# AFC-737: daily read-only scan of default-branch workflow failure streaks.
-# Uses the workflow GITHUB_TOKEN (contents + actions read).  In this repository
-# that token typically sees only this repo unless a wider org read token is
-# configured later; the report records that in visibility_note.
+# AFC-737 / AFC-750: daily read-only scan of default-branch workflow failure streaks.
+# Token: repository secret FLEET_READ_TOKEN when set, else github.token.  With
+# FLEET_READ_TOKEN the job scans every fleet-apps.json repo; otherwise only this repo.
 
 on:
   schedule:
@@ -35,16 +34,18 @@ jobs:
 
       - name: Run CI red report
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FLEET_READ_TOKEN: ${{ secrets.FLEET_READ_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.FLEET_READ_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VISIBILITY="Workflow GITHUB_TOKEN is scoped to ${{ github.repository }}; org-wide listing uses only repos this token can read."
-          python3 scripts/ci-red-report/__main__.py \
-            --org Simple-With-Us \
-            --repo "${{ github.event.repository.name }}" \
-            --visibility-note "$VISIBILITY" \
-            --json-out ci-red-report.json \
-            --markdown-out ci-red-report.md
+          ARGS=(--org Simple-With-Us --json-out ci-red-report.json --markdown-out ci-red-report.md)
+          if [ -n "${FLEET_READ_TOKEN:-}" ]; then
+            ARGS+=(--fleet-apps fleet-apps.json)
+          else
+            NOTE=$(python3 -c "import sys; sys.path.insert(0,'scripts/ci-red-report'); import fleet_apps; print(fleet_apps.missing_fleet_token_visibility_note(scanning_repo='${{ github.event.repository.name }}'))")
+            ARGS+=(--repo "${{ github.event.repository.name }}" --visibility-note "$NOTE")
+          fi
+          python3 scripts/ci-red-report/__main__.py "${ARGS[@]}"
 
       - name: Job summary
         run: |

@@ -8,8 +8,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import github
 import scanner
 from fake_github import FixtureGitHub
+
+
+class DenyRepoGitHub(FixtureGitHub):
+    def __init__(self, *, status: int, repo: str) -> None:
+        super().__init__()
+        self._status = status
+        self._repo = repo
+
+    def get_json(self, path: str, *, params=None):
+        if path == f"/repos/Simple-With-Us/{self._repo}":
+            raise github.GitHubError("denied", status=self._status)
+        return super().get_json(path, params=params)
 
 
 class ScannerTests(unittest.TestCase):
@@ -47,6 +60,29 @@ class ScannerTests(unittest.TestCase):
         job_paths = [c for c in client.calls if c.endswith("/jobs")]
         self.assertEqual(len(job_paths), 1)
         self.assertIn("/actions/runs/101/jobs", job_paths[0])
+
+    def test_scan_continues_on_404(self) -> None:
+        client = DenyRepoGitHub(status=404, repo="missing-repo")
+        report = scanner.build_report(
+            client,
+            org="Simple-With-Us",
+            repos=["missing-repo", "AI-Fleet-Coordinator"],
+            max_runs_per_workflow=10,
+        )
+        self.assertEqual(report["repos_scanned"], 2)
+        self.assertTrue(any("404" in err for err in report["errors"]))
+        self.assertGreaterEqual(report["red_count"], 0)
+
+    def test_scan_continues_on_403(self) -> None:
+        client = DenyRepoGitHub(status=403, repo="forbidden-repo")
+        report = scanner.build_report(
+            client,
+            org="Simple-With-Us",
+            repos=["forbidden-repo"],
+            max_runs_per_workflow=10,
+        )
+        self.assertEqual(report["repos_scanned"], 1)
+        self.assertTrue(any("403" in err for err in report["errors"]))
 
     def test_markdown_renders_table(self) -> None:
         report = {

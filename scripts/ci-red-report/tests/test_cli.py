@@ -49,6 +49,42 @@ class CliTests(unittest.TestCase):
                         loaded = json.loads(jpath.read_text(encoding="utf-8"))
                         self.assertEqual(loaded["red_workflows"][0]["streak_length"], 5)
 
+    def test_fleet_token_loads_fleet_apps_repos(self) -> None:
+        fake_report = {"schema_version": 1, "red_workflows": [], "visibility_note": "ok"}
+        captured: dict[str, object] = {}
+
+        def fake_build_report(client, **kwargs):
+            captured.update(kwargs)
+            return fake_report
+
+        with mock.patch.object(cli, "build_report", side_effect=fake_build_report):
+            with mock.patch.object(cli, "GitHubClient"):
+                with mock.patch.object(
+                    cli,
+                    "load_fleet_repo_names",
+                    return_value=["AI-Fleet-Coordinator", "Socratic-Trade"],
+                ) as load_mock:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        jpath = Path(tmp) / "out.json"
+                        with mock.patch.dict(
+                            "os.environ",
+                            {"FLEET_READ_TOKEN": "ghp_fixture", "GITHUB_TOKEN": "other"},
+                        ):
+                            code = cli.main(
+                                [
+                                    "--org",
+                                    "Simple-With-Us",
+                                    "--json-out",
+                                    str(jpath),
+                                ]
+                            )
+                            self.assertEqual(code, 0)
+                            load_mock.assert_called_once()
+                            self.assertEqual(
+                                captured.get("repos"),
+                                ["AI-Fleet-Coordinator", "Socratic-Trade"],
+                            )
+
 
 if __name__ == "__main__":
     unittest.main()
