@@ -24,7 +24,7 @@ S = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(S)
 
 POLICY = """import hashlib,json
-MAX_BUNDLE_BYTES=9*1024*1024
+MAX_BUNDLE_BYTES=12*1024*1024
 def allowed_path(path):
     if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/simple-tools-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
     parts=path.split("/")
@@ -140,6 +140,45 @@ class SourceTests(Fixture):
         self.assertTrue(policy.allowed_path("scripts/simple_tools/core.py"))
         self.assertNotIn("docs/private-fixture.md", bundle["files"])
 
+    def test_repo_only_files_are_not_shipped(self):
+        actual = Path(__file__).with_name("fleet-cli-release.py")
+        if not actual.is_file():
+            self.skipTest("Receiver integration runs from the owned source lane")
+        self.put("scripts/fleet-cli-release.py", actual.read_text())
+        self.put("scripts/simple_tools/clarify.py", "# repo-only\n")
+        self.commit()
+        bundle, _raw, receiver = S.build_bundle(self.repo)
+        policy = S.receiver_policy(receiver.encode())
+        # Main's AFC-768 policy: allowed_path is false, retained_path stays true for rollback.
+        self.assertFalse(policy.allowed_path("scripts/simple_tools/clarify.py"))
+        self.assertFalse(policy.shipped_path("scripts/simple_tools/clarify.py"))
+        self.assertTrue(policy.retained_path("scripts/simple_tools/clarify.py"))
+        self.assertNotIn("scripts/simple_tools/clarify.py", bundle["files"])
+
+    def test_repo_only_cannot_drop_required_files(self):
+        actual = Path(__file__).with_name("fleet-cli-release.py")
+        if not actual.is_file():
+            self.skipTest("Receiver integration runs from the owned source lane")
+        text = actual.read_text()
+        # Pin typography-stable contents only:  ruff/autofix may reformat the set
+        # literal, and a byte-identical block would skip this safety check.
+        marker = "REPO_ONLY = frozenset"
+        needle = '"scripts/simple_tools/mcp/fixtures.jsonl"'
+        if marker not in text or text.count(needle) != 1:
+            self.fail("REPO_ONLY block missing from receiver")
+        self.put(
+            "scripts/fleet-cli-release.py",
+            text.replace(needle, needle + ',\n        "fleet-apps.json"', 1),
+        )
+        self.commit()
+        self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
+
+    def test_receiver_cap_may_exceed_sender_cap_but_never_trail_it(self):
+        self.assertEqual(S.MAX_BYTES, 8 * 1024 * 1024)
+        self.put("scripts/fleet-cli-release.py", POLICY.replace("12*1024*1024", "4*1024*1024"))
+        self.commit()
+        self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
+
     def test_only_published_allowlisted_blobs_and_regular_modes_ship(self):
         bundle, raw, receiver = S.build_bundle(self.repo)
         self.assertEqual(
@@ -233,7 +272,7 @@ class SourceTests(Fixture):
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        # Raw stays under the ceiling.  Base64 of 7 MiB, plus the other files, crosses it.
+        # Raw stays under the 8 MiB sender cap.  Base64 of 7 MiB, plus the other files, crosses it.
         self.put("scripts/simple_tools/large.py", "x" * (7 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)

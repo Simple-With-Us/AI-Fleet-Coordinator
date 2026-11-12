@@ -2,9 +2,11 @@
 //
 // What this automates (owner request 2026-11-07, iMessage): request Kody's initial
 // review on every open fleet PR that has never had one, instead of stopping repeat
-// reviews. Kodus' global review cadence is Manual, so follow-up reviews only happen
-// when someone comments @kody start-review; this script posts that comment once per
-// unreviewed PR and never again.
+// reviews. This script posts that comment once per unreviewed PR and never again.
+// The November 7 belief that follow-up reviews only happen on @kody start-review
+// is not the live behavior: the kody-ai app re-reviews on push. docs/KODY-ONCE-PER-PR.md
+// (AFC-735) names the hosted setting that stops that. This hourly job still does
+// not retry a failed review.
 //
 // What this deliberately does NOT do:
 // - Retry a failed review. A "Code Review Could Not Complete" comment from Kody means
