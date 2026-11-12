@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, annotateExternalGroups, attachPreReleaseVersions, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, preReleaseVersionsBulkPath, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry, shouldRemedyApp,
+  acquireLockDir, annotateExternalGroups, annotateInternalLanding, attachPreReleaseVersions, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, preReleaseVersionsBulkPath, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry, shouldRemedyApp,
   ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
@@ -92,7 +92,7 @@ function fakeDeps({ repos = {}, builds = {}, betaGroups = {}, window = "normal",
         const groups = (betaGroups[groupList[1]] || []).map((g) => ({
           type: "betaGroups",
           id: g.id,
-          attributes: { name: g.name, isInternalGroup: false, publicLinkEnabled: Boolean(g.publicLinkEnabled) },
+          attributes: { name: g.name, isInternalGroup: Boolean(g.internal), publicLinkEnabled: Boolean(g.publicLinkEnabled) },
         }));
         return { data: groups };
       }
@@ -525,6 +525,151 @@ test("betaTesterCountFromJson and annotateExternalGroups", () => {
   }]);
   assert.match(reason, /older than the valid build/);
   assert.deepEqual(groups[0].findings, ["staleBuild"]);
+});
+
+function internalGroup(over = {}) {
+  return {
+    id: "bg-internal",
+    name: "Internal",
+    internal: true,
+    builds: [FRESH_GROUP_BUILD],
+    testerTotal: 2,
+    ...over,
+  };
+}
+
+test("internal landing: VALID build assigned to the internal group stays current", async () => {
+  const beta = { 111: [internalGroup()] };
+  const { r } = await evalOne(botfleetLike(), BOTFLEET_BUILDS, {}, { betaGroups: beta });
+  assert.equal(r.status, "current", r.reason);
+  assert.equal(r.internalLanding.installable, true);
+  assert.equal(r.internalLandingOnly, undefined);
+  assert.equal(r.internalLanding.groups[0].assigned, true);
+  assert.equal(r.internalLanding.groups[0].testerCount, 2);
+  assert.equal(r.internalLanding.groups[0].findings, undefined);
+  assert.deepEqual(r.externalGroups, []);
+  assert.equal(r.testflight.build, "202610171703");
+  assert.equal(r.shipped.sha, "ship1");
+  assert.equal(exitCodeFor([r]), EXIT_CURRENT);
+  assert.ok(!shouldRemedyApp(r));
+});
+
+test("internal landing: VALID build missing from the internal group is not current and does not ship", async () => {
+  const beta = { 111: [internalGroup({ builds: [STALE_GROUP_BUILD], testerTotal: 3 })] };
+  const reg = registry({ demo: app() });
+  const { deps, calls } = fakeDeps({
+    repos: { Demo: botfleetLike() },
+    builds: BOTFLEET_BUILDS,
+    betaGroups: beta,
+  });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "behind", r.reason);
+  assert.equal(r.internalLandingOnly, true);
+  assert.equal(r.behindReason, "internalLanding");
+  assert.equal(r.internalLanding.installable, false);
+  assert.equal(r.internalLanding.groups[0].assigned, false);
+  assert.deepEqual(r.internalLanding.groups[0].findings, ["notAssigned"]);
+  assert.match(r.reason, /does not include valid build/);
+  assert.equal(r.testflight.build, "202610171703");
+  assert.ok(!shouldRemedyApp(r));
+  await runRemedies([r], { apps: {} }, deps, reg, { now: NOW, maxShips: 1 });
+  assert.equal(r.remedy.action, "blocked");
+  assert.match(r.remedy.reason, /internal tester access/);
+  assert.equal(calls.dispatch.length, 0);
+  assert.equal(exitCodeFor([r]), EXIT_BEHIND);
+});
+
+test("internal landing: VALID build with zero internal testers is not current and does not ship", async () => {
+  const beta = { 111: [internalGroup({ testerTotal: 0 })] };
+  const reg = registry({ demo: app() });
+  const { deps, calls } = fakeDeps({
+    repos: { Demo: botfleetLike() },
+    builds: BOTFLEET_BUILDS,
+    betaGroups: beta,
+  });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "behind", r.reason);
+  assert.equal(r.internalLanding.installable, false);
+  assert.equal(r.internalLanding.groups[0].assigned, true);
+  assert.equal(r.internalLanding.groups[0].testerCount, 0);
+  assert.deepEqual(r.internalLanding.groups[0].findings, ["noTesters"]);
+  assert.match(r.reason, /zero internal testers/);
+  assert.ok(!shouldRemedyApp(r));
+  await runRemedies([r], { apps: {} }, deps, reg, { now: NOW, maxShips: 1 });
+  assert.equal(r.remedy.action, "blocked");
+  assert.equal(calls.dispatch.length, 0);
+  assert.equal(exitCodeFor([r]), EXIT_BEHIND);
+});
+
+test("internal landing: unreadable internal count stays a lookup finding and leaves the app current", async () => {
+  const beta = { 111: [internalGroup()] };
+  const { deps } = fakeDeps({ repos: { Demo: botfleetLike() }, builds: BOTFLEET_BUILDS, betaGroups: beta });
+  const orig = deps.asc;
+  deps.asc = async (p) => {
+    if (p.includes("bg-internal/betaTesters")) {
+      throw new Error("App Store Connect /v1/betaGroups/bg-internal/betaTesters: HTTP 503");
+    }
+    return orig(p);
+  };
+  const reg = registry({ demo: app() });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "current", r.reason);
+  assert.equal(r.internalLandingOnly, undefined);
+  assert.equal(r.internalLanding.installable, null);
+  assert.equal(r.internalLanding.groups[0].assigned, true);
+  assert.equal(r.internalLanding.groups[0].assignedKnown, true);
+  assert.equal(r.internalLanding.groups[0].testerCountKnown, false);
+  assert.equal(r.internalLanding.groups[0].testerCount, null);
+  assert.deepEqual(r.internalLanding.groups[0].findings, ["lookupUnknown"]);
+  assert.match(r.internalLanding.groups[0].lookupWarning, /HTTP 503/);
+  assert.equal(r.testflight.processingState, "VALID");
+  assert.equal(exitCodeFor([r]), EXIT_CURRENT);
+  assert.ok(!shouldRemedyApp(r));
+});
+
+test("internal landing: code behind with no internal access stays remediable", async () => {
+  const w = botfleetLike({ natives: { ios: { sha: "nat2", date: "2026-10-17T20:15:00Z" } } });
+  const beta = { 111: [internalGroup({ testerTotal: 0 })] };
+  const reg = registry({ demo: app() });
+  const { deps, calls } = fakeDeps({
+    repos: { Demo: w },
+    builds: BOTFLEET_BUILDS,
+    betaGroups: beta,
+  });
+  const r = await evaluateApp(makeContext(deps, reg), "demo", reg.apps.demo, NOW);
+  assert.equal(r.status, "behind");
+  assert.notEqual(r.internalLandingOnly, true);
+  assert.match(r.reason, /zero internal testers/);
+  assert.ok(shouldRemedyApp(r));
+  await runRemedies([r], { apps: {} }, deps, reg, { now: NOW, maxShips: 1, dryRun: true });
+  assert.equal(r.remedy.action, "would-dispatch");
+  assert.equal(calls.dispatch.length, 0);
+});
+
+test("annotateInternalLanding records assignment and tester findings", () => {
+  const valid = { build: "202610171703", marketingVersion: "1.0.113" };
+  const missing = annotateInternalLanding(valid, [{
+    name: "Internal",
+    id: "bg-internal",
+    assigned: false,
+    assignedKnown: true,
+    testerCount: 0,
+    testerCountKnown: true,
+  }]);
+  assert.equal(missing.installable, false);
+  assert.deepEqual(missing.groups[0].findings.sort(), ["noTesters", "notAssigned"]);
+  assert.match(missing.reason, /does not include valid build/);
+  const unknown = annotateInternalLanding(valid, [{
+    name: "Internal",
+    id: "bg-internal",
+    assigned: false,
+    assignedKnown: false,
+    testerCount: null,
+    testerCountKnown: false,
+  }]);
+  assert.equal(unknown.installable, null);
+  assert.equal(unknown.reason, null);
+  assert.deepEqual(unknown.groups[0].findings, ["lookupUnknown"]);
 });
 
 test("current:  the correlated ship run contains the newest native commit", async () => {
