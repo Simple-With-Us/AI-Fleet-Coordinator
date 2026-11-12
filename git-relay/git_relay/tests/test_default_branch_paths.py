@@ -72,6 +72,7 @@ class DefaultBranchPaths(unittest.TestCase):
         client = Boom(
             {"default_branch": "main"},
             {"type": "file", "path": PATH, "sha": SHA},
+            {"name": "main"},
             {"commit": {"sha": "c" * 40}, "content": {"path": PATH}},
         )
         out = handle(client, "wf_file_put").run("wf_file_put", put_args())
@@ -82,7 +83,28 @@ class DefaultBranchPaths(unittest.TestCase):
         self.assertEqual(payload["branch"], "main")
         self.assertEqual(payload["sha"], SHA)
         self.assertTrue(payload["message"].startswith(_DEFAULT_BRANCH_PREFIX))
-        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(len(client.calls), 4)
+
+    def test_case_variant_of_the_default_branch_takes_the_default_branch_route(self):
+        # "Main" is the default branch, so the grant, the message prefix and the sha check all
+        # apply; the provider names the branch "main" and agrees.
+        client = Boom(
+            {"default_branch": "main"},
+            {"type": "file", "path": PATH, "sha": SHA},
+            {"name": "main"},
+            {"commit": {"sha": "c" * 40}, "content": {"path": PATH}},
+        )
+        handle(client, "wf_file_put").run("wf_file_put", put_args(branch="Main"))
+        payload = client.calls[-1][2]
+        self.assertEqual(payload["sha"], SHA)
+        self.assertTrue(payload["message"].startswith(_DEFAULT_BRANCH_PREFIX))
+        # An ungranted path on the same spelling is refused with no write.
+        client = Boom({"default_branch": "main"})
+        with self.assertRaisesRegex(Refused, "default branch is not writable"):
+            handle(client, "wf_file_put").run(
+                "wf_file_put", put_args(branch="Main", path="docs/a.md")
+            )
+        self.assertEqual([call[0] for call in client.calls], ["GET"])
 
     def test_disallowed_path_keeps_the_existing_refusal(self):
         client = Boom({"default_branch": "main"})
@@ -110,6 +132,7 @@ class DefaultBranchPaths(unittest.TestCase):
         client = Boom(
             {"default_branch": "main"},
             RelayGitHubError(404, "missing"),
+            {"name": "main"},
             {"commit": {"sha": "c" * 40}, "content": {"path": PATH}},
         )
         args = put_args()

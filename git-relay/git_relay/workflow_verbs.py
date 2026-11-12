@@ -322,9 +322,54 @@ def _ref(args, key, required=True):
         or ".." in value
         or value.startswith(("/", "-"))
         or value.endswith(("/", ".lock"))
+        # git check-ref-format: no empty, dot-leading or dot-ending segment, no ".lock"
+        # segment end.  GitHub drops "." segments from a URL path, so "./main" would
+        # otherwise reach the default branch past a literal-name compare.
+        or any(
+            not part or part.startswith(".") or part.endswith((".", ".lock"))
+            for part in value.split("/")
+        )
     ):
         raise Refused(f"invalid {key}")
     return value
+
+
+def _branch_key(name):
+    """Comparison form of a branch name: no empty or "." segments, no refs/heads/ or heads/ prefix, case-folded."""
+    if not isinstance(name, str):
+        return None
+    key = "/".join(part for part in name.split("/") if part not in ("", "."))
+    changed = True
+    while changed:
+        changed = False
+        for prefix in ("refs/heads/", "heads/"):
+            if key.casefold().startswith(prefix):
+                key = key[len(prefix) :]
+                changed = True
+    return key.casefold()
+
+
+def _is_default_branch(name, default):
+    """True when name is, or cannot be shown not to be, the repository's default branch.
+
+    Fails closed: a missing or non-string name or default counts as the default branch.
+    Compares the normalised, case-folded forms, so "Main", "refs/heads/main" and any
+    dot-segment spelling all match "main".
+    """
+    if not isinstance(default, str) or not default:
+        return True
+    key = _branch_key(name)
+    if not key:
+        return True
+    return key == _branch_key(default)
+
+
+def _provider_ref_branch(data, key="ref"):
+    """The branch a provider ref answer names (refs/heads/<name>), or None when it is not one."""
+    value = data.get(key) if isinstance(data, dict) else None
+    if not isinstance(value, str) or not value.startswith("refs/heads/") or len(value) == 11:
+        return None
+    return value[11:]
 
 
 def _path(args, key="path"):
@@ -4171,7 +4216,7 @@ class WorkflowVerbs:
                 ) from None
             raise
         default_branch = repository.get("default_branch")
-        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+        if _is_default_branch(name, default_branch):
             raise Refused("default branch mutation refused")
         path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
         try:
@@ -4180,6 +4225,12 @@ class WorkflowVerbs:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
             raise
+        # The provider's own answer decides, not the caller's spelling.
+        provider_branch = _provider_ref_branch(prior)
+        if provider_branch is None or _is_default_branch(provider_branch, default_branch):
+            raise Refused("default branch mutation refused")
+        if provider_branch != name:
+            raise Refused("ref changed")
         if _sub(prior, "object").get("sha") != expected_sha:
             raise Refused("ref changed")
         data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=self.bearer)
@@ -4215,7 +4266,7 @@ class WorkflowVerbs:
                 ) from None
             raise
         default_branch = repository.get("default_branch")
-        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+        if _is_default_branch(name, default_branch):
             raise Refused("default branch mutation refused")
         path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
         try:
@@ -4224,6 +4275,12 @@ class WorkflowVerbs:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
             raise
+        # The provider's own answer decides, not the caller's spelling.
+        provider_branch = _provider_ref_branch(prior)
+        if provider_branch is None or _is_default_branch(provider_branch, default_branch):
+            raise Refused("default branch mutation refused")
+        if provider_branch != name:
+            raise Refused("ref changed")
         if _sub(prior, "object").get("sha") != expected_sha:
             raise Refused("ref changed")
         data = self.client._call("DELETE", path, None, bearer=self.bearer)
@@ -7463,9 +7520,14 @@ class WorkflowVerbs:
                 or not info["default_branch"]
             ):
                 raise RelayGitHubError(502, "rename repository pre-read unverifiable")
-            if branch == info["default_branch"]:
+            if _is_default_branch(branch, info["default_branch"]):
                 raise Refused("default branch is not writable")
             ref = self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
+            provider_branch = _provider_ref_branch(ref)
+            if provider_branch is None or _is_default_branch(
+                provider_branch, info["default_branch"]
+            ):
+                raise Refused("default branch is not writable")
             if (
                 not isinstance(ref, dict)
                 or ref.get("ref") != "refs/heads/" + branch
@@ -7642,7 +7704,7 @@ class WorkflowVerbs:
                     "repository pre-read unavailable; no write attempted"
                 ) from None
             raise
-        on_default = branch == info["default_branch"]
+        on_default = _is_default_branch(branch, info["default_branch"])
         if on_default:
             if not self._default_branch_path_allowed(repo, path):
                 raise Refused("default branch is not writable")
@@ -7719,7 +7781,7 @@ class WorkflowVerbs:
         default = repo_info.get("default_branch")
         if not isinstance(default, str) or not default:
             raise Refused("default branch is not writable")
-        if branch == default:
+        if _is_default_branch(branch, default):
             if not self._default_branch_path_allowed(repo, path):
                 raise Refused("default branch is not writable")
             payload["message"] = _prefixed_default_message(message)
@@ -7730,6 +7792,23 @@ class WorkflowVerbs:
                 payload["sha"] = prior
         elif "prior_sha" in args:
             payload["sha"] = _sha(args, "prior_sha")
+        # The provider's own name for the branch decides, not the caller's spelling.  A name it
+        # does not know (HEAD, a tag, a typo) is refused before any write.
+        try:
+            target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "branch pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        provider_name = target.get("name") if isinstance(target, dict) else None
+        if not isinstance(provider_name, str) or not provider_name:
+            raise RelayGitHubError(502, "branch pre-read unverifiable")
+        if _is_default_branch(provider_name, default) != _is_default_branch(branch, default):
+            raise Refused("default branch is not writable")
+        if not _is_default_branch(branch, default) and provider_name != branch:
+            raise RelayGitHubError(502, "branch pre-read unverifiable")
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/contents/{quote(path, safe='/')}",
@@ -7891,10 +7970,14 @@ class WorkflowVerbs:
             raise Refused("invalid patch message")
         repo_info = _obj(self._get(f"/repos/{repo}"))
         default = repo_info.get("default_branch")
-        if not isinstance(default, str) or not default or branch == default:
+        if _is_default_branch(branch, default):
             raise Refused("default branch is not writable")
         ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
-        if _sub(_obj(self._get(ref_path)), "object").get("sha") != head:
+        prior_ref = _obj(self._get(ref_path))
+        provider_branch = _provider_ref_branch(prior_ref)
+        if provider_branch is None or _is_default_branch(provider_branch, default):
+            raise Refused("default branch is not writable")
+        if _sub(prior_ref, "object").get("sha") != head:
             raise Refused("branch head moved")
         base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
         tree = _sub(base_commit, "tree").get("sha")
@@ -8033,9 +8116,12 @@ class WorkflowVerbs:
         if find_secret(message) or any(v and v in message for v in self.loaded_known):
             raise Refused("credential-shaped content refused")
         default = _obj(self._get(f"/repos/{repo}")).get("default_branch")
-        if not isinstance(default, str) or not default or branch == default:
+        if _is_default_branch(branch, default):
             raise Refused("default branch is not writable")
         ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
+        provider_branch = _provider_ref_branch(ref)
+        if provider_branch is None or _is_default_branch(provider_branch, default):
+            raise Refused("default branch is not writable")
         if _sub(ref, "object").get("sha") != head:
             raise Refused("branch head moved")
         base_tree = _sub(_obj(self._get(f"/repos/{repo}/git/commits/{head}")), "tree").get("sha")
