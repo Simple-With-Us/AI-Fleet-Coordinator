@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Check-then-apply entry point for agent config on this host.
+# Default is check-only.  --apply writes managed drift through the existing installers.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here"
+exec python3 -m fleet_agent_config "$@"
