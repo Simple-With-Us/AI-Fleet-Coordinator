@@ -453,6 +453,12 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_autofix_model_defaults -v
+    # Read-only Sentry uptime coverage audit. Fixtures only: the tests never
+    # call the Sentry API, and the workflow skips when the token secret is absent.
+    - name: Uptime coverage audit tests
+      timeout-minutes: 10
+      run: |
+        cd scripts/uptime-audit && python3 -m unittest discover -s tests -t . -v
     # Owner rule 2026-10-21:  the request gate fires only on a tag that opens
     # the comment.  The test runs the reusables' own marked gate block.
     - name: Autofix request gate tests
@@ -615,6 +621,8 @@ jobs:
       run: |
         python3 scripts/test_check_infisical_env.py
         python3 scripts/check-infisical-env.py
+        python3 scripts/test_check_fleet_ops_project_id.py
+        python3 scripts/check-fleet-ops-project-id.py
     # fleet-telemetry-relay: transform mappings against recorded payloads,
     # secretscan redaction parity, Coolify env-name inventory, and a stubbed
     # configure-agents.sh (never talks to Infisical or writes under $HOME).

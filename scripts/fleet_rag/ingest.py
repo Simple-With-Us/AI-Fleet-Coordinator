@@ -52,6 +52,7 @@ import json
 import os
 import pathlib
 import re
+import socket
 import sys
 import tempfile
 import time
@@ -86,6 +87,9 @@ GROUP_CHUNKS = 512
 EMBED_RATE = 24.0  # texts per second budget for the shared TEI box
 PROGRESS_EVERY = 200
 EXIT_LOCKED = 3
+INGEST_LOCK_STALE_ENV = "FLEET_RAG_INGEST_LOCK_STALE_S"
+DEFAULT_INGEST_LOCK_STALE_S = 6 * 3600
+NIGHTLY_SUMMARY_ENV = "FLEET_RAG_NIGHTLY_SUMMARY"
 #  The marker a pending nightly leaves behind, so a partial refresh that arrives while the
 #  nightly is still waiting cannot steal the lock in the gap between the waiter's polls and
 #  then hold it for its whole budget.  The file holds the nightley's deadline in epoch ms;
@@ -107,6 +111,19 @@ GENERATORS = sources.GENERATORS
 class IngestLocked(FleetRagError):
     """Another ingest holds the lock file."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "lock_busy",
+        pid: int | None = None,
+        host: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.pid = pid
+        self.host = host
+
 
 class NightlyPending(FleetRagError):
     """A nightly ingest is pending, so a partial refresh must not take the lock."""
@@ -115,17 +132,175 @@ class NightlyPending(FleetRagError):
 # --------------------------------------------------------------------------- lock
 
 
+def _ingest_lock_hostname() -> str:
+    return socket.gethostname()
+
+
+def _ingest_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _ingest_lock_stale_age_s() -> float:
+    raw = (os.environ.get(INGEST_LOCK_STALE_ENV) or "").strip()
+    if not raw:
+        return float(DEFAULT_INGEST_LOCK_STALE_S)
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return float(DEFAULT_INGEST_LOCK_STALE_S)
+
+
+def _parse_ingest_lock_line(line: str) -> dict[str, Any] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    parts = stripped.split()
+    meta: dict[str, Any] = {"raw": stripped}
+    try:
+        meta["pid"] = int(parts[0])
+    except ValueError:
+        meta["pid"] = None
+    if len(parts) >= 3:
+        meta["host"] = parts[-1]
+        meta["at"] = parts[1]
+    elif len(parts) == 2:
+        meta["host"] = None
+        meta["at"] = parts[1]
+    else:
+        meta["host"] = None
+        meta["at"] = None
+    return meta
+
+
+def _read_ingest_lock_meta(path: pathlib.Path) -> dict[str, Any] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    line = text.splitlines()[0] if text.splitlines() else ""
+    return _parse_ingest_lock_line(line)
+
+
+def _ingest_lock_age_s(path: pathlib.Path, meta: dict[str, Any] | None) -> float:
+    if meta and meta.get("at"):
+        try:
+            at = _dt.datetime.fromisoformat(str(meta["at"]))
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=_dt.UTC)
+            return max(0.0, time.time() - at.timestamp())
+        except ValueError:
+            pass
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _remove_ingest_lock(path: pathlib.Path) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _reconcile_stale_ingest_lock(path: pathlib.Path, log=eprint) -> None:
+    """Drop cosmetic or expired lock files before the flock attempt."""
+    if not path.exists():
+        return
+    meta = _read_ingest_lock_meta(path)
+    local = _ingest_lock_hostname()
+    pid = meta.get("pid") if meta else None
+    host = meta.get("host") if meta else None
+    if pid is not None and host in (None, local):
+        if not _ingest_pid_alive(int(pid)):
+            log(f"ingest lock: removing stale lock at {path} (pid {pid} is not running on {local})")
+            _remove_ingest_lock(path)
+        return
+    if pid is None or host is None:
+        age_s = _ingest_lock_age_s(path, meta)
+        if age_s >= _ingest_lock_stale_age_s():
+            log(
+                f"ingest lock: removing stale lock at {path} "
+                f"(missing pid or host, age {int(age_s)}s)"
+            )
+            _remove_ingest_lock(path)
+
+
+def _nightly_summary_path() -> pathlib.Path:
+    raw = (os.environ.get(NIGHTLY_SUMMARY_ENV) or "").strip()
+    if raw:
+        return pathlib.Path(raw)
+    return pathlib.Path.home() / ".local" / "state" / "fleet-rag-nightly" / "last.json"
+
+
+def _write_lock_held_nightly_summary(pid: int, host: str) -> None:
+    path = _nightly_summary_path()
+    summary = {
+        "ok": False,
+        "ran": True,
+        "reason": "lock_held",
+        "ingest_lock_pid": pid,
+        "ingest_lock_host": host,
+        "errors": ["lock_held"],
+        "warnings": [],
+        "guard_trips": [],
+    }
+    try:
+        _write_json(path, summary)
+    except OSError:
+        pass
+
+
+def _raise_ingest_lock_held(path: pathlib.Path, *, attests_health: bool, log=eprint) -> None:
+    meta = _read_ingest_lock_meta(path) or {}
+    pid = meta.get("pid")
+    host = meta.get("host") or _ingest_lock_hostname()
+    local = _ingest_lock_hostname()
+    if isinstance(pid, int) and meta.get("host") in (None, local) and _ingest_pid_alive(pid):
+        log(f"ingest lock: held by live pid {pid} on {host}")
+        if attests_health:
+            _write_lock_held_nightly_summary(pid, str(host))
+        raise IngestLocked(
+            f"another ingest is running (lock held: {path}, pid {pid}); exit {EXIT_LOCKED}",
+            reason="lock_held",
+            pid=pid,
+            host=str(host),
+        ) from None
+    raise IngestLocked(
+        f"another ingest is running (lock held: {path}); "
+        f"wait for it or remove a stale lock, exit {EXIT_LOCKED}"
+    ) from None
+
+
 class IngestLock:
     """Exclusive flock; raises IngestLocked when another process still holds the lock
     after timeout_s (0 = non-blocking, the partial-refresh behavior)."""
 
-    def __init__(self, path: pathlib.Path, timeout_s: float = 0):
+    def __init__(
+        self,
+        path: pathlib.Path,
+        timeout_s: float = 0,
+        *,
+        attests_health: bool = False,
+        log=eprint,
+    ):
         self.path = pathlib.Path(path)
         self.timeout_s = timeout_s
+        self.attests_health = attests_health
+        self.log = log
         self._fd: int | None = None
 
     def __enter__(self) -> IngestLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        _reconcile_stale_ingest_lock(self.path, log=self.log)
         deadline = time.monotonic() + self.timeout_s
         while True:
             fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
@@ -136,17 +311,21 @@ class IngestLock:
                 os.close(fd)
                 if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
                     if time.monotonic() >= deadline:
-                        raise IngestLocked(
-                            f"another ingest is running (lock held: {self.path}); "
-                            f"wait for it or remove a stale lock, exit {EXIT_LOCKED}"
-                        ) from None
+                        _raise_ingest_lock_held(
+                            self.path, attests_health=self.attests_health, log=self.log
+                        )
                     time.sleep(min(5.0, max(0.1, deadline - time.monotonic())))
                     continue
                 raise
         try:
             os.ftruncate(fd, 0)
             os.write(
-                fd, f"{os.getpid()} {_dt.datetime.now().isoformat(timespec='seconds')}\n".encode()
+                fd,
+                (
+                    f"{os.getpid()} "
+                    f"{_dt.datetime.now().isoformat(timespec='seconds')} "
+                    f"{_ingest_lock_hostname()}\n"
+                ).encode(),
             )
         except OSError:
             pass
@@ -739,7 +918,7 @@ def run(
             f"exit {EXIT_LOCKED}"
         )
     try:
-        with IngestLock(lock_path, timeout_s=lock_timeout_s):
+        with IngestLock(lock_path, timeout_s=lock_timeout_s, attests_health=attests, log=log):
             return _run_locked(
                 names,
                 dry_run,
