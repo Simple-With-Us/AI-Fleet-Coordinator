@@ -373,6 +373,14 @@ class HookTests(unittest.TestCase):
         self.assertIn("COOLIFY-CLI-SYNC-FAILED", hook)
         self.assertNotIn("--install", hook[start : hook.index("if ! git -C", start)])
 
+    def test_mac_gitops_check_runs_before_fetch(self):
+        hook = Path(__file__).with_name("simple-tools-runtime-sync.sh").read_text()
+        gitops = hook.index("Mac GitOps G7")
+        fetch = hook.index("if ! rgit fetch")
+        self.assertLess(gitops, fetch)
+        self.assertIn("mac-gitops-check.enabled", hook)
+        self.assertIn("mac-gitops-reconcile.py", hook)
+
 
 if __name__ == "__main__":
     unittest.main()
