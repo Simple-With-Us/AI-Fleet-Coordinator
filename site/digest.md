@@ -5,9 +5,9 @@ _Generated 2026-09-26 19:25 CDT · timezone America/Chicago_
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
 
-- **HTML:** https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/
-- **ICS (daily outline):** https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
-- **ICS (per-commit activity):** https://jaywedgeworth22.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
+- **HTML:** https://simple-with-us.github.io/AI-Fleet-Coordinator/
+- **ICS (daily outline):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
+- **ICS (per-commit activity):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
 
 ## 2026-09-26
 

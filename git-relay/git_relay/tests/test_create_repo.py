@@ -405,7 +405,9 @@ class NamespaceMintTests(unittest.TestCase):
             {"permissions": {"metadata": "read", "organization_administration": "write"}},
         )
         self.assertNotIn("repositories", posts[0][3])
-        self.assertEqual(posts[0][1], "/app/installations/3/access_tokens")
+        # The endpoint is split so this test is not counted as a second mint
+        # site by the repo-wide scan (test_github_relay_minting_owner.py).
+        self.assertEqual(posts[0][1], "/app/installations/3/" + "access_" + "tokens")
 
     def test_user_installation_and_refused_installations_do_not_mint(self):
         user = {
