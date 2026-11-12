@@ -1,0 +1,230 @@
+{
+  "suite": "retrieval-quality",
+  "collection_setting": "QDRANT_FLEET_COLLECTION",
+  "doc_id_prefix": "doc/AI-Fleet-Coordinator/",
+  "extra_paths": [
+    "README.md",
+    "TEMPLATE-AGENTS.md"
+  ],
+  "queries": [
+    {
+      "id": "mac-ci-runners",
+      "query": "Are local Mac self-hosted GitHub Actions runners such as trading-live-mac-ci and actions-runner allowed, and what does check-ci-runner-policy.py check?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/AGENTS.md"],
+      "note": "AGENTS.md CI runner ban"
+    },
+    {
+      "id": "kody-manual-mode",
+      "query": "Kodus runs in manual mode so a push does not start a review. Who has to comment @kody start-review?",
+      "expect_doc_id_prefix": [
+        "doc/AI-Fleet-Coordinator/AGENTS.md",
+        "doc/AI-Fleet-Coordinator/TEMPLATE-AGENTS.md"
+      ],
+      "note": "The same manual-review rule is in AGENTS.md and the template"
+    },
+    {
+      "id": "infisical-service-tokens",
+      "query": "Where is the Service Tokens Only rule for Infisical, including linux-private-bootstrap and AFC-711?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/INFISICAL.md"],
+      "note": "INFISICAL.md service-token rule"
+    },
+    {
+      "id": "nightly-timer",
+      "query": "When does fleet-rag-nightly.timer run, and what value of FLEET_RAG_NIGHTLY actually starts the ingest?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/RAG-NIGHTLY-INGEST.md"],
+      "note": "Nightly ingest timer"
+    },
+    {
+      "id": "nightly-prune-guards",
+      "query": "What does FLEET_RAG_PRUNE_FORCE lift, and when is a whole doc repo of 5 or more documents refused?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/RAG-NIGHTLY-INGEST.md"],
+      "note": "Nightly prune guards"
+    },
+    {
+      "id": "nightly-mirror-age",
+      "query": "How long does the Mac skill mirror stay fresh before FLEET_RAG_MIRROR_MAX_AGE_S marks it stale?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/RAG-NIGHTLY-INGEST.md"],
+      "note": "Mirror freshness window"
+    },
+    {
+      "id": "reranker-model",
+      "query": "Which cross-encoder model reranks fleet recall hits, cross-encoder/ms-marco-MiniLM-L-6-v2?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/RAG-FLEET-INFRA.md"],
+      "note": "RAG infra reranker"
+    },
+    {
+      "id": "recall-access-check",
+      "query": "Which Linear issue collects the Fleet RAG access check, and what shape does the OPS-372 comment use?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/RECALL-ACCESS-CHECK.md"],
+      "note": "Recall access check"
+    },
+    {
+      "id": "kody-first-review",
+      "query": "Why does the Kody first-review prompter skip PRs younger than 30 minutes?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/KODY-FIRST-REVIEW.md"],
+      "note": "First-review prompter"
+    },
+    {
+      "id": "kody-defer",
+      "query": "How does a person defer a Kody finding with /defer so the thread resolves to a GitHub issue?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/KODY-DEFER.md"],
+      "note": "Kody defer command"
+    },
+    {
+      "id": "pr-sweep",
+      "query": "Where is the only copy of the pr-sweep worker rules, and how do I print them with pr-sweep prompt?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/PR-SWEEP.md"],
+      "note": "PR sweep runbook"
+    },
+    {
+      "id": "housekeeper-ask-first",
+      "query": "Which Housekeeper reclaim targets, including claudevm.bundle and DriveFS, need an explicit Jay OK before delete?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/HOUSEKEEPER.md"],
+      "note": "Housekeeper ask-first reclaim"
+    },
+    {
+      "id": "coolify-egress",
+      "query": "Why must the Coolify host keep its default egress route, after the Tailscale exit node caused Cloudflare 522s?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/COOLIFY-EGRESS-ROUTING.md"],
+      "note": "Coolify egress rule"
+    },
+    {
+      "id": "workers-guards",
+      "query": "What do limits.cpu_ms and preview_urls = false stop on the fleet Cloudflare Workers account, AFC-617?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/cloudflare-workers.md"],
+      "note": "Workers spend guards"
+    },
+    {
+      "id": "hold-guard",
+      "query": "How does hold-guard decide setter-only release from the labeled actor id on a pull request timeline?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/hold-guard-rollout.md"],
+      "note": "Hold guard ownership"
+    },
+    {
+      "id": "lane-map",
+      "query": "Where do layout v2 lanes live, and what is a review-pr checkout under apps/lanes?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/protocols/lane-map.md"],
+      "note": "Lane map"
+    },
+    {
+      "id": "dns-account-vs-zone",
+      "query": "Is Usage.Jays.Services a Cloudflare account name, a zone, or a hostname?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/DNS-AND-REGISTRARS.md"],
+      "note": "DNS account versus zone"
+    },
+    {
+      "id": "fleet-mode",
+      "query": "Which phrases mean fleet mode, including delegate hard and spawn and stay free?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/FLEET-MODE.md"],
+      "note": "Fleet mode triggers"
+    },
+    {
+      "id": "autofix-dispatcher",
+      "query": "What does SWU_AUTOFIX_DISPATCHER_ENABLED do, and which untried PR does the dispatcher take first?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/AUTOFIX-DISPATCHER.md"],
+      "note": "Autofix dispatcher trial"
+    },
+    {
+      "id": "storage-guard",
+      "query": "What does FLEET_RAG_STORAGE_GUARD_REQUIRED=1 refuse before a Qdrant write?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/fleet-rag-storage-guard.md"],
+      "note": "Destination storage guard"
+    },
+    {
+      "id": "worker-deploy",
+      "query": "Which workflow deploys simple-tools-mcp, and when was pr-conflict-watch retired from the alert pipeline?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/worker-deploy-automation.md"],
+      "note": "Worker deploy pipelines"
+    },
+    {
+      "id": "cloud-bootstrap",
+      "query": "What does the cloud agent bootstrap restore, and why is /workspace/.bootstrap.sh the script that survives a fresh sandbox?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/CLOUD-AGENT-BOOTSTRAP.md"],
+      "note": "Cloud sandbox bootstrap"
+    },
+    {
+      "id": "board-writeback-retired",
+      "query": "When was the mac-collab board write-back retired, and is BOARD_BACKEND=mac-collab still in force?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/BOARD-WRITEBACK-PROTOCOL.md"],
+      "note": "Retired board write-back"
+    },
+    {
+      "id": "testflight-freshness",
+      "query": "What question does the TestFlight freshness check answer for AFC-341, and what does --ship-behind do?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/ios-testflight-freshness.md"],
+      "note": "TestFlight freshness"
+    },
+    {
+      "id": "operator-listener",
+      "query": "Where is the operator eavesdropper listener supposed to move, and what stays on the Mac at cutover?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/operator-listener-hosting.md"],
+      "note": "Operator listener hosting"
+    },
+    {
+      "id": "muster-resources",
+      "query": "What is CODING_RAM_POLICY, and what does the Muster cpu_weight control bound?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/muster-resource-controls.md"],
+      "note": "Muster resource controls"
+    },
+    {
+      "id": "git-actions-inventory",
+      "query": "What do wf_artifact_get and wf_cache_usage return, and do they download artifact contents?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/git-actions-inventory-and-attempts.md"],
+      "note": "Actions inventory reads"
+    },
+    {
+      "id": "cursor-repo-mapping",
+      "query": "Where does Cursor cache trackedGitRepos, and what is workspaceMetadata.entries in state.vscdb?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/CURSOR-REPO-MAPPING.md"],
+      "note": "Cursor folder mapping"
+    },
+    {
+      "id": "onboarding-new-app",
+      "query": "How does a new app join the fleet, and what does the script write into fleet-apps.json before the checklist?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-APP.md"],
+      "note": "New app onboarding"
+    },
+    {
+      "id": "onboarding-new-seat",
+      "query": "How do I register a new agent seat with onboard-new-agent.sh and a worktree suffix?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-AGENT.md"],
+      "note": "New seat onboarding"
+    },
+    {
+      "id": "org-baseline",
+      "query": "What org-wide branch protection minimums does the org baseline ask for, instead of per-repo secret copies?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/ORG-BASELINE.md"],
+      "note": "Org baseline"
+    },
+    {
+      "id": "mac-local-processes",
+      "query": "Which document is the master list of always-on Mac jobs, also called the Background Jobs Master List?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/MAC-LOCAL-PROCESSES.md"],
+      "note": "Mac process inventory"
+    },
+    {
+      "id": "zulip-guide",
+      "query": "Where is the canonical Zulip conduct guide, and when was Slack retired with a hard cut?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/protocols/zulip-fleet-guide.md"],
+      "note": "Zulip fleet guide"
+    },
+    {
+      "id": "auto-merge-caller",
+      "query": "Where does the shared auto-merge armer live, and what happened to the per-repo auto-merge-prs.yml copies?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/AUTO-MERGE.md"],
+      "note": "Auto-merge reusable workflow"
+    },
+    {
+      "id": "sentence-gap-portable",
+      "query": "Where is the portable sentence-gap paste block that starts at PASTE FROM HERE for any LLM tool?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md"],
+      "note": "Portable sentence-gap skill"
+    },
+    {
+      "id": "fleet-apps-registry",
+      "query": "Which generated document is the Fleet Apps and App Store Connect registry produced by fleet-apps-sheet-sync?",
+      "expect_doc_id_prefix": ["doc/AI-Fleet-Coordinator/docs/FLEET-APPS-REGISTRY.md"],
+      "note": "Fleet apps registry"
+    }
+  ]
+}
