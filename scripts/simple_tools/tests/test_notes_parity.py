@@ -172,6 +172,21 @@ class ParityTests(unittest.TestCase):
             (WORKER_NOTES_JS.parent / "../../simple_tools/mcp/notes-tools.json").resolve(), NOTES_JSON.resolve()
         )
 
+    def test_pin_skipped_is_on_the_write_and_status_contracts_and_the_worker_reads_it(self):
+        """AFC-455:  Python notes_status and notes.js both surface pin_skipped, from the same tool contract."""
+        props = {tool["name"]: tool["outputSchema"]["properties"] for tool in self.tools}
+        for name in ("notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_status"):
+            field = props[name].get("pin_skipped")
+            self.assertIsInstance(field, dict, name)
+            self.assertEqual(field.get("type"), "string", name)
+            self.assertIn("unpinned", field.get("description", ""), name)
+        source = WORKER_NOTES_JS.read_text(encoding="utf-8")
+        self.assertIn("pin_skipped: z.string().nullish()", source)
+        self.assertIn("parsed.data.pin_skipped", source)
+        self.assertIn("writeFields(record.result)", source)
+        # notes_status copies a finished write through writeFields, the same helper the writes use.
+        self.assertIn('if (record.state === "done" && WRITE_ACTIONS.includes(record.action)) Object.assign(info, writeFields(record.result));', source)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
