@@ -415,6 +415,8 @@ def http_fetch_observer(
                 ReasonCode.TIMEOUT,
             ) from None
     raise CheckError("the api observer exhausted retry budget", ReasonCode.ERROR)
+
+
 def _reject_json_constant(token: str) -> Any:
     """Reject non-standard JSON constants (NaN/Infinity/-Infinity)."""
     raise ValueError("non-standard JSON constant %r is refused" % token)
