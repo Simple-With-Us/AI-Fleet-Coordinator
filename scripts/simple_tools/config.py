@@ -80,17 +80,33 @@ WAKE_CAP_KEYS: tuple[str, ...] = (
     "owner_per_day",
     "owner_per_topic_per_hour",
 )
-# The rest of a seat's `budget` table keeps its defaults.
+# The rest of a seat's `budget` table.  Only `board_per_day` keeps a default, and its 0 is a feature
+# switch (the seat files nothing on the board), not a throttle.  The others have NO default (owner,
+# Nov 10, 2026:  wakes are liberal and nothing throttles them), so a key a seat leaves out is no
+# limit, the way the five wake count caps are.  The route suggestion caps (owner 2026-10-10:  what
+# one routing seat may page on the owner's behalf, counted from that seat's own ledger) are
+# `routes_per_hour`, `routes_per_day`, and `route_topic_minutes` since the last route posted in the
+# same topic;  a seat that wants one writes it in its own `budget`, and a route cap written there
+# still applies (wakes.route_budget_block).  `usd_per_day` is only accepted, so a config that names
+# it keeps loading:  nothing enforces it (wake accounting is frequency-only, owner 2026-10-13), so
+# writing it sets no ceiling.  The old defaults were $2 a day, 3 routes an hour, 10 a day and one
+# per topic every 30 minutes.
 BUDGET_DEFAULTS: dict[str, float] = {
-    "usd_per_day": 2.0,
     "board_per_day": 0,
-    # Route suggestions (owner 2026-10-10):  what one routing seat (today only CLAUDE, the one claude
-    # wake) may page on the owner's behalf, counted from that seat's own ledger.  A route also needs
-    # route_topic_minutes since the last route posted in the same topic.
-    "routes_per_hour": 3,
-    "routes_per_day": 10,
-    "route_topic_minutes": 30,
 }
+# Every key a seat's `budget` table may carry:  the defaults above, the five wake count caps, and
+# the keys that no longer have a default:  the three route caps, still enforced when a config sets
+# them, and `usd_per_day`, accepted and never enforced, so a live config that names one keeps
+# loading.
+BUDGET_KEYS_UNSET_BY_DEFAULT: tuple[str, ...] = (
+    "usd_per_day",
+    "routes_per_hour",
+    "routes_per_day",
+    "route_topic_minutes",
+)
+KNOWN_BUDGET_KEYS: frozenset[str] = frozenset(
+    {*BUDGET_DEFAULTS, *WAKE_CAP_KEYS, *BUDGET_KEYS_UNSET_BY_DEFAULT}
+)
 # [registry] (AFC-721):  one stale window for every platform (36 hours), one sweep every 15 minutes,
 # and one sweep pass may end at most half of a (platform, host)'s open rows.  Host gone reports may
 # close at most half of a host's live rows for a platform within any 60 minute window.
@@ -631,7 +647,9 @@ class Config:
         self.operator_dm_allow: frozenset[int] = frozenset()
         self.owner_clients: set[str] = set(DEFAULT_OWNER_CLIENTS)
         self.stale_after = float(L.STALE_AFTER_DEFAULT)
-        self.wake_loop_prevention = True
+        # The topic loop guard is OFF unless the config turns it on (owner, Nov 10, 2026:  wakes are
+        # liberal and nothing throttles them).
+        self.wake_loop_prevention = False
         self.coalesce_seconds = 20.0
         self.coalesce_max_seconds = 90.0
         self.owner_coalesce_seconds = 5.0
@@ -875,8 +893,11 @@ def _routine(seat: str, given: Any, problems: list[str]) -> RoutineConfig | None
 def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
     """What is worth saying about the keys of one `[seat.X]` section, in a stable order.  Warnings only:
     a deprecated key keeps working exactly as before, and an unknown key is ignored as it always was.
-    Neither one may downgrade the seat or drop its `routine`, so the caller puts these in
-    `Config.warnings` and nowhere else (a wake problem would rewrite the seat to inbox)."""
+    The seat's `live` table is checked too:  a `live` that is not a table, or a live limit that
+    is not a whole number of at least 0, is ignored by live.live_limits, and with no live default
+    behind it that limit is off, so it is said here.  None of these may downgrade the seat or drop
+    its `routine`, so the caller puts them in `Config.warnings` and nowhere else (a wake problem
+    would rewrite the seat to inbox)."""
     found: list[str] = []
     for key in sorted(section, key=str):
         if key in SEAT_KEYS or key in SEAT_KEYS_RETIRED:
@@ -900,6 +921,21 @@ def seat_key_warnings(seat: str, section: Mapping[str, Any]) -> list[str]:
                 found.append(
                     "seat.%s.budget.%s is deprecated:  it still works as before, and goes away with "
                     "the wake types it belongs to" % (seat, key)
+                )
+    live = section.get("live")
+    if live is not None and not isinstance(live, dict):
+        found.append(
+            "seat.%s.live must be a table;  it is ignored, so no live limit applies" % seat
+        )
+    elif isinstance(live, dict):
+        for key in sorted(live, key=str):
+            value = live[key]
+            if key in L.LIVE_LIMIT_KEYS and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                found.append(
+                    "seat.%s.live.%s must be a whole number of at least 0;  it is ignored, so that "
+                    "limit is off" % (seat, key)
                 )
     return found
 
@@ -1076,7 +1112,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.route_enabled must be true or false")
     else:
         cfg.route_enabled = route_on
-    loop_prevention = daemon.get("wake_loop_prevention", True)
+    loop_prevention = daemon.get("wake_loop_prevention", False)
     if not isinstance(loop_prevention, bool):
         errors.append("daemon.wake_loop_prevention must be true or false")
     else:
@@ -1576,7 +1612,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             wake_problems.append("seat.%s.budget must be a table" % seat_name)
             given = {}
         for key, value in given.items():
-            if key not in BUDGET_DEFAULTS and key not in WAKE_CAP_KEYS:
+            if key not in KNOWN_BUDGET_KEYS:
                 wake_problems.append("seat.%s.budget.%s is not a known budget" % (seat_name, key))
                 continue
             number = _number(value, "seat.%s.budget.%s" % (seat_name, key), wake_problems)

@@ -364,6 +364,8 @@ class RoutingTests(DaemonHarness):
         self.assertEqual(self.ledger(), [])
 
     def test_an_owner_follow_up_soon_after_a_live_turn_is_still_an_interrupt(self) -> None:
+        # No live limit has a default, so the seat writes the per-topic spacing that holds the peer.
+        self.write_config(live="per_topic_minutes = 5")
         daemon = self.started()
         self.write_lease("L1", topics=[("simple-tools", "t")])
         now = self.clock.time()
@@ -895,12 +897,13 @@ class WakeTests(DaemonHarness):
         self.assertEqual(reasons, ["wakes_per_hour"], "0 keeps its meaning:  held back, never run")
         self.assertEqual(len(self.dumps()), 0)
 
-    def test_peer_budget_per_topic_with_loop_prevention_off(self) -> None:
-        self.write_config(budget="per_topic_per_hour = 2")
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+    def test_peer_budget_per_topic_with_loop_prevention_on(self) -> None:
+        # The guard is off by default (owner, Nov 10, 2026):  turned on, it changes nothing here.
+        self.write_config(
+            budget="per_topic_per_hour = 2", extra_daemon="wake_loop_prevention = true"
+        )
         daemon = self.started()
-        self.assertFalse(daemon.loopguard.enabled)
+        self.assertTrue(daemon.loopguard.enabled)
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", MENTION + " %d" % n)
             self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
@@ -1303,19 +1306,29 @@ class WakeTests(DaemonHarness):
         self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
         self.assertEqual(len(self.ledger()), 1)
 
-    def test_lock_handover_rebuild_applies_disabled_guard(self) -> None:
+    def test_lock_handover_rebuild_applies_the_loop_guard_setting_on_disk(self) -> None:
+        # The guard is off unless the config turns it on, so the rebuild is proved in the direction
+        # that differs from the default first (`true` on disk gives an enabled guard), then back.
         daemon = self.started()
+        self.assertFalse(daemon.loopguard.enabled, "absent means off")
         for _ in range(3):
             daemon.loopguard.note(TOPIC_KEY, wake_reply=True, owner=False)
-        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
-        daemon.rebuild_from_disk()
-        self.assertFalse(daemon.loopguard.enabled)
         self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
-        self.assertEqual(daemon.loopguard.count(TOPIC_KEY), 3)
+        for off in ("wake_loop_prevention = false", ""):
+            with self.subTest(then=off or "absent"):
+                self.write_config(extra_daemon="wake_loop_prevention = true")
+                daemon.rebuild_from_disk()
+                self.assertTrue(daemon.loopguard.enabled)
+                self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY), "the kept count holds it")
+                self.write_config(extra_daemon=off)
+                daemon.rebuild_from_disk()
+                self.assertFalse(daemon.loopguard.enabled)
+                self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
+                self.assertEqual(daemon.loopguard.count(TOPIC_KEY), 3)
 
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
+        # The guard is off unless the config turns it on.
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")
         for n in range(3):
@@ -1413,6 +1426,11 @@ class JetWakeTests(DaemonHarness):
         self.assertEqual((self.ledger()[0]["trigger_ids"], self.ledger()[0]["owner"]), ([mid], False))
 
     def test_the_loop_guard_blocks_jet_wakes_until_an_owner_post(self) -> None:
+        # The guard is off unless the config turns it on.
+        self.write_config(
+            eligible=BASE_CONFIG["eligible"] + [self.JET_ID],
+            extra_daemon="wake_loop_prevention = true",
+        )
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")
         for n in range(3):
@@ -1451,6 +1469,10 @@ class EveryoneWakesTests(DaemonHarness):
 
     def now(self) -> int:
         return int(self.clock.time())
+
+    def guard_on(self) -> None:
+        """The loop guard is off unless the config turns it on, so a test about it writes that."""
+        self.write_config(eligible=[], extra_daemon="wake_loop_prevention = true")
 
     def test_a_gb_persona_mention_wakes_claude(self) -> None:
         daemon = self.started()
@@ -1523,6 +1545,7 @@ class EveryoneWakesTests(DaemonHarness):
         """Each side's wake reply is `·wake`-tagged, so it never wakes the other.  However the thread goes,
         3 wake replies within the DM window stop it waking; the owner is not in it, so the count is rolling
         and the pair wakes again once the oldest reply ages out."""
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             sender = self.fake.me if n % 2 else self.echo
@@ -1545,6 +1568,7 @@ class EveryoneWakesTests(DaemonHarness):
     def test_a_guard_drop_leaves_a_row_and_names_the_topic_in_status(self) -> None:
         """AFC-255.  Before, a guard drop wrote one `wake-blocked` log line and returned, so the ledger
         was empty and only the JSON log said a wake had been thrown away."""
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", "[CODEX·wake] re=%d\nreply" % n, timestamp=self.now())
@@ -1563,6 +1587,7 @@ class EveryoneWakesTests(DaemonHarness):
     def test_the_guard_notice_fires_once_per_topic_per_window_not_per_message(self) -> None:
         """The guard holds a hot topic for a long time, so one notice per drop would be a flood; one per
         topic per window is the story worth telling."""
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", "[CODEX·wake] re=%d\nreply" % n, timestamp=self.now())
@@ -1658,6 +1683,7 @@ class EveryoneWakesTests(DaemonHarness):
         self.assertTrue(any("install a muse build" in red for red in seat["red"]), seat["red"])
 
     def test_a_topic_loop_guard_still_waits_for_the_owner(self) -> None:
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             self.fake.add_message(self.gb, "simple-tools", "t", "[GB-COMPILER·wake] re=%d\nreply" % n,
@@ -1983,14 +2009,13 @@ class RecoveryTests(DaemonHarness):
         self.assertEqual(self.dumps(), [])
         self.assertTrue(any("stopped mid-run" in b[8] for b in self.banners))
 
-    def test_a_crash_between_started_and_done_never_reruns_with_loop_prevention_off(self) -> None:
+    def test_a_crash_between_started_and_done_never_reruns_with_loop_prevention_on(self) -> None:
         paths = self.seat_paths()
         L.append_jsonl(paths.wakes, [{"ts": self.clock.time(), "wake_id": "w1", "seat": "CLAUDE", "state": "started",
                                       "owner": True, "reserved_usd": 0.25, "trigger_ids": [5], "topic_key": TOPIC_KEY}])
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
-        self.assertFalse(daemon.loopguard.enabled)
+        self.assertTrue(daemon.loopguard.enabled)
         self.wake_cycle(daemon)
         self.assertEqual([r["state"] for r in self.ledger()], ["started", "failed"])
         self.assertEqual(self.dumps(), [])
@@ -2007,11 +2032,10 @@ class RecoveryTests(DaemonHarness):
         self.assertEqual([(r["state"], r.get("reason")) for r in self.ledger()], [("queued", None), ("dropped", "stale")])
         self.assertEqual(self.dumps(), [])
 
-    def test_a_peer_wake_that_went_stale_while_the_daemon_was_down_never_runs_with_loop_prevention_off(self) -> None:
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+    def test_a_peer_wake_that_went_stale_while_the_daemon_was_down_never_runs_with_loop_prevention_on(self) -> None:
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
-        self.assertFalse(daemon.loopguard.enabled)
+        self.assertTrue(daemon.loopguard.enabled)
         self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         daemon.shutdown()
