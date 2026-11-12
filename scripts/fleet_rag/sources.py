@@ -1826,8 +1826,11 @@ def iter_chat_logs(
 #
 # Linear replaces the frozen board corpus. Every live or archived issue is eligible,
 # including imported issues untouched since the freeze. Only committed ingest state may
-# suppress a routine refetch; FULL bypasses that cache. Retired coverage files are used
-# only by explicit migration verification, never by the normal Linear source.
+# suppress a routine refetch; FULL bypasses that cache. A committed updatedAt cursor
+# limits the id scan to issues updated since that cursor minus an overlap. The cursor
+# advances only after a clean source run. A missing, corrupt, or stale cursor, and a
+# weekly full sweep, read every id. Retired coverage files are used only by explicit
+# migration verification, never by the normal Linear source.
 
 LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
 LINEAR_PAGE = 250
@@ -2107,18 +2110,23 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
     return data
 
 
-def _linear_light_scan(deadline: float | None = None) -> dict:
+def _linear_light_scan(
+    deadline: float | None = None, updated_since: str | None = None
+) -> dict:
     """Every issue's id -> {identifier, updatedAt}, one 250-wide page at a time, oldest update
-    first.  Fail closed:  a missing connection or a zero-issue scan is a broken read, never an
-    empty board."""
+    first.  ``updated_since`` is a strict UTC timestamp:  the scan then asks only for issues
+    updated at or after that instant.  Fail closed:  a missing connection is a broken read.
+    A zero-issue scan is a broken read on a full sweep, and a quiet incremental window when
+    ``updated_since`` is set."""
     deadline = deadline if deadline is not None else _linear_deadline()
+    filt = _linear_updated_since_clause(updated_since)
     out: dict = {}
     after = None
     while True:
         clause = f', after: "{after}"' if after else ""
         data = _linear_query(
-            "query { issues(first: %d, includeArchived: true, orderBy: updatedAt%s) { %s } }"
-            % (LINEAR_PAGE, clause, _LINEAR_LIGHT_FIELDS),
+            "query { issues(first: %d, includeArchived: true%s, orderBy: updatedAt%s) { %s } }"
+            % (LINEAR_PAGE, filt, clause, _LINEAR_LIGHT_FIELDS),
             timeout_s=_linear_remaining(deadline),
         )
         conn = data.get("issues")
@@ -2138,7 +2146,7 @@ def _linear_light_scan(deadline: float | None = None) -> dict:
             }
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):
-            if not out:
+            if not out and updated_since is None:
                 raise LinearSourceError(
                     "linear: the issue scan returned zero issues;  refusing to treat a broken "
                     "read as an empty board"
@@ -2514,6 +2522,27 @@ def _linear_scan_entry(node) -> tuple:
     return "", str(node or "")
 
 
+def _linear_state_path() -> pathlib.Path:
+    raw = os.environ.get("FLEET_RAG_LINEAR_STATE")
+    if raw:
+        return pathlib.Path(raw)
+    return pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json"
+
+
+def _linear_load_state() -> dict:
+    """The ingest state object, or {} when the file is missing or unreadable.
+
+    An unreadable file is the safe direction:  the next read is a full sweep and no
+    per-issue row is treated as fresh."""
+    try:
+        loaded = json.loads(_linear_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded
+
+
 def _linear_ingested_versions() -> dict:
     """doc_id -> ingest state row for the linear rows of the ingest state file, so a routine
     run fetches only issues Linear changed since they were ingested.  Any read problem
@@ -2521,27 +2550,152 @@ def _linear_ingested_versions() -> dict:
     Linear is never a deletion inventory: FULL refetches selected issues but can
     still omit truncated ones. The orchestrator skips Linear prune in nightly
     runs and refuses a separate Linear prune before any write."""
-    path = pathlib.Path(
-        os.environ.get("FLEET_RAG_LINEAR_STATE")
-        or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json")
-    )
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
     out: dict = {}
-    for doc_id, rec in state.items():
+    for doc_id, rec in _linear_load_state().items():
         if (
             isinstance(doc_id, str)
             and doc_id.startswith("linear/")
             and isinstance(rec, dict)
             and isinstance(rec.get("updated_at"), int)
+            and not isinstance(rec.get("updated_at"), bool)
         ):
             out[doc_id] = rec
     return out
 
 
 LINEAR_REFRESH_DAYS = 7  # FLEET_RAG_LINEAR_REFRESH_DAYS overrides
+# updatedAt high-water mark lives in the ingest state under this key.  It is not a
+# document:  it has no source and no chunk ids, so prune never treats it as a row.
+LINEAR_CURSOR_KEY = "_linear_sync"
+LINEAR_SWEEP_DAYS = 7  # FLEET_RAG_LINEAR_SWEEP_DAYS overrides
+LINEAR_OVERLAP_HOURS = 2  # FLEET_RAG_LINEAR_OVERLAP_HOURS overrides
+# Only this form is interpolated into the GraphQL filter.
+_LINEAR_CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _linear_bounded_int(name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        warn(f"linear: {name}={raw!r} is not an integer; using {default}")
+        return default
+    if value < lo or value > hi:
+        warn(f"linear: {name}={value} is outside {lo}..{hi}; using {default}")
+        return default
+    return value
+
+
+def _linear_sweep_ms() -> int:
+    days = _linear_bounded_int("FLEET_RAG_LINEAR_SWEEP_DAYS", LINEAR_SWEEP_DAYS, 1, 90)
+    return days * 24 * 3600 * 1000
+
+
+def _linear_overlap_ms() -> int:
+    hours = _linear_bounded_int(
+        "FLEET_RAG_LINEAR_OVERLAP_HOURS", LINEAR_OVERLAP_HOURS, 1, 168
+    )
+    return hours * 3600 * 1000
+
+
+def _linear_epoch_ms(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _linear_iso(ms: int) -> str:
+    """UTC timestamp in the only form the incremental filter will interpolate."""
+    stamp = _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc)
+    text = stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+    if not _LINEAR_CURSOR_RE.fullmatch(text):
+        raise LinearSourceError("linear: could not format an updatedAt cursor")
+    return text
+
+
+def _linear_updated_since_clause(updated_since: str | None) -> str:
+    if updated_since is None:
+        return ""
+    if not _LINEAR_CURSOR_RE.fullmatch(updated_since):
+        raise LinearSourceError("linear: incremental updatedAt bound is not a timestamp")
+    return f', filter: {{ updatedAt: {{ gte: "{updated_since}" }} }}'
+
+
+def _linear_sync_status(state: dict) -> tuple[str, dict | None]:
+    """``missing``, ``corrupt``, or ``ok`` for the updatedAt cursor record."""
+    if LINEAR_CURSOR_KEY not in state:
+        return "missing", None
+    record = state.get(LINEAR_CURSOR_KEY)
+    if not isinstance(record, dict):
+        return "corrupt", None
+    cursor = record.get("updated_at_cursor")
+    if not isinstance(cursor, str) or not _LINEAR_CURSOR_RE.fullmatch(cursor):
+        return "corrupt", None
+    if parse_ts_ms(cursor) <= 0:
+        return "corrupt", None
+    return "ok", record
+
+
+def linear_read_plan(now: int | None = None) -> dict:
+    """Decide a full id sweep or an updatedAt window.
+
+    A full sweep is the explicit full flag, a missing or corrupt cursor, a cursor
+    older than the sweep interval, or a last successful full sweep older than that
+    interval.  An incremental read asks for issues updated since the cursor minus
+    the overlap.  The cursor itself advances only after the orchestrator commits a
+    fully successful source run.
+    """
+    current = now_ms() if now is None else int(now)
+    sweep_ms = _linear_sweep_ms()
+    overlap_ms = _linear_overlap_ms()
+    force_bodies = bool(os.environ.get("FLEET_RAG_LINEAR_FULL"))
+    status, record = _linear_sync_status(_linear_load_state())
+    cursor = record.get("updated_at_cursor") if record else None
+    cursor_ms = parse_ts_ms(cursor) if isinstance(cursor, str) else 0
+    last_full = _linear_epoch_ms(record.get("last_full_sweep_at_ms")) if record else None
+    reason = "incremental"
+    full_scan = False
+    if force_bodies:
+        full_scan = True
+        reason = "flag"
+    elif status == "missing":
+        full_scan = True
+        reason = "missing"
+    elif status == "corrupt" or cursor_ms <= 0:
+        full_scan = True
+        reason = "corrupt"
+    elif current - cursor_ms >= sweep_ms:
+        full_scan = True
+        reason = "cursor_stale"
+    elif last_full is None or current - last_full >= sweep_ms:
+        full_scan = True
+        reason = "sweep_due"
+    updated_since = None
+    if not full_scan:
+        updated_since = _linear_iso(max(0, cursor_ms - overlap_ms))
+    return {
+        "full_scan": full_scan,
+        "force_bodies": force_bodies,
+        "reason": reason,
+        "updated_since": updated_since,
+        "cursor": cursor if isinstance(cursor, str) and cursor_ms > 0 else None,
+        "scan_started_ms": current,
+        "cursor_candidate": _linear_iso(current),
+    }
+
+
+def _linear_mark_cursor(receipt: dict) -> None:
+    """A finished read may advance the cursor only when nothing was left unread."""
+    if receipt.get("limited"):
+        receipt["cursor_advance"] = False
+        return
+    rows = receipt.get("issues") or {}
+    receipt["cursor_advance"] = not any(
+        isinstance(row, dict) and row.get("status") in ("skipped", "not_fetched")
+        for row in rows.values()
+    )
 
 
 def iter_linear(
@@ -2559,9 +2713,17 @@ def iter_linear(
     Legacy map_path/freeze/covered_ids arguments remain accepted for callers, but cannot
     exclude issues. FULL forces every scanned issue to be fetched. A receipt describes
     source reads, not permission to delete or proof of a committed corpus replacement.
+    The updatedAt cursor selects an incremental window; the orchestrator advances it
+    only after this generator finishes cleanly.
     """
     reset_linear_seat_state()
-    light_scan = light_scan or _linear_light_scan
+    plan = linear_read_plan()
+
+    def _production_scan() -> dict:
+        since = None if plan["full_scan"] else plan["updated_since"]
+        return _linear_light_scan(updated_since=since)
+
+    light_scan = light_scan or _production_scan
     fetch_full = fetch_full or _linear_fetch_full
     scan = light_scan()
     selected = list(scan)
@@ -2569,7 +2731,14 @@ def iter_linear(
         receipt.update(
             {
                 "schema": 1,
-                "full": bool(os.environ.get("FLEET_RAG_LINEAR_FULL")),
+                "full": bool(plan["force_bodies"]),
+                "full_scan": bool(plan["full_scan"]),
+                "read_mode": "full" if plan["full_scan"] else "incremental",
+                "full_reason": plan["reason"] if plan["full_scan"] else "",
+                "updated_since": plan["updated_since"],
+                "cursor_before": plan["cursor"],
+                "cursor_candidate": plan["cursor_candidate"],
+                "cursor_advance": False,
                 "limited": limit is not None,
                 "scan_count": len(scan),
                 "source_complete": False,
@@ -2583,6 +2752,11 @@ def iter_linear(
                 "scan_updated_at": updated,
                 "status": "not_fetched",
             }
+    if plan["full_scan"] and not scan:
+        raise LinearSourceError(
+            "linear: the issue scan returned zero issues;  refusing to treat a broken "
+            "read as an empty board"
+        )
     if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
         ingested = _linear_ingested_versions()
         refresh_ms = (
@@ -2618,6 +2792,8 @@ def iter_linear(
     if receipt is not None:
         receipt["selected_count"] = len(selected)
     if not selected:
+        if receipt is not None:
+            _linear_mark_cursor(receipt)
         return
     found = set()
     incomplete = []
@@ -2701,6 +2877,7 @@ def iter_linear(
             and len(found) == len(scan)
             and all(row["status"] == "fetched" for row in receipt["issues"].values())
         )
+        _linear_mark_cursor(receipt)
 
     if os.environ.get("FLEET_RAG_LINEAR_FULL") and incomplete and receipt is None:
         raise LinearSourceError(

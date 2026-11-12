@@ -179,6 +179,37 @@ def save_state(state: dict, path: pathlib.Path = STATE_PATH) -> None:
     os.replace(tmp, path)
 
 
+def _commit_linear_cursor(state: dict, receipt: dict) -> bool:
+    """Advance the Linear updatedAt cursor after a fully successful source run.
+
+    A failed, limited, dry, or incomplete read leaves the stored cursor alone.
+    A full sweep also stamps the sweep clock.  An incremental read keeps the
+    previous sweep clock so the weekly full read still comes due.
+    """
+    if not receipt.get("cursor_advance"):
+        return False
+    candidate = receipt.get("cursor_candidate")
+    if (
+        not isinstance(candidate, str)
+        or sources._LINEAR_CURSOR_RE.fullmatch(candidate) is None
+    ):
+        return False
+    prev = state.get(sources.LINEAR_CURSOR_KEY)
+    last_full = None
+    if isinstance(prev, dict):
+        last_full = sources._linear_epoch_ms(prev.get("last_full_sweep_at_ms"))
+    record: dict = {"kind": "linear-sync", "updated_at_cursor": candidate}
+    if receipt.get("full_scan"):
+        stamped = sources.parse_ts_ms(candidate)
+        if stamped <= 0:
+            return False
+        record["last_full_sweep_at_ms"] = stamped
+    elif last_full is not None:
+        record["last_full_sweep_at_ms"] = last_full
+    state[sources.LINEAR_CURSOR_KEY] = record
+    return True
+
+
 def _write_json(path: pathlib.Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -880,6 +911,11 @@ def _run_locked(
             linear_receipt["deletion_authorized"] = False
             if not source_ok:
                 linear_receipt["source_complete"] = False
+            elif not dry_run and _commit_linear_cursor(state, linear_receipt):
+                # The cursor moves only with the committed outcome of this source.
+                # A later source failure must not roll it back: the Linear read
+                # itself finished, and the next run's overlap covers the gap.
+                save_state(state, state_path)
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")
@@ -1217,6 +1253,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, help="max documents per source")
     ap.add_argument("--since", help="only documents updated since YYYY-MM-DD | ISO | Nd | epoch ms")
     ap.add_argument(
+        "--full",
+        action="store_true",
+        help="force a full Linear read this run (sets FLEET_RAG_LINEAR_FULL for the process; "
+        "a scheduled sweep uses FLEET_RAG_LINEAR_SWEEP_DAYS and still honors the per-issue cache)",
+    )
+    ap.add_argument(
         "--prune",
         action="store_true",
         help="after a source finishes cleanly, delete chunks of documents it no longer yields "
@@ -1252,15 +1294,25 @@ def main(argv: list[str] | None = None) -> int:
         lock_timeout = (
             args.lock_timeout if args.lock_timeout is not None else (6000.0 if attests else 0.0)
         )
-        report = run(
-            "all" if args.all else args.source,
-            dry_run=args.dry_run,
-            since=args.since,
-            limit=args.limit,
-            heartbeat=not args.no_heartbeat,
-            prune=args.prune,
-            lock_timeout_s=lock_timeout,
-        )
+        previous_full = os.environ.get("FLEET_RAG_LINEAR_FULL")
+        if args.full:
+            os.environ["FLEET_RAG_LINEAR_FULL"] = "1"
+        try:
+            report = run(
+                "all" if args.all else args.source,
+                dry_run=args.dry_run,
+                since=args.since,
+                limit=args.limit,
+                heartbeat=not args.no_heartbeat,
+                prune=args.prune,
+                lock_timeout_s=lock_timeout,
+            )
+        finally:
+            if args.full:
+                if previous_full is None:
+                    os.environ.pop("FLEET_RAG_LINEAR_FULL", None)
+                else:
+                    os.environ["FLEET_RAG_LINEAR_FULL"] = previous_full
     except (IngestLocked, NightlyPending) as e:
         #  Both are the same class of refusal —  this run must not hold the lock now —  so
         #  both exit 3, which is what the sheet sync's best-effort ingest expects.
