@@ -116,20 +116,28 @@ class ReleaseTests(unittest.TestCase):
             self.assertFalse(release.allowed_path(path), path)
 
     def test_repo_only_modules_stay_out_and_nothing_shipped_imports_them(self):
-        # AFC bundle cap trim (Nov 11, 2026):  these modules match the simple_tools pattern but no installed
-        # host runs them, so they stay in the repository and out of the release.  The test golden cases
-        # (mcp/fixtures.jsonl) stay out too:  only the test suites read them.
+        # AFC-768 (Nov 11, 2026):  these modules match the simple_tools pattern but nothing runs them, so they
+        # stay in the repository and out of the release.  Every module a host or installer still runs ships.
         import ast
 
         root = Path(__file__).resolve().parent.parent
-        self.assertFalse(release.allowed_path("scripts/simple_tools/mcp/fixtures.jsonl"))
+        for path in (
+            "scripts/simple_tools/mcp/fixtures.jsonl",
+            "scripts/simple_tools/notes_runner.py",
+            "scripts/simple_tools/wake_alerter.py",
+            "scripts/simple_tools/textsafe.py",
+            "scripts/simple_tools/selftest.py",
+            "scripts/simple_tools/operator_provenance.py",
+            "scripts/simple_tools/github_token_router.py",
+            "scripts/simple_tools/operator_github.py",
+            "scripts/simple_tools/operator_github_state.py",
+        ):
+            self.assertTrue(release.allowed_path(path), path)
         names = set()
         for path in release.REPO_ONLY:
             self.assertTrue((root / path).is_file(), path)
             self.assertFalse(release.allowed_path(path), path)
             names.add(Path(path).stem)
-        # The one lazy import a shipped module may keep:  `simple-notes runner` refuses plainly without it.
-        lazy = {("scripts/simple_tools/notes_cli.py", "notes_runner")}
         shipped = [
             p.relative_to(root).as_posix()
             for directory in ("scripts/simple_tools", "scripts/simple_tools/mcp")
@@ -150,8 +158,7 @@ class ReleaseTests(unittest.TestCase):
                     found = {(node.module or "").rsplit(".", 1)[-1]} | {a.name for a in node.names}
                 else:
                     continue
-                for name in found & names:
-                    self.assertIn((path, name), lazy, "%s imports repo-only %s" % (path, name))
+                self.assertFalse(found & names, "%s imports repo-only %s" % (path, sorted(found & names)))
 
     def test_board_ships_with_its_simple_tools_catalog(self):
         # `board commands`, `board run` and `board mcp` read these beside board;  a release without them
@@ -692,6 +699,36 @@ class ReleaseTests(unittest.TestCase):
             (self.base / "releases" / old["bundle_sha256"] / "scripts/recall").exists()
         )
 
+    def test_rollback_to_a_release_that_ships_a_now_repo_only_module(self):
+        # AFC-768 review:  narrowing allowed_path with REPO_ONLY must not make status or rollback refuse an
+        # older retained release that carried one of those modules under the policy of its day.
+        old = make_bundle("old")
+        extra = sorted(release.REPO_ONLY)[0]
+        data = b"# shipped before AFC-768\n"
+        old["files"][extra] = {
+            "mode": 0o644,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "data": base64.b64encode(data).decode(),
+        }
+        old["bundle_sha256"] = release.manifest_digest(old["files"])
+        self.assertFalse(release.allowed_path(extra))
+        with mock.patch.object(release, "REPO_ONLY", frozenset()):  # the receiver of that day
+            self.receive(old)
+        self.receive(make_bundle("new"), install=False)
+        self.assertEqual(release.release_at(self.base, "previous").name, old["bundle_sha256"])
+        result = release.control(self.home, "rollback")
+        self.assertEqual(result["bundle_sha256"], old["bundle_sha256"])
+        self.assertEqual(release.control(self.home, "status")["bundle_sha256"], old["bundle_sha256"])
+        self.assertTrue((self.base / "releases" / old["bundle_sha256"] / extra).is_file())
+
+    def test_a_new_bundle_with_a_repo_only_module_is_refused(self):
+        bundle = make_bundle("new")
+        extra = sorted(release.REPO_ONLY)[0]
+        bundle["files"][extra] = dict(bundle["files"]["scripts/simple_tools/cli.py"])
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        with self.assertRaises(release.Refused):
+            self.receive(bundle)
+
     def test_a_new_bundle_without_the_new_tools_is_still_refused(self):
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             self.receive(self.old_bundle())
@@ -1157,8 +1194,6 @@ class ShippedDataFilesTests(unittest.TestCase):
             and "/tests/" not in p
             and not p.endswith((".md", ".sh"))
             and "/server/" not in p
-            # The golden test cases:  only the test suites read them (tools.load_fixtures), never a host.
-            and p != "scripts/simple_tools/mcp/fixtures.jsonl"
         ]
         self.assertTrue(data)
         missing = [p for p in data if not release.allowed_path(p)]

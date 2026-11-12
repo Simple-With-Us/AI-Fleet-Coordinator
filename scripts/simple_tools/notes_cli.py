@@ -522,13 +522,7 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
 
 
 def _cmd_runner(rt: Any, args: argparse.Namespace) -> int:
-    try:
-        from . import notes_runner as RUN
-    except ImportError:
-        # A fleet-cli release does not carry the runner (it is the Mac's, run from the managed checkout).
-        raise Z.UsageError(
-            "simple-notes runner is the Mac's notes runner;  run it from the Mac's runtime checkout"
-        ) from None
+    from . import notes_runner as RUN
     from . import notes_wire as W
 
     home = _home(rt)

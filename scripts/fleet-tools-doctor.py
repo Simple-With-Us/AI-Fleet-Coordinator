@@ -173,6 +173,7 @@ SHIPPED_EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
         "scripts/simple_tools/mcp/gb-identities.json",
@@ -517,23 +518,15 @@ def release_policy():
 
 
 # The fallback copy of the release's REPO_ONLY:  simple_tools modules that match the shipped pattern but stay
-# out of a release (no installed host runs them).  A test pins this copy to the release's REPO_ONLY.
+# out of a release (nothing runs them).  A test pins this copy to the release's REPO_ONLY.
 SHIPPED_REPO_ONLY = frozenset(
     "scripts/simple_tools/" + name + ".py"
     for name in (
         "clarify",
-        "github_token_router",
-        "notes_runner",
-        "operator_github",
         "operator_github_client",
         "operator_github_policy",
         "operator_github_secrets",
-        "operator_github_state",
-        "operator_provenance",
         "operator_send",
-        "selftest",
-        "textsafe",
-        "wake_alerter",
     )
 )
 

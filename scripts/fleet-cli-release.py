@@ -120,6 +120,7 @@ EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -161,39 +162,24 @@ EXACT = frozenset(
         "scripts/ag-wake-bridge",
     }
 )
-# Modules in scripts/simple_tools/ that match the shipped pattern but that no installed host runs, so they
-# stay in the repository and out of the release.  A release goes to the Coolify server (fleet-cli-sync.py's
-# one target);  the Mac runs every tool from its managed runtime checkout.  Each one below is run, if at all,
-# from a checkout, and none is imported at module level by anything the release ships (checked against every
-# entry point's import closure, Nov 11, 2026):
-#   - the OPS-966 GitHub token broker:  an offline-reviewed prototype that git-relay replaced as the one
-#     minting path (owner decision Oct 22, 2026);  kept for review history and its repo-only tests.
-#   - operator_provenance:  the broker's and notes queue's audit-event allowlist;  only its test imports it.
+# Modules in scripts/simple_tools/ that match the shipped pattern but that nothing runs, on any host, so they
+# stay in the repository and out of the release (AFC-768, Nov 11, 2026).  Every module that a host or an
+# installer still runs or loads stays in the release, even when today's hosts run it from a git checkout:
+# the release path is dormant (the server runs from git since Oct 19, 2026), and a release must still be
+# whole if it is ever used again.  Each one below has no importer outside this set and the repo-only tests:
+#   - operator_github_client, operator_github_policy, operator_github_secrets:  the OPS-966 token broker's
+#     outer layers, which git-relay replaced as the one minting path (owner decision Oct 22, 2026);  kept for
+#     review history and their repo-only tests.
 #   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
-#   - selftest:  the onboarding check, run as `python3 scripts/simple_tools/selftest.py` from a checkout.
-#   - wake_alerter:  the Mac banner poller, which its LaunchAgent runs from the managed runtime checkout.
-#   - notes_runner:  the Mac runner for the Operator's notes queue (it runs apple-notes-coding.sh), which its
-#     LaunchAgent runs from the managed runtime checkout;  `simple-notes runner` imports it lazily and says
-#     so plainly on a host that has no copy.
-#   - textsafe:  loaded by path from the needs-owner and fleet-facts stable copies, which their installers
-#     copy from a checkout;  no shipped module imports it.
-# A new module still ships by default:  this list only ever names a module that has no shipped importer.
+# A new module still ships by default:  this list only ever names a module that nothing runs.
 REPO_ONLY = frozenset(
     "scripts/simple_tools/" + name + ".py"
     for name in (
         "clarify",
-        "github_token_router",
-        "operator_github",
         "operator_github_client",
         "operator_github_policy",
         "operator_github_secrets",
-        "operator_github_state",
-        "operator_provenance",
-        "notes_runner",
         "operator_send",
-        "selftest",
-        "textsafe",
-        "wake_alerter",
     )
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -807,6 +793,13 @@ def verify_existing(release: Path, files: dict) -> None:
             raise Refused("existing_release_changed")
 
 
+def retained_path(path: str) -> bool:
+    # A retained release was judged by the policy that installed it.  A path that policy shipped and REPO_ONLY
+    # has since kept out is still a valid member of that older release, so status and rollback keep accepting
+    # it:  narrowing the release must never strand the rollback target it exists for.
+    return allowed_path(path) or path in REPO_ONLY
+
+
 def verify_retained(release: Path) -> dict:
     metadata = release / "release.json"
     if (
@@ -829,7 +822,7 @@ def verify_retained(release: Path) -> dict:
             raise Refused("invalid_release_metadata")
         for name, entry in files.items():
             if (
-                not allowed_path(name)
+                not retained_path(name)
                 or set(entry) != {"mode", "sha256"}
                 or type(entry["mode"]) is not int
                 or entry["mode"] not in (0o644, 0o755)
