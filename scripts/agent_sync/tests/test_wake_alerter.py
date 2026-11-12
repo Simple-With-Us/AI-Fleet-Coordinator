@@ -1,4 +1,5 @@
 """Tests for the Mac wake alerter (hosted-listener thin client)."""
+
 from __future__ import annotations
 
 import json
@@ -15,8 +16,12 @@ BASE = "http://server.boa-roygbiv.ts.net:8788"
 
 
 def payload(items):
-    return {"contract": "agent-sync-read/1", "seat": SEAT, "record": "wakes",
-            "view": {"seat": SEAT, "total": len(items), "by_state": {}, "items": items}}
+    return {
+        "contract": "agent-sync-read/1",
+        "seat": SEAT,
+        "record": "wakes",
+        "view": {"seat": SEAT, "total": len(items), "by_state": {}, "items": items},
+    }
 
 
 class Resp:
@@ -42,8 +47,10 @@ class AlerterTests(unittest.TestCase):
 
     def poll(self, items=None, opener=None):
         if opener is None:
+
             def opener(req, timeout=0):
                 return Resp(payload(items or []))
+
         return WA.poll_once(BASE, SEAT, KEY, self.state, runner=self.ran.append, opener=opener)
 
     def test_new_wake_banners_once(self):
