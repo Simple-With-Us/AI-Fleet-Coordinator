@@ -22,16 +22,16 @@ This module is the one place the daemon gets that client:
     the caller logs a refusal and posts nothing.  It never reaches for a seat's client, which is
     the whole point.
 
-Direct messages (owner ruling, Tue, Nov 10 2026): no seat or agent ever sends a direct message, and the
-Operator's own are only clarification questions about a wake.  `SIMPLE_TOOLS_OPERATOR_DM_MODE` stages
-that for this voice.  `legacy` (the default, and what a missing, empty or unrecognised value means) is
-today's behaviour: every `direct` message the daemon composes goes out.  `clarify` refuses every
-`direct` (or `private`) message unless the caller passes `clarify=True`, which a later change sets for
-the consultant's one clarification question.  A refusal sends nothing, builds no client and carries no
-message text (`CODE_DM_CLARIFY_ONLY`).  The same goes for rewriting a direct message the voice itself
-sent: it remembers the ids of those (ids only, the last `DM_ID_MEMORY`) and refuses `edit` of one in
-`clarify` mode unless the caller passes `clarify=True`.  Stream posts, and edits of anything else,
-are never affected.
+Direct messages (owner rulings, Tue, Nov 10 2026): no seat or agent ever sends a direct message, and
+the Operator asks nobody anything, so it has no clarification question to send either.
+`SIMPLE_TOOLS_OPERATOR_DM_MODE` stages that for this voice.  `legacy` (the default, and what a
+missing, empty or unrecognised value means) is today's behaviour: every `direct` message the daemon
+composes goes out.  `clarify` (the value keeps its old name so no deployed setting breaks) sends no
+`direct` (or `private`) message at all:  every one is refused, and no flag lets one through.  A
+refusal sends nothing, builds no client and carries no message text (`CODE_DM_CLARIFY_ONLY`).  The
+same goes for rewriting a direct message the voice itself sent: it remembers the ids of those (ids
+only, the last `DM_ID_MEMORY`) and refuses `edit` of one in `clarify` mode.  Stream posts, and edits
+of anything else, are never affected.
 
 The client is built WITHOUT `mark_operator_verified`: the owner-in-the-conversation guard (AFC-469)
 applies to it exactly as it does to any bot, so a direct message must carry the owner, and the narrow
@@ -66,8 +66,8 @@ CODE_OWNER = "operator_owner_not_pinned"
 CODE_SECRET = "secret_scanner"
 #: Not a refusal: the client is being built in the background and the caller (which must not wait) asks again.
 CODE_BUILDING = "operator_building"
-#: A direct message refused because `SIMPLE_TOOLS_OPERATOR_DM_MODE` is `clarify` and the caller did not
-#: say it is a clarification question.  A stable token: nothing parses the reason sentence.
+#: A direct message refused because `SIMPLE_TOOLS_OPERATOR_DM_MODE` is `clarify`, where the Operator
+#: sends none.  A stable token (it keeps its old spelling):  nothing parses the reason sentence.
 CODE_DM_CLARIFY_ONLY = "operator_dm_clarify_only"
 
 #: The setting that stages the DM policy for this voice, and the two modes it takes.
@@ -77,11 +77,11 @@ DM_MODE_CLARIFY = "clarify"
 #: Zulip spells a direct message `direct`, and still accepts its old name `private`.
 DM_TYPES = frozenset({"direct", "private"})
 #: Fixed text, so a refusal can never carry the message it refused.
-DM_CLARIFY_ONLY_REASON = (
-    "the Operator sends a direct message only to ask one clarifying question about a wake "
+DM_REFUSED_REASON = (
+    "the Operator sends no direct message and asks nobody anything "
     "(%s=clarify), so this one was not sent" % ENV_DM_MODE
 )
-DM_CLARIFY_ONLY_EDIT_REASON = (
+DM_EDIT_REFUSED_REASON = (
     "the Operator does not rewrite a direct message it sent "
     "(%s=clarify), so this edit was not made" % ENV_DM_MODE
 )
@@ -500,29 +500,27 @@ class OperatorVoice:
         if not valid:
             self._write("operator-dm-mode-invalid", setting=ENV_DM_MODE, using=mode)
 
-    def refuse_unclarified_dm(self, params: Mapping[str, Any], clarify: Any = False) -> None:
-        """Raise OperatorRefused for a direct message that `clarify` mode does not allow.
+    def refuse_unclarified_dm(self, params: Mapping[str, Any]) -> None:
+        """Raise OperatorRefused for a direct message in `clarify` mode, which sends none.
 
         Public so a caller can ask before it spends anything: it builds no client, reads no vault and
         sends nothing, and `post` makes the same check itself.  The reason is fixed text: nothing
-        from `params` goes into the error or a log.  Only `clarify=True` opens the gate.
+        from `params` goes into the error or a log.  Nothing opens the gate:  the Operator asks
+        nobody anything (owner ruling, Nov 10, 2026).
         """
-        if not is_direct(params) or clarify is True:
+        if not is_direct(params):
             return
         if parse_dm_mode(self._env)[0] != DM_MODE_CLARIFY:
             return
-        raise OperatorRefused(DM_CLARIFY_ONLY_REASON, code=CODE_DM_CLARIFY_ONLY)
+        raise OperatorRefused(DM_REFUSED_REASON, code=CODE_DM_CLARIFY_ONLY)
 
-    def refuse_unclarified_edit(self, message_id: Any, clarify: Any = False) -> None:
+    def refuse_unclarified_edit(self, message_id: Any) -> None:
         """Raise OperatorRefused for an edit of this voice's own direct message in `clarify` mode.
 
         Like `refuse_unclarified_dm` it is public, builds no client and carries only fixed text.  An
         id this voice does not remember as a direct message (the held-wake digest is a stream
-        message) is never refused, and in `legacy` mode nothing is.  Only `clarify=True` opens the
-        gate.
+        message) is never refused, and in `legacy` mode nothing is.
         """
-        if clarify is True:
-            return
         if parse_dm_mode(self._env)[0] != DM_MODE_CLARIFY:
             return
         try:
@@ -532,7 +530,7 @@ class OperatorVoice:
         with self._lock:
             remembered = key in self._dm_ids
         if remembered:
-            raise OperatorRefused(DM_CLARIFY_ONLY_EDIT_REASON, code=CODE_DM_CLARIFY_ONLY)
+            raise OperatorRefused(DM_EDIT_REFUSED_REASON, code=CODE_DM_CLARIFY_ONLY)
 
     def _remember_dm(self, params: Mapping[str, Any], answer: Any) -> None:
         """Remember the id of a direct message this voice has just posted.
@@ -558,20 +556,16 @@ class OperatorVoice:
         *,
         timeout: float | None = None,
         wait: bool = True,
-        clarify: bool = False,
     ) -> dict[str, Any]:
         """POST messages as the Operator.  Raises OperatorUnavailable when there is no Operator
-        (or, with `wait=False`, none ready yet), OperatorRefused (`CODE_DM_CLARIFY_ONLY`) for a
-        direct message that `SIMPLE_TOOLS_OPERATOR_DM_MODE=clarify` does not allow, and whatever
-        the client raises (DmGuardRefused, ApiError, NetworkError) otherwise.
+        (or, with `wait=False`, none ready yet), OperatorRefused (`CODE_DM_CLARIFY_ONLY`) for any
+        direct message in `SIMPLE_TOOLS_OPERATOR_DM_MODE=clarify`, and whatever the client raises
+        (DmGuardRefused, ApiError, NetworkError) otherwise.
 
-        `clarify=True` is the caller saying this direct message is its one clarification question
-        about a wake.  Only the value `True` counts, so a truthy string or number cannot open the
-        gate, and it is never sent to Zulip.  In `legacy` mode (the default) it changes nothing.
         The mode is read from the voice's copy of the environment on every post, and a reload
         refreshes that copy (`update_env`), so a change applies at once.
         """
-        self.refuse_unclarified_dm(params, clarify)
+        self.refuse_unclarified_dm(params)
         client = self.client(wait=wait)
         try:
             if timeout is None:
@@ -585,18 +579,16 @@ class OperatorVoice:
         self._remember_dm(params, answer)
         return answer
 
-    def edit(
-        self, message_id: int, content: str, *, wait: bool = True, clarify: bool = False
-    ) -> dict[str, Any]:
+    def edit(self, message_id: int, content: str, *, wait: bool = True) -> dict[str, Any]:
         """PATCH one of the Operator's own messages (the standing held-wake digest).  A rejected
         credential (401 or 403) drops the cached client exactly as it does for a post.
 
         In `SIMPLE_TOOLS_OPERATOR_DM_MODE=clarify` an edit of a direct message this voice posted is
-        refused unless `clarify=True` (`CODE_DM_CLARIFY_ONLY`, before any client is built).  This
-        cannot cover a direct message sent before a restart, because only the ids of this process's
-        own posts are remembered.  An edit cannot change recipients or open a conversation, so
-        that is all the gate there is."""
-        self.refuse_unclarified_edit(message_id, clarify)
+        refused (`CODE_DM_CLARIFY_ONLY`, before any client is built).  This cannot cover a direct
+        message sent before a restart, because only the ids of this process's own posts are
+        remembered.  An edit cannot change recipients or open a conversation, so that is all the
+        gate there is."""
+        self.refuse_unclarified_edit(message_id)
         client = self.client(wait=wait)
         try:
             return client.patch("messages/%d" % int(message_id), {"content": content})

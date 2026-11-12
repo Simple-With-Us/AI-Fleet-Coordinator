@@ -93,7 +93,10 @@ class LedgerTests(unittest.TestCase):
 
     def test_a_missing_or_malformed_ledger_reads_as_no_sends(self) -> None:
         self.assertEqual(OC._sends(self.path), {})
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        seat_dir = os.path.dirname(self.path)
+        # Both private directories get 0700:  makedirs applies `mode` to the leaf only.
+        for private_dir in (os.path.dirname(seat_dir), seat_dir):
+            os.makedirs(private_dir, mode=0o700, exist_ok=True)
         Path(self.path).write_text('{"sends": []}', encoding="utf-8")
         self.assertEqual(OC._sends(self.path), {})
 
