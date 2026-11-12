@@ -1398,6 +1398,9 @@ class FromRealDaemonStatusTests(DaemonHarness):
             # and effect reasons in its terminal rows, so the reducer deliberately never
             # reads it (see reduced_status.py, "Deliberately never read").
             "drain",
+            # AFC-721's one stale sweeper's last pass, for the Eavesdropper's own status
+            # readers (fleet-ops-ctl eavesdropper-status);  the reduced card does not show it.
+            "registry_sweep",
         }  # fmt: skip
         self.assertEqual(set(document), read | not_read)
         seat_keys = {
