@@ -1190,6 +1190,53 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
         return NoAnswer(0)
 
 
+def read_router_health_http(
+    url=ROUTER_HEALTH_URL,
+    timeout=ROUTER_HEALTH_TIMEOUT,
+    max_bytes=ROUTER_HEALTH_MAX_BYTES,
+):
+    """`(document, reason)` from loopback `GET /health` without proxy or redirect use."""
+    import http.client
+    import socket
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+    try:
+        request = urllib.request.Request(url, method="GET")
+    except ValueError:
+        return None, "read_failed"
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 503:
+            return None, "bad_status"
+        try:
+            body = exc.read(max_bytes + 1)
+        except (OSError, ValueError, http.client.HTTPException):
+            return None, "read_failed"
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            return None, "timeout"
+        if isinstance(reason, ConnectionRefusedError):
+            return None, "router_not_running"
+        return None, "read_failed"
+    if len(body) > max_bytes:
+        return None, "too_large"
+    try:
+        document = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "not_json"
+    if not isinstance(document, dict) or not isinstance(document.get("seats"), dict):
+        return None, "not_json"
+    return document, None
+
+
 class Context:
     """Everything that touches the machine, so the tests can replace each piece."""
 
