@@ -157,6 +157,16 @@ class TestAntigravityWakePayload(BaseTest):
         self.assertEqual(env["SIMPLE_TOOLS_ATTACH"], "0")
         self.assertNotIn("WAKE_ROUTER_KEY", env)
 
+        # AGY_BIN is preserved when present in env
+        fake_bin = self.root / "bin" / "custom-agy"
+        fake_bin.parent.mkdir(parents=True, exist_ok=True)
+        fake_bin.write_text("#!/bin/sh\nexit 0\n")
+        fake_bin.chmod(0o755)
+        env_with_bin = {**self.env, "AGY_BIN": str(fake_bin)}
+        c_env = AGW._child_env(env_with_bin)
+        self.assertEqual(c_env["AGY_BIN"], str(fake_bin))
+        self.assertEqual(AGW._find_agy_binary(c_env), str(fake_bin))
+
     def test_resolve_cwd(self) -> None:
         rec_ok = {"workspace_uris": json.dumps([f"file://{self.valid_project}"])}
         self.assertEqual(AGW._resolve_cwd(rec_ok), str(self.valid_project))
@@ -225,6 +235,35 @@ class TestAntigravityDeliverLocal(BaseTest):
         finally:
             os.close(fd)
 
+        # AG_WAKE_STATE custom directory contention
+        custom_bridge = self.root / "custom-ag-wake"
+        custom_bridge.mkdir(parents=True)
+        fd2 = os.open(custom_bridge / f"session-{SID_VALID}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd2, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            env_custom = {**self.env, "AG_WAKE_STATE": str(custom_bridge)}
+            delivery2 = AGW.deliver_local(env_custom, AGW.DEFAULTS, SID_VALID, self.wake())
+            self.assertEqual((delivery2.outcome, delivery2.code), ("busy", "session-locked"))
+        finally:
+            os.close(fd2)
+
+    def test_bridge_lock_eacces_fails(self) -> None:
+        bridge_dir = self.root / ".local" / "state" / "ag-wake"
+        bridge_dir.mkdir(parents=True)
+        orig_flock = fcntl.flock
+        call_count = 0
+
+        def fake_flock(fd, op):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:  # First is session lock, second is bridge lock
+                raise PermissionError("EACCES")
+            return orig_flock(fd, op)
+
+        with mock.patch("fcntl.flock", side_effect=fake_flock):
+            delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_VALID, self.wake())
+            self.assertEqual((delivery.outcome, delivery.code), ("failed", "bridge-lock-eacces"))
+
     def test_recheck_under_lock(self) -> None:
         self._insert(SID_VALID)
         target = WR.Target(SID_VALID, "CC", "server", 1)
@@ -235,41 +274,120 @@ class TestAntigravityDeliverLocal(BaseTest):
             ran = True
             return subprocess.CompletedProcess(argv, returncode=0)
 
+        # When recheck_registry=True (Mac path), _recheck runs and can refuse
         with mock.patch.object(
             AGW, "_recheck", return_value=WR.Delivery("refused", code=WR.RELEASED)
         ):
             delivery = AGW.deliver_local(
-                self.env, AGW.DEFAULTS, SID_VALID, self.wake(), target=target, runner=fake_runner
+                self.env,
+                AGW.DEFAULTS,
+                SID_VALID,
+                self.wake(),
+                target=target,
+                recheck_registry=True,
+                runner=fake_runner,
             )
         self.assertEqual((delivery.outcome, delivery.code), ("refused", WR.RELEASED))
         self.assertFalse(ran)
+
+        # When recheck_registry=False (Server path), _recheck is skipped even if target is present
+        with (
+            mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"),
+            mock.patch.object(
+                AGW, "_recheck", return_value=WR.Delivery("refused", code=WR.RELEASED)
+            ),
+        ):
+            delivery2 = AGW.deliver_local(
+                self.env,
+                AGW.DEFAULTS,
+                SID_VALID,
+                self.wake(),
+                target=target,
+                recheck_registry=False,
+                runner=fake_runner,
+            )
+        self.assertEqual(delivery2.outcome, "sent")
+        self.assertTrue(ran)
 
     def test_conversation_not_found(self) -> None:
         delivery = AGW.deliver_local(self.env, AGW.DEFAULTS, SID_ABSENT, self.wake())
         self.assertEqual((delivery.outcome, delivery.code), ("refused", "conversation-not-found"))
 
     def test_find_conversation_record_schema_tolerance(self) -> None:
-        db_min = self.root / "minimal.db"
-        conn = sqlite3.connect(db_min)
+        # Schema missing not_fully_idle fails closed
+        db_missing_idle = self.root / "missing_idle.db"
+        conn = sqlite3.connect(db_missing_idle)
         try:
             conn.execute(
-                "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT)"
+                "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, killed INTEGER)"
             )
             conn.execute(
-                "INSERT INTO conversation_summaries (conversation_id, title) VALUES (?, ?)",
-                (SID_VALID, "Minimal Chat"),
+                "INSERT INTO conversation_summaries (conversation_id, killed) VALUES (?, 0)",
+                (SID_VALID,),
             )
             conn.commit()
         finally:
             conn.close()
 
-        min_env = {**self.env, "AG_WAKE_STORE": str(db_min)}
-        rec, err = AGW.find_conversation_record(min_env, SID_VALID)
-        self.assertIsNone(err)
-        self.assertIsNotNone(rec)
-        self.assertEqual(rec["title"], "Minimal Chat")
-        self.assertEqual(rec["killed"], 0)
-        self.assertEqual(rec["not_fully_idle"], 0)
+        rec, err = AGW.find_conversation_record(
+            {**self.env, "AG_WAKE_STORE": str(db_missing_idle)}, SID_VALID
+        )
+        self.assertIsNone(rec)
+        self.assertEqual(err, "schema-missing-idle")
+
+        # Schema missing killed fails closed
+        db_missing_killed = self.root / "missing_killed.db"
+        conn = sqlite3.connect(db_missing_killed)
+        try:
+            conn.execute(
+                "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, not_fully_idle INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries (conversation_id, not_fully_idle) VALUES (?, 0)",
+                (SID_VALID,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rec2, err2 = AGW.find_conversation_record(
+            {**self.env, "AG_WAKE_STORE": str(db_missing_killed)}, SID_VALID
+        )
+        self.assertIsNone(rec2)
+        self.assertEqual(err2, "schema-missing-killed")
+
+        # deliver_local maps schema-missing to retryable failed
+        delivery = AGW.deliver_local(
+            {**self.env, "AG_WAKE_STORE": str(db_missing_idle)}, AGW.DEFAULTS, SID_VALID, self.wake()
+        )
+        self.assertEqual((delivery.outcome, delivery.code), ("failed", "store-schema-missing-idle"))
+
+        # Minimal schema with both required columns succeeds
+        db_ok = self.root / "minimal_ok.db"
+        conn = sqlite3.connect(db_ok)
+        try:
+            conn.execute(
+                "CREATE TABLE conversation_summaries ("
+                "conversation_id TEXT PRIMARY KEY, not_fully_idle INTEGER, killed INTEGER, "
+                "workspace_uris TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, 0, 0, ?)",
+                (SID_VALID, json.dumps([f"file://{self.valid_project}"])),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rec3, err3 = AGW.find_conversation_record(
+            {**self.env, "AG_WAKE_STORE": str(db_ok)}, SID_VALID
+        )
+        self.assertIsNone(err3)
+        self.assertIsNotNone(rec3)
+        self.assertEqual(rec3["not_fully_idle"], 0)
+        self.assertEqual(rec3["killed"], 0)
+        self.assertEqual(rec3["title"], "")
+        self.assertEqual(rec3["nesting_depth"], 0)
 
     def test_find_conversation_record_locked_corrupt_read_error(self) -> None:
         # Corrupt DB file
@@ -377,6 +495,7 @@ class TestAntigravityDeliverLocal(BaseTest):
         self.assertEqual(delivery.outcome, "sent")
         self.assertEqual(delivery.route, "resume")
         self.assertEqual(delivery.ack, "unknown")
+        self.assertEqual(delivery.note, "agy-exit-0")
         self.assertEqual(ran[0][:3], ["/bin/agy", "--conversation", SID_VALID])
         self.assertEqual(ran[0][3], "-p")
 
@@ -435,6 +554,20 @@ class TestAntigravityMakeDeliver(BaseTest):
 
             d3 = deliver(t_unknown, self.wake())
             self.assertEqual((d3.outcome, d3.code), ("refused", "unknown-host"))
+
+    def test_server_delivery_without_registry_env_succeeds(self) -> None:
+        self._insert(SID_VALID)
+        clean_env = dict(self.env)
+        clean_env.pop("SIMPLE_TOOLS_OPERATOR_REGISTRY_BEARER", None)
+        clean_env.pop("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", None)
+        fake_runner = lambda argv, **kwargs: subprocess.CompletedProcess(argv, returncode=0)
+        deliver = AGW.make_deliver(clean_env, AGW.DEFAULTS, runner=fake_runner)
+        target = WR.Target(SID_VALID, "CC", "server", 1)
+
+        with mock.patch.object(AGW, "_find_agy_binary", return_value="/bin/agy"):
+            d = deliver(target, self.wake())
+        self.assertEqual(d.outcome, "sent")
+        self.assertEqual(d.note, "agy-exit-0")
 
 
 class TestAntigravityDeliverRequest(BaseTest):

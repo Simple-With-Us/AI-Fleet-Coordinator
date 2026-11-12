@@ -29,6 +29,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -130,14 +131,16 @@ def find_conversation_record(
                 }
                 if "conversation_id" not in cols:
                     continue
-                fields = ["conversation_id"]
+                if "not_fully_idle" not in cols:
+                    return None, "schema-missing-idle"
+                if "killed" not in cols:
+                    return None, "schema-missing-killed"
+                fields = ["conversation_id", "not_fully_idle", "killed"]
                 for col in (
                     "title",
                     "workspace_uris",
                     "parent_conversation_id",
                     "nesting_depth",
-                    "killed",
-                    "not_fully_idle",
                 ):
                     if col in cols:
                         fields.append(col)
@@ -150,14 +153,14 @@ def find_conversation_record(
                 if row is not None:
                     data: dict[str, Any] = {
                         "conversation_id": row[0],
+                        "not_fully_idle": row[1],
+                        "killed": row[2],
                         "title": "",
                         "workspace_uris": "",
                         "parent_conversation_id": "",
                         "nesting_depth": 0,
-                        "killed": 0,
-                        "not_fully_idle": 0,
                     }
-                    for idx, col in enumerate(fields[1:], start=1):
+                    for idx, col in enumerate(fields[3:], start=3):
                         data[col] = row[idx]
                     return data, None
             finally:
@@ -248,13 +251,16 @@ def _child_env(env: Mapping[str, str]) -> dict[str, str]:
     """The clean environment a resumed `agy` process runs in:  no router keys."""
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = str(env.get("PATH") or "/usr/local/bin:/usr/bin:/bin")
-    return {
+    res = {
         "HOME": home,
         "PATH": os.path.join(home, ".local", "bin") + os.pathsep + path,
         "AGENT_LAUNCHER": "simple-tools-wake",
         "AGENT_LAUNCH_SEAT": SEAT,
         "SIMPLE_TOOLS_ATTACH": "0",
     }
+    if env.get("AGY_BIN"):
+        res["AGY_BIN"] = str(env["AGY_BIN"])
+    return res
 
 
 def _resolve_cwd(rec: dict[str, Any]) -> str:
@@ -303,6 +309,7 @@ def deliver_local(
     wake: WR.Wake,
     target: WR.Target | None = None,
     *,
+    recheck_registry: bool = False,
     runner: Runner = subprocess.run,
 ) -> WR.Delivery:
     """Deliver one wake to a chat on this host under the per-session lock."""
@@ -318,8 +325,12 @@ def deliver_local(
         except OSError:
             return WR.Delivery("busy", "resume", code="session-locked")
 
-        bridge_home = str(env.get("HOME") or os.path.expanduser("~"))
-        bridge_dir = Path(bridge_home) / ".local" / "state" / "ag-wake"
+        bridge_state = env.get("AG_WAKE_STATE")
+        if bridge_state:
+            bridge_dir = Path(bridge_state)
+        else:
+            bridge_home = str(env.get("HOME") or os.path.expanduser("~"))
+            bridge_dir = Path(bridge_home) / ".local" / "state" / "ag-wake"
         bridge_lock = None
         if bridge_dir.is_dir():
             try:
@@ -328,13 +339,19 @@ def deliver_local(
                 )
                 bridge_lock = os.fdopen(b_fd, "w")
                 fcntl.flock(bridge_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
+            except PermissionError:
                 if bridge_lock is not None:
                     bridge_lock.close()
+                return WR.Delivery("failed", "resume", code="bridge-lock-eacces")
+            except OSError as exc:
+                if bridge_lock is not None:
+                    bridge_lock.close()
+                if exc.errno == errno.EACCES:
+                    return WR.Delivery("failed", "resume", code="bridge-lock-eacces")
                 return WR.Delivery("busy", "resume", code="session-locked")
 
         try:
-            if target is not None:
+            if target is not None and recheck_registry:
                 stale = _recheck(env, target)
                 if stale is not None:
                     return stale
@@ -383,7 +400,7 @@ def deliver_local(
 
             if proc.returncode == 0:
                 return WR.Delivery(
-                    "sent", "resume", ack="unknown", note="agy completed with exit 0"
+                    "sent", "resume", ack="unknown", note="agy-exit-0"
                 )
             return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
         finally:
@@ -402,7 +419,15 @@ def make_deliver(
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         if target.host == local_host:
-            return deliver_local(env, config, target.session_id, wake, target=target, runner=runner)
+            return deliver_local(
+                env,
+                config,
+                target.session_id,
+                wake,
+                target=target,
+                recheck_registry=False,
+                runner=runner,
+            )
         if target.host == "mac":
             from . import claude_wake as CW
 
@@ -552,7 +577,13 @@ def deliver_request(
 
     try:
         delivery = deliver_local(
-            env, mac_config, target.session_id, wake, target=target, runner=runner
+            env,
+            mac_config,
+            target.session_id,
+            wake,
+            target=target,
+            recheck_registry=True,
+            runner=runner,
         )
     except OSError as exc:
         delivery = WR.Delivery("failed", code="deliver-%s" % type(exc).__name__)
