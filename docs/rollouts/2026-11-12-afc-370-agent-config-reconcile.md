@@ -15,7 +15,7 @@ Check is the default.  Drift, a refusal or an error exits 1. `--apply` was not 
 - Lane Map blocks through `fleet_lanes.install_rules`.  `~/.claude/CLAUDE.md` and `~/AGENTS.md` are report-only.  Apply never passes `--i-own-this-file`.
 - Guard hooks through `fleet_lanes.install_tools`.  A platform with no automatic write, including fx, is report-only.  Apply passes `--no-verify`.
 - MCP registrations through `fleet_lanes.install_mcp`, without `--with-simple-chat`.
-- The fleet-recall MCP entries and Claude hook files that `install-fleet-rag.sh --hooks` owns.  The shell script runs only when one of those managed rows drifts.
+- The fleet-recall MCP entries and Claude hook files that `install-fleet-rag.sh` owns.  The shell script runs only when one of those managed rows drifts.  `--hooks` is passed only for hook drift, and `FLEET_RAG_SKIP_ABSENT_GEMINI=1` keeps a missing `~/.gemini` from being created.  The installer on its own still creates that file.
 
 A tool home that is not already on the machine is a skip.  The command does not create one.
 

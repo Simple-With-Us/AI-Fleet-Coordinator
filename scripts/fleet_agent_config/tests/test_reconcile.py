@@ -224,6 +224,34 @@ class ApplyContractTests(TempHome):
         self.assertTrue(argv[1].endswith("install-fleet-rag.sh"))
         self.assertEqual(argv[2:], ["--hooks"])
         self.assertEqual(run.call_args.kwargs["env"]["HOME"], str(self.home))
+        self.assertEqual(run.call_args.kwargs["env"]["FLEET_RAG_SKIP_ABSENT_GEMINI"], "1")
+
+    def test_recall_mcp_drift_does_not_request_hooks(self) -> None:
+        (self.home / ".claude.json").write_text("{}\n", encoding="utf-8")
+        with mock.patch("fleet_agent_config.reconcile.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0)
+            result = reconcile(str(self.home), apply=True)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[0], "bash")
+        self.assertTrue(argv[1].endswith("install-fleet-rag.sh"))
+        self.assertNotIn("--hooks", argv)
+        self.assertEqual(run.call_args.kwargs["env"]["FLEET_AGENT_CONFIG_RECALL_HOOKS"], "0")
+        self.assertEqual(run.call_args.kwargs["env"]["FLEET_RAG_SKIP_ABSENT_GEMINI"], "1")
+        self.assertIn("recall", result.applied)
+        self.assertFalse((self.home / ".gemini").exists())
+        self.assertFalse((self.home / ".claude").exists())
+
+    def test_recall_apply_leaves_an_absent_gemini_home_absent(self) -> None:
+        (self.home / ".claude.json").write_text("{}\n", encoding="utf-8")
+        result = reconcile(
+            str(self.home),
+            apply=True,
+            env={"HOME": str(self.home), "PATH": os.environ.get("PATH", "/usr/bin")},
+        )
+        self.assertFalse((self.home / ".gemini").exists())
+        self.assertFalse((self.home / ".claude").exists())
+        self.assertEqual(self.status(result, "recall-mcp", ".claude.json"), "current")
+        self.assertTrue(result.ok, result.summary())
 
     def test_recall_hooks_drift_uses_the_injected_runner_once(self) -> None:
         (self.home / ".claude").mkdir()

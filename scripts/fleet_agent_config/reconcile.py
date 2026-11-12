@@ -635,10 +635,16 @@ def _default_mcp(home: str, target: str, env: Mapping[str, str]) -> int:
 
 def _default_recall(home: str, env: Mapping[str, str]) -> int:
     script = os.path.join(_SCRIPTS, "install-fleet-rag.sh")
+    argv = ["bash", script]
+    if env.get("FLEET_AGENT_CONFIG_RECALL_HOOKS", "1") != "0":
+        argv.append("--hooks")
+    run_env = dict(env)
+    # The installer creates ~/.gemini on its own.  A reconcile must not.
+    run_env["FLEET_RAG_SKIP_ABSENT_GEMINI"] = "1"
     proc = subprocess.run(
-        ["bash", script, "--hooks"],
+        argv,
         cwd=_REPO,
-        env=dict(env),
+        env=run_env,
         capture_output=True,
         text=True,
         check=False,
@@ -697,7 +703,12 @@ def reconcile(
                     Finding("mcp", item.name, "error", f"installer exited {code}")
                 )
     if any(item.surface in ("recall-mcp", "recall-hooks") for item in drifted):
-        code = calls["recall"](root, scoped)
+        recall_env = dict(scoped)
+        recall_env["FLEET_RAG_SKIP_ABSENT_GEMINI"] = "1"
+        recall_env["FLEET_AGENT_CONFIG_RECALL_HOOKS"] = (
+            "1" if any(item.surface == "recall-hooks" for item in drifted) else "0"
+        )
+        code = calls["recall"](root, recall_env)
         report.applied.append("recall")
         if code != 0:
             report.findings.append(Finding("recall", "*", "error", f"installer exited {code}"))
