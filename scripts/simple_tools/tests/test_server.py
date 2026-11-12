@@ -274,7 +274,8 @@ class ConfigTests(unittest.TestCase):
             'creds = "env"\nwake = "http"\nroutine = { key_env = "ZULIP_GB_COMPILER_API_KEY" }': "uses ZULIP_GB_COMPILER_API_KEY for more than one setting",
             'creds = "env"\nkey_env = "K1"\nwake = "http"\nroutine = { url_env = "K1" }': "uses K1 for more than one",
             'bot = "GB-Compiler"\nwake = "http"\nroutine = { url_env = "ZULIP_SITE" }': "may not read ZULIP_SITE",
-            # check outgoing token guard
+            'bot = "GB-Compiler"\nwake = "http"\nroutine = { url_env = "%s" }' % C.outgoing_webhook_token_env("GB-COMPILER"): "may not read " + C.outgoing_webhook_token_env("GB-COMPILER"),
+            'bot = "GB-Compiler"\nwake = "http"\nroutine = { key_env = "%s" }' % C.outgoing_webhook_token_env("GB-COMPILER"): "may not read " + C.outgoing_webhook_token_env("GB-COMPILER"),
         }
         for body, expected in cases.items():
             with self.subTest(body=body):
