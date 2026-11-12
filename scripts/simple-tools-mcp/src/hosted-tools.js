@@ -42,7 +42,6 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
-  ownIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
   formatTime,
@@ -51,6 +50,13 @@ import {
   newNonce,
   instructionsFor,
 } from "./contract.js";
+import {
+  COMPACT_BODY_LIMIT,
+  FULL_ZULIP_BODY_LIMIT,
+  effectiveLimit,
+  splitFullArg,
+  toolWantsCompact,
+} from "./list-presentation.js";
 import {
   RECALL_TOOLS,
   RECALL_READ_TOOLS,
@@ -69,6 +75,7 @@ import {
   RECALL_MARKER_BEGIN,
   RECALL_MARKER_END,
 } from "./recall.js";
+import { PEER_ACTIONS_TOOLS, PEER_ACTIONS_WRITE_TOOLS, PEER_ACTIONS_METHODS } from "./peer_actions.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
 import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
@@ -137,7 +144,8 @@ import {
   CLOSING_STATUSES,
   STATUS_WORDS,
 } from "./linear.js";
-import { GAP, fixOutbound, sentenceGap } from "./textfmt.js";
+import { GAP, fixOutbound } from "./textfmt.js";
+import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
@@ -173,7 +181,9 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only eavesdropper tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS].map(withServiceTitle));
+// AFC-722:  every hosted tool that persists GitHub or Linear prose takes `sentence_gap` (src/outbound-gap.js).
+export const GAP_OPTION_TOOLS = Object.freeze(new Set([...Object.keys(GITHUB_GAP_FIELDS).map(githubToolName), ...LINEAR_WRITE_TOOLS]));
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...PEER_ACTIONS_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS].map(withServiceTitle).map((tool) => (GAP_OPTION_TOOLS.has(tool.name) ? withGapOption(tool) : tool)));
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -187,7 +197,7 @@ const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", "catalog", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...PEER_ACTIONS_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 /**
  * Whether a finished call writes a spec-3.9 audit row (owner ruling
  * 2026-11-06:  successful reads leave the audit log).  A call audits unless
@@ -403,7 +413,7 @@ export class HostedTools {
    * @param {string|null} [o.identityKey]    this credential's cache key (the SHA-256 of the presented credential)
    * @param {object|null} [o.identityEntry]  the route's fresh cache entry for this credential, or null when the route verified live for this request (the first call always pays the full gate price)
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, workerEnv = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -437,6 +447,7 @@ export class HostedTools {
     // The Operator notes key (OPERATOR_NOTES_KEY) joins the scrub list too.
     this.notes = notes ?? null;
     if (this.notes) this.known.push(...this.notes.secrets().filter(Boolean));
+    this.workerEnv = workerEnv;
     this.gate = gate;
     // The audit sink the Worker installs (src/audit-batch.js, R2):  null
     // keeps the immediate per-row gate write every other construction -
@@ -568,14 +579,28 @@ export class HostedTools {
       // Every delegated service call first verifies the selected role's own
       // Zulip bot is present, matches its email and is a member (role 400).
       if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
-      const preparedArgs = withDefaults(spec.inputSchema, args);
-      result = Object.hasOwn(FLEETLINK_BY_NAME, publicName)
-        ? await this.fleetlinkTool(publicName, preparedArgs, audit)
+      audit.rawArgs = args;
+      let preparedArgs = withDefaults(spec.inputSchema, args);
+      // AFC-722:  the gap choice rides in AsyncLocalStorage, and the argument itself never reaches a handler,
+      // so nothing forwards it to git-relay or Linear.
+      let gapChoice = true;
+      if (GAP_OPTION_TOOLS.has(publicName) && Object.hasOwn(preparedArgs, SENTENCE_GAP_ARG)) {
+        gapChoice = preparedArgs[SENTENCE_GAP_ARG] !== false;
+        const { [SENTENCE_GAP_ARG]: _choice, ...rest } = preparedArgs;
+        preparedArgs = rest;
+      }
+      const gapNotices = [];
+      result = await runWithGap(gapChoice, () => Object.hasOwn(FLEETLINK_BY_NAME, publicName)
+        ? this.fleetlinkTool(publicName, preparedArgs, audit)
         : Object.hasOwn(LINEAR_MCP_BY_NAME, publicName)
-        ? await callLinearMcp(this, publicName, preparedArgs, audit)
+        ? callLinearMcp(this, publicName, preparedArgs, audit)
         : Object.hasOwn(LINEAR_NAMED_BY_NAME, publicName)
-          ? await callNamedLinear(this, publicName, preparedArgs, audit)
-          : await this[`tool_${legacyZulipName}`](preparedArgs, audit);
+          ? callNamedLinear(this, publicName, preparedArgs, audit)
+          : this[`tool_${legacyZulipName}`](preparedArgs, audit), gapNotices);
+      // AFC-722 review:  a gap the server could not write is reported, never dropped silently.
+      if (gapNotices.length && Array.isArray(result?.content)) {
+        result = { ...result, content: [...result.content, ...gapNotices.map((text) => ({ type: "text", text }))] };
+      }
       audit.outcome = "ok";
     } catch (error) {
       const mapped = mapException(error, { write: HOSTED_WRITE_TOOLS.has(publicName) });
@@ -863,13 +888,13 @@ export class HostedTools {
 
   // ---------------------------------------------------------------- reads
 
-  async messageItem(message, members) {
+  async messageItem(message, members, bodyLimit = BODY_LIMIT) {
     const senderId = isInt(message.sender_id) ? message.sender_id : null;
     const own = String(message.sender_email ?? "").toLowerCase() === this.email;
     const user = members.find((u) => senderId !== null && u.user_id === senderId);
     const isBot = own ? true : user ? Boolean(user.is_bot) : null;
     const owner = senderId === this.config.ownerUserId && this.config.ownerClients.includes(String(message.client ?? ""));
-    const [body, truncated] = clean(message.content ?? "", BODY_LIMIT);
+    const [body, truncated] = clean(message.content ?? "", bodyLimit);
     const people = message.type === "private" ? dmPeople(message) : null;
     return {
       id: isInt(message.id) ? message.id : null,
@@ -888,10 +913,10 @@ export class HostedTools {
     };
   }
 
-  async messagesResult(tool, args, messages, nextSinceId) {
+  async messagesResult(tool, args, messages, nextSinceId, { bodyLimit = BODY_LIMIT } = {}) {
     const members = messages.length ? await this.users() : [];
     const items = [];
-    for (const m of messages) items.push(await this.messageItem(m, members));
+    for (const m of messages) items.push(await this.messageItem(m, members, bodyLimit));
     const ids = items.map((i) => i.id).filter((id) => id !== null);
     const summary = `${items.length} message${items.length === 1 ? "" : "s"}, next_since_id ${nextSinceId ?? "none"}`;
     return okResult(envelope(tool, args, summary, items), { count: items.length, ids, next_since_id: nextSinceId ?? null });
@@ -953,21 +978,27 @@ export class HostedTools {
   }
 
   async tool_read_topic(args, audit) {
-    const channel = normalizeChannel(args.channel);
-    const topic = normalizeTopic(args.topic);
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
+    const channel = normalizeChannel(workArgs.channel);
+    const topic = normalizeTopic(workArgs.topic);
     audit.topic = await this.auditTopic(topic);
     await this.ensureSeat();
     const streamId = await this.channelId(channel);
     audit.channel_id = streamId;
     await this.reserve("read");
-    const messages = await this.page([{ operator: "channel", operand: streamId }, { operator: "topic", operand: topic }], args.since_id, args.limit);
-    const next = HostedTools.nextSince(messages, args.since_id);
+    const messages = await this.page([{ operator: "channel", operand: streamId }, { operator: "topic", operand: topic }], workArgs.since_id, limit);
+    const next = HostedTools.nextSince(messages, workArgs.since_id);
     // Hosted hides this bot's own posts unless include_self (spec 1).
-    const shown = messages.filter((m) => args.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
-    return this.messagesResult("read_topic", [["channel", channel], ["topic", topic]], shown, next);
+    const shown = messages.filter((m) => workArgs.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
+    return this.messagesResult("read_topic", [["channel", channel], ["topic", topic]], shown, next, { bodyLimit });
   }
 
   async tool_inbox(args, audit) {
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     await this.ensureSeat();
     await this.reserve("read");
     const allowed = await this.channelSet();
@@ -976,15 +1007,15 @@ export class HostedTools {
     // one) never reaches the client.  Direct messages come from their own
     // `is:dm` query (spec 1.2), never from the mention query, and the bot's own
     // sends are left out (`-sender:<this bot>` keeps them from using up the page).
-    const mentions = await this.page([{ operator: "is", operand: "mentioned" }], args.since_id, args.limit);
-    const direct = await this.page([{ operator: "is", operand: "dm" }, { operator: "sender", operand: this.email, negated: true }], args.since_id, args.limit);
+    const mentions = await this.page([{ operator: "is", operand: "mentioned" }], workArgs.since_id, limit);
+    const direct = await this.page([{ operator: "is", operand: "dm" }, { operator: "sender", operand: this.email, negated: true }], workArgs.since_id, limit);
     const kept = [
       ...mentions.filter((m) => m.type === "stream" && allowed.has(m.stream_id)),
       ...direct.filter((m) => m.type === "private" && String(m.sender_email ?? "").toLowerCase() !== this.email),
     ];
     const merged = [...new Map(kept.map((m) => [m.id, m])).values()].sort((a, b) => a.id - b.id);
-    const { shown, next } = HostedTools.inboxWindow({ pages: [mentions, direct], merged, sinceId: args.since_id, limit: args.limit });
-    return this.messagesResult("inbox", [], shown, next);
+    const { shown, next } = HostedTools.inboxWindow({ pages: [mentions, direct], merged, sinceId: workArgs.since_id, limit });
+    return this.messagesResult("inbox", [], shown, next, { bodyLimit });
   }
 
   /**
@@ -1312,20 +1343,23 @@ export class HostedTools {
   }
 
   async tool_dm_read(args, audit) {
-    HostedTools.needPeople(args);
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
+    HostedTools.needPeople(workArgs);
     await this.ensureSeat();
-    const { userIds } = await this.resolveDm(args, { active: false });
+    const { userIds } = await this.resolveDm(workArgs, { active: false });
     audit.recipient_ids = userIds;
     await this.reserve("read");
     const selfId = this.me.user_id;
     const expected = [...new Set([selfId, ...userIds])].sort((a, b) => a - b).join(",");
-    const messages = (await this.page([{ operator: "dm", operand: userIds.length ? userIds : [selfId] }], args.since_id, args.limit)).filter(
+    const messages = (await this.page([{ operator: "dm", operand: userIds.length ? userIds : [selfId] }], workArgs.since_id, limit)).filter(
       // Zulip answers only for conversations this bot is in;  this keeps the answer to exactly the one asked for.
       (m) => m.type === "private" && dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
     );
-    const next = HostedTools.nextSince(messages, args.since_id);
-    const shown = messages.filter((m) => args.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
-    return this.messagesResult("dm_read", [["with", userIds.join(",")]], shown, next);
+    const next = HostedTools.nextSince(messages, workArgs.since_id);
+    const shown = messages.filter((m) => workArgs.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
+    return this.messagesResult("dm_read", [["with", userIds.join(",")]], shown, next, { bodyLimit });
   }
 
   // The opener of one DM conversation:  its oldest message, fetched anchored at "oldest".
@@ -1644,10 +1678,10 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", args); }
-  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", args); }
-  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", args); }
-  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", args); }
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
@@ -1655,6 +1689,7 @@ export class HostedTools {
     return this.grCall("workflow_dispatch", parsed);
   }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
+  async tool_gr_create_repo(args) { return this.grCall("create_repo", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
   async recallCall(fn, { write = false, retrySafe = false } = {}) {
@@ -1974,23 +2009,15 @@ export class HostedTools {
     }
   }
 
-  /** The seat tag line that opens every body it writes, unless the body already opens with this seat's own intro
-   * (Policy › Post intro format, AFC-692):  a second `[SEAT]` / `[SEAT·session]` in front of `[SEAT 📁repos]` is the
-   * double tag Jay asked to stop.  A foreign-seat intro is still content and still gets this seat's tag, since every
-   * hosted Linear write shares one user and the tag is the attribution. */
+  /** The caller's Linear body as posted:  no seat tag is prepended and a supplied session is not
+   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  `session` stays on
+   * the signature because callers and idempotency keys still pass it. */
   linearBody(text, session) {
-    const prefix = tagPrefix(this.seat, sessionTag(session));
-    const own = ownIntro(prefix, text);
-    let body = own ? text : `${prefix}] ${text}`;
-    if (own && prefix.includes("·")) {
-      // As composeBody:  the supplied session is operational attribution and replaces a stale one in the intro.
-      const seatEnd = own.intro.indexOf("[") + 1 + this.seat.length;
-      const suffix = own.intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
-      body = `${own.intro.slice(0, seatEnd)}${prefix.slice(prefix.indexOf("·"))}${suffix}]${own.rest}`;
-    }
+    void session;
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
-    return neutralizeLinearMentions(sentenceGap(body));
+    // AFC-722:  the full house gap (one or more spaces), unless the call passed sentence_gap: false.
+    return neutralizeLinearMentions(outboundGap(text));
   }
 
   /** The secret scan on everything the caller wrote, before any request. */
@@ -2114,41 +2141,43 @@ export class HostedTools {
   }
 
   async tool_linear_list(args, audit) {
+    const { args: workArgs, full, limitProvided } = splitFullArg(args, audit.rawArgs);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full, limitProvided });
     await this.reserveLinear("read");
     const filter = {};
-    if (args.team) filter.team = { key: { eq: args.team.toUpperCase() } };
-    if (args.status) {
-      const states = LIST_STATUS_STATES[args.status];
-      if (!states) throw new ToolError("invalid_argument", `unknown status ${JSON.stringify(args.status)};  use ${STATUS_WORDS.join(", ")}.`);
+    if (workArgs.team) filter.team = { key: { eq: workArgs.team.toUpperCase() } };
+    if (workArgs.status) {
+      const states = LIST_STATUS_STATES[workArgs.status];
+      if (!states) throw new ToolError("invalid_argument", `unknown status ${JSON.stringify(workArgs.status)};  use ${STATUS_WORDS.join(", ")}.`);
       filter.state = { name: { in: [...states] } };
     }
     // Severity is a grouped `Severity/<sev>` label, not the flat `P0`, and P3
     // and P4 share Linear priority 4.  So the filter is the priority, and the
     // P3/P4 split is made here from the labels on the row (board severity_of).
-    const sevs = args.severity ? Object.values(SEV_PRIORITY).filter((p) => p === SEV_PRIORITY[args.severity]) : [];
-    if (args.severity) filter.priority = { eq: SEV_PRIORITY[args.severity] };
+    const sevs = workArgs.severity ? Object.values(SEV_PRIORITY).filter((p) => p === SEV_PRIORITY[workArgs.severity]) : [];
+    if (workArgs.severity) filter.priority = { eq: SEV_PRIORITY[workArgs.severity] };
     const labelClauses = [];
-    if (args.kind) labelClauses.push({ labels: { some: { name: { eq: args.kind }, parent: { name: { eq: "Kind" } } } } });
-    if (args.env) labelClauses.push({ labels: { some: { name: { eq: ENVS[args.env] }, parent: { name: { eq: "Env" } } } } });
-    if (args.label) {
-      this.checkLabels([args.label]);
-      labelClauses.push({ labels: { some: { name: { eq: args.label } } } });
+    if (workArgs.kind) labelClauses.push({ labels: { some: { name: { eq: workArgs.kind }, parent: { name: { eq: "Kind" } } } } });
+    if (workArgs.env) labelClauses.push({ labels: { some: { name: { eq: ENVS[workArgs.env] }, parent: { name: { eq: "Env" } } } } });
+    if (workArgs.label) {
+      this.checkLabels([workArgs.label]);
+      labelClauses.push({ labels: { some: { name: { eq: workArgs.label } } } });
     }
     if (labelClauses.length === 1) filter.labels = labelClauses[0].labels;
     else if (labelClauses.length > 1) filter.and = labelClauses;
-    const data = await this.linearCall(() => this.requireLinear().call(Q_LIST, { filter, first: args.limit }));
+    const data = await this.linearCall(() => this.requireLinear().call(Q_LIST, { filter, first: limit }));
     const nodes = data?.issues?.nodes ?? [];
     // board severity_of:  priority is the source of truth, and P4 only when the
     // workspace has a Severity/P4 group label, otherwise P3.
     const keep = (issue) => {
-      if (!args.severity) return true;
+      if (!workArgs.severity) return true;
       const p = issue?.priority;
       if (!sevs.includes(p)) return false;
-      if (args.severity !== "P4") return true;
+      if (workArgs.severity !== "P4") return true;
       return (issue?.labels?.nodes ?? []).some((l) => l?.parent?.name === "Severity" && l.name === "P4");
     };
     const items = nodes.filter(keep).map(issueItem);
-    const header = `simple-tools linear_list${args.status ? `:  status ${JSON.stringify(args.status)}` : ""}${args.team ? `, team ${JSON.stringify(args.team.toUpperCase())}` : ""}`;
+    const header = `simple-tools linear_list${workArgs.status ? `:  status ${JSON.stringify(workArgs.status)}` : ""}${workArgs.team ? `, team ${JSON.stringify(workArgs.team.toUpperCase())}` : ""}`;
     const summary = `${items.length} issue${items.length === 1 ? "" : "s"}`;
     return okResult(linearEnvelope(header, summary, items, newNonce()), { count: items.length, ids: items.map((i) => i.id) });
   }
@@ -2177,8 +2206,8 @@ export class HostedTools {
    *
    * Unlike a Zulip post there is no reconcile step:  Linear offers no way to
    * search a comment by its body, so an outcome this server cannot confirm
-   * drops the row and lets the retry send.  Every body therefore opens with the
-   * seat tag line, which is what makes a human able to see a duplicate.
+   * drops the row and lets the retry send.  A human judging a duplicate reads
+   * the body as the seat wrote it, plus the Linear app identity that posted it.
    */
   async linearWrite(idem, fields, send) {
     const begun = await this.gate.idemBegin({ key: idem.key, ttlMs: idem.ttlMs, fields });
@@ -2416,7 +2445,7 @@ export class HostedTools {
 }
 
 // AFC-330:  the rest of Zulip (src/zulip-full.js) and the eavesdropper's records (src/listener.js).
-Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, NOTES_METHODS);
+Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, NOTES_METHODS, PEER_ACTIONS_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */
 export function seatProblem(me, { seat, email, ownerUserId = null }) {
@@ -2448,7 +2477,7 @@ for (const action of TYPED_V1_ACTIONS) {
     return this.grCall(action, args, {typedPrincipal: principal});
   };
 }
-// gr_wf_* : same relay transport as the seven gr_ tools (POST /v1/<action>, caller bearer, Access
+// gr_wf_* : same relay transport as the gr_ tools (POST /v1/<action>, caller bearer, Access
 // headers, grCall error mapping incl. outcome_unknown on 5xx).  The relay owns outcome/idempotency
 // (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
 for (const action of WF_V1_ACTIONS) {
@@ -2456,7 +2485,19 @@ for (const action of WF_V1_ACTIONS) {
     if (this.config?.grWorkflowEnabled !== true) {
       throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
     }
-    const parsedArgs = parseWfV1Args(action, args);
+    // AFC-722:  the gap is written before the relay's own checks, so they see the bytes that will land.  A
+    // gapped body that no longer fits a byte cap (U+00A0 is two UTF-8 bytes) is sent as written instead, and the
+    // result says so.
+    const gapped = gapGitHubArgs(action, args);
+    let parsedArgs = parseWfV1Args(action, gapped);
+    if (parsedArgs === null && gapped !== args) {
+      parsedArgs = parseWfV1Args(action, args);
+      if (parsedArgs !== null) {
+        for (const field of GITHUB_GAP_FIELDS[action] ?? []) {
+          if (gapped[field] !== args[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
+        }
+      }
+    }
     if (parsedArgs === null) throw new ToolError("invalid_argument", `Invalid arguments for gr_${action}.`);
     return this.grCall(action, parsedArgs, {workflow:true});
   };

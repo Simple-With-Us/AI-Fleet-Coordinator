@@ -12,8 +12,8 @@
 [Unit]
 Description=Fleet RAG nightly ingest (no-op until FLEET_RAG_NIGHTLY=1)
 ConditionPathExists=/etc/fleet/rag-nightly.env
-# The unit owns the code sync:  systemd starts code-main-sync first and orders this job
-# after it finishes.  The job reads its Result instead of calling systemctl start.
+# systemd starts code-main-sync first and orders this job after it finishes.
+# The job also accepts the timer's last success on its own, and it does not start the unit.
 Wants=code-main-sync.service
 After=network-online.target code-main-sync.service
 

@@ -1,10 +1,13 @@
 # Kody first-review prompter
 
 Owner request 2026-11-07 (iMessage): make Kody's *initial* review automatic across
-every fleet repo by prompting it, rather than trying to stop later reviews. Kodus'
-global review cadence is already Manual, so follow-up reviews only happen when
-someone comments `@kody start-review`. This automation posts that comment once for
-each open PR that has never had a Kody review, and then never again.
+every fleet repo by prompting it, rather than trying to stop later reviews. This
+automation posts that comment once for each open PR that has never had a Kody
+review, and then never again.
+
+The November 7 note that global review cadence was already Manual is not what
+Kodus does.  Follow-up reviews run on push.  The hosted setting that stops them is
+in `docs/KODY-ONCE-PER-PR.md` ([AFC-735](https://linear.app/simple-with-us/issue/AFC-735)).
 
 ## How it works
 

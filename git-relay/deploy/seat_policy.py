@@ -11,6 +11,13 @@
     seat_policy.py verify-apps --unit UNIT
         as root on the relay host:  every seat's own App mints a read-only token and reads
         one repository
+    seat_policy.py proof-key
+        as root:  mint the operator proof key into the root-owned 0600 file
+        GIT_RELAY_PROOF_KEY_FILE names.  Never prints the key.  Never overwrites one.
+    seat_policy.py install-seat --unit UNIT --first-seat --proof-id ID ...
+        admit one seat the live policy does not name:  digest fence, provisional
+        write, ExternalProof, and roll back to the prior digest unless that proof
+        is proven and bound to the relay's audit log
 
 The policy file holds no secret.  Every seat is `auth: shared`:  it signs in with its own
 admin-minted ST-MCP bearer, which the relay checks through the Worker's verifier, and the
@@ -42,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import fcntl
 import hashlib
 import json
@@ -76,7 +84,7 @@ UNIT_ENV = ("PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_ENVIRONMENT")
 ENV_FILE = re.compile(r"(\S+) \(ignore_errors=(?:yes|no)\)")
 TOP_KEYS = {"//", "profiles", "seats"}
 PROFILE_KEYS = {"//", "actions", "mint_permissions", "repos"}
-SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert"}
+SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert", "default_branch_paths"}
 
 
 class PolicyFileError(ValueError):
@@ -110,6 +118,19 @@ def _profile(profiles: dict, name: str) -> dict:
             raise PolicyFileError(f"profile {name!r}: {field} is empty")
         out[field] = value
     return out
+
+
+def _default_branch_paths(identity: str, raw, repos):
+    """The same exact-path rules SeatPolicy enforces, so a bad grant never renders."""
+    relay_dir = str(HERE.parent)
+    if relay_dir not in sys.path:
+        sys.path.insert(0, relay_dir)
+    from git_relay.policy import PolicyError, parse_default_branch_paths
+
+    try:
+        return parse_default_branch_paths(identity, raw, repos)
+    except PolicyError as exc:
+        raise PolicyFileError(str(exc)) from None
 
 
 def render(doc: dict) -> dict:
@@ -151,6 +172,11 @@ def render(doc: dict) -> dict:
             if row["oauth_assert"] is not True:
                 raise PolicyFileError(f"seat {identity!r}: oauth_assert must be true when present")
             seats[slug]["oauth_assert"] = True
+        if "default_branch_paths" in row:
+            grants = _default_branch_paths(identity, row["default_branch_paths"], resolved["repos"])
+            seats[slug]["default_branch_paths"] = {
+                repo: list(paths) for repo, paths in grants.items()
+            }
     if not seats:
         raise PolicyFileError("the policy names no seat")
     return seats
@@ -180,6 +206,15 @@ def canonical_digest(policy: dict) -> str:
 
 SEATS_FILE_VAR = "GIT_RELAY_SEATS_FILE"
 PROOF_KEY_FILE_VAR = "GIT_RELAY_PROOF_KEY_FILE"
+# The new seat's own bearer, for the post-install ExternalProof only.
+# Root-owned 0600.  Never printed, never written into the provisional marker.
+FIRST_SEAT_BEARER_VAR = "GIT_RELAY_FIRST_SEAT_BEARER_FILE"
+# Crash record beside the seats file.  Holds the prior policy bytes so a
+# killed provisional admission can be rolled back by the next install-seat.
+# The file is root-owned 0600.  Its directory follows the live seats file
+# (service-owned is allowed), not the proof-key ancestor rule.
+PROVISIONAL_SUFFIX = ".first-seat-provisional"
+_MARKER_KEYS = frozenset({"v", "seat", "proof_id", "before", "after", "policy_before"})
 # server.py's default audit path, relative to the unit's WorkingDirectory.
 DEFAULT_AUDIT = "git-relay-audit.jsonl"
 # The durable accepted-proof store (deploy_proof.ReplayStore), same directory.
@@ -603,14 +638,14 @@ def _restore_file(unit: Unit, wait: int, before: str, path: str, backup: str, st
     return 3
 
 
-def _proof_key_dir_trust(path):
-    """The key's directory chain must be untamperable by anyone but its operator.
+def _proof_key_dir_trust(path, kind="proof-key"):
+    """The private file's directory chain must be untamperable by anyone but its operator.
 
     As root - where install-seat and proof-key run in production - the FULL
     ancestor chain is checked with the same rule require_root_owned applies
     to the policy file:  every ancestor directory root-owned, writable by
     root alone, never a symlink (a foreign-owned 0755 parent, or a symlinked
-    one, lets another account substitute the key file).  Non-root is the
+    one, lets another account substitute the file).  Non-root is the
     dev/fixture path:  only the immediate directory is checked, since test
     trees legitimately live under per-user (and on macOS symlinked) roots.
     """
@@ -619,68 +654,119 @@ def _proof_key_dir_trust(path):
         try:
             require_root_owned([parent])
         except SystemExit as exc:
-            raise ValueError(f"proof-key directory chain:  {exc}")
+            raise ValueError(f"{kind} directory chain:  {exc}")
         return
     try:
         pst = os.stat(parent)
     except OSError:
-        raise ValueError("proof-key directory unreadable")
+        raise ValueError(f"{kind} directory unreadable")
     if pst.st_mode & 0o022:
-        raise ValueError("proof-key directory must not be group/world-writable")
+        raise ValueError(f"{kind} directory must not be group/world-writable")
 
 
-def _load_proof_key(path):
-    """Read the operator proof key from a custody-checked file;  never logs it.
+def _read_opened(path, kind, max_bytes) -> bytes:
+    """Read one file the caller has already trusted the directory of.
 
-    The directory chain is checked first (_proof_key_dir_trust).  The file
-    itself is opened O_NOFOLLOW | O_NONBLOCK (a FIFO must refuse, not hang)
-    and verified by fstat on the OPENED descriptor - a regular file of at
-    most 64 KiB, owned by the current euid (root-owned in production), 0600
-    when running as root - so a symlink swap or a replace between check and
-    open lands on the descriptor that is actually read, never a second
-    lookup.  Any deviation refuses closed:  a writable or substituted key
-    silently forges every receipt gate downstream of it.
+    The file is opened O_NOFOLLOW | O_NONBLOCK (a FIFO must refuse, not hang)
+    and verified by fstat on the OPENED descriptor:  a regular file, owned by
+    the current euid (root-owned in production), 0600 when running as root,
+    at most max_bytes.  A symlink swap or a replace between check and open
+    lands on the descriptor that is actually read, never a second lookup.
+    The bytes are never logged.
     """
-    _proof_key_dir_trust(path)
     try:
-        # O_NONBLOCK with the O_NOFOLLOW:  a FIFO at the path must refuse,
-        # never hang the install transaction on open.
         fd = os.open(
             path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         )
     except OSError:
-        raise ValueError("proof-key file unreadable (missing, or a symlink)")
+        raise ValueError(f"{kind} file unreadable (missing, or a symlink)")
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            raise ValueError("proof-key file must be a regular file")
+            raise ValueError(f"{kind} file must be a regular file")
         if st.st_uid != os.geteuid():
-            raise ValueError("proof-key file must be owned by its operator")
+            raise ValueError(f"{kind} file must be owned by its operator")
         if os.geteuid() == 0 and st.st_mode & 0o077:
-            raise ValueError("proof-key file must be private (0600)")
-        if st.st_size > 1 << 16:
-            raise ValueError("proof-key file larger than 64 KiB is not a key")
-        data = os.read(fd, 1 << 16)
+            raise ValueError(f"{kind} file must be private (0600)")
+        if st.st_size > max_bytes:
+            if kind == "proof-key":
+                raise ValueError("proof-key file larger than 64 KiB is not a key")
+            raise ValueError(f"{kind} file is too large")
+        return os.read(fd, max_bytes)
     finally:
         os.close(fd)
-    key = data.strip()
+
+
+def _read_private(path, kind="proof-key", max_bytes=1 << 16) -> bytes:
+    """Read a proof-key or bearer file.  The directory chain is the proof-key rule."""
+    _proof_key_dir_trust(path, kind)
+    return _read_opened(path, kind, max_bytes)
+
+
+def _marker_dir_trust(seats_path: str) -> None:
+    """Trust the seats directory the way the live seats file is allowed to live there.
+
+    policy_input accepts that file owned by the service uid or by root, in a
+    service-controlled directory.  This checks the immediate directory only:
+    a real directory, not a symlink, not group- or world-writable, and as root
+    owned by root or by the same uid as the seats file.  The proof-key ancestor
+    rule does not apply.  A service-owned directory is the file input's normal
+    place, and crash recovery has to read the marker there.  The marker file
+    itself stays root-owned 0600, so the service user cannot forge one.
+    """
+    parent = os.path.dirname(os.path.abspath(seats_path)) or "/"
+    try:
+        pst = os.lstat(parent)
+        fst = os.lstat(seats_path)
+    except OSError:
+        raise ValueError("provisional-marker directory unreadable")
+    if stat.S_ISLNK(pst.st_mode) or not stat.S_ISDIR(pst.st_mode):
+        raise ValueError("provisional-marker directory must be a real directory")
+    if stat.S_IMODE(pst.st_mode) & 0o022:
+        raise ValueError("provisional-marker directory must not be group/world-writable")
+    if os.geteuid() == 0 and pst.st_uid not in (0, fst.st_uid):
+        raise ValueError(
+            "provisional-marker directory must be owned by root or the seats-file owner"
+        )
+
+
+def _load_proof_key(path):
+    """Read the operator proof key from a custody-checked file;  never logs it."""
+    key = _read_private(path, "proof-key").strip()
     if not key:
         raise ValueError("proof-key file empty")
     return key
 
 
+def _load_bearer(path) -> str:
+    """Read the new seat's bearer for ExternalProof.  Never logs it.
+
+    A trailing newline is ignored.  Any other whitespace refuses, so a padded
+    or multi-token file cannot be sent.
+    """
+    try:
+        text = _read_private(path, "bearer-file").decode("utf-8")
+    except UnicodeError:
+        raise ValueError("bearer-file is not utf-8")
+    bearer = text.strip("\n")
+    bearer = bearer.removesuffix("\r")
+    if not bearer or any(ch.isspace() for ch in bearer):
+        raise ValueError("bearer-file must be a single token")
+    return bearer
+
+
 def proof_key(args) -> int:
     """Mint the operator proof key into a root-owned 0600 file;  never prints it.
 
-    Custody rule (a proposal requiring the host owner's approval to enact):
-    one 0600 file owned by root on the relay host, named by
-    GIT_RELAY_PROOF_KEY_FILE, in a root-owned directory that is not group- or
-    world-writable.  Any offline backup - for example the Fleet-OPS
-    /git-relay-owner folder - is a separate, explicitly authorized
-    operational step, never part of this command.  A non-root caller is
-    refused (the file must be root-owned), a symlinked path is refused, and
-    an existing key is never overwritten:  rotating the key would orphan
-    outstanding receipts.
+    The owner is root, the relay host operator who runs install-seat.  The
+    relay service user does not own the file and does not read it, and neither
+    does any seat.  The path is GIT_RELAY_PROOF_KEY_FILE, or --key-file when
+    that is unset, in a directory root owns and only root can write.  As root
+    the full ancestor chain is checked.  A non-root caller is refused, a
+    symlinked path is refused, and an existing key is never overwritten:
+    rotating the key would orphan outstanding receipts.  Any offline backup
+    is a separate, explicitly authorized operational step, never part of this
+    command.
     """
     path = os.environ.get(PROOF_KEY_FILE_VAR) or args.key_file
     if not path:
@@ -742,6 +828,357 @@ def proof_key(args) -> int:
     return 0
 
 
+def _hex64(value) -> bool:
+    return (
+        isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+_DIR_FSYNC_SKIP = {errno.EINVAL}
+if hasattr(errno, "ENOTSUP"):
+    _DIR_FSYNC_SKIP.add(errno.ENOTSUP)
+if hasattr(errno, "EOPNOTSUPP"):
+    _DIR_FSYNC_SKIP.add(errno.EOPNOTSUPP)
+
+
+def _fsync_dir(path: str) -> None:
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    dfd = os.open(directory, os.O_RDONLY)
+    try:
+        try:
+            os.fsync(dfd)
+        except OSError as exc:
+            if exc.errno not in _DIR_FSYNC_SKIP:
+                raise
+    finally:
+        os.close(dfd)
+
+
+def _marker_path(path: str) -> str:
+    return path + PROVISIONAL_SUFFIX
+
+
+def _write_provisional(path: str, payload: dict) -> None:
+    """Write the crash record.  It holds the prior policy, never a bearer.
+
+    The file is created by this process, so as root it is root-owned, then
+    forced to 0600.  The directory check is the seats-file rule, not the
+    proof-key ancestor rule.
+    """
+    _marker_dir_trust(path)
+    marker = _marker_path(path)
+    if os.path.lexists(marker):
+        raise ValueError("provisional marker already exists")
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".first-seat.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, marker)
+        _fsync_dir(marker)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _read_provisional(path: str, proof_ok) -> dict | None:
+    """The open provisional, or None when there is no marker.
+
+    A symlink, a non-private file or a marker whose embedded prior policy does
+    not digest to its own `before` field refuses.  The marker is not deleted:
+    root has to remove a marker this function cannot trust.  The directory
+    uses the seats-file rule.  The file itself must be root-owned 0600 when
+    this process is root.
+    """
+    marker = _marker_path(path)
+    if not os.path.lexists(marker):
+        return None
+    if os.path.islink(marker):
+        raise ValueError("provisional marker is a symlink")
+    _marker_dir_trust(path)
+    raw = _read_opened(marker, "provisional-marker", (4 << 20) + 8192)
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+        if not isinstance(doc, dict) or set(doc) != _MARKER_KEYS or doc.get("v") != 1:
+            raise ValueError("malformed")
+        if not isinstance(doc["seat"], str) or not doc["seat"] or not proof_ok(doc["proof_id"]):
+            raise ValueError("malformed")
+        if not _hex64(doc["before"]) or not _hex64(doc["after"]) or doc["before"] == doc["after"]:
+            raise ValueError("malformed")
+        if not isinstance(doc["policy_before"], str):
+            raise ValueError("malformed")
+        prior = json.loads(doc["policy_before"])
+        if not isinstance(prior, dict) or canonical_digest(prior) != doc["before"]:
+            raise ValueError("malformed")
+    except (ValueError, UnicodeError):
+        raise ValueError("provisional marker is malformed")
+    return doc
+
+
+def _clear_provisional(path: str) -> None:
+    marker = _marker_path(path)
+    if not os.path.lexists(marker):
+        return
+    if os.path.islink(marker):
+        raise ValueError("provisional marker is a symlink")
+    os.unlink(marker)
+    _fsync_dir(path)
+
+
+def _proof_ok(deploy_proof, proof_id) -> bool:
+    return isinstance(proof_id, str) and deploy_proof.PROOF_ID.fullmatch(proof_id) is not None
+
+
+def _rollback_first_seat(unit: Unit, wait: int, before_text: str, path: str, st) -> int:
+    """Put the prior policy bytes back.  Drop the marker only after that digest matches."""
+    rc = _restore_file(unit, wait, before_text, path, _marker_path(path), st)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            current = json.load(fh)
+        prior = json.loads(before_text)
+    except ValueError:
+        return rc
+    if canonical_digest(current) == canonical_digest(prior):
+        try:
+            _clear_provisional(path)
+        except (OSError, ValueError):
+            print("refusing:  the prior policy is restored but the provisional marker remains")
+    return rc
+
+
+def _close_provisional(unit: Unit, path: str, wait: int, deploy_proof) -> int | None:
+    """Finish a provisional left by a killed admission, before this install trusts the file.
+
+    A marker whose live digest is the prior digest never landed:  drop it.
+    A marker whose proof id is already in the replay store committed:  drop
+    the marker and keep the row.  Any other marker whose live digest is the
+    provisional digest is unproven:  restore the prior bytes and stop, so the
+    operator runs the install again against the restored file.  None means
+    this call may continue.
+    """
+    try:
+        marker = _read_provisional(path, lambda proof_id: _proof_ok(deploy_proof, proof_id))
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    if marker is None:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            live = json.load(fh)
+    except ValueError:
+        print("refusing:  an open first-seat provisional sits beside a policy that is not JSON")
+        return 2
+    live_digest = canonical_digest(live)
+    if live_digest == marker["before"]:
+        try:
+            _clear_provisional(path)
+        except (OSError, ValueError) as exc:
+            print(f"refusing:  {exc}")
+            return 2
+        return None
+    if live_digest != marker["after"] or marker["seat"] not in live:
+        print("refusing:  an open first-seat provisional does not match the live policy")
+        return 2
+    try:
+        store = deploy_proof.ReplayStore(os.path.join(unit.relay, REPLAY_STORE))
+    except (ValueError, OSError):
+        print("refusing:  the replay store is unreadable;  refusing closed")
+        return 2
+    if store.seen(marker["proof_id"]):
+        try:
+            _clear_provisional(path)
+        except (OSError, ValueError) as exc:
+            print(f"refusing:  {exc}")
+            return 2
+        print("cleared a committed first-seat marker;  the proven row stays")
+        return None
+    print("rolling back an unproven first-seat provisional to the prior digest")
+    rc = _rollback_first_seat(unit, wait, marker["policy_before"], path, os.stat(path))
+    print("rolled back the unproven provisional;  run the install again")
+    return rc
+
+
+def _external_proof(deploy_proof, bearer, seat, proof_id, before, after):
+    """The existing ExternalProof, against its own URL.  Tests replace this.
+
+    The bearer is an argument and is not logged.  No operator-url override:
+    the post-install proof goes only to ExternalProof's own endpoint.
+    """
+    return deploy_proof.ExternalProof(bearer)(seat, proof_id, before, after)
+
+
+def _first_seat_proof_reason(deploy_proof, record, seat, proof_id, before, after):
+    """None when the record commits this exact admission.  Otherwise a rollback reason."""
+    if not isinstance(record, dict):
+        return "inconclusive"
+    outcome = record.get("outcome")
+    if outcome == deploy_proof.INCONCLUSIVE:
+        return "inconclusive"
+    if outcome != deploy_proof.PROVEN:
+        return "refused"
+    if record.get("seat") != seat:
+        return "wrong-seat"
+    if (
+        record.get("proof_id") != proof_id
+        or record.get("policy_before") != before
+        or record.get("policy_after") != after
+    ):
+        return "refused"
+    return None
+
+
+_ROLLBACK_TEXT = {
+    "wrong-seat": "refusing:  first-seat proof names another seat;  rolled back to the prior digest",
+    "inconclusive": "refusing:  first-seat proof inconclusive;  rolled back to the prior digest",
+    "refused": "refusing:  first-seat proof refused;  rolled back to the prior digest",
+}
+
+
+def _admit_first_seat(
+    args, unit: Unit, path: str, info, before_text: str, result: dict, after: str, key, deploy_proof
+) -> int:
+    """Write one absent seat, prove it with ExternalProof, or put the prior digest back.
+
+    The pre-write gates (digest fence, additive prepare, proof-key custody)
+    have already passed.  Replay of the proof id refuses before any write.
+    The row is provisional until verify_receipt consumes the id against the
+    relay's own audit log.  A refused proof, an inconclusive proof, a wrong
+    seat, a missing audit row, an unhealthy restart or an interruption rolls
+    back.  This path is not used for a seat the policy already names, and it
+    does not run for --receipt or --bootstrap-receipt.
+    """
+    proof_id = args.proof_id
+    if not _proof_ok(deploy_proof, proof_id):
+        print("refusing:  invalid proof id")
+        return 2
+    bearer_path = os.environ.get(FIRST_SEAT_BEARER_VAR)
+    if not bearer_path:
+        print(f"refusing:  {FIRST_SEAT_BEARER_VAR} names no bearer file;  the proof gate stays on")
+        return 2
+    try:
+        bearer = _load_bearer(bearer_path)
+        store = deploy_proof.ReplayStore(os.path.join(unit.relay, REPLAY_STORE))
+    except ValueError as exc:
+        print(f"refusing:  {exc}")
+        return 2
+    except OSError:
+        print("refusing:  the bearer file or replay store is unreadable;  refusing closed")
+        return 2
+    if store.seen(proof_id):
+        print("refusing:  receipt replayed")
+        return 2
+    if not args.apply:
+        print(
+            "dry run;  first-seat admission writes nothing.  Install it with --apply and the same "
+            "--expect-before/--expect-after/--proof-id"
+        )
+        return 0
+    _ = unit.health
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup = f"{path}.backup-seat-add-{stamp}"
+    _write_atomic(backup, before_text)
+    try:
+        _write_provisional(
+            path,
+            {
+                "v": 1,
+                "seat": args.seat,
+                "proof_id": proof_id,
+                "before": args.expect_before,
+                "after": after,
+                "policy_before": before_text,
+            },
+        )
+    except (ValueError, OSError) as exc:
+        try:
+            os.unlink(backup)
+        except OSError:
+            pass
+        print(f"refusing:  {exc}")
+        return 2
+    rendered = json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n"
+
+    def rollback() -> int:
+        return _rollback_first_seat(unit, args.wait, before_text, path, info)
+
+    try:
+        _write_atomic_as(path, rendered, info)
+        _fsync_dir(path)
+        restart = subprocess.run(["systemctl", "restart", unit.name], check=False)
+        if restart.returncode != 0 or not _healthy(unit.health, unit.name, args.wait):
+            print(
+                f"{unit.name} did not come back healthy (restart exit {restart.returncode});  "
+                "rolled back to the prior digest"
+            )
+            return rollback()
+        try:
+            with open(path, encoding="utf-8") as fh:
+                live = json.load(fh)
+        except ValueError:
+            print("refusing:  the provisional policy is not JSON;  rolled back to the prior digest")
+            return rollback()
+        if canonical_digest(live) != after:
+            print(
+                "refusing:  the live policy left the reviewed digest before the proof;  rolled back"
+            )
+            return rollback()
+        try:
+            record = _external_proof(
+                deploy_proof, bearer, args.seat, proof_id, args.expect_before, after
+            )
+        except (OSError, ValueError):
+            record = None
+        reason = _first_seat_proof_reason(
+            deploy_proof, record, args.seat, proof_id, args.expect_before, after
+        )
+        if reason is not None:
+            print(_ROLLBACK_TEXT[reason])
+            return rollback()
+        audit_rows = deploy_proof.read_audit_rows(_audit_path(unit))
+        receipt = deploy_proof.sign_receipt(key, record)
+        deploy_proof.verify_receipt(
+            key,
+            receipt,
+            seat=args.seat,
+            now=int(time.time()),
+            store=store,
+            policy_before=args.expect_before,
+            policy_after=after,
+            audit_rows=audit_rows,
+            store_id=True,
+        )
+    except ValueError as exc:
+        print(f"refusing:  {exc};  rolled back to the prior digest")
+        return rollback()
+    except OSError:
+        print(
+            "refusing:  the audit log or replay store is unreadable;  rolled back to the prior digest"
+        )
+        return rollback()
+    except BaseException:
+        print("interrupted during first-seat admission;  rolling back")
+        rollback()
+        raise
+    try:
+        _clear_provisional(path)
+    except (OSError, ValueError):
+        print(
+            f"installed seat {args.seat} after ExternalProof;  {unit.name} is healthy;  "
+            f"backup {backup};  the provisional marker remains beside the policy"
+        )
+        return 0
+    print(
+        f"installed seat {args.seat} after ExternalProof;  {unit.name} is healthy;  backup {backup}"
+    )
+    return 0
+
+
 def install_seat(args, unit: Unit) -> int:
     """Add exactly one seat to a file-backed policy under one exclusive transaction.
 
@@ -757,6 +1194,16 @@ def install_seat(args, unit: Unit) -> int:
     checks the same gates without consuming the receipt;  --apply verifies it
     again and records it.  No policy is ever trimmed, reordered or regenerated
     here.
+
+    `--first-seat` is the only path that writes before its proof, and only for
+    a seat the live policy does not already name.  It keeps this digest fence
+    and the additive prepare, writes that one row with a private marker that
+    holds the prior bytes, restarts, and runs ExternalProof.  The row stays
+    only when that proof is PROVEN and the existing receipt gates bind it to
+    this seat, both digests and the relay's own audit row.  A refused proof,
+    an inconclusive proof, a wrong seat, a failed bind, an unhealthy restart
+    or an interruption restores the prior digest.  `--receipt` and
+    `--bootstrap-receipt` still verify before any write.
     """
     sys.path.insert(0, unit.relay)
     try:
@@ -816,6 +1263,13 @@ def _install_seat_locked(
             "refusing:  the service user does not own the seats file;  a root replace would be unreadable"
         )
         return 2
+    # A killed --first-seat leaves the row in place with a marker.  Close that
+    # before this install treats the file as the reviewed policy, including on
+    # the receipt path, so an unproven row cannot be adopted.
+    closed = _close_provisional(unit, path, args.wait, deploy_proof)
+    if closed is not None:
+        return closed
+    info = os.stat(path)
     with open(path, encoding="utf-8") as fh:
         before_text = fh.read()
     try:
@@ -849,6 +1303,10 @@ def _install_seat_locked(
     except ValueError as exc:
         print(f"refusing:  {exc}")
         return 2
+    if getattr(args, "first_seat", False):
+        return _admit_first_seat(
+            args, unit, path, info, before_text, result, after, key, deploy_proof
+        )
     bootstrap = getattr(args, "bootstrap_receipt", None)
     with open(args.receipt or bootstrap, encoding="utf-8") as fh:
         receipt = json.load(fh)
@@ -1058,6 +1516,28 @@ def verify_inner(args) -> int:
     return 0 if failures == 0 else 1
 
 
+def _install_seat_cli(parser, args) -> None:
+    """Refuse a bad install-seat invocation before any unit or file is touched."""
+    for flag in ("seat", "row_json", "expect_before", "expect_after"):
+        if not getattr(args, flag):
+            parser.error(f"install-seat needs --{flag.replace('_', '-')}")
+    selected = [
+        name
+        for name, on in (
+            ("--receipt", bool(args.receipt)),
+            ("--bootstrap-receipt", bool(args.bootstrap_receipt)),
+            ("--first-seat", bool(args.first_seat)),
+        )
+        if on
+    ]
+    if len(selected) != 1:
+        parser.error(
+            "install-seat needs exactly one of --receipt, --bootstrap-receipt or --first-seat"
+        )
+    if args.first_seat and not args.proof_id:
+        parser.error("install-seat --first-seat needs --proof-id")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
@@ -1083,6 +1563,15 @@ def main(argv=None) -> int:
         "--bootstrap-receipt",
         help="install-seat:  the signed bootstrap-proof receipt (first seat for an identity)",
     )
+    parser.add_argument(
+        "--first-seat",
+        action="store_true",
+        help="install-seat:  provisional row, then ExternalProof, rollback unless proven",
+    )
+    parser.add_argument(
+        "--proof-id",
+        help="install-seat --first-seat:  one-time id the post-install ExternalProof carries",
+    )
     parser.add_argument("--key-file", help="proof-key:  key path when the env var is unset")
     parser.add_argument("--seats", help="verify-inner only:  the rendered policy")
     parser.add_argument("--relay", help="verify-inner only:  the deployed relay code")
@@ -1097,6 +1586,8 @@ def main(argv=None) -> int:
         return verify_inner(args)
     if args.command == "proof-key":
         return proof_key(args)
+    if args.command == "install-seat":
+        _install_seat_cli(parser, args)
     if not args.unit:
         parser.error(f"{args.command} needs --unit, the relay's systemd unit")
     unit = read_unit(args.unit)
@@ -1107,13 +1598,11 @@ def main(argv=None) -> int:
     if args.command == "install":
         return install(args, unit)
     if args.command == "install-seat":
-        for flag in ("seat", "row_json", "expect_before", "expect_after"):
-            if not getattr(args, flag):
-                parser.error(f"install-seat needs --{flag.replace('_', '-')}")
-        if bool(args.receipt) == bool(args.bootstrap_receipt):
-            parser.error("install-seat needs exactly one of --receipt or --bootstrap-receipt")
         if os.geteuid() == 0:
-            require_root_owned([args.row_json, args.receipt or args.bootstrap_receipt])
+            owned = [args.row_json]
+            if not args.first_seat:
+                owned.append(args.receipt or args.bootstrap_receipt)
+            require_root_owned(owned)
         return install_seat(args, unit)
     return verify_apps(args, unit)
 

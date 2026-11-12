@@ -1967,6 +1967,8 @@ class ContainerTests(unittest.TestCase):
         with FakeInfisical("unused-fixture-id", "unused-fixture-secret", {}) as fake:
             env.update({
                 "INFISICAL_TOKEN": fake.token,
+                # The loader stops startup without the read-only /wake-router token (AFC-759).
+                "EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN": fake.wake_token,
                 "INFISICAL_PROJECT_ID": INFISICAL_PROJECT_ID,
                 "INFISICAL_API_URL": fake.url,
             })
@@ -1997,16 +1999,19 @@ class ContainerTests(unittest.TestCase):
                 seeded.read_text().endswith("# pinned by init\n"),
                 "an existing config is never overwritten",
             )
-            self.assertEqual(len(fake.requests), 8)
+            # Each start reads /zulip, /operator and /wake-router once, each after its token's metadata.
+            self.assertEqual(len(fake.requests), 12)
             self.assertTrue(all(method == "GET" for method, _ in fake.requests))
             self.assertTrue(all(
                 path == "/api/v2/service-token"
                 or (path.startswith("/api/v3/secrets/raw?") and (
                     "secretPath=%2Fzulip" in path or "secretPath=%2Foperator" in path
+                    or "secretPath=%2Fwake-router" in path
                 ))
                 for _, path in fake.requests
             ))
             self.assertNotIn(fake.token, run.stdout + run.stderr + again.stdout + again.stderr)
+            self.assertNotIn(fake.wake_token, run.stdout + run.stderr + again.stdout + again.stderr)
 
     def test_the_healthcheck_follows_the_status_file_age(self) -> None:
         health = _load_healthcheck()

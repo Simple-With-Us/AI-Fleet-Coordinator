@@ -565,6 +565,26 @@ class RestTests(_ServiceCase):
         self.assertIn({"key": "source", "match": {"value": "meta"}}, flt["must_not"])
         self.assertIn({"key": "app", "match": {"value": "fleet"}}, flt["must"])
 
+    def test_repeated_search_skips_qdrant_and_counts_the_hit(self):
+        body = {"query": "leaking credentials handoff", "limit": 2, "app": "fleet"}
+        status, _, first = self.request("POST", "/recall/search", body)
+        self.assertEqual(status, 200)
+        calls = len(FakeQdrant.calls) + len(FakeQdrant.group_calls)
+        status, _, second = self.request("POST", "/recall/search", body)
+        self.assertEqual(status, 200)
+        self.assertEqual(second["hits"], first["hits"])
+        self.assertEqual(len(FakeQdrant.calls) + len(FakeQdrant.group_calls), calls)
+        status, _, stats = self.request("GET", "/recall/stats")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(stats["search_cache"]["hits"], 1)
+        self.assertGreaterEqual(stats["search_cache"]["misses"], 1)
+        status, _, _full = self.request("POST", "/recall/search", {**body, "full": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(FakeQdrant.calls) + len(FakeQdrant.group_calls), calls + 1)
+        status, _, err = self.request("POST", "/recall/search", {**body, "compact": "yes"})
+        self.assertEqual(status, 400)
+        self.assertIn("compact", err["error"])
+
     def test_search_per_doc_rerank_prefer_lessons_wired(self):
         # rerank=False, prefer_lessons=False must reach recall_search unchanged (mode stays
         # plain "hybrid", never "+rerank"), proving these are not silently dropped server-side.
@@ -780,6 +800,9 @@ class McpTests(_ServiceCase):
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertTrue(t["description"])
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
+        search_props = tools[0]["inputSchema"]["properties"]
+        self.assertIs(search_props["compact"]["default"], True)
+        self.assertIs(search_props["full"]["default"], False)
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category", "seat"])
         self.assertEqual(tools[3]["inputSchema"]["required"], ["doc_id", "text", "reason", "seat"])
         self.assertEqual(tools[4]["inputSchema"]["required"], ["doc_id", "reason", "seat"])
