@@ -712,6 +712,9 @@ class MessageTests(unittest.TestCase):
             text = PA.message_for(body, env, CID)
         self.assertTrue(text.startswith("This chat's earlier letter CC went to another chat"))
         self.assertIn("Operator session letter: Antigravity KL (gen 2), on the Mac.", text)
+        # The rebuilt line still tells the chat its post intro, as the library's own line does.
+        self.assertTrue(text.endswith(PL.intro_sentence("AG", {"label": "KL", "generation": 2, "location": "mac"})))
+        self.assertIn('"[AG: KL.2.M \U0001F4C1<repos>]"', text)
 
     def test_a_line_without_a_letter_is_passed_on(self) -> None:
         body = {"context": "No Operator letter yet (x).  A later prompt tries again, at most every ten minutes."}

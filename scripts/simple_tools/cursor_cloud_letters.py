@@ -172,23 +172,24 @@ def wanted_title(label: str, current: object) -> str:
     return prefix + title[len(prefix) : TITLE_LIMIT].rstrip()
 
 
-def rename_prompt(title: str, busy: bool) -> str:
+def rename_prompt(title: str, busy: bool, intro: str = "") -> str:
     """The steer that asks the agent to retitle itself.  Rendered copy: a sentence gap is U+00A0 plus a space.
 
     The title is one line.  A double quote in it becomes a single quote so the title stays inside the quotes the
-    instruction puts around it."""
+    instruction puts around it.  `intro` is the library's sentence naming the chat's post intro (its letter,
+    generation and host);  it is the last sentence when given."""
     shown = PL.one_line(title).replace('"', "'")[:TITLE_LIMIT]
     gap = "\u00a0 "
     if busy:
         return (
             'Call the rename-chat tool once with this exact title: "%s".%s'
             "Then continue the work already in progress.%s"
-            "Do not change that work." % (shown, gap, gap)
+            "Do not change that work.%s" % (shown, gap, gap, intro)
         )
     return (
         'Call the rename-chat tool once with this exact title: "%s".%s'
         "Then stop.%s"
-        "Do not edit files, open a pull request, or do any other work." % (shown, gap, gap)
+        "Do not edit files, open a pull request, or do any other work.%s" % (shown, gap, gap, intro)
     )
 
 
@@ -354,7 +355,13 @@ def sweep(
                 rows.append(row)
                 continue
             outcome = steer(
-                sid, rename_prompt(wanted_title(label, current), agent.get("state") == "busy")
+                sid,
+                rename_prompt(
+                    wanted_title(label, current),
+                    agent.get("state") == "busy",
+                    # A cloud agent has no hook to tell it its post intro, so the steer does.
+                    PL.intro_sentence(PC.SEAT, {"label": label, "generation": generation, "location": "cloud"}),
+                ),
             )
             row["steer"] = outcome
             # A sent steer is done for this pass, and so is one whose outcome is unknown: it may have reached the

@@ -219,6 +219,44 @@ class SharedBehaviour(Base):
         return hook_answer(self.run_hook(self.spec, payload, env=self.env(SESSION_LETTER_LOCATION="server"),
                                          now=now, transport=transport or Calls(self)))
 
+    def test_a_lettered_chat_is_told_its_post_intro(self) -> None:
+        # Owner, Nov 11 2026:  a chat needs its generation and the intro format to open a post (Zulip #Policy,
+        # "Post intro format"):  [SEAT: LL.GEN.HOST <folder><repos>], periods between letter, generation and host.
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup",
+                         "session_title": "Fix the Login Bug"}, now=time.time())
+        note = self.note("CODEX", "s-0001")
+        intro = "[CODEX: %s.%d.S \U0001F4C1<repos>]" % (note["label"], note.get("generation") or 1)
+        said = out["additionalContext"]
+        self.assertIn('Open every Zulip, Linear and GitHub post with "%s" as its first line' % intro, said)
+        self.assertIn("(generation %d;" % (note.get("generation") or 1), said)
+        self.assertIn("renamed.\u00a0 Open every", said)  # a sentence gap, as everywhere in rendered copy
+
+    def test_the_post_intro_names_the_generation_and_the_host_and_never_guesses(self) -> None:
+        self.assertEqual(PL.post_intro("claude", "II", 2, "mac"), "[CLAUDE: II.2.M \U0001F4C1<repos>]")
+        self.assertEqual(PL.post_intro("MM", "HH", 1, "server"), "[MM: HH.1.S \U0001F4C1<repos>]")
+        self.assertEqual(PL.post_intro("CURSOR", "LY", 3, "cloud"), "[CURSOR: LY.3.C \U0001F4C1<repos>]")
+        self.assertEqual(PL.post_intro("AG", "KL", None, "Mac"), "[AG: KL.1.M \U0001F4C1<repos>]")  # a first generation
+        self.assertEqual(PL.post_intro("AG", "KL", True, "mac"), "[AG: KL.1.M \U0001F4C1<repos>]")
+        unknown = (("", "II", "mac"), ("CLAUDE", "", "mac"), ("CLAUDE", "II", ""), ("CLAUDE", "II", "moon"))
+        for seat, label, where in unknown:
+            self.assertEqual(PL.post_intro(seat, label, 2, where), "", (seat, label, where))
+        # No intro, no sentence:  the reminder is what it was.
+        note = {"label": "II", "generation": 2, "location": "mac"}
+        self.assertEqual(PL.intro_sentence("", note), "")
+        self.assertNotIn("Open every", PL.reminder(self.spec, note))
+        self.assertTrue(PL.reminder(self.spec, note, "CLAUDE").endswith(PL.intro_sentence("CLAUDE", note)))
+
+    def test_a_mark_behind_a_letter_comes_off_with_it(self) -> None:
+        # A Cursor Cloud chat was titled "LY: ??: Words" by a client older than the rule;  the next compose heals it.
+        self.assertEqual(PL.bare("LY: ??: Fix Login", ("LY",)), "Fix Login")
+        self.assertEqual(PL.bare("LY: ??: Fix Login"), "Fix Login")
+        self.assertEqual(PL.bare("LY: ??: ??: Fix Login", ("LY",)), "Fix Login")
+        self.assertEqual(PL.bare("LY: ??:", ("LY",)), "")
+        self.assertEqual(PL.compose("LY", PL.bare("LY: ??: Fix Login", ("LY",))), "LY: Fix Login")
+        # A letter the chat does not hold is still its own words, and a question in the words is not the mark.
+        self.assertEqual(PL.bare("PR: ??: Review", ("LY",)), "PR: ??: Review")
+        self.assertEqual(PL.bare("LY: Why?? Fix", ("LY",)), "Why?? Fix")
+
     def test_a_lettered_chat_keeps_its_letter_when_a_resume_gets_no_answer(self) -> None:
         t0 = time.time()
         self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup",

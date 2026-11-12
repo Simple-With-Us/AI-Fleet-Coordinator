@@ -430,8 +430,8 @@ def message_for(body: Mapping[str, Any], env: Mapping[str, str], sid: str) -> st
     # Rendered copy: a sentence gap is U+00A0 plus a space.
     return (
         '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s", and its title '
-        'starts with "%s: "; keep that prefix if the chat is renamed.'
-        % (head, ref, where, DISPLAY, label, label)
+        'starts with "%s: "; keep that prefix if the chat is renamed.%s'
+        % (head, ref, where, DISPLAY, label, label, PL.intro_sentence(SEAT, dict(note, label=label, location=where)))
     )
 
 

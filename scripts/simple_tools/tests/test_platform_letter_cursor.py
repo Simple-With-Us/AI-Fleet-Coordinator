@@ -81,6 +81,11 @@ class HookTests(Base):
         self.assertRegex(label, r"^[A-Z]{2}$")
         self.assertEqual(list(answer), ["additional_context"])
         self.assertIn('"@**Cursor** %s"' % label, answer["additional_context"])
+        # A Cursor chat's title carries no letter, so the line is how it learns its post intro too.
+        self.assertRegex(
+            answer["additional_context"],
+            r'Open every Zulip, Linear and GitHub post with "\[CURSOR: %s\.\d+\.M \U0001F4C1<repos>\]"' % label,
+        )
 
     def test_a_prompt_keeps_the_letter_and_never_blocks(self) -> None:
         self.hook(payload("sessionStart"))

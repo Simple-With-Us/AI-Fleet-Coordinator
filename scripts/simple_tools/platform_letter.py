@@ -462,22 +462,28 @@ def bare(title: object, labels: tuple[str, ...] | list[str] = ()) -> str:
 
     With the chat's own letters (the one it holds and the ones it held) only those are dropped, so a title that opens
     with an acronym ("PR: Review") keeps it; without any, one or two capital letters before a colon are taken for a
-    letter.  The no-letter mark ("??: ") always comes off, however many times it is there, so a chat that gets its
-    letter later, or asks again, never carries "XX: ??: Words" or "??: ??: Words"."""
-    line = UNLETTERED_PREFIX.sub("", one_line(title), count=1)
-    if line in (UNLETTERED, UNLETTERED + ":"):
-        return ""  # the name was cleared down to the mark alone
+    letter.  The no-letter mark ("??: ") always comes off, however many times it is there and on either side of the
+    letter, so a chat that gets its letter later, or asks again, never carries "XX: ??: Words" or "??: ??: Words",
+    and one that already does is put right the next time its title is composed."""
+    line = _unmarked(one_line(title))
     held = [label for label in labels if label]
     if held:
         for label in held:
             if line == label + ":":
                 return ""  # the name was cleared down to the letter alone
             if line.startswith(label + ": "):
-                return line[len(label) + 2 :]
+                # A mark behind the letter ("LY: ??: Words", from a client older than the rule) comes off too.
+                return _unmarked(line[len(label) + 2 :])
         return line
     if re.fullmatch(r"[A-Z]{1,2}:", line):
         return ""
-    return LETTER_PREFIX.sub("", line, count=1) if LETTER_PREFIX.match(line) else line
+    return _unmarked(LETTER_PREFIX.sub("", line, count=1)) if LETTER_PREFIX.match(line) else line
+
+
+def _unmarked(line: str) -> str:
+    """`line` without the no-letter mark at its front, however many times it is there, and "" for the mark alone."""
+    line = UNLETTERED_PREFIX.sub("", line, count=1)
+    return "" if line in (UNLETTERED, UNLETTERED + ":") else line
 
 
 def compose(label: str, words: object) -> str:
@@ -1174,15 +1180,46 @@ class Out:
                 self.stream.write(json.dumps({"platform_letter": body}, sort_keys=True) + "\n")
 
 
-def reminder(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
+#: The host's letter in a post's opening tag (owner, Nov 5 2026):  M for Mac, S for server, C for cloud.
+HOST_CODES = {"mac": "M", "server": "S", "cloud": "C"}
+
+
+def post_intro(seat: object, label: object, generation: object, location: object) -> str:
+    """The tag this chat opens every post with (owner ruling, Zulip #Policy "Post intro format", Nov 5 2026;
+    AGENTS.md, Fleet post headers):  `[SEAT: LL.GEN.HOST 📁<repos>]`, the letter, its generation and the host
+    joined by periods.  "" when the seat, the letter or the host is not known:  a chat is never handed a tag with a
+    guessed part."""
+    host = HOST_CODES.get(str(location or "").lower())
+    valid = isinstance(generation, int) and not isinstance(generation, bool) and generation >= 1
+    if not (seat and label and host):
+        return ""
+    return "[%s: %s.%d.%s 📁<repos>]" % (str(seat).upper(), label, generation if valid else 1, host)
+
+
+def intro_sentence(seat: object, note: Mapping[str, Any]) -> str:
+    """The sentence that tells a chat its post intro, led by a sentence gap, or "" when the intro is not known.
+    The generation is said in words too, because the reference form ("Claude BB") leaves a first generation out and
+    the intro never does."""
+    intro = post_intro(seat, note.get("label"), note.get("generation") or 1, note.get("location"))
+    if not intro:
+        return ""
+    # Rendered copy: a sentence gap is U+00A0 plus a space, and a colon or semicolon takes one space.
+    return (
+        '%sOpen every Zulip, Linear and GitHub post with "%s" as its first line (generation %d; repos by app '
+        'acronym; recipients inside the bracket after "\u2192").'
+        % ("  ", intro, note.get("generation") or 1)
+    )
+
+
+def reminder(spec: PlatformSpec, note: Mapping[str, Any], seat: object = "") -> str:
     label = note.get("label") or ""
     gen = note.get("generation") or 1
     ref = "%s %s%s" % (spec.display, label, " (gen %d)" % gen if gen > 1 else "")
     # Rendered copy: a sentence gap is U+00A0 plus a space, and a colon or semicolon takes one space.
     return (
         'Operator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s", and its title '
-        'starts with "%s: "; keep that prefix if the chat is renamed.'
-        % (ref, note.get("location"), spec.display, label, label)
+        'starts with "%s: "; keep that prefix if the chat is renamed.%s'
+        % (ref, note.get("location"), spec.display, label, label, intro_sentence(seat, note))
     )
 
 
@@ -1213,10 +1250,12 @@ def untitled_context(
         " (gen %d)" % gen if isinstance(gen, int) and gen > 1 else "",
     )
     # Rendered copy:  a sentence gap is U+00A0 plus a space.
+    told = dict(note, label=label, location=where)  # what the post intro is built from
     return (
         '%sOperator session letter: %s, on the %s.  This chat is addressed as "@**%s** %s".  %s gives a '
         "hook no way to set a chat's title, so the title does not carry the letter; a name the owner gives this chat "
-        'should start with "%s: ".' % (head, ref, where, display, label, product, label)
+        'should start with "%s: ".%s'
+        % (head, ref, where, display, label, product, label, intro_sentence(seat, told))
     )
 
 
@@ -2173,7 +2212,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     note = chat.read()
     if source == "compact":
         if note.get("state") == "open" and note.get("label"):
-            out.emit("start", context=reminder(spec, note), label=str(note["label"]))
+            out.emit("start", context=reminder(spec, note, chat.seat), label=str(note["label"]))
         return 0
     # /clear starts a new chat that can carry the old chat's name; that name is not this chat's title.
     cleared = source == "clear"
@@ -2226,7 +2265,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     )
     chat.write(note)
     out.emit(
-        "start", context=_reissued(spec, answer) + reminder(spec, note), title=shown, label=label
+        "start", context=_reissued(spec, answer) + reminder(spec, note, chat.seat), title=shown, label=label
     )
     return 0
 
@@ -2354,7 +2393,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if announce or (shown and shown != current):
         out.emit(
             "prompt",
-            context=moved + reminder(spec, note) if announce else "",
+            context=moved + reminder(spec, note, chat.seat) if announce else "",
             title=shown,
             label=str(note.get("label") or ""),
         )
@@ -2377,7 +2416,7 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             note["titled"] = True
             note["title"] = words
             shown = present(chat, note, compose(str(note["label"]), words), current, data, "rename")
-            context = reminder(chat.spec, note)
+            context = reminder(chat.spec, note, chat.seat)
             note.pop("announce", None)
         else:
             shown, context = unlettered(chat, note, words, current, data, "rename"), ""
@@ -2405,7 +2444,7 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     prior = follow_letter(note, answer)
     if prior:
         show = _follow_title(note, prior, show or current)
-        moved = relabeled(prior, str(note["label"])) + reminder(chat.spec, note)
+        moved = relabeled(prior, str(note["label"])) + reminder(chat.spec, note, chat.seat)
     shown = present(chat, note, show, current, data, "rename") if show else None
     chat.write(note)
     if shown or moved:

@@ -289,6 +289,12 @@ class TitleTests(unittest.TestCase):
         self.assertIn("\"AA: say 'hi'\"", busy)
         self.assertNotIn('say "hi"', busy)
         self.assertIn("\u00a0 ", idle)
+        # The steer is how a cloud agent learns its post intro:  the letter, its generation and C for cloud.
+        intro = PL.intro_sentence("CURSOR", {"label": "AA", "generation": 3, "location": "cloud"})
+        self.assertIn('"[CURSOR: AA.3.C \U0001F4C1<repos>]"', intro)
+        for told in (CCL.rename_prompt("AA: tidy", False, intro), CCL.rename_prompt("AA: tidy", True, intro)):
+            self.assertTrue(told.endswith(intro), told)
+        self.assertNotIn("Open every", idle)
 
     def test_bot_of(self) -> None:
         self.assertEqual(CCL.bot_of("GB-Director: tidy the board"), ("GB-Director", "tidy the board"))
