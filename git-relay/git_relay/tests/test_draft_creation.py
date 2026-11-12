@@ -39,8 +39,13 @@ DRAFT_RECEIPT = {
     "number": 1,
     "html_url": URL,
     "draft": True,
-    "base": {"repo": {"full_name": ARGS["repo"]}},
+    "base": {"ref": ARGS["base"], "repo": {"full_name": ARGS["repo"]}},
+    "head": {"ref": ARGS["head"], "label": "example:" + ARGS["head"]},
 }
+# The same pull request as the provider returns it for a ready (non-draft) create and for
+# the read-back GET that follows every create.
+READY_RECEIPT = {**DRAFT_RECEIPT, "draft": False}
+PULLS = "https://api.github.com/repos/example/fixture/pulls"
 
 
 class DraftCreation(unittest.TestCase):
@@ -62,22 +67,28 @@ class DraftCreation(unittest.TestCase):
 
     def test_true_reaches_existing_endpoint_and_credential_with_verified_receipt(self):
         response, calls = self.run_creation({"draft": True}, DRAFT_RECEIPT)
-        self.assertEqual(response, (200, {"number": 1, "url": URL}))
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0].full_url, "https://api.github.com/repos/example/fixture/pulls")
+        self.assertEqual(response, (200, {"number": 1, "url": URL, "verified": True}))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].full_url, PULLS)
         self.assertEqual(calls[0].get_method(), "POST")
         self.assertEqual(
-            calls[0].get_header("Authorization"), "Bearer synthetic-existing-owner-pr-token"
+            calls[0].get_header("Authorization"), "Bearer " + "synthetic-existing-owner-pr-token"
         )
         self.assertIs(json.loads(calls[0].data)["draft"], True)
+        # The read-back uses the same endpoint family and the same credential.
+        self.assertEqual(calls[1].full_url, PULLS + "/1")
+        self.assertEqual(calls[1].get_method(), "GET")
+        self.assertEqual(
+            calls[1].get_header("Authorization"), "Bearer " + "synthetic-existing-owner-pr-token"
+        )
 
     def test_omitted_and_false_keep_existing_payload_and_receipt(self):
         self.assertEqual(
             _validate_args("open_pr", ARGS), _validate_args("open_pr", {**ARGS, "draft": False})
         )
         for extra in ({}, {"draft": False}):
-            response, calls = self.run_creation(extra, {"number": 1, "html_url": "url"})
-            self.assertEqual(response, (200, {"number": 1, "url": "url"}))
+            response, calls = self.run_creation(extra, READY_RECEIPT)
+            self.assertEqual(response, (200, {"number": 1, "url": URL, "verified": True}))
             self.assertEqual(
                 json.loads(calls[0].data),
                 {key: ARGS[key] for key in ("title", "head", "base", "body")},
@@ -138,12 +149,22 @@ class DraftCreation(unittest.TestCase):
         calls = []
 
         def opener(request, timeout):
+            if request.get_method() == "GET":
+                number = int(request.full_url.rsplit("/", 1)[1])
+                return FakeResponse(
+                    {
+                        **DRAFT_RECEIPT,
+                        "number": number,
+                        "html_url": f"{URL[:-1]}{number}",
+                        "draft": number == 1,
+                    }
+                )
             payload = json.loads(request.data)
             calls.append(payload)
             return FakeResponse(
                 DRAFT_RECEIPT
                 if payload.get("draft") is True
-                else {"number": 2, "html_url": "legacy"}
+                else {"number": 2, "html_url": URL[:-1] + "2"}
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -157,7 +178,7 @@ class DraftCreation(unittest.TestCase):
             self.assertEqual(relay.handle(TOKEN, "open_pr", {**ARGS, "draft": False}), first)
             self.assertEqual(len(calls), 1)
             drafted = relay.handle(TOKEN, "open_pr", {**ARGS, "draft": True})
-            self.assertEqual(drafted, (200, {"number": 1, "url": URL}))
+            self.assertEqual(drafted, (200, {"number": 1, "url": URL, "verified": True}))
             self.assertEqual(relay.handle(TOKEN, "open_pr", {**ARGS, "draft": True}), drafted)
             self.assertEqual(len(calls), 2)
 
