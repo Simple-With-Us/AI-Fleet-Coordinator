@@ -1,6 +1,6 @@
 # Simple-Tools Guide
 
-The one guide to the simple-tools on every transport: the stdio server (`simple-chat mcp`), the hosted ST-MCP server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.  It is served three ways: the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, and the `simple-tools-guide` skill.  Design and rules: `docs/protocols/per-call-identity.md`.  Source of this page: `docs/protocols/simple-tools-guide.md` in AI-Fleet-Coordinator; edit it there, never only a copy.
+The one guide to the simple-tools on every transport: the stdio server (`simple-chat mcp`), the hosted ST-MCP server (`https://agents.<ST-MCP-host>.com/mcp`), and the `simple-chat` CLI.  It is served three ways: the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, and the `simple-tools-guide` skill.  Design and rules: `docs/protocols/per-call-identity.md`.  Source of this page: `docs/protocols/simple-tools-guide.md` in AI-Fleet-Coordinator; edit it there, never only a copy.
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
@@ -32,7 +32,7 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server: `{"command": "simple-chat", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/simple-tools-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.<ST-MCP-host>.com/mcp` with OAuth.  The owner arms the seat in `https://agents.<ST-MCP-host>.com/admin` first, then the client starts its sign-in and the owner approves it; steps per app are in `scripts/simple-tools-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
@@ -239,7 +239,7 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP: it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
-**Fetch and clone need no token.**  `simple-git clone`, `fetch`, `pull`, `ls-remote`, `bundle` and `archive` run local git over the read-only route at `https://agents.simplewithus.com/git/`, as the seat's own GitHub App.  The relay holds the GitHub token, so the machine needs only `SIMPLE_TOOLS_BEARER`.  The route has no push.
+**Fetch and clone need no token.**  `simple-git clone`, `fetch`, `pull`, `ls-remote`, `bundle` and `archive` run local git over the read-only route at `https://agents.<ST-MCP-host>.com/git/`, as the seat's own GitHub App.  The relay holds the GitHub token, so the machine needs only `SIMPLE_TOOLS_BEARER`.  The route has no push.
 
 **Large files.**  A tool argument is a poor way to send a big file, because the model has to write out all of it.  `simple-git publish --repo OWNER/NAME --branch BRANCH --message TEXT --file LOCAL[=REPO_PATH]` reads the files from disk and commits them through `gr_wf_files_put`, with up to 2 MiB per file.  It splits a set past 20 files or 4 MiB into several commits, in order.  `--base BRANCH` creates the branch first.
 

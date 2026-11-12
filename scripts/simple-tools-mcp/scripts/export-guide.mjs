@@ -13,7 +13,7 @@ export const GUIDE_MODULE = path.resolve(HERE, "../src/guide-text.js");
 
 export function guideModuleText() {
   const md = readFileSync(GUIDE_MD, "utf8");
-  return `// GENERATED from docs/protocols/simple-tools-guide.md by scripts/export-guide.mjs;  do not edit.\n// Regenerate with:  cd scripts/simple-tools-mcp && node scripts/export-guide.mjs\nexport const GUIDE_TEXT = ${JSON.stringify(md)}; // pragma: allowlist secret\n`;
+  return `// GENERATED from docs/protocols/simple-tools-guide.md by scripts/export-guide.mjs;  do not edit.\n// Regenerate with:  cd scripts/simple-tools-mcp && node scripts/export-guide.mjs\nexport const GUIDE_TEXT = ${JSON.stringify(md)};\n`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
