@@ -1190,6 +1190,41 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
         return NoAnswer(0)
 
 
+def _read_router_health_body(response, max_bytes, deadline):
+    """Read an HTTP health response body within ``max_bytes`` and ``deadline``."""
+    raw_fp = getattr(response, "fp", None)
+    sock = getattr(getattr(raw_fp, "raw", None), "_sock", None)
+    read_fn = getattr(response, "read1", None) or getattr(raw_fp, "read1", None) or response.read
+    chunks = bytearray()
+    limit = max_bytes + 1
+    while len(chunks) < limit:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("router health read deadline exceeded")
+        if sock is not None and hasattr(sock, "settimeout"):
+            sock.settimeout(remaining)
+        chunk = read_fn(min(4096, limit - len(chunks)))
+        if not chunk:
+            break
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _validate_router_health_json_limits(document, max_depth=16, max_nodes=10000):
+    """Reject deeply nested or element-heavy decoded JSON iteratively."""
+    nodes = 0
+    stack = [(document, 0)]
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > max_nodes or depth > max_depth:
+            raise ValueError("not_json")
+        if isinstance(value, dict):
+            stack.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list):
+            stack.extend((child, depth + 1) for child in value)
+
+
 def read_router_health_http(
     url=ROUTER_HEALTH_URL,
     timeout=ROUTER_HEALTH_TIMEOUT,
@@ -1209,16 +1244,26 @@ def read_router_health_http(
         request = urllib.request.Request(url, method="GET")
     except ValueError:
         return None, "read_failed"
+    deadline = time.monotonic() + timeout
     try:
         with opener.open(request, timeout=timeout) as response:
-            body = response.read(max_bytes + 1)
+            body = _read_router_health_body(response, max_bytes, deadline)
     except urllib.error.HTTPError as exc:
-        if exc.code != 503:
-            return None, "bad_status"
         try:
-            body = exc.read(max_bytes + 1)
+            if exc.code != 503:
+                return None, "bad_status"
+            body = _read_router_health_body(exc, max_bytes, deadline)
+        except (socket.timeout, TimeoutError):
+            return None, "timeout"
         except (OSError, ValueError, http.client.HTTPException):
             return None, "read_failed"
+        finally:
+            try:
+                exc.close()
+            except Exception:
+                pass
+    except (socket.timeout, TimeoutError):
+        return None, "timeout"
     except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, (socket.timeout, TimeoutError)):
@@ -1230,6 +1275,7 @@ def read_router_health_http(
         return None, "too_large"
     try:
         document = json.loads(body.decode("utf-8"))
+        _validate_router_health_json_limits(document)
     except (UnicodeDecodeError, ValueError, RecursionError):
         return None, "not_json"
     if not isinstance(document, dict) or not isinstance(document.get("seats"), dict):
@@ -2262,11 +2308,22 @@ def reduce_router_health(document, now):
         entry = raw_seats[seat_raw]
         seat = _operator_text(seat_raw, OPERATOR_SEAT_RE)
         if seat is None or not isinstance(entry, dict):
-            dropped += 1
-            continue
-        healthy = _operator_flag(entry.get("healthy"))
-        delivery = _operator_flag(entry.get("delivery"))
-        raw_reason = entry.get("reason") if isinstance(entry.get("reason"), str) else ""
+            raise ValueError("not_json")
+        healthy_value = entry.get("healthy")
+        delivery_value = entry.get("delivery")
+        reason_value = entry.get("reason")
+        if (
+            healthy_value is not None
+            and not isinstance(healthy_value, bool)
+            or delivery_value is not None
+            and not isinstance(delivery_value, bool)
+            or reason_value is not None
+            and not isinstance(reason_value, str)
+        ):
+            raise ValueError("not_json")
+        healthy = _operator_flag(healthy_value)
+        delivery = _operator_flag(delivery_value)
+        raw_reason = reason_value if isinstance(reason_value, str) else ""
         installed, registry_configured, reason = _router_seat_state(healthy, delivery, raw_reason)
         row = {
             "seat": seat,
