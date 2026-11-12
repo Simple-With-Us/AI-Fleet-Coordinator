@@ -280,6 +280,57 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(before, self.state.read_text())
         self.assertEqual(set(self.qd.points), points)
 
+    def test_since_does_not_advance_the_cursor_past_a_skipped_issue(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        now = sources.parse_ts_ms("2026-10-22T12:00:00.000Z")
+        cursor = "2026-10-20T00:00:00.000Z"
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        self.state.write_text(json.dumps({
+            sources.LINEAR_CURSOR_KEY: {
+                "kind": "linear-sync",
+                "updated_at_cursor": cursor,
+                "last_full_sweep_at_ms": sources.parse_ts_ms("2026-10-21T00:00:00.000Z"),
+            }
+        }))
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            skipped = ingest.run(
+                "linear", since="2026-10-22T00:00:00.000Z", cfg={"x": "y"}, qd=self.qd,
+                state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                log=lambda *a: None,
+            )
+        self.assertTrue(skipped["ok"])
+        self.assertEqual(skipped["per_source"]["linear"]["docs_seen"], 1)
+        self.assertEqual(skipped["per_source"]["linear"]["docs_changed"], 0)
+        self.assertFalse(skipped["linear_read_receipt"]["cursor_advance"])
+        held = json.loads(self.state.read_text())
+        self.assertEqual(held[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"], cursor)
+        self.assertNotIn("linear/uuid-1", held)
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now + 60_000),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            caught = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertTrue(caught["ok"])
+        self.assertEqual(caught["per_source"]["linear"]["docs_changed"], 1)
+        advanced = json.loads(self.state.read_text())
+        self.assertIn("linear/uuid-1", advanced)
+        self.assertEqual(
+            advanced[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"],
+            sources._linear_iso(now + 60_000),
+        )
+
     def test_unchanged_linear_issue_is_not_reembedded(self) -> None:
         from fleet_rag.tests.test_sources import _linear_node
 

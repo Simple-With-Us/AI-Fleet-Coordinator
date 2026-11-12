@@ -28,7 +28,7 @@ Prune uses the guards from AFC-677. Nothing is pruned when any source in the run
 
 ## Linear incremental read
 
-The Linear source keeps an `updatedAt` cursor in the ingest state under `_linear_sync`.  A nightly run asks Linear only for issues updated since that cursor, minus a safety overlap.  The overlap defaults to 2 hours (`FLEET_RAG_LINEAR_OVERLAP_HOURS`, from 1 to 168).  The cursor moves only after that source finishes without error.  A dry run, a `--limit` run, a skipped issue, or a failed read leaves the cursor where it was.
+The Linear source keeps an `updatedAt` cursor in the ingest state under `_linear_sync`.  A nightly run asks Linear only for issues updated since that cursor, minus a safety overlap.  The overlap defaults to 2 hours (`FLEET_RAG_LINEAR_OVERLAP_HOURS`, from 1 to 168).  The cursor moves only after that source finishes without error.  A dry run, a `--limit` run, a `--since` run that skips an issue, a skipped issue, or a failed read leaves the cursor where it was.
 
 A full id sweep runs when the cursor is missing, corrupt, or older than the sweep interval, and when the last successful full sweep is older than that same interval.  The interval defaults to 7 days (`FLEET_RAG_LINEAR_SWEEP_DAYS`, from 1 to 90).  An invalid value keeps the default.  `--full`, also forwarded by `recall ingest --full`, sets `FLEET_RAG_LINEAR_FULL` for that run.  That forces a full id sweep and refetches every issue body.  A scheduled sweep still uses the per-issue `updatedAt` cache.  The content hash still skips re-embedding when the body is unchanged.
 

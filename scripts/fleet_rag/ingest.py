@@ -182,7 +182,7 @@ def save_state(state: dict, path: pathlib.Path = STATE_PATH) -> None:
 def _commit_linear_cursor(state: dict, receipt: dict) -> bool:
     """Advance the Linear updatedAt cursor after a fully successful source run.
 
-    A failed, limited, dry, or incomplete read leaves the stored cursor alone.
+    A failed, limited, dry, since-filtered, or incomplete read leaves the stored cursor alone.
     A full sweep also stamps the sweep clock.  An incremental read keeps the
     previous sweep clock so the weekly full read still comes due.
     """
@@ -825,6 +825,7 @@ def _run_locked(
         group: list[tuple[sources.Doc, str]] = []
         group_chunks = 0
         yielded: set[str] = set()
+        since_skipped = False
         source_ok = True
         linear_receipt = (
             {} if name == "linear" and GENERATORS[name] is sources.iter_linear else None
@@ -846,6 +847,10 @@ def _run_locked(
                 yielded.add(doc.doc_id)
                 live_owners.add(doc.doc_id)
                 if since_ms and (doc.updated_at_ms or doc.created_at_ms) < since_ms:
+                    # Counted as seen, and still in the yielded set so prune cannot
+                    # treat the filter as a deletion.  The Linear cursor must not
+                    # move past an issue this filter dropped.
+                    since_skipped = True
                     continue
                 doc_hash = content_hash(doc.text_markdown)
                 prev = state.get(doc.doc_id)
@@ -906,6 +911,10 @@ def _run_locked(
             linear_receipt["state_hash_verified_count"] = verified
             linear_receipt["source_ok"] = source_ok
             linear_receipt["deletion_authorized"] = False
+            if since_skipped:
+                # --since dropped issues the scan already counted.  Advancing the
+                # updatedAt cursor would hide them until the next full sweep.
+                linear_receipt["cursor_advance"] = False
             if not source_ok:
                 linear_receipt["source_complete"] = False
             elif not dry_run and _commit_linear_cursor(state, linear_receipt):
