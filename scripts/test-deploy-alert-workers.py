@@ -452,6 +452,67 @@ class Tests(unittest.TestCase):
             opener.return_value.open.return_value = response
             m.reviewed("a" * 40)
 
+    def test_kody_check_receipt_without_pr_review_passes(self):
+        import json
+        from unittest.mock import MagicMock
+
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "pageInfo": {"hasNextPage": False},
+                                "nodes": [{"isResolved": True}],
+                            }
+                        }
+                    }
+                }
+            }
+        ).encode()
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    {
+                        "check_runs": [
+                            {
+                                "name": m.KODY_CHECK_NAME,
+                                "app": {"slug": m.KODY_APP_SLUG},
+                                "status": "completed",
+                                "conclusion": "success",
+                                "head_sha": head,
+                                "output": {
+                                    "title": m.KODY_CHECK_TITLE,
+                                    "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                                },
+                            }
+                        ]
+                    },
+                ],
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            patch.object(m.urllib.request, "build_opener") as opener,
+        ):
+            opener.return_value.open.return_value = response
+            m.reviewed("a" * 40)
+
+    def test_release_review_paths_exclude_receipt_and_lockfiles(self):
+        self.assertNotIn("docs/releases/alert-credentials-qualified.json", m.RELEASE_REVIEW_PATHS)
+        self.assertNotIn("scripts/simple-tools-mcp/package-lock.json", m.RELEASE_REVIEW_PATHS)
+
     def test_workflow_is_main_ci_and_catchup_without_broad_gate(self):
         text = m.pathlib.Path(".github/workflows/alert-workers-deploy.yml").read_text()
         self.assertIn("workflow_run:", text)
