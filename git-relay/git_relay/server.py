@@ -2,7 +2,7 @@
 
 Endpoints (all JSON in, JSON out):
     GET  /healthz
-    POST /v1/open_pr           {repo, base, head, title, body}      (owner token)
+    POST /v1/open_pr           {repo, base, head, title, body, draft?}  (owner token; read back)
     POST /v1/edit_pr           {repo, number, title?, body?}        (seat's App)
     POST /v1/reply_thread      {repo, number, comment_id, body}     (seat's App)
     POST /v1/comment_pr        {repo, number, body}                 (seat's App)
@@ -653,6 +653,19 @@ class Relay:
                     if exc.code is not None:
                         payload["github_code"] = exc.code
                         detail["github_code"] = exc.code
+                    # open_pr's read-back:  github_status stays 502 (the relay's
+                    # classification);  what the read-back GET itself answered is carried
+                    # separately.  The number the create named is unconfirmed, so it goes
+                    # to the audit row only, labelled, and never into the answer.
+                    readback_status = getattr(exc, "readback_status", None)
+                    if readback_status is not None:
+                        payload["readback_status"] = detail["readback_status"] = readback_status
+                        if exc.retry_after is not None:
+                            payload["readback_retry_after_seconds"] = exc.retry_after
+                            detail["readback_retry_after_seconds"] = exc.retry_after
+                    unconfirmed = getattr(exc, "unconfirmed_number", None)
+                    if unconfirmed is not None:
+                        detail["unconfirmed_number"] = unconfirmed
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 502, payload

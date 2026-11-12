@@ -108,7 +108,7 @@ struct ServiceActionSubject: Equatable {
             title = action.subjectTitle
             self.verb = .readLogs
         case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .serverResource, .resourceStatus,
-             .eavesdropperStatus, .unitStatus:
+             .eavesdropperStatus, .unitStatus, .serverListenerSettings:
             title = action.title
             self.verb = .other
         }
