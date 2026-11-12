@@ -1,4 +1,4 @@
-"""The listener's server instance:  environment credentials, DM capture for a Grok Bot persona,
+"""The listener's server instance:  environment credentials, DM capture for a Grok bot,
 the remote routine (`http`) wake, the seat partition, and the container pieces.
 
 Everything runs against the fake Zulip server, a fake routine webhook, a fake clock and temp
@@ -33,7 +33,7 @@ from simple_tools import launchd
 from simple_tools import live as L
 from simple_tools import service_identity as S
 from simple_tools.tests.fake_routine import FakeRoutine
-from simple_tools.tests.harness import write_rc
+from simple_tools.tests.harness import TWO_INSTANCE_PARTITION, write_rc
 from simple_tools.tests.listener_harness import ListenerHarness
 
 REPO = Path(__file__).resolve().parents[3]
@@ -43,7 +43,7 @@ GB_EMAIL = "compiler-grok-bot@zulip.test"
 DIRECTOR_EMAIL = "director-grok-bot@zulip.test"
 SEAT = "GB-COMPILER"
 MENTION = "@**GB-Compiler** the build is red on main, can you look?"
-# The cloud seats the partition gives the server instance besides the GB personas, with the bot email
+# The cloud seats the partition gives the server instance besides the GB bots, with the bot email
 # whose local part derives each seat tag (identity.EMAIL_TAG_OVERRIDES) and a display name to @-mention.
 CLOUD_SEATS = {
     "MA": ("muse-assist-bot@zulip.test", "Muse Assist"),
@@ -52,6 +52,13 @@ CLOUD_SEATS = {
     "WISE": ("instinct-owl-bot@zulip.test", "Wise Owl"),
     "ECHO": ("instinct-bat-bot@zulip.test", "Echo Bat"),
 }
+# The Mac CLI seats, held by the server listener since the one-listener cutover (owner, Tue,
+# Nov 10).  GROK and AMP are disabled there:  GROK's Infisical pair has the ZULIP_GROK_BUILD_*
+# stem, and AMP has no ZULIP_AMP_* pair.
+MAC_CLI_SEATS = [
+    "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
+]
+MAC_CLI_DISABLED = ["AMP", "GROK"]
 
 
 def routine_cfg(**kw) -> C.RoutineConfig:
@@ -100,6 +107,8 @@ class ServerHarness(ListenerHarness):
             GB_COMPILER_ROUTINE_KEY=self.routine_key,
             SIMPLE_TOOLS_INSTANCE="server",
             SIMPLE_TOOLS_CONFIG=str(self.config_file),
+            # The server instance reads the live partition, so the shipped sample is checked against it.
+            SIMPLE_TOOLS_PARTITION=str(PARTITION),
             AGENT_SEAT=None,
             CLAUDE_CODE_SESSION_ID=None,
         )
@@ -369,7 +378,7 @@ class AdminRefusalTests(ServerHarness):
         self.assertEqual(
             [r["user_id"] for r in self.fake.registrations],
             [self.gb["user_id"]],
-            "only the member persona holds a queue",
+            "only the member bot holds a queue",
         )
         self.fake.add_message(
             "Codex", "simple-tools", "t", "@**GB-Director** and @**GB-Compiler** look"
@@ -629,14 +638,67 @@ class RoutineBodyTests(unittest.TestCase):
         self.assertIs(type(body({"stream_id": 7})["stream_id"]), int)
         self.assertIn(b'"stream_id":7', A.routine_bytes(body({"stream_id": 7})))
 
+    def test_a_reply_row_adds_the_letter_and_linked_by_and_nothing_else(self) -> None:
+        """Owner, Nov 10 2026:  an untagged reply wakes the chat it answers, and the router is told which.
+        The two fields are optional and additive:  a row that is not a reply sends neither (an explicit
+        letter in its own text is the router's to read), and a reply to a post with no letter sends
+        `linked_by` alone."""
+        base = {
+            "id": 9,
+            "type": "stream",
+            "channel": "simple-tools",
+            "topic": "t",
+            "stream_id": 7,
+            "sender_id": 11,
+            "content": "@**Seat** AB look",
+        }
+
+        def body(**row: object) -> dict:
+            return A.routine_body(
+                seat="GB-X",
+                wake_id="w9",
+                trigger_ids=[9],
+                row={**base, **row},
+                bot_user_id=16,
+                realm="https://z.test",
+                now=1790000000.0,
+                nonce="00ff",  # the excerpt's marker nonce is random otherwise
+            )
+
+        plain = body(classes=["eligible", "direct"])
+        self.assertTrue({"letter", "linked_by"}.isdisjoint(plain))
+        reply = body(classes=["eligible", "reply"], reply_target_letter="AA")
+        self.assertEqual(set(reply) - set(plain), {"letter", "linked_by"})
+        self.assertEqual((reply["letter"], reply["linked_by"]), ("AA", "reply"))
+        self.assertEqual({k: v for k, v in reply.items() if k not in ("letter", "linked_by")}, plain)
+        unlettered = body(classes=["eligible", "reply"], reply_target_letter="")
+        self.assertEqual(set(unlettered) - set(plain), {"linked_by"})
+        self.assertIn(b'"letter":"AA"', A.routine_bytes(reply))
+        self.assertIn(b'"linked_by":"reply"', A.routine_bytes(reply))
+
     def test_routine_url_rules(self) -> None:
+        def v4(*octets: int) -> str:
+            # Built from numbers, so the repo's private-address guard does not read a fixture as inventory.
+            return ".".join(str(octet) for octet in octets)
+
         good = [
             "https://routines.grok.example/hooks/abc?token=1",
             "http://127.0.0.1:8080/x",
             "http://localhost/x",
+            # A wake bridge on a Tailscale address (the ZCode bridge binds the tailnet IP), both ends of the range.
+            "http://%s:8791/wake/ZC" % v4(100, 100, 100, 100),
+            "http://%s/x" % v4(100, 64, 0, 1),
+            "http://%s/x" % v4(100, 127, 255, 254),
         ]
         bad = {
             "http://routines.example.com/x": "must be https",
+            # Just outside the range on each side, a private range that is not the tailnet, a public address, and
+            # a hostname that merely starts like a tailnet address.
+            "http://%s/x" % v4(100, 128, 0, 1): "must be https",
+            "http://%s/x" % v4(100, 63, 255, 255): "must be https",
+            "http://%s/x" % v4(10, 0, 0, 5): "must be https",
+            "http://%s/x" % v4(8, 8, 8, 8): "must be https",
+            "http://%s.evil.example/x" % v4(100, 100, 100, 100): "must be https",
             "ftp://x/y": "https URL",
             "https://user:pw@host/x": "user name or password",
             "https:///nohost": "no host",
@@ -1052,13 +1114,15 @@ class PartitionTests(ServerHarness):
         self.assertIn('"refused-start"', log)
 
     def test_the_partition_file_keeps_claude_off_the_server_and_gb_off_the_mac(self) -> None:
+        # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
+        # server since the one-listener cutover (owner, Tue, Nov 10).
         self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
-        err = self.refused(self.server_env())
+        err = self.refused(self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
         self.assertIn(
             "seat CLAUDE is configured here (the 'server' listener), but it belongs to the 'mac' instance",
             err,
         )
-        self.assertIn("simple-tools-partition.toml", err)
+        self.assertIn(str(TWO_INSTANCE_PARTITION), err)
         self.write_config(
             seats='[seat.CLAUDE]\nbot = "Claude"\n\n[seat.GB-COMPILER]\nenabled = false\nbot = "GB-Compiler"\n'
         )
@@ -1105,7 +1169,8 @@ class PartitionTests(ServerHarness):
         )
         err = self.refused(self.env())
         self.assertIn(
-            "seat ZED is configured here (the 'mac' listener), but %s does not list it" % PARTITION,
+            "seat ZED is configured here (the 'mac' listener), but %s does not list it"
+            % TWO_INSTANCE_PARTITION,
             err,
         )
         self.assertIn("held by no instance", err)
@@ -1137,7 +1202,7 @@ class PartitionTests(ServerHarness):
         err = self.refused(self.env())
         self.assertIn("seat GBC is configured here", err)
         self.assertIn("seat GBC reads bot = 'GB-Compiler'", err)
-        # The server:  a listed persona pointed at another persona's default variables.
+        # The server:  a listed bot pointed at another bot's default variables.
         self.config_file.write_text(
             textwrap.dedent("""\
             [daemon]
@@ -1177,7 +1242,7 @@ class PartitionTests(ServerHarness):
         )
         self.assertTrue(daemon.seats["GB-FIXER"].fatal)
         self.assertEqual(self.fake.registrations, [], "the aliased key never registers a queue")
-        self.assertTrue(daemon.connect_seat(SEAT), "the persona's own seat still connects")
+        self.assertTrue(daemon.connect_seat(SEAT), "the bot's own seat still connects")
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn('"seat-refused"', log)
 
@@ -1202,14 +1267,22 @@ class PartitionTests(ServerHarness):
         self.assertEqual(self.fake.registrations, [])
 
     def test_the_cli_run_returns_2_without_waiting(self) -> None:
+        # A seat of the other instance, on the two-instance fixture:  the live partition gives CLAUDE
+        # to the server since the one-listener cutover (owner, Tue, Nov 10), and there the config
+        # would load and the run would never return.
         self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\n')
-        result = self.run_cli("daemon", "run", "--wait-lock", env=self.server_env())
+        result = self.run_cli(
+            "daemon", "run", "--wait-lock",
+            env=self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)),
+        )
         self.assertEqual(result.code, 2)
         self.assertIn("refusing to start", result.err)
         self.assertEqual(self.fake.registrations, [])
 
     def test_a_reload_that_adds_a_seat_of_the_other_instance_keeps_the_running_config(self) -> None:
-        daemon = self.started()
+        # The mechanics, on the two-instance fixture:  the live partition has given CLAUDE to the
+        # server since the one-listener cutover (owner, Tue, Nov 10).
+        daemon = self.started(env=self.server_env(SIMPLE_TOOLS_PARTITION=str(TWO_INSTANCE_PARTITION)))
         self.write_server_config(seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n')
         daemon.reload()
         self.assertEqual(sorted(daemon.seats), [SEAT])
@@ -1224,7 +1297,13 @@ class PartitionTests(ServerHarness):
     def test_the_repo_partition_and_both_sample_configs_agree(self) -> None:
         partition, error = C.load_partition(str(PARTITION))
         self.assertIsNone(error)
-        self.assertEqual(partition["CLAUDE"], "mac")
+        self.assertEqual(
+            {s: v for s, v in partition.items() if v == "mac"},
+            {"OPERATOR": "mac"},
+            "one listener, on the server, holds every seat (owner, Tue, Nov 10);  only the "
+            "Operator's service identity stays on the Mac",
+        )
+        self.assertEqual({partition[s] for s in MAC_CLI_SEATS}, {"server"})
         gb = sorted(s for s in partition if s.startswith("GB-"))
         self.assertEqual(len(gb), 12)
         self.assertEqual({partition[s] for s in gb}, {"server"})
@@ -1241,9 +1320,10 @@ class PartitionTests(ServerHarness):
         self.assertEqual(
             {s for s, v in partition.items() if v == "mac"} - S.SERVICE_SEATS,
             set(launchd.READER_SEATS),
-            "the Mac holds every Mac seat (owner, Thu, Oct 8), the deterministic service "
-            "identities excepted (they hold no reader seat)",
+            "the Mac's reader seats are the partition's mac seats, the deterministic service "
+            "identities excepted (they hold no reader seat);  since Nov 10 there are none",
         )
+        self.assertEqual(launchd.READER_SEATS, [])
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "WISE"]:
             self.assertEqual(partition.get(seat), "server", "%s is a cloud seat" % seat)
         self.assertEqual(
@@ -1254,7 +1334,7 @@ class PartitionTests(ServerHarness):
         mac = C.from_dict(tomllib.loads(launchd.sample_config(str(self.secrets_dir))))
         self.assertEqual(mac.instance, "mac")
         self.assertEqual(C.partition_errors(mac, partition, env_instance="mac"), [])
-        self.assertEqual(sorted(mac.seats), ["CLAUDE"])
+        self.assertEqual((sorted(mac.seats), sorted(mac.disabled)), ([], []))
         self.assertTrue(
             (bf_names - {"BF-BUILDER"}) <= mac.outgoing_webhook_seats,
             "a fresh Mac sample accepts migrated BF senders without holding their queues "
@@ -1272,14 +1352,47 @@ class PartitionTests(ServerHarness):
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
         self.assertEqual(
             sorted(server.disabled),
-            [],
-            "no server seat is disabled:  every seat works through the Operator (owner, Fri, Nov 6)",
+            MAC_CLI_DISABLED,
+            "only GROK and AMP are disabled, for want of a loadable Zulip pair (owner, Tue, Nov 10)",
         )
         self.assertEqual(
             sorted(server.seats),
-            sorted(list(gb) + list(CLOUD_SEATS) + [s for s, v in bf.items() if v == "server"]),
-            "the enabled seats are every GB persona, the five cloud seats and every live BF seat",
+            sorted(
+                list(gb)
+                + list(CLOUD_SEATS)
+                + [s for s, v in bf.items() if v == "server"]
+                + [s for s in MAC_CLI_SEATS if s not in MAC_CLI_DISABLED]
+            ),
+            "the enabled seats are every GB bot, the five cloud seats, every live BF seat and "
+            "the Mac CLI seats with a loadable pair",
         )
+        for seat in MAC_CLI_SEATS:
+            seat_cfg = server.seats.get(seat) or server.disabled[seat]
+            code = C.env_code(seat)
+            if seat == "ZC":
+                # ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md), with the bridge's
+                # bearer, so it is the one Mac CLI seat with a routine.
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance),
+                    ("http", "env", "server"),
+                    "ZC wakes through its bridge",
+                )
+                routine = seat_cfg.routine
+                self.assertEqual(
+                    (routine.url_env, routine.key_env, routine.auth, routine.header, routine.method),
+                    ("ZC_ROUTINE_URL", "ZC_ROUTINE_KEY", "bearer", "Authorization", "POST"),
+                )
+            else:
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance, seat_cfg.routine),
+                    ("inbox", "env", "server", None),
+                    "%s has inbox capture on the server" % seat,
+                )
+            self.assertEqual(
+                (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env),
+                ("ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code, "ZULIP_SITE"),
+                seat,
+            )
         for seat in [s for s, v in bf.items() if v == "server"]:
             seat_cfg = server.seats[seat]
             code = C.env_code(seat)
@@ -1411,7 +1524,7 @@ class CloudSeatTests(CloudSeatHarness):
         self.assertEqual(
             sorted(r["user_id"] for r in self.fake.registrations),
             sorted(bot["user_id"] for bot in self.cloud.values()),
-            "five queues, one per bot, and none for a persona that was not started",
+            "five queues, one per bot, and none for a bot that was not started",
         )
         self.assertEqual(len({r["user_id"] for r in self.fake.registrations}), 5)
 
@@ -1551,7 +1664,7 @@ class ServerInitTests(ServerHarness):
         self.config_file.unlink()
         # Without --seat the reader is the first enabled seat in name order, which is ECHO now that the
         # sample holds the cloud seats, so the runbook always names one.
-        # GB-COMPILER is the reader here, and like GB-FIXER an enabled persona whose credentials init checks.
+        # GB-COMPILER is the reader here, and like GB-FIXER an enabled bot whose credentials init checks.
         fixer_key = secrets.token_hex(16)
         self.extra_keys.append(("fixer-grok-bot@zulip.test", fixer_key))
         self.fake.add_bot("fixer-grok-bot@zulip.test", "GB-Fixer", fixer_key)

@@ -2,7 +2,7 @@
 
 Every test runs the real notifier in process against the fake `board` and `simple-chat` (built on the real parsers), a
 fake clock and fake K1 knobs, in a temp HOME.  Jay is Zulip user 7 (the pinned owner);  CODEX, BF-DIRECTOR and the
-Grok Bot personas are the filing seats.
+Grok bots are the filing seats.
 """
 from __future__ import annotations
 

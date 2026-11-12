@@ -513,7 +513,7 @@ class HeldAlertTests(HeldBackRoutineTests):
 
 class HeldAlertMultiSeatTests(HeldMixin, CloudSeatHarness):
     """Coalescing across seats, over the shipped sample config:  the five cloud seats plus the
-    persona, all connected on one instance, which is the fleet shape the decision was made about.
+    bot, all connected on one instance, which is the fleet shape the decision was made about.
     Only the cross-seat tests live here;  the single-seat ones are on `HeldAlertTests`."""
 
     def alerts(self):

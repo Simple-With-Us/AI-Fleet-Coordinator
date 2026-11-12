@@ -54,7 +54,7 @@ class ExportAttemptTests(unittest.TestCase):
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             version = db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         self.assertIn("export_attempts", tables)
-        self.assertEqual(version, 2)
+        self.assertGreaterEqual(version, 2)  # version 3 (AFC-694) added session_issues on top
 
     def test_record_and_read_back(self):
         oid = self._pending_id()

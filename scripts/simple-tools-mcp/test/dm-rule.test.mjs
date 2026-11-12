@@ -40,11 +40,11 @@ function memoryGate(clock) {
 
 /** The same GROK-WEB harness as dm.test.mjs, with the DM rule ON (the shared default is off there
  *  because those tests are about tagging and idempotency, not the rule). */
-function harness({ seat = "GROK-WEB" } = {}) {
+function harness({ seat = "GROK-WEB", rule = "on" } = {}) {
   const fake = new FakeZulip();
   const clock = { now: Date.parse("2026-10-22T10:00:00Z") };
   const logs = [];
-  const config = loadConfig(testEnv({ SIMPLE_TOOLS_DM_RULE: "on", HOSTED_SEATS: "JET,GROK-WEB", OPERATOR_ZULIP_USER_ID: String(OPERATOR_USER_ID) }));
+  const config = loadConfig(testEnv({ SIMPLE_TOOLS_DM_RULE: rule, HOSTED_SEATS: "JET,GROK-WEB", OPERATOR_ZULIP_USER_ID: String(OPERATOR_USER_ID) }));
   const user = (name) => fake.users.find((u) => u.full_name === name);
   const operator = fake.addUser("operator-bot@zulip.test", "Operator");
   operator.is_bot = true;
@@ -247,4 +247,126 @@ test("SIMPLE_TOOLS_DM_RULE=off restores the pre-rule behaviour, and the owner-in
   const refused = await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "hello" });
   assert.equal(refused.isError, true, JSON.stringify(refused));
   assert.equal(JSON.parse(refused.content[0].text).code, "dm_owner_not_participant");
+});
+
+// ---------------------------------------------------------------- scheduled messages and drafts
+//
+// A scheduled or draft direct message is the same act as sending it now, so the DM rule covers every
+// direct target they build (the stdio twin does the same in _target, scripts/simple_tools/mcp/tools.py).
+// Before this, only zulip_dm_send applied the rule here, and a seat could schedule or draft a DM to a
+// conversation that included Jay.  The refusal is the same code and the same message, nothing is
+// scheduled or drafted, and a channel target and a typing notice are not affected.
+
+const deliverAt = (clock) => Math.floor(clock.now / 1000) + 3600;
+const sortedIds = (...ids) => [...ids].sort((a, b) => a - b);
+
+/** The three tools that build a direct target, each given the recipient ids. */
+const DM_TARGET_TOOLS = {
+  zulip_scheduled_create: (ids, { clock }) => ({ user_ids: ids, text: "later", deliver_at: deliverAt(clock) }),
+  zulip_draft_create: (ids) => ({ user_ids: ids, text: "note" }),
+  // An edit rewrites a draft's recipient set, so it is the same act as creating one.
+  zulip_draft_edit: (ids, { draftId }) => ({ draft_id: draftId, user_ids: ids, text: "note two" }),
+};
+
+/** Call one of those tools against a harness.  A draft edit first needs an existing channel draft. */
+async function callDmTarget(h, name, ids) {
+  let draftId;
+  if (name === "zulip_draft_edit") {
+    const made = await h.tools.call("zulip_draft_create", { topic: "d", text: "channel draft" });
+    assert.notEqual(made.isError, true, JSON.stringify(made));
+    draftId = made.structuredContent.id;
+  }
+  return h.tools.call(name, DM_TARGET_TOOLS[name](ids, { clock: h.clock, draftId }));
+}
+
+const nothingCreated = (fake) => {
+  assert.equal(fake.scheduled.size, 0, "nothing was scheduled");
+  assert.equal(fake.requestsTo("POST", "/scheduled_messages").length, 0, "Zulip was not asked to schedule anything");
+  for (const draft of fake.drafts.values()) assert.equal(draft.type, "stream", "no draft was rewritten into a direct message");
+};
+
+for (const name of Object.keys(DM_TARGET_TOOLS)) {
+  test(`${name}: a seat opening a DM is refused with the same code and message as zulip_dm_send`, async () => {
+    const h = harness();
+    const { tools, fake, codex, jay } = h;
+    // A seat, the owner and a group with both:  each kind of recipient has its own guidance.
+    for (const ids of [[codex.user_id], [jay.user_id], [codex.user_id, jay.user_id]]) {
+      const sent = errorOf(await tools.call("zulip_dm_send", { user_ids: ids, text: "hello" }), "dm_not_allowed");
+      const refused = errorOf(await callDmTarget(h, name, ids), "dm_not_allowed");
+      assert.equal(refused.message, sent.message, "the same message as zulip_dm_send");
+      assert.match(refused.message, /may not open a new direct message/);
+    }
+    nothingCreated(fake);
+  });
+
+  test(`${name}: a reply inside a DM Operator opened stays allowed`, async () => {
+    const h = harness();
+    const { fake, operator, jay } = h;
+    fake.addDm(operator, [fake.me, jay], "which seat is this for?");
+    const result = await callDmTarget(h, name, [operator.user_id, jay.user_id]);
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    const to = sortedIds(operator.user_id, jay.user_id);
+    if (name === "zulip_scheduled_create") assert.deepEqual(fake.scheduled.get(result.structuredContent.id).to, to);
+    else assert.deepEqual(fake.drafts.get(result.structuredContent.id).to, to);
+    // A schedule and a draft only store the message:  the seat has sent nothing yet.
+    assert.deepEqual(directMessages(fake).filter((m) => m.sender_id === fake.me.user_id), []);
+  });
+
+  test(`${name}: a conversation the seat opened itself is still refused`, async () => {
+    const h = harness();
+    const { fake, codex, jay } = h;
+    // The opener here is the seat, not Operator:  answering inside it is not the allowed reply.
+    fake.addDm(fake.me, [codex, jay], "mine");
+    const error = errorOf(await callDmTarget(h, name, [codex.user_id, jay.user_id]), "dm_not_allowed");
+    assert.match(error.message, /may not open a new direct message/);
+    nothingCreated(fake);
+  });
+
+  test(`${name}: the refusal is audited with its code and its recipients`, async () => {
+    const h = harness();
+    const { tools, fake, codex } = h;
+    errorOf(await callDmTarget(h, name, [codex.user_id]), "dm_not_allowed");
+    const row = (await tools.gate.callTail(10)).find((r) => r.tool === name && r.outcome === "error");
+    assert.ok(row, "the refused call left an audit row");
+    assert.equal(row.error_code, "dm_not_allowed");
+    assert.deepEqual(row.recipient_ids, [codex.user_id]);
+    nothingCreated(fake);
+  });
+
+  test(`${name}: with SIMPLE_TOOLS_DM_RULE=off it goes out again, and the owner-in-the-conversation guard still holds`, async () => {
+    const h = harness({ rule: "off" });
+    const { codex, jay } = h;
+    const allowed = await callDmTarget(h, name, [codex.user_id, jay.user_id]);
+    assert.notEqual(allowed.isError, true, JSON.stringify(allowed));
+    // The rule is off, but the owner guard (AFC-469) is not:  a conversation without the owner goes nowhere.
+    const refused = await callDmTarget(h, name, [codex.user_id]);
+    assert.equal(refused.isError, true, JSON.stringify(refused));
+    assert.equal(JSON.parse(refused.content[0].text).code, "dm_owner_not_participant");
+  });
+}
+
+test("scheduled and draft messages to a channel are not affected by the DM rule", async () => {
+  const { tools, fake, clock } = harness();
+  const messageReads = () => fake.requestsTo("GET", "/messages").length;
+  const before = messageReads();
+  const scheduled = await tools.call("zulip_scheduled_create", { topic: "later", text: "channel message", deliver_at: deliverAt(clock) });
+  assert.notEqual(scheduled.isError, true, JSON.stringify(scheduled));
+  assert.equal(fake.scheduled.get(scheduled.structuredContent.id).type, "stream");
+  const draft = await tools.call("zulip_draft_create", { topic: "d", text: "channel draft" });
+  assert.notEqual(draft.isError, true, JSON.stringify(draft));
+  const edited = await tools.call("zulip_draft_edit", { draft_id: draft.structuredContent.id, topic: "d2", text: "channel draft two" });
+  assert.notEqual(edited.isError, true, JSON.stringify(edited));
+  assert.equal(fake.drafts.get(draft.structuredContent.id).type, "stream");
+  assert.equal(messageReads(), before, "a channel target looks up no direct message conversation");
+});
+
+test("a typing notice to a DM is not a message, and the DM rule does not refuse it", async () => {
+  const { tools, fake, codex, jay } = harness();
+  const before = fake.requestsTo("GET", "/messages").length;
+  for (const ids of [[codex.user_id], [codex.user_id, jay.user_id]]) {
+    const result = await tools.call("zulip_typing", { op: "start", user_ids: ids });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+  }
+  assert.equal(fake.typing.length, 2, "both notices reached Zulip");
+  assert.equal(fake.requestsTo("GET", "/messages").length, before, "no conversation lookup for a typing notice");
 });

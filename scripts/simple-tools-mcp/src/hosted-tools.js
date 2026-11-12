@@ -42,6 +42,7 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
+  ownIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
   formatTime,
@@ -69,7 +70,7 @@ import {
   RECALL_MARKER_END,
 } from "./recall.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
-import { REFUSAL_REASONS, classifyRelayRefusal, githubRefusalStatus, refusalReasonText } from "./gr-refusal.js";
+import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
@@ -782,7 +783,7 @@ export class HostedTools {
     // reserve, cached or not.
     if (this._identityHit && (kind === "read" || kind === "linear_read")) return;
     try {
-      // A delegated persona cannot multiply the authenticated CURSOR grant's
+      // A delegated bot cannot multiply the authenticated CURSOR grant's
       // allowance.  Its own gate is a second, independent limit and token cache.
       if (this.callerGate !== this.gate) {
         const callerPolicy = this.callerSeat === "CURSOR" ? this.config.cursorToolBudgets?.[kind] : undefined;
@@ -1527,6 +1528,14 @@ export class HostedTools {
         { extra },
       );
     }
+    // A workflow READ that GitHub (or the relay's own read check) failed:  the
+    // relay marks it retryable, and a read changed nothing.  It used to fall
+    // into the unreadable-answer text below, which hid a plain transient
+    // failure (AFC deficiency rows 22, 31, 35, 47, 107, 138).  Only
+    // callWorkflow produces this exact flat marker with retryable:true.
+    if (status === 502 && workflow && body && typeof body === "object" && body.error === "workflow_request_refused" && body.retryable === true) {
+      throw new ToolError("unavailable", "git-relay could not complete this read:  GitHub failed it or the relay could not verify GitHub's answer.  Nothing was written;  retry shortly, and if it repeats, read less per call (a smaller per_page or the paged verb).", { retryable: true });
+    }
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
     // Only the transport's own root marker proves this failed before send.
     // Upstream status/body content can never supply that marker.
@@ -1540,6 +1549,16 @@ export class HostedTools {
     // own pre-write app-token outage, which it marks retryable:  only that
     // marker keeps "nothing was written".
     if (status >= 500) {
+      // The verifier being unreachable is a definite pre-write answer, not a
+      // mint failure and not an unknown GitHub outcome.  It must be named
+      // before the generic retryable-5xx mint message.
+      const verifierShape = z.object({ error: z.string().optional(), reason: z.string().optional() }).safeParse(body);
+      if (verifierShape.success && (verifierShape.data.error === "verifier_unavailable" || verifierShape.data.reason === "verifier_unavailable")) {
+        throw new ToolError("relay_refused", refusalReasonText("verifier_unavailable"), {
+          retryable: true,
+          extra: { reason: "verifier_unavailable" },
+        });
+      }
       if (body && typeof body === "object" && body.retryable === true) {
         throw new ToolError("unavailable", "git-relay cannot mint a GitHub App token right now (retryable).  Nothing was written;  try again shortly.");
       }
@@ -1594,10 +1613,28 @@ export class HostedTools {
       const classified = refusalShape.data.reason
         ? { reason: refusalShape.data.reason, ...(githubRefusalStatus(refusalShape.data.github_status) !== undefined ? { github_status: githubRefusalStatus(refusalShape.data.github_status) } : {}) }
         : classifyRelayRefusal(refusalError, refusalShape.data.github_status);
-      const extra = classified ? { reason: classified.reason, ...(classified.github_status !== undefined ? { github_status: classified.github_status } : {}) } : null;
+      // A renamed or transferred repository (OPS-1036):  say where it went, from
+      // the validated owner/name and id only, on both relay paths.
+      // Writes only.  The object is revalidated here, so a message field or any
+      // other key the relay did not allowlist cannot reach the caller.
+      const diagnostics = WF_V1_READ_ACTIONS.includes(action)
+        ? null
+        : allowlistedGithubDiagnostics(body.github_diagnostics);
+      if (classified?.reason === "repository_moved") {
+        const moved = movedRepository(body);
+        // An error field is clipped at 60 characters (contract.js), so a longer
+        // owner/name travels in the message only, never as a clipped field.
+        const fields = { ...moved, ...(moved.moved_to && moved.moved_to.length > 60 ? { moved_to: undefined } : {}) };
+        throw new ToolError("relay_refused", repositoryMovedText(moved), { extra: { reason: "repository_moved", ...fields, ...(diagnostics ? { github_diagnostics: diagnostics } : {}) } });
+      }
+      const extra = {
+        ...(classified ? { reason: classified.reason, ...(classified.github_status !== undefined ? { github_status: classified.github_status } : {}) } : {}),
+        ...(diagnostics ? { github_diagnostics: diagnostics } : {}),
+      };
+      const reported = Object.keys(extra).length ? extra : null;
       const flat = refusalError === "workflow_request_refused";
       const fixedText = classified && flat ? refusalReasonText(classified.reason) : null;
-      throw new ToolError("relay_refused", fixedText ?? (typeof refusalError === "string" ? refusalError.slice(0, 300) : "refused"), { extra });
+      throw new ToolError("relay_refused", fixedText ?? (typeof refusalError === "string" ? refusalError.slice(0, 300) : "refused"), { extra: reported });
     }
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.
@@ -1618,6 +1655,7 @@ export class HostedTools {
     return this.grCall("workflow_dispatch", parsed);
   }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
+  async tool_gr_create_repo(args) { return this.grCall("create_repo", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
   async recallCall(fn, { write = false, retrySafe = false } = {}) {
@@ -1937,11 +1975,23 @@ export class HostedTools {
     }
   }
 
-  /** The seat tag line that opens every body it writes, as the Zulip tools do. */
+  /** The seat tag line that opens every body it writes, unless the body already opens with this seat's own intro
+   * (Policy › Post intro format, AFC-692):  a second `[SEAT]` / `[SEAT·session]` in front of `[SEAT 📁repos]` is the
+   * double tag Jay asked to stop.  A foreign-seat intro is still content and still gets this seat's tag, since every
+   * hosted Linear write shares one user and the tag is the attribution. */
   linearBody(text, session) {
+    const prefix = tagPrefix(this.seat, sessionTag(session));
+    const own = ownIntro(prefix, text);
+    let body = own ? text : `${prefix}] ${text}`;
+    if (own && prefix.includes("·")) {
+      // As composeBody:  the supplied session is operational attribution and replaces a stale one in the intro.
+      const seatEnd = own.intro.indexOf("[") + 1 + this.seat.length;
+      const suffix = own.intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
+      body = `${own.intro.slice(0, seatEnd)}${prefix.slice(prefix.indexOf("·"))}${suffix}]${own.rest}`;
+    }
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
-    return neutralizeLinearMentions(sentenceGap(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`));
+    return neutralizeLinearMentions(sentenceGap(body));
   }
 
   /** The secret scan on everything the caller wrote, before any request. */
@@ -2399,7 +2449,7 @@ for (const action of TYPED_V1_ACTIONS) {
     return this.grCall(action, args, {typedPrincipal: principal});
   };
 }
-// gr_wf_* : same relay transport as the seven gr_ tools (POST /v1/<action>, caller bearer, Access
+// gr_wf_* : same relay transport as the gr_ tools (POST /v1/<action>, caller bearer, Access
 // headers, grCall error mapping incl. outcome_unknown on 5xx).  The relay owns outcome/idempotency
 // (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
 for (const action of WF_V1_ACTIONS) {

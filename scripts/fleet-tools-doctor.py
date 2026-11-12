@@ -66,6 +66,8 @@ Checks:
               the server's fleet-cli-git-update and fleet-tools-doctor timers);  on the server,
               updater:fleet-server-status.timer also says whether the collector's report is
               fresh and linger is on for the user it runs as
+  agent-config  skills, rules blocks, guard hooks and MCP config versus this checkout
+              (check only; owner instruction files stay report-only and do not fail the row)
 
 Exit 1 on any FAIL on this host, 0 otherwise.  Standard library only, and Python 3.9 compatible
 (the Mac's LaunchAgent runs /usr/bin/python3).
@@ -185,6 +187,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_export.mjs",
         "scripts/simple_tools/operator_sheets_google.mjs",
         "scripts/simple_tools/operator_sheets_drain.mjs",
+        # AFC-412 PR2:  mirrors the release EXACT entry for the Operator chat-thread registry drain.
+        "scripts/simple_tools/thread_registry_export.mjs",
         # AFC-564:  mirrors the release EXACT entry for the OpenCode letter plugin.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
         # OPS-1048:  mirror the release EXACT entries for the ZC wake bridge and the letter hook's
@@ -3559,6 +3563,52 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
     return False
 
 
+def check_agent_config(report: Report, home: Path | None = None) -> None:
+    """One row for agent-config drift on this host.
+
+    The import stays inside the function.  A syntax or import failure in the
+    reconciler must warn here and leave the rest of the doctor running: the
+    Mac LaunchAgent still starts this file on Python 3.9.
+    """
+    root = Path(home) if home is not None else HOME
+    try:
+        scripts = Path(__file__).resolve().parent
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        from fleet_agent_config.reconcile import check as agent_check
+
+        env = os.environ.copy()
+        env["HOME"] = str(root)
+        result = agent_check(str(root), env=env)
+    except Exception as exc:
+        report.add(
+            "agent-config",
+            "WARN",
+            "agent config check could not run (%s)" % type(exc).__name__,
+            state="unknown",
+            category="agent-config",
+        )
+        return
+    blocking = [item for item in result.findings if item.status in ("drift", "refused", "error")]
+    if blocking:
+        shown = ", ".join("%s:%s" % (item.surface, item.name) for item in blocking[:8])
+        report.add(
+            "agent-config",
+            "FAIL",
+            "drift: " + shown,
+            state="stale",
+            category="agent-config",
+        )
+        return
+    report.add(
+        "agent-config",
+        "OK",
+        result.summary(),
+        state="current",
+        category="agent-config",
+    )
+
+
 def run(
     argv: list[str] | None = None,
     env: dict[str, str] | None = None,
@@ -3651,6 +3701,7 @@ def run(
         {seat: fleetlink_tokens[seat] for seat in ("CODEX", "CLAUDE")},
     )
     check_notes(report, host, env, runner, network=network)
+    check_agent_config(report)
     finalize_rows(report, host)
     doc = host_document(report, host, expected, network, updater)
     if args.post:

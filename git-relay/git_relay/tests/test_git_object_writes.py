@@ -250,6 +250,39 @@ class Writes(unittest.TestCase):
             self.handle(c, a).run(a, {**base, "files": files})
         self.assertEqual(len(c.calls), 1, "refused before any tree write")
 
+    def test_tree_blob_reference_loaded_credentials_refused(self):
+        import base64 as b64m
+        import hashlib as hl
+
+        a = "wf_git_tree_create"
+
+        def blob_of(raw):
+            sha = hl.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
+            ).hexdigest()
+            return sha, {
+                "sha": sha,
+                "encoding": "base64",
+                "size": len(raw),
+                "content": b64m.b64encode(raw).decode(),
+            }
+
+        # Caller-presented and installation credentials both refuse before any
+        # tree write on the referenced-blob path too.
+        for raw in (b"x = 'caller-live-value-7'\n", b"x = 'own'\n"):
+            sha, blob = blob_of(raw)
+            handle = self.handle(Client(blob), a)
+            handle.loaded_known = ("caller-live-value-7", "own")
+            with self.assertRaisesRegex(Refused, "^credential-shaped content refused$"):
+                handle.run(
+                    a,
+                    {
+                        "repo": REPO,
+                        "base_tree": SHA,
+                        "files": [{"path": "x.txt", "sha": sha, "mode": "100644"}],
+                    },
+                )
+
     def test_referenced_blob_cap_fits_the_github_response_bound(self):
         import base64
         import json

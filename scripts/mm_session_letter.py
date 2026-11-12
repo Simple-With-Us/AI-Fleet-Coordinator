@@ -791,6 +791,89 @@ def reopen_closed(record_id: str, parent_session_id: str = "") -> dict:
     return _require_registry(registry_call(args))
 
 
+def _registry_letter_from_rows(
+    rows: list[dict[str, object]],
+    *,
+    verified_host: str,
+    profile_scope: str,
+) -> str:
+    """Pick the live letter for this location from registration rows, skipping empty labels."""
+    for row in rows:
+        if row.get("verified_host") == verified_host and row.get("profile_scope") == profile_scope:
+            label = str(row.get("label") or "")
+            if label:
+                return label
+    if len(rows) == 1:
+        label = str(rows[0].get("label") or "")
+        if label:
+            return label
+    return ""
+
+
+def registry_letter_for_session(session_id: str) -> str:
+    """The letter the registry maps to this session id, without registering again.
+
+    The rename path needs the letter resolve already knows, not a fresh registration that
+    can answer with the wrong row or another free letter.      The cache and the registry's own lookup come first;  only a session with no letter
+    anywhere should call register().
+    """
+    letter = cached_letter(session_id)
+    if letter:
+        return letter
+    db = registry_db()
+    if not db:
+        return ""
+    from simple_tools import operator_registry as OR
+
+    try:
+        entry = OR.lookup_entry(db, PLATFORM, location(), PROFILE_SCOPE, session_id)
+        label = str(entry.get("label") or "")
+        if label:
+            return label
+        rows = OR.registrations_for_native_id(db, PLATFORM, session_id)
+        return _registry_letter_from_rows(
+            rows, verified_host=location(), profile_scope=PROFILE_SCOPE
+        )
+    except (OR.RegistryUnavailable, sqlite3.Error, OSError, ValueError):
+        return ""
+    return ""
+
+
+def rename_registry_context(session_id: str) -> tuple[tuple[str, ...], str]:
+    """Held letters and resolved letter for one rename, using one registry read handle."""
+    letter = cached_letter(session_id)
+    db = registry_db()
+    if not db:
+        return (), letter
+    from simple_tools import operator_registry as OR
+
+    held: tuple[str, ...] = ()
+    try:
+        reg = OR.SessionRegistry(db, read_only=True)
+        try:
+            row = reg.session_by_identity(
+                platform=PLATFORM,
+                verified_host=location(),
+                profile_scope=PROFILE_SCOPE,
+                native_session_id=session_id,
+            )
+            if row is not None:
+                held = reg.letters_held(row["record_id"])
+                live_letter, _generation = reg._active_alias(reg._conn, row["record_id"])
+                if live_letter:
+                    letter = live_letter
+            if not letter:
+                rows = reg.live_registration_rows_for_native_id(PLATFORM, session_id)
+                letter = _registry_letter_from_rows(
+                    rows, verified_host=location(), profile_scope=PROFILE_SCOPE
+                )
+        finally:
+            reg.close_db()
+    except (OR.RegistryUnavailable, sqlite3.Error, OSError, ValueError):
+        return held, letter
+    return held, letter
+
+
 def update_title(session_id: str, title: str, directories: list[str] | None = None) -> dict:
     """Carry the thread topic into the registry (topic only — not the letter prefix)."""
     _scan_title(title)
@@ -1028,17 +1111,20 @@ def title_topic(title: str, letter: str = "", held: tuple[str, ...] = ()) -> str
     is what topic_without_letter does, and this is the title form of it.
     """
     text = (title or "").strip()
-    match = PAIR_PREFIX_RE.match(text)
-    if match:
+    while text:
+        match = PAIR_PREFIX_RE.match(text)
+        if not match:
+            break
         prefix = text[:2]
-        if prefix == letter or prefix in held:
-            return text[match.end() :].strip()
+        if prefix != letter and prefix not in held:
+            break
+        text = text[match.end() :].strip()
     return topic_without_letter(text, (letter,) if letter else ())
 
 
 def wanted_title(letter: str, topic: str, previous_letters: tuple[str, ...] = ()) -> str:
     """The title form:  the letter, then the topic, in Title Case English."""
-    topic = topic_without_letter(topic, tuple(previous_letters) + (letter,))
+    topic = title_topic(topic, letter, previous_letters)
     topic = " ".join(topic.split())
     if not topic or not is_english(topic):
         topic = "Session " + (letter or "?")
@@ -2164,13 +2250,15 @@ def main(argv: list[str] | None = None) -> int:
         return migrate_pairs()
     if args.command == "rename":
         parent = parent_for_row(session_row(args.session_id) or {})
-        try:
-            answer = _require_registry(register(args.session_id, "", parent))
-        except RegistryError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return _registry_exit_code(exc)
-        letter = str(answer.get("label") or "")
-        title = wanted_title(letter, args.title)
+        held, letter = rename_registry_context(args.session_id)
+        if not letter:
+            try:
+                answer = _require_registry(register(args.session_id, "", parent), needs_label=True)
+            except RegistryError as exc:
+                print(json.dumps({"error": str(exc)}))
+                return _registry_exit_code(exc)
+            letter = str(answer.get("label") or "")
+        title = wanted_title(letter, args.title, held)
         try:
             renamed = set_title(args.session_id, title)
         except ValueError as exc:

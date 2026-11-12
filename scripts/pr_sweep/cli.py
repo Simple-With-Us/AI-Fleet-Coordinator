@@ -533,8 +533,8 @@ def main(
 
 
 def _lane_passthrough(argv: Sequence[str]):
-    lane = os.path.expanduser("~/apps/lane")
-    if not os.path.exists(lane):
+    lane = R.resolve_lane_tool()
+    if lane is None:
         return (
             69,
             "pr-sweep: ~/apps/lane is not installed (python3 -m fleet_lanes.install_tools apply tools)",

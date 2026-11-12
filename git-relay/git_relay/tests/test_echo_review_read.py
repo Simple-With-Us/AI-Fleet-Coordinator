@@ -20,16 +20,12 @@ class Tests(unittest.TestCase):
 
     def test_only_exact_action_appended(self):
         before = copy.deepcopy(self.policy)
-        out = m.prepare(self.policy, m.digest(self.policy))
+        out = m.prepare(self.policy)
         self.assertEqual(self.policy, before)
         self.assertEqual(out["swu-wise"], before["swu-wise"])
         self.assertEqual(out["swu-echo"]["actions"], ["wf_review_threads", m.ACTION])
         out["swu-echo"]["actions"].pop()
         self.assertEqual(out, before)
-
-    def test_drift_refuses(self):
-        with self.assertRaises(ValueError):
-            m.prepare(self.policy, "wrong")
 
     def test_unsafe_or_wrong_seat_refuses(self):
         for field, value in [
@@ -45,12 +41,12 @@ class Tests(unittest.TestCase):
             p = copy.deepcopy(self.policy)
             p["swu-echo"][field] = value
             with self.assertRaises(ValueError):
-                m.prepare(p, m.digest(p))
+                m.prepare(p)
 
     def test_missing_seat_refuses(self):
         del self.policy["swu-echo"]
         with self.assertRaises(ValueError):
-            m.prepare(self.policy, m.digest(self.policy))
+            m.prepare(self.policy)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,9 @@
 the stdio rows of section 8).
 
 The HOME of every test holds the credential files of several bots:  seats (Claude, Cursor), a BF-*
-bot, an enabled GB-* persona and GB-RETIRED (not enabled), the owner's own account and an integration
+bot, an enabled GB-* bot and GB-RETIRED (not enabled), the owner's own account and an integration
 bot.  Expectations come from the GB table (identities.gb_identities()) and the seat registry, never
-from a literal list of personas.
+from a literal list of bots.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from simple_tools.tests.harness import TAG, write_rc
 from simple_tools.tests.mcp_harness import McpHarness, seat_bearer_file, zulip_shaped
 
 ENABLED = X.gb_identities()
-PERSONA = ENABLED[1]  # any enabled persona works;  the table decides which
-PERSONA_EMAIL = "%s-grok-bot@zulip.test" % PERSONA[len("GB-") :].lower()
+BOT = ENABLED[1]  # any enabled bot works;  the table decides which
+BOT_EMAIL = "%s-grok-bot@zulip.test" % BOT[len("GB-") :].lower()
 
 
 class IdentityHarness(McpHarness):
@@ -32,7 +32,7 @@ class IdentityHarness(McpHarness):
         bots = {
             "CURSOR": ("cursor-bot@zulip.test", "Cursor"),
             "BF-PLUMBER": ("bf-plumber-bot@zulip.test", "BF Plumber"),
-            PERSONA: (PERSONA_EMAIL, PERSONA.title()),
+            BOT: (BOT_EMAIL, BOT.title()),
             "GB-RETIRED": ("retired-grok-bot@zulip.test", "Retired"),
             "SENTRY": ("sentry-bot@zulip.test", "Sentry"),
         }
@@ -59,7 +59,7 @@ class IdentityHarness(McpHarness):
         # Every bot this host holds keys for.  A connection serves none of them but its own bearer's seat
         # (bearer_gate.py):  the allowed set is that one seat, and the others are refused by name.
         self.host_seats = sorted(
-            {"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({PERSONA, "GB-RETIRED"} & set(ENABLED))
+            {"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({BOT, "GB-RETIRED"} & set(ENABLED))
         )
         self.expected = ["CLAUDE"]
         # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_FILE and never reads AGENT_SEAT,
@@ -68,7 +68,7 @@ class IdentityHarness(McpHarness):
         self.pin_seat_bearers(
             {
                 seat: seat_bearer_file(seat)
-                for seat in ("CLAUDE", "CURSOR", "BF-PLUMBER", PERSONA)
+                for seat in ("CLAUDE", "CURSOR", "BF-PLUMBER", BOT)
             }
         )
 
@@ -541,7 +541,7 @@ class CliTests(IdentityHarness):
 
 
 class EnvBackedTests(McpHarness):
-    """The server instance (Codex P1 on PR #588):  cloud seats and GB personas have no zuliprc there;  their
+    """The server instance (Codex P1 on PR #588):  cloud seats and GB bots have no zuliprc there;  their
     keys come from their own ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY with ZULIP_SITE, which Infisical
     syncs into the container.  The allowed set and the opener read that source too, with the same exclusions,
     and no value reaches argv, a log or the output."""
@@ -551,7 +551,7 @@ class EnvBackedTests(McpHarness):
         self.vars: dict[str, str] = {"ZULIP_SITE": self.fake.url}
         bots = {
             "GROK-WEB": ("grok-web-bot@zulip.test", "Grok Web"),
-            PERSONA: (PERSONA_EMAIL, PERSONA.title()),
+            BOT: (BOT_EMAIL, BOT.title()),
             "BF-PLUMBER": ("bf-plumber-bot@zulip.test", "BF Plumber"),
             "SENTRY": ("sentry-bot@zulip.test", "Sentry"),
             "GB-RETIRED": ("retired-grok-bot@zulip.test", "Retired"),
@@ -565,7 +565,7 @@ class EnvBackedTests(McpHarness):
             self.vars["ZULIP_%s_API_KEY" % code] = (
                 '"%s"' % key
             )  # quote-wrapped, as the synced values are
-        self.env_only = sorted({"GROK-WEB", PERSONA, "BF-PLUMBER"})
+        self.env_only = sorted({"GROK-WEB", BOT, "BF-PLUMBER"})
 
     def server_env(self, **overrides: str | None) -> dict[str, str]:
         return {**self.mcp_env(**overrides), **self.vars}
@@ -587,7 +587,7 @@ class EnvBackedTests(McpHarness):
         )
         message = next(m for m in self.fake.messages if m["id"] == posted["id"])
         self.assertEqual(message["sender_email"], "grok-web-bot@zulip.test")
-        refused = self.error(session.call("zulip_post", {"topic": "env", "text": "x"}, identity=PERSONA))
+        refused = self.error(session.call("zulip_post", {"topic": "env", "text": "x"}, identity=BOT))
         self.assertEqual(refused["code"], "identity_not_allowed")
 
     def test_a_mixed_host_serves_only_the_bearers_seat(self):

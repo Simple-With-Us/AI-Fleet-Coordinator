@@ -120,6 +120,7 @@ build_and_stage() {
   read_identity
   (cd "$MUSTER_DIR" && xcodegen generate --spec project.yml)
   rm -rf "$APP_BUNDLE" "$DERIVED"
+  python3 "$MUSTER_DIR/script/resolve_packages.py"     --project "$MUSTER_DIR/Muster.xcodeproj" --derived-data "$DERIVED"
   /usr/bin/xcodebuild -project "$MUSTER_DIR/Muster.xcodeproj" \
     -scheme Muster -configuration Release \
     -destination 'generic/platform=macOS' \

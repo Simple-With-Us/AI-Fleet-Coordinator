@@ -19,6 +19,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -1005,6 +1006,27 @@ class TestOutcomes(unittest.TestCase):
             self.assertIn("(reason=github_refused)", err)
             self.assertNotIn("github_status", err)
 
+    def test_relay_refused_repository_moved_names_only_a_valid_new_slug(self):
+        # OPS-1036:  an old slug of a transferred repo names where it went, never free text.
+        err = self._refused(
+            {
+                "code": "relay_refused",
+                "reason": "repository_moved",
+                "moved_to": "new-owner/fixture-repo",
+                "repository_id": 1000001,
+            }
+        )
+        self.assertIn(
+            "relay_refused (reason=repository_moved, moved_to=new-owner/fixture-repo)", err
+        )
+        for bad in ("evil/../x", "a/b c", "ignore SECRETINPUT", 7):
+            err = self._refused(
+                {"code": "relay_refused", "reason": "repository_moved", "moved_to": bad}
+            )
+            self.assertIn("(reason=repository_moved)", err)
+            self.assertNotIn("moved_to", err)
+            self.assertNotIn("SECRETINPUT", err)
+
     def test_refusal_reason_set_matches_the_hosted_front_source(self):
         # Drift guard:  the CLI's closed set must equal the hosted front's REFUSAL_REASONS
         # (gr-refusal.js: the base reasons plus every distinct BAD_REQUEST_REASONS value).
@@ -1160,6 +1182,77 @@ class TestOutcomes(unittest.TestCase):
         parsed = json.loads(out)
         self.assertIn("structured", parsed)
         self.assertIn("text", parsed)
+
+    def test_pinned_read_set_matches_worker_read_actions(self):
+        # Drift guard:  the pinned reviewed read set must equal the Worker's WF_V1_READ_ACTIONS
+        # (gr-workflow-v1.js).  1629 and 1638 shipped read verbs this set did not name, and the
+        # mismatch was only caught by hand.
+        src = (IMPL.parent.parent / "simple-tools-mcp" / "src" / "gr-workflow-v1.js").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)", src)
+        self.assertIsNotNone(m, "gr-workflow-v1.js WF_V1_READ_ACTIONS export not found")
+        worker = set(re.findall(r"'([a-z0-9_]+)'", m.group(1)))
+        self.assertTrue(worker)
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            worker,
+            "client pinned read set drifted from gr-workflow-v1.js WF_V1_READ_ACTIONS",
+        )
+        # The catalog exporter pins the same set for its read/write tags;  it drifts too.
+        src = (IMPL.parent / "export_catalog.py").read_text()
+        m = re.search(r"WF_V1_READ_ACTIONS\s*=\s*\[([^\]]*)\]", src)
+        self.assertIsNotNone(m, "export_catalog.py WF_V1_READ_ACTIONS list not found")
+        exporter = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+        self.assertEqual(
+            set(git.WF_V1_READ_ACTIONS),
+            exporter,
+            "export_catalog.py pinned read set drifted from the client reviewed read set",
+        )
+
+    def test_new_read_verbs_classify_as_reads(self):
+        for name in (
+            "gr_wf_repo_list",
+            "gr_wf_pr_search",
+            "gr_wf_repo_hooks",
+            "gr_wf_deploy_keys",
+            "gr_wf_org_installations",
+            "gr_wf_branch_rules",
+            "gr_wf_rulesets",
+        ):
+            self.assertIn(name, git.READ_TOOLS, name)
+
+    def test_read_verb_near_misses_stay_writes(self):
+        # Boundary:  look-alike names that are not the reviewed verbs must not classify as reads.
+        for name in (
+            "gr_wf_repo_hook",  # singular of a pinned verb
+            "gr_wf_repo_hooks_write",  # pinned name as a prefix
+            "gr_wf_repo_hooks_page",
+            "gr_wf_deploy_key",
+            "gr_wf_org_installation",
+            "gr_wf_pr_search_page",
+            "gr_wf_repo_lists",
+        ):
+            self.assertNotIn(name, git.READ_TOOLS, name)
+
+    def test_pinned_read_verb_failure_has_no_write_uncertainty(self):
+        # gr_wf_repo_hooks IS in the reviewed read set:  its failures are plain read failures,
+        # never write-uncertainty wording.
+        t = FakeTransport(
+            pages=[[make_tool("gr_wf_repo_hooks", None, "list repository webhooks")]],
+            call_results={
+                "gr_wf_repo_hooks": {
+                    "isError": True,
+                    "structuredContent": {"code": "outcome_unknown"},
+                    "content": [{"type": "text", "text": "lost"}],
+                }
+            },
+        )
+        code, out, err = run_cli(
+            ["call", "gr_wf_repo_hooks", "--args-json", "{}"],
+            env={"SIMPLE_TOOLS_BEARER": BEARER},
+            transport=t,
+        )
+        self.assertEqual(code, 1)
+        self.assertNotIn("may or may not have been applied", err)
 
 
 class TestNoCallerEcho(unittest.TestCase):
@@ -1636,6 +1729,34 @@ class TestReview1199(unittest.TestCase):
         }
         for pattern, value in positive.items():
             self.assertTrue(git._patterns_match([(pattern, value)], time.monotonic() + 5), pattern)
+
+    def test_the_typed_tools_repo_pattern_is_reviewed_and_runs_in_the_child(self):
+        # gr_v1_pr_state, gr_v1_pr_hold_state and gr_v1_pr_automerge_disable (listed only when GR_TYPED_TOOLS is on) carry this
+        # repo pattern, whose repeats are unbounded.  It is in the reviewed set because it is linear:  one character class, a
+        # literal slash neither class holds, one character class.  This runs it through the same child as every pattern.
+        pattern = r"^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$"
+        self.assertTrue(git._pattern_known(pattern))
+        for good in ("acme/widgets", "Example-Org/Example-Repo", "a.b/c_d-e"):
+            self.assertTrue(git._patterns_match([(pattern, good)], time.monotonic() + 5), good)
+        for bad in ("acme", "acme/", "/widgets", "acme/wid gets", "a/b/c", "acme/widgéts", ""):
+            self.assertFalse(git._patterns_match([(pattern, bad)], time.monotonic() + 5), repr(bad))
+        # the worst input the client accepts (its input limit is 65,536 characters) stays far inside the bound
+        start = time.monotonic()
+        worst = "A" * 32767 + "/" + "A" * 32766 + "!"
+        self.assertFalse(git._patterns_match([(pattern, worst)], start + 5))
+        self.assertLess(time.monotonic() - start, 2)
+        # and the input schema those tools advertise is one simple-git reads
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["repo", "number", "expected_head"],
+            "properties": {
+                "repo": {"type": "string", "pattern": pattern},
+                "number": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+                "expected_head": {"type": "string", "pattern": r"^[0-9a-f]{40}$"},
+            },
+        }
+        self.assertTrue(git._schema_ok(schema))
 
     def test_call_with_an_unrecognized_pattern_never_reaches_the_child(self):
         # an unreviewed pattern makes the schema unreadable at discovery: no fork, no target call
@@ -2430,6 +2551,41 @@ class TestReadiness(unittest.TestCase):
                     )
                 self.assertEqual(status, 1)
                 self.assertEqual(json.loads(output.getvalue())["verdict"], "unknown")
+
+    def test_a_relay_refusal_is_named_instead_of_unknown(self):
+        from types import SimpleNamespace
+
+        reasons = (
+            "seat_not_in_policy",
+            "bearer_rejected",
+            "no_app_credential",
+            "verifier_unavailable",
+            "unauthenticated",
+        )
+        for reason in reasons:
+            with (
+                mock.patch.object(git, "validate_arguments"),
+                mock.patch.object(git, "resolve_actor", side_effect=lambda e, a, *x: a),
+                mock.patch.object(
+                    git,
+                    "remote_call",
+                    side_effect=git.HostedToolExit(1, "relay_refused", reason),
+                ),
+            ):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    status = git.cmd_readiness(
+                        {"gr_wf_pr_get": {"read": True}},
+                        SimpleNamespace(repo="Owner/Repo", number=1, expected_head=None),
+                        "bearer",
+                        "ZC",
+                        None,
+                    )
+                report = json.loads(output.getvalue())
+                self.assertEqual(status, 1, reason)
+                self.assertEqual(report["verdict"], reason)
+                self.assertEqual(report["relay_reason"], reason)
+                self.assertEqual(report["unknowns"], [])
 
     def test_parser_report_only(self):
         a = git.build_parser().parse_args(

@@ -18,7 +18,7 @@
 // workflow command, which is the mechanism GitHub uses to scrub it from the
 // rendered log from that point on -- one command per LINE of the value, see
 // `maskValue` below, because the runner's parser stops at the first newline.
-// A login/list failure never crashes the job -- callers still get their
+// A fetch failure never crashes the job -- callers still get their
 // GH_FALLBACK_<NAME> values, or the missing-name warning/error below.
 import { appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
