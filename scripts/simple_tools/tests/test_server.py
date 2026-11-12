@@ -327,12 +327,12 @@ class ConfigTests(unittest.TestCase):
             'header = "%s", timeout_seconds = 15 }' % (url_env, key_env, auth, header)
         )
 
-    def router_cfg(self, claude: str, zc: str) -> C.Config:
+    def router_cfg(self, claude: str, zc: str, daemon: str = "") -> C.Config:
         return self.parse(
-            '[daemon]\ninstance = "server"\n'
+            '[daemon]\ninstance = "server"\n%s\n'
             '[seat.CLAUDE]\ninstance = "server"\ncreds = "env"\n%s\n'
             '[seat.ZC]\ninstance = "server"\ncreds = "env"\n%s\n'
-            '[seat.CODEX]\ninstance = "server"\ncreds = "env"\nwake = "inbox"\n' % (claude, zc)
+            '[seat.CODEX]\ninstance = "server"\ncreds = "env"\nwake = "inbox"\n' % (daemon, claude, zc)
         )
 
     def assert_both_dropped(self, cfg: C.Config, name: str) -> None:
@@ -452,6 +452,57 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX"])
         self.assertEqual(sorted(cfg.disabled), ["ZC"])
         self.assertEqual(cfg.disabled["ZC"].routine.key_env, C.ROUTER_BEARER_ENV)
+
+    def test_the_outgoing_webhook_token_name_is_the_one_the_daemon_reads(self) -> None:
+        self.assertEqual(
+            C.outgoing_webhook_token_env("GB-COMPILER"), "ZULIP_OUTGOING_GB_COMPILER_TOKEN"
+        )
+
+    def test_a_seat_naming_another_seats_outgoing_webhook_token_drops_both(self) -> None:
+        # The daemon reads ZULIP_OUTGOING_<CODE>_TOKEN for every seat in outgoing_webhook_seats
+        # (daemon._configure_outgoing_webhook) though no setting names it, and the server loader
+        # exports it for every server seat, listed or not;  a seat that names another seat's token in
+        # any role would send it to its own routine or use it as its own Zulip credential.
+        for owner, other in (("CLAUDE", "ZC"), ("ZC", "CLAUDE")):
+            token = C.outgoing_webhook_token_env(owner)
+            misuses = {
+                "routine key_env": self.router_routine(
+                    "OTHER_ROUTINE_URL", key_env=token, auth="header"
+                ),
+                "routine url_env": self.router_routine(token),
+                "zulip key_env": 'key_env = "%s"\nwake = "inbox"' % token,
+            }
+            listings = {"listed": 'outgoing_webhook_seats = ["%s"]' % owner, "not listed": ""}
+            for role, misuse in misuses.items():
+                for listing, daemon in listings.items():
+                    with self.subTest(owner=owner, role=role, owner_is=listing):
+                        sections = {owner: self.router_routine("BEARER_ROUTINE_URL"), other: misuse}
+                        cfg = self.router_cfg(sections["CLAUDE"], sections["ZC"], daemon=daemon)
+                        self.assert_both_dropped(cfg, token)
+
+    def test_seats_in_outgoing_webhook_seats_with_their_own_names_still_load(self) -> None:
+        cfg = self.router_cfg(
+            self.router_routine("CLAUDE_ROUTINE_URL"),
+            "enabled = false\n" + self.router_routine("ZC_ROUTINE_URL"),
+            daemon='outgoing_webhook_seats = ["CLAUDE", "ZC", "CODEX"]',
+        )
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.skipped_seats, {})
+        self.assertEqual(cfg.outgoing_webhook_seats, frozenset({"CLAUDE", "ZC", "CODEX"}))
+        self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX"])
+        self.assertEqual(sorted(cfg.disabled), ["ZC"])
+
+    def test_listed_seats_whose_routine_key_is_their_own_routine_key_still_load(self) -> None:
+        # Each seat's own <CODE>_ROUTINE_KEY is counted twice for that one seat (routine key and
+        # read-API key) and its own outgoing token once;  none of that is a clash.
+        cfg = self.router_cfg(
+            self.router_routine("CLAUDE_ROUTINE_URL", key_env="CLAUDE_ROUTINE_KEY", auth="header"),
+            self.router_routine("ZC_ROUTINE_URL", key_env="ZC_ROUTINE_KEY", auth="hmac-sha256"),
+            daemon='outgoing_webhook_seats = ["CLAUDE", "ZC"]',
+        )
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(cfg.skipped_seats, {})
+        self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX", "ZC"])
 
 
 class EnvCredentialTests(ServerHarness):

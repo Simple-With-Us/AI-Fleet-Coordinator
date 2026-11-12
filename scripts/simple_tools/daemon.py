@@ -1155,7 +1155,8 @@ class Daemon:
         for seat in sorted(self.config.outgoing_webhook_seats):
             if seat not in self.seats:
                 continue
-            name = "ZULIP_OUTGOING_%s_TOKEN" % C.env_code(seat)
+            # The name is C.outgoing_webhook_token_env's, which the config check holds to one seat.
+            name = C.outgoing_webhook_token_env(seat)
             token = self.env.get(name) or ""
             if token:
                 tokens[seat] = token

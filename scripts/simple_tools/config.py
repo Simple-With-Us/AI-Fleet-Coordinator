@@ -1681,13 +1681,23 @@ def listener_api_key_env(seat: str, routine: RoutineConfig | None) -> str:
     return env_code(seat) + "_ROUTINE_KEY"
 
 
+def outgoing_webhook_token_env(seat: str) -> str:
+    """The variable that holds a seat's Zulip outgoing-webhook token
+    (daemon._configure_outgoing_webhook), ZULIP_OUTGOING_<CODE>_TOKEN, read for a seat in
+    daemon.outgoing_webhook_seats though no setting of the seat names it.  The server loader
+    exports it for every server seat (server/infisical_env.py), listed or not."""
+    return "ZULIP_OUTGOING_%s_TOKEN" % env_code(seat)
+
+
 def _refuse_shared_env(cfg: Config) -> None:
     """Two seats reading the same variable would alias one bot (or send one seat's wakes to
     another's routine, or one seat's read-API key to another's):  every seat that shares a name is
     dropped with an error.  A seat's names are its Zulip `email_env` and `key_env`, its routine's
-    `url_env` and `key_env`, and the variable its read-API key is read from (listener_api_key_env),
-    which a seat on the router's bearer still reads though its config no longer names it.  Enabled
-    and disabled seats are checked alike.
+    `url_env` and `key_env`, the variable its read-API key is read from (listener_api_key_env),
+    which a seat on the router's bearer still reads though its config no longer names it, and its
+    Zulip outgoing-webhook token ZULIP_OUTGOING_<CODE>_TOKEN (outgoing_webhook_token_env), which no
+    setting of the seat names either and which the server loader exports for every server seat,
+    listed in daemon.outgoing_webhook_seats or not.  Enabled and disabled seats are checked alike.
 
     One exception, ROUTER_BEARER_ENV, the one wake router's bearer (One Operator rule:  one router,
     one bearer, nothing per seat).  Any number of seats may name it as `routine.key_env` with
@@ -1709,6 +1719,9 @@ def _refuse_shared_env(cfg: Config) -> None:
             (seat_cfg.key_env, False),
             (listener_api_key_env(seat_cfg.seat, routine), False),
         ]
+        # The loader exports every server seat's outgoing-webhook token, listed or not, so no other
+        # seat may name it and send it out.  Only a seat's own token is ever its own.
+        uses.append((outgoing_webhook_token_env(seat_cfg.seat), False))
         if seat_cfg.site_env == ROUTER_BEARER_ENV:
             # Every env seat reads the one ZULIP_SITE, so the site name meets only the bearer rule.
             uses.append((seat_cfg.site_env, False))
