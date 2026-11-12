@@ -35,9 +35,7 @@ class DispatchIntents(unittest.TestCase):
         self.assertEqual(
             _validate_args("workflow_dispatch", self.args())["expected_head_sha"], "a" * 40
         )
-        intent_only = _validate_args(
-            "workflow_dispatch", self.args(expected_head_sha=None)
-        )
+        intent_only = _validate_args("workflow_dispatch", self.args(expected_head_sha=None))
         self.assertEqual(intent_only["intent_id"], "qualification-source-one")
         self.assertNotIn("expected_head_sha", intent_only)
 

@@ -22,7 +22,9 @@ class WorkflowDispatchIntentTests(unittest.TestCase):
     def test_validate_accepts_optional_intent_id(self):
         self.assertIsNone(_validate_args("workflow_dispatch", ARGS))
         self.assertIsNone(
-            _validate_args("workflow_dispatch", {"repo": "o/r", "workflow": "ci.yml", "ref": "main"})
+            _validate_args(
+                "workflow_dispatch", {"repo": "o/r", "workflow": "ci.yml", "ref": "main"}
+            )
         )
 
     def test_validate_refuses_expected_head_sha_without_intent(self):
@@ -46,7 +48,7 @@ class WorkflowDispatchIntentTests(unittest.TestCase):
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-                body = b"{\"ok\": true}"
+                body = b'{"ok": true}'
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -58,12 +60,14 @@ class WorkflowDispatchIntentTests(unittest.TestCase):
         server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            reply = RelayMcp(f"http://127.0.0.1:{server.server_port}", "seat-token-value").handle({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "workflow_dispatch", "arguments": ARGS},
-            })
+            reply = RelayMcp(f"http://127.0.0.1:{server.server_port}", "seat-token-value").handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "workflow_dispatch", "arguments": ARGS},
+                }
+            )
             self.assertNotIn("error", reply)
             self.assertEqual(bodies, [dict(ARGS)])
         finally:
