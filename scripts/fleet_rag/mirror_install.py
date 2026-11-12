@@ -94,6 +94,7 @@ def apply(
     payload = {
         "enabled": bool(enable),
         "home": str(home),
+        "log": str(log_path),
         "ssh_target": target,
         "remote_root": root,
         "remote_python": remote_python,

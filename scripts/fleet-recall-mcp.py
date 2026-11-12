@@ -108,6 +108,11 @@ TOOLS = [
                     "default": False,
                     "description": "Include retracted contributions for audit; normal search hides them.",
                 },
+                "compact": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Cache key for the excerpt view. Hit text stays complete until presentation.",
+                },
                 "full": {
                     "type": "boolean",
                     "default": False,
@@ -321,6 +326,7 @@ def call_tool(name: str, args: dict) -> dict:
         _bool(search_args, "rerank")
         _bool(search_args, "prefer_lessons")
         _bool(search_args, "include_retracted")
+        _bool(search_args, "compact")
         _bool(args, "full")
         if "fields" in args and args["fields"] is not None and not isinstance(args["fields"], list):
             raise FleetRagError("fields must be a list of field names")
@@ -332,10 +338,11 @@ def call_tool(name: str, args: dict) -> dict:
             or os.environ.get("AGENT_TAG")
         )
         # A null for an optional flag means "default", not False.
-        for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted"):
+        for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted", "compact"):
             if key in search_args and search_args[key] is None:
                 del search_args[key]
         fallback_args = dict(search_args)
+        fallback_args.pop("compact", None)
         if presentation.full:
             fallback_args["full"] = True
         if "fields" in args and args.get("fields") is not None:
@@ -344,7 +351,9 @@ def call_tool(name: str, args: dict) -> dict:
         res = public_fallback.call_with_fallback(
             "recall_search",
             fallback_args,
-            lambda: recall_api.recall_search(**search_args),
+            lambda: recall_api.recall_search(
+                **search_args, **({"full": True} if presentation.full else {})
+            ),
         )
         res = recall_presentation.present_search_result(res, presentation)
         latency_ms = int((time.time() - t0) * 1000)
