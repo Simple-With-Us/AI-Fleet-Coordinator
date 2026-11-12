@@ -12,8 +12,8 @@ import urllib.error
 import urllib.request
 
 # GitHub owner the public feeds are built from.  The repos moved from the personal
-# jaywedgeworth22 account to this org, and the old Pages host jaywedgeworth22.github.io
-# now returns 404.  CI also sets FLEET_OWNER, so this default is what a manual run uses.
+# personal jaywedgeworth22 account to this org, and the old Pages host jaywedgeworth22.github.io
+# now 404s.  CI also sets FLEET_OWNER, so this default is what a manual run uses.
 DEFAULT_FLEET_OWNER = "Simple-With-Us"
 
 PUBLIC_REPOS = (

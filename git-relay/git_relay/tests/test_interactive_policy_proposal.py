@@ -44,7 +44,7 @@ EXPECTED_REPOS = {
     "Simple-With-Us/Usage-Monitor",
     "Simple-With-Us/congress-trading-shared",
     "Simple-With-Us/homebrew-tap",
-    "jaywedgeworth22/Fleet-OPS",
+    "Simple-With-Us/Fleet-OPS",
 }
 EXPECTED_SEAT_KEYS = {"auth", "identity", "actions", "repos", "app_slug", "mint_permissions"}
 
@@ -78,7 +78,7 @@ class InteractivePolicyProposalTest(unittest.TestCase):
         self.assertEqual(len(repos), 18)
         self.assertEqual(len(set(repos)), 18)
         personal = [r for r in repos if not r.startswith("Simple-With-Us/")]
-        self.assertEqual(personal, ["jaywedgeworth22/Fleet-OPS"])
+        self.assertEqual(personal, ["Simple-With-Us/Fleet-OPS"])
         org = [r for r in repos if r.startswith("Simple-With-Us/")]
         self.assertEqual(len(org), 17)
         for repo in repos:
