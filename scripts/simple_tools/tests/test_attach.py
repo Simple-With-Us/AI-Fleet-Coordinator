@@ -236,6 +236,8 @@ class RewakeTests(AttachHarness):
         self.assertEqual(budget["streak"], {L.topic_key("simple-tools", "t"): 1})
 
     def test_no_live_budget_room_means_no_wake(self) -> None:
+        # No live limit has a default, so the seat writes the per-topic spacing that leaves no room.
+        self.write_config(rewake=True, live="per_topic_minutes = 5")
         L.write_json(self.seat_paths().budget(LEASE), {"turns": [{"ts": time.time(), "topic": L.topic_key("simple-tools", "t"),
                                                                  "owner": False}]})
         L.append_live(self.seat_paths(), LEASE, [message_item(1)])

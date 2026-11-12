@@ -438,8 +438,8 @@ jobs:
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_program -v
     # The FINAL owner sentence-gap policy (AFC-521):  every file that states the
-    # rule names the exception (the Claude Code Code tab, the MiniMax Code chat
-    # pane and the Z Code chat pane take the entity),
+    # rule names the exception (the Claude Code Code tab and the MiniMax Code chat
+    # pane take the entity),
     # no live line prescribes the superseded 2026-10-22
     # GitHub-entity split, and the published note takes a real U+00A0 on GitHub too.
     - name: Sentence gap final policy tests
@@ -717,6 +717,10 @@ jobs:
     - name: PR Autofix reusable workflow contract
       timeout-minutes: 10
       run: node --test .github/pr-autofix-reusable.node-test.mjs
+    # Same-repo PRs push the Ruff fix as the autofix App, whoever authored the head, and never with github.token.
+    - name: autofix.ci workflow contract
+      timeout-minutes: 10
+      run: node --test .github/autofix-ci.node-test.mjs
     # The shared auto-merge armer against a fake `gh`:  a merge queue refuses
     # --delete-branch, and the armer has to arm again without the flag instead of
     # failing every PR in the repo (AFC-413).  No network:  the fake records its
