@@ -1130,5 +1130,133 @@ class CliTests(unittest.TestCase):
         self.assertIn("--platforms", err.getvalue())
 
 
+def write_token(path: pathlib.Path, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("FLEET_RECALL_INFISICAL_TOKEN=st.test-token\n", encoding="utf-8")
+    os.chmod(path, mode)
+
+
+def setup_home(root: pathlib.Path, *, token_mode: int = 0o600, with_install: bool = True) -> pathlib.Path:
+    home = root / "home"
+    rag = home / "apps" / "fleet-rag"
+    if with_install:
+        rag.mkdir(parents=True)
+        write(rag / "linear-board" / "board", "#!/usr/bin/env python3\n")
+        write(rag / "simple_tools" / "secretscan.py", "def scan(t): return None\n")
+    write_token(home / ".secrets" / "fleet-recall-infisical.env", mode=token_mode)
+    return home
+
+
+class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
+    def setUp(self):
+        self.make_hermetic()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.cfg = {
+            "QDRANT_URL": "http://q",
+            "QDRANT_API_KEY": "k",
+            "QDRANT_FLEET_COLLECTION": "doctor-test-collection",
+            "TEI_URL": "http://t",
+            "TEI_API_KEY": "t",
+        }
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_setup_all_green_skips_optional_rows(self):
+        home = setup_home(self.root)
+        env = {
+            "HOME": str(home),
+            "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+        }
+        with mock.patch.object(doctor.core, "embedder_healthy", return_value=True):
+            rep = doctor.setup_report(
+                home=home,
+                env=env,
+                load_config=lambda **_: dict(self.cfg),
+                qdrant_factory=lambda: recall_api.FakeQdrant(self.cfg),
+                now_s=1_700_000_000.0,
+            )
+        self.assertTrue(rep["ok"], rep)
+        rows = by_check(rep)
+        self.assertEqual(rows["mirror:freshness"]["status"], "SKIP")
+        self.assertEqual(rows["nightly:last-json"]["status"], "SKIP")
+        self.assertEqual(rows["qdrant:collection"]["status"], "OK")
+        self.assertIn("points=", rows["qdrant:collection"]["detail"])
+
+    def test_token_file_bad_mode_fails(self):
+        home = setup_home(self.root, token_mode=0o644)
+        env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
+        rep = doctor.setup_report(
+            home=home,
+            env=env,
+            load_config=lambda **_: dict(self.cfg),
+            qdrant_factory=lambda: recall_api.FakeQdrant(self.cfg),
+        )
+        self.assertFalse(rep["ok"])
+        self.assertEqual(by_check(rep)["infisical:token-file"]["status"], "FAIL")
+        self.assertIn("mode 600", by_check(rep)["infisical:token-file"]["detail"])
+
+    def test_stale_ingest_lock_fails(self):
+        home = setup_home(self.root)
+        lock = home / "apps" / "fleet-rag" / "state" / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("999999 dead\n", encoding="utf-8")
+        env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
+        rep = doctor.setup_report(
+            home=home,
+            env=env,
+            load_config=lambda **_: dict(self.cfg),
+            qdrant_factory=lambda: recall_api.FakeQdrant(self.cfg),
+        )
+        self.assertEqual(by_check(rep)["ingest:lock"]["status"], "FAIL")
+        self.assertIn("stale", by_check(rep)["ingest:lock"]["detail"])
+
+    def test_mirror_freshness_when_configured(self):
+        home = setup_home(self.root)
+        mirror_live = self.root / "mirror" / "current"
+        mirror_live.mkdir(parents=True)
+        stamp = {
+            "complete": True,
+            "at": int(1_700_000_000.0) - 3600,
+            "files": {"skills/claude": 1},
+        }
+        write(mirror_live / ".complete", json.dumps(stamp))
+        env = {
+            "HOME": str(home),
+            "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            "FLEET_RAG_MIRROR": str(mirror_live),
+        }
+        rep = doctor.setup_report(
+            home=home,
+            env=env,
+            load_config=lambda **_: dict(self.cfg),
+            qdrant_factory=lambda: recall_api.FakeQdrant(self.cfg),
+            now_s=1_700_000_000.0,
+        )
+        self.assertEqual(by_check(rep)["mirror:freshness"]["status"], "OK")
+
+    def test_cli_setup_doctor_json_exit_code(self):
+        home = setup_home(self.root)
+        env = {
+            "HOME": str(home),
+            "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            **self.cfg,
+        }
+        with (
+            mock.patch.object(doctor.core, "embedder_healthy", return_value=True),
+            mock.patch.object(recall_api, "load_config", lambda **_: dict(self.cfg)),
+            mock.patch.object(recall_api, "Qdrant", recall_api.FakeQdrant),
+            mock.patch.dict(os.environ, env, clear=False),
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = load_cli().main(["doctor", "--json"])
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertIn("SKIP", payload["counts"])
+
+
 if __name__ == "__main__":
     unittest.main()

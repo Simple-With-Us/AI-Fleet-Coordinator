@@ -18,13 +18,15 @@ import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import zoneinfo
 from typing import Any, Callable
 
-from . import core, health, recall_api, search_log
+from . import core, health, mirror, recall_api, search_log
 from .core import FleetRagError, now_ms
 
 SERVER_NAME = "fleet-recall"
@@ -42,8 +44,17 @@ SSH_TIMEOUT = 30
 _CT = zoneinfo.ZoneInfo("America/Chicago")
 
 
-def _row(status: str, check: str, detail: str = "") -> dict:
-    return {"status": status, "check": check, "detail": detail}
+def _row(status: str, check: str, detail: str = "", hint: str = "") -> dict:
+    out: dict[str, str] = {"status": status, "check": check, "detail": detail}
+    if hint:
+        out["hint"] = hint
+    return out
+
+
+def _finalize_rows(rows: list[dict]) -> dict:
+    statuses = ("OK", "WARN", "FAIL", "SKIP")
+    counts = {s: sum(1 for r in rows if r["status"] == s) for s in statuses}
+    return {"rows": rows, "ok": counts["FAIL"] == 0, "counts": counts}
 
 
 # --------------------------------------------------------------------------- config files
@@ -376,8 +387,300 @@ def platforms_report(home: pathlib.Path | str | None = None, box: bool = False,
     rows.append(_rerank_row(rerank_check, direct_path_blocked=direct_path_blocked))
     if box:
         rows += _box_rows(ssh_run)
-    counts = {s: sum(1 for r in rows if r["status"] == s) for s in ("OK", "WARN", "FAIL")}
-    return {"rows": rows, "ok": counts["FAIL"] == 0, "counts": counts}
+    return _finalize_rows(rows)
+
+
+# --------------------------------------------------------------------------- setup doctor (recall doctor)
+
+NIGHTLY_MAX_AGE_H = 30 * 3600
+INSTALL_BOARD = "linear-board/board"
+INSTALL_SECRETSCAN = "simple_tools/secretscan.py"
+
+
+def rag_install_root(home: pathlib.Path | None = None, env: dict[str, str] | None = None) -> pathlib.Path:
+    source = env if env is not None else os.environ
+    home = home or pathlib.Path(os.path.expanduser("~"))
+    raw = (source.get("FLEET_RAG_HOME") or "").strip()
+    return pathlib.Path(raw).expanduser() if raw else home / "apps" / "fleet-rag"
+
+
+def _token_file_path(env: dict[str, str]) -> pathlib.Path | None:
+    named = (env.get(core.INFISICAL_READ_TOKEN_FILE) or "").strip()
+    home = (env.get("HOME") or "").strip()
+    if named:
+        return pathlib.Path(named).expanduser()
+    if home:
+        return pathlib.Path(home, *core.DEFAULT_READ_TOKEN_FILE)
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def nightly_applies(env: dict[str, str]) -> bool:
+    if (env.get("FLEET_RAG_NIGHTLY") or "").strip() == "1":
+        return True
+    if (env.get("FLEET_RAG_NIGHTLY_SUMMARY") or "").strip():
+        return True
+    if pathlib.Path("/etc/fleet/rag-nightly.env").is_file():
+        return True
+    # Import here so a minimal `python3 -I mirror.py` copy is unaffected.
+    from .nightly_job import summary_path
+
+    return summary_path(env).is_file()
+
+
+def _token_file_row(env: dict[str, str]) -> dict:
+    if (env.get(core.INFISICAL_READ_TOKEN) or "").strip():
+        return _row("OK", "infisical:token-file", "bound via FLEET_RECALL_INFISICAL_TOKEN in environment")
+    if all((env.get(k) or "").strip() for k in core.READ_KEYS) and not core._read_token_bound():
+        return _row("SKIP", "infisical:token-file", "not needed (all read keys already in environment)")
+    path = _token_file_path(env)
+    if path is None:
+        return _row(
+            "FAIL",
+            "infisical:token-file",
+            "no token file path (set HOME or FLEET_RECALL_INFISICAL_TOKEN_FILE)",
+            hint="create ~/.secrets/fleet-recall-infisical.env with FLEET_RECALL_INFISICAL_TOKEN=st.… and chmod 600",
+        )
+    try:
+        fd = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+    except FileNotFoundError:
+        return _row(
+            "FAIL",
+            "infisical:token-file",
+            f"{path.name} absent",
+            hint="mint a scoped recall read token and install it mode 600 (see docs/RAG-NIGHTLY-INGEST.md)",
+        )
+    except OSError as exc:
+        return _row(
+            "FAIL",
+            "infisical:token-file",
+            f"cannot open ({type(exc).__name__})",
+            hint="fix permissions on the recall Infisical token file",
+        )
+    try:
+        info = os.fstat(fd)
+        owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
+        mode = stat.S_IMODE(info.st_mode)
+        if not stat.S_ISREG(info.st_mode) or not owner_ok or mode & 0o077:
+            return _row(
+                "FAIL",
+                "infisical:token-file",
+                f"{path.name} must be a regular file mode 600 owned by you",
+                hint=f"chmod 600 {path.name}",
+            )
+    finally:
+        os.close(fd)
+    return _row("OK", "infisical:token-file", f"{path.name} present mode 600")
+
+
+def _infisical_read_row(load_config: Callable[..., dict[str, str]]) -> dict:
+    try:
+        cfg = load_config(need_write=False)
+    except FleetRagError as exc:
+        return _row(
+            "FAIL",
+            "infisical:read-keys",
+            str(exc)[:200],
+            hint="fix the service-token scope or export QDRANT_* and TEI_* in the environment",
+        )
+    missing = [k for k in core.READ_KEYS if k not in cfg]
+    if missing:
+        return _row(
+            "FAIL",
+            "infisical:read-keys",
+            "missing " + ", ".join(missing),
+            hint="widen the recall reader token to prod / or set the keys in the environment",
+        )
+    return _row("OK", "infisical:read-keys", f"read ok ({len(core.READ_KEYS)} key names resolved)")
+
+
+def _embedder_row(load_config: Callable[..., dict[str, str]]) -> dict:
+    try:
+        cfg = load_config(need_write=False)
+    except FleetRagError:
+        return _row("FAIL", "tei:embedder", "credentials unavailable", hint="fix Infisical binding first")
+    healthy = core.embedder_healthy(cfg)
+    return (
+        _row("OK", "tei:embedder", "reachable")
+        if healthy
+        else _row("FAIL", "tei:embedder", "unreachable", hint="check TEI_URL / TEI_API_KEY and Tailscale or recall-tunnel")
+    )
+
+
+def _qdrant_collection_row(
+    load_config: Callable[..., dict[str, str]],
+    qdrant_factory: Callable[[], Any] | None,
+    direct_path_blocked: bool,
+) -> dict:
+    if direct_path_blocked:
+        return _row(
+            "WARN",
+            "qdrant:collection",
+            DIRECT_PATH_BLOCKED_DETAIL,
+            hint="run tailscale login or eval \"$(recall-tunnel env)\"",
+        )
+    try:
+        cfg = load_config(need_write=False)
+        q = qdrant_factory() if qdrant_factory else recall_api.Qdrant(cfg)
+        if not q.healthz():
+            return _row("FAIL", "qdrant:collection", "healthz failed", hint="check QDRANT_URL and mesh reachability")
+        info = q.info()
+        name = str(info.get("status", "?"))
+        points = info.get("points_count", "?")
+        return _row("OK", "qdrant:collection", f"{q.collection} status={name} points={points}")
+    except FleetRagError as exc:
+        return _row(
+            "FAIL",
+            "qdrant:collection",
+            f"unreachable ({type(exc).__name__})",
+            hint="verify QDRANT_URL, API key, and collection name",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _row(
+            "FAIL",
+            "qdrant:collection",
+            f"unreachable ({type(exc).__name__})",
+            hint="verify QDRANT_URL, API key, and collection name",
+        )
+
+
+def _mirror_row(env: dict[str, str], now_s: float | None = None) -> dict:
+    raw = (env.get(mirror.MIRROR_ENV) or "").strip()
+    if not raw:
+        return _row("SKIP", "mirror:freshness", "FLEET_RAG_MIRROR unset on this host")
+    root = mirror.mirror_root(env)
+    if root is None:
+        return _row("SKIP", "mirror:freshness", "FLEET_RAG_MIRROR unset on this host")
+    now_s = time.time() if now_s is None else now_s
+    status = mirror.mirror_status(root, now_s, mirror.max_age_s(env))
+    if status.fresh:
+        age_h = (now_s - (status.at or int(now_s))) / 3600.0
+        return _row("OK", "mirror:freshness", f".complete age_hours={age_h:.1f}")
+    detail = f".complete {status.reason}"
+    hint = "run the Mac mirror LaunchAgent or fleet-rag-mirror push; check FLEET_RAG_MIRROR path"
+    return _row("WARN" if status.reason in ("stale", "missing-stamp") else "FAIL", "mirror:freshness", detail, hint=hint)
+
+
+def _nightly_last_json_row(env: dict[str, str], now_s: float | None = None) -> dict:
+    if not nightly_applies(env):
+        return _row("SKIP", "nightly:last-json", "nightly job not configured on this host")
+    from .nightly_job import summary_path
+
+    path = summary_path(env)
+    now_s = time.time() if now_s is None else now_s
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        mtime = path.stat().st_mtime
+    except (OSError, ValueError, json.JSONDecodeError):
+        return _row(
+            "FAIL",
+            "nightly:last-json",
+            f"{path.name} absent or unreadable",
+            hint="enable fleet-rag-nightly on the server and inspect journalctl -u fleet-rag-nightly",
+        )
+    finished = data.get("finished_at") or data.get("ended_at")
+    if isinstance(finished, (int, float)):
+        age_s = now_s - float(finished) / (1000.0 if finished > 1e12 else 1.0)
+    else:
+        age_s = now_s - mtime
+    ok = bool(data.get("ok"))
+    errors = data.get("errors") or []
+    detail = f"age_hours={age_s / 3600:.1f} ok={'true' if ok else 'false'} errors={len(errors)}"
+    if age_s > NIGHTLY_MAX_AGE_H:
+        return _row(
+            "FAIL",
+            "nightly:last-json",
+            f"{detail} (stale>{NIGHTLY_MAX_AGE_H // 3600}h)",
+            hint="check fleet-rag-nightly.timer and ~/.local/state/fleet-rag-nightly/last.json",
+        )
+    if not ok:
+        return _row(
+            "FAIL",
+            "nightly:last-json",
+            detail,
+            hint="read last.json and journalctl -u fleet-rag-nightly.service",
+        )
+    if errors:
+        return _row("WARN", "nightly:last-json", detail, hint="review guard trips in last.json")
+    return _row("OK", "nightly:last-json", detail)
+
+
+def _install_row(root: pathlib.Path, rel: str, check: str) -> dict:
+    path = root / rel
+    if path.is_file():
+        return _row("OK", check, f"{path.name} present")
+    return _row(
+        "FAIL",
+        check,
+        f"{rel} missing under install root",
+        hint="run bash scripts/install-fleet-rag.sh from an AI-Fleet-Coordinator checkout",
+    )
+
+
+def _ingest_lock_row(lock_path: pathlib.Path) -> dict:
+    if not lock_path.is_file():
+        return _row("OK", "ingest:lock", "no lock file")
+    try:
+        text = lock_path.read_text(encoding="utf-8", errors="replace").strip().split()
+        pid = int(text[0]) if text else 0
+    except (OSError, ValueError):
+        return _row(
+            "FAIL",
+            "ingest:lock",
+            "unreadable lock file",
+            hint=f"remove stale {lock_path.name} if no ingest is running",
+        )
+    if _pid_alive(pid):
+        return _row("WARN", "ingest:lock", f"held by live pid {pid}", hint="wait for ingest to finish")
+    return _row(
+        "FAIL",
+        "ingest:lock",
+        f"stale lock (pid {pid} not running)",
+        hint=f"rm {lock_path.name} after confirming no ingest is active",
+    )
+
+
+def setup_report(
+    home: pathlib.Path | str | None = None,
+    env: dict[str, str] | None = None,
+    load_config: Callable[..., dict[str, str]] | None = None,
+    qdrant_factory: Callable[[], Any] | None = None,
+    now_s: float | None = None,
+    direct_path_blocked: bool = False,
+) -> dict:
+    """Fleet RAG setup health (`recall doctor`): token file, Infisical read, Qdrant, mirror,
+    nightly summary, install layout, and ingest.lock.  Rows use OK / WARN / FAIL / SKIP; only FAIL
+    fails the report.  Values are never printed."""
+    home_path = pathlib.Path(home) if home else pathlib.Path(os.path.expanduser("~"))
+    env_map = dict(os.environ if env is None else env)
+    env_map.setdefault("HOME", str(home_path))
+    loader = load_config or recall_api.load_config
+    install_root = rag_install_root(home_path, env_map)
+    lock_path = install_root / "state" / "ingest.lock"
+    rows = [
+        _token_file_row(env_map),
+        _infisical_read_row(loader),
+        _embedder_row(loader),
+        _qdrant_collection_row(loader, qdrant_factory, direct_path_blocked),
+        _mirror_row(env_map, now_s=now_s),
+        _nightly_last_json_row(env_map, now_s=now_s),
+        _install_row(install_root, INSTALL_BOARD, "install:linear-board"),
+        _install_row(install_root, INSTALL_SECRETSCAN, "install:secretscan"),
+        _ingest_lock_row(lock_path),
+    ]
+    return _finalize_rows(rows)
 
 
 def format_platforms(report: dict) -> str:
@@ -386,9 +689,11 @@ def format_platforms(report: dict) -> str:
     for r in report["rows"]:
         lines.append(f"{r['status']:<6} {r['check']:<{width}}  {r['detail']}")
     c = report["counts"]
+    parts = [f"OK {c.get('OK', 0)}", f"WARN {c.get('WARN', 0)}", f"FAIL {c.get('FAIL', 0)}"]
+    if c.get("SKIP"):
+        parts.append(f"SKIP {c['SKIP']}")
     lines.append("")
-    lines.append(f"overall: {'ok' if report['ok'] else 'PROBLEMS'}  "
-                 f"(OK {c['OK']}, WARN {c['WARN']}, FAIL {c['FAIL']})")
+    lines.append(f"overall: {'ok' if report['ok'] else 'PROBLEMS'}  ({', '.join(parts)})")
     return "\n".join(lines)
 
 
