@@ -16,17 +16,24 @@
   // OPERATOR_NOTES_KEY signs the notes_* tools' Operator requests (DEPLOY.md,
   // "Notes, recall and the guide").
   "$schema": "node_modules/wrangler/config-schema.json",
-  // The Worker SCRIPT NAME stays `agent-sync-mcp`, deliberately, even though the
-  // server is now called ST-MCP.  A Durable Object namespace is named
-  // <script name>.<class name> and is created by this script's migration, so
-  // renaming the script would point `SeatGate` at a brand new empty namespace
-  // and orphan every live DO:  the arming windows, grant epochs, pause flags,
-  // write spacing, budgets, idempotency rows, role cache, audit logs and cached
-  // Linear tokens in agent-sync-mcp.SeatGate (spec 3.7).  KV would survive,
-  // because kv_namespaces binds by explicit id, but the DO state would not.
-  // The public hostname, issuer, serverInfo name and every doc are ST-MCP; only
-  // this internal script name is left, and only to protect live state.
-  "name": "agent-sync-mcp",
+  // The Worker script name is `simple-tools-mcp`, matching production.  The
+  // SeatGate Durable Object namespace (id c544eb9aabc84742bbf6b5c5f3f838fa)
+  // was created under the retired script name, so its internal name still
+  // carries that prefix:  a creation-time artifact, not an ownership fact.
+  // The namespaces registry lists this script as the namespace's script, the
+  // binding resolves by namespace id, and a deploy of this config attaches
+  // SeatGate to that namespace and its state (the arming windows, grant
+  // epochs, pause flags, write spacing, budgets, idempotency rows, role
+  // cache, audit logs and cached Linear tokens, spec 3.7).  A
+  // transferred_classes migration cannot rename the namespace now:  the
+  // source script no longer exists, and Cloudflare refuses the transfer
+  // (error 10074, verified against scratch Workers on Nov 3, 2026).  The
+  // internal namespace name is therefore the documented exception to the
+  // retired-name sweep (owner decision, Nov 3, 2026).  Never deploy this
+  // tree under a different script name, and never declare a deleted_classes
+  // or fresh new_sqlite_classes migration for SeatGate:  either would
+  // strand the live namespace and its state.
+  "name": "simple-tools-mcp",
   "main": "src/index.js",
   "account_id": "3a9368057468d0909cafaa85df12d1b7",
   "compatibility_date": "2026-09-24",
@@ -86,13 +93,19 @@
     // ECHO and WISE (Fri, Oct 9) are two identities of the Instinct app
     // (instinct.com), each posting as its own member bot.
     // CLAUDE hosted configuration is prepared; its key and connection are pending.
-    "HOSTED_SEATS": "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE",
+    // JET-CHAT is the Jet seat's chat half after the wake split:  the same
+    // openai-dot-bot under its own seat and email var.  CODEX (codex-bot)
+    // joined with its captured ChatGPT pair.  Both were live in production
+    // before this file said so;  the Nov 3, 2026 parity change records them.
+    "HOSTED_SEATS": "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE,CODEX",
     "EVENTS_ONLY_SEATS": "JET",
     // Bot emails (plain vars, spec 3.6).  The keys are Worker secrets.  A key
     // whose users/me is not this bot, not a bot, or not a member is refused.
     "ZULIP_EMAIL_GROK_WEB": "grok-web-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_CURSOR": "cursor-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_JET": "openai-dot-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_JET_CHAT": "openai-dot-bot@simplewithus.zulipchat.com",
+    "ZULIP_EMAIL_CODEX": "codex-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_ECHO": "instinct-bat-bot@simplewithus.zulipchat.com",
     "ZULIP_EMAIL_WISE": "instinct-owl-bot@simplewithus.zulipchat.com",
     "ZULIP_CLAUDE_EMAIL": "claude-bot@simplewithus.zulipchat.com",
@@ -149,6 +162,17 @@
           "https://chatgpt.com/oauth/Aa3WqJNIVGqM/client.json"
         ]
       },
+      // JET-CHAT and CODEX carry only the shared ChatGPT callback.  A shared
+      // callback belongs to the whole JET / JET-CHAT / CODEX cohort
+      // (SHARED_CHATGPT_SEATS in src/config.js), never to one seat.
+      "JET-CHAT": {
+        "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+        "cimd_client_ids": []
+      },
+      "CODEX": {
+        "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+        "cimd_client_ids": []
+      },
       "GROK-WEB": {
         "redirect_uris": ["https://grok.com/connectors-oauth-exchange-code/"],
         "cimd_client_ids": ["https://grok.com/oauth/mcp-client.json"]
@@ -198,6 +222,19 @@
     // operator.jays.services, the route the owner approved, which carries only
     // /listener/v1/ and /notes/v1/ to the listener's port 8788.
     "LISTENER_API_URL": "https://operator.jays.services",
+    // The git-relay upstream the gr_* tools call.  GR_WORKFLOW_TOOLS "on"
+    // lists and enables the gr_wf_ workflow verb tools (src/config.js);
+    // without it they are neither listed nor callable.
+    "GR_UPSTREAM_URL": "https://git-relay.simplewithus.com",
+    "GR_WORKFLOW_TOOLS": "on",
+    // Infisical fallback reads (src/infisical.js):  mode "fallback" lets a
+    // seat-key read fall back to the Fleet-OPS project when the primary path
+    // has no key.  INFISICAL_WORKSPACE_ID is deliberately absent, like
+    // ACCESS_AUD above:  the project id names the secret store itself, so it
+    // is provisioned as an encrypted Worker secret (wrangler secret put),
+    // never committed.  Until it is set, the fallback reads answer
+    // not_configured and the rest works (fail closed).
+    "INFISICAL_MODE": "fallback",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }

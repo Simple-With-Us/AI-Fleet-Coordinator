@@ -10,7 +10,13 @@ Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/ma
 
 The Worker can read its secrets at runtime from Fleet-OPS `prod` through one
 read-tools service token (`INFISICAL_SERVICE_TOKEN` + `INFISICAL_WORKSPACE_ID`
-bindings), instead of install-time copied Worker secrets.  `INFISICAL_MODE`:
+bindings), instead of install-time copied Worker secrets.  `INFISICAL_WORKSPACE_ID`
+is an encrypted secret binding, never a committed var:  it names the secret
+store itself, so `wrangler.jsonc` carries only `INFISICAL_MODE`, and a deploy
+from a config that lacks the secret binding answers `not_configured` on
+Infisical reads until the binding is put (`wrangler secret put
+INFISICAL_WORKSPACE_ID`, value from the Fleet-OPS project page, on stdin).
+`INFISICAL_MODE`:
 
 - `off` (default):  only the legacy Worker bindings are read.  Fully
   compatible with every install below;  nothing changes until the mode is set.

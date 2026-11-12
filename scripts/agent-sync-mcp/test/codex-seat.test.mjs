@@ -1,10 +1,10 @@
 // The CODEX seat (owner request, Oct 23 2026:  Codex connects through /admin
-// arming the same way Jet did).  Code-only scaffolding:  the seat joins
-// KNOWN_SEATS with its own secret names and label, so its exact Codex
-// callback pair - captured from the first refused authorize attempt, never
-// guessed - can be added to SEATS at deploy.  Until the codex-bot key and
-// email are provisioned and the pair is configured, the seat cannot be
-// hosted, armed or bound.
+// arming the same way Jet did).  The seat joins KNOWN_SEATS with its own
+// secret names and label, and its exact Codex callback pair - captured from
+// the first refused authorize attempt, never guessed - is in SEATS:  the
+// shared ChatGPT callback, held by the JET / JET-CHAT / CODEX cohort.  The
+// seat was live in production before the committed config recorded it;  the
+// Nov 3, 2026 parity change closes that gap.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -38,10 +38,14 @@ test("CODEX is a known seat with its own secret names, label and full tools", ()
   assert.equal(seatTagFor({ is_bot: true, email: CODEX_EMAIL, full_name: "Codex" }), "CODEX");
 });
 
-test("CODEX is not hosted yet, and hosting it without its email var fails closed", () => {
+test("CODEX is hosted with its captured pair, and hosting it without its email var fails closed", () => {
   const prod = loadConfig(wranglerConfig().vars);
-  assert.ok(!prod.hostedSeats.includes("CODEX"), "HOSTED_SEATS gains CODEX only with its captured pair at deploy");
-  assert.throws(() => loadConfig(testEnv({ HOSTED_SEATS: "JET,CODEX" })), /ZULIP_EMAIL_CODEX/, "an unprovisioned email var refuses config load rather than serving a wrong binding");
+  assert.ok(prod.hostedSeats.includes("CODEX"), "CODEX is hosted:  its captured pair is in the committed SEATS");
+  assert.equal(prod.botEmails.CODEX, CODEX_EMAIL, "the committed email var matches the fleet registry address");
+  assert.deepEqual([...prod.redirectSeats.get("https://chatgpt.com/connector_platform_oauth_redirect")], ["JET", "JET-CHAT", "CODEX"], "CODEX carries the shared ChatGPT callback as part of its cohort");
+  const unprovisioned = testEnv({ HOSTED_SEATS: "JET,CODEX" });
+  delete unprovisioned.ZULIP_EMAIL_CODEX;
+  assert.throws(() => loadConfig(unprovisioned), /ZULIP_EMAIL_CODEX/, "an unprovisioned email var refuses config load rather than serving a wrong binding");
   const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,CODEX", ZULIP_EMAIL_CODEX: CODEX_EMAIL }));
   assert.equal(cfg.botEmails.CODEX, CODEX_EMAIL);
 });

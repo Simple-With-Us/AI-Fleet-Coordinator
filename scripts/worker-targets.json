@@ -1,5 +1,5 @@
 {
-  "agent-sync-mcp": {
+  "simple-tools-mcp": {
     "command": [
       "scripts/agent-sync-mcp/node_modules/.bin/wrangler",
       "deploy",

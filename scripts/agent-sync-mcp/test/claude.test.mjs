@@ -22,7 +22,10 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback", (
   assert.deepEqual([...prod.seats.CLAUDE.redirectUris], [REDIRECT]);
   assert.deepEqual([...prod.seats.CLAUDE.cimdClientIds], []);
   assert.equal(prod.redirectOwner.get(REDIRECT), "CLAUDE");
-  assert.equal(prod.redirectOwner.get(CHATGPT_REDIRECT), "JET");
+  // The ChatGPT callback is shared by the JET / JET-CHAT / CODEX cohort, so
+  // it has no single owner;  JET's CIMD document stays JET's alone.
+  assert.equal(prod.redirectOwner.has(CHATGPT_REDIRECT), false);
+  assert.deepEqual([...prod.redirectSeats.get(CHATGPT_REDIRECT)], ["JET", "JET-CHAT", "CODEX"]);
   assert.equal(prod.cimdOwner.get(CHATGPT_CLIENT), "JET");
   assert.equal(prod.redirectOwner.get("https://www.cursor.com/agents/mcp/oauth/callback"), "CURSOR");
   assert.ok(!("CLAUDE" in WAKE_SECRETS));

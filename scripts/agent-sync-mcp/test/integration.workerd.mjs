@@ -2,6 +2,7 @@ import { parse as parseGraphql } from "graphql";
 import { LINEAR_NAMED_TOOLS } from "../src/linear-named-specs.js";
 import { LINEAR_MCP_TOOLS } from "../src/linear-mcp-specs.js";
 import { FLEETLINK_TOOLS } from "../src/fleetlink.js";
+import { WF_V1_TOOLS } from "../src/gr-workflow-v1.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS } from "../src/zulip-tool-specs.js";
 // One workerd integration test (spec 6, Worker suite).
 // Runs the bundled Worker in Miniflare (from the pinned wrangler) with fake
@@ -34,8 +35,10 @@ const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_re
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
   ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
   // The GR-MCP front (gr-tools.js):  listed like every other family;  without
-  // GR_UPSTREAM_URL the calls answer not_configured.
-  "gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread"];
+  // GR_UPSTREAM_URL the calls answer not_configured.  The committed config
+  // enables the gr_wf_ workflow verb tools (GR_WORKFLOW_TOOLS "on", matching
+  // production), so they are listed after the front.
+  "gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread", ...WF_V1_TOOLS.map((t) => t.name)];
 const JET_KEY = zulipShapedKey(11);
 // Jet's bot login comes from the committed var, never a literal copy:  it is not a secret, and the bot-email check, the
 // openai-dot tag mapping and seatProblem accept no other address, so a synthetic one cannot stand in (kody, PR 889).
