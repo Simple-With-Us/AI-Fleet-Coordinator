@@ -9,7 +9,9 @@
     {"action": "coolifyRedeploy", "target": "abc123def456", "mode": "yes", "line": "server redeploy abc123def456 --yes --json"},
     {"action": "resourceStatus", "target": "coding", "mode": "plan", "line": "server resource-status coding --plan --json"},
     {"action": "eavesdropperStatus", "target": "server", "mode": "plan", "line": "server eavesdropper-status server --plan --json"},
-    {"action": "unitStatus", "target": "fleet-server-status.timer", "mode": "plan", "line": "server unit-status fleet-server-status.timer --plan --json"}
+    {"action": "unitStatus", "target": "fleet-server-status.timer", "mode": "plan", "line": "server unit-status fleet-server-status.timer --plan --json"},
+    {"action": "serverListenerSettings", "target": "server", "mode": "plan", "line": "server eavesdropper-settings server --plan --json"},
+    {"action": "serverListenerSettings", "target": "server", "mode": "yes", "line": "server eavesdropper-settings server --yes --json"}
   ],
   "refusedAtGate": [
     "-- server restart fleet-server-status.timer --plan --json",
