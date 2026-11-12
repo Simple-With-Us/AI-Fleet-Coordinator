@@ -458,9 +458,14 @@ final class KnobReaderTests: XCTestCase {
                 "\(knob.name) has the secret column \(knob.secretColumn)"
             )
         }
-        // The block names two secrets:  the signing key and the wake router's bearer.
+        // The block names the secrets:  the signing key, the wake router's one bearer and its
+        // registry signing key.
         let secrets = registry.knobs.filter { $0.isSecret }
-        XCTAssertEqual(secrets.map { $0.name }, ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_CLAUDE_KEY"])
+        XCTAssertEqual(secrets.map { $0.name }, [
+            "FLEET_FACTS_SIGNING_KEY",
+            "WAKE_ROUTER_KEY",
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        ])
     }
 
     /// A knob holding its default says which value that is.

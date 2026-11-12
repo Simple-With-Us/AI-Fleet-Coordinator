@@ -67,7 +67,11 @@ final class KnobControlsTests: XCTestCase {
         XCTAssertEqual(try knob(registry, "NEEDS_OWNER_CAPS").editor, .caps(["per_day", "per_hour", "urgent_per_hour"]))
         // The secrets fail closed and have no editor.
         let secrets = registry.knobs.filter { $0.isSecret }
-        XCTAssertEqual(secrets.map { $0.name }, ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_CLAUDE_KEY"])
+        XCTAssertEqual(secrets.map { $0.name }, [
+            "FLEET_FACTS_SIGNING_KEY",
+            "WAKE_ROUTER_KEY",
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        ])
         for secret in secrets {
             XCTAssertNil(secret.editor, secret.name)
         }
