@@ -82,6 +82,8 @@ jobs:
       - name: Mint Autofix Push Token
         id: push_token
         if: steps.app_push.outputs.mint_token == 'true'
+        # A failed mint leaves the token empty, so autofix-ci/action below still runs.
+        continue-on-error: true
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.SWU_AUTOFIX_GITHUB_APP_ID }}
@@ -90,6 +92,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
 
       - name: Commit And Push The Ruff Fix As The Autofix App
+        id: app_commit
         if: env.SAME_REPO_PR == 'true' && steps.push_token.outputs.token != ''
         env:
           PUSH_TOKEN: ${{ steps.push_token.outputs.token }}
@@ -106,6 +109,12 @@ jobs:
             echo "::warning::Ruff changed files under .github/workflows;  they are left out of the autofix commit"
           fi
           if git diff --cached --quiet; then
+            if ! git diff --quiet -- .github/workflows; then
+              # Only workflow files changed:  hand them to autofix-ci/action instead of dropping them.
+              echo "fallback=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Ruff only changed files under .github/workflows;  autofix-ci/action handles them."
+              exit 0
+            fi
             echo "Ruff made no changes;  nothing to push."
             exit 0
           fi
@@ -116,6 +125,12 @@ jobs:
           # Loop guard, against this App only:  if the head is already this App's own fix commit and
           # Ruff still changes it, another push would only start the same cycle again.  Ruff on its own
           # output makes no diff, so a normal run stops after one fix.  Other bots are never guarded.
+          # A newer push to the branch starts its own run on the new head;  do not race it.
+          remote_sha=$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)
+          if [ -n "$remote_sha" ] && [ "$remote_sha" != "$HEAD_SHA" ]; then
+            echo "::notice::${BRANCH} moved from ${HEAD_SHA} to ${remote_sha} during this run;  the run on the new head formats it."
+            exit 0
+          fi
           head_email=$(git log -1 --format=%ae "$HEAD_SHA")
           head_name=$(git log -1 --format=%an "$HEAD_SHA")
           if [ "$head_email" = "$app_email" ] || [ "$head_name" = "$app_name" ]; then
@@ -126,8 +141,19 @@ jobs:
           git config user.email "$app_email"
           git commit -m "style: ruff format (autofix)"
           # actions/checkout persists the job token as an http extraheader, which would win over the
-          # credentials in the push URL;  clear it for this push so the App token is what GitHub sees.
-          git -c http.https://github.com/.extraheader= push "https://x-access-token:${PUSH_TOKEN}@github.com/${GH_REPO}.git" "HEAD:refs/heads/${BRANCH}"
+          # App token;  clear it for this push.  The credential helper reads PUSH_TOKEN from the
+          # environment, so the token is never in a URL or on a command line.
+          if ! git -c http.https://github.com/.extraheader= -c credential.helper= \
+            -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${PUSH_TOKEN}"; }; f' \
+            push "https://github.com/${GH_REPO}.git" "HEAD:refs/heads/${BRANCH}"; then
+            remote_sha=$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)
+            if [ -n "$remote_sha" ] && [ "$remote_sha" != "$HEAD_SHA" ]; then
+              echo "::notice::${BRANCH} moved to ${remote_sha} before the push landed;  the run on the new head formats it."
+              exit 0
+            fi
+            echo "::error::Pushing the Ruff fix to ${BRANCH} failed."
+            exit 1
+          fi
           echo "::notice::Pushed the Ruff fix as ${app_name} to ${BRANCH} (${files});  CI runs on the new head."
 
       - name: Note The Missing Autofix App
@@ -137,6 +163,6 @@ jobs:
 
       - uses: autofix-ci/action@v1
         # Forks, pushes to main, and same-repo PRs without the App token.
-        if: steps.push_token.outputs.token == ''
+        if: steps.push_token.outputs.token == '' || steps.app_commit.outputs.fallback == 'true'
         with:
           fail-fast: false

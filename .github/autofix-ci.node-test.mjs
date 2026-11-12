@@ -63,8 +63,12 @@ test('the push uses only the App token, as the App bot identity, never github.to
   assert.match(push, /gh api "\/users\/\$\{APP_SLUG\}%5Bbot%5D" --jq \.id/);
   assert.match(push, /app_email="\$\{app_user_id\}\+\$\{APP_SLUG\}\[bot\]@users\.noreply\.github\.com"/);
   assert.match(push, /git commit -m "style: ruff format \(autofix\)"/);
-  // checkout's persisted github.token header would otherwise override the URL credentials.
-  assert.match(push, /git -c http\.https:\/\/github\.com\/\.extraheader= push "https:\/\/x-access-token:\$\{PUSH_TOKEN\}@github\.com\/\$\{GH_REPO\}\.git" "HEAD:refs\/heads\/\$\{BRANCH\}"/);
+  // checkout's persisted github.token header would otherwise override the App token.
+  assert.match(push, /git -c http\.https:\/\/github\.com\/\.extraheader= -c credential\.helper= /);
+  // The token reaches git through a credential helper reading the env, never a URL or argv.
+  assert.match(push, /credential\.helper=!f\(\) \{ echo username=x-access-token; echo "password=\$\{PUSH_TOKEN\}"; \}; f/);
+  assert.match(push, /push "https:\/\/github\.com\/\$\{GH_REPO\}\.git" "HEAD:refs\/heads\/\$\{BRANCH\}"/);
+  assert.doesNotMatch(push, /x-access-token:\$\{PUSH_TOKEN\}@/);
   assert.doesNotMatch(push, /--force|-f /);
 });
 
@@ -82,7 +86,8 @@ test('the loop guard looks only at this App, and fails naming the files', () => 
 });
 
 test('without the App token, autofix-ci/action runs exactly as before, with a notice for same-repo PRs', () => {
-  assert.equal(ifOf(fallback), "if: steps.push_token.outputs.token == ''");
+  // Also runs when the App push staged nothing but workflow files, which the App may not change.
+  assert.equal(ifOf(fallback), "if: steps.push_token.outputs.token == '' || steps.app_commit.outputs.fallback == 'true'");
   assert.match(fallback, /uses: autofix-ci\/action@v1\n/);
   assert.match(fallback, /fail-fast: false/);
   assert.equal(ifOf(missing), "if: env.SAME_REPO_PR == 'true' && steps.push_token.outputs.token == ''");
@@ -94,4 +99,12 @@ test('step if expressions never reference secrets so startup validation passes',
   for (const step of steps) {
     assert(!ifOf(step).includes('secrets.'), `step if must not reference secrets: ${ifOf(step)}`);
   }
+});
+
+test('a failed token mint and a moved branch both fall back instead of failing the run', () => {
+  const mint = steps.find((step) => step.includes('name: Mint Autofix Push Token'));
+  assert.match(mint, /continue-on-error: true/);
+  assert.match(push, /remote_sha=\$\(git ls-remote origin "refs\/heads\/\$\{BRANCH\}" \| cut -f1\)/);
+  assert(push.indexOf('remote_sha=') < push.indexOf('git commit'));
+  assert.match(push, /echo "fallback=true" >> "\$GITHUB_OUTPUT"/);
 });
