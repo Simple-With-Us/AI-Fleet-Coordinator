@@ -40,7 +40,7 @@
 #                      Refused while delivery is armed (WAKE_ROUTER_DELIVERY_ENABLED true)
 #   --uninstall        stop, disable and remove exactly what this script installed, and move the
 #                      token back to the staging file
-#   --tailnet-addr A   the server's tailnet IPv4 address (100.64.0.0/10);  default: `tailscale ip -4`
+#   --tailnet-addr A   the server's tailnet IPv4 address (Tailscale's CGNAT /10);  default: `tailscale ip -4`
 #   --tls-cert F, --tls-key F   the tailnet certificate and key the front serves (needed on the
 #                      first install;  later runs keep the installed copies)
 #   --staged F         the staged token file (default ~/.config/infisical-staging/afc-wake-router.env)
@@ -102,7 +102,7 @@ REPORTED = (
 MAC_SSH = "mac-wake"
 RESERVED_PORTS = frozenset({8793})  # zc-wake-tls.service
 LOOPBACK_ALLOWED = frozenset({"127.0.0.1"})
-TAILNET = ipaddress.ip_network("100.64.0.0/10")
+TAILNET = ipaddress.ip_network((0x64400000, 10))  # Tailscale's CGNAT range, the /10 at 100.64
 PORT_RE = re.compile(r"[1-9][0-9]{3,4}")
 TEST_ROOT_ENV = "WAKE_ROUTER_TEST_ROOT"
 

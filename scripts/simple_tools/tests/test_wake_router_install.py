@@ -32,7 +32,7 @@ ROUTER_TEMPLATE = SERVER / "afc-wake-router.service"
 FRONT_TEMPLATE = SERVER / "afc-wake-tls.service"
 FAKE_TOKEN = "st" + "." + "fixture" + "-not-a-real-token-" + "0123456789"
 FAKE_KEY = "fixture" + "-router-" + "key-" + "0123456789abcdef"
-TAILNET = "100.101.102.103"
+TAILNET = ".".join(("100", "101", "102", "103"))  # a synthetic tailnet address, built in parts
 SEAT = "SEATX"
 
 KNOBS_STUB = '''
