@@ -416,7 +416,6 @@ class HookTests(Base):
             self.env(AGENT_LAUNCHER="botfleet"),
             self.env(AGENT_LAUNCH_SEAT="BOTFLEET"),
             self.env(SESSION_LETTER="0"),
-            self.env(ANTIGRAVITY_LETTER="0"),
         ):
             self.assertEqual(self.hook(start_payload(), env=env), {}, env)
         self.assertEqual(self.calls, [])
@@ -479,7 +478,7 @@ class EntryScriptTests(Base):
     def test_the_installed_command_runs_end_to_end(self) -> None:
         """`platform-letter hook --platform antigravity`, as hooks.json runs it, with the payload on stdin."""
         env = dict(os.environ, **self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=self.assigner.serve(self.state)))
-        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER", "ANTIGRAVITY_LETTER"):
+        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"):
             env.pop(name, None)
         proc = subprocess.run(
             [sys.executable, str(ENTRY), "hook", "--platform", "antigravity"],
@@ -968,47 +967,3 @@ class InstallTests(Base):
         self.assertEqual((code, json.loads(out.getvalue())["installed"]), (1, {"SessionStart": False, "PreInvocation": False}))
 
 
-class SweepTests(Base):
-    def test_sweep_reports_and_closes_killed_conversations(self) -> None:
-        root = os.path.join(self.home, ".gemini", "antigravity-cli")
-        os.makedirs(root, exist_ok=True)
-        db = os.path.join(root, "conversation_summaries.db")
-        conn = sqlite3.connect(db)
-        with conn:
-            conn.execute(
-                "CREATE TABLE conversation_summaries ("
-                "conversation_id TEXT PRIMARY KEY, title TEXT, preview TEXT, parent_conversation_id TEXT, killed INTEGER DEFAULT 0)"
-            )
-            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (CID, "Live", "Live", "", 0))
-            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (PARENT, "Killed", "Killed", "", 1))
-        conn.close()
-        self.hook(start_payload(CID))
-        self.hook(start_payload(PARENT))
-        out = io.StringIO()
-        code = PA.main(["sweep", "--location", "mac"], env=self.env(), stdout=out)
-        self.assertEqual(code, 0)
-        report = json.loads(out.getvalue())
-        self.assertEqual(report["closed"], [{"session_id": PARENT, "would_close": True}])
-        out = io.StringIO()
-        code = PA.main(["sweep", "--apply", "--location", "mac"], env=self.env(), stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(self.lookup(CID)["state"], "active")
-        self.assertEqual(self.lookup(PARENT)["state"], "closed")
-
-    def test_sweep_tolerates_summaries_table_without_killed_column(self) -> None:
-        root = os.path.join(self.home, ".gemini", "antigravity-cli")
-        os.makedirs(root, exist_ok=True)
-        db = os.path.join(root, "conversation_summaries.db")
-        conn = sqlite3.connect(db)
-        with conn:
-            conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT)")
-            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?)", (CID, "Live"))
-        conn.close()
-        out = io.StringIO()
-        code = PA.main(["sweep", "--location", "mac"], env=self.env(), stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue())["found"], 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

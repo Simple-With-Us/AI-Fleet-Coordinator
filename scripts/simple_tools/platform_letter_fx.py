@@ -66,7 +66,6 @@ SOURCE = "fx-letter-sync"
 LIVE_SECONDS = 36 * 3600
 DISPLAY = "Fx"
 
-ENV_OFF = "FX_LETTER"
 SESSIONS_SUBPATH = os.path.join(".fx", "sessions")
 
 
@@ -177,7 +176,6 @@ SPEC = PL.PlatformSpec(
     current_title=PL.from_payload("title"),
     stored_title=PL.from_payload("title"),
     locations=("mac",),
-    env_off=ENV_OFF,
 )
 
 

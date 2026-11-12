@@ -96,6 +96,7 @@ SPEC = PL.PlatformSpec(
     events={"sessionStart": "start", "beforeSubmitPrompt": "prompt"},
     close_reasons=(),
     output="json",
+    session_env=("CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"),
 )
 
 

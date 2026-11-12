@@ -52,7 +52,7 @@
 //   in the shared service, where the caller's environment cannot be seen.  A chat started by a chat that takes none
 //   (a sub-agent of a sweep worker) takes none.  The title is looked at when the chat is registered, a moment after it
 //   is created, so a title given with the chat counts.
-// - In a private server, the environment is the caller's: SESSION_LETTER=0 or OPENCODE_LETTER=0 turns the plugin off,
+// - In a private server, the environment is the caller's: SESSION_LETTER=0 turns the plugin off,
 //   and a session a launcher started (AGENT_LAUNCHER or AGENT_LAUNCH_SEAT) takes no letter.  In the shared service
 //   those variables are ignored, and taken out of the environment the hook is run with (the first client to start the
 //   service would otherwise decide them for every later chat).
@@ -72,9 +72,10 @@ import { join } from "node:path";
 export const PLUGIN_ID = "platform-letter-opencode";
 export const PLATFORM = "opencode";
 export const NO_LETTER_MARK = "[no-letter]"; // the same string as NO_LETTER_MARK in platform_letter_opencode.py
-const HOOK_TIMEOUT_MS = 25000; // the ssh hop takes up to 8 seconds, and the hook's own budget elsewhere is 15 to 20
+const HOOK_TIMEOUT_MS = 25000; // the hook's own budget elsewhere is 15 to 20 seconds, and a register chains three calls
 const TOUCH_MS = 25 * 60 * 1000; // the hook marks a chat seen at most every 30 minutes; ask a little sooner
-const RETRY_HOOK_MS = 10 * 60 * 1000; // a hook that did not answer, or that left the chat without a letter
+const RETRY_HOOK_MS = 10 * 60 * 1000; // a hook that did not answer (a chat with no letter asks on every prompt:
+// the library throttles its own registry calls and keeps the "??" on the title)
 const RETRY_TITLE_MS = 60 * 1000; // a title OpenCode refused
 const RETRY_READ_MS = 60 * 1000; // a chat OpenCode could not be asked about
 const SETTLE_MS = 1500; // a new chat waits this long for its first prompt, or for the title it is given right away
@@ -86,7 +87,7 @@ const MAX_HOOKS = 3;
 const MAX_OUTPUT = 64 * 1024;
 const MAX_LINEAGE = 6; // parents above a chat that are registered first
 const LOCATIONS = ["mac", "server"];
-const CALLER_ENV = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER", "OPENCODE_LETTER"];
+const CALLER_ENV = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"];
 const SLOT = Symbol.for("platform-letter-opencode.engine"); // on globalThis: the one engine of this process
 
 function text(value) {
@@ -113,9 +114,7 @@ export function readSettings(options, env = process.env, shared = sharedServer()
   if (typeof opts.shared === "boolean") shared = opts.shared;
   if (!shared) {
     // A private server is the client's own child: its environment is the caller's, so the caller's switches apply.
-    for (const name of ["SESSION_LETTER", "OPENCODE_LETTER"]) {
-      if (text(env[name]) === "0") return null;
-    }
+    if (text(env.SESSION_LETTER) === "0") return null;
     if (text(env.AGENT_LAUNCHER) || text(env.AGENT_LAUNCH_SEAT)) return null;
   }
   const command =
@@ -466,8 +465,11 @@ export function createLetters({ api, run, now = Date.now, log = () => {}, settle
     const st = stateOf(sid);
     if (!fresh && !st.started) await start(sid, { source: "resume", force: true });
     if ((await ready(sid, { force: true })) === "no") return;
-    if (st.prompted && now() < st.nextAt) {
-      await retryTitle(sid); // a steady-state prompt costs no hook
+    if (st.prompted && (st.label || st.silent) && now() < st.nextAt) {
+      // A steady-state prompt of a lettered chat costs no hook, nor does one while the hook cannot run at all.  A
+      // chat the hook answered without a letter asks on every prompt:  the library throttles its registry calls
+      // and keeps "??" on the title, over a name OpenCode gave the chat meanwhile.
+      await retryTitle(sid);
       return;
     }
     try {
@@ -483,8 +485,9 @@ export function createLetters({ api, run, now = Date.now, log = () => {}, settle
       title: st.title,
     });
     await apply(sid, answer);
+    st.silent = answer === null;
     if (answer === null || !st.label) {
-      st.prompted = true; // no letter yet (the Mac asleep): ask again in ten minutes, not with every prompt
+      st.prompted = true; // no letter yet
       st.nextAt = now() + RETRY_HOOK_MS;
     } else if (!titled(st)) {
       st.prompted = false; // a letter and no name (a prompt of only a link, or an image): the next prompt may give one

@@ -107,7 +107,7 @@ class SpecTests(Base):
         sid = conv(15)
         self.hook(
             {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"},
-            env=self.env(CLUTCH_LETTER="0"),
+            env=self.env(SESSION_LETTER="0"),
         )
         self.assertIsNone(self.lookup(sid))
 

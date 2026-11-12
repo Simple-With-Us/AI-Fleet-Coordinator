@@ -37,7 +37,7 @@ Who takes a letter.  The hook runs with a cleared environment (HOME, PATH, the 
 caller's AGENT_*), so the facts about the chat come from its parent, the Muse process:  its command line says what
 kind of run it is, and its environment says whether a launcher started it.  A chat takes a letter when Muse was
 started as `muse` or `muse resume` (or is the desktop app), with no AGENT_LAUNCHER or AGENT_LAUNCH_SEAT, no
-SESSION_LETTER=0 or MUSE_LETTER=0, and no MUSE_LETTER_HELPER mark.  Every other Muse command takes none:  `muse exec`
+SESSION_LETTER=0, and no MUSE_LETTER_HELPER mark.  Every other Muse command takes none:  `muse exec`
 (the Operator's wake runs, BotFleet, anything headless), `muse serve` (a host some program drives, such as the Clutch
 bridge or this adapter's own rename helper), `muse plugins hook test` and the rest.  A parent that is not Muse takes
 none either, so a fixture piped into the hook by hand never registers a chat.  On the Mac the command line comes from the
@@ -138,7 +138,7 @@ def muse_kind(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     pe = proc.env
     if pe.get(MR.HELPER_MARK) or pe.get("AGENT_LAUNCHER") or pe.get("AGENT_LAUNCH_SEAT"):
         return "headless"
-    if pe.get("SESSION_LETTER") == "0" or pe.get("MUSE_LETTER") == "0":
+    if pe.get("SESSION_LETTER") == "0":
         return "headless"
     if MR.subcommand(proc.argv) not in ("", "resume"):
         return "headless"

@@ -1,62 +1,62 @@
-"""`platform-letter`: an Operator session letter, and the title "<letter>: <Title>", for every interactive chat on the
-platforms other than Claude and MiniMax (owner request, Oct 29, 2026).  Claude has `claude_letter` and MiniMax has
-`mm_session_letter`; this module is the shared library every other platform's adapter is a thin file on.
+"""`platform-letter` (also `simple-chat letter`):  an Operator session letter, and the title "<letter>: <Title>", for
+every interactive chat on every platform (owner request, Oct 29, 2026;  one client for all of them, Nov 11, 2026).
 
     platform-letter hook --platform P       the hook a platform runs: start, prompt, rename, turn and end events
     platform-letter registry OP --platform P ...   one registry API call: register, title, touch, close or show
     platform-letter show --platform P       this chat's letter from its local note; no network
     platform-letter install --platform P    add the platform's hooks (--check, --remove)
-    simple-chat letter request [--session-id S]   ask the assigner for this chat's letter now (`request_main`)
+    platform-letter request [--session-id S]   ask the assigner for this chat's letter now (`request_main`)
 
-An adapter is one file, `simple_tools/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: what differs per
-platform) and, to be installable, an `INSTALL` (a JsonHookInstaller) or its own `install(options, env, stdout)`.  The
-library does everything else: the in-scope rule, the registry call, the note, the title, retry, touch and close.
+`simple-chat letter <verb>` is the same command with the same verbs.  An adapter is one file,
+`simple_tools/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: where the platform's session id, parent
+and title come from, and how a title is written) and, to be installable, an `INSTALL` (a JsonHookInstaller) or its own
+`install(options, env, stdout)` for a platform whose hook configuration is not a JSON hook file.  The library does
+everything else, once, for every platform:  the in-scope rule, the registry call, the note, the title, retry, touch
+and close.  Claude Code and MiniMax Code are rows of the table like every other platform.
 
 Where the letter comes from.  One assigner:  the Operator's session registry behind the Eavesdropper's registry API
 (`listener_registry`, reached through `registry_api`).  Every chat on every host asks it the same way, one signed
 HTTPS call per op, and nothing else:  there is no local registry file and no ssh hop (owner, Nov 11, 2026:  "one
-operator that has one tool/process for all platforms").  A host with no API URL or key gets `not_configured` from
-`registry_api`, which is one more way of getting no letter.  A platform keeps its own namespace (`codex`, `opencode`,
-`muse`, `grok-leader`, `antigravity`, `cursor`):  a letter is unique inside it, and `claude` and `minimax` are reserved
-to their own hooks until those clients fold into this table.
+operator that has one tool/process for all platforms").  The API's address and key come from the process
+environment or, when it names neither, from Infisical through fleet_knobs (`registry_api`);  a host with neither
+gets `not_configured`, which is one more way of getting no letter.  The registry keys a letter's sequence on the
+seat label;  `platform` here is only the registry identity of the chat (with location, scope and session id).
 
 No letter.  A chat that gets no letter, for any reason (the assigner refused because every pair is live, it did not
 answer, the host is not configured, the location is not stated, any other error), is titled "??: <Title>" and carries
-on:  nothing here ever fails a session start.  Its later prompts and turn ends ask again, at most every RETRY_SECONDS
-(the note's `failed_at` stamp), and the first answer that carries a letter swaps "??" for it.  `simple-chat letter
-request` asks at once, whatever the stamp says, and prints the letter or the refusal in one line.
+on:  nothing here ever fails a session start.  A chat that already holds a letter keeps it when a call merely fails;
+only a refusal, or a registry with no registration for it, takes it off.  Later prompt, rename and turn events ask
+again, at most every RETRY_SECONDS (the note's `failed_at` stamp), and the first answer that carries a letter swaps
+"??" for it.  `simple-chat letter request` asks at once, whatever the stamp says, and prints the letter or the refusal
+in one line.
 
-The letters.  Every chat takes a pair (AA to ZZ, 676 per platform).  A main chat takes the doubled pairs in order
-(AA, BB ... ZZ), oldest first; a sub-thread, a chat another chat started, takes the first free pair after its
-parent's (parent CC, child CD, the next CE).  The allocation is the registry's own rule (`letter_space="double"`,
-`letter_pick="primary"`, `parent_session_id`); this module only asks, through ONE function (`operator_register`)
-that reads the registry's signature, so a registry without a parameter still answers, with the lowest free pair.  The
-exception is a closed chat whose pair went to another chat: a registry that predates pair letters would give it a
-single letter, so that reopen is refused (see `operator_reopen`).
+The letters.  Every chat takes a pair (AA to ZZ).  The allocation is the assigner's own rule (`letter_space="double"`,
+`letter_pick`, `parent_session_id`):  a main chat takes a doubled pair, a sub-thread the pair after its parent's
+(parent CC, child CD, the next CE).  This module only asks.
 
 What the hook does.
 - A start event registers the chat, or resumes its registration, and titles it: "<letter>: <Title>" when the chat
   already has a title (or a stored one the adapter finds), else "<letter>: New Chat" until its first prompt.  A
   `compact` start only reminds the model of the letter.
-- A prompt event titles a chat that is still on the placeholder from its first prompt, retries a registration that
-  failed (at most every ten minutes), puts the letter back on a chat whose name dropped it and sends the new words to
+- A prompt event titles a chat that is still on the placeholder from its first prompt, asks again for a missing
+  letter (at most every ten minutes), puts the letter back on a chat whose name dropped it and sends the new words to
   the Operator, and marks the chat seen at most every half hour.  Steady-state prompts cost no call.
 - A rename event does the rename part alone, for platforms that tell the hook when a title changed.
 - A turn event (the end of a turn) reports what the turn touched, and asks again for a missing letter as a prompt does.
 - An end event closes the registration when the chat is over for good (the spec's `close_reasons`, `None` for every
-  end), which frees its letter.
+  end), which frees its letter.  Reclaiming letters is otherwise the assigner's own sweep:  no client sweeps.
 
 The title reaches the chat the way the platform allows: in the hook's own output (`hook` style, a `sessionTitle`
 field), through the adapter's `title_writer` (a callable that renames the chat natively), or from a plugin that reads
-the `json` output.  A writer that fails leaves the title pending and is tried again on the next prompt.
+the `json` output.  A writer that fails leaves the title pending and is tried again on the next prompt.  A platform
+with neither route is told its letter and asked to keep it in a name the owner gives.
 
-The hook never blocks a chat: every failure is a line of context, or nothing, and exit 0.  Only interactive chats
+The hook never blocks a chat: every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part: a launcher-run session never does (`identity.launched`, unless the spec names that launcher), nor a
-headless or exec run, nor a sub-agent run unless the platform records the chat that started it.  SESSION_LETTER=0 (or
-`<PLATFORM>_LETTER=0`) turns it off.  The location is the fleet location, never a guess: darwin is the Mac, and any
-other host must say `--location server` (or SESSION_LETTER_LOCATION, or CLAUDE_LETTER_LOCATION), and a chat on a host
-that does not say is a "??" chat until it does.  Titles go through the fleet's secret scanner before they are stored
-or relayed.
+headless or exec run, nor a sub-agent run unless the platform records the chat that started it.  SESSION_LETTER=0
+turns it off, the same switch on every platform.  The location is the fleet location, never a guess: darwin is the
+Mac, and any other host must say `--location server` (or SESSION_LETTER_LOCATION), and a chat on a host that does not
+say is a "??" chat until it does.  Titles go through the fleet's secret scanner before they are stored or relayed.
 
 Python 3.11+, standard library only.
 """
@@ -91,14 +91,11 @@ LOCATIONS = ("mac", "server")
 # The locations the registry side takes:  a hook runs on the Mac or the server, and a chat no hook runs in (a Cursor
 # Cloud agent, which `cursor_cloud_letters` registers from the Cursor API) is in the cloud.
 REGISTRY_LOCATIONS = LOCATIONS + ("cloud",)
-# The two platforms that have their own hooks, sweeps and registry sides: this module never writes their rows.
-RESERVED_PLATFORMS = ("claude", "minimax")
 PLATFORM_RE = re.compile(r"[a-z][a-z0-9-]{1,31}")
 LABEL_RE = re.compile(r"[A-Z]{1,2}")
 
 ENV_OFF = "SESSION_LETTER"
 ENV_LOCATION = "SESSION_LETTER_LOCATION"
-ENV_LOCATION_FALLBACK = "CLAUDE_LETTER_LOCATION"
 ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
 
 TOUCH_SECONDS = 1800
@@ -136,8 +133,9 @@ NO_LOCATION = (
 EVENTS = ("start", "prompt", "rename", "end", "turn")
 #: The event names Claude Code and Codex style hooks use, and the default for a spec.
 DEFAULT_EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SessionEnd": "end"}
-#: Timeouts in seconds for those hook entries.  A register chains at most two registry API calls of _API_TIMEOUT
-#: each, and a SessionEnd budget is often 1.5 seconds, too short for that, so every entry names its own.
+#: Timeouts in seconds for those hook entries.  A register chains at most three registry API calls (register, reopen,
+#: update) of _API_TIMEOUT each, and a SessionEnd budget is often 1.5 seconds, too short for that, so every entry
+#: names its own.
 HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "SessionEnd": 15}
 #: The `source` values of a start event after which a hook-output title is applied.
 TITLE_SOURCES = ("startup", "resume", "fork")
@@ -266,7 +264,10 @@ def payload_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = No
 class TitleRequest:
     """One title for an adapter's `title_writer` to put on the chat natively.  `title` is the whole "XX: Words",
     `words` the part after the letter, `current` what the platform shows now (may be empty), and `reason` one of
-    start, prompt, rename, retry or reissue.  The writer returns True when the chat now carries the title."""
+    start, prompt, rename, retry or reissue.  `shown` is the title the hook itself last put on the chat ("" when
+    none) and `held` the letters the chat holds or held, so a writer that guards a person's name can tell the hook's
+    own earlier title ("??: Words", "CC: Words") from a name a person gave.  The writer returns True when the chat
+    now carries the title."""
 
     platform: str
     session_id: str
@@ -277,6 +278,8 @@ class TitleRequest:
     reason: str
     data: Mapping[str, Any]
     env: Mapping[str, str]
+    shown: str = ""
+    held: tuple[str, ...] = ()
 
 
 TitleWriter = Callable[[TitleRequest], bool]
@@ -296,6 +299,8 @@ class PlatformSpec:
     stored_title               the title of an existing chat from the platform's own store, "" when unknown
     events                     the platform's event names, mapped to start, prompt, rename and end
     close_reasons              the end reasons that close a registration; None closes on every end event
+    session_env                the environment variables that hold the chat's session id inside the chat's own
+                               shell, for `request` run with no --session-id (AGENT_SESSION is read for every spec)
     title_writer / title_in_output   how a title reaches the chat (see the module docstring)
     output                     "hook" (Claude style hookSpecificOutput), "text" (plain stdout) or "json"
     launchers                  the launchers whose sessions DO take a letter under this spec (BotFleet's own spec
@@ -303,7 +308,6 @@ class PlatformSpec:
     title_sources              the start sources after which a hook-output title is applied
     locations                  the fleet locations the platform runs on (Grok and Antigravity: only "mac"); a hook
                                on any other takes no letter
-    env_off                    the variable that turns the hook off for this platform (default <PLATFORM>_LETTER)
     quiet_events               platform events whose hook output the platform does not take (Codex's SubagentStop has
                                no hookSpecificOutput): the hook still runs, and prints nothing for them
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
@@ -328,13 +332,13 @@ class PlatformSpec:
     launchers: tuple[str, ...] = ()
     title_sources: tuple[str, ...] = TITLE_SOURCES
     locations: tuple[str, ...] = LOCATIONS
-    env_off: str = ""
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
+    session_env: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not PLATFORM_RE.fullmatch(self.platform) or self.platform in RESERVED_PLATFORMS:
-            raise ValueError("%r is not a platform namespace this module may write" % self.platform)
+        if not PLATFORM_RE.fullmatch(self.platform):
+            raise ValueError("%r is not a platform name" % self.platform)
         if isinstance(self.seat, str):
             if not I.valid_seat(self.seat) or I.canonical_seat(self.seat) != self.seat:
                 raise ValueError("%r is not a canonical seat tag" % self.seat)
@@ -350,8 +354,9 @@ class PlatformSpec:
             raise ValueError("locations must be some of %s" % ", ".join(LOCATIONS))
 
     @property
-    def off_variable(self) -> str:
-        return self.env_off or re.sub(r"[^A-Z0-9]", "_", self.platform.upper()) + "_LETTER"
+    def titles(self) -> bool:
+        """The hook can put a title on the chat:  through a writer, or in its own output."""
+        return self.title_writer is not None or self.title_in_output or self.output == "json"
 
     def seat_for(self, payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
         """The canonical seat tag this chat registers under, or "" when there is none.  Most platforms are one seat;
@@ -373,7 +378,7 @@ def register_spec(spec: PlatformSpec) -> PlatformSpec:
 def load_adapter(platform: str) -> Any:
     """The adapter module `simple_tools/platform_letter_<platform>.py`, or None.  The name is checked first, so an
     argument can never name any other module."""
-    if not PLATFORM_RE.fullmatch(platform or "") or platform in RESERVED_PLATFORMS:
+    if not PLATFORM_RE.fullmatch(platform or ""):
         return None
     import importlib
 
@@ -402,10 +407,9 @@ def in_scope(spec: PlatformSpec, env: Mapping[str, str], data: Mapping[str, Any]
     """Only interactive chats take a letter.  A session a launcher started never does (BotFleet, Grok Bot and the
     wake runs have their own handles), unless the spec names that launcher; a headless run never does; a sub-agent
     run does only when the platform records the chat that started it (it is then a sub-thread).  SESSION_LETTER=0
-    and `<PLATFORM>_LETTER=0` turn the hook off."""
-    for name in (ENV_OFF, spec.off_variable):
-        if _text(env.get(name)) == "0":
-            return False
+    turns the hook off, on every platform."""
+    if _text(env.get(ENV_OFF)) == "0":
+        return False
     if I.launched(env) and I.launcher_of(env) not in spec.launchers:
         return False
     kind = _text(spec.kind(data, env))
@@ -416,11 +420,9 @@ def in_scope(spec: PlatformSpec, env: Mapping[str, str], data: Mapping[str, Any]
 
 def location(env: Mapping[str, str], platform: str = sys.platform, flag: str = "") -> str | None:
     """The fleet location of this chat, or None when it cannot be stated: darwin is the Mac, and any other host
-    must say so, with --location, SESSION_LETTER_LOCATION or CLAUDE_LETTER_LOCATION.  A value that is not a fleet
-    location is refused rather than passed on."""
-    forced = (
-        _text(flag) or _text(env.get(ENV_LOCATION)) or _text(env.get(ENV_LOCATION_FALLBACK))
-    ).lower()
+    must say so, with --location or SESSION_LETTER_LOCATION.  A value that is not a fleet location is refused rather
+    than passed on."""
+    forced = (_text(flag) or _text(env.get(ENV_LOCATION))).lower()
     if forced:
         return forced if forced in LOCATIONS else None
     return "mac" if platform == "darwin" else None
@@ -536,16 +538,14 @@ def title_from_prompt(prompt: object) -> str:
 # The registry side:  one registry API call per op
 # --------------------------------------------------------------------------------------------
 #
-# operator_reopen, SpaceLost and _last_letter below are the assigner's own helpers, not a client path:  the API
-# (listener_registry) and the registry CLI (operator_registry) import them from here for a reopen.
+# operator_reopen, SpaceLost and _last_letter below are the assigner's own helpers, not a client path:  the registry
+# CLI (operator_registry) imports them from here for a reopen.  with_registry_env is the wake delivery's
+# (claude_wake), not the letter client's:  the letter client reads the API's address and key from its environment or
+# from Infisical (`registry_api`), never from a host file.
 
 
 def valid_platform(platform: object) -> bool:
-    return (
-        isinstance(platform, str)
-        and bool(PLATFORM_RE.fullmatch(platform))
-        and platform not in RESERVED_PLATFORMS
-    )
+    return isinstance(platform, str) and bool(PLATFORM_RE.fullmatch(platform))
 
 
 def resolve_pick(OR: Any, pick: str) -> str:
@@ -639,20 +639,20 @@ _NOT_REGISTERED_MARK = "is not registered on"
 
 
 #: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
-#: 20 seconds (HOOK_TIMEOUTS) and a register chains at most two calls, so one call gets 6:
-#: the chain's worst case stays inside the tightest budget, and a healthy call to the
-#: listener answers in well under a second.  The batch callers of registry_api (the
-#: operator-registry CLI) keep its longer default.
-_API_TIMEOUT = 6
+#: 20 seconds (HOOK_TIMEOUTS) and a register chains at most three calls (register, reopen,
+#: update), so one call gets 4:  the chain's worst case stays inside the tightest budget, and
+#: a healthy call to the listener answers in well under a second.  An unsettled parent is
+#: registered first, at most once per RETRY_SECONDS (`_ensure_parent`).  The batch callers of
+#: registry_api (the operator-registry CLI) keep its longer default.
+_API_TIMEOUT = 4
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
 def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     """Return `env` enriched from `$HOME/.local/bin/operator-registry-env` when it names no registry API URL.
 
-    Hook processes launched by Antigravity, Codex, OpenCode, Muse and ZCode inherit no login profile, so on both the
-    server and the Mac the shared registry env file is where `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and the signing key
-    live.  It reads configuration only, never a store:  with nothing found, the call answers `not_configured`."""
+    The wake delivery's helper (claude_wake), not the letter client's:  the letter client never reads this file.  It
+    reads configuration only, never a store:  with nothing found, the call answers `not_configured`."""
     from . import registry_api as RA
 
     if RA.base_url(env):
@@ -927,7 +927,6 @@ def registry_main(
     answer that carries an error, among them a host with no API configured (`not_configured`) and a registry that
     did not answer."""
     from . import operator_registry as OR
-    from . import registry_api
 
     parser = _make_parser()
     try:
@@ -942,8 +941,6 @@ def registry_main(
         return _emit(stdout, {"error": "a registration needs a seat"}, 2)
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
-    if not registry_api.base_url(env):
-        env = with_registry_env(env)
     try:
         sid = SI.check(args.session_id, "the session id")
         if args.op == "register":
@@ -1222,9 +1219,21 @@ def held(note: Mapping[str, Any], *extra: object) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def refused(answer: Mapping[str, Any]) -> bool:
+    """The assigner answered, and the answer is no letter:  every pair is live, or it holds no registration for the
+    chat.  Anything else that carries an error is a call that got no answer (not configured, unreachable, a timeout)."""
+    error = str(answer.get("error") or "")
+    return error == NO_REGISTRATION or error.startswith("all ") and error.endswith(" letters are in use")
+
+
 def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[str, Any]:
     """Fold one register answer into the note: open, failed (no letter, for any reason), or held by another seat.  A
-    failed note holds no letter (`label` is ""), and its `failed_at` is the stamp that throttles asking again."""
+    failed note holds no letter (`label` is ""), and its `failed_at` is the stamp that throttles asking again.
+
+    A chat that holds a letter keeps it when the call merely got no answer (an Eavesdropper redeploy, a timeout):  only
+    a refusal takes the letter off.  Its `sync_failed_at` stamp holds the next call back for RETRY_SECONDS."""
+    if ("error" in answer or not answer.get("outcome")) and lettered(note) and not refused(answer):
+        return dict(note, location=chat.location, sync_failed_at=chat.now)
     if "error" in answer or not answer.get("outcome"):
         return dict(
             note,
@@ -1269,14 +1278,19 @@ def lettered(note: Mapping[str, Any]) -> bool:
     return note.get("state") == "open" and bool(note.get("label"))
 
 
-def no_letter(note: Mapping[str, Any]) -> str:
-    """The context line for a chat that holds no letter."""
+def no_letter(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
+    """The context line for a chat that holds no letter, worded by whether the hook can title the chat."""
+    mark = (
+        'its title starts with "??: "'
+        if spec.titles
+        else '%s gives a hook no way to set a title, so a name given to this chat should start with "??: "'
+        % spec.display
+    )
     if note.get("state") == "mismatch":
-        return 'This chat is registered under another seat, so it takes no letter and its title starts with "??: ".'
+        return "This chat is registered under another seat, so it takes no letter here and its title is left as it is."
     return (
-        'No Operator letter yet (%s), so this chat\'s title starts with "??: ".  A later prompt or the end of a turn '
-        "asks again, at most every ten minutes, and `simple-chat letter request` asks now."
-        % (note.get("error") or "no answer")
+        "No Operator letter yet (%s), so %s.  A later hook run asks again, at most every ten minutes, and "
+        "`simple-chat letter request` asks now." % (note.get("error") or "no answer", mark)
     )
 
 
@@ -1318,6 +1332,8 @@ def ask_again(
     the new letter (`titled` is false, so the next title the hook sets is "<letter>: <words>")."""
     if not force and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
         return note
+    # Stamped before the chain:  a hook killed inside it (a hung assigner) does not repeat it on the next prompt.
+    chat.write(dict(note, failed_at=chat.now))
     fresh = _apply(chat, _enroll(chat, words, parent), dict(note, parent=parent))
     if lettered(fresh):
         fresh.update(announce=True, placeholder=compose(str(fresh["label"]), ""))
@@ -1903,11 +1919,16 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
     print nothing, close nothing.
 
     A letter that comes here goes on the title through the adapter's writer when it has one;  a platform that takes
-    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true."""
+    titles only from hook output gets it at the next prompt, which reads `titled` false and `announce` true.  For a
+    lettered chat on a platform whose writer renames natively, the turn end also does the rename part (a platform
+    that retitled the chat itself, dropping the letter, gets it back)."""
     note = chat.read()
     if not note:
         return 0
-    if not lettered(note) and note.get("state") not in ("mismatch", "closed"):
+    if lettered(note) and chat.spec.title_writer is not None:
+        on_rename(chat, data, Out(io.StringIO(), chat.spec, ""))
+        note = chat.read()
+    elif not lettered(note) and note.get("state") not in ("mismatch", "closed"):
         parent = _text(chat.spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
         note = ask_again(chat, note, str(note.get("title") or ""), parent)
         if lettered(note) and note.get("announce"):
@@ -1948,19 +1969,6 @@ def _issues_value(text: str) -> Any:
         return text  # refused by the registry as any value that is not a list is
 
 
-def record_issues_local(OR: Any, db: str, identity: Mapping[str, Any], text: str) -> dict[str, Any]:
-    """The `issues` op on a registry file: the session's update with the list it carries."""
-    out = OR.update_session(
-        db,
-        platform=identity["platform"],
-        verified_host=identity["location"],
-        profile_scope=identity["scope"],
-        native_session_id=identity["session_id"],
-        issues=_issues_value(text),
-    )
-    return _issues_answer(out)
-
-
 def record_issues_api(
     env: Mapping[str, str], identity: Mapping[str, Any], text: str
 ) -> dict[str, Any]:
@@ -1996,6 +2004,8 @@ def _write_title(
         reason=reason,
         data=data,
         env=chat.env,
+        shown=str(note.get("shown") or ""),
+        held=held(note),
     )
     try:
         return bool(writer(request))
@@ -2127,6 +2137,7 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
         )  # the grandparents' turn may have registered this one (a store that names a loop)
         if _settled(note):
             return
+        mother.write(dict(note, failed_at=chat.now))
         done = _apply(
             mother,
             mother.registry("register", title=str(note.get("title") or ""), parent=grand),
@@ -2172,13 +2183,18 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     if inherited:
         start["seen"] = inherited  # the name the chat started with is not a rename
     note = _apply(chat, answer, start)
-    if note["state"] in ("failed", "mismatch"):
+    if note["state"] == "mismatch":
+        # Another seat holds this chat:  the note says so, and its title is that seat's to keep.
+        chat.write(note)
+        out.emit("start", context=no_letter(spec, note))
+        return 0
+    if note["state"] == "failed":
         # No letter, for whatever reason:  the chat is titled "??: <Title>" and carries on.
         shown = unlettered(
             chat, note, loose, current, data, "start", settable=source in spec.title_sources
         )
         chat.write(note)
-        out.emit("start", context=no_letter(note), title=shown)
+        out.emit("start", context=no_letter(spec, note), title=shown)
         return 0
     label = note["label"]
     text = loose
@@ -2258,6 +2274,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     title = None
     answer: dict[str, Any] = {}
     text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
+    if announce and not text and not note.get("titled"):
+        # A letter that came on a prompt with no words (a bare slash command):  the "??" goes now, the words later.
+        title = compose(note["label"], "")
     if text:
         title = compose(note["label"], text)
         note.update(
@@ -2335,9 +2354,29 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
 def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     """A platform that says when a chat was renamed: keep the letter on its title and the Operator's words current."""
     note = chat.read()
+    current = tidy(chat.spec.current_title(data, chat.env))
+    if note and not lettered(note) and note.get("state") not in ("mismatch", "closed"):
+        # A chat with no letter keeps its "??" over a new name, and asks again when the stamp says it is due.
+        words = bare(current, held(note))
+        if not words or current in (note.get("shown"), note.get("seen")):
+            return 0
+        note["seen"] = current
+        parent = _text(chat.spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        note = ask_again(chat, note, words, parent)
+        if lettered(note):
+            note["titled"] = True
+            note["title"] = words
+            shown = present(chat, note, compose(str(note["label"]), words), current, data, "rename")
+            context = reminder(chat.spec, note)
+            note.pop("announce", None)
+        else:
+            shown, context = unlettered(chat, note, words, current, data, "rename"), ""
+        chat.write(note)
+        if shown or context:
+            out.emit("rename", context=context, title=shown, label=str(note.get("label") or ""))
+        return 0
     if note.get("state") != "open":
         return 0
-    current = tidy(chat.spec.current_title(data, chat.env))
     words, show = _renamed(note, current)
     if not (words or show):
         return 0
@@ -2456,6 +2495,8 @@ def _run_hook(
     out = Out(stdout, spec, _text(data.get("hook_event_name")))
     if where is not None and where not in spec.locations:
         return 0  # the platform does not run there, so this is not one of its chats
+    if where is None and "server" not in spec.locations:
+        return 0  # a Mac-only platform on a host that is not the Mac:  not one of its chats
     # A host that does not state its location still runs the chat:  every registry call answers NO_LOCATION, so the
     # chat is a "??" chat until the host says where it is.
     chat = Chat(
@@ -2507,12 +2548,43 @@ def adapter_platforms() -> list[str]:
     return sorted(name for name in names if valid_platform(name))
 
 
+#: The shapes of the note fields the request path reads:  a field that is present must have its type.
+_NOTE_FIELDS: dict[str, tuple[type, ...]] = {
+    "state": (str,),
+    "label": (str,),
+    "platform": (str,),
+    "title": (str,),
+    "shown": (str,),
+    "parent": (str,),
+    "location": (str,),
+    "error": (str,),
+    "failed_at": (int, float),
+    "sync_failed_at": (int, float),
+    "touched_at": (int, float),
+    "generation": (int,),
+    "labels": (list,),
+}
+
+
+def note_problem(note: Mapping[str, Any]) -> str:
+    """What is wrong with a letter note's shape, or "" when every field the request path reads has its type and a
+    label is "" or one or two capitals."""
+    for key, kinds in _NOTE_FIELDS.items():
+        value = note.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, kinds)):
+            return "%s must be %s" % (key, " or ".join(k.__name__ for k in kinds))
+    label = note.get("label") or ""
+    if label and not LABEL_RE.fullmatch(label):
+        return "label must be one or two capital letters"
+    return ""
+
+
 def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str, str] | str:
     """(spec, session id, seat) of the chat a `request` is about, or why there is none.
 
     With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
-    runs in:  the first spec in the table whose own session-id reader finds an id in the environment (the same
-    reader `show` uses) and whose note for that id exists.  The note is the proof the chat is that platform's:  a
+    runs in:  the first spec in the table whose own session-id reader, or whose session id variables (its
+    `session_env`, then AGENT_SESSION, the fleet's own name for it), name an id whose note exists.  The note is the proof the chat is that platform's:  a
     stray variable from another platform's shell finds no note and is never registered."""
     root = L.state_root(env)
     if sid:
@@ -2533,10 +2605,13 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
                     note = json.load(fh)
             except (OSError, ValueError):
                 continue
-            platform = str(note.get("platform") or "") if isinstance(note, dict) else ""
+            if not isinstance(note, dict) or note_problem(note):
+                problem = note_problem(note) if isinstance(note, dict) else "not a JSON object"
+                return "invalid letter note for chat %s: %s" % (sid, problem)
+            platform = str(note.get("platform") or "")
             spec = load_spec(platform) if valid_platform(platform) else None
             if spec is None:
-                return "chat %s is a %s chat, which has no entry in the shared letter table yet" % (
+                return "chat %s is a %s chat, which has no entry in the letter table" % (
                     sid,
                     platform or "unknown",
                 )
@@ -2546,14 +2621,19 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
         spec = load_spec(platform)
         if spec is None:
             continue
-        try:
-            found = SI.check(spec.session_id({}, env), "the session id")
-        except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
-            continue
         seat = spec.seat_for({}, env)
-        if seat and os.path.isfile(note_path(env, seat, found)):
-            return spec, found, seat
-    return "no chat of the shared letter table runs in this shell; pass --session-id S"
+        try:
+            own = spec.session_id({}, env)  # the spec's own reader, for one that reads the environment
+        except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
+            own = ""
+        for value in (own, *(env.get(name) for name in (*spec.session_env, "AGENT_SESSION"))):
+            try:
+                found = SI.check(_text(value), "the session id")
+            except ValueError:
+                continue
+            if seat and os.path.isfile(note_path(env, seat, found)):
+                return spec, found, seat
+    return "no chat with a letter note runs in this shell; pass --session-id S"
 
 
 def request_main(
@@ -2595,6 +2675,10 @@ def request_main(
         seat=seat,
     )
     note = chat.read()
+    problem = note_problem(note)
+    if problem:
+        stdout.write("no letter: invalid letter note for chat %s: %s\n" % (sid, problem))
+        return 1
     if note.get("location") in LOCATIONS:
         chat.location = str(
             note["location"]
@@ -2627,7 +2711,8 @@ def request_main(
     note = ask_again(chat, note, "" if words == PLACEHOLDER else words, parent, force=True)
     if lettered(note):
         title = compose(str(note["label"]), str(note.get("title") or ""))
-        present(chat, note, title, str(note.get("shown") or ""), {}, "retry", settable=False)
+        payload = dict(spec.chat_payload(sid)) if spec.chat_payload else {"session_id": sid}
+        present(chat, note, title, str(note.get("shown") or ""), payload, "retry", settable=False)
         note["titled"] = note.get("shown") == title
         chat.write(note)
         stdout.write("letter %s: %s chat %s\n" % (note["label"], spec.display, sid))
@@ -2676,20 +2761,33 @@ def _flag(words: list[str], name: str) -> str:
     return ""
 
 
+#: The commands of the two letter clients this table replaced, and the platform whose entries they are.
+RETIRED_HOOKS = {"simple-chat": "claude", "mm-session-letter": "minimax"}
+
+
 def installed_command(entry: object, platform: str) -> list[str] | None:
-    """The words of the command in a hook entry when it is this platform's `platform-letter hook`, else None.  The
-    entry may have any shape: every string in it is looked at."""
+    """The words of the command in a hook entry when it is this platform's `platform-letter hook` (or `simple-chat
+    letter hook`, the same command), else None.  The entry may have any shape: every string in it is looked at.
+
+    The hooks installed before Claude and MiniMax joined the table (`simple-chat letter hook` with no --platform, and
+    `mm-session-letter hook-...`) count as theirs (RETIRED_HOOKS), so `install` replaces them in place instead of
+    adding a second set."""
     for text in _strings(entry):
         try:
             words = shlex.split(text)
         except ValueError:
             continue
-        if (
-            len(words) >= 2
-            and os.path.basename(words[0]) == ENTRY
-            and words[1] == "hook"
-            and _flag(words[2:], "--platform") == platform
-        ):
+        program = os.path.basename(words[0]) if words else ""
+        if program == ENTRY and words[1:2] == ["hook"]:
+            rest = words[2:]
+        elif program == "simple-chat" and words[1:3] == ["letter", "hook"]:
+            rest = words[3:]
+        elif program in RETIRED_HOOKS and words[1:2] and words[1].startswith("hook-"):
+            rest = []
+        else:
+            continue
+        named = _flag(rest, "--platform") or RETIRED_HOOKS.get(program, "")
+        if named == platform:
             return words
     return None
 
@@ -3023,7 +3121,8 @@ USAGE = (
     "usage: platform-letter {hook --platform P [--location L]\n"
     "                        | registry OP --platform P ...\n"
     "                        | show --platform P [--session-id S]\n"
-    "                        | install --platform P [--location L] [--check | --remove]}\n"
+    "                        | install --platform P [--location L] [--check | --remove]\n"
+    "                        | request [--session-id S]}\n"
 )
 
 
@@ -3063,10 +3162,9 @@ def main(
         return 0 if argv else 2
     if argv[0] == "hook":
         try:
-            # `--remote` is still parsed, and never used:  hook commands installed before the ssh hop was deleted
-            # carry it, and a hook that cannot parse its own command line would give its chat neither a letter nor a
-            # "??".  Re-running `install` writes the command without it.
-            flags = _flags(argv[1:], ("--platform", "--location", "--remote"))
+            # A command line this hook cannot read (a retired flag) is a hook that does nothing and exits 0:  the hook
+            # never blocks a chat.  Re-running `install` writes the current command.
+            flags = _flags(argv[1:], ("--platform", "--location"))
             spec = load_spec(flags.get("platform", ""))
             if spec is None:
                 stderr.write("platform-letter hook: no adapter for the platform\n")
@@ -3117,6 +3215,8 @@ def main(
         )
     if argv[0] == "install":
         return install_main(argv[1:], env, stdout)
+    if argv[0] == "request":
+        return request_main(argv[1:], env, stdout, transport=transport)
     stderr.write(USAGE)
     return 2
 

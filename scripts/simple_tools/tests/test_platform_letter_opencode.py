@@ -36,7 +36,6 @@ class SpecTests(unittest.TestCase):
     def test_the_adapter_is_found_by_the_library(self) -> None:
         self.assertIs(PL.load_spec("opencode"), OC.SPEC)
         self.assertEqual((OC.SPEC.platform, OC.SPEC.seat, OC.SPEC.source), ("opencode", "OPENCODE", "opencode-letter-plugin"))
-        self.assertEqual(OC.SPEC.off_variable, "OPENCODE_LETTER")
         self.assertEqual((OC.SPEC.output, OC.SPEC.title_in_output), ("json", True))
         self.assertEqual(OC.SPEC.locations, PL.LOCATIONS)  # OpenCode runs on both hosts
 
@@ -63,10 +62,10 @@ class SpecTests(unittest.TestCase):
         self.assertEqual(OC.opencode_title({}), "")
 
     def test_a_launcher_run_and_the_off_switches_take_no_letter(self) -> None:
-        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "BF"}, {"SESSION_LETTER": "0"}, {"OPENCODE_LETTER": "0"}):
+        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "BF"}, {"SESSION_LETTER": "0"}):
             with self.subTest(env=env):
                 self.assertFalse(PL.in_scope(OC.SPEC, env, {}))
-        self.assertTrue(PL.in_scope(OC.SPEC, {"CODEX_LETTER": "0"}, {}))
+        self.assertTrue(PL.in_scope(OC.SPEC, {"OPENCODE_LETTER": "0"}, {}))  # no per-platform switch
 
     def test_a_title_with_the_no_letter_mark_is_a_headless_run_and_takes_no_letter(self) -> None:
         # The spec's `kind` answered chat or subagent only, so the library's rule that a headless run takes no letter
@@ -586,7 +585,7 @@ class NodeTests(HookBase):
         )
         # The hook runs in a subprocess, so the assigner is served on loopback for it.
         env["SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"] = self.fake.serve(self.state)
-        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER", "OPENCODE_LETTER"):
+        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"):
             env.pop(name, None)
         proc = subprocess.run(
             ["node", driver, sys.executable, str(ENTRY)], capture_output=True, text=True, timeout=180, env=env

@@ -56,7 +56,7 @@ No double registration.  OpenCode with a Claude model is still OpenCode: the pr
 CLAUDE_CODE_ENTRYPOINT (the string is in neither binary, v2.1.1 on the server and v2.2.2 on the Mac), and the
 Claude hook lives in the `hooks` of `~/.claude/settings.json`, which only Claude Code runs: on a scratch OpenCode with
 CLAUDE_CODE_ENTRYPOINT=cli in its environment and marker hooks in that file, no marker fired and the registry held no
-`claude` row (opencode_letter_plugin/README.md).  So `claude_letter` never runs for an OpenCode chat, and this
+`claude` row (opencode_letter_plugin/README.md).  So the Claude row's hook never runs for an OpenCode chat, and this
 adapter registers under the platform `opencode` and the seat OPENCODE only.
 
 Installing.  `platform-letter install --platform opencode [--location server] [--check | --remove]` puts
@@ -133,6 +133,7 @@ SPEC = PL.PlatformSpec(
     close_reasons=("archived", "deleted"),
     output="json",
     title_in_output=True,
+    session_env=("OPENCODE_SESSION_ID",),
 )
 
 

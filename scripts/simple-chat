@@ -34,18 +34,13 @@ if (
 
     sys.exit(attach_main(sys.argv[2:], command=sys.argv[1]))
 
-# `letter` (AFC-564) is the Claude Code session-letter hook and its registry side.  Unlike attach it never needs the
-# hosted server (it reaches the registry on the Mac in process or over ssh), and the managed wrapper on a seat host
-# turns remote mode on for every seat, so the hook must run whether or not SIMPLE_CHAT_REMOTE is set:  skipped, it
-# would fall through to the CLI's argument parser and exit 2, which blocks the prompt.
-# `letter request` (owner, Nov 11, 2026) is the one command, the same on every platform, that asks the one assigner for
-# this chat's letter now and prints the letter or the refusal in one line;  the shared letter client answers it.
-if __name__ == "__main__" and sys.argv[1:3] == ["letter", "request"]:
-    from simple_tools.platform_letter import request_main  # noqa: E402
-
-    sys.exit(request_main(sys.argv[3:]))
+# `letter` is the one letter client, the same command and verbs on every platform (`platform-letter`):  the hook every
+# platform's hook file runs, `request` (ask the one assigner for this chat's letter now), `show`, `install` and
+# `registry`.  It never needs the hosted server, and the managed wrapper on a seat host turns remote mode on for every
+# seat, so it must run whether or not SIMPLE_CHAT_REMOTE is set:  skipped, it would fall through to the CLI's argument
+# parser and exit 2, which blocks the prompt.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
-    from simple_tools.claude_letter import main as letter_main  # noqa: E402
+    from simple_tools.platform_letter import main as letter_main  # noqa: E402
 
     sys.exit(letter_main(sys.argv[2:]))
 

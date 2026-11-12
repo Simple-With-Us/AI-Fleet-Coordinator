@@ -37,7 +37,7 @@ Each step is **AUTOMATED** (an installer subcommand does it), **OWNER-ACTION** (
    ```
    # Mac
    platform-letter install --platform muse
-   # server (the registry file is on the Mac, reached over ssh)
+   # server (every host asks the Operator registry API directly)
    platform-letter install --platform muse --location server
    # both: from the home folder, which Muse trusts
    cd ~

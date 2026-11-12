@@ -21,7 +21,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from simple_tools import claude_letter as CL
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_grok_leader as G
@@ -314,16 +313,17 @@ class AccessorTests(Base):
         self.assertEqual(G.SPEC.locations, ("mac",))
         for name, canonical in G.SPEC.events.items():
             self.assertEqual(PL.canonical_event(G.SPEC, {"hook_event_name": name}), canonical)
-        self.assertEqual(G.SPEC.off_variable, "GROK_LETTER")
         self.assertIs(PL.load_spec("grok-leader"), G.SPEC)
 
     def test_the_claude_hook_is_not_in_scope_in_a_grok_hook_environment(self) -> None:
         """Grok imports Claude hook files; the Claude letter hook gates on CLAUDE_CODE_ENTRYPOINT, which Grok does not set
         itself.  A Grok that inherits one (started from a Claude Code Bash tool) is the gap `install` warns about."""
         grok = self.hook_env(gid(1), "session_start", CLAUDE_PROJECT_DIR="/tmp/cwd", GROK_WORKSPACE_ROOT="/tmp/cwd")
-        self.assertFalse(CL.in_scope(grok))
-        self.assertFalse(CL.in_scope(self.env(CLAUDE_CODE_ENTRYPOINT="sdk-cli")))
-        self.assertTrue(CL.in_scope(self.env(CLAUDE_CODE_ENTRYPOINT="cli")))  # and a real Claude chat still is
+        from simple_tools import platform_letter_claude as PC
+
+        self.assertFalse(PL.in_scope(PC.SPEC, grok, {}))
+        self.assertFalse(PL.in_scope(PC.SPEC, self.env(CLAUDE_CODE_ENTRYPOINT="sdk-cli"), {}))
+        self.assertTrue(PL.in_scope(PC.SPEC, self.env(CLAUDE_CODE_ENTRYPOINT="cli"), {}))  # a real Claude chat is
 
 
 class RenameTests(Base):
@@ -584,7 +584,7 @@ class HookTests(FlowBase):
     def test_the_off_switches(self) -> None:
         sid = gid(1)
         self.session(sid)
-        for name in ("GROK_LETTER", "SESSION_LETTER"):
+        for name in ("SESSION_LETTER",):
             env = self.env(GROK_SESSION_ID=sid, GROK_HOOK_EVENT="session_start", **{name: "0"})
             self.assertIsNone(self.start(sid, env=env), name)
         self.assertIsNone(self.lookup(sid))
@@ -596,14 +596,14 @@ class HookTests(FlowBase):
 
     def test_the_gates_are_the_hosting_processs_environment(self) -> None:
         """The hook of a leader-hosted chat runs in the leader's environment, so what only the client that asked for the
-        chat had set (a launcher's AGENT_LAUNCHER, GROK_LETTER=0 in a terminal) never reaches it, and what the leader
+        chat had set (a launcher's AGENT_LAUNCHER, SESSION_LETTER=0 in a terminal) never reaches it, and what the leader
         itself carries reaches every chat on it.  Pinned both ways so the README's account stays the true one."""
         sid, other = gid(1), gid(2)
         self.session(sid)
         self.session(other)
         self.start(sid, env=self.leader_env(sid))
         self.assertRegex(self.label(sid), PAIR)  # nothing of the client is in the leader's environment: a letter
-        for extra in ({"AGENT_LAUNCHER": "botfleet"}, {"GROK_LETTER": "0"}, {"SESSION_LETTER": "0"}):
+        for extra in ({"AGENT_LAUNCHER": "botfleet"}, {"SESSION_LETTER": "0"}):
             self.assertIsNone(self.start(other, env=self.leader_env(other, **extra)), extra)  # a leader started that way
         self.assertIsNone(self.lookup(other))
 

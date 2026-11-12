@@ -46,9 +46,8 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 157th is simple_tools/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
 # The 158th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
 # unit template stays repo-only under simple_tools/server/).
-# The 159th is scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper (OPS-1048):  the copy the
-# install writes to ~/.local/bin/zc-letter/platform-letter, which sources the shared registry env before it execs
-# the checkout's real platform-letter.
+# The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
+# env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
 # simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
 # The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
@@ -153,11 +152,8 @@ EXACT = frozenset(
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
-        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to), and the letter
-        # hook's wrapper (the copy `platform-letter install --platform zcode` writes, which sources the shared
-        # registry env file before it execs this checkout's real platform-letter).
+        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to).
         "scripts/zc-wake-bridge",
-        "scripts/zcode-letter-hook/platform-letter",
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
     }

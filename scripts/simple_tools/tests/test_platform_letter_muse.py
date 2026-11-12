@@ -93,10 +93,10 @@ class Tree(unittest.TestCase):
 class ProcessTests(Tree):
     def test_read_proc_keeps_only_the_identity_variables(self) -> None:
         fake_proc(self.proc, 7, ppid=3, argv=(MUSE_EXE, "exec"), exe=MUSE_EXE,
-                  env={"AGENT_LAUNCHER": "botfleet", "GITHUB_TOKEN": "x" * 12, "MUSE_LETTER": "0", "PATH": "/bin"})
+                  env={"AGENT_LAUNCHER": "botfleet", "GITHUB_TOKEN": "x" * 12, "SESSION_LETTER": "0", "PATH": "/bin"})
         proc = MR.read_proc(7, self.proc)
         self.assertEqual((proc.pid, proc.ppid, proc.exe), (7, 3, MUSE_EXE))
-        self.assertEqual(dict(proc.env), {"AGENT_LAUNCHER": "botfleet", "MUSE_LETTER": "0"})
+        self.assertEqual(dict(proc.env), {"AGENT_LAUNCHER": "botfleet", "SESSION_LETTER": "0"})
         self.assertNotIn("x" * 12, repr(proc))
 
     def test_a_missing_process_a_zombie_and_pid_one_are_none(self) -> None:
@@ -137,22 +137,22 @@ class ProcessTests(Tree):
                 return SimpleNamespace(stdout="  4242 /opt/homebrew/bin/muse\n")
             if argv[:3] == ["ps", "-o", "command="]:
                 return SimpleNamespace(stdout=flat + "\n")
-            return SimpleNamespace(stdout=flat + " MUSE_LETTER=0 GITHUB_TOKEN=" + "x" * 12 + "\n")  # ps eww
+            return SimpleNamespace(stdout=flat + " SESSION_LETTER=0 GITHUB_TOKEN=" + "x" * 12 + "\n")  # ps eww
 
         kernel = ("/opt/homebrew/bin/muse", ("/opt/homebrew/bin/muse", "login page redirects to the wrong host"),
-                  ["PATH=/bin", "MUSE_LETTER=0", "GITHUB_TOKEN=" + "x" * 12])
+                  ["PATH=/bin", "SESSION_LETTER=0", "GITHUB_TOKEN=" + "x" * 12])
         with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: kernel):
             proc = MR.read_proc(9999, None, runner)
         self.assertEqual((proc.pid, proc.ppid, proc.exe), (9999, 4242, "/opt/homebrew/bin/muse"))
         self.assertEqual(proc.argv, kernel[1])
         self.assertEqual(MR.subcommand(proc.argv), "")
-        self.assertEqual(dict(proc.env), {"MUSE_LETTER": "0"})
+        self.assertEqual(dict(proc.env), {"SESSION_LETTER": "0"})
         self.assertNotIn("x" * 12, repr(proc))
         # Where the kernel will not say, `ps` alone answers, with the words flattened as before.
         with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: None):
             flat = MR.read_proc(9999, None, runner)
         self.assertEqual(flat.argv[:2], ("/opt/homebrew/bin/muse", "login"))
-        self.assertEqual(dict(flat.env), {"MUSE_LETTER": "0"})
+        self.assertEqual(dict(flat.env), {"SESSION_LETTER": "0"})
         # A process that is gone is None, whichever way it is read.
         gone = lambda argv, **kw: SimpleNamespace(stdout="")
         with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: kernel):
@@ -162,8 +162,8 @@ class ProcessTests(Tree):
         def buffer(argc: int, path: bytes, args: list, env: list, pad: int = 3) -> bytes:
             return argc.to_bytes(4, sys.byteorder) + path + b"\0" * pad + b"".join(a + b"\0" for a in args) + b"".join(e + b"\0" for e in env)
 
-        raw = buffer(2, b"/opt/muse", [b"muse", b"login page"], [b"PATH=/bin", b"MUSE_LETTER=0"])
-        self.assertEqual(MR.parse_procargs(raw), ("/opt/muse", ("muse", "login page"), ["PATH=/bin", "MUSE_LETTER=0"]))
+        raw = buffer(2, b"/opt/muse", [b"muse", b"login page"], [b"PATH=/bin", b"SESSION_LETTER=0"])
+        self.assertEqual(MR.parse_procargs(raw), ("/opt/muse", ("muse", "login page"), ["PATH=/bin", "SESSION_LETTER=0"]))
         # An empty argument stays, and a process with no environment is fine.
         self.assertEqual(MR.parse_procargs(buffer(3, b"/opt/muse", [b"muse", b"", b"x"], [])), ("/opt/muse", ("muse", "", "x"), []))
         for bad in (b"", b"\0\0\0\0", buffer(0, b"/x", [], []), buffer(9, b"/x", [b"a"], []), b"\2\0\0\0/no-nul"):
@@ -202,7 +202,7 @@ class KindTests(Tree):
 
     def test_a_launcher_the_opt_outs_and_the_helper_mark_take_no_letter(self) -> None:
         for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"}, {"AGENT_LAUNCHER": "simple-tools-wake"},
-                    {"SESSION_LETTER": "0"}, {"MUSE_LETTER": "0"}, {MR.HELPER_MARK: "1"}):
+                    {"SESSION_LETTER": "0"}, {"SESSION_LETTER": "0"}, {MR.HELPER_MARK: "1"}):
             self.muse(env=env)
             self.assertEqual(self.kind(), "headless", env)
         self.muse(env={"SESSION_LETTER": "1", "AGENT_SEAT": "MC"})
@@ -248,7 +248,6 @@ class SpecTests(unittest.TestCase):
         spec = PL.load_spec("muse")
         self.assertIs(spec, PLM.SPEC)
         self.assertEqual((spec.platform, spec.seat, spec.source, spec.display), ("muse", "MC", "muse-letter-hook", "Muse Code"))
-        self.assertEqual(spec.off_variable, "MUSE_LETTER")
         self.assertEqual(spec.close_reasons, ())
         self.assertFalse(spec.title_in_output)
         self.assertEqual(spec.events["SessionStart"], "start")
@@ -1150,7 +1149,7 @@ class HookFlowTests(Tree):
         self.assertEqual(self.note()["ended"]["reason"], "other")
 
     def test_a_headless_run_a_launcher_run_and_an_opt_out_leave_no_trace(self) -> None:
-        for words, env in ((("exec", "hi"), {}), (("serve",), {}), ((), {"AGENT_LAUNCHER": "botfleet"}), ((), {"MUSE_LETTER": "0"}),
+        for words, env in ((("exec", "hi"), {}), (("serve",), {}), ((), {"AGENT_LAUNCHER": "botfleet"}), ((), {"SESSION_LETTER": "0"}),
                            ((), {MR.HELPER_MARK: "1"})):
             self.muse(*words, env=env)
             self.assertIsNone(self.start())

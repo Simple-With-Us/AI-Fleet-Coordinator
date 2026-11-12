@@ -225,11 +225,11 @@ class TitleTests(unittest.TestCase):
 
 class SpecTests(unittest.TestCase):
     def test_a_spec_is_checked(self) -> None:
-        self.assertEqual(make_spec().off_variable, "CODEX_LETTER")
-        self.assertEqual(make_spec(platform="mc-code", seat="MC").off_variable, "MC_CODE_LETTER")
+        # Claude and MiniMax are rows of the table like every other platform (owner, Nov 11, 2026).
+        self.assertEqual(make_spec(platform="claude", seat="CLAUDE").platform, "claude")
+        self.assertEqual(make_spec(platform="minimax", seat="MM").platform, "minimax")
+        self.assertFalse(hasattr(make_spec(), "off_variable"))  # one off switch, SESSION_LETTER, for every platform
         for bad in (
-            dict(platform="claude", seat="CLAUDE"),  # reserved to its own hook
-            dict(platform="minimax", seat="MM"),
             dict(platform="Codex"),
             dict(platform="x"),
             dict(seat="codex"),
@@ -246,18 +246,15 @@ class SpecTests(unittest.TestCase):
         self.assertIsNone(PL.location({}, "linux"))
         self.assertEqual(PL.location({PL.ENV_LOCATION: "Server"}, "linux"), "server")
         self.assertIsNone(PL.location({PL.ENV_LOCATION: "my-laptop"}, "linux"))
-        self.assertEqual(PL.location({PL.ENV_LOCATION_FALLBACK: "server"}, "linux"), "server")
-        both = {PL.ENV_LOCATION: "mac", PL.ENV_LOCATION_FALLBACK: "server"}
-        self.assertEqual(PL.location(both, "linux"), "mac")  # the generic name wins over the Claude one
-        self.assertEqual(PL.location(both, "linux", flag="server"), "server")  # a flag wins over both
+        self.assertIsNone(PL.location({"CLAUDE_LETTER_LOCATION": "server"}, "linux"))  # no seat-named variable
+        self.assertEqual(PL.location({PL.ENV_LOCATION: "mac"}, "linux", flag="server"), "server")  # a flag wins
         self.assertIsNone(PL.location({}, "linux", flag="cloud"))
 
     def test_scope(self) -> None:
         spec = make_spec()
         self.assertTrue(PL.in_scope(spec, {}, {}))
         self.assertFalse(PL.in_scope(spec, {"SESSION_LETTER": "0"}, {}))
-        self.assertFalse(PL.in_scope(spec, {"CODEX_LETTER": "0"}, {}))
-        self.assertTrue(PL.in_scope(spec, {"OPENCODE_LETTER": "0"}, {}))
+        self.assertTrue(PL.in_scope(spec, {"CODEX_LETTER": "0"}, {}))  # no per-platform switch
         # A launcher-run session never takes a platform letter: BotFleet, Grok Bot and the wake runs have their own.
         for env in (
             {"AGENT_LAUNCHER": "botfleet"},
@@ -315,8 +312,10 @@ class SpecTests(unittest.TestCase):
         PL.register_spec(spec)
         self.assertIs(PL.load_spec("testbot"), spec)
         self.assertIsNone(PL.load_spec("nosuchplatform"))
-        for name in ("", "../etc", "os", "claude", "Codex", "a;b"):
+        for name in ("", "../etc", "os", "Codex", "a;b"):
             self.assertIsNone(PL.load_adapter(name), name)
+        for name in ("claude", "minimax"):  # rows of the one table
+            self.assertEqual(PL.load_spec(name).platform, name)
         module = types.SimpleNamespace(SPEC=make_spec(platform="faux", seat="FAUX"))
         with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_faux": module}):
             self.assertEqual(PL.load_spec("faux").seat, "FAUX")
@@ -327,15 +326,6 @@ class SpecTests(unittest.TestCase):
 
 class ContractTests(unittest.TestCase):
     """The one function that speaks `operator_registry`: it asks only for what the registry takes."""
-
-    def registry_of(self, register_session):
-        return SimpleNamespace(register_session=register_session, ISSUER_OPERATOR="OPERATOR")
-
-    def ask(self, OR_, **extra):
-        return PL.operator_register(
-            OR_, "db", platform="codex", location="server", sid="s-0001", seat="CODEX", source="x",
-            title="T", space="double", pick="primary", **extra,
-        )
 
     def test_the_pick(self) -> None:
         with_primary = SimpleNamespace(LETTER_PICKS=("lowest", "oldest", "primary"))
@@ -408,14 +398,16 @@ class RegistrySideTests(Base):
         self.assertFalse(os.path.exists(other))  # no local registry, ever
         self.assertEqual(self.fake.requests, [])
 
-    def test_the_claude_and_minimax_namespaces_are_not_this_sides_to_write(self) -> None:
-        for platform in ("claude", "minimax", "Codex", "", "../x"):
+    def test_every_platform_name_is_written_and_a_bad_name_is_refused(self) -> None:
+        for platform in ("Codex", "", "../x"):
             with self.subTest(platform=platform):
                 code, out = self.registry(*self.reg_argv("register", "s-0001", platform=platform))
                 self.assertEqual(code, 2)
                 self.assertIn("error", out)
-        self.assertIsNone(self.lookup("s-0001", platform="claude"))
-        self.assertIsNone(self.lookup("s-0001", platform="minimax"))
+        for platform, seat in (("claude", "CLAUDE"), ("minimax", "MM")):
+            code, out = self.registry(*self.reg_argv("register", "s-0001", platform=platform, seat=seat))
+            self.assertEqual(code, 0, out)
+            self.assertIsNotNone(self.lookup("s-0001", platform=platform))
 
     def test_bad_arguments_and_session_ids(self) -> None:
         self.assertEqual(self.registry("register", "--bogus")[0], 2)
@@ -888,12 +880,11 @@ class HookTests(Base):
         class OldRegistry(Calls):
             """A Mac on a runtime from before the touch named the letter."""
 
-            def __call__(self, cmd, **kwargs):
-                answer = super().__call__(cmd, **kwargs)
-                body = json.loads(answer.stdout)
-                if shlex.split(cmd[8])[2] == "touch":
-                    body = {k: v for k, v in body.items() if k not in ("label", "generation")}
-                return SimpleNamespace(stdout=json.dumps(body) + "\n", returncode=answer.returncode)
+            def __call__(self, argv):
+                answer = super().__call__(argv)
+                if argv[0] == "touch":
+                    answer = {k: v for k, v in answer.items() if k not in ("label", "generation")}
+                return answer
 
         label = self.titled_chat()
         self.move_letter("s-0001", "QX")
@@ -1404,8 +1395,9 @@ class HookTests(Base):
             "",
         ):
             with self.subTest(answer=answer):
-                def bad(cmd, **kwargs):
-                    return SimpleNamespace(stdout=answer, returncode=0)
+                def bad(argv, answer=answer):
+                    # The answer the registry side would print, read the way the client reads it.
+                    return PL._last_json(answer) or {"error": "the registry gave no answer"}
 
                 out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
                                 transport=bad)
@@ -1419,6 +1411,7 @@ class HookTests(Base):
         out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
                         transport=answer)
         self.assertIn("another seat", out["additionalContext"])
+        self.assertNotIn("sessionTitle", out)  # the other seat's title is left as it is
         self.assertEqual(self.note("s-0001")["state"], "mismatch")
         self.assertIsNone(self.prompt("s-0001", "x"))
 
@@ -1493,8 +1486,8 @@ class HookTests(Base):
 
     def test_an_adapter_can_own_its_hook_entry(self) -> None:
         """A platform whose payload has no event name or whose answer has a shape of its own defines `hook_main`; the
-        library entry calls it with what `hook` takes, minus the spec.  A `--remote` an old install wrote is parsed
-        and dropped."""
+        library entry calls it with what `hook` takes, minus the spec.  A retired flag (`--remote`, from before the ssh
+        hop was deleted) is a command line the hook does not read:  it does nothing and exits 0."""
         seen = {}
 
         def hook_main(env, stdin, stdout, **kwargs):
@@ -1509,9 +1502,11 @@ class HookTests(Base):
         with mock.patch.dict(sys.modules, {"simple_tools.platform_letter_owned": module}):
             code = PL.main(["hook", "--platform", "owned", "--location", "server", "--remote", "mac"],
                            env=self.env(), stdin=io.StringIO("payload"), stdout=out, stderr=err)
+            self.assertEqual((code, out.getvalue(), seen), (0, "", {}))
+            code = PL.main(["hook", "--platform", "owned", "--location", "server"],
+                           env=self.env(), stdin=io.StringIO("payload"), stdout=out, stderr=err)
         self.assertEqual((code, out.getvalue(), seen["stdin"]), (0, '{"own": true}\n', "payload"))
         self.assertEqual(seen["location_flag"], "server")
-        self.assertNotIn("remote_flag", seen)
 
     def test_a_session_id_that_is_not_one_is_ignored(self) -> None:
         ssh = Calls(self)
@@ -1528,7 +1523,6 @@ class HookTests(Base):
             {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "BF-BUILDER"},
             {"AGENT_LAUNCHER": "simple-tools-wake"},
             {"AGENT_LAUNCH_SEAT": "BF-BUILDER"},
-            {"CODEX_LETTER": "0"},
             {"SESSION_LETTER": "0"},
         ):
             with self.subTest(extra=extra):
@@ -1566,9 +1560,6 @@ class HookTests(Base):
             self.hook({"hook_event_name": "SessionStart", "source": "startup"}, spec=bot,
                       env=dict(env, **extra), transport=answer)
         self.assertEqual(seen, [])
-        # The Claude platform's own spec cannot be built, so no adapter can write its rows from here.
-        with self.assertRaises(ValueError):
-            make_spec(platform="claude", seat=PL.from_env("AGENT_LAUNCH_SEAT"))
 
     def test_a_platform_that_runs_only_on_the_mac_takes_no_server_letter(self) -> None:
         spec = make_spec(platform="grok", seat="GROK", locations=("mac",))
@@ -2011,8 +2002,8 @@ class HookTests(Base):
         # waited for: the sub-thread would otherwise take a main pair ahead of it.
         t0 = time.time()
 
-        def refuses(cmd, **kwargs):
-            return SimpleNamespace(stdout=json.dumps({"error": "no Operator registry on this host"}), returncode=3)
+        def refuses(argv):
+            return {"error": "no Operator registry on this host"}
 
         self.hook({"hook_event_name": "SessionStart", "session_id": "q-0001", "source": "startup"}, spec=spec,
                   runner=refuses, now=t0)
