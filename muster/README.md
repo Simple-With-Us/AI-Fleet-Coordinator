@@ -70,7 +70,7 @@ Every panel has one name, the same in the sidebar, the window title and its own 
 
 ## Keyboard
 
-Command-K opens Quick Open:  type a panel's name or a word that goes with it (for example `pm2`, `wake` or `audit`), use the arrow keys, and press Return.  A count beside a result is the sidebar's own count for that panel.  The Go menu lists every panel, and Command-1 to Command-9 open the first nine in the sidebar's order, from Overview to Resource Limits.  The rest are reached through Quick Open or the Go menu.
+Command-K opens Quick Open:  type a panel's name or a word that goes with it (for example `pm2`, `wake` or `audit`), use the arrow keys, and press Return.  A count beside a result is the sidebar's own count for that panel.  The Go menu lists every panel, and Command-1 to Command-9 open the first nine in the sidebar's order, from Overview to Resource Limits.  The rest are reached through Quick Open or the Go menu.
 
 ## Scope
 
