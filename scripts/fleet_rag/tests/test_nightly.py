@@ -418,6 +418,12 @@ class NightlyJobTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             env = _ready(Path(tmp))
+            _fresh_mirror(env, Path(tmp) / "mirror")
+            store = Path(env["FLEET_RAG_NIGHTLY_SUMMARY"])
+            store.write_text(
+                json.dumps({"alert_fingerprint": "ok=0|errors:nope", "alert_streak": 2}) + "\n",
+                encoding="utf-8",
+            )
             for key in ("ZULIP_SITE", "ZULIP_EMAIL", "ZULIP_API_KEY"):
                 env.pop(key, None)
             summary = nightly_job.execute(
@@ -430,6 +436,8 @@ class NightlyJobTests(unittest.TestCase):
             )
         self.assertEqual(summary["alert"], "unconfigured")
         self.assertEqual(posts, [])
+        self.assertEqual(summary.get("alert_streak"), 2)
+        self.assertEqual(summary.get("alert_fingerprint"), "ok=0|errors:nope")
 
     def test_zulip_credentials_load_from_infisical(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

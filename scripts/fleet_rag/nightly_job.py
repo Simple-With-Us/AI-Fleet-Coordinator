@@ -347,6 +347,20 @@ def _read_previous_summary(path: Path) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _inherit_alert_state(summary: dict, store_path: Path | None) -> None:
+    """Keep the last posted streak when tonight did not deliver an alert."""
+    if store_path is None:
+        summary.pop("alert_fingerprint", None)
+        summary.pop("alert_streak", None)
+        return
+    previous = _read_previous_summary(store_path)
+    summary["alert_fingerprint"] = (previous.get("alert_fingerprint") or "").strip()
+    try:
+        summary["alert_streak"] = int(previous.get("alert_streak") or 0)
+    except (TypeError, ValueError):
+        summary["alert_streak"] = 0
+
+
 def zulip_post(site: str, email: str, api_key: str, fields: dict[str, str]) -> None:
     """POST one Zulip message.  Same https-only shape as code-main-sync."""
     parsed = urllib.parse.urlsplit(site.strip().rstrip("/"))
@@ -408,9 +422,8 @@ def send_alert(
                 streak = int(previous.get("alert_streak") or 0) + 1
             except (TypeError, ValueError):
                 streak = 2
-    summary["alert_fingerprint"] = fingerprint
-    summary["alert_streak"] = streak
     if not (site and email and api_key):
+        _inherit_alert_state(summary, store_path)
         return "unconfigured"
     host = os.uname().nodename
     tag = env.get("FLEET_RAG_ALERT_TAG") or ALERT_TAG
@@ -437,7 +450,10 @@ def send_alert(
         (post or zulip_post)(site, email, api_key, fields)
     except Exception as exc:  # noqa: BLE001 - alerting must not hide the ingest result
         sys.stderr.write(f"alert: Zulip post failed ({type(exc).__name__})\n")
+        _inherit_alert_state(summary, store_path)
         return "failed"
+    summary["alert_fingerprint"] = fingerprint
+    summary["alert_streak"] = streak
     sys.stderr.write("alert: posted\n")
     return "posted"
 
@@ -728,6 +744,8 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _on_term)
     summary = execute(env)
     held["summary"] = summary
+    if summary.get("warnings") == ["lock-busy"]:
+        _inherit_alert_state(summary, path)
     try:
         write_summary(path, summary)
     except OSError as exc:
