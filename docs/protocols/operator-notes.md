@@ -21,6 +21,8 @@ The verbs, their options and the tool arguments are one contract:  `scripts/simp
 
 The output is the same everywhere:  a write answers `status: done` with the `note_id`, a read answers the note, and only a request still waiting when the caller's wait ran out answers `queued` or `running` with its `request_id`.
 
+A pin the Shortcut does not do still answers `done`.  The result also carries `pin_skipped`, the reason, and the note is saved unpinned.  `notes_status` on the direct path and on the Operator path returns that same field, and a pin that ran omits it.  The Mac runner writes the result, including `pin_skipped`, into its spool before it reports.  A crash after that write reports the same result again on the next pass, and a second pass reports nothing.  The queue stores one `pin_skipped`: a repeat of the same claim is the record already stored, not a second acknowledgement.  AFC-455 first described this as a Zulip reply on `#notes-relay`.  That channel is retired (AFC-486), and this result field is the report a requester reads.
+
 ## Where a Request Runs
 
 - **On the Mac** (macOS, `osascript` and the script found):  `simple-notes`, the stdio MCP and the apple-notes skill run `apple-notes-coding.sh` directly, as before.
