@@ -12,12 +12,14 @@ import json
 import os
 import shlex
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import types
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -2354,6 +2356,66 @@ class HookTests(Base):
         self.assertEqual(code, 1)
         self.assertIn("no chat with the session id s-0999", line)
         self.assertEqual(self.request("--bogus")[0], 2)
+
+
+class DurableWriteTests(Base):
+    """A file renamed into place survives a crash only when its folder is flushed too:  the note and a platform's hook
+    file are each fsynced, renamed, and then their folder is fsynced."""
+
+    @contextmanager
+    def writes(self):
+        """What happens to files while this is open, in order:  ("file", None) and ("folder", its (device, inode))
+        for an fsync, ("replace", the destination) for a rename."""
+        seen: list[tuple[str, object]] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            info = os.fstat(fd)
+            is_folder = stat.S_ISDIR(info.st_mode)
+            seen.append(("folder", (info.st_dev, info.st_ino)) if is_folder else ("file", None))
+            return real_fsync(fd)
+
+        def replace(src, dst):
+            seen.append(("replace", dst))
+            return real_replace(src, dst)
+
+        with mock.patch.object(PL.os, "fsync", fsync), mock.patch.object(PL.os, "replace", replace):
+            yield seen
+
+    def folder_id(self, path: str) -> tuple[int, int]:
+        info = os.stat(os.path.dirname(path))
+        return info.st_dev, info.st_ino
+
+    def test_a_note_is_fsynced_renamed_and_then_its_folder_is_fsynced(self) -> None:
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=1.0)
+        with self.writes() as seen:
+            self.assertTrue(chat.write({"state": "open", "label": "AA"}))
+        self.assertEqual(seen, [("file", None), ("replace", chat.path), ("folder", self.folder_id(chat.path))])
+        self.assertEqual(chat.read()["label"], "AA")
+
+    def test_a_note_whose_folder_cannot_be_flushed_is_not_called_saved(self) -> None:
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=1.0)
+        with mock.patch.object(PL, "_sync_folder", side_effect=OSError("no fsync here")):
+            self.assertFalse(chat.write({"state": "open", "label": "AA"}))  # and nothing is raised into the hook
+        self.assertEqual(os.listdir(os.path.dirname(chat.path)), ["s-0001.json"])  # no temporary file is left
+
+    def test_a_hook_file_is_fsynced_renamed_and_then_its_folder_is_fsynced(self) -> None:
+        path = os.path.join(self.home, ".claude", "settings.json")
+        out = io.StringIO()
+        with self.writes() as seen:
+            self.assertEqual(PL.install_main(["--platform", "claude"], self.env(), out), 0)
+        self.assertEqual(seen[-3:], [("file", None), ("replace", path), ("folder", self.folder_id(path))])
+        # The same holds when the file is there already (it is backed up first, then replaced).
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"hooks": {}}, fh)
+        with self.writes() as seen:
+            self.assertEqual(PL.install_main(["--platform", "claude"], self.env(), out), 0)
+        self.assertEqual(seen[-2:], [("replace", path), ("folder", self.folder_id(path))])
+        # A folder that cannot be flushed is an install that failed, not one reported as done.
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"hooks": {}}, fh)
+        with mock.patch.object(PL, "_sync_folder", side_effect=OSError("no fsync here")), self.assertRaises(OSError):
+            PL.install_main(["--platform", "claude"], self.env(), out)
 
 
 class InstallTests(Base):

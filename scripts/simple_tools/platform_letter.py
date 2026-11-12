@@ -1026,6 +1026,16 @@ def _answer(value: dict[str, Any] | None) -> dict[str, Any]:
 Transport = Callable[[list[str]], Mapping[str, Any]]
 
 
+def _sync_folder(folder: str) -> None:
+    """Flush a folder to disk after a file was renamed into it, so the rename itself survives a crash:  the file's
+    own fsync covers its bytes, not the folder entry that names it."""
+    dir_fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 class Chat:
     """One chat, as the hook sees it: its spec, location and session id, its note, and the way to its registry.
 
@@ -1061,8 +1071,9 @@ class Chat:
         return data if isinstance(data, dict) else {}
 
     def write(self, note: Mapping[str, Any]) -> bool:
-        """Save the note; False when it cannot be saved (a state folder that is not writable).  The hook goes on
-        without it, so the letter is still shown, and the next event only resumes the registration."""
+        """Save the note; False when it cannot be saved (a state folder that is not writable, or one whose rename
+        could not be made durable).  The hook goes on without it, so the letter is still shown, and the next event
+        only resumes the registration."""
         tmp = ""
         try:
             folder = os.path.dirname(self.path)
@@ -1084,6 +1095,8 @@ class Chat:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)
+            tmp = ""  # renamed into place:  nothing is left to clean up
+            _sync_folder(folder)
         except (OSError, TypeError, ValueError):
             if tmp:
                 try:
@@ -3159,6 +3172,7 @@ def install_json_hooks(
                 os.fsync(fh.fileno())
             os.chmod(tmp, file_mode)
             os.replace(tmp, path)
+            _sync_folder(os.path.dirname(path))
         except BaseException:
             try:
                 os.unlink(tmp)
