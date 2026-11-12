@@ -48,7 +48,7 @@ SCANNED = sorted(
 ALLOWLIST: dict[str, str] = {
     # Settings read from the environment that are not registered knobs, each with its reason.
     "SIMPLE_TOOLS_OPERATOR_DM_MODE": "staged Operator DM policy (legacy or clarify); whether to register or remove it is an owner decision (AFC-773).",
-    "OPERATOR_ZULIP_USER_ID": "the Operator's Zulip identity pin; its one home is Infisical /operator, read by the Eavesdropper's loader, so a knob would be a second home.",
+    "OPERATOR_ZULIP_USER_ID": "the Operator's Zulip identity pin, an identity and not an owner-tunable: the environment wins, else `[daemon] operator_user_id` in the host's listener.toml, and on the server the Eavesdropper's loader fills it from Infisical /operator; so not a knob.",
     "OPERATOR_ALERTER_HOOK": "a command line the per-host wake alerter runs; the alerter has no Infisical access.",
     "OPERATOR_ALERTER_HOOK_TIMEOUT": "the per-host wake alerter's hook time limit, read at import; the alerter has no Infisical access.",
     "OPERATOR_LISTENER_URL": "the address one host's wake alerter polls, a per-host URL.",
