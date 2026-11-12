@@ -56,7 +56,7 @@ A successful run is quiet.  Zulip gets a post on the OPS stream, topic `fleet-r
 
 ## Mac job
 
-Installer: `python3 scripts/fleet_rag/mirror_install.py`.  Template: `scripts/launchd/com.jay.fleet-rag-mirror.plist`.
+Installer: `python3 scripts/fleet_rag/mirror_install.py`.  Template: `scripts/launchd/com.jay.fleet-rag-mirror.plist`.  Example paths live in `scripts/launchd/fleet-rag-mirror.env.example` (copy to a private 0600 env file; the job never reads that file at runtime).
 
 `apply` without `--enable` writes the LaunchAgent and a config with `enabled` false, and does not call `launchctl`.  `--enable` is the only path that sets `enabled` true and bootstraps the agent.  A loaded agent still does nothing while `enabled` is false.
 
@@ -145,13 +145,19 @@ sudo systemctl enable --now fleet-rag-nightly.timer
 The Mac needs no Infisical token.  The SSH key must work non-interactively to the server.
 
 ```bash
+# Paths below match scripts/launchd/fleet-rag-mirror.env.example — copy that file,
+# edit the values for the Mac and server, keep it mode 0600, then:
+set -a
+source ~/Library/Application\ Support/fleet-rag/mirror-install.env
+set +a
 python3 scripts/fleet_rag/mirror_install.py \
-  --ssh-target <user@host> \
-  --remote-root /home/jay/fleet-rag-mirror \
-  --remote-script /home/jay/apps/AI-Fleet-Coordinator/scripts/fleet_rag/mirror.py
+  --ssh-target "$FLEET_RAG_MIRROR_SSH_TARGET" \
+  --remote-root "$FLEET_RAG_MIRROR_REMOTE_ROOT" \
+  --remote-script "$FLEET_RAG_MIRROR_REMOTE_SCRIPT" \
+  --remote-python "$FLEET_RAG_MIRROR_REMOTE_PYTHON"
 ```
 
-That writes `enabled` false and does not bootstrap.  Confirm the config, then turn the schedule on with the same command plus `--enable`.
+That writes `enabled` false and does not bootstrap.  Confirm the config, then turn the schedule on with the same command plus `--enable`.  LaunchAgent stdout and stderr land in `~/Library/Logs/fleet-rag-mirror.log`; the push also appends one summary line there each run.
 
 `remote_root` is the parent.  `FLEET_RAG_MIRROR` on the server is `<remote_root>/current`.
 
@@ -174,5 +180,5 @@ The last promoted mirror stays on the server.  Ingest keeps pruning skill and m
 ## Checks
 
 ```bash
-cd scripts && python3 -m unittest fleet_rag.tests.test_nightly fleet_rag.tests.test_ingest fleet_rag.tests.test_sources
+cd scripts && python3 -m unittest fleet_rag.tests.test_nightly fleet_rag.tests.test_mirror_logging fleet_rag.tests.test_ingest fleet_rag.tests.test_sources
 ```
