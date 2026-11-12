@@ -1170,6 +1170,7 @@ test("testflight-apps.json is complete and carries no gate override", () => {
   assert.ok(clMac && !clMac.skip, "contactlogo-mac is monitored for Mac TestFlight");
   assert.equal(clMac.ship.workflow, "mac-testflight.yml");
   assert.doesNotMatch(clMac.ship.workflow, /mac-release/);
+  assert.equal(clMac.autoRemedy, false, "Mac TestFlight auto-remedy stays off until Jay approves it");
   assert.deepEqual(reg.apps.dealdex.paths, ["apps/ios"]);
   assert.ok(!reg.apps.contactlogo.paths.some((p) => p.startsWith("Apps/")));
 });
@@ -1201,7 +1202,10 @@ test("registry paths in testflight-apps.json exist on each repo's main branch", 
     await deps.gh("repos/Simple-With-Us/AI-Fleet-Coordinator/contents/README.md?ref=main");
   } catch (err) {
     const msg = String(err.message || err);
-    if (/401|Bad credentials|HTTP 403/i.test(msg)) t.skip(`GitHub contents API needs a readable token: ${msg.split(":").slice(0, 2).join(":")}`);
+    if (/401|Bad credentials|HTTP 403/i.test(msg)) {
+      t.skip(`GitHub contents API needs a readable token: ${msg.split(":").slice(0, 2).join(":")}`);
+      return;
+    }
     throw err;
   }
   await assertRegistryPathsExist(reg, (p) => deps.gh(p));

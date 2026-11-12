@@ -89,7 +89,7 @@
       "ship": { "workflow": "mac-testflight.yml", "inputs": {} },
       "sourceWorkflows": ["mac-testflight.yml", "testflight.yml"],
       "compileCheck": "Mac TestFlight*",
-      "autoRemedy": true
+      "autoRemedy": false
     },
     "botfleet": {
       "displayName": "BotFleet",
