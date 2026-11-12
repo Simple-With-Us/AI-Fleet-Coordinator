@@ -5756,10 +5756,9 @@ class RouterHealthTests(Base):
             f"SEAT{i:02d}": {"healthy": True, "delivery": True}
             for i in range(foc.OPERATOR_MAX_SEATS + 3)
         }
-        seats["!BAD"] = {"healthy": True, "delivery": True}
         seats["AG"] = {
-            "healthy": 1,
-            "delivery": "yes",
+            "healthy": False,
+            "delivery": False,
             "reason": f"{self.SECRET_URL} {self.SECRET_WORD}",
         }
         code, answer = self.plan_health(doc={"healthy": "yes", "seats": seats})
@@ -5767,15 +5766,15 @@ class RouterHealthTests(Base):
         rh = answer["routerHealth"]
         self.assertIsNone(rh["healthy"])
         self.assertTrue(rh["truncated"])
-        self.assertEqual(rh["dropped"], 1)
+        self.assertEqual(rh["dropped"], 0)
         by_seat = {row["seat"]: row for row in rh["seats"]}
         self.assertEqual(
             by_seat["AG"],
             {
                 "seat": "AG",
-                "installed": None,
-                "healthy": None,
-                "delivery": None,
+                "installed": True,
+                "healthy": False,
+                "delivery": False,
                 "registry_configured": None,
                 "reason": "other",
             },
@@ -5783,6 +5782,19 @@ class RouterHealthTests(Base):
         text = json.dumps(answer)
         self.assertNotIn(self.SECRET_URL, text)
         self.assertNotIn(self.SECRET_WORD, text)
+        for bad_seats in (
+            {"!BAD": {"healthy": True, "delivery": True}},
+            {"AG": "not-a-dict"},
+            {"AG": {"healthy": 1, "delivery": True}},
+            {"AG": {"healthy": True, "delivery": "yes"}},
+            {"AG": {"healthy": True, "delivery": False, "reason": 123}},
+        ):
+            with self.subTest(bad_seats=bad_seats):
+                bad_code, bad_ans = self.plan_health(doc={"healthy": True, "seats": bad_seats})
+                self.assertEqual(
+                    (bad_code, bad_ans["ok"], bad_ans["result"], bad_ans["errorCode"]),
+                    (1, False, "unavailable", "not_json"),
+                )
 
     def test_refusals_and_unavailable_states(self):
         code, mac_target = self.plan_health(
@@ -5884,6 +5896,12 @@ class RouterHealthTests(Base):
                     self.assertEqual(
                         foc.read_router_health_http(url=url, max_bytes=8), (None, "too_large")
                     )
+                    deep_body = (b"[" * 20) + b"0" + (b"]" * 20)
+                    state.update(status=200, body=b'{"healthy": true, "seats": {}, "deep": ' + deep_body + b"}")
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
+                    wide_body = b'{"healthy": true, "seats": {}, "extra": [' + b",".join([b"0"] * 10050) + b"]}"
+                    state.update(status=200, body=wide_body)
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
                 finally:
                     if old_proxy is None:
                         os.environ.pop("HTTP_PROXY", None)
@@ -5894,6 +5912,44 @@ class RouterHealthTests(Base):
         self.assertEqual(foc.read_router_health_http(url=url), (None, "router_not_running"))
 
 
+
+    def test_read_router_health_http_times_out_slow_trickle_peer(self):
+        import http.server
+        import socketserver
+        import threading
+
+        class TrickleHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                try:
+                    for _ in range(20):
+                        self.wfile.write(b"{")
+                        self.wfile.flush()
+                        time.sleep(0.05)
+                except OSError:
+                    pass
+
+            def log_message(self, format, *args):
+                pass
+
+        class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+
+        with Server(("127.0.0.1", 0), TrickleHandler) as srv:
+            port = srv.server_address[1]
+            url = f"http://127.0.0.1:{port}/health"
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                started = time.monotonic()
+                result = foc.read_router_health_http(url=url, timeout=0.25)
+                elapsed = time.monotonic() - started
+                self.assertEqual(result, (None, "timeout"))
+                self.assertLess(elapsed, 0.9)
+            finally:
+                srv.shutdown()
 class SourceTests(unittest.TestCase):
     def test_no_shell_true_anywhere(self):
         text = Path(HERE, "fleet-ops-control.py").read_text()
