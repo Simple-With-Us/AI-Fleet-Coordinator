@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
-  acquireLockDir, annotateExternalGroups, annotateInternalLanding, attachPreReleaseVersions, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, preReleaseVersionsBulkPath, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry, shouldRemedyApp,
-  ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
+  acquireLockDir, annotateExternalGroups, annotateInternalLanding, assertRegistryPathsExist, attachPreReleaseVersions, betaTesterCountFromJson, buildCutTime, buildsFilterForBetaGroupPath, buildsRelationshipForBetaGroupPath, externalBetaGroupsListPath, oldestRun, preReleaseVersionsBulkPath, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry, shouldRemedyApp,
+  ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeDeps, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1166,6 +1166,45 @@ test("testflight-apps.json is complete and carries no gate override", () => {
     if (a.autoRemedy !== false) assert.ok(a.compileCheck, `${key}: autoRemedy needs a compile check`);
     assert.ok(["IOS", "MAC_OS"].includes(a.platform), `${key}: platform`);
   }
+  const clMac = reg.apps["contactlogo-mac"];
+  assert.ok(clMac && !clMac.skip, "contactlogo-mac is monitored for Mac TestFlight");
+  assert.equal(clMac.ship.workflow, "mac-testflight.yml");
+  assert.doesNotMatch(clMac.ship.workflow, /mac-release/);
+  assert.deepEqual(reg.apps.dealdex.paths, ["apps/ios"]);
+  assert.ok(!reg.apps.contactlogo.paths.some((p) => p.startsWith("Apps/")));
+});
+
+test("assertRegistryPathsExist rejects a path GitHub does not have on main", async () => {
+  const reg = registry({
+    demo: app({ repo: "Demo", paths: ["ios", "gone/tree"] }),
+  });
+  const gh = async (apiPath) => {
+    if (apiPath.includes("gone%2Ftree") || apiPath.includes("gone/tree")) {
+      const e = new Error("HTTP 404: Not Found");
+      e.notFound = true;
+      throw e;
+    }
+    return { name: "ios", path: "ios" };
+  };
+  await assert.rejects(() => assertRegistryPathsExist(reg, gh), /gone\/tree.*not found on main/);
+});
+
+test("registry paths in testflight-apps.json exist on each repo's main branch", async (t) => {
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (!token) {
+    t.skip("needs GH_TOKEN or GITHUB_TOKEN to verify paths on GitHub");
+    return;
+  }
+  const reg = loadRegistry(path.join(HERE, "testflight-apps.json"));
+  const deps = makeDeps({ ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token });
+  try {
+    await deps.gh("repos/Simple-With-Us/AI-Fleet-Coordinator/contents/README.md?ref=main");
+  } catch (err) {
+    const msg = String(err.message || err);
+    if (/401|Bad credentials|HTTP 403/i.test(msg)) t.skip(`GitHub contents API needs a readable token: ${msg.split(":").slice(0, 2).join(":")}`);
+    throw err;
+  }
+  await assertRegistryPathsExist(reg, (p) => deps.gh(p));
 });
 
 // ---------------------------------------------------------------------------
