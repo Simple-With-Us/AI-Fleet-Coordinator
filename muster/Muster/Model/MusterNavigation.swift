@@ -186,8 +186,15 @@ extension MusterDestination {
         }
     }
 
-    /// The shortcut as a menu shows it, or nil.
-    var shortcutLabel: String? { shortcutDigit.map { "\u{2318}\($0)" } }
+    /// Writes this panel as the saved place the window follows, unless a sheet is up over the
+    /// window:  a sheet owns the window until it closes, so the panel beneath it is left alone.
+    /// Returns whether it wrote.
+    @discardableResult
+    func saveAsPlace(underSheet: Bool, in defaults: UserDefaults = .standard) -> Bool {
+        guard !underSheet else { return false }
+        defaults.set(rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        return true
+    }
 }
 
 /// Quick Open's search:  pure, so every panel's reachability is a test.
