@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.server
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import secrets
@@ -203,7 +204,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertNotEqual(out["PATH"], "/nowhere")
         self.assertNotIn("INFISICAL_CLIENT_ID", out)
         self.assertNotIn("INFISICAL_CLIENT_SECRET", out)
-        self.assertIn("loaded 11 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
+        self.assertIn("loaded 12 variables from Infisical (prod /zulip; 1 replaced a container value, 5 other", line)
         for value in list(self.values.values()) + [self.csecret, fake.token]:
             self.assertNotIn(value, line)
 
@@ -215,7 +216,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(out["SENTRY_FLEET_DSN"], "https://k@o1.ingest.us.sentry.io/1")
         self.assertNotIn("SENTRY_API_TOKEN", out)
         self.assertNotIn("SIMPLE_TOOLS_SENTRY_DSN_OTHER", out)
-        self.assertIn("loaded 12 variables", line)
+        self.assertIn("loaded 13 variables", line)
         self.assertNotIn("k@o1", line)
 
     def test_missing_service_token_fails_closed_before_any_request(self) -> None:
@@ -229,7 +230,7 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             fake.read_failures = 1
             out, line = IE.build_env(self.env(fake), sleep=lambda s: None)
-        self.assertIn("loaded 11 variables", line)
+        self.assertIn("loaded 12 variables", line)
         # The /zulip read is retried once;  then /operator and /wake-router are read once each.
         self.assertEqual([m for m, _ in fake.requests], ["GET"] * 7)
         raw_paths = [folder(p) for m, p in fake.requests if "/api/v3/secrets/raw?" in p]
@@ -287,14 +288,17 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(out["JET_ROUTINE_URL"], self.values["JET_ROUTINE_URL"])
         self.assertEqual(out["JET_ROUTINE_KEY"], self.values["JET_ROUTINE_KEY"])
         self.assertEqual(out["ZULIP_GB_FIXER_API_KEY"], self.values["ZULIP_GB_FIXER_API_KEY"])
+        # The one router bearer comes from /wake-router, never from the container copy.
+        self.assertEqual(out["WAKE_ROUTER_KEY"], fake.wake_secrets["WAKE_ROUTER_KEY"])
+        self.assertNotEqual(out["WAKE_ROUTER_KEY"], self.COOLIFY_COPIES["WAKE_ROUTER_KEY"])
         # Names Infisical does not hold are gone, never kept from the container:  a seat's names (any seat),
-        # the router's bearer the Eavesdropper does not use, the Operator's voice and notes-queue keys.
-        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", "WAKE_ROUTER_KEY", "ZC_ROUTINE_KEY", "ZC_ROUTINE_URL",
+        # the Operator's voice and notes-queue keys.
+        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", "ZC_ROUTINE_KEY", "ZC_ROUTINE_URL",
                      "ZULIP_CLAUDE_EMAIL", "ZULIP_OPERATOR_API_KEY", "OPERATOR_NOTES_RUNNER_KEY"):
             self.assertNotIn(name, out)
         # The router's other knobs are not the Eavesdropper's to carry.
         self.assertNotIn("WAKE_ROUTER_DELIVERY_ENABLED", out)
-        self.assertIn("Infisical-only names: 3 of 3 (", line)
+        self.assertIn("Infisical-only names: 4 of 4 (", line)
         self.assertIn("OPERATOR_REGISTRY_KEY from /wake-router SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", line)
         self.assertIn("container copies removed: %d (" % len(self.COOLIFY_COPIES), line)
         for value in (list(self.COOLIFY_COPIES.values()) + list(fake.wake_secrets.values())
@@ -342,6 +346,43 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertNotIn("JET_ROUTINE_URL", out)
         self.assertIn("not usable, so not loaded: JET_ROUTINE_KEY, JET_ROUTINE_URL", line)
         self.assertNotIn("ftp://", line)
+
+    def test_the_routine_url_rule_matches_the_daemons(self) -> None:
+        # The ZCode bridge is plain http to a Tailscale address;  the daemon accepts that, so the loader does too.
+        tailnet = "http://%s:8791/wake/ZC" % ipaddress.IPv4Address((100 << 24) | (64 << 16) | 7)
+        for url in (tailnet, "http://127.0.0.1:8791/wake", "http://localhost/wake", "https://jet.test/wake"):
+            self.assertTrue(IE.seat_value_usable("ZC_ROUTINE_URL", url), url)
+        for url in ("http://jet.test/wake", "http://10.0.0.1/wake", "ftp://jet.test/wake", "https://u:p@jet.test/",
+                    "https://[::1/wake", "https://jet.test:99999/wake", "https://jet.test/a b", "https:///wake"):
+            self.assertFalse(IE.seat_value_usable("ZC_ROUTINE_URL", url), url)
+        from simple_tools import adapters
+
+        for url in (tailnet, "http://jet.test/wake", "https://[::1/wake", "https://jet.test:99999/wake"):
+            self.assertEqual(IE.routine_url_usable(url), adapters.routine_url_problem(url) is None, url)
+
+    def test_a_malformed_routine_url_is_refused_for_that_seat_and_never_raises(self) -> None:
+        values = dict(self.values, JET_ROUTINE_URL="https://[jet.test/wake")
+        with FakeInfisical(self.cid, self.csecret, values) as fake:
+            out, line = IE.build_env(self.env(fake))
+        self.assertNotIn("JET_ROUTINE_URL", out)
+        self.assertIn("not usable, so not loaded: JET_ROUTINE_URL", line)
+        self.assertIn("ZULIP_GB_FIXER_API_KEY", out, "every other seat still runs")
+
+    def test_a_reference_in_a_name_the_loader_never_uses_does_not_stop_startup(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            fake.wake_secrets["WAKE_ROUTER_MAC_SSH"] = "${fleet.some.reference}"
+            fake.operator_secrets["OPERATOR_SOMETHING_ELSE"] = "${fleet.other.reference}"
+            out, _ = IE.build_env(self.env(fake))
+        self.assertEqual(out["OPERATOR_REGISTRY_KEY"], fake.wake_secrets["SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"])
+        self.assertNotIn("WAKE_ROUTER_MAC_SSH", out)
+        self.assertNotIn("OPERATOR_SOMETHING_ELSE", out)
+
+    def test_a_reference_in_a_name_the_loader_uses_still_stops_startup(self) -> None:
+        for folder, name in (("wake", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"), ("operator", "OPERATOR_ZULIP_EMAIL")):
+            with self.subTest(name=name), FakeInfisical(self.cid, self.csecret, self.values) as fake:
+                getattr(fake, folder + "_secrets")[name] = "${fleet.some.reference}"
+                with self.assertRaisesRegex(IE.LoadError, "unresolved reference"):
+                    IE.build_env(self.env(fake))
 
     def test_an_unusable_infisical_only_value_stops_startup_without_the_value(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
@@ -471,7 +512,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(got, {"ZULIP_ALERT_GB_FIXER_KEY": self.values["ZULIP_ALERT_GB_FIXER_KEY"],
                                "INFISICAL_CLIENT_SECRET": None, "INFISICAL_CLIENT_ID": None,
                                "ZULIP_ALERT_GB_FIXER_HEADER": None})
-        self.assertIn("simple-chat: loaded 11 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 12 variables from Infisical", run.stderr)
         self.assertNotIn(self.csecret, run.stderr)
 
     def entrypoint(self, env: dict[str, str]) -> subprocess.CompletedProcess:
@@ -484,7 +525,7 @@ class InfisicalEnvTests(unittest.TestCase):
             run = self.entrypoint(self.env(fake))
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(json.loads(run.stdout)["running"], "simple-chat daemon status --json ran with the given arguments")
-        self.assertIn("simple-chat: loaded 11 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 12 variables from Infisical", run.stderr)
         self.assertEqual([p.split("?")[0] for _, p in fake.requests if "/api/v3/secrets/raw?" in p],
                          ["/api/v3/secrets/raw"] * 3)
         # /zulip, /operator (AFC-486 and the Operator's identity) and the router's /wake-router

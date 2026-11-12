@@ -215,6 +215,8 @@ a.  In Infisical, project AI Fleet Coordinator, environment `prod`, folder `/zu
 | `JET_ROUTINE_URL` | `https://agents.simplewithus.com/internal/wake/JET` |
 | `JET_ROUTINE_KEY` | the shared HMAC key, the same value as the Worker secret `WAKE_HMAC_KEY_JET`, at least 32 characters, a literal and not an Infisical reference.  A rotation changes this value and the Worker secret together. |
 
+**Move the key, never copy it.**  AFC prod `/zulip` is the one home of `JET_ROUTINE_KEY`.  Once it is there, delete the Fleet-OPS prod `/zulip` copy in the same sitting:  the loader loads a routine key held by both projects from neither, so leaving both copies leaves Jet unready and drops every Jet wake.  Install the Worker secret from the AFC copy (DEPLOY.md, "Wake Jet").
+
 b.  Switch JET's section of the **live** config to the http wake.  The container copied the sample onto its volume on first start and never re-reads the repo's copy, so merging this change did not reach it.  In the app's Coolify terminal (or `docker exec -i <container> sh` on the host), paste:
 
 ```

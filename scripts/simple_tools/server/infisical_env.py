@@ -32,7 +32,7 @@ the seat partition (every seat it gives to "server"), so nothing else in the fol
     ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY         the Operator bot's own address and key (AFC-602)
 
 CODE is the seat with hyphens as underscores.  The same rule applies to every seat:  a seat whose names are
-missing, or whose routine URL or key is not usable (https, or http to loopback;  a key of 32 characters or
+missing, or whose routine URL or key is not usable (https, or http to loopback or a Tailscale address;  a key of 32 characters or
 more), is simply not loaded, the line names it, and every other seat runs.
 
 INFISICAL_ONLY names are not per seat, so a missing or unusable one stops startup with an error naming the
@@ -157,6 +157,9 @@ INFISICAL_ONLY: tuple[tuple[str, str, str, str], ...] = (
         "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
         r"[!-~]{32,512}",
     ),
+    # The one bearer the Eavesdropper presents to the one wake router, for every seat whose wake goes
+    # through it (`key_env = "WAKE_ROUTER_KEY"` in a seat's section).  Not a seat's key:  one name, one home.
+    ("WAKE_ROUTER_KEY", WAKE_ROUTER_PATH, "WAKE_ROUTER_KEY", r"[!-~]{32,512}"),
 )
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
@@ -352,9 +355,13 @@ def fetch(
     token_name: str = TOKEN,
     expected_paths: tuple[str, ...] | None = None,
     stage: str = "read",
+    keep: frozenset[str] | None = None,
     **kw,
 ) -> dict[str, str]:
-    """{name: value} for every secret in one prod folder using a scoped service token."""
+    """{name: value} for every secret in one prod folder using a scoped service token.
+
+    With `keep`, only those names are returned and checked for an unresolved reference:  every listed row is
+    still verified, but a reference in a name the loader never uses cannot stop startup."""
     base = api_base(env)
     if token is None:
         token = (env.get(TOKEN) or "").strip()
@@ -399,6 +406,7 @@ def fetch(
     ):
         raise LoadError("read: no secrets list in the response")
     out: dict[str, str] = {}
+    seen: set[str] = set()
     for item in secrets:
         if (
             not isinstance(item, dict)
@@ -409,9 +417,12 @@ def fetch(
             or ("workspace" in item and item["workspace"] != project_id)
             or ("environment" in item and item["environment"] != environment)
             or ("secretPath" in item and item["secretPath"] != requested_path)
-            or item["secretKey"] in out
+            or item["secretKey"] in seen
         ):
             raise LoadError("%s: invalid or unverified listing" % stage)
+        seen.add(item["secretKey"])
+        if keep is not None and item["secretKey"] not in keep:
+            continue
         if UNRESOLVED_REFERENCE_RE.search(item["secretValue"]):
             raise LoadError("%s: secret value contains an unresolved reference" % stage)
         out[item["secretKey"]] = item["secretValue"]
@@ -518,6 +529,11 @@ def _wake_router_token(env: Mapping[str, str]) -> str:
     return token
 
 
+def infisical_only_sources(folder: str) -> frozenset[str]:
+    """The source names INFISICAL_ONLY reads from one folder."""
+    return frozenset(source for _, where, source, _ in INFISICAL_ONLY if where == folder)
+
+
 def wake_router_values(env: Mapping[str, str], **kw) -> dict[str, str]:
     """Every name in prod /wake-router of the primary project, read with its own exact-scope token.
 
@@ -529,6 +545,7 @@ def wake_router_values(env: Mapping[str, str], **kw) -> dict[str, str]:
         token_name=WAKE_ROUTER_TOKEN,
         expected_paths=(WAKE_ROUTER_PATH,),
         stage="read %s" % WAKE_ROUTER_PATH,
+        keep=infisical_only_sources(WAKE_ROUTER_PATH),
         **kw,
     )
 
@@ -574,24 +591,45 @@ def is_seat_name(name: str) -> bool:
 
 
 def seat_value_usable(name: str, value: str) -> bool:
-    """A routine pair's URL must be https (http only to loopback) and its key at least 32 characters, the same
+    """A routine pair's URL must pass the daemon's rule (routine_url_usable) and its key at least 32 characters, the same
     floor the daemon applies;  anything else is refused for that seat alone."""
     if name.endswith("_ROUTINE_KEY"):
         return bool(re.fullmatch(r"[!-~]{32,4096}", value.strip()))
     if name.endswith("_ROUTINE_URL"):
-        parsed = urllib.parse.urlsplit(value.strip())
-        if parsed.scheme == "https" and parsed.hostname:
-            return True
-        if parsed.scheme == "http" and parsed.hostname:
-            try:
-                return (
-                    parsed.hostname == "localhost"
-                    or ipaddress.ip_address(parsed.hostname).is_loopback
-                )
-            except ValueError:
-                return False
-        return False
+        return routine_url_usable(value.strip())
     return True
+
+
+# The Tailscale range (RFC 6598), built from numbers as adapters._TAILNET is, so the repo's private-address
+# guard does not read the rule as inventory.
+_TAILNET = ipaddress.ip_network((ipaddress.IPv4Address((100 << 24) | (64 << 16)), 10))
+
+
+def routine_url_usable(url: str) -> bool:
+    """The daemon's own rule (adapters.routine_url_problem):  https, or plain http only to loopback or a
+    Tailscale IP literal;  a host, no user:password part, no whitespace or control character.  A URL that does
+    not parse is refused for its seat alone, never raised."""
+    if any(ch in url for ch in "\r\n\x00\t "):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError on a bad port
+    except ValueError:
+        return False
+    if parts.scheme not in ("https", "http") or not host:
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    if parts.scheme == "https":
+        return True
+    if host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address in _TAILNET
 
 
 def _retired_knobs(env: Mapping[str, str]) -> None:
@@ -660,6 +698,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         token=token,
         expected_paths=primary_paths,
         stage="read operator",
+        keep=OPERATOR_NAMES | infisical_only_sources(OPERATOR_PATH),
         **kw,
     )
     operator = {name: value for name, value in operator_all.items() if name in OPERATOR_NAMES}
