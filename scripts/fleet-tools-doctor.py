@@ -161,13 +161,6 @@ SHIPPED = (
 # The fallback copy of what a release ships, for a host with no checkout.  With a checkout,
 # is_shipped asks the receiver's shipped_path (or allowed_path on an older receiver), so the
 # copies cannot drift;  a test pins this copy to the release's EXACT minus REPO_ONLY.
-# Allowed on a retained release, never in a new bundle.  Mirrors fleet-cli-release.REPO_ONLY.
-SHIPPED_REPO_ONLY = frozenset(
-    {
-        "scripts/simple_tools/seat_control.py",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
-    }
-)
 SHIPPED_EXACT = frozenset(
     {
         "scripts/simple-chat",
@@ -182,6 +175,7 @@ SHIPPED_EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
         "scripts/simple_tools/mcp/gb-identities.json",
