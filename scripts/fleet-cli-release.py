@@ -22,7 +22,11 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024
+# The allowlisted runtime's compact JSON crossed 8 MiB on 2026-11-12
+# (this branch by 375 bytes, main by 277, their merge by 4441).  9 MiB is
+# the shared sender and receiver ceiling.  fleet-cli-sync.py keeps the
+# same number, and the runtime test still requires the built bundle to fit.
+MAX_BUNDLE_BYTES = 9 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
