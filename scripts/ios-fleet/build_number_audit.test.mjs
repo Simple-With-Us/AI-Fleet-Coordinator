@@ -3,12 +3,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  BUILD_NUMBER_MIN,
-  BUILD_NUMBER_RE,
   EXIT_FAILED,
   EXIT_OK,
   EXIT_STRICT,
-  LEGACY_TIMESTAMP_BUILD_RE,
+  FLEET_BUILD_TIMESTAMP_RE,
   auditAppBuilds,
   auditBuildFormat,
   auditIosMacPair,
@@ -33,9 +31,10 @@ import {
 
 import { loadRegistry } from "./ios_testflight_freshness.mjs";
 
-const VALID = "2320";
-const VALID_OLD = "2310";
+const VALID = "202611091600";
+const VALID_OLD = "202611081200";
 const TIMESTAMP = "202611091430";
+const COUNTER = "2320";
 
 function buildRow(build, marketing, uploaded, platform = "IOS") {
   return {
@@ -81,23 +80,24 @@ test("compareSemver", () => {
 });
 
 test("fleet build number format", () => {
-  assert.ok(isFleetBuildNumber("2320"));
-  assert.ok(isFleetBuildNumber(String(BUILD_NUMBER_MIN)));
+  assert.ok(isFleetBuildNumber(TIMESTAMP));
+  assert.ok(isFleetBuildNumber(VALID));
+  assert.ok(!isFleetBuildNumber(COUNTER));
   assert.ok(!isFleetBuildNumber("235"));
-  assert.ok(!isFleetBuildNumber(TIMESTAMP));
   assert.ok(!isFleetBuildNumber(""));
   assert.ok(!isFleetBuildNumber(null));
-  assert.ok(BUILD_NUMBER_RE.test("2320"));
-  assert.ok(LEGACY_TIMESTAMP_BUILD_RE.test(TIMESTAMP));
+  assert.ok(FLEET_BUILD_TIMESTAMP_RE.test(TIMESTAMP));
+  assert.ok(!FLEET_BUILD_TIMESTAMP_RE.test(COUNTER));
 });
 
 test("finding: invalid build format", () => {
   assert.equal(auditBuildFormat([buildRow("235", "0.1.0", "2026-11-09T20:00:00Z")], "demo", "IOS").length, 1);
   assert.equal(
-    auditBuildFormat([buildRow(TIMESTAMP, "0.1.0", "2026-11-09T20:00:00Z")], "demo", "IOS").length,
+    auditBuildFormat([buildRow(COUNTER, "0.1.0", "2026-11-09T20:00:00Z")], "demo", "IOS").length,
     1,
   );
-  assert.match(invalidBuildDetail(TIMESTAMP), /retired UTC timestamp/);
+  assert.match(invalidBuildDetail(COUNTER), /not a main-merge timestamp build/);
+  assert.match(invalidBuildDetail(""), /missing/);
 });
 
 test("finding: missing build number", () => {
@@ -122,8 +122,8 @@ test("finding: non-monotonic uploads (adjacent only)", () => {
 
 test("finding: ios/mac mismatch", () => {
   const platformBuilds = {
-    IOS: [buildRow("2321", "0.1.0", "2026-11-09T21:00:00Z", "IOS")],
-    MAC_OS: [buildRow("2320", "0.1.0", "2026-11-09T20:00:00Z", "MAC_OS")],
+    IOS: [buildRow("202611091501", "0.1.0", "2026-11-09T21:00:00Z", "IOS")],
+    MAC_OS: [buildRow("202611091500", "0.1.0", "2026-11-09T20:00:00Z", "MAC_OS")],
   };
   const f = auditIosMacPair("contactlogo", platformBuilds);
   assert.equal(f.length, 1);

@@ -3,9 +3,10 @@
  * build_number_audit.mjs — read-only fleet build-number audit (AFC-675).
  *
  * For every app in testflight-apps.json it reads App Store Connect builds and
- * reports drift from FLEET-PROTOCOL.md § App Version and Build Numbers:  integer
- * build numbers from 1000 upward (1000-series), shared between iOS and Mac for a
- * release, and monotonically increasing.  Marketing version is 0.1.0 for all apps
+ * reports drift from the owner build policy of 2026-10-29 (Zulip #Policy,
+ * "ASC & TestFlight Version & Build #s"):  the build number is the main-merge
+ * timestamp in Central Time (YYYYMMDDHHMM, no dots, no counter), shared between
+ * iOS and Mac for a release, and monotonically increasing.  Marketing version is 0.1.0 for all apps
  * except Congress.Trade (1.1.2), unless an approved App Store version is higher.
  *
  *   node build_number_audit.mjs              human-readable table (current train)
@@ -34,18 +35,19 @@ import {
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-/** Standing rule: builds start at 1000 and count up (FLEET-PROTOCOL.md). */
-export const BUILD_NUMBER_MIN = 1000;
-/** Retired UTC timestamp stamps; invalid under the standing rule. */
-export const LEGACY_TIMESTAMP_BUILD_RE = /^20\d{10}$/;
-/** Positive integer build string (before min check). */
-export const BUILD_NUMBER_RE = /^[1-9]\d+$/;
+/** Standing rule (owner policy 2026-10-29): the build number is the main-merge
+    timestamp in Central Time, YYYYMMDDHHMM, with no dots and no counter.  A
+    rebuild of the same commit takes the highest existing build plus one, which
+    can land one minute past a real merge minute, so this shape check is the
+    format guard and the monotonic audit is the ordering guard. */
+export const FLEET_BUILD_TIMESTAMP_RE = /^20\d{10}$/;
 
 export const EXIT_OK = 0;
 export const EXIT_STRICT = 1;
 export const EXIT_FAILED = 2;
 
-export const FLEET_BUILD_RULE_SOURCE = "FLEET-PROTOCOL.md § App Version and Build Numbers";
+export const FLEET_BUILD_RULE_SOURCE =
+  "owner build policy 2026-10-29 (Zulip #Policy, ASC & TestFlight Version & Build #s)";
 
 /** App Store states that mean a version is approved and may raise the marketing floor. */
 export const APPROVED_STORE_STATES = new Set([
@@ -97,10 +99,7 @@ export function parseAuditArgs(argv) {
 
 export function isFleetBuildNumber(build) {
   const s = build == null ? "" : String(build);
-  if (LEGACY_TIMESTAMP_BUILD_RE.test(s)) return false;
-  if (!BUILD_NUMBER_RE.test(s)) return false;
-  const n = Number(s);
-  return Number.isFinite(n) && n >= BUILD_NUMBER_MIN;
+  return FLEET_BUILD_TIMESTAMP_RE.test(s);
 }
 
 export function invalidBuildDetail(build) {
@@ -108,10 +107,7 @@ export function invalidBuildDetail(build) {
   if (build == null || build === "") {
     return `build number is missing (${FLEET_BUILD_RULE_SOURCE})`;
   }
-  if (LEGACY_TIMESTAMP_BUILD_RE.test(shown)) {
-    return `build ${shown} uses retired UTC timestamp scheme; ${FLEET_BUILD_RULE_SOURCE} requires 1000-series builds`;
-  }
-  return `build ${shown} is not a valid 1000-series build number (${FLEET_BUILD_RULE_SOURCE})`;
+  return `build ${shown} is not a main-merge timestamp build (YYYYMMDDHHMM Central; ${FLEET_BUILD_RULE_SOURCE})`;
 }
 
 /**
