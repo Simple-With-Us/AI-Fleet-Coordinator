@@ -676,6 +676,113 @@ class ExtraDocWalkerTests(unittest.TestCase):
         paths = [d.path for d in docs]
         self.assertEqual(len(paths), len(set(pathlib.Path(p).resolve() for p in paths)))
 
+    def test_diet_excludes_are_held_and_legacy_skips_are_not(self) -> None:
+        docs = self.fleet / "docs"
+        paragraph = "A normal paragraph about the diet.\n"
+        (docs / "keep.md").write_text("# Keep\n\n" + paragraph)
+        (docs / "copy.md").write_text("# Copy\n\n" + paragraph)
+        (docs / "essay.md").write_text("# Essay\n\n" + ("word " * 2000) + "\n")
+        (docs / "Build").mkdir()
+        (docs / "Build" / "notes.md").write_text("# Notes\n\nkept because Build is not the legacy dir.\n")
+        (docs / "generated").mkdir()
+        (docs / "generated" / "api.md").write_text("# API\n\nbuilt\n")
+        (docs / "Coverage").mkdir()
+        (docs / "Coverage" / "index.md").write_text("# cov\n")
+        (docs / "third_party").mkdir()
+        (docs / "third_party" / "lib.md").write_text("# tp\n")
+        (docs / "vendored").mkdir()
+        (docs / "vendored" / "lib.md").write_text("# ven\n")
+        (docs / "out").mkdir()
+        (docs / "out" / "page.md").write_text("# out\n")
+        (docs / "app.min.md").write_text("# Min\n\nnope\n")
+        (docs / "schema.generated.md").write_text("# Schema\n\ngenerated\n")
+        (docs / "bundle.md").write_text("a" * sources.MINIFIED_LINE_CHARS + "\n")
+        (docs / "blob.md").write_bytes(b"# Blob\n\n\x00binary\n")
+        (docs / "node_modules" / "pkg").mkdir(parents=True)
+        (docs / "node_modules" / "pkg" / "README.md").write_text("# nm\n")
+        (docs / "dist").mkdir()
+        (docs / "dist" / "out.md").write_text("# dist\n")
+        (docs / "big.md").write_text("x" * (sources.DOC_MAX_BYTES + 1))
+        (self.fleet / "package-lock.json").write_text("{}\n")
+        (docs / "yarn.lock").write_text("lock\n")
+        (self.fleet / "custom.lock").write_text("lock\n")
+
+        walked = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=None,
+                apps_dir=None,
+                grok_home=None,
+            )
+        )
+        names = {pathlib.Path(d.path).name for d in walked}
+        for kept in ("keep.md", "copy.md", "essay.md", "notes.md", "README.md"):
+            self.assertIn(kept, names, kept)
+        for gone in (
+            "api.md",
+            "index.md",
+            "lib.md",
+            "page.md",
+            "app.min.md",
+            "schema.generated.md",
+            "bundle.md",
+            "blob.md",
+            "out.md",
+            "big.md",
+        ):
+            self.assertNotIn(gone, names, gone)
+
+        diet_files = [
+            docs / "generated" / "api.md",
+            docs / "Coverage" / "index.md",
+            docs / "third_party" / "lib.md",
+            docs / "vendored" / "lib.md",
+            docs / "out" / "page.md",
+            docs / "app.min.md",
+            docs / "schema.generated.md",
+            docs / "bundle.md",
+            docs / "blob.md",
+        ]
+        held = sources.take_held_doc_ids()
+        self.assertEqual(held, {sources.doc_id_for_path(p) for p in diet_files})
+        legacy = [
+            docs / "node_modules" / "pkg" / "README.md",
+            docs / "dist" / "out.md",
+            docs / "big.md",
+        ]
+        self.assertTrue(held.isdisjoint(sources.doc_id_for_path(p) for p in legacy))
+
+        self.assertEqual(sources.doc_exclude_reason(self.fleet / "package-lock.json"), "lockfile")
+        self.assertEqual(sources.doc_exclude_reason(docs / "yarn.lock"), "lockfile")
+        self.assertEqual(sources.doc_exclude_reason(self.fleet / "custom.lock"), "lockfile")
+        self.assertIsNone(sources.doc_exclude_reason(docs / "keep.md"))
+        self.assertIsNone(sources.doc_exclude_reason(docs / "essay.md"))
+        self.assertIsNone(sources.doc_exclude_reason(docs / "Build" / "notes.md"))
+        self.assertEqual(
+            sources.doc_exclude_reason(docs / "node_modules" / "pkg" / "README.md"), "legacy-dir"
+        )
+        self.assertEqual(sources.doc_exclude_reason(docs / "bundle.md"), "minified")
+        self.assertEqual(sources.doc_exclude_reason(docs / "blob.md"), "binary")
+        self.assertEqual(sources.doc_exclude_reason(docs / "schema.generated.md"), "generated")
+        self.assertEqual(sources.doc_exclude_reason(docs / "Coverage" / "index.md"), "skipped-dir")
+
+        warnings = sources.take_warnings()
+        diet_rules = {w.split()[3] for w in warnings if w.split()[3].startswith("diet-")}
+        self.assertEqual(
+            diet_rules, {"diet-skipped-dir", "diet-minified", "diet-generated", "diet-binary"}
+        )
+        census = ingest.doc_diet_census(sources.LAST_DOC_WALK)
+        self.assertEqual(census["docs_after"], len(walked))
+        self.assertEqual(census["docs_before"], census["docs_after"] + census["docs_excluded"])
+        self.assertEqual(census["docs_excluded"], len(diet_files))
+        self.assertGreater(census["chunks_before"], census["chunks_after"])
+        self.assertGreaterEqual(census["chunks_deduped"], 1)
+        self.assertEqual(census["rules_version"], sources.DOC_DIET_VERSION)
+        self.assertEqual(census["rules_hash"], ingest.diet_rules_hash())
+        self.assertGreaterEqual(census["excluded_by_rule"]["skipped-dir"], 5)
+
 
 class MirrorSkipTests(unittest.TestCase):
     """Doc-walk dedupe at the source: live ~/apps copy wins, skill copies and effort-log mirrors

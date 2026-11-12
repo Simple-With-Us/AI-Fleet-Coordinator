@@ -13,7 +13,9 @@ Sources (payload `source` value):
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
                  FLEET-PROTOCOL.md is ingested:  the public ones are the text of that file),
                  top-level ~/apps/*.md (not effort logs),
-                 ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
+                 ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md.
+                 Skips node_modules, VCS, backups, build/dist/coverage output, vendored and
+                 generated trees, lockfiles, minified blobs, and files over DOC_MAX_BYTES.
   skill          ~/.claude/skills/*/SKILL.md, ~/.cursor/skills/*/SKILL.md and ~/.grok/skills/*/SKILL.md
                  (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree).
                  When FLEET_RAG_MIRROR is set, those three trees are read from that directory.
@@ -88,7 +90,9 @@ JSONL_LINE_MAX = 200_000
 
 # Restricted walk for product app repos (fleet coordinator / fleet-ops keep a broader walk).
 DOC_ROOT_NAMES = ("README.md", "AGENTS.md", "STATUS.md", "CLAUDE.md")
-DOC_SKIP_DIR_NAMES = frozenset(
+# Directories the walk already skipped before the AFC-746 diet.  Files under these are not
+# held back from prune: they were never part of the corpus this diet is migrating.
+DOC_SKIP_DIR_NAMES_LEGACY = frozenset(
     {
         "node_modules",
         ".git",
@@ -99,6 +103,110 @@ DOC_SKIP_DIR_NAMES = frozenset(
         ".secrets",
     }
 )
+# Directories the diet adds.  A hit is excluded and held out of prune until a dry-run
+# report and an explicit migration (FLEET_RAG_PRUNE_EXCLUDED or an allowlist).
+DOC_DIET_DIR_NAMES = frozenset(
+    {
+        "coverage",
+        ".next",
+        "out",
+        ".output",
+        "storybook-static",
+        ".turbo",
+        ".cache",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "target",
+        "third_party",
+        "third-party",
+        "vendored",
+        "external",
+        "bower_components",
+        "generated",
+        ".generated",
+        "htmlcov",
+        "site-packages",
+        "Pods",
+        "Carthage",
+        "DerivedData",
+        ".build",
+        ".yarn",
+        "dist-types",
+        ".parcel-cache",
+        ".svelte-kit",
+        ".nuxt",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
+    }
+)
+DOC_SKIP_DIR_NAMES = DOC_SKIP_DIR_NAMES_LEGACY | DOC_DIET_DIR_NAMES
+DOC_DIET_DIR_NAMES_FOLDED = frozenset(name.casefold() for name in DOC_DIET_DIR_NAMES)
+DOC_DIET_VERSION = "afc-746-1"
+# Reasons introduced by the diet.  The older reasons stay out of the prune hold.
+DOC_DIET_REASONS = frozenset({"skipped-dir", "lockfile", "minified", "generated", "binary"})
+DOC_LOCKFILE_NAMES = frozenset(
+    {
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lock",
+        "bun.lockb",
+        "cargo.lock",
+        "poetry.lock",
+        "pipfile.lock",
+        "composer.lock",
+        "gemfile.lock",
+        "packages.lock.json",
+        "package.resolved",
+        "go.sum",
+        "npm-shrinkwrap.json",
+        "shrinkwrap.yaml",
+        "pubspec.lock",
+        "flake.lock",
+        "uv.lock",
+        "gradle.lockfile",
+    }
+)
+DOC_BINARY_SUFFIXES = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".ico",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".tgz",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".mp4",
+        ".mp3",
+        ".wasm",
+        ".pyc",
+        ".so",
+        ".dylib",
+        ".a",
+        ".o",
+        ".class",
+        ".jar",
+        ".exe",
+        ".dll",
+        ".bin",
+        ".sqlite",
+        ".db",
+    }
+)
+# A line this long with almost no whitespace is a minified bundle, not prose.
+MINIFIED_LINE_CHARS = 8000
+MINIFIED_WHITESPACE_MAX = 0.05
 DOC_APP_REPOS = (
     "Socratic.Trade",
     "Socratic-Trade",  # the checkout's current name;  missing it pruned the repo (AFC-677)
@@ -131,12 +239,25 @@ SKIP_SKILL_COPY = "skill-copy"  # (b) covered by the skill source
 SKIP_EFFORT_LOG = "effort-log-mirror"  # (c) covered by the effort-log source
 SKIP_HANDBOOK_MIRROR = "handbook-mirror"  # (d) Fleet-OPS generated/ and public handbook pages: any ingested FLEET-PROTOCOL.md
 DOC_SKIPS: list[tuple[str, str]] = []
+# Diet excludes from the last iter_docs call: (reason, path).  Legacy skips are not listed.
+DOC_EXCLUDED_NEW: list[tuple[str, pathlib.Path]] = []
+# doc_ids of diet excludes.  Ingest withholds them from prune until a migration.
+DOC_HELD_IDS: set[str] = set()
+# {"kept": [Path], "excluded_new": [(reason, Path)]} from the last iter_docs, or None.
+LAST_DOC_WALK: dict | None = None
 
 
 def take_doc_skips() -> list[tuple[str, str]]:
     """Return and clear the (rule, path) pairs the last doc walk skipped."""
     out = list(DOC_SKIPS)
     DOC_SKIPS.clear()
+    return out
+
+
+def take_held_doc_ids() -> set[str]:
+    """Return and clear doc_ids the last doc walk excluded under the diet rules."""
+    out = set(DOC_HELD_IDS)
+    DOC_HELD_IDS.clear()
     return out
 
 
@@ -633,9 +754,13 @@ def iter_effort_logs(
 # --------------------------------------------------------------------------- docs
 
 
-def _skip_doc(p: pathlib.Path) -> bool:
-    parts = set(p.parts)
-    if parts & DOC_SKIP_DIR_NAMES:
+def _legacy_skip(p: pathlib.Path) -> bool:
+    """True when the pre-diet walk already dropped this file.
+
+    Those files are not held from prune.  An unreadable path counts as already
+    skipped, matching the old ``_skip_doc`` which treated ``OSError`` as a skip.
+    """
+    if set(p.parts) & DOC_SKIP_DIR_NAMES_LEGACY:
         return True
     if "reviews" in p.parts and "raw" in p.name.lower():
         return True
@@ -645,6 +770,60 @@ def _skip_doc(p: pathlib.Path) -> bool:
     except OSError:
         return True
     return False
+
+
+def doc_exclude_reason(p: pathlib.Path) -> str | None:
+    """Why the doc walk drops ``p``, or None to keep it.
+
+    ``legacy-dir``, ``reviews-raw``, ``too-large`` and ``unreadable`` are the old
+    walk.  ``skipped-dir``, ``lockfile``, ``minified``, ``generated`` and ``binary``
+    are the diet.  Only the diet reasons are held out of prune.
+    """
+    if set(p.parts) & DOC_SKIP_DIR_NAMES_LEGACY:
+        return "legacy-dir"
+    folded = {part.casefold() for part in p.parts}
+    if folded & DOC_DIET_DIR_NAMES_FOLDED:
+        return "skipped-dir"
+    fold = p.name.casefold()
+    if fold in DOC_LOCKFILE_NAMES or fold.endswith("-lock.json") or fold.endswith(".lock"):
+        return "lockfile"
+    if ".min." in fold or fold.endswith(".min"):
+        return "minified"
+    if fold.endswith(".generated.md") or fold.endswith(".gen.md") or ".generated." in fold:
+        return "generated"
+    if p.suffix.casefold() in DOC_BINARY_SUFFIXES:
+        return "binary"
+    if "reviews" in p.parts and "raw" in p.name.lower():
+        return "reviews-raw"
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return "unreadable"
+    if size > DOC_MAX_BYTES:
+        return "too-large"
+    try:
+        with open(p, "rb") as fh:
+            sample = fh.read(8192)
+    except OSError:
+        return "unreadable"
+    if b"\x00" in sample:
+        return "binary"
+    if size == 0:
+        return None
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "unreadable"
+    if not any(len(line) >= MINIFIED_LINE_CHARS for line in text.splitlines()):
+        return None
+    whitespace = sum(1 for ch in text if ch.isspace())
+    if text and whitespace / len(text) < MINIFIED_WHITESPACE_MAX:
+        return "minified"
+    return None
+
+
+def _skip_doc(p: pathlib.Path) -> bool:
+    return doc_exclude_reason(p) is not None
 
 
 def _is_effort_log_name(name: str) -> bool:
@@ -821,12 +1000,39 @@ def _unique_paths(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     return out
 
 
+def doc_id_for_path(p: pathlib.Path, doc_prefix: str = "doc") -> str:
+    """The ``doc_id`` ``doc_from_file`` would assign, without reading the body."""
+    info = repo_info(p)
+    rel = ""
+    if info:
+        try:
+            rel = str(canonical_path(p).relative_to(info["top"]))
+        except (ValueError, OSError):
+            rel = ""
+    if info and rel:
+        repo = info["repo"] or pathlib.Path(info["top"]).name
+        return f"{doc_prefix}/{repo}/{rel}"
+    try:
+        home_rel = str(p.resolve().relative_to(HOME))
+    except (ValueError, OSError):
+        home_rel = str(p).lstrip("/")
+    return f"{doc_prefix}/local/{home_rel}"
+
+
 def _dedupe_docs(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     seen: set[tuple] = set()
     out: list[pathlib.Path] = []
     for f in files:
         try:
+            # _skip_doc stays the predicate tests patch.  OSError, including a patch
+            # that raises, drops the file the way the pre-diet walk did and does not
+            # hold it.
             if not f.is_file() or _skip_doc(f):
+                reason = doc_exclude_reason(f) if f.is_file() else None
+                if reason in DOC_DIET_REASONS and not _legacy_skip(f):
+                    DOC_EXCLUDED_NEW.append((reason, f))
+                    DOC_SKIPS.append((f"diet-{reason}", str(f)))
+                    DOC_HELD_IDS.add(doc_id_for_path(f))
                 continue
             key = fs_key(f)
         except OSError:
@@ -955,16 +1161,11 @@ def doc_from_file(
             rel = str(canonical_path(p).relative_to(info["top"]))
         except (ValueError, OSError):
             rel = ""
+    doc_id = doc_id_for_path(p, doc_prefix)
     if info and rel:
-        doc_id = f"{doc_prefix}/{info['repo'] or pathlib.Path(info['top']).name}/{rel}"
         url = blob_url(info, rel)
         created = info["dates"].get(rel, 0) * 1000 or mtime_ms(p)
     else:
-        try:
-            home_rel = str(p.resolve().relative_to(HOME))
-        except ValueError:
-            home_rel = str(p.resolve()).lstrip("/")
-        doc_id = f"{doc_prefix}/local/{home_rel}"
         url = ""
         created = mtime_ms(p)
     md = read_text(p)
@@ -1015,6 +1216,7 @@ def iter_docs(
     apps_dir: object = _CALLER_DEFAULT,
     grok_home: pathlib.Path | str | None = GROK_HOME,
 ) -> Iterator[Doc]:
+    global LAST_DOC_WALK
     repo = (
         _default_checkout("AI-Fleet-Coordinator")
         if fleet_repo is _CALLER_DEFAULT
@@ -1026,6 +1228,8 @@ def iter_docs(
         else pathlib.Path(str(fleet_ops))
     )
     DOC_SKIPS.clear()
+    DOC_EXCLUDED_NEW.clear()
+    DOC_HELD_IDS.clear()
     files = _doc_files(
         repo,
         ops,
@@ -1034,6 +1238,7 @@ def iter_docs(
         apps_dir=_configured_dir(apps_dir, "FLEET_APPS_ROOT", APPS_DIR),
         grok_home=None if grok_home is None else pathlib.Path(grok_home),
     )
+    LAST_DOC_WALK = {"kept": list(files), "excluded_new": list(DOC_EXCLUDED_NEW)}
     _log_doc_skips()
     for i, p in enumerate(files):
         if limit and i >= limit:
@@ -1042,11 +1247,13 @@ def iter_docs(
 
 
 def _log_doc_skips() -> None:
-    """One warning per mirror rule: count plus up to three example paths (home-relative)."""
+    """One warning per mirror or diet rule: count plus up to three example paths."""
     by_rule: dict[str, list[str]] = {}
     for rule, path in DOC_SKIPS:
         by_rule.setdefault(rule, []).append(path)
-    for rule in (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG, SKIP_HANDBOOK_MIRROR):
+    known = (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG, SKIP_HANDBOOK_MIRROR)
+    diet = tuple(rule for rule in sorted(by_rule) if rule.startswith("diet-"))
+    for rule in known + diet:
         paths = by_rule.get(rule)
         if not paths:
             continue
