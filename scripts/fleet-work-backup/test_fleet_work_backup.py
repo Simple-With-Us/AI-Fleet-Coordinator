@@ -760,9 +760,11 @@ class RunBase(unittest.TestCase):
         )  # `run [--only X] -- CMD`:  CMD with the fake creds as env
         fs_stub.write_text(
             "#!/bin/bash\n"
-            '[ "$1" = run ] || exit 2\n'
-            'shift; [ "$1" = -- ] && shift\n'
             f'set -a; . "{self.creds_file}"; set +a\n'
+            'if [ "$1" = get ]; then [ -n "${!2:-}" ] || exit 3; printf %s "${!2}"; exit 0; fi\n'
+            '[ "$1" = run ] || exit 2\n'
+            'shift; [ "$1" = --only ] && shift 2\n'
+            '[ "$1" = -- ] && shift\n'
             'exec "$@"\n'
         )
         fs_stub.chmod(0o755)
@@ -3379,7 +3381,10 @@ class MiscCase(unittest.TestCase):
 
     def test_read_credentials_asks_fleet_secrets_once_and_tolerates_absence(self):
         names = {n: "" for n in fwb.CRED_NAMES.values()}
-        head = '#!/bin/bash\n[ "$1" = run ] || exit 2\nshift; [ "$1" = -- ] && shift\n'
+        head = (
+            '#!/bin/bash\n[ "$1" = run ] || exit 2\n'
+            'shift; [ "$1" = --only ] && shift 2\n[ "$1" = -- ] && shift\n'
+        )
         with tempfile.TemporaryDirectory() as d:
             stub = Path(d) / "fleet-secrets"
             stub.write_text(head + 'A=x exec "$@"\n')
@@ -3395,6 +3400,14 @@ class MiscCase(unittest.TestCase):
                     fwb.read_credentials(cfg),
                     {"B2_FLEET_WORK_KEY_ID": "kid", "RESTIC_FLEET_WORK_PASSWORD": "pw"},
                 )
+            stub.write_text(
+                "#!/bin/bash\n"
+                'if [ "$1" = get ]; then [ "$2" = B2_FLEET_WORK_KEY_ID ] && printf kid && exit 0; exit 3; fi\n'
+                "exit 3\n"
+            )
+            # --only exits 3 on an absent name:  per-name get
+            with mock.patch.dict(os.environ, names):
+                self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
             stub.write_text("#!/bin/bash\nexit 4\n")  # an Infisical or auth failure
             with mock.patch.dict(os.environ, names):
                 self.assertEqual(fwb.read_credentials(cfg), {})
@@ -3407,6 +3420,60 @@ class MiscCase(unittest.TestCase):
                 self.assertEqual(
                     fwb.read_credentials(cfg), {}
                 )  # the environment has all four:  no fetch
+
+    def test_read_credentials_asks_only_for_its_own_names(self):
+        """Least privilege:  `run --only` carries just the job's names, and the B2 master key names only
+        when FLEET_WORK_BACKUP_ALLOW_MASTER=1.  The stub refuses a `run` without `--only`."""
+        names = {n: "" for n in fwb.CRED_NAMES.values()}
+        job = ",".join(fwb.CRED_NAMES.values())
+        both = ",".join(list(fwb.CRED_NAMES.values()) + list(fwb.MASTER_NAMES.values()))
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "argv.log"
+            stub = Path(d) / "fleet-secrets"
+            stub.write_text(
+                "#!/bin/bash\n"
+                f'echo "$*" | cut -d" " -f1-3 >> "{log}"\n'
+                '[ "$1" = run ] && [ "$2" = --only ] && [ "$4" = -- ] || exit 2\n'
+                "shift 4\n"
+                'B2_FLEET_WORK_KEY_ID=kid BACKBLAZE_MASTER_KEY_ID=mk exec "$@"\n'
+            )
+            stub.chmod(0o755)
+            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
+            with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": ""}):
+                self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
+            self.assertEqual(log.read_text().strip(), f"run --only {job}")
+            log.unlink()
+            with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
+                self.assertEqual(
+                    fwb.read_credentials(cfg),
+                    {"B2_FLEET_WORK_KEY_ID": "kid", "BACKBLAZE_MASTER_KEY_ID": "mk"},
+                )
+            self.assertEqual(log.read_text().strip(), f"run --only {both}")
+
+    def test_the_per_name_get_never_inherits_standard_input(self):
+        """`get` may fall back to a person's own CLI login when its stdin is a terminal, so the fallback
+        gives it none.  The stub echoes one byte of its stdin;  the process's stdin holds a byte."""
+        names = {n: "" for n in fwb.CRED_NAMES.values()}
+        with tempfile.TemporaryDirectory() as d:
+            stub = Path(d) / "fleet-secrets"
+            stub.write_text(
+                "#!/bin/bash\n"
+                '[ "$1" = get ] && [ "$2" = B2_FLEET_WORK_KEY_ID ] && { head -c1; exit 0; }\n'
+                "exit 3\n"
+            )
+            stub.chmod(0o755)
+            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
+            read_end, write_end = os.pipe()
+            os.write(write_end, b"x")
+            saved = os.dup(0)
+            try:
+                os.dup2(read_end, 0)
+                with mock.patch.dict(os.environ, names):
+                    self.assertEqual(fwb.read_credentials(cfg), {})
+            finally:
+                os.dup2(saved, 0)
+                for fd in (saved, read_end, write_end):
+                    os.close(fd)
 
     def test_plist_and_installer_agree_with_the_module(self):
         plist = (HERE.parent / "launchd" / "com.jay.fleet-work-backup.plist").read_text()

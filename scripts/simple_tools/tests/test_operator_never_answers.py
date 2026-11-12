@@ -13,6 +13,9 @@ and these tests pin the rule four ways:
   4. the structure:  no function can build a wake reply, a route page or an owner ack, and the set of
      functions that send a message as the Operator, and of modules that post a Zulip message at all, is
      pinned, so a new sender is a deliberate change to this file and never an accident.
+
+A fifth set pins the owner's Nov 10, 2026 ruling that the Operator asks nobody a clarifying question:
+no candidate list, no registration question and no clarifying-question exemption in the hosted tools.
 """
 
 from __future__ import annotations
@@ -391,9 +394,7 @@ class StructureTests(unittest.TestCase):
                 # The owner's DM notes and alerts, which are the Operator's own and answer nothing.
                 "_operator_send": {"dm_owner", "_run_broadcast_audit_body", "_held_alert"},
                 "_operator_edit": {"_held_alert_edit"},
-                # The Operator asking which session a letter means, and its own registration protocol.
-                "send_candidate_list": {"ask_operator_for_candidates"},
-                "send_location_question": {"_ask_registration_row", "_maybe_registration_answer"},
+                # Nothing else:  the Operator asks nobody (see OperatorAsksNobodyTests).
             },
             "a new function sends as the Operator:  it must not answer a wake, and this list is the place to say so",
         )
@@ -443,8 +444,6 @@ class StructureTests(unittest.TestCase):
         "dm_policy.py": "the Side-Chats helper a seat's DM is routed to",
         "listener_cli.py": "`daemon probe`, a diagnostic a person runs",
         "handbook_service.py": "the Operator's own handbook change post (automatic, answers nothing)",
-        "operator_candidates.py": "the candidate list:  the Operator asking which session a letter means",
-        "operator_registration_ask.py": "the Operator's registration question and its confirmation",
         "operator_post.py": "the Operator's voice, behind the daemon's two choke points",
     }
 
@@ -472,6 +471,70 @@ class StructureTests(unittest.TestCase):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "TypingSignal":
                     constructors.append(path.name)
         self.assertEqual(constructors, [], "something raises the Operator's typing indicator again")
+
+
+# --------------------------------------------------------------------------------------------
+# 5. The Operator asks nobody
+# --------------------------------------------------------------------------------------------
+
+
+class OperatorAsksNobodyTests(unittest.TestCase):
+    """Owner ruling, Nov 10, 2026:  "forget the operator asking clarification since overcomplicates
+    for minimal benefit".  The candidate-list DM (which session a letter means), the registration
+    question ("where do you run?") and the hosted tools' clarifying-question exemption are gone, and
+    these cases fail if any of the removed functions or modules comes back."""
+
+    #: The functions that asked.  No module may define one or call one again.
+    ASKERS = {
+        "ask_operator_for_candidates",
+        "send_candidate_list",
+        "_send_candidate_list",
+        "send_location_question",
+        "maybe_ask_registrations",
+        "_ask_registration_row",
+        "_maybe_registration_answer",
+        "operator_dm_allowed",
+    }
+    #: The modules that asked, and the registration question's queue.
+    ASKING_MODULES = ("operator_registration_ask", "operator_registration")
+
+    def test_no_module_defines_or_calls_an_asker(self) -> None:
+        for path in modules():
+            for node in ast.walk(parse(path)):
+                name = None
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    name = node.name
+                elif isinstance(node, ast.Attribute):
+                    name = node.attr
+                elif isinstance(node, ast.Name):
+                    name = node.id
+                self.assertNotIn(
+                    name, self.ASKERS, "%s:%d asks again" % (path.name, getattr(node, "lineno", 0))
+                )
+
+    def test_the_asking_modules_are_gone_and_nothing_imports_them(self) -> None:
+        for module in self.ASKING_MODULES:
+            self.assertFalse((TOOLS / ("%s.py" % module)).exists(), module)
+        for path in modules():
+            for node in ast.walk(parse(path)):
+                names: list[str] = []
+                if isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""] + [alias.name for alias in node.names]
+                elif isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                for name in names:
+                    self.assertNotIn(
+                        name.rsplit(".", 1)[-1],
+                        self.ASKING_MODULES,
+                        "%s:%d imports %s" % (path.name, node.lineno, name),
+                    )
+
+    def test_the_hosted_tools_offer_no_clarifying_question(self) -> None:
+        hosted = TOOLS.parent / "simple-tools-mcp" / "src" / "hosted-tools.js"
+        self.assertTrue(hosted.exists(), hosted)
+        text = hosted.read_text(encoding="utf-8")
+        self.assertNotIn("clarifying", text.lower())
+        self.assertNotIn("clarifying_question", text)
 
 
 if __name__ == "__main__":
