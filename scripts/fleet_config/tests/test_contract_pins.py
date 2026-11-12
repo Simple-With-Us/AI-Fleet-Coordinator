@@ -157,6 +157,27 @@ class ContractPinTests(unittest.TestCase):
         self.assertIs(contract.overall_verdict(passing), OverallVerdict.PASS)
         self.assertIsNot(contract.overall_verdict(all_unknown), OverallVerdict.PASS)
 
+    def test_a_not_applicable_result_is_never_proof_and_never_a_failure(self):
+        """PASS means every check the rules ask for was proven.
+
+        A seat with no guard has a rule that asks for nothing,  so the result neither
+        fails the run nor stands in for a proof:  a run of nothing else is UNKNOWN,  and
+        a run whose other rules all pass is still PASS.
+        """
+        no_guard = _result(state=CheckState.UNSUPPORTED, reason_code=ReasonCode.NOT_APPLICABLE)
+        self.assertFalse(contract.is_failing(no_guard))
+        self.assertTrue(contract.is_not_applicable(no_guard))
+        self.assertIs(contract.overall_verdict((no_guard,)), OverallVerdict.UNKNOWN)
+        self.assertIs(contract.overall_verdict((no_guard, _result())), OverallVerdict.PASS)
+        unsupported = _result(state=CheckState.UNSUPPORTED, reason_code=ReasonCode.UNSUPPORTED)
+        self.assertFalse(contract.is_not_applicable(unsupported))
+        self.assertIs(contract.overall_verdict((unsupported, _result())), OverallVerdict.UNKNOWN)
+
+    def test_an_expected_guard_scope_is_in_the_envelope(self):
+        expected = ExpectedState(description="d", guards=("shell",))
+        self.assertEqual(contract.expected_to_dict(expected)["guards"], ["shell"])
+        self.assertNotIn("guards", contract.expected_to_dict(ExpectedState(description="d")))
+
     def test_marked_block_hash_parity(self):
         """The package's marked-block digest and the installer's are the same digest.
 

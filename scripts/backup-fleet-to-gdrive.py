@@ -24,6 +24,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -47,6 +48,12 @@ BACKUP_FOLDER_PREFIX = "Website & App Source Backups - "
 # plenty of history to restore from, and the job was writing one folder a day
 # with no retention at all.
 DEFAULT_KEEP = 14
+
+# The operator-visible wording for a retention pass that could not run.  It
+# has to read differently from the normal "removed N" summary, because a
+# skipped retention that looks like a successful zero-count prune is how the
+# dated backup set grows without anybody noticing.
+RETENTION_SKIPPED = "Retention: skipped (Drive root could not be listed)"
 
 # Same denylist as code-main-keeper.sh.  Pionex is a leftover checkout, not a fleet app.
 SKIP_NAMES = {
@@ -72,14 +79,16 @@ EXCLUDE_DIRS = {
     ".idea",
 }
 
-EXCLUDE_EXTS = {".sock", ".log", ".tmp", ".swp", ".pyc", ".env", ".pem", ".p12"}
-EXCLUDE_NAMES = {
-    ".env",
-    ".env.local",
-    ".env.production",
-    "credentials.json",
-    "global-api-keys",
-}
+EXCLUDE_EXTS = {".sock", ".log", ".tmp", ".swp", ".pyc"}
+EXCLUDE_NAMES = {"global-api-keys"}
+
+# Secret exclusion is by MEANING, fail-closed.  A name/ext denylist missed
+# .env.staging, *.key, id_rsa and service-account JSON, zipping live secrets
+# to Drive.  Any name whose parts mean "credential material" is excluded even
+# if its exact spelling was never listed.
+SECRET_EXTS = {"key", "pem", "p12", "pfx", "jks", "keystore", "env"}
+SECRET_NAMES = {".netrc", ".npmrc", ".pypirc"}
+SECRET_TOKENS = {"credential", "credentials", "secret", "secrets"}
 
 DOC_FILES = [
     "README.md",
@@ -146,24 +155,86 @@ def find_gdrive() -> Path:
     sys.exit(1)
 
 
+def is_secret_shaped(name: str) -> bool:
+    """True when a basename means credential material, listed or not."""
+    lower = name.lower()
+    if lower in SECRET_NAMES or lower.startswith(".env"):
+        return True
+    if lower.startswith("id_") and not lower.endswith(".pub"):
+        return True
+    # Every dot-suffix counts, so deploy-key.pem.txt is secret-shaped by its
+    # .pem component even though its final extension is .txt.
+    suffixes = lower.split(".")[1:]
+    if any(s in SECRET_EXTS for s in suffixes):
+        return True
+    tokens = [tok for tok in re.split(r"[^a-z0-9]+", lower) if tok]
+    if any(tok in SECRET_TOKENS for tok in tokens):
+        return True
+    if "serviceaccount" in "".join(tokens):
+        return True
+    if "private" in tokens and "key" in tokens:
+        return True
+    return False
+
+
 def should_skip_file(name: str) -> bool:
-    if name == ".DS_Store" or name in EXCLUDE_NAMES:
+    if name == ".DS_Store" or name in EXCLUDE_NAMES or is_secret_shaped(name):
         return True
     ext = os.path.splitext(name)[1].lower()
     return ext in EXCLUDE_EXTS
 
 
-def dated_backup_folders(gdrive: Path) -> list[tuple[datetime.date, Path]]:
+def dated_backup_folders(gdrive: Path) -> list[tuple[datetime.date, Path]] | None:
     """The dated backup folders in Drive, oldest first.
 
     Only a folder whose name is the prefix plus a real ISO date counts, so
     nothing else in Drive can be mistaken for a backup set.
+
+    Returns None when the Drive root could not be listed, and a list when it
+    could.  The two must not look alike: an empty list means there was
+    nothing to prune, while None means the prune never got to look, and a
+    refusal that reads as "nothing to prune" is how the dated backup set
+    grows without anybody noticing.
+
+    The Drive is a File Provider mount, and it refuses some requests
+    outright: listing the root of a large Drive is one of them, and it has
+    refused from the launchd job with "Operation not permitted" while the
+    same call succeeds from a shell.  Retention is housekeeping, and it runs
+    *after* the repository zips are already in Drive, so a refusal there must
+    not take the job down: the run would fail, the mirror would never run,
+    and the daily backup would be reported as broken when the part the owner
+    depends on had already succeeded.
+
+    A refusal can also come for one entry instead of the whole listing, so
+    every per-entry filesystem call is guarded the same way.  One unreadable
+    folder in the Drive must not cost the owner the whole backup.
     """
     found: list[tuple[datetime.date, Path]] = []
-    if not gdrive.is_dir():
-        return found
-    for entry in sorted(gdrive.iterdir(), key=lambda p: p.name):
-        if not entry.is_dir() or not entry.name.startswith(BACKUP_FOLDER_PREFIX):
+    try:
+        if not gdrive.is_dir():
+            print(
+                f"WARN: {gdrive} is not a readable directory, so it cannot be listed "
+                "to prune old backups",
+                file=sys.stderr,
+            )
+            return None
+        entries = sorted(gdrive.iterdir(), key=lambda p: p.name)
+    except OSError as exc:
+        print(
+            f"WARN: could not list {gdrive} to prune old backups: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    for entry in entries:
+        # The stat that decides whether the entry is a folder is the call
+        # the File Provider mount refuses.  Skip the entry and keep going:
+        # the rest of Drive is still worth pruning.
+        try:
+            entry_is_dir = entry.is_dir()
+        except OSError as exc:
+            print(f"WARN: could not stat {entry}: {exc}", file=sys.stderr)
+            continue
+        if not entry_is_dir or not entry.name.startswith(BACKUP_FOLDER_PREFIX):
             continue
         stamp = entry.name[len(BACKUP_FOLDER_PREFIX) :]
         try:
@@ -175,7 +246,7 @@ def dated_backup_folders(gdrive: Path) -> list[tuple[datetime.date, Path]]:
     return found
 
 
-def prune_old_backups(gdrive: Path, keep: int, dry_run: bool = False) -> list[Path]:
+def prune_old_backups(gdrive: Path, keep: int, dry_run: bool = False) -> list[Path] | None:
     """Drop the dated backup folders beyond the newest `keep`.
 
     The job wrote one folder a day with no retention at all, so the backup
@@ -184,10 +255,19 @@ def prune_old_backups(gdrive: Path, keep: int, dry_run: bool = False) -> list[Pa
     ones are the ones nobody will ever restore.
 
     A dry run reports what would go and touches nothing.
+
+    Returns None when the retention could not be applied, and the list of
+    removed folders when it was.  None is not the same thing as an empty
+    list: an empty list is a prune that ran and found nothing to remove,
+    while None is a prune that never ran, and the operator has to be able to
+    tell those apart.
     """
     if keep < 0:
         return []
     folders = dated_backup_folders(gdrive)
+    if folders is None:
+        print(RETENTION_SKIPPED, file=sys.stderr)
+        return None
     doomed = folders[: max(0, len(folders) - keep)]
     removed: list[Path] = []
     for _day, path in doomed:
@@ -328,6 +408,12 @@ def main() -> int:
 
     if args.prune_only:
         removed = prune_old_backups(gdrive, args.keep, dry_run=args.dry_run)
+        if removed is None:
+            # The retention never ran, so the summary says so instead of
+            # counting a prune that did not happen.  The exit status stays 0:
+            # housekeeping must never take the daily job down.
+            print(RETENTION_SKIPPED)
+            return 0
         verb = "would remove" if args.dry_run else "removed"
         print(f"{verb} {len(removed)} backup folder(s), keeping the newest {args.keep}")
         return 0
@@ -358,7 +444,10 @@ def main() -> int:
         print(f"  saved {zip_out.name} ({count} files, {size_mb:.2f} MB)")
         backed_up.append(repo)
 
-    findings_db = Path.home() / "apps" / "mac-collab" / "findings.db"
+    # mac-collab was retired on 2026-10-19 (AFC-363):  the live tree moved to
+    # ~/apps/_retired/mac-collab-20261019/.  The old path no longer exists, so the
+    # snapshot below was silently skipped until this was pointed at the archive.
+    findings_db = Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "findings.db"
     if findings_db.is_file():
         if args.dry_run:
             print(f"would save findings-{DATE_STR}.db (findings.db SQLite snapshot)")
@@ -367,7 +456,9 @@ def main() -> int:
                 import sqlite3
 
                 db_dest = dest_dir / f"findings-{DATE_STR}.db"
-                src_conn = sqlite3.connect(findings_db)
+                # The archive is frozen and read-only;  open it read-only, like every
+                # other reader of that file does, so it is never checkpointed or rewritten.
+                src_conn = sqlite3.connect(f"file:{findings_db}?mode=ro", uri=True)
                 dst_conn = sqlite3.connect(db_dest)
                 src_conn.backup(dst_conn)
                 dst_conn.close()
@@ -394,6 +485,12 @@ def main() -> int:
         print(f"Backed up {len(backed_up)} repositories to {dest_dir}")
 
     removed = prune_old_backups(gdrive, args.keep, dry_run=args.dry_run)
+    if removed is None:
+        # The zips are already in Drive, so a retention that could not run is
+        # a warning, not a failure: the summary says the retention was
+        # skipped and the exit status stays 0.
+        print(RETENTION_SKIPPED)
+        return 0
     verb = "would remove" if args.dry_run else "removed"
     print(f"Retention: {verb} {len(removed)} old backup folder(s), keeping the newest {args.keep}")
     return 0

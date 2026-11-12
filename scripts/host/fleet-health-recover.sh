@@ -20,6 +20,19 @@ set -euo pipefail
 # Top-level health only.  ST /api/health is {ok:true, checks.dependencies.*.ok}
 # and a nested "ok":false (congress.trade dependency) must not count as down —
 # that substring used to docker-restart production during RTH.
+# Build a curl -K config for Pushover creds.  Values are escaped for curl's
+# quoted config syntax (backslash, then double quote); values with CR/LF are
+# rejected because they cannot be represented safely on one config line.
+pushover_curl_config() {
+  local t="${PUSHOVER_APP_TOKEN:-}" u="${PUSHOVER_USER_KEY:-}"
+  case "$t$u" in
+    *$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  t=${t//\\/\\\\}; t=${t//\"/\\\"}
+  u=${u//\\/\\\\}; u=${u//\"/\\\"}
+  printf 'form-string = "token=%s"\nform-string = "user=%s"\n' "$t" "$u"
+}
+
 health_body_ok() {
   python3 -c '
 import json, sys
@@ -105,14 +118,18 @@ notify() {
     return 0
   fi
   now > "$stamp_file"
+  local _po_cfg
+  if ! _po_cfg=$(pushover_curl_config); then
+    log "warn: pushover config rejected (token/user contains CR/LF); notify skipped"
+    return 0
+  fi
   curl -sS -m 15 -o /dev/null \
-    --form-string "token=${PUSHOVER_APP_TOKEN}" \
-    --form-string "user=${PUSHOVER_USER_KEY}" \
+    -K <(printf '%s\n' "$_po_cfg") \
     --form-string "title=${title}" \
     --form-string "message=${msg}" \
     --form-string "priority=1" \
     https://api.pushover.net/1/messages.json >/dev/null 2>&1 \
-    || log "warn: pushover notify failed"
+    || log "warn: pushover notify failed (curl exit $?; bad config or network)"
 }
 
 is_coolify_deploy_active() {
@@ -120,7 +137,7 @@ is_coolify_deploy_active() {
   command -v python3 >/dev/null 2>&1 || return 1
   local json
   json=$(curl -fsS -m 8 \
-    -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$COOLIFY_TOKEN") \
     -H "Accept: application/json" \
     "${COOLIFY_BASE_URL%/}/api/v1/deployments" 2>/dev/null) || return 1
   printf '%s' "$json" | APP_UUID="$APP_UUID" python3 -c '
@@ -277,13 +294,13 @@ restart_via_coolify_api() {
   local code
   code=$(curl -sS -m 30 -o /tmp/fleet-coolify-restart-${APP_NAME}.out -w '%{http_code}' \
     -X GET \
-    -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$COOLIFY_TOKEN") \
     -H "Accept: application/json" \
     "$url" 2>/dev/null || echo 000)
   if [[ "$code" == "405" || "$code" == "404" ]]; then
     code=$(curl -sS -m 30 -o /tmp/fleet-coolify-restart-${APP_NAME}.out -w '%{http_code}' \
       -X POST \
-      -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+      -H @<(printf 'Authorization: Bearer %s\n' "$COOLIFY_TOKEN") \
       -H "Accept: application/json" \
       "$url" 2>/dev/null || echo 000)
   fi

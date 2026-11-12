@@ -24,7 +24,7 @@ The Muster scaffold (PR #719) rendered only a placeholder.  Phase 2 merged the `
 - `cd scripts && python3 -m unittest discover -s fleet_view/tests -t .` — 14 tests, OK.
 - `python3 -m unittest discover -s muster/script -t muster/script` — 16 tests, OK.
 - `xcodegen generate --spec muster/project.yml` and `xcodebuild -project muster/Muster.xcodeproj -scheme Muster -configuration Debug build CODE_SIGNING_ALLOWED=NO` — BUILD SUCCEEDED.
-- Live `python3 -m fleet_view status` on this Mac:  444 lanes OK, 64 open PRs observed, 148 claims OK, 17 of 60 GitHub requests and 1 of 30 Linear requests spent.  The PR section reports UNKNOWN because `gh` cannot resolve `Simple-With-Us/fleetlink-legacy`.  Spot checks against `gh pr list` and `board list --json` matched.
+- Live `python3 -m fleet_view status` on this Mac:  444 lanes OK, 64 open PRs observed, 148 claims OK, 17 of 60 GitHub requests and 1 of 30 Linear requests spent.  The PR section reports UNKNOWN because `gh` cannot resolve `Simple-With-Us/fleetlink-legacy`.  Spot checks against `gh pr list` and `simple-board list --json` matched.
 
 ## Follow-ups left open on AFC-394
 

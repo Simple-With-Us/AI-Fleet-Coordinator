@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -20,6 +21,43 @@ HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("doctor", HERE / "fleet-tools-doctor.py")
 doctor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(doctor)
+
+
+class RootSearchPathTests(unittest.TestCase):
+    """As root, the doctor never searches a directory another user can write."""
+
+    def test_root_skips_a_directory_not_owned_by_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            planted = Path(tmp) / "bin"
+            planted.mkdir()
+            fake = mock.Mock(st_uid=1000, st_mode=stat.S_IFDIR | 0o755)
+            real_stat = os.stat
+            with (
+                mock.patch.object(doctor, "TOOL_PATH_DIRS", (str(planted), "/usr/bin")),
+                mock.patch.dict(os.environ, {"PATH": ""}),
+                mock.patch.object(
+                    doctor.os,
+                    "stat",
+                    side_effect=lambda p, *a, **k: (
+                        fake if p == str(planted) else real_stat(p, *a, **k)
+                    ),
+                ),
+            ):
+                self.assertNotIn(str(planted), doctor.tool_path_dirs(euid=0))
+                # Not root:  the caller's own directories are searched as before.
+                self.assertIn(str(planted), doctor.tool_path_dirs(euid=1000))
+
+    def test_root_skips_a_group_or_world_writable_root_directory(self):
+        for mode in (0o775, 0o757):
+            fake = mock.Mock(st_uid=0, st_mode=stat.S_IFDIR | mode)
+            with mock.patch.object(doctor.os, "stat", return_value=fake):
+                self.assertFalse(doctor.dir_is_root_safe("/some/dir"))
+        safe = mock.Mock(st_uid=0, st_mode=stat.S_IFDIR | 0o755)
+        with mock.patch.object(doctor.os, "stat", return_value=safe):
+            self.assertTrue(doctor.dir_is_root_safe("/usr/bin"))
+
+    def test_a_missing_directory_is_kept(self):
+        self.assertTrue(doctor.dir_is_root_safe("/no/such/dir/for/the/doctor"))
 
 
 class SeatAndMcpTests(unittest.TestCase):
@@ -60,13 +98,13 @@ class SeatAndMcpTests(unittest.TestCase):
 
         with mock.patch.object(doctor, "infisical_names", fake_names):
             report = doctor.Report()
-            doctor.check_seat(report, "GROK-WEB", {})
+            doctor.check_seat(report, "GROK-WEB", {}, False)
             self.assertEqual(report.rows[0]["status"], "FAIL")
             self.assertIn("zulip bot, linear app, fleetlink token", report.rows[0]["detail"])
             # AFC-359:  files in the retired credentials folder no longer count.
             self.touch(".secrets/Zulip/Grok-Web-zuliprc")
             report = doctor.Report()
-            doctor.check_seat(report, "GROK-WEB", {})
+            doctor.check_seat(report, "GROK-WEB", {}, False)
             self.assertIn("zulip bot", report.rows[0]["detail"])
             names["/zulip"] = frozenset(
                 {"GROK_WEB_ZULIP_EMAIL", "GROK_WEB_ZULIP_KEY", "GROK_WEB_ZULIP_SITE"}
@@ -75,31 +113,119 @@ class SeatAndMcpTests(unittest.TestCase):
                 {"GROK_WEB_LINEAR_CLIENT_ID", "GROK_WEB_LINEAR_CLIENT_SECRET"}
             )
             report = doctor.Report()
-            doctor.check_seat(report, "GROK-WEB", {"FLEETLINK_TOKEN_GROK_WEB": "t"})
+            doctor.check_seat(report, "GROK-WEB", {"FLEETLINK_TOKEN_GROK_WEB": "t"}, True)
             self.assertEqual(report.rows[0]["status"], "OK")
             names["/zulip"] = frozenset(
                 {"GROK_BUILD_ZULIP_EMAIL", "GROK_BUILD_ZULIP_KEY", "GROK_BUILD_ZULIP_SITE"}
             )
             report = doctor.Report()
-            doctor.check_seat(report, "GROK", {})
+            doctor.check_seat(report, "GROK", {}, False)
             self.assertNotIn("zulip bot", report.rows[0]["detail"])
             names["/zulip"] = None
             report = doctor.Report()
-            doctor.check_seat(report, "GROK", {})
+            doctor.check_seat(report, "GROK", {}, False)
             self.assertEqual(report.rows[0]["status"], "WARN")
+
+    def test_unreadable_fleetlink_token_names_warns_instead_of_missing(self):
+        names: dict[str, frozenset[str] | None] = {
+            "/zulip": frozenset(
+                {"GROK_WEB_ZULIP_EMAIL", "GROK_WEB_ZULIP_KEY", "GROK_WEB_ZULIP_SITE"}
+            ),
+            "/linear": frozenset({"GROK_WEB_LINEAR_CLIENT_ID", "GROK_WEB_LINEAR_CLIENT_SECRET"}),
+            "/fleetlink": None,
+        }
+
+        def fake_names(folder, env, project="fleet-ops"):
+            return names[folder]
+
+        with mock.patch.object(doctor, "infisical_names", fake_names):
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK-WEB", {}, None)
+            self.assertEqual(report.rows[0]["status"], "WARN")
+            self.assertIn("fleetlink token names", report.rows[0]["detail"])
+            self.assertNotIn("missing fleetlink", report.rows[0]["detail"])
+            # An unreadable listing still reports a missing Zulip bot or Linear app.
+            names["/zulip"] = frozenset()
+            names["/linear"] = frozenset()
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK-WEB", {}, None)
+            self.assertEqual(report.rows[0]["status"], "FAIL")
+            self.assertIn("missing zulip bot, linear app", report.rows[0]["detail"])
+            self.assertIn("fleetlink token names", report.rows[0]["detail"])
+            self.assertNotIn("missing zulip bot, linear app, fleetlink", report.rows[0]["detail"])
+
+    def mcp_rows(self, fleetlink_tokens=frozenset(), readable=True):
+        """Run check_mcp with a fixed FleetLink token reading for the two seats.
+
+        The reading is passed in, the way run() does it, so the check never shells out to
+        fleet-secrets and the suite stays hermetic.
+        """
+        tokens = {
+            seat: (f"FLEETLINK_TOKEN_{seat}" in fleetlink_tokens) if readable else None
+            for seat in ("CODEX", "CLAUDE")
+        }
+        report = doctor.Report()
+        doctor.check_mcp(report, tokens)
+        return {r["check"]: r for r in report.rows}
 
     def test_mcp_registrations(self):
         self.touch(
             ".codex/config.toml",
-            "[mcp_servers.agent-sync]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
+            "[mcp_servers.simple-chat]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
         )
-        self.touch(".claude.json", json.dumps({"mcpServers": {"agent-sync": {}}}))
-        report = doctor.Report()
-        doctor.check_mcp(report)
-        rows = {r["check"]: r for r in report.rows}
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
+        rows = self.mcp_rows({"FLEETLINK_TOKEN_CLAUDE"})
         self.assertEqual(rows["mcp:codex"]["status"], "OK")
         self.assertEqual(rows["mcp:claude"]["status"], "WARN")
         self.assertIn("missing fleetlink", rows["mcp:claude"]["detail"])
+
+    def test_mcp_registrations_report_the_canonical_name_as_the_missing_one(self):
+        self.touch(".codex/config.toml", "[mcp_servers.coolify]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {}}))
+        rows = self.mcp_rows({"FLEETLINK_TOKEN_CLAUDE", "FLEETLINK_TOKEN_CODEX"})
+        self.assertEqual(rows["mcp:codex"]["status"], "WARN")
+        missing = rows["mcp:codex"]["detail"].split("missing ", 1)[1]
+        self.assertEqual(
+            {name.strip() for name in missing.split(",")}, {"simple-chat", "fleetlink"}
+        )
+
+    def test_an_unreadable_token_listing_is_reported_as_unknown(self):
+        self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
+        rows = self.mcp_rows(readable=False)
+        for seat in ("mcp:codex", "mcp:claude"):
+            self.assertEqual(rows[seat]["status"], "WARN")
+            self.assertIn("token names could not be read", rows[seat]["detail"])
+
+    def test_mcp_requires_codex_and_claude_in_the_token_map(self):
+        report = doctor.Report()
+        doctor.check_mcp(report, {"CODEX": False})
+        rows = {r["check"]: r for r in report.rows}
+        self.assertEqual(rows["mcp:claude"]["status"], "FAIL")
+        self.assertIn("missing CLAUDE", rows["mcp:claude"]["detail"])
+
+    def test_a_seat_without_a_fleetlink_token_is_not_asked_to_register_it(self):
+        self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
+        rows = self.mcp_rows()
+        self.assertEqual(rows["mcp:codex"]["status"], "OK")
+        self.assertEqual(rows["mcp:claude"]["status"], "OK")
+
+    def test_a_seat_with_a_fleetlink_token_is_asked_to_register_it(self):
+        self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
+        rows = self.mcp_rows({"FLEETLINK_TOKEN_CLAUDE"})
+        self.assertEqual(rows["mcp:codex"]["status"], "OK")
+        self.assertEqual(rows["mcp:claude"]["status"], "WARN")
+        self.assertIn("missing fleetlink", rows["mcp:claude"]["detail"])
+
+    def test_registered_env_reads_the_server_registration(self):
+        self.touch(
+            ".codex/config.toml",
+            "[mcp_servers.simple-chat]\ncommand = 'x'\n"
+            "[mcp_servers.simple-chat.env]\nLC_ALL = 'C.UTF-8'\n",
+        )
+        self.assertEqual(doctor.registered_env("CODEX", home=self.home), {"LC_ALL": "C.UTF-8"})
 
     def test_post_only_when_the_failing_set_changes(self):
         calls = []
@@ -114,11 +240,245 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertFalse(doctor.post_changes(report, runner))
         self.assertEqual(
             calls[0][:6],
-            ["agent-sync", "post", "--channel", "agent-sync", "--topic", "fleet tools doctor"],
+            [
+                "simple-chat",
+                "post",
+                "--channel",
+                "Work-In-Progress",
+                "--topic",
+                "fleet tools doctor",
+            ],
         )
-        self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][6])
+        self.assertEqual(calls[0][6], "--json")
+        self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][-1])
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
-        self.assertIn("every check passes again", calls[1][6])
+        self.assertIn("every check passes again", calls[1][-1])
+
+    # AFC-461:  the owner asked (Oct 22) that an unchanged recurring status post be edited, not reposted.
+    @staticmethod
+    def chat_runner(calls, posted_ids=None, edit_code=0, edit_err="Invalid message(s)"):
+        ids = iter(posted_ids or [])
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            if argv[1] == "post":
+                out = json.dumps({"id": next(ids), "channel": "x", "topic": "y"}) + "\n"
+                return subprocess.CompletedProcess(argv, 0, out, "")
+            if argv[1] == "edit":
+                return subprocess.CompletedProcess(
+                    argv, edit_code, "", "" if edit_code == 0 else edit_err
+                )
+            raise AssertionError(argv)
+
+        return runner
+
+    @staticmethod
+    def failing_report(*rows):
+        report = doctor.Report()
+        for check, detail in rows:
+            report.add(check, "FAIL", detail)
+        return report
+
+    def state(self):
+        return json.loads((self.home / "state.json").read_text())
+
+    def test_first_post_stores_the_message_id(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101])
+        report = self.failing_report(("tool:gitleaks", "not installed"))
+        self.assertTrue(doctor.post_changes(report, runner))
+        self.assertEqual(calls[0][1], "post")
+        self.assertIn("--json", calls[0])
+        self.assertEqual(self.state()["message_id"], 4101)
+        self.assertEqual(self.state()["checks"], ["tool:gitleaks"])
+
+    def test_same_checks_with_changed_text_edit_the_stored_message(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101])
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.61.0")), runner)
+        )
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.62.0")), runner)
+        )
+        self.assertEqual([c[1] for c in calls], ["post", "edit"])
+        self.assertEqual(calls[1][2:4], ["--id", "4101"])
+        self.assertIn("tool:gh: 2.60.0, latest 2.62.0", calls[1][-1])
+        self.assertEqual(self.state()["message_id"], 4101)
+        self.assertEqual(self.state()["failing"], ["tool:gh: 2.60.0, latest 2.62.0"])
+        # Nothing changed at all:  no edit and no post.
+        self.assertFalse(
+            doctor.post_changes(self.failing_report(("tool:gh", "2.60.0, latest 2.62.0")), runner)
+        )
+        self.assertEqual(len(calls), 2)
+
+    def test_a_changed_set_of_checks_posts_a_new_message(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101, 4102, 4103])
+        doctor.post_changes(self.failing_report(("tool:gh", "behind")), runner)
+        added = self.failing_report(("tool:gh", "behind"), ("tool:gitleaks", "not installed"))
+        self.assertTrue(doctor.post_changes(added, runner))
+        self.assertEqual([c[1] for c in calls], ["post", "post"])
+        self.assertEqual(self.state()["message_id"], 4102)
+        cleared = self.failing_report(("tool:gitleaks", "not installed"))
+        self.assertTrue(doctor.post_changes(cleared, runner))
+        self.assertEqual([c[1] for c in calls], ["post", "post", "post"])
+        self.assertEqual(self.state()["message_id"], 4103)
+
+    def test_a_failed_edit_falls_back_to_a_new_post(self):
+        # Exit 5 is Zulip answering with an error (here the message is gone):  the edit was not applied.
+        calls = []
+        runner = self.chat_runner(calls, [4101, 4102], edit_code=5)
+        doctor.post_changes(self.failing_report(("tool:gh", "behind by 1")), runner)
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
+        self.assertEqual([c[1] for c in calls], ["post", "edit", "post"])
+        self.assertEqual(self.state()["message_id"], 4102)
+        self.assertEqual(self.state()["failing"], ["tool:gh: behind by 2"])
+
+    def test_an_edit_with_simple_chat_missing_falls_back_to_a_new_post(self):
+        calls = []
+        ids = iter([4102])
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            if argv[1] == "edit":
+                raise FileNotFoundError(argv[0])
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"id": next(ids)}), "")
+
+        (self.home / "state.json").write_text(
+            json.dumps({"failing": ["tool:gh: a"], "checks": ["tool:gh"], "message_id": 4101})
+        )
+        self.assertTrue(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
+        self.assertEqual([c[1] for c in calls], ["edit", "post"])
+        self.assertEqual(self.state()["message_id"], 4102)
+
+    def test_an_edit_that_may_have_landed_posts_nothing_and_retries_next_run(self):
+        # A timeout, a network error (exit 6), an internal error (exit 1) or a gateway status may
+        # each have applied the edit, so a new post would repeat the same text in the topic.
+        old = {"failing": ["tool:gh: a"], "checks": ["tool:gh"], "message_id": 4101}
+
+        def timing_out(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, 60)
+
+        cases = [
+            ("timeout", timing_out),
+            ("network", self.chat_runner([], [9999], edit_code=6, edit_err="timed out")),
+            ("internal", self.chat_runner([], [9999], edit_code=1, edit_err="internal error")),
+            ("gateway", self.chat_runner([], [9999], edit_code=5, edit_err="HTTP 504")),
+        ]
+        for name, inner in cases:
+            with self.subTest(name):
+                calls = []
+
+                def runner(argv, inner=inner, calls=calls, **kw):
+                    calls.append(argv)
+                    return inner(argv, **kw)
+
+                (self.home / "state.json").write_text(json.dumps(old))
+                self.assertFalse(doctor.post_changes(self.failing_report(("tool:gh", "b")), runner))
+                self.assertEqual([c[1] for c in calls], ["edit"])
+                self.assertEqual(self.state(), old)
+                # The next run edits the same message again.
+                retry = []
+                self.assertTrue(
+                    doctor.post_changes(
+                        self.failing_report(("tool:gh", "b")), self.chat_runner(retry, [])
+                    )
+                )
+                self.assertEqual([c[1] for c in retry], ["edit"])
+                self.assertEqual(retry[0][2:4], ["--id", "4101"])
+                self.assertEqual(self.state()["message_id"], 4101)
+
+    def test_an_old_state_without_an_id_posts_as_before(self):
+        calls = []
+        runner = self.chat_runner(calls, [4101])
+        (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 1"]}))
+        self.assertTrue(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
+        self.assertEqual([c[1] for c in calls], ["post"])
+        self.assertEqual(self.state()["message_id"], 4101)
+        # An unchanged set against the old state is still silent.
+        (self.home / "state.json").write_text(json.dumps({"failing": ["tool:gh: behind by 2"]}))
+        self.assertFalse(
+            doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_a_post_without_json_output_keeps_no_id(self):
+        calls = []
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "posted id 9 to #x\n", "")
+
+        doctor.post_changes(self.failing_report(("tool:gh", "behind by 1")), runner)
+        self.assertNotIn("message_id", self.state())
+        doctor.post_changes(self.failing_report(("tool:gh", "behind by 2")), runner)
+        self.assertEqual([c[1] for c in calls], ["post", "post"])
+
+    def test_a_post_that_may_have_landed_is_not_posted_again(self):
+        # Kody on PR 1467:  a post that timed out, or failed with a network or internal error, may
+        # already be on Zulip.  Its set is remembered without an id, so the next run posts nothing.
+        def timing_out(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, 60)
+
+        def exiting(code, err):
+            return lambda argv, **kw: subprocess.CompletedProcess(argv, code, "", err)
+
+        for name, runner in [
+            ("timeout", timing_out),
+            ("network", exiting(6, "timed out")),
+            ("internal", exiting(1, "internal error")),
+            ("gateway", exiting(5, "HTTP 502")),
+        ]:
+            with self.subTest(name):
+                (self.home / "state.json").unlink(missing_ok=True)
+                report = self.failing_report(("tool:gh", "behind by 1"))
+                self.assertFalse(doctor.post_changes(report, runner))
+                self.assertEqual(
+                    self.state(), {"failing": ["tool:gh: behind by 1"], "checks": ["tool:gh"]}
+                )
+                calls = []
+                self.assertFalse(doctor.post_changes(report, self.chat_runner(calls, [4101])))
+                self.assertEqual(calls, [])
+                # A later text change posts a new message, because there is no id to edit.
+                self.assertTrue(
+                    doctor.post_changes(
+                        self.failing_report(("tool:gh", "behind by 2")),
+                        self.chat_runner(calls, [4101]),
+                    )
+                )
+                self.assertEqual([c[1] for c in calls], ["post"])
+
+    def test_a_refused_or_impossible_post_is_tried_again_next_run(self):
+        # Zulip refused it (exit 3), or simple-chat is missing:  nothing was posted, so nothing is
+        # remembered and the next run posts.
+        def missing(argv, **kw):
+            raise FileNotFoundError(argv[0])
+
+        refused = lambda argv, **kw: subprocess.CompletedProcess(argv, 3, "", "refused")
+        for name, runner in [("refused", refused), ("missing", missing)]:
+            with self.subTest(name):
+                (self.home / "state.json").unlink(missing_ok=True)
+                report = self.failing_report(("tool:gh", "behind by 1"))
+                self.assertFalse(doctor.post_changes(report, runner))
+                self.assertFalse((self.home / "state.json").exists())
+                calls = []
+                self.assertTrue(doctor.post_changes(report, self.chat_runner(calls, [4101])))
+                self.assertEqual([c[1] for c in calls], ["post"])
+
+    def test_posted_message_id_reads_only_a_positive_integer_id(self):
+        self.assertEqual(doctor.posted_message_id('{"id": 7, "channel": "c"}\n'), 7)
+        self.assertEqual(doctor.posted_message_id('noise\n{"id": 8}\n'), 8)
+        # Kody on PR 1467:  a pretty-printed object over several lines.
+        self.assertEqual(doctor.posted_message_id('{\n  "id": 9,\n  "channel": "c"\n}\n'), 9)
+        self.assertIsNone(doctor.posted_message_id('{"id": "7"}'))
+        self.assertIsNone(doctor.posted_message_id('{"id": true}'))
+        self.assertIsNone(doctor.posted_message_id("posted id 7"))
+        self.assertIsNone(doctor.posted_message_id(None))
 
     def test_runtime_reads_the_live_release_not_the_stale_receipt(self):
         self.touch("rt/status.json", json.dumps({"source_commit": "b" * 40, "status": "activated"}))
@@ -130,7 +490,7 @@ class SeatAndMcpTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
             if "diff" in argv:
                 return subprocess.CompletedProcess(
-                    argv, 0, "scripts/agent_sync/mcp/listener-tools.json", ""
+                    argv, 0, "scripts/simple_tools/mcp/eavesdropper-tools.json", ""
                 )
             return subprocess.CompletedProcess(argv, 1, "", "")
 
@@ -159,7 +519,7 @@ class SeatAndMcpTests(unittest.TestCase):
             def changed(argv, **kw):
                 if "diff" in argv:
                     return subprocess.CompletedProcess(
-                        argv, 0, "scripts/agent_sync/cli.py\nscripts/linear-board/board", ""
+                        argv, 0, "scripts/simple_tools/cli.py\nscripts/linear-board/board", ""
                     )
                 return runner(argv, **kw)
 
@@ -176,7 +536,7 @@ class SeatAndMcpTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     argv,
                     0,
-                    "scripts/agent_sync/tests/test_x.py\nscripts/linear-board/README.md",
+                    "scripts/simple_tools/tests/test_x.py\nscripts/linear-board/README.md",
                     "",
                 )
             return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
@@ -215,22 +575,44 @@ class SeatAndMcpTests(unittest.TestCase):
         rel = importlib.util.spec_from_file_location("release", HERE / "fleet-cli-release.py")
         receiver = importlib.util.module_from_spec(rel)
         rel.loader.exec_module(receiver)
-        self.assertEqual(doctor.SHIPPED_EXACT, receiver.EXACT)
-        for path in receiver.EXACT:
-            self.assertTrue(doctor.is_shipped(path), path)
-            self.assertTrue(any(path == p or path.startswith(p) for p in doctor.SHIPPED), path)
-        for path in (
-            "scripts/fleet_rag/eval.py",
-            "scripts/fleet_lanes/tests/test_lane.py",
-            "scripts/fleet_rag/tests/x.py",
-        ):
-            self.assertFalse(doctor.is_shipped(path), path)
+        shipped = receiver.EXACT - receiver.REPO_ONLY
+        self.assertEqual(doctor.SHIPPED_EXACT, shipped)
+        self.assertEqual(doctor.SHIPPED_REPO_ONLY, receiver.REPO_ONLY)
+        doctor._RELEASE_POLICY.clear()
+        doctor._RELEASE_POLICY.append(receiver)
+        try:
+            for path in shipped:
+                self.assertTrue(doctor.is_shipped(path), path)
+                self.assertTrue(any(path == p or path.startswith(p) for p in doctor.SHIPPED), path)
+            for path in receiver.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+            for path in (
+                "scripts/fleet_rag/eval.py",
+                "scripts/fleet_lanes/tests/test_lane.py",
+                "scripts/fleet_rag/tests/x.py",
+            ):
+                self.assertFalse(doctor.is_shipped(path), path)
+        finally:
+            doctor._RELEASE_POLICY.clear()
 
-    def test_the_same_five_tools_on_both_hosts(self):
+    def test_the_same_seven_tools_on_both_hosts(self):
         self.assertEqual(
-            doctor.FLEET_TOOLS, ("agent-sync", "board", "recall", "lane", "fleet-mode")
+            doctor.FLEET_TOOLS,
+            (
+                "simple-chat",
+                "simple-notes",
+                "simple-board",
+                "recall",
+                "lane",
+                "fleet-mode",
+                "platform-letter",
+            ),
         )
         self.assertTrue(set(doctor.FLEET_TOOLS) <= set(doctor.COMMANDS))
+        # AFC-564: the Mac links platform-letter only when install.sh is rerun, and the server hooks depend on it, so
+        # both hosts check it.
+        self.assertIn(("platform-letter", "platform-letter"), doctor.MAC_SIMPLE_TOOLS)
+        self.assertEqual(doctor.SERVER_WRAPPERS["platform-letter"], "scripts/platform-letter")
 
     def test_commands_accept_the_macs_apps_folder_but_not_a_missing_tool(self):
         apps = self.home / "apps"
@@ -258,6 +640,19 @@ class SeatAndMcpTests(unittest.TestCase):
         rows = {r["check"]: r["status"] for r in report.rows}
         self.assertEqual(rows["tool-file:scripts/recall"], "OK")
         self.assertEqual(rows["tool-file:docs/FLEET-MODE.md"], "FAIL")
+
+    def test_partial_release_without_recall_presentation_is_missing(self):
+        helper = "scripts/fleet_rag/recall_presentation.py"
+        self.assertIn(helper, doctor.TOOL_FILES)
+        for rel in doctor.TOOL_FILES:
+            if rel != helper:
+                self.touch(f"rt/current/{rel}")
+        report = doctor.Report()
+        doctor.check_tool_files(report)
+        row = report.row(f"tool-file:{helper}")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertEqual(row["state"], "missing")
+        self.assertEqual(report.row("tool-file:scripts/recall")["status"], "OK")
 
     def test_fleet_mode_doc_warns_when_the_mac_copy_differs(self):
         doc = self.home / "apps/FLEET-MODE.md"
@@ -301,9 +696,9 @@ class SeatAndMcpTests(unittest.TestCase):
         report.add("tool:gitleaks", "FAIL", "not installed;  required on the server")
         self.assertTrue(doctor.post_changes(report, runner))  # a real change still posts
 
-    def test_post_survives_a_missing_agent_sync(self):
+    def test_post_survives_a_missing_simple_tools(self):
         def runner(argv, **kw):
-            raise FileNotFoundError("agent-sync")
+            raise FileNotFoundError("simple-chat")
 
         report = doctor.Report()
         report.add("seat:CLAUDE", "FAIL", "x")
@@ -311,9 +706,9 @@ class SeatAndMcpTests(unittest.TestCase):
 
     def test_codex_toml_quoted_and_subtables(self):
         names = doctor.codex_mcp_names(
-            '[mcp_servers."agent-sync"]\ncommand = "x"\n[mcp_servers.fleetlink.env]\nA = "b"\n'
+            '[mcp_servers."simple-chat"]\ncommand = "x"\n[mcp_servers.fleetlink.env]\nA = "b"\n'
         )
-        self.assertEqual(sorted(names), ["agent-sync", "fleetlink"])
+        self.assertEqual(sorted(names), ["fleetlink", "simple-chat"])
 
 
 class ShippedListTests(unittest.TestCase):
@@ -323,9 +718,40 @@ class ShippedListTests(unittest.TestCase):
         )
         release = importlib.util.module_from_spec(rspec)
         rspec.loader.exec_module(release)
-        self.assertEqual(doctor.SHIPPED_EXACT, release.EXACT)
-        for path in release.EXACT:
-            self.assertTrue(doctor.is_shipped(path), path)
+        shipped = release.EXACT - release.REPO_ONLY
+        self.assertEqual(doctor.SHIPPED_EXACT, shipped)
+        self.assertEqual(doctor.SHIPPED_REPO_ONLY, release.REPO_ONLY)
+        doctor._RELEASE_POLICY.clear()
+        doctor._RELEASE_POLICY.append(release)
+        try:
+            for path in shipped:
+                self.assertTrue(doctor.is_shipped(path), path)
+            for path in release.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+        finally:
+            doctor._RELEASE_POLICY.clear()
+        # The no-checkout fallback must exclude the same repo-only paths.
+        doctor._RELEASE_POLICY.append(None)
+        try:
+            for path in shipped:
+                self.assertTrue(doctor.is_shipped(path), path)
+            for path in release.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+        finally:
+            doctor._RELEASE_POLICY.clear()
+
+    def test_the_fallback_repo_only_list_is_the_release_list(self):
+        rspec = importlib.util.spec_from_file_location(
+            "release_for_doctor_repo_only", HERE / "fleet-cli-release.py"
+        )
+        release = importlib.util.module_from_spec(rspec)
+        rspec.loader.exec_module(release)
+        self.assertEqual(doctor.SHIPPED_REPO_ONLY, release.REPO_ONLY)
+        # With no checkout the fallback must agree with the release:  a repo-only module is not drift.
+        with mock.patch.object(doctor, "release_policy", return_value=None):
+            for path in release.REPO_ONLY:
+                self.assertFalse(doctor.is_shipped(path), path)
+            self.assertTrue(doctor.is_shipped("scripts/simple_tools/notes_cli.py"))
 
 
 class McpStartupTests(unittest.TestCase):
@@ -335,7 +761,7 @@ class McpStartupTests(unittest.TestCase):
                 argv,
                 1,
                 b"",
-                b"agent-sync: internal error: FileNotFoundError: listener-tools.json\n",
+                b"simple-chat: internal error: FileNotFoundError: eavesdropper-tools.json\n",
             )
 
         def working(argv, **kw):
@@ -346,7 +772,7 @@ class McpStartupTests(unittest.TestCase):
             }
             return subprocess.CompletedProcess(argv, 0, json.dumps(reply).encode() + b"\n", b"")
 
-        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"):
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/simple-chat"):
             report = doctor.Report()
             doctor.check_mcp_startup(report, "CLAUDE", broken)
             self.assertEqual(report.rows[0]["status"], "FAIL")
@@ -355,7 +781,7 @@ class McpStartupTests(unittest.TestCase):
             doctor.check_mcp_startup(report, "CLAUDE", working)
             self.assertEqual(
                 (report.rows[0]["status"], report.rows[0]["detail"]),
-                ("OK", "agent-sync mcp serves 2 tools"),
+                ("OK", "simple-chat mcp serves 2 tools"),
             )
 
 
@@ -364,11 +790,11 @@ class RegisteredEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / ".claude.json").write_text(
-                json.dumps({"mcpServers": {"agent-sync": {"env": {"ZULIP_RC": "/c"}}}})
+                json.dumps({"mcpServers": {"simple-chat": {"env": {"ZULIP_RC": "/c"}}}})
             )
             (home / ".codex").mkdir()
             (home / ".codex/config.toml").write_text(
-                '[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nZULIP_RC = "/x"\n'
+                '[mcp_servers.simple-chat]\ncommand = "x"\n\n[mcp_servers.simple-chat.env]\nZULIP_RC = "/x"\n'
             )
             self.assertEqual(doctor.registered_env("CLAUDE", home), {})
             self.assertEqual(doctor.registered_env("CODEX", home), {})
@@ -377,8 +803,8 @@ class RegisteredEnvTests(unittest.TestCase):
             for bad in (
                 [],
                 {"mcpServers": []},
-                {"mcpServers": {"agent-sync": "x"}},
-                {"mcpServers": {"agent-sync": {"env": "x"}}},
+                {"mcpServers": {"simple-chat": "x"}},
+                {"mcpServers": {"simple-chat": {"env": "x"}}},
             ):
                 (home / ".claude.json").write_text(json.dumps(bad))
                 with self.assertRaises(doctor.ClientConfigError):
@@ -390,17 +816,17 @@ class RegisteredEnvTests(unittest.TestCase):
             home = Path(tmp)
             (home / ".codex").mkdir()
             (home / ".codex/config.toml").write_text(
-                '[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nLANG = "C"\n\n'
+                '[mcp_servers.simple-chat]\ncommand = "x"\n\n[mcp_servers.simple-chat.env]\nLANG = "C"\n\n'
                 '[mcp_servers."fleetlink"]\ncommand = "y"\n'
             )
             with mock.patch.dict(sys.modules, {"tomllib": None}):
                 self.assertEqual(
-                    sorted(doctor.client_servers("CODEX", home)), ["agent-sync", "fleetlink"]
+                    sorted(doctor.client_servers("CODEX", home)), ["fleetlink", "simple-chat"]
                 )
                 self.assertEqual(doctor.registered_env("CODEX", home), {})
                 report = doctor.Report()
                 with mock.patch.object(doctor, "HOME", home):
-                    doctor.check_mcp(report)
+                    doctor.check_mcp(report, {"CODEX": False, "CLAUDE": False})
         codex = [row for row in report.rows if row["check"] == "mcp:codex"]
         self.assertEqual(codex[0]["status"], "OK")
 
@@ -411,7 +837,7 @@ class RegisteredEnvTests(unittest.TestCase):
                 json.dumps(
                     {
                         "mcpServers": {
-                            "agent-sync": {
+                            "simple-chat": {
                                 "env": {
                                     "INFISICAL_TOKEN": "synthetic-file-token",
                                     "ZULIP_KEY": "synthetic-key",
@@ -434,7 +860,7 @@ class RegisteredEnvTests(unittest.TestCase):
                 "registered_env",
                 side_effect=doctor.ClientConfigError("Claude client JSON unavailable or malformed"),
             ),
-            mock.patch.object(doctor.shutil, "which", return_value="agent-sync"),
+            mock.patch.object(doctor.shutil, "which", return_value="simple-chat"),
         ):
             report = doctor.Report()
             doctor.check_mcp_startup(report, "CLAUDE", runner)
@@ -451,7 +877,7 @@ class RegisteredEnvTests(unittest.TestCase):
 
         with (
             mock.patch.object(doctor, "registered_env", return_value={"LANG": "file-locale"}),
-            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"),
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/simple-chat"),
             mock.patch.dict(
                 os.environ, {"LANG": "process-locale", "INFISICAL_TOKEN": "synthetic-process-token"}
             ),
@@ -494,7 +920,7 @@ class HomeCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        self.rt_dir = self.home / "apps/lanes/_managed/fleet/agent-sync-runtime"
+        self.rt_dir = self.home / "apps/lanes/_managed/fleet/simple-tools-runtime"
         self.patch = mock.patch.multiple(
             doctor,
             HOME=self.home,
@@ -837,17 +1263,17 @@ class MacRuntimeTests(HomeCase):
         self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
 
     def test_reasons(self):
-        self.touch(".agent-sync/runtime-sync.pause", "")
+        self.touch(".simple-tools/runtime-sync.pause", "")
         _, row = self.runtime(updater=dict(self.HEALTHY, paused=True))
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("paused", row["reason"])
-        (self.home / ".agent-sync/runtime-sync.pause").unlink()
-        self.touch(".agent-sync/runtime-sync.bad-sha", TIP + "\n")
+        (self.home / ".simple-tools/runtime-sync.pause").unlink()
+        self.touch(".simple-tools/runtime-sync.bad-sha", TIP + "\n")
         _, row = self.runtime(updater=dict(self.HEALTHY, advanced=None))
         self.assertEqual(row["status"], "WARN")  # amber:  the updater waits for main to move
         self.assertIn("smoke test", row["reason"])
-        (self.home / ".agent-sync/runtime-sync.bad-sha").unlink()
-        _, row = self.runtime(tracked=" M scripts/agent-sync\n")
+        (self.home / ".simple-tools/runtime-sync.bad-sha").unlink()
+        _, row = self.runtime(tracked=" M scripts/simple-chat\n")
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("tracked changes", row["reason"])
         _, row = self.runtime(updater=dict(self.HEALTHY, advanced=False))
@@ -882,7 +1308,7 @@ class MacRuntimeTests(HomeCase):
 
 
 class MacUpdaterTests(HomeCase):
-    PRINT = "gui/501/com.jay.agent-sync-runtime-sync = {\n\tactive count = 0\n\tstate = not running\n\truns = 413\n\tlast exit code = 0\n\tevent triggers = {\n\t\tstate = active\n\t}\n}\n"
+    PRINT = "gui/501/com.jay.simple-tools-runtime-sync = {\n\tactive count = 0\n\tstate = not running\n\truns = 413\n\tlast exit code = 0\n\tevent triggers = {\n\t\tstate = active\n\t}\n}\n"
 
     def previous(self, runs, minutes_ago):
         return {
@@ -896,7 +1322,7 @@ class MacUpdaterTests(HomeCase):
         report = doctor.Report()
         runner = fake_runner([(("launchctl", "print"), answer or (0, self.PRINT))])
         info = doctor.check_mac_updater(report, runner, previous)
-        return info, report.row("updater:com.jay.agent-sync-runtime-sync")
+        return info, report.row("updater:com.jay.simple-tools-runtime-sync")
 
     def test_counter(self):
         info, row = self.updater(self.previous(400, 15))
@@ -1017,7 +1443,7 @@ class LaneTests(HomeCase):
     def setUp(self):
         super().setUp()
         self.touch(
-            "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet_lanes/install_tools.py"
+            "apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet_lanes/install_tools.py"
         )
         self.touch("apps/lane-tools/VERSION", f"sha={OLD}\npackage=0.1.0\n")
 
@@ -1113,23 +1539,37 @@ class ServerTests(HomeCase):
             row = report.row("updater:fleet-cli-git-update.timer")
             self.assertEqual((row["state"], row["status"]), want, answer)
 
+    def test_service_run_newer_than_the_timer_counts_as_a_run(self):
+        now = int(time.time())
+        out = (
+            "LoadState=loaded\nActiveState=active\nLastTriggerUSec=@%d\n"
+            "NextElapseUSecRealtime=\nExecMainStartTimestamp=\n\n"
+            "LoadState=loaded\nActiveState=inactive\nLastTriggerUSec=\n"
+            "NextElapseUSecRealtime=\nExecMainStartTimestamp=@%d\n"
+        ) % (now - 300 * 60, now - 20 * 60)
+        report = doctor.Report()
+        doctor.check_server_timers(report, fake_runner([(("systemctl",), (0, out))]))
+        row = report.row("updater:fleet-cli-git-update.timer")
+        self.assertEqual((row["state"], row["status"]), ("current", "OK"))
+        self.assertIn("fired 20 minutes ago", row["reason"])
+
     def test_wrappers_and_the_fleet_secrets_link(self):
         current = str(self.fleet_cli / "current")
         self.touch(
-            ".local/bin/agent-sync",
-            f"release = Path({current!r})\nargv = [str(release / 'scripts/agent-sync')]\n",
+            ".local/bin/simple-chat",
+            f"release = Path({current!r})\nargv = [str(release / 'scripts/simple-chat')]\n",
         )
-        self.touch(".local/bin/board", "exec /usr/bin/python3 /somewhere/else/board\n")
+        self.touch(".local/bin/simple-board", "exec /usr/bin/python3 /somewhere/else/board\n")
         self.touch("elsewhere/fleet-secrets", "#!/bin/sh\n")
         (self.home / ".local/bin/fleet-secrets").symlink_to(self.home / "elsewhere/fleet-secrets")
         report = doctor.Report()
         rt = {"state": "current", "status": "OK", "head": TIP, "tip": TIP}
         doctor.check_server_tools(report, rt, {"FleetLink": "current"}, fake_runner([]))
-        self.assertEqual(report.row("tool:agent-sync")["state"], "current")
-        self.assertEqual(report.row("tool:board")["state"], "missing")  # points elsewhere
+        self.assertEqual(report.row("tool:simple-chat")["state"], "current")
+        self.assertEqual(report.row("tool:simple-board")["state"], "missing")  # points elsewhere
         self.assertEqual(report.row("tool:recall")["state"], "missing")  # absent
         self.assertEqual(report.row("tool:fleet-secrets")["state"], "stale")  # wrong link
-        self.assertEqual(report.row("tool:fleet-share")["state"], "missing")
+        self.assertEqual(report.row("tool:fleetlink")["state"], "missing")
 
 
 class RemoteTests(unittest.TestCase):
@@ -1148,7 +1588,9 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse(doc["reachable"])
         self.assertIn(doctor.NO_ROUTE, doc["error"])
         rows = {r["check"]: r for r in doc["checks"]}
-        self.assertTrue({"runtime", "tool:agent-sync", "tool:gitleaks", "tool:claude"} <= set(rows))
+        self.assertTrue(
+            {"runtime", "tool:simple-chat", "tool:gitleaks", "tool:claude"} <= set(rows)
+        )
         self.assertTrue(all(r["state"] == "unknown" for r in rows.values()))
         self.assertTrue(rows["tool:gitleaks"]["required"])
         for key in ("path", "version", "latest", "latestSource", "basis"):
@@ -1244,6 +1686,11 @@ class ReportAndRunTests(HomeCase):
             for key in doctor.ROW_FIELDS:
                 self.assertIn(key, row)
         self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
+        agent = [row for row in doc["checks"] if row["check"] == "agent-config"]
+        self.assertEqual(len(agent), 1)
+        self.assertEqual(agent[0]["status"], "OK")
+        self.assertEqual(agent[0]["category"], "agent-config")
+        self.assertEqual(agent[0]["state"], "current")
         self.assertIsNone(doc["expected"]["rev"])
         self.assertEqual(doc["doctorCommit"], TIP)
         rows = {r["check"]: r for r in doc["checks"]}
@@ -1253,9 +1700,9 @@ class ReportAndRunTests(HomeCase):
     def test_no_network_never_calls_a_fleet_tool_current(self):
         (self.rt_dir).mkdir(parents=True)
         (self.rt_dir / ".git").write_text("gitdir: x\n")
-        self.touch("apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent-sync", "x")
+        self.touch("apps/lanes/_managed/fleet/simple-tools-runtime/scripts/simple-chat", "x")
         (self.home / ".local/bin").mkdir(parents=True)
-        (self.home / ".local/bin/agent-sync").symlink_to(self.rt_dir / "scripts/agent-sync")
+        (self.home / ".local/bin/simple-chat").symlink_to(self.rt_dir / "scripts/simple-chat")
         rules = [
             (("rev-parse", "HEAD"), (0, TIP + "\n")),
             (
@@ -1267,14 +1714,14 @@ class ReportAndRunTests(HomeCase):
         text, _ = self.run_doctor(["--json", "--no-network"], rules, host="mac")
         rows = {r["check"]: r for r in json.loads(text)["checks"]}
         self.assertEqual(rows["runtime"]["state"], "unknown")
-        self.assertEqual(rows["tool:agent-sync"]["state"], "unknown")
+        self.assertEqual(rows["tool:simple-chat"]["state"], "unknown")
         current = [
             r["check"]
             for r in rows.values()
             if r["state"] == "current"
             and (
                 r["check"] == "runtime"
-                or r["check"].startswith(("tool:agent", "tool:board", "tool:lane", "tool:recall"))
+                or r["check"].startswith(("tool:agent", "tool:lane", "tool:recall"))
             )
         ]
         self.assertEqual(current, [])
@@ -1291,7 +1738,10 @@ class ReportAndRunTests(HomeCase):
         self.assertEqual(len(text.strip().splitlines()), 1)
         self.assertIn("server unreachable:", text)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["report.json"])
+        # AFC-576:  the app-process report is written beside it.
+        self.assertEqual(
+            sorted(p.name for p in path.parent.iterdir()), ["app-processes.json", "report.json"]
+        )
         report = json.loads(path.read_text())
         self.assertEqual((report["schemaVersion"], report["tool"]), (1, "fleet-tools-doctor"))
         self.assertEqual([h["host"] for h in report["hosts"]], ["mac", "server"])
@@ -1312,6 +1762,57 @@ class ReportAndRunTests(HomeCase):
             doctor.write_report(self.home / "state/fleet-tools/report.json", {"schemaVersion": 1})
         self.assertEqual(list(real.iterdir()), [])
 
+    def test_a_folder_swapped_for_a_symlink_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        real = self.home / "elsewhere"
+        real.mkdir()
+        (self.home / "state").mkdir()
+        (self.home / "state/fleet-tools").symlink_to(real)
+        with mock.patch.object(doctor.Path, "is_symlink", return_value=False):
+            with self.assertRaises(ValueError):
+                doctor.write_report(
+                    self.home / "state/fleet-tools/report.json", {"schemaVersion": 1}
+                )
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_the_report_folder_is_fsynced_after_the_rename(self):
+        # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
+        synced = []
+        real_fsync = os.fsync
+
+        def record(fd):
+            synced.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        target = self.home / "state/fleet-tools/report.json"
+        with mock.patch.object(doctor.os, "fsync", side_effect=record):
+            doctor.write_report(target, {"schemaVersion": 1})
+        self.assertIn(target.parent.stat().st_ino, synced)
+        self.assertIn(target.stat().st_ino, synced)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_a_folder_fsync_failure_is_raised_unless_the_file_system_lacks_it(self):
+        # A file system without folder fsync says EINVAL, and the report it already renamed stands.
+        # Any other failure is a real one, and the write says so.
+        target = self.home / "state/fleet-tools/report.json"
+        real_fsync = os.fsync
+
+        def folder_fails(code):
+            def fsync(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError(code, os.strerror(code))
+                return real_fsync(fd)
+
+            return fsync
+
+        with mock.patch.object(doctor.os, "fsync", side_effect=folder_fails(errno.EINVAL)):
+            doctor.write_report(target, {"schemaVersion": 1})
+        self.assertEqual(json.loads(target.read_text()), {"schemaVersion": 1})
+        with mock.patch.object(doctor.os, "fsync", side_effect=folder_fails(errno.EIO)):
+            with self.assertRaises(OSError):
+                doctor.write_report(target, {"schemaVersion": 2})
+
     def test_no_registry_skips_the_version_probes(self):
         text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
         checks = [r["check"] for r in json.loads(text)["checks"]]
@@ -1320,7 +1821,7 @@ class ReportAndRunTests(HomeCase):
     def test_presence_rows_are_their_own_category_and_an_absent_checkout_is_unknown(self):
         text, _ = self.run_doctor(["--json", "--no-network"])
         rows = {r["check"]: r for r in json.loads(text)["checks"]}
-        self.assertEqual(rows["command:agent-sync"]["category"], "presence")
+        self.assertEqual(rows["command:simple-chat"]["category"], "presence")
         self.assertEqual(rows["tool-file:scripts/recall"]["category"], "presence")
         self.assertIn("presence", doctor.VERDICT_EXCLUDED)
         self.assertEqual(rows["checkout:FleetLink"]["state"], "unknown")  # find_repo finds none
@@ -1334,6 +1835,653 @@ class ReportAndRunTests(HomeCase):
         runtime = {r["check"]: r for r in json.loads(text)["checks"]}["runtime"]
         self.assertEqual(runtime["installed"], TIP)  # the managed runtime's HEAD, not the release's
         self.assertNotIn("release", runtime["detail"])
+
+
+class ServerStatusTests(HomeCase):
+    """The server's doctor carries the collector's report, and the Mac keeps it beside its own."""
+
+    run_doctor = ReportAndRunTests.run_doctor
+    CONFIGURED = (("ssh", "-G"), (0, "user root\nhostname 192.0.2.10\n"))
+
+    def status(self, **overrides):
+        status = {
+            "schemaVersion": 1,
+            "tool": "fleet-server-status",
+            "generatedAt": "2026-10-28T15:00:00Z",
+            "host": "server",
+            "coolify": [],
+            "processes": [],
+            "files": [],
+            "hostMetrics": {"cpuCount": 4, "disks": []},
+            "services": [],
+            "filesSummary": {"found": 0, "limit": 200, "truncated": False},
+        }
+        status.update(overrides)
+        return status
+
+    def status_path(self):
+        return self.home / doctor.SERVER_STATUS_RELATIVE
+
+    def write_status(self, text):
+        path = self.status_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text if isinstance(text, str) else json.dumps(text))
+        return path
+
+    def server_answer(self, status):
+        doc = {"ok": True, "checks": [], "schemaVersion": 1, "host": "server"}
+        if status is not None:
+            doc["serverStatus"] = status
+        return (("BatchMode=yes",), (0, json.dumps(doc).encode()))
+
+    def test_the_server_json_carries_a_valid_status(self):
+        self.write_status(self.status())
+        text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
+        doc = json.loads(text)
+        self.assertEqual(doc["serverStatus"], self.status())
+        # The doctor's own contract is unchanged beside it.
+        self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
+        self.assertIsInstance(doc["checks"], list)
+
+    def test_the_server_json_leaves_out_a_status_that_is_not_one(self):
+        too_big = self.status(files=[{"path": "x" * 1024}] * 600)
+        for text in (
+            None,  # no file at all
+            "not json",
+            "[1, 2]",
+            json.dumps(self.status(tool="something-else")),
+            json.dumps({"schemaVersion": 1}),
+            json.dumps(too_big),
+        ):
+            if text is None:
+                self.assertFalse(self.status_path().exists())
+            else:
+                self.write_status(text)
+            out, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
+            self.assertNotIn("serverStatus", json.loads(out), (text or "")[:40])
+
+    def test_only_the_server_and_only_json_carry_it(self):
+        self.write_status(self.status())
+        text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"], host="mac")
+        self.assertNotIn("serverStatus", json.loads(text))
+        text, _ = self.run_doctor(["--no-network", "--no-registry", "--write", "-"])
+        self.assertNotIn("serverStatus", json.loads(text)["hosts"][0])
+
+    def test_the_mac_writes_a_valid_status_privately_and_drops_it_from_the_report(self):
+        report = self.home / ".local/state/fleet-tools/report.json"
+        rules = [self.CONFIGURED, self.server_answer(self.status())]
+        self.run_doctor(
+            ["--no-network", "--no-registry", "--remote", "fleet-tools-ro", "--write", str(report)],
+            rules,
+            host="mac",
+        )
+        combined = json.loads(report.read_text())
+        server = combined["hosts"][1]
+        self.assertTrue(server["reachable"])
+        self.assertNotIn("serverStatus", server)
+        path = self.status_path()
+        self.assertEqual(json.loads(path.read_text()), self.status())
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        # Atomic:  no temporary file is left beside the reports (AFC-576 adds the app-process one).
+        self.assertEqual(
+            sorted(p.name for p in path.parent.iterdir()),
+            ["app-processes.json", "report.json", "server-status.json"],
+        )
+
+    def test_the_mac_drops_an_invalid_status_and_keeps_the_previous_file(self):
+        report = self.home / ".local/state/fleet-tools/report.json"
+        previous = self.write_status(self.status(host="before"))
+        for status in (
+            self.status(tool="other"),
+            ["not", "an", "object"],
+            "a string",
+            self.status(files=[{"path": "x" * 1024}] * 600),
+        ):
+            rules = [self.CONFIGURED, self.server_answer(status)]
+            self.run_doctor(
+                [
+                    "--no-network",
+                    "--no-registry",
+                    "--remote",
+                    "fleet-tools-ro",
+                    "--write",
+                    str(report),
+                ],
+                rules,
+                host="mac",
+            )
+            server = json.loads(report.read_text())["hosts"][1]
+            self.assertTrue(server["reachable"])
+            self.assertNotIn("serverStatus", server)
+            self.assertEqual(json.loads(previous.read_text())["host"], "before")
+
+    def test_printing_the_report_strips_the_status_and_writes_nothing(self):
+        rules = [self.CONFIGURED, self.server_answer(self.status())]
+        text, _ = self.run_doctor(
+            ["--no-network", "--no-registry", "--remote", "fleet-tools-ro", "--write", "-"],
+            rules,
+            host="mac",
+        )
+        self.assertNotIn("serverStatus", json.loads(text)["hosts"][1])
+        self.assertFalse(self.status_path().exists())
+
+    def test_an_unreachable_server_writes_nothing(self):
+        server = doctor.unreachable_server("no route")
+        server["serverStatus"] = self.status()
+        self.assertFalse(doctor.keep_server_status(server, self.status_path()))
+        self.assertNotIn("serverStatus", server)
+        self.assertFalse(self.status_path().exists())
+        self.assertFalse(doctor.keep_server_status(None, self.status_path()))
+        self.assertFalse(doctor.keep_server_status({"reachable": True}, self.status_path()))
+
+    def test_a_write_that_fails_never_fails_the_doctor(self):
+        blocked = self.home / "blocked"
+        blocked.write_text("a file where the folder should be")
+        server = {"reachable": True, "serverStatus": self.status()}
+        self.assertFalse(doctor.keep_server_status(server, blocked / "server-status.json"))
+
+    def test_the_answer_bound_leaves_room_for_the_status(self):
+        self.assertGreaterEqual(
+            doctor.MAX_REMOTE_BYTES, 1024 * 1024 + 2 * doctor.MAX_SERVER_STATUS_BYTES
+        )
+        self.assertEqual(doctor.MAX_SERVER_STATUS_BYTES, 512 * 1024)
+
+    def test_a_status_with_too_many_nodes_is_refused(self):
+        many = self.status(processes=[{"pid": n} for n in range(doctor.MAX_REMOTE_NODES // 2)])
+        self.assertFalse(doctor.server_status_valid(many))
+        self.assertTrue(doctor.server_status_valid(self.status()))
+
+    def test_a_deeply_nested_status_file_is_left_out_without_a_crash(self):
+        # Within 512 KiB, but past the parser's recursion limit:  --json still prints a document.
+        self.write_status("[" * 200000)
+        out, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
+        doc = json.loads(out)
+        self.assertNotIn("serverStatus", doc)
+        self.assertIsInstance(doc["checks"], list)
+        self.assertIsNone(doctor.read_server_status(self.status_path()))
+
+    def timer_row(self, minutes_old, linger, user="root"):
+        linger_dir = self.home / "linger"
+        linger_dir.mkdir(exist_ok=True)
+        if linger:
+            (linger_dir / user).touch()
+        stamp = doctor.parse_utc(self.status()["generatedAt"])
+        report = doctor.Report()
+        doctor.check_server_status_timer(
+            report,
+            self.status_path(),
+            clock=lambda: stamp + minutes_old * 60,
+            user=user,
+            linger_dir=linger_dir,
+        )
+        return report.row("updater:fleet-server-status.timer")
+
+    def test_the_collector_timer_row(self):
+        row = self.timer_row(10, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("absent", "OK"))
+        self.write_status(self.status())
+        row = self.timer_row(10, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("current", "OK"))
+        # Fresh, but the timer stops when the last session closes.
+        (self.home / "linger/root").unlink()
+        row = self.timer_row(10, linger=False)
+        self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
+        self.assertIn("loginctl enable-linger root", row["reason"])
+        # Past Muster's window:  stale, and the linger hint when it is the likely cause.
+        row = self.timer_row(60, linger=False)
+        self.assertEqual((row["state"], row["status"]), ("stale", "FAIL"))
+        self.assertIn("enable-linger", row["reason"])
+        row = self.timer_row(60, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("stale", "FAIL"))
+        self.assertNotIn("enable-linger", row["reason"])
+        self.write_status("[" * 5000)
+        row = self.timer_row(10, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("stale", "FAIL"))
+
+
+class NotesServiceTests(unittest.TestCase):
+    """AFC-486:  the Notes rows Muster shows (category `service`)."""
+
+    PRINT = "gui/501/com.jay.operator-notes-runner = {\n\tstate = running\n\truns = 3\n\tlast exit code = 0\n}\n"
+    NOW = 1_800_000_000.0
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.state = root / "notes-runner.json"
+        self.log = root / "apple-notes-actions.jsonl"
+        for name, value in (("NOTES_RUNNER_STATE", self.state), ("NOTES_ACTION_LOG", self.log)):
+            patcher = mock.patch.object(doctor, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def iso(self, seconds_ago):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.NOW - seconds_ago))
+
+    def rows(self, host, answer=(0, PRINT), health=None, network=True):
+        report = doctor.Report()
+        doctor.check_notes(
+            report,
+            host,
+            {},
+            fake_runner([(("launchctl", "print"), answer)]),
+            network=network,
+            health=health or (lambda env: {}),
+            clock=lambda: self.NOW,
+        )
+        return {row["check"]: row for row in report.rows}
+
+    def test_a_runner_that_is_not_loaded_fails(self):
+        rows = self.rows("mac", answer=(113, ""))
+        self.assertEqual(
+            (rows["notes:runner"]["status"], rows["notes:runner"]["category"]), ("FAIL", "service")
+        )
+
+    def test_a_loaded_runner_that_polls_is_current_and_a_silent_one_is_stale(self):
+        self.state.write_text(json.dumps({"last_poll_at": self.iso(30), "handled": 4}))
+        self.assertEqual(self.rows("mac")["notes:runner"]["state"], "current")
+        self.state.write_text(
+            json.dumps({"last_poll_at": self.iso(3600), "last_error": "unavailable: x"})
+        )
+        row = self.rows("mac")["notes:runner"]
+        self.assertEqual((row["status"], row["state"]), ("WARN", "stale"))
+        self.assertIn("last error", row["detail"])
+
+    def test_the_action_log_row_reports_unsent_lines(self):
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "unknown")  # no log yet
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(10),
+                    "log": {"offset": 0},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "stale")
+        size = self.log.stat().st_size
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(10),
+                    "log": {"inode": self.log.stat().st_ino, "offset": size},
+                    "log_shipped_at": self.iso(60),
+                }
+            )
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+
+    def test_unsent_bytes_are_counted_from_the_file_the_cursor_names(self):
+        # The cursor can sit in a rotated copy (a send that failed after a rotation):  the rest of that copy and the
+        # whole newer log are unsent, however small the new log is.
+        rotated = self.log.with_name(self.log.name + ".1")
+        rotated.write_text("x" * 3999 + "\n")
+        self.log.write_text("y" * 99 + "\n")
+        cursor = {"inode": rotated.stat().st_ino, "offset": 1000}
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(10),
+                    "log": cursor,
+                    "log_shipped_at": self.iso(7200),
+                    "last_error": "log:  unavailable: the Operator notes API could not be reached",
+                    "last_error_at": self.iso(60),
+                }
+            )
+        )
+        row = self.rows("mac")["notes:action-log"]
+        self.assertEqual(row["state"], "stale")
+        self.assertIn("%d bytes not yet sent" % (4000 - 1000 + 100), row["detail"])
+        self.assertIn("last error (60 s ago)", row["detail"])
+        # A cursor that names no kept file:  the runner sends every kept file again, so all of it counts.
+        self.state.write_text(
+            json.dumps({"log": {"inode": -1, "offset": 50}, "log_shipped_at": self.iso(7200)})
+        )
+        self.assertIn("4100 bytes not yet sent", self.rows("mac")["notes:action-log"]["detail"])
+        # A file cut short in place (shorter than the cursor):  the runner finds its place again, so all of it counts.
+        self.state.write_text(
+            json.dumps(
+                {
+                    "log": {"inode": self.log.stat().st_ino, "offset": 500},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertIn("4100 bytes not yet sent", self.rows("mac")["notes:action-log"]["detail"])
+
+    def test_a_torn_tail_and_an_old_or_unrelated_error_are_not_reported_as_waiting(self):
+        self.log.write_text(
+            '{"id":"a","ts":"2026-10-22T10:00:00Z"}\n{"id":"b","ts":'
+        )  # the last line torn
+        whole = len('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        state = {
+            "last_poll_at": self.iso(10),
+            "log": {"inode": self.log.stat().st_ino, "offset": whole},
+            "log_shipped_at": self.iso(7200),
+            "last_error": "log:  unavailable: x",
+            "last_error_at": self.iso(9000),  # before the last send
+        }
+        self.state.write_text(json.dumps(state))
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+        self.log.write_text(self.log.read_text() + "1}\n")  # finished:  now one line waits
+        self.state.write_text(json.dumps(state))
+        row = self.rows("mac")["notes:action-log"]
+        self.assertEqual(row["state"], "stale")
+        self.assertNotIn("last error", row["detail"])  # the only error is older than the last send
+        self.state.write_text(
+            json.dumps(dict(state, last_error="internal: a claim", last_error_at=self.iso(60)))
+        )
+        self.assertNotIn(
+            "last error", self.rows("mac")["notes:action-log"]["detail"]
+        )  # not from shipping the log
+        # A torn tail longer than the doctor's first look back (64 KiB) is still left out.
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n' + "z" * 100_000)
+        self.state.write_text(
+            json.dumps(dict(state, log={"inode": self.log.stat().st_ino, "offset": whole}))
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+
+    def test_a_line_written_moments_ago_is_not_late_however_long_ago_the_last_send(self):
+        # A quiet Mac sends nothing for hours;  a line it writes now waits only for the runner's next pass (25 s).
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        os.utime(self.log, (self.NOW - 20, self.NOW - 20))
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(5),
+                    "log": {"offset": 0},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+        os.utime(
+            self.log, (self.NOW - 600, self.NOW - 600)
+        )  # written ten minutes ago and still not sent
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "stale")
+
+    def test_the_doctor_counts_the_copies_the_script_keeps(self):
+        from simple_tools import notes as N
+
+        self.assertEqual(doctor.NOTES_LOG_ROTATIONS, N.ACTION_LOG_ROTATIONS)
+
+    def test_the_server_reads_the_queue_health(self):
+        fresh = {
+            "queued": 1,
+            "running": 0,
+            "oldest_queued_seconds": 20,
+            "runner_polled_at": self.iso(10),
+        }
+        self.assertEqual(
+            self.rows("server", health=lambda env: fresh)["notes:queue"]["status"], "OK"
+        )
+        silent = dict(fresh, runner_polled_at=None)
+        self.assertEqual(
+            self.rows("server", health=lambda env: silent)["notes:queue"]["state"], "stale"
+        )
+        backlog = dict(fresh, oldest_queued_seconds=4000)
+        self.assertIn(
+            "waited", self.rows("server", health=lambda env: backlog)["notes:queue"]["detail"]
+        )
+
+    def test_a_failed_probe_is_a_row_never_a_crash(self):
+        class Refused(Exception):
+            def __init__(self, code):
+                super().__init__(code)
+                self.code, self.message = code, "x"
+
+        def raises(code):
+            def health(env):
+                raise Refused(code)
+
+            return health
+
+        self.assertEqual(
+            self.rows("server", health=raises("not_configured"))["notes:queue"]["status"], "WARN"
+        )
+        self.assertEqual(
+            self.rows("server", health=raises("unavailable"))["notes:queue"]["status"], "FAIL"
+        )
+        self.assertEqual(self.rows("server", network=False)["notes:queue"]["state"], "unknown")
+
+
+class CodeRootTests(unittest.TestCase):
+    """The doctor finds the integration checkouts through the canonical roots.
+
+    The owner removed the /root aliases on 2026-10-25, so the doctor reads the
+    roots the fleet names in the environment and keeps the copy under the home
+    as the fallback.
+    """
+
+    def make_repo(self, root: Path, name: str) -> Path:
+        repo = root / name
+        (repo / ".git").mkdir(parents=True)
+        return repo
+
+    def test_a_configured_root_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "configured"
+            repo = self.make_repo(root, "Fixture-Repo")
+            with mock.patch.dict(
+                os.environ, {"FLEET_CODE_ROOT": str(root), "FLEET_SERVER_VOLUME": ""}
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_the_volume_the_host_names_is_used_next(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            volume = Path(tmp) / "volume"
+            repo = self.make_repo(volume / "Code", "Fixture-Repo-2")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": str(volume)}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", Path(tmp) / "home"),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo-2"), repo)
+
+    def test_the_copy_under_the_home_is_the_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "Code", "Fixture-Repo")
+            with (
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_a_host_with_no_root_and_no_alias_finds_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", Path(tmp) / "home"),
+            ):
+                self.assertIsNone(doctor.find_repo("Fixture-Repo"))
+
+    def test_a_root_named_with_a_tilde_is_expanded_against_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "trees", "Fixture-Repo")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "~/trees", "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_a_relative_root_is_joined_onto_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "trees", "Fixture-Repo")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "trees", "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_the_volume_may_be_named_with_a_tilde(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "vol" / "Code", "Fixture-Repo-2")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": "~/vol"}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo-2"), repo)
+
+    def test_a_relative_volume_is_joined_onto_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "vol" / "Code", "Fixture-Repo-2")
+            with (
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": "vol"}),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo-2"), repo)
+
+    def test_as_root_a_root_another_user_can_write_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "planted"
+            repo = self.make_repo(root, "Fixture-Repo")
+            fake = mock.Mock(st_uid=1000, st_mode=stat.S_IFDIR | 0o755)
+            real_stat = os.stat
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": str(root), "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(
+                    doctor.os,
+                    "stat",
+                    side_effect=lambda p, *a, **k: (
+                        fake if p == str(root) else real_stat(p, *a, **k)
+                    ),
+                ),
+            ):
+                # As root the doctor runs nothing out of a tree another user can write.
+                self.assertIsNone(doctor.find_repo("Fixture-Repo", euid=0))
+                # As that user, the tree is its own and is searched.
+                self.assertEqual(doctor.find_repo("Fixture-Repo", euid=1000), repo)
+
+    def test_the_warning_names_every_root_that_was_searched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            report = doctor.Report()
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": str(home), "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                doctor.check_checkouts(report, network=False, host="server")
+            detail = report.row(f"checkout:{doctor.REPOS[0]}")["detail"]
+            self.assertIn(str(home), detail)
+            self.assertIn(str(home / "Code"), detail)
+
+    def test_the_roots_are_reported_once_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"FLEET_CODE_ROOT": str(home / "Code"), "FLEET_SERVER_VOLUME": ""},
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                roots = doctor.code_roots()
+            self.assertEqual(roots, [home / "Code"])
+
+
+class PlacementWatchTests(unittest.TestCase):
+    def run_check(self, content: str | None, *, age: float = 0.0) -> list[dict]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            if content is not None:
+                path.write_text(content, encoding="utf-8")
+            report = doctor.Report()
+            now = (path.stat().st_mtime if content is not None else time.time()) + age
+            doctor.check_placement_watch(report, status_path=path, now=now)
+            return report.rows
+
+    def test_no_row_until_it_is_installed(self) -> None:
+        self.assertEqual(self.run_check(None), [])
+
+    def test_a_healthy_run_is_ok(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True, "findings": 3, "new": 1}))
+        self.assertEqual((rows[0]["check"], rows[0]["status"]), ("placement-watch", "OK"))
+        self.assertIn("3 findings", rows[0]["detail"])
+
+    def test_a_quiet_watcher_fails(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True}), age=4 * 3600)
+        self.assertEqual(rows[0]["status"], "FAIL")
+        self.assertIn("4 hours", rows[0]["detail"])
+
+    def test_a_failing_watcher_fails_with_its_reason(self) -> None:
+        rows = self.run_check(json.dumps({"ok": False, "errors": ["simple-board file: exit 1"]}))
+        self.assertEqual(rows[0]["status"], "FAIL")
+        self.assertIn("simple-board", rows[0]["detail"])
+
+    def test_garbage_is_a_warning(self) -> None:
+        self.assertEqual(self.run_check("{nope")[0]["status"], "WARN")
+
+    def test_a_watcher_held_in_dry_run_has_a_row_that_says_so(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True, "held": True, "findings": 34, "new": 34}))
+        self.assertEqual((rows[0]["check"], rows[0]["status"]), ("placement-watch", "WARN"))
+        self.assertIn("held in dry run", rows[0]["detail"])
+        self.assertIn("34 findings", rows[0]["detail"])
+
+    def test_a_held_row_says_when_the_watcher_last_acted(self) -> None:
+        rows = self.run_check(
+            json.dumps({"ok": True, "held": True, "last_acting_run": "2026-11-04T20:00:00+00:00"})
+        )
+        self.assertIn("last acting run 2026-11-04", rows[0]["detail"])
+
+    def test_a_held_watcher_that_has_stopped_is_still_stale(self) -> None:
+        rows = self.run_check(json.dumps({"ok": True, "held": True}), age=4 * 3600)
+        self.assertEqual(rows[0]["status"], "FAIL")
+
+    def test_an_unreadable_external_root_is_partial_not_clean_and_not_a_failure(self) -> None:
+        rows = self.run_check(
+            json.dumps(
+                {
+                    "ok": False,
+                    "coverage": "external-unreadable",
+                    "errors": [],
+                    "findings": 9,
+                    "held": True,
+                }
+            )
+        )
+        self.assertEqual(rows[0]["status"], "WARN")
+        self.assertIn("partial", rows[0]["detail"])
+        self.assertIn("held in dry run", rows[0]["detail"])
+
+    def test_a_filing_error_outranks_an_unreadable_root(self) -> None:
+        rows = self.run_check(
+            json.dumps(
+                {
+                    "ok": False,
+                    "coverage": "external-unreadable",
+                    "errors": ["simple-board file: exit 1"],
+                }
+            )
+        )
+        self.assertEqual(rows[0]["status"], "FAIL")
 
 
 if __name__ == "__main__":

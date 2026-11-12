@@ -36,6 +36,7 @@ __all__ = [
     "build_status_envelope",
     "expected_to_dict",
     "is_failing",
+    "is_not_applicable",
     "observed_to_dict",
     "overall_verdict",
     "result_to_dict",
@@ -68,11 +69,30 @@ def is_failing(result: CheckResult) -> bool:
     return result.reason_code in FAILING_REASON_CODES
 
 
+def is_not_applicable(result: CheckResult) -> bool:
+    """True when a result says its rule asks for nothing to be proven here.
+
+    A seat with no hook mechanism has a rule that pins the absence of a hook.  That
+    result is ``UNSUPPORTED`` with the reason code ``not-applicable``.  It is not a
+    pass, because no guard was proven, and it is not a hole in the proof either:  there
+    is nothing there to prove.
+    """
+    if result.state is not CheckState.UNSUPPORTED:
+        return False
+    return result.reason_code is ReasonCode.NOT_APPLICABLE
+
+
 def overall_verdict(results: tuple[CheckResult, ...]) -> OverallVerdict:
-    """The verdict for a set of results.  An empty run is ``UNKNOWN``, never ``PASS``."""
+    """The verdict for a set of results.  An empty run is ``UNKNOWN``, never ``PASS``.
+
+    ``PASS`` means every check the rules ask for was proven.  A result that is not
+    applicable asks for nothing, so it neither fails the run nor counts as proof:  a
+    run of nothing but such results is ``UNKNOWN``.
+    """
     if any(is_failing(result) for result in results):
         return OverallVerdict.FAIL
-    if results and all(result.state is CheckState.PASS for result in results):
+    asked = tuple(result for result in results if not is_not_applicable(result))
+    if asked and all(result.state is CheckState.PASS for result in asked):
         return OverallVerdict.PASS
     return OverallVerdict.UNKNOWN
 
@@ -102,6 +122,8 @@ def expected_to_dict(expected: ExpectedState) -> dict[str, object]:
         out["mode"] = expected.mode
     if expected.timeout_seconds is not None:
         out["timeoutSeconds"] = expected.timeout_seconds
+    if expected.guards:
+        out["guards"] = list(expected.guards)
     return out
 
 
@@ -155,11 +177,17 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
     """The pinned ``fleet-config status --json`` envelope for one report.
 
     The top-level keys are ``schemaVersion``, ``tool``, ``command``, ``generatedAt``,
-    ``summary``, ``results`` and ``uncovered``, in that order.  Consumers group the flat
-    ``results`` list by seat, platform and kind;  the envelope deliberately carries no
-    second, grouped copy that could disagree with it.  ``uncovered`` is flat for the
-    same reason:  it names the surfaces that fit none of the six kinds,  so the app can
-    render the blindness rather than leave a hole where a check would have been.
+    ``summary``, ``results``, ``uncovered`` and ``notImplemented``, in that order.
+    Consumers group the flat ``results`` list by seat, platform and kind;  the envelope
+    deliberately carries no second, grouped copy that could disagree with it.  ``uncovered``
+    is flat for the same reason:  it names the surfaces that fit none of the six kinds,  so
+    the app can render the blindness rather than leave a hole where a check would have been.
+
+    ``notImplemented`` names the fleet-wide rules the registry declares and the engine
+    cannot run yet.  They carry no result,  because a rule nobody can check must not make
+    every run unknown,  and they are listed so the gap stays visible.  The list is
+    additive:  a reader that does not know the key ignores it,  which is why the envelope
+    version stays where it is.
     """
     summary = report.summary
     return {
@@ -177,5 +205,13 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
         "uncovered": [
             {"seat": item.seat, "surface": item.surface, "reason": item.reason}
             for item in report.uncovered
+        ],
+        "notImplemented": [
+            {
+                "ruleId": item.rule_id,
+                "ownerSeat": item.owner_seat,
+                "reason": item.reason,
+            }
+            for item in report.not_implemented
         ],
     }

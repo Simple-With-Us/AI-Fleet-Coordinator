@@ -355,6 +355,68 @@ private final class RecordingNotifier: ApplyNotifying, @unchecked Sendable {
     func post(title: String, body: String) async { lock.lock(); items.append((title, body)); lock.unlock() }
 }
 
+/// A notifier that holds its post until the test lets it go.
+///
+/// A notification that waits on the system is the case an apply must not be held
+/// hostage by,  so the test needs one that really waits.
+private final class BlockingNotifier: ApplyNotifying, @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [(String, String)] = []
+    private var waiting = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    var posted: [(String, String)] { lock.lock(); defer { lock.unlock() }; return items }
+    /// True once the notifier has been entered and is waiting to be let go.
+    var isWaiting: Bool { lock.lock(); defer { lock.unlock() }; return waiting }
+
+    func post(title: String, body: String) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            items.append((title, body))
+            waiting = true
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    /// Let the waiting post go.  Calling it twice is harmless.
+    func release() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
+/// A holder that records the holds it took and the ones it released.
+private final class RecordingActivityHolder: ApplyActivityHolding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var reasons: [String] = []
+    private var released = 0
+
+    /// The holds that are still open.
+    var holds: Int { lock.lock(); defer { lock.unlock() }; return reasons.count - released }
+    /// Why each hold was taken.
+    var takenReasons: [String] { lock.lock(); defer { lock.unlock() }; return reasons }
+
+    func begin(reason: String) -> NSObjectProtocol? {
+        lock.lock()
+        reasons.append(reason)
+        lock.unlock()
+        return ActivityToken()
+    }
+
+    func end(_ token: NSObjectProtocol) {
+        lock.lock()
+        released += 1
+        lock.unlock()
+    }
+}
+
+/// The token a recording holder hands out.
+private final class ActivityToken: NSObject {}
+
 @MainActor
 final class CoordinatorFlowTests: XCTestCase {
     private let rule = "claude-hooks-lane-guard"
@@ -392,6 +454,21 @@ final class CoordinatorFlowTests: XCTestCase {
         throw CancellationError()
     }
 
+    /// Wait for a notification to arrive.
+    ///
+    /// The notification is posted off the session's completion path,  so it can land
+    /// after the session has already read as finished.
+    private func waitForNotification(
+        _ notifier: RecordingNotifier, count: Int = 1,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        for _ in 0..<400 {
+            if notifier.posted.count >= count { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("timed out waiting for the notification", file: file, line: line)
+    }
+
     func testPlanThenConfirmThenGreen() async throws {
         let planText = try fixture("plan_autofix_with_touch_id", "txt")
         let fake = engine(
@@ -413,9 +490,90 @@ final class CoordinatorFlowTests: XCTestCase {
         XCTAssertTrue(outcome.isGreen)
         XCTAssertEqual(fake.recorded.filter { $0.contains("--yes") }, [["apply", "CLAUDE", "hooks", "--yes"]])
         XCTAssertEqual(coordinator.latestResult(seat: "CLAUDE", ruleID: rule)?.state, .pass)
+        try await waitForNotification(notifier)
         XCTAssertEqual(notifier.posted.count, 1)
         XCTAssertEqual(notifier.posted.first?.0, "Apply Finished")
         XCTAssertFalse(coordinator.hasWorkInFlight)
+    }
+
+    /// The apply result is published before the notification goes out.
+    ///
+    /// A notification can wait on the system,  and a session that is still open in
+    /// .reproving blocks dismiss,  holds the app awake and stops a new plan,  so the
+    /// owner would never see the green or the red.  The result is published first,
+    /// and the notification is posted off the session's completion path.
+    func test_the_result_is_published_before_the_notification_goes_out() async throws {
+        let notifier = BlockingNotifier()
+        defer { notifier.release() }
+        let fake = engine(
+            plan: try fixture("plan_autofix_with_touch_id", "txt"),
+            statusAfter: try fixture("status_two_seats_live", "json"),
+            apply: FleetConfigCLIResult(exitCode: 0, stdout: try fixture("apply_report_applied", "txt"), stderr: "")
+        )
+        let coordinator = ApplyCoordinator(runner: fake, notifier: notifier)
+        let id = coordinator.beginPlan(seat: "CLAUDE", ruleID: rule, kind: "hooks")
+        _ = try await waitFor(coordinator, id) { if case .review = $0.phase { return true }; return false }
+        coordinator.confirmApply(sessionID: id)
+
+        let done = try await waitFor(coordinator, id) { $0.isFinished }
+        guard case .finished(let outcome) = done.phase else { return XCTFail("\(done.phase)") }
+        XCTAssertTrue(outcome.isGreen)
+
+        // The notification is still waiting on the system,  and the session reads as
+        // finished anyway:  the result is not held by the notification.
+        for _ in 0..<400 where !notifier.isWaiting {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(notifier.isWaiting, "the notification should still be waiting")
+        XCTAssertFalse(coordinator.hasWorkInFlight, "a finished apply holds nothing in flight")
+
+        // A new plan is not refused because the last one has not closed.
+        let again = coordinator.beginPlan(seat: "CLAUDE", ruleID: rule, kind: "hooks")
+        XCTAssertNotEqual(again, id, "a finished apply does not block the next one")
+    }
+
+    /// The app is held while the notification is still waiting.
+    ///
+    /// The notification is off the session's completion path,  so the apply's own
+    /// hold is gone by the time the post runs.  The notification is the only thing
+    /// that tells the owner the apply ended,  so it carries a hold of its own for
+    /// the length of the post:  without one the system can terminate the app in the
+    /// window between the apply ending and the post completing.
+    func test_the_app_is_held_while_the_notification_is_waiting() async throws {
+        let notifier = BlockingNotifier()
+        defer { notifier.release() }
+        let holder = RecordingActivityHolder()
+        let fake = engine(
+            plan: try fixture("plan_autofix_with_touch_id", "txt"),
+            statusAfter: try fixture("status_two_seats_live", "json"),
+            apply: FleetConfigCLIResult(exitCode: 0, stdout: try fixture("apply_report_applied", "txt"), stderr: "")
+        )
+        let coordinator = ApplyCoordinator(runner: fake, notifier: notifier, activityHolder: holder)
+        let id = coordinator.beginPlan(seat: "CLAUDE", ruleID: rule, kind: "hooks")
+        _ = try await waitFor(coordinator, id) { if case .review = $0.phase { return true }; return false }
+        coordinator.confirmApply(sessionID: id)
+
+        let done = try await waitFor(coordinator, id) { $0.isFinished }
+        guard case .finished(let outcome) = done.phase else { return XCTFail("\(done.phase)") }
+        XCTAssertTrue(outcome.isGreen)
+
+        // The notification is waiting,  and the app is held for it.
+        for _ in 0..<400 where !notifier.isWaiting {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(notifier.isWaiting, "the notification should still be waiting")
+        XCTAssertEqual(holder.holds, 1, "the notification carries a hold of its own")
+        XCTAssertTrue(
+            holder.takenReasons.contains("Announcing the result of an apply"),
+            "the hold is taken for the notification"
+        )
+
+        // Letting the post go releases the hold.
+        notifier.release()
+        for _ in 0..<400 where holder.holds != 0 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(holder.holds, 0, "the hold ends when the post is done")
     }
 
     func testClosingTheSheetDoesNotCancelTheApply() async throws {
@@ -451,6 +609,7 @@ final class CoordinatorFlowTests: XCTestCase {
         XCTAssertEqual(kind, .touchIDDeclined)
         XCTAssertEqual(fake.recorded.filter { $0.contains("--yes") }.count, 1, "a refusal is never retried")
         XCTAssertNotEqual(coordinator.latestResult(seat: "CLAUDE", ruleID: rule)?.state, .pass)
+        try await waitForNotification(notifier)
         XCTAssertEqual(notifier.posted.first?.0, "Apply Needs Attention")
     }
 

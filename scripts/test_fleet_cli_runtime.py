@@ -23,12 +23,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fleet_knobs.tests._fake import ScopedReadAPI
+
 ROOT = Path(__file__).resolve().parents[1]
 RUN = subprocess.run
 
 AUDIT = r"""
-import os, sys
+import os, pwd, sys
 _home = os.path.realpath(os.environ["HOME"])
+# The real entrypoints resolve account home through pwd, independently of HOME.
+# Keep that supported lookup inside the fixture before any optional host helper is opened.
+_getpwuid = pwd.getpwuid
+def _fixture_account(uid):
+    record = _getpwuid(uid)
+    return pwd.struct_passwd((*record[:5], _home, *record[6:])) if uid == os.getuid() else record
+pwd.getpwuid = _fixture_account
 def _audit(event, args):
     if event.startswith("socket."):
         raise RuntimeError("offline_network_forbidden")
@@ -52,8 +61,8 @@ PROTOCOL = (
     + r"""
 import io
 sys.path.insert(0, sys.argv[1])
-from agent_sync.mcp.stdio import Server
-from agent_sync.mcp.tools import load_served_tools
+from simple_tools.mcp.stdio import Server
+from simple_tools.mcp.tools import load_served_tools
 class CatalogueOnly:
     seat = "CODEX"
     spec = load_served_tools()
@@ -143,13 +152,13 @@ class ActualRuntime(unittest.TestCase):
         cls.receiver = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.receiver)
         candidates = set(cls.receiver.EXACT)
-        for directory in ("scripts/agent_sync", "scripts/agent_sync/mcp"):
+        for directory in ("scripts/simple_tools", "scripts/simple_tools/mcp"):
             candidates.update(
                 path.relative_to(ROOT).as_posix() for path in (ROOT / directory).glob("*.py")
             )
         files = {}
         for name in sorted(candidates):
-            if not cls.receiver.allowed_path(name):
+            if not cls.receiver.shipped_path(name):
                 continue
             path = ROOT / name
             if path.is_symlink() or not path.is_file():
@@ -232,11 +241,64 @@ class ActualRuntime(unittest.TestCase):
             "offline credential-path audit refused access",
         )
 
+    def test_notes_reader_import_is_in_installed_runtime(self):
+        path = "scripts/simple_tools/notes_service_reader.py"
+        self.assertIn(path, self.bundle["files"])
+        self.assertIn(path, self.receiver.TOOL_REQUIRED)
+        self.assertNotIn(path, self.receiver.BASE_REQUIRED)
+        command = [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            AUDIT + "\nimport sys; sys.path.insert(0, sys.argv[1]); "
+            "from simple_tools import notes_client, notes_service_reader; "
+            "assert notes_client.SR is notes_service_reader; "
+            "assert notes_service_reader.load() is None",
+            str(self.release / "scripts"),
+        ]
+        result = RUN(command, env=self.env, cwd=self.home, capture_output=True, timeout=15)
+        self.assert_exit(result, 0)
+        self.assertFalse(result.stdout)
+
     def test_actual_allowlist_installs_and_verifies(self):
         self.assertEqual(self.receipt["status"], "activated")
         self.assertEqual(self.receipt["bundle_sha256"], self.bundle["bundle_sha256"])
         self.assertLessEqual(len(self.raw), self.receiver.MAX_BUNDLE_BYTES)
         self.assertLessEqual(len(self.bundle["files"]), self.receiver.MAX_FILES)
+        sender_spec = importlib.util.spec_from_file_location(
+            "fleet_cli_runtime_sender", ROOT / "scripts/fleet-cli-sync.py"
+        )
+        sender = importlib.util.module_from_spec(sender_spec)
+        sender_spec.loader.exec_module(sender)
+        # The real bundle must fit what the sender ships, and the receiver cap must not trail the sender.
+        self.assertLessEqual(len(self.raw), sender.MAX_BYTES)
+        self.assertLessEqual(sender.MAX_BYTES, self.receiver.MAX_BUNDLE_BYTES)
+        # The cap is checked by what it is for:  both sides agree and the real bundle fits.  It is
+        # not pinned to a number, so adding a module under the cap breaks nothing here.
+        self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
+        self.assertIn("scripts/simple_tools/wake_settings.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/wake_service.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/thread_registry.py", self.bundle["files"])
+        self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/mcp/bearer_gate.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/listener_registry.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/registry_api.py", self.bundle["files"])
+        # The git tools CLI ships in the bundle:  required of new bundles, never of rollback targets.
+        for path in ("scripts/simple-git", "scripts/git-tools/git"):
+            self.assertIn(path, self.bundle["files"])
+            self.assertIn(path, self.receiver.TOOL_REQUIRED)
+            self.assertNotIn(path, self.receiver.BASE_REQUIRED)
+        # simple-git is a helper command:  a seat that declares itself gets its OWN bearer from the host
+        # helper, and an undeclared caller supplies its own.  The implementation file is never wired.
+        # This fixture home has no helper, so the installed wrapper is the plain one with no credential path.
+        self.assertEqual(self.receiver.HELPER_COMMANDS.get("scripts/simple-git"), "simple-git")
+        self.assertNotIn("scripts/git-tools/git", self.receiver.HELPER_COMMANDS)
+        installed = (self.home / ".local/bin/simple-git").read_text()
+        self.assertFalse((self.home / ".config/fleet-cli/seat-remote-defaults.py").exists())
+        self.assertNotIn("runpy", installed)
+        self.assertNotIn(".secrets", installed)
+
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")
         self.assertEqual(status["bundle_sha256"], self.bundle["bundle_sha256"])
@@ -247,10 +309,12 @@ class ActualRuntime(unittest.TestCase):
 
     def test_actual_cli_commands(self):
         cases = [
-            ("scripts/agent-sync", ["--version"], 0, b"agent-sync"),
-            ("scripts/agent-sync", ["mcp", "--help"], 0, b"--default-seat"),
+            ("scripts/simple-chat", ["--version"], 0, b"simple-chat"),
+            ("scripts/simple-chat", ["mcp", "--help"], 0, b"--default-seat"),
             ("scripts/linear-board/board", ["--help"], 0, b"whoami"),
             ("scripts/linear-board/board", ["whoami"], 4, b""),
+            ("scripts/simple-git", ["--help"], 0, b"simple-git"),
+            ("scripts/simple-git", ["list"], 4, b""),
         ]
         for script, args, code, text in cases:
             with self.subTest(script=script, args=args):
@@ -297,19 +361,112 @@ class ActualRuntime(unittest.TestCase):
         self.assertFalse((self.release / "scripts/fleet_rag/eval.py").exists())
         self.assertFalse((self.release / "scripts/fleet_lanes/install_tools.py").exists())
 
+    def test_produced_runtime_uses_real_scoped_verifier_for_knobs_and_recall(self):
+        package = self.release / "scripts/fleet_secrets"
+        self.assertEqual(
+            sorted(path.name for path in package.iterdir()), ["__init__.py", "core.py"]
+        )
+        self.assertFalse((self.release / "scripts/fleet-secrets").exists())
+        code = r"""
+import json, os, sys, urllib.parse
+address = urllib.parse.urlsplit(os.environ['FLEET_SECRETS_API'])
+assert address.hostname == '127.0.0.1' and address.port
+allowed = (address.hostname, address.port)
+home = os.path.realpath(os.environ['HOME'])
+def audit(event, args):
+    if event == 'socket.connect' and args[1] != allowed:
+        raise RuntimeError('non_loopback_connection_forbidden')
+    if event == 'socket.getaddrinfo' and args[:2] != allowed:
+        raise RuntimeError('non_loopback_lookup_forbidden')
+    if event.startswith('socket.') and event not in ('socket.connect', 'socket.getaddrinfo', 'socket.__new__'):
+        raise RuntimeError('unexpected_socket_operation')
+    if event == 'open' and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        path = os.path.realpath(os.fsdecode(args[0]))
+        if any(part in path.split(os.sep) for part in ('.secrets', '.codex', '.claude')) and os.path.commonpath([home, path]) != home:
+            raise RuntimeError('outside_home_credentials_forbidden')
+sys.addaudithook(audit)
+sys.path.insert(0, sys.argv[1])
+import fleet_secrets.core as verifier
+assert os.path.commonpath([sys.argv[1], verifier.__file__]) == sys.argv[1]
+if sys.argv[2] == 'knobs':
+    from fleet_knobs import source
+    assert os.path.commonpath([sys.argv[1], source._load_helper().__file__]) == sys.argv[1]
+    result = source.fetch({'OPERATOR_API_URL'})
+else:
+    from fleet_rag import core
+    result = core.infisical_fetch({'RECALL_API_URL'})
+print(json.dumps(result))
+"""
+        values = {
+            "OPERATOR_API_URL": "https://operator.invalid",
+            "RECALL_API_URL": "https://recall.invalid",
+        }
+        with ScopedReadAPI(values) as api:
+            for consumer, name in (("knobs", "OPERATOR_API_URL"), ("recall", "RECALL_API_URL")):
+                with self.subTest(consumer=consumer):
+                    env = {
+                        **env_for(self.home),
+                        **api.env,
+                        "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"],
+                    }
+                    if consumer == "recall":
+                        from fleet_rag.core import SHARED_PROJECT
+
+                        api.project = SHARED_PROJECT
+                        env["FLEET_RECALL_INFISICAL_TOKEN"] = env.pop("FLEET_KNOBS_INFISICAL_TOKEN")
+                    api.requests.clear()
+                    api.metadata_override.clear()
+                    ran = RUN(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            "-c",
+                            code,
+                            str(self.release / "scripts"),
+                            consumer,
+                        ],
+                        env=env,
+                        cwd=self.home,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    self.assertEqual(ran.returncode, 0, ran.stderr)
+                    self.assertEqual(json.loads(ran.stdout), {name: values[name]})
+                    self.assertEqual(len(api.requests), 2)
+                    self.assertEqual(api.requests[0], "/api/v2/service-token")
+                    self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw/" + name + "?"))
+                    api.requests.clear()
+                    api.metadata_override["permissions"] = ["read", "write"]
+                    denied = RUN(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            "-c",
+                            code,
+                            str(self.release / "scripts"),
+                            consumer,
+                        ],
+                        env=env,
+                        cwd=self.home,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    self.assertNotEqual(denied.returncode, 0)
+                    self.assertEqual(api.requests, ["/api/v2/service-token"])
+
     def test_actual_mcp_startup_refuses_missing_credentials(self):
         result = self.command(
-            "scripts/agent-sync", ["mcp", "--default-seat", "CODEX"], data=self.requests()
+            "scripts/simple-chat", ["mcp", "--default-seat", "CODEX"], data=self.requests()
         )
         self.assert_exit(result, 3)
         self.assertFalse(result.stdout, "unauthenticated MCP emitted protocol output")
-        # AFC-359:  no zuliprc default;  with no fleet-secrets on PATH it fails fast naming the Infisical keys.
-        self.assertTrue(
-            b"cannot read Infisical Fleet-OPS /zulip" in result.stderr
-            and b"CODEX_ZULIP_KEY" in result.stderr
-            and b"fleet-secrets is not installed" in result.stderr,
-            "missing-credential diagnostic absent",
-        )
+        # Own-bearer proof comes before provider credentials or any protocol output.
+        self.assertIn(b"CODEX's own bearer was not accepted (not_configured)", result.stderr)
+        self.assertNotIn(b"cannot read Infisical", result.stderr)
 
     @staticmethod
     def requests():
@@ -342,14 +499,19 @@ class ActualRuntime(unittest.TestCase):
         replies = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual([item["id"] for item in replies], [1, 2])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
-        self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
-        # What the real server serves:  tools.json, listener-tools.json (AFC-330), notes-tools.json and
+        self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "simple-chat")
+        # What the real server serves:  tools.json, eavesdropper-tools.json (AFC-330), notes-tools.json and
         # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
-        # fleetlink-tools.json.  Every file must ship, or `agent-sync mcp` fails at startup on the server (it
-        # did, 2026-10-16).
-        mcp = self.release / "scripts/agent_sync/mcp"
+        # peer-actions-tools.json, then fleetlink-tools.json last (the hosted Worker specs).  Every file
+        # must ship, or `simple-chat mcp` fails at startup on the server (it did, 2026-10-16).
+        mcp = self.release / "scripts/simple_tools/mcp"
         served = []
-        for name in ("tools.json", "listener-tools.json", "notes-tools.json", "recall-tools.json"):
+        for name in (
+            "tools.json",
+            "eavesdropper-tools.json",
+            "notes-tools.json",
+            "recall-tools.json",
+        ):
             served += json.loads((mcp / name).read_bytes())["tools"]
         self.assertTrue(served)
         listed = replies[1]["result"]["tools"]
@@ -370,11 +532,23 @@ class ActualRuntime(unittest.TestCase):
             [t["name"] for t in listed[len(served) : len(served) + len(linear)]], linear
         )
         fleetlink = json.loads((mcp / "fleetlink-tools.json").read_bytes())["tools"]
+        peer_actions = json.loads((mcp / "peer-actions-tools.json").read_bytes())["tools"]
         self.assertTrue(fleetlink)
-        self.assertEqual(listed[len(served) + len(linear) :], fleetlink)
+        self.assertTrue(peer_actions)
+        tail = listed[len(served) + len(linear) :]
+        self.assertEqual(tail[: len(peer_actions)], peer_actions)
+        self.assertEqual(tail[len(peer_actions) :], fleetlink)
 
     def test_generated_wrapper_isolation_flags(self):
-        for name in ("agent-sync", "board", "fleet-cli-release", "agent-sync-codex-mcp", "recall"):
+        for name in (
+            "simple-chat",
+            "simple-notes",
+            "simple-board",
+            "simple-git",
+            "fleet-cli-release",
+            "simple-chat-codex-mcp",
+            "recall",
+        ):
             with self.subTest(wrapper=name):
                 content = (self.home / ".local/bin" / name).read_text()
                 self.assertTrue(content.startswith("#!/usr/bin/python3 -I\n"))
@@ -392,6 +566,16 @@ class ActualRuntime(unittest.TestCase):
         if not sys.platform.startswith("linux"):
             self.skipTest(
                 "pinned deployment wrapper execution requires Linux; runtime and flags checked separately"
+            )
+        # A generated wrapper execs a fresh isolated interpreter, so the audited
+        # bootstrap's fixture account-home cannot cross that exec boundary.
+        # Fresh CI runners still execute every direct-wrapper assertion below.
+        import pwd
+
+        account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        if (account_home / self.receiver.HELPER_PATH).exists():
+            self.skipTest(
+                "direct wrappers resolve a configured account helper outside temporary HOME"
             )
         interpreter = Path("/usr/bin/python3")
         if not interpreter.is_file():
@@ -414,13 +598,14 @@ class ActualRuntime(unittest.TestCase):
                 "deployment interpreter requires Python 3.11+; host /usr/bin/python3 is older"
             )
         for name, args, expected in [
-            ("agent-sync", ["--version"], 0),
-            ("board", ["--help"], 0),
-            ("board", ["whoami"], 4),
-            ("board", ["commands", "--kind", "read"], 0),
-            ("board", ["mcp", "list"], 0),
+            ("simple-chat", ["--version"], 0),
+            ("simple-notes", ["--version"], 0),
+            ("simple-board", ["--help"], 0),
+            ("simple-board", ["whoami"], 4),
+            ("simple-board", ["commands", "--kind", "read"], 0),
+            ("simple-board", ["mcp", "list"], 0),
             ("fleet-cli-release", ["status"], 0),
-            ("agent-sync-codex-mcp", [], 3),
+            ("simple-chat-codex-mcp", [], 3),
             ("recall", ["--help"], 0),
             ("lane", ["--help"], 0),
             ("fleet-mode", [], 0),
@@ -437,7 +622,7 @@ class ActualRuntime(unittest.TestCase):
                 )
                 self.assert_exit(result, expected)
         result = RUN(
-            [str(self.home / ".local/bin/agent-sync-codex-mcp")],
+            [str(self.home / ".local/bin/simple-chat-codex-mcp")],
             env={**self.env, "AGENT_SEAT": "ASTRA"},
             cwd=self.home,
             input=self.requests(),

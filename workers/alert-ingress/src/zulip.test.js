@@ -3,7 +3,7 @@
 // the result field.  Checking `patched.id` instead fell through and posted a
 // duplicate message on every refresh.
 //
-// Run: node --test workers/alert-ingress/src/
+// Run: node --test workers/alert-ingress/src/*.test.js
 
 import test from "node:test";
 import assert from "node:assert/strict";

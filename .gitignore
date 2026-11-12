@@ -24,7 +24,19 @@ scripts/host/fleet-health-recover.d/*.env
 # Wrangler local dev cache (start.jays.services Worker)
 scripts/safari-start/.wrangler/
 
+# fleet-activity publish helper (git worktree + staging)
+.fleet-activity-publish-staging/
+.fleet-activity-publish-worktree/
+
+# Fleet digest + calendar build outputs (mirror: published/fleet-activity; Pages: workflow artifact)
+/site/index.html
+/site/digest.md
+/site/calendar/
+/calendar/daily-digest.ics
+/calendar/agent-activity.ics
+
 # Muster generated project and local build staging
 muster/Muster.xcodeproj/
 muster/.build/
 muster/dist/
+/.wrangler/

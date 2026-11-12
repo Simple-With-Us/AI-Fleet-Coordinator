@@ -142,7 +142,7 @@ production lesson-prefetch leg (`LESSON_SCORE_THRESHOLD`, a dedicated agent-cont
 exist to close.  Full list of the 11 BM25-alone misses is in
 `experiments/.cache/results/bm25_alone_full.json` (gitignored; re-run
 `python3 -m fleet_rag.experiments.run_offline_bm25` to reproduce) — 8 of the 11 are
-agent-contribution or AGENT-SYNC-doc rows without a strong unique keyword.
+agent-contribution or FLEET-PROTOCOL-doc rows without a strong unique keyword.
 
 **Not measured — three variants blocked:**
 

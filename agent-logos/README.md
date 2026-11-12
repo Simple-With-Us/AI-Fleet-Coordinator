@@ -33,8 +33,7 @@ and Cursor are owner-supplied from `~/Code/Icons - Logos/`.
 
 **Mixed extensions are expected.** Grok Bot and Cursor ship as PNG, the rest are
 SVG, so never assume `<slug>.svg` — resolve the extension (see `logo_file()` in
-`scripts/build-fleet-daily-digest.py` and `load_agent_logos()` in
-`~/apps/mac-collab/mac-collab-server.py`).
+`scripts/build-fleet-daily-digest.py`).
 
 **Owner / Jay:** the orange signature is stored as `owner.svg` (PNG embedded) and
 `owner.png`, but the daily digest does **not** show an Owner chip. Rows that say

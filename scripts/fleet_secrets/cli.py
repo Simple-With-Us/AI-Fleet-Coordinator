@@ -3,13 +3,15 @@
   run [--path /] [--only NAME,NAME] -- CMD [ARG...]
         exec CMD with the secrets as environment variables.  Existing variables of the same
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
-  get NAME [--path /] [--project fleet-ops|ai-fleet-coordinator]
-        print one value, exactly, with no trailing newline.  Exit 3 when NAME is absent.
+  get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]
+        print one value, exactly, with no trailing newline.  With several names, print a JSON
+        object of name to value instead (one folder export for the whole batch).  Exit 3 when
+        any NAME is absent;  nothing is printed then.
   names [--path /] [--project fleet-ops|ai-fleet-coordinator]
         key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
   set NAME [--path /]
         create or update one secret in Fleet-OPS prod.  The value is read from standard input (one
-        trailing newline removed), never from an argument.  Needs a machine identity.  Only names on the
+        trailing newline removed), never from an argument.  Needs a separately bound scoped writer token.  Only names on the
         built-in allowlist in core.WRITE_ALLOWLIST (now CACHE_* under /linear) are accepted;  everything
         else exits 2.
   doctor [--json]
@@ -33,7 +35,8 @@ from .core import SecretsError, UsageError
 
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
-    "       fleet-secrets get NAME [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json]\n"
@@ -76,7 +79,10 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
         else:
             opts["args"].append(a)  # type: ignore[union-attr]
             i += 1
-    if len(opts["args"]) != positional:  # type: ignore[arg-type]
+    if positional < 0:  # at least -positional arguments
+        if len(opts["args"]) < -positional:  # type: ignore[arg-type]
+            raise UsageError("wrong number of arguments")
+    elif len(opts["args"]) != positional:  # type: ignore[arg-type]
         raise UsageError("wrong number of arguments")
     return opts
 
@@ -112,13 +118,36 @@ def _take_project(args: Sequence[str]) -> tuple[str, list[str]]:
 
 def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
-    opts = _parse(rest, False, 1)
+    opts = _parse(rest, False, -1)
+    names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
+    secrets = core.fetch_all(
+        core.check_path(str(opts["path"])), env, project, allow_session=sys.stdin.isatty()
+    )
+    # One export serves the whole batch:  a caller that needs an App's id and
+    # private key pays one round trip, and the other folder values never cross
+    # into its process.  Nothing is printed unless every name resolves.
+    missing = [n for n in names if n not in secrets]
+    if missing:
+        raise SecretsError(
+            "key {} is not in Infisical at {}".format(", ".join(missing), opts["path"]), 3
+        )
+    core.reject_unresolved(secrets, names)
+    if len(names) == 1:
+        out.write(secrets[names[0]])
+    else:
+        out.write(json.dumps({n: secrets[n] for n in names}))
+    out.flush()
+    return 0
+
+
+def cmd_get_verified(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
+    opts = _parse(args, False, 1)
     name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
-    if name not in secrets:
-        raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
-    core.reject_unresolved(secrets, [name])
-    out.write(secrets[name])
+    path = core.check_path(str(opts["path"]))
+    if path == "/":
+        raise UsageError("get-verified needs an explicit --path:  the project root proves nothing")
+    value = core.fetch_verified(name, path, env)
+    out.write(value)
     out.flush()
     return 0
 
@@ -144,8 +173,12 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
 def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
     opts = _parse(rest, False, 0)
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
-    core.reject_unresolved(secrets)
+    secrets = core.fetch_all(
+        core.check_path(str(opts["path"])), env, project, allow_session=sys.stdin.isatty()
+    )
+    # No value is used here, so none is rejected:  one key whose value is an
+    # unexpanded reference must not hide every key name at the path (AFC-592).
+    # `doctor` still reports the unresolved count, and `get`/`run` fail closed.
     out.write("".join(n + "\n" for n in sorted(secrets)))
     out.flush()
     return 0
@@ -202,23 +235,9 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         rep["project_id_resolvable"] = True
     except SecretsError:
         rep["project_id_resolvable"] = False
-    (
-        rep["keychain_client_id_present"],
-        rep["keychain_client_secret_present"],
-    ) = core.keychain_presence(core.login_keychain())
-    (
-        rep["system_keychain_client_id_present"],
-        rep["system_keychain_client_secret_present"],
-    ) = core.keychain_presence(core.SYSTEM_KEYCHAIN)
-    (
-        rep["automation_env_client_id_present"],
-        rep["automation_env_client_secret_present"],
-    ) = core.automation_env_presence(env)
-    try:
-        rep["auth_mode"] = core.auth_mode(env)
-    except SecretsError as exc:
-        rep["auth_mode"] = exc.message.split(":")[0][:40]
-    rep["session_login_valid"] = core.session_valid(cli, env) if cli else False
+    rep["auth_mode"] = core.auth_mode(env)
+    rep["reader_configured"] = bool((env.get(core.ENV_TOKEN) or "").strip())
+    rep["writer_configured"] = bool((env.get(core.ENV_WRITE_TOKEN) or "").strip())
     rep["fetch_names_ok"] = False
     rep["names_count"] = 0
     rep["unresolved_reference_count"] = 0
@@ -242,7 +261,7 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         except SecretsError:
             rep[f"{slug}_project_id_resolvable"] = False
         rep[f"{slug}_fetch_ok"] = False
-        if rep[f"{slug}_project_id_resolvable"] and rep["cli_present"]:
+        if rep[f"{slug}_project_id_resolvable"]:
             try:
                 core.fetch_all("/fleetlink", env, project)
                 rep[f"{slug}_fetch_ok"] = True
@@ -251,7 +270,6 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         other_ok = other_ok and bool(rep[f"{slug}_fetch_ok"])
     ok = (
         rep["environment_ok"]
-        and rep["cli_present"]
         and rep["project_id_resolvable"]
         and rep["fetch_names_ok"]
         and rep["unresolved_reference_count"] == 0
@@ -303,6 +321,8 @@ def main(
     try:
         if cmd == "get":
             return cmd_get(rest, env, out)
+        if cmd == "get-verified":
+            return cmd_get_verified(rest, env, out)
         if cmd == "names":
             return cmd_names(rest, env, out)
         if cmd == "set":

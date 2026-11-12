@@ -140,13 +140,13 @@ run_reject_log "SLOW  pm2:"
 run_reject_log "status=http-"
 no_other_restart none
 
-# 0b. Slack was retired in the hard cut to Zulip (2026-10-07).  The watch
-#     must not probe the dead Slack relay on :8787 or expect any Slack-era
-#     job, or it restarts or bootstraps a ghost every cycle.
+# 0b. Slack was retired (2026-10-07).  The watch must not probe the dead
+#     Slack relay on :8787 or expect any Slack-era job, or it restarts or
+#     bootstraps a ghost every cycle.
 if grep -q '^curl 8787$' "${STUB_DIR}/curl-calls" 2>/dev/null; then
-  fail "retired agent-sync-push (:8787) is still probed"
+  fail "the retired Slack relay (:8787) is still probed"
 fi
-slack_code="$(grep -v '^[[:space:]]*#' "$WATCH" | grep -i -E 'slack|agent-sync' || true)"
+slack_code="$(grep -v '^[[:space:]]*#' "$WATCH" | grep -i -E 'slack' || true)"
 [ -z "$slack_code" ] || fail "Slack-era entry left in the watch code:"$'\n'"$slack_code"
 
 # 1. rc 7 (connection refused): dead, restart on the very first run.
