@@ -336,6 +336,34 @@ test("a request still running when the wait runs out answers running, and notes_
   assert.match(status.finished_at, /^2026-10-22T15:00:\d\dZ$/);
 });
 
+test("a pin that ran omits pin_skipped on the write and on notes_status", async () => {
+  const { operator, tools } = harness();
+  operator.onPoll = finishOn(operator, 1, "done", writeDone());
+  const out = ok(await tools.call("notes_create", { session: SESSION, title: TITLE, markdown: "x", request_id: "pin-ok-request1" }), "notes_create");
+  assert.equal(out.status, "done");
+  assert.equal(out.pin_skipped, undefined);
+  assert.equal(out.note_id, NOTE_ID);
+  const status = ok(await tools.call("notes_status", { request_id: "pin-ok-request1" }), "notes_status");
+  assert.equal(status.pin_skipped, undefined);
+  assert.equal(status.note_id, NOTE_ID);
+  assert.equal(status.status, "done");
+});
+
+test("a skipped pin is one field on the write and on every later notes_status", async () => {
+  const reason = "Pin Coding Note Shortcut failed; note saved unpinned";
+  const { operator, tools } = harness();
+  operator.onPoll = finishOn(operator, 1, "done", writeDone({ pin_skipped: reason }));
+  const out = ok(await tools.call("notes_update", { title: STATIC_TITLE, markdown: "x", session: SESSION, request_id: "pin-skip-0001" }), "notes_update");
+  assert.equal(out.pin_skipped, reason);
+  assert.equal(out.status, "done");
+  const first = ok(await tools.call("notes_status", { request_id: "pin-skip-0001" }), "notes_status");
+  const second = ok(await tools.call("notes_status", { request_id: "pin-skip-0001" }), "notes_status");
+  assert.equal(first.pin_skipped, reason);
+  assert.equal(first.action, "update");
+  assert.deepEqual(first, second);
+  assert.equal(operator.posts().length, 1, "reading status does not post another acknowledgement");
+});
+
 test("a poll that fails ends the wait:  the request is queued, so the answer is its status and request_id, not an error", async () => {
   const { operator, tools, logs } = harness();
   operator.override = (call) => (call.method === "GET" ? { status: 503, body: { error: "unavailable", message: "busy" } } : null);
