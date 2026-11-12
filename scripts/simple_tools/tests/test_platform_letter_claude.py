@@ -883,12 +883,34 @@ class ArchiveStatesTests(StoreBase):
         os.utime(self.record("local_aaaaaaaa-0001", "s-0001"), (old, old))
         self.record("local_aaaaaaaa-0002", "s-0002", archived=False, padding="x" * 500)
         self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {"s-0001": PC.ARCHIVED})
+        # A record the scan did not look at could be a live record of any chat asked about, so once there is one
+        # no chat is called archived:  past the count, past the bytes, too big to read, or not openable.
+        kept = {"s-0001": PC.UNREADABLE}
         with mock.patch.object(PC, "ARCHIVE_SCAN_RECORDS", 1):
-            self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {})  # past the bound:  not found, so kept
+            self.assertEqual(PC.archive_states(self.home, {"s-0001"}), kept)
         with mock.patch.object(PC, "ARCHIVE_SCAN_BYTES", 100):
-            self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {})
-        with mock.patch.object(PC, "RECORD_BYTES", 300):  # a record too big to read is not read, and says nothing
-            self.assertEqual(PC.archive_states(self.home, {"s-0001", "s-0002"}), {"s-0001": PC.ARCHIVED})
+            self.assertEqual(PC.archive_states(self.home, {"s-0001"}), kept)
+        with mock.patch.object(PC, "RECORD_BYTES", 300):
+            self.assertEqual(PC.archive_states(self.home, {"s-0001", "s-0002", "s-0009"}),
+                             {"s-0001": PC.UNREADABLE, "s-0002": PC.UNREADABLE, "s-0009": PC.UNREADABLE})
+        real = PC._read
+        with mock.patch.object(PC, "_read", side_effect=lambda p: None if "0002" in p else real(p)):
+            self.assertEqual(PC.archive_states(self.home, {"s-0001"}), kept)
+            self.assertEqual(PC.claude_gone({"HOME": self.home}, {"s-0001"}), set())
+        # An unarchived answer stands whatever else was not seen:  it keeps the chat too.
+        self.record("local_aaaaaaaa-0003", "s-0003", archived=False)
+        with mock.patch.object(PC, "ARCHIVE_SCAN_RECORDS", 1):
+            self.assertEqual(PC.archive_states(self.home, {"s-0003", "s-0001"}),
+                             {"s-0003": PC.UNARCHIVED, "s-0001": PC.UNREADABLE})
+
+    def test_an_archived_record_does_not_stand_beside_an_oversized_live_record_of_the_same_chat(self) -> None:
+        # The review's case:  one archived record, and one live record of the same session id that is too big to read.
+        self.record("local_aaaaaaaa-0001", "s-0001")
+        self.record("local_bbbbbbbb-0001", "s-0001", archived=False, padding="x" * 4000)
+        self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {"s-0001": PC.UNARCHIVED})  # both read:  kept
+        with mock.patch.object(PC, "RECORD_BYTES", 2000):
+            self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {"s-0001": PC.UNREADABLE})
+            self.assertEqual(PC.claude_gone({"HOME": self.home}, {"s-0001"}), set())
 
     def test_symlinks_are_not_followed_and_only_two_fields_leave_a_record(self) -> None:
         real = write(self.home, "elsewhere", {"cliSessionId": "s-0001", "isArchived": True})
@@ -1650,6 +1672,44 @@ class StoredTitleTests(HookBase):
         for bad in ("", None, 7, ["x"], os.path.join(self.home, ".claude", "projects", "missing.jsonl"),
                     os.path.join(self.home, ".claude", "projects", "p")):
             self.assertEqual(self.title(bad), "", bad)
+
+    def test_a_very_long_line_is_never_read_past_the_bound(self) -> None:
+        # One line can be as long as a pasted file.  It is read up to the bound and no further, whatever follows.
+        huge = json.dumps({"type": "user", "message": {"content": "fix the build " + "x" * 200000}})
+        path = self.transcript(huge, {"type": "user", "message": {"content": "review the parser"}})
+        read: list[int] = []
+        real_open = open
+
+        class Counting:
+            def __init__(self, fh):
+                self.fh = fh
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self.fh.__exit__(*exc)
+
+            def readline(self, size=-1):
+                line = self.fh.readline(size)
+                read.append(len(line))
+                return line
+
+            def __iter__(self):
+                raise AssertionError("the transcript is read line by bounded line, never iterated")
+
+        def counting_open(name, *a, **kw):
+            fh = real_open(name, *a, **kw)
+            return Counting(fh) if name == os.path.realpath(path) else fh
+
+        with mock.patch.object(PC, "TRANSCRIPT_BYTES", 1000), mock.patch("builtins.open", counting_open):
+            self.assertEqual(self.title(path), "")
+        self.assertEqual(read, [1001])  # the bound and one character, to tell a long line from the end
+        # Inside the bound a last line with no newline is still a line.
+        short = self.transcript('{"type": "user", "message": {"content": "fix the build"}}', name="short.jsonl")
+        with open(short, "w", encoding="utf-8") as fh:
+            fh.write('{"type": "user", "message": {"content": "fix the build"}}')
+        self.assertEqual(self.title(short), "Fix the Build")
 
     def test_only_the_first_lines_are_read(self) -> None:
         filler = [{"type": "assistant", "message": {"content": "x"}}] * 5

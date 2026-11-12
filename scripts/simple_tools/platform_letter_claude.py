@@ -159,8 +159,8 @@ TRANSCRIPT_BYTES = 4 << 20
 ARCHIVED = "archived"
 UNARCHIVED = "unarchived"
 # The archive reader reads every record, not the newest few, because a chat archived long after it last ran can sit
-# anywhere in the folder.  These bound it:  a record past them is not found, and a chat with no record found is left
-# alone, so the bound can only keep a letter, never free one.
+# anywhere in the folder.  These bound it:  a record past them is not looked at, and once any record was not looked
+# at no chat is called archived, so the bound can only keep a letter, never free one.
 ARCHIVE_SCAN_RECORDS = 3000
 ARCHIVE_SCAN_BYTES = 1 << 30
 
@@ -577,8 +577,9 @@ def _user_texts(entry: Mapping[str, Any]) -> list[str]:
 def claude_stored_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """The title a resumed chat's first prompt gives, read from its own transcript (`transcript_path`), or "".
 
-    Only a transcript under `~/.claude` is read, and only its first lines (TRANSCRIPT_LINES, TRANSCRIPT_BYTES), so
-    a stray path in the hook input cannot point anywhere else.  The words go through the library's own title
+    Only a transcript under `~/.claude` is read, and only its first lines (TRANSCRIPT_LINES, TRANSCRIPT_BYTES, a
+    line that runs past the bound is not read to its end), so a stray path in the hook input cannot point anywhere
+    else and one long line cannot fill memory.  The words go through the library's own title
     rule, the one a first prompt goes through, secret scan included."""
     path = payload.get("transcript_path")
     if not isinstance(path, str) or not path:
@@ -590,10 +591,13 @@ def claude_stored_title(payload: Mapping[str, Any], env: Mapping[str, str]) -> s
     read = 0
     try:
         with open(real, encoding="utf-8", errors="replace") as fh:
-            for n, line in enumerate(fh):
+            for _ in range(TRANSCRIPT_LINES):
+                # Never more than the bound in memory:  one line can be as long as a pasted file.
+                room = TRANSCRIPT_BYTES - read
+                line = fh.readline(room + 1) if room > 0 else ""
                 read += len(line)
-                if n >= TRANSCRIPT_LINES or read > TRANSCRIPT_BYTES:
-                    break
+                if not line or len(line) > room:
+                    break  # the end, or a line that runs past the bound:  it is not read on
                 try:
                     entry = json.loads(line)
                 except (ValueError, RecursionError):
@@ -736,7 +740,10 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
     `claude` chat, or a chat on a host with no app.  None when this host has no store at all.
 
     Any doubt keeps the chat:  a UUID held by two records is ARCHIVED only when every one of them says so, and one
-    unreadable record that mentions the UUID makes it UNREADABLE.  Only `cliSessionId` and `isArchived` leave a
+    unreadable record that mentions the UUID makes it UNREADABLE.  A record that was not looked at (too big to
+    read, not openable, or past the scan's bounds) could be a live record of any chat asked about, so when
+    there is one, every UUID with no UNARCHIVED answer is UNREADABLE, found or not:  what the scan did not see can
+    only keep a letter.  Only `cliSessionId` and `isArchived` leave a
     record, and a record is parsed only when its text names one of the UUIDs asked about (`_ids_named`)."""
     root = store_root(home)
     if not os.path.isdir(root):
@@ -752,14 +759,19 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
             states[sid] = state
 
     spent = 0
-    for _, size, path in _records(root)[:ARCHIVE_SCAN_RECORDS]:
+    records = _records(root)
+    unseen = len(records) > ARCHIVE_SCAN_RECORDS  # a record past the bound is one nobody looked at
+    for _, size, path in records[:ARCHIVE_SCAN_RECORDS]:
         if spent > ARCHIVE_SCAN_BYTES:
+            unseen = True
             break
         if size > RECORD_BYTES:
             spent += RECORD_BYTES
+            unseen = True
             continue
         text = _read(path)
         if text is None:
+            unseen = True
             continue
         spent += len(text)
         named = _ids_named(text, wanted)
@@ -775,6 +787,10 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
         cli = record.get("cliSessionId")
         if cli in wanted:
             note(cli, ARCHIVED if record["isArchived"] else UNARCHIVED)
+    if unseen:
+        for sid in wanted:
+            if states.get(sid) != UNARCHIVED:
+                states[sid] = UNREADABLE
     return states
 
 
