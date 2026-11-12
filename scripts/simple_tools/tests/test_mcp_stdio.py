@@ -117,6 +117,7 @@ WRITE_TOOLS = {
     "recall_contribute",
     "recall_correct",
     "recall_retract",
+    "peer_actions_log",
     "fleetlink_create_share",
     "fleetlink_create_link",
     "fleetlink_share_to_team",

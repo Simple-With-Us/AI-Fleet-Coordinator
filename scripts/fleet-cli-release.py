@@ -102,6 +102,7 @@ SCOPED_READER_MODULES = ("__init__", "core")
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
     "scripts/simple_tools/mcp/notes-tools.json",
+    "scripts/simple_tools/mcp/peer-actions-tools.json",
     "scripts/simple_tools/mcp/recall-tools.json",
     "scripts/linear-board/catalog/core-tools.json",
     "docs/protocols/simple-tools-guide.md",
@@ -110,6 +111,7 @@ EXACT = frozenset(
     {
         "scripts/simple-chat",
         "scripts/simple-notes",
+        "scripts/simple-peer-actions",
         "scripts/simple-board",
         # The git tools CLI entry wrapper and implementation.
         "scripts/simple-git",
@@ -185,6 +187,7 @@ TOOL_REQUIRED = frozenset(
         # stays a valid rollback target.
         "scripts/simple-chat",
         "scripts/simple-notes",
+        "scripts/simple-peer-actions",
         "scripts/simple-board",
         # The git tools CLI.  TOOL_REQUIRED, not BASE_REQUIRED:  a retained pre-git release stays a valid
         # rollback target (the smoke skips cases whose script a rollback target does not carry).
@@ -212,6 +215,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple_tools/secretscan.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/simple_tools/notes_service_reader.py",
+        "scripts/simple_tools/peer_actions.py",
+        "scripts/simple_tools/peer_actions_cli.py",
         "scripts/simple_tools/fleet_bearer.py",
         # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
         "scripts/simple_tools/mcp/bearer_gate.py",
@@ -648,6 +653,7 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "simple-git": (wrapper(home, "scripts/simple-git"), 0o755),
         bin_dir / "simple-chat": (wrapper(home, "scripts/simple-chat"), 0o755),
         bin_dir / "simple-notes": (wrapper(home, "scripts/simple-notes"), 0o755),
+        bin_dir / "simple-peer-actions": (wrapper(home, "scripts/simple-peer-actions"), 0o755),
         bin_dir / "simple-chat-codex-mcp": (
             wrapper(
                 home,
