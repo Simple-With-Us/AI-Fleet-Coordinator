@@ -16,6 +16,7 @@
                                        [--expect SHA256] [--yes] [--json]
   python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
   python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
+  python3 scripts/fleet-ops-control.py server router-health server     --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -75,8 +76,9 @@ What it promises:
     fixed `docker exec -i --user simpletools eavesdropper` argv and the request on its standard
     input, so no word of a request reaches an argv.  Over ssh the verb is
     `server eavesdropper-settings server` with `--plan` (a get, or a plan when standard input holds
-    `{"set": {...}}`) or `--yes` (the apply, which may carry the plan's hash as
-    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  A get is "standard input
+    `{"set": {...}}`) or `--yes` (the apply, which must carry the plan's hash as
+    `expectPlanSHA256`, or is refused with `plan_hash_required`, or `plan_hash_invalid` when the
+    hash is not 64 lowercase hex characters);  `--file` and `--set` are not offered there.  A get is "standard input
     ended with nothing on it", so the caller must close it (the `-n` option of ssh, or `</dev/null`):  a
     plain `ssh` from a terminal keeps it open, and the request is then refused (`usage`) after
     the bounded read's five seconds.  A table such as a
@@ -100,6 +102,13 @@ What it promises:
     any target but `server`, need no allowlist entry, and answer `unavailable` with an
     `errorCode` word and exit status 1 when the store cannot be read.  The `--from-muster`
     route does not offer them.
+  * `server router-health server --plan` reads the one wake router's `GET /health` on loopback
+    8794 (ignoring proxies and refusing redirects) and reduces each seat to installed or not,
+    delivery on or off, registry configured or not, counts and fixed reason words only (never a
+    URL, key or free text).  Like `eavesdropper-status` it takes no lock, writes no audit row for a
+    plan, refuses `--yes` and any target but `server`, needs no allowlist entry, and answers
+    `unavailable` with an `errorCode` word and exit status 1 when the router cannot be reached or
+    answers unexpectedly.  The `--from-muster` route does not offer it.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -135,8 +144,9 @@ the one request that stores the trust list, so the route stays inert (every appr
 `no_trust_list`) until a chain has been accepted.
 
 Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
-eavesdropper-status`, `server operator-sessions` and `server operator-wakes` alone, the store
-could not be read: result `unavailable`, with no command failed), 2 refused.
+eavesdropper-status`, `server operator-sessions`, `server operator-wakes` and
+`server router-health` alone, the store or router could not be read: result `unavailable`, with no
+command failed), 2 refused.
 """
 
 from __future__ import annotations
@@ -258,6 +268,8 @@ EAVESDROPPER_SETTINGS_EDIT_TIMEOUT = 180
 EAVESDROPPER_SETTINGS_STDIN_TIMEOUT = 5
 EAVESDROPPER_SETTINGS_AUDIT_TARGET = "eavesdropper settings"
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+# The shape of a plan's `planSHA256`, which the server `--yes` form must carry as `expectPlanSHA256`.
+EAVESDROPPER_SETTINGS_PLAN_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "refused", "failed")
 
 EAVESDROPPER_UNAVAILABLE = {
@@ -542,6 +554,20 @@ OPERATOR_STOP_STATES = ("skipped", "dropped", "held_back", "surfaced", "expired"
 # Seconds since 1970 that can be a time the daemon wrote:  2000 to 2100.
 OPERATOR_EPOCH_MIN = 946684800.0
 OPERATOR_EPOCH_MAX = 4102444800.0
+# `server router-health server --plan`:  reads the one wake router's `GET /health` on loopback
+# 8794 and reduces it to fixed booleans, counts and reason words only, never a URL, key or text.
+ROUTER_HEALTH_VERB = "router-health"
+ROUTER_HEALTH_URL = "http://127.0.0.1:8794/health"
+ROUTER_HEALTH_TIMEOUT = 5
+ROUTER_HEALTH_MAX_BYTES = 256 * 1024
+ROUTER_HEALTH_UNAVAILABLE = {
+    "router_not_running": "the wake router is not listening on loopback 8794",
+    "timeout": "reading the wake router health took too long",
+    "bad_status": "the wake router answered with an unexpected status",
+    "too_large": "the wake router health answer is larger than the allowed size",
+    "not_json": "the wake router health answer is not a JSON object",
+    "read_failed": "the wake router health could not be read",
+}
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
@@ -1164,6 +1190,99 @@ def http_get(url, headers, timeout=HTTP_TIMEOUT):
         return NoAnswer(0)
 
 
+def _read_router_health_body(response, max_bytes, deadline):
+    """Read an HTTP health response body within ``max_bytes`` and ``deadline``."""
+    raw_fp = getattr(response, "fp", None)
+    sock = getattr(getattr(raw_fp, "raw", None), "_sock", None)
+    read_fn = getattr(response, "read1", None) or getattr(raw_fp, "read1", None) or response.read
+    chunks = bytearray()
+    limit = max_bytes + 1
+    while len(chunks) < limit:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("router health read deadline exceeded")
+        if sock is not None and hasattr(sock, "settimeout"):
+            sock.settimeout(remaining)
+        chunk = read_fn(min(4096, limit - len(chunks)))
+        if not chunk:
+            break
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _validate_router_health_json_limits(document, max_depth=16, max_nodes=10000):
+    """Reject deeply nested or element-heavy decoded JSON iteratively."""
+    nodes = 0
+    stack = [(document, 0)]
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > max_nodes or depth > max_depth:
+            raise ValueError("not_json")
+        if isinstance(value, dict):
+            stack.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list):
+            stack.extend((child, depth + 1) for child in value)
+
+
+def read_router_health_http(
+    url=ROUTER_HEALTH_URL,
+    timeout=ROUTER_HEALTH_TIMEOUT,
+    max_bytes=ROUTER_HEALTH_MAX_BYTES,
+):
+    """`(document, reason)` from loopback `GET /health` without proxy or redirect use."""
+    import http.client
+    import socket
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+    try:
+        request = urllib.request.Request(url, method="GET")
+    except ValueError:
+        return None, "read_failed"
+    deadline = time.monotonic() + timeout
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = _read_router_health_body(response, max_bytes, deadline)
+    except urllib.error.HTTPError as exc:
+        try:
+            if exc.code != 503:
+                return None, "bad_status"
+            body = _read_router_health_body(exc, max_bytes, deadline)
+        except (socket.timeout, TimeoutError):
+            return None, "timeout"
+        except (OSError, ValueError, http.client.HTTPException):
+            return None, "read_failed"
+        finally:
+            try:
+                exc.close()
+            except Exception:
+                pass
+    except (socket.timeout, TimeoutError):
+        return None, "timeout"
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            return None, "timeout"
+        if isinstance(reason, ConnectionRefusedError):
+            return None, "router_not_running"
+        return None, "read_failed"
+    if len(body) > max_bytes:
+        return None, "too_large"
+    try:
+        document = json.loads(body.decode("utf-8"))
+        _validate_router_health_json_limits(document)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "not_json"
+    if not isinstance(document, dict) or not isinstance(document.get("seats"), dict):
+        return None, "not_json"
+    return document, None
+
+
 class Context:
     """Everything that touches the machine, so the tests can replace each piece."""
 
@@ -1187,6 +1306,7 @@ class Context:
         monotonic=None,
         reader=None,
         stdin=None,
+        router_health=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -1214,6 +1334,7 @@ class Context:
         self.reader = reader or run_bounded_read
         # The bounded read of this process's own standard input (`server eavesdropper-settings`).
         self.stdin = stdin or read_bounded_stdin
+        self.router_health = router_health or read_router_health_http
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -1736,6 +1857,15 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
                 str(reload.get("code") or "reload_skipped").replace("_", " "),
             )
         lines = [str(line) for line in document.get("diff") or []]
+        plan_hash = document.get("planSHA256")
+        if (
+            result == "planned"
+            and isinstance(plan_hash, str)
+            and EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(plan_hash)
+        ):
+            # The apply must name this hash (`--expect`, or `expectPlanSHA256` over ssh), so a
+            # plan in plain text says it too, not only the JSON answer.
+            lines.append("planSHA256: " + plan_hash)
         for change in changed:
             # A sub-key a whole-table value drops is said in words, not left to the diff.
             removes = change.get("removes") if isinstance(change, dict) else None
@@ -1754,9 +1884,14 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
 
     Standard input is empty (a get, with `--plan` only) or one JSON object with `set`, an
     optional `remove` list (the sub-keys a whole-table value is meant to drop) and, for an
-    apply, an optional `expectPlanSHA256`.  Anything else is refused.  Empty means it ended:
+    apply, `expectPlanSHA256`.  Anything else is refused.  Empty means it ended:
     an input the caller leaves open (a plain `ssh` from a terminal, without `-n` or
-    `</dev/null`) is refused when the bounded read gives up, never taken for a get."""
+    `</dev/null`) is refused when the bounded read gives up, never taken for a get.
+
+    An apply (`--yes`) must carry the plan's hash as `expectPlanSHA256`.  Without it the request
+    is refused (`plan_hash_required`), and with a value that is not 64 lowercase hex characters
+    it is refused (`plan_hash_invalid`).  Both refusals come before the action lock and before
+    the container is called."""
     raw = ctx.stdin()
     if raw is None:
         raise Refused(
@@ -1783,8 +1918,19 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             "standard input must be one JSON object with a non-empty set", error_code="usage"
         )
     expect = request.get("expectPlanSHA256")
-    if expect is not None and (mode != "yes" or not isinstance(expect, str)):
-        raise Refused("expectPlanSHA256 belongs to an apply", error_code="usage")
+    if mode != "yes":
+        if expect is not None:
+            raise Refused("expectPlanSHA256 belongs to an apply", error_code="usage")
+    elif expect is None:
+        raise Refused(
+            "an apply must carry the plan's hash as expectPlanSHA256;  run --plan first",
+            error_code="plan_hash_required",
+        )
+    elif not isinstance(expect, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(expect):
+        raise Refused(
+            "expectPlanSHA256 must be the plan's planSHA256, 64 lowercase hex characters",
+            error_code="plan_hash_invalid",
+        )
     action = "plan" if mode == "plan" else "apply"
     return action, request["set"], request.get("remove"), expect
 
@@ -2114,6 +2260,130 @@ def operator_read(ctx, action, target, mode):
             "errorCode": reason,
         }, 1
     return {"ok": True, "result": "planned", "detail": detail, key: reduced}, 0
+
+
+def _router_seat_state(healthy, delivery, raw_reason):
+    """`(installed, registry_configured, reason_word)` derived from a `/health` seat row."""
+    if raw_reason == "not-installed":
+        return False, None, "not_installed"
+    if raw_reason.startswith("seat-not-served:"):
+        return True, None, "seat_not_served"
+    if raw_reason.startswith("routine-key-unavailable:"):
+        return True, None, "routine_key_unavailable"
+    if raw_reason == "registry-not-configured":
+        return True, False, "registry_not_configured"
+    if healthy is True:
+        return True, True, None
+    installed = True if delivery is not None else None
+    reason = "other" if raw_reason else None
+    return installed, None, reason
+
+
+def reduce_router_health(document, now):
+    """The `routerHealth` object of `server router-health`, from the router's `/health` JSON.
+
+    {"schema": 1, "generated_at": ISO, "instance": "server",
+     "healthy": bool | null,
+     "counts": {"total": int, "installed": int, "not_installed": int,
+                "healthy": int, "delivery_on": int, "registry_configured": int},
+     "truncated": bool, "dropped": int,
+     "seats": [{"seat": name, "installed": bool | null, "healthy": bool | null,
+                "delivery": bool | null, "registry_configured": bool | null,
+                "reason": code | null}]}
+    """
+    if not isinstance(document, dict) or not isinstance(document.get("seats"), dict):
+        raise ValueError("not_json")
+    raw_seats = document["seats"]
+    seats = []
+    dropped = 0
+    counts = {
+        "total": 0,
+        "installed": 0,
+        "not_installed": 0,
+        "healthy": 0,
+        "delivery_on": 0,
+        "registry_configured": 0,
+    }
+    for seat_raw in sorted(raw_seats, key=str)[:OPERATOR_MAX_SEATS]:
+        entry = raw_seats[seat_raw]
+        seat = _operator_text(seat_raw, OPERATOR_SEAT_RE)
+        if seat is None or not isinstance(entry, dict):
+            raise ValueError("not_json")
+        healthy_value = entry.get("healthy")
+        delivery_value = entry.get("delivery")
+        reason_value = entry.get("reason")
+        if (
+            healthy_value is not None
+            and not isinstance(healthy_value, bool)
+            or delivery_value is not None
+            and not isinstance(delivery_value, bool)
+            or reason_value is not None
+            and not isinstance(reason_value, str)
+        ):
+            raise ValueError("not_json")
+        healthy = _operator_flag(healthy_value)
+        delivery = _operator_flag(delivery_value)
+        raw_reason = reason_value if isinstance(reason_value, str) else ""
+        installed, registry_configured, reason = _router_seat_state(healthy, delivery, raw_reason)
+        row = {
+            "seat": seat,
+            "installed": installed,
+            "healthy": healthy,
+            "delivery": delivery,
+            "registry_configured": registry_configured,
+            "reason": reason,
+        }
+        seats.append(row)
+        counts["total"] += 1
+        if installed is True:
+            counts["installed"] += 1
+        elif installed is False:
+            counts["not_installed"] += 1
+        if healthy is True:
+            counts["healthy"] += 1
+        if delivery is True:
+            counts["delivery_on"] += 1
+        if registry_configured is True:
+            counts["registry_configured"] += 1
+    return {
+        "schema": OPERATOR_SCHEMA,
+        "generated_at": _operator_stamp(now),
+        "instance": OPERATOR_TARGET,
+        "healthy": _operator_flag(document.get("healthy")),
+        "counts": counts,
+        "truncated": len(raw_seats) > OPERATOR_MAX_SEATS,
+        "dropped": dropped,
+        "seats": seats,
+    }
+
+
+def router_health_read(ctx, target, mode):
+    """`(fields, exit_status)` of `server router-health server --plan`, or Refused."""
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused("router-health only reads: pass --plan")
+    if target != OPERATOR_TARGET:
+        raise Refused("only the server's wake router can be read here")
+    document, reason = ctx.router_health()
+    if document is not None:
+        try:
+            reduced = reduce_router_health(document, ctx.now())
+        except Exception:  # noqa: BLE001 - a malformed document is answered as unavailable
+            document, reason = None, "not_json"
+    if document is None:
+        reason_code = reason if reason in ROUTER_HEALTH_UNAVAILABLE else "read_failed"
+        return {
+            "ok": False,
+            "result": "unavailable",
+            "detail": ROUTER_HEALTH_UNAVAILABLE[reason_code],
+            "errorCode": reason_code,
+        }, 1
+    return {
+        "ok": True,
+        "result": "planned",
+        "detail": "read-only health of the server's wake router",
+        "routerHealth": reduced,
+    }, 0
 
 
 def _pm2_prefix(ctx):
@@ -3281,7 +3551,8 @@ def handle(
             # Allowlisted settings of the Eavesdropper's live config.  `--plan` reads or plans
             # and takes no lock and writes no audit row;  `--yes` is the apply, under the one
             # action lock, with one audit row that names no setting and no value.  The request
-            # itself is on standard input, never in the command.  The `--from-muster` route has no
+            # itself is on standard input, never in the command, and an apply there must name the
+            # plan's hash (refused before the lock otherwise).  The `--from-muster` route has no
             # approval form for this verb, so it is refused there outright.
             audit_target = EAVESDROPPER_SETTINGS_AUDIT_TARGET
             if require_approval:
@@ -3308,6 +3579,10 @@ def handle(
             # takes no lock, asks for no sudo, writes no audit row for a plan and refuses
             # `--yes` (audited, like every refused `--yes`).
             fields, code = operator_read(ctx, action, target, mode)
+            answer.update(fields)
+            return answer, code
+        if scope == "server" and action == ROUTER_HEALTH_VERB:
+            fields, code = router_health_read(ctx, target, mode)
             answer.update(fields)
             return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
@@ -3865,6 +4140,7 @@ def parse_ssh_command(text):
         EAVESDROPPER_SETTINGS_VERB,
         "operator-sessions",
         "operator-wakes",
+        ROUTER_HEALTH_VERB,
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
@@ -3883,7 +4159,10 @@ def run_eavesdropper_settings(argv, ctx, out):
     KEY.SUBKEY` (repeatable) names a sub-key a whole-table value is meant to drop.  `--file PATH` is the
     file to act on, edited by the module in this process;  without it the server's container is
     used, on the server only.  `apply` needs `--yes`, holds the one action lock and writes one
-    audit row.  `--expect` is a plan's `planSHA256`."""
+    audit row.  `--expect` is a plan's `planSHA256`.  It is optional with `--file`, which edits
+    a copy or a fixture.  Without `--file` the apply edits the live file, so `--expect` is
+    required (`plan_hash_required`) and must be 64 lowercase hex characters (`plan_hash_invalid`),
+    both checked before the action lock."""
     as_json = "--json" in argv
     answer = {
         "ok": False,
@@ -3919,8 +4198,26 @@ def run_eavesdropper_settings(argv, ctx, out):
             raise Refused("plan takes no --expect or --yes")
         if action == "apply" and not args.yes:
             raise Refused("pass --yes to apply, or use plan to see the changes")
+        if args.file is not None and not args.file.strip():
+            # The editor reads an empty path as the live file, so an empty --file must never
+            # count as "a file was named" and slip past the live-file rules below.
+            raise Refused("--file needs a path", error_code="usage")
         if args.file is None and not ctx.platform.startswith("linux"):
             raise Refused("pass --file PATH:  the live file is in the server's container")
+        if action == "apply" and args.file is None:
+            # Without `--file` the apply edits the live file in the container, so it must name
+            # the plan's hash, as the server `--yes` form must.  Refused before the action lock.
+            if args.expect is None:
+                raise Refused(
+                    "an apply to the live file must carry the plan's hash as --expect;  "
+                    "run plan first and pass the planSHA256 it prints",
+                    error_code="plan_hash_required",
+                )
+            if not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(args.expect):
+                raise Refused(
+                    "--expect must be the plan's planSHA256, 64 lowercase hex characters",
+                    error_code="plan_hash_invalid",
+                )
         changes = None
         if action != "get":
             module = _load_eavesdropper_settings_editor(ctx)

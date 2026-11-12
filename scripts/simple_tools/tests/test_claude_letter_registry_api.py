@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from simple_tools import claude_letter as CL
 from simple_tools import listener_api as API
@@ -161,6 +162,139 @@ class ApiSide(unittest.TestCase):
         self.registry("close", "--location", "mac", "--session-id", SID)
         code, closed = self.registry("issues", "--location", "mac", "--session-id", SID, "--issues=[]")
         self.assertEqual((code, closed.get("retired")), (0, True))
+
+    # ---- AFC-772:  a Claude chat that arrives under another platform's seat ----
+
+    def test_another_platforms_seat_is_refused_with_the_registry_code_and_nothing_is_stored(self) -> None:
+        code, answer = self.registry("register", "--location", "mac", "--session-id", SID, "--seat", "ZC")
+        self.assertEqual(code, 5, answer)  # an answer that carries an error, like every other refusal
+        self.assertEqual(answer["code"], "seat_platform_mismatch")
+        self.assertEqual(answer["error"], "platform claude registers under seat CLAUDE, not ZC")
+        self.assertEqual((answer["platform"], answer["seat"], answer["expected"]), ("claude", "ZC", ["CLAUDE"]))
+        self.assertIsNone(self.record())
+        code, answer = self.registry("register", "--location", "mac", "--session-id", SID)
+        self.assertEqual((code, answer["outcome"]), (0, "registered"))  # the right seat is not held up
+
+    def test_a_chat_whose_host_exports_another_seat_carries_on_with_no_letter(self) -> None:
+        # What happened on the Mac:  AGENT_SEAT named ZCode's seat, and the Claude hook takes its seat from it.
+        env = dict(self.api_env, CLAUDE_CODE_ENTRYPOINT="cli", AGENT_SEAT="ZC")
+        start = time.time()
+
+        def hook(payload: dict, now: float) -> dict | None:
+            out = io.StringIO()
+            code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=no_runner, now=now, platform="darwin")
+            self.assertEqual(code, 0)  # the hook never blocks a chat
+            text = out.getvalue().strip()
+            return json.loads(text)["hookSpecificOutput"] if text else None
+
+        out = hook({"hook_event_name": "SessionStart", "session_id": SID, "source": "startup"}, start)
+        self.assertIn(
+            "No Operator letter yet (platform claude registers under seat CLAUDE, not ZC)", out["additionalContext"]
+        )
+        self.assertIn("tries again", out["additionalContext"])
+        self.assertNotIn("sessionTitle", out)
+        self.assertIsNone(self.record())
+        with open(os.path.join(self.hook_state, "ZC", "letters", SID + ".json"), encoding="utf-8") as fh:
+            note = json.load(fh)
+        self.assertEqual((note["state"], note.get("label", "")), ("failed", ""))
+        # A prompt inside the retry window asks the registry nothing and says nothing;  a later one asks again and
+        # gets the same answer, still without stopping the chat.
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": SID, "prompt": "fix the build"}
+        self.assertIsNone(hook(prompt, start + 5))
+        hook(prompt, start + CL.RETRY_SECONDS + 5)
+        self.assertIsNone(self.record())
+
+    def test_a_chat_filed_under_another_seat_earlier_still_resumes_and_ends_its_own_row(self) -> None:
+        # The Mac chats of AFC-772 already held a letter under ZC when the registry began to refuse that pair.  A
+        # refused resume left the note "failed", SessionEnd closes only an open note, and the stale sweep waits for a
+        # newer chat of the same seat, which can no longer register:  the letter stayed live with nothing to end it.
+        # So a live row is still resumed under the seat it is stored under, and the chat ends it itself.
+        env = dict(self.api_env, CLAUDE_CODE_ENTRYPOINT="cli", AGENT_SEAT="ZC")
+        start = time.time()
+
+        def hook(payload: dict, now: float) -> dict | None:
+            out = io.StringIO()
+            code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=no_runner, now=now, platform="darwin")
+            self.assertEqual(code, 0)
+            text = out.getvalue().strip()
+            return json.loads(text)["hookSpecificOutput"] if text else None
+
+        def note() -> dict:
+            with open(os.path.join(self.hook_state, "ZC", "letters", SID + ".json"), encoding="utf-8") as fh:
+                return json.load(fh)
+
+        with mock.patch.object(OR, "check_seat_platform", lambda *_: None):  # filed before the check existed
+            first = hook({"hook_event_name": "SessionStart", "session_id": SID, "source": "startup"}, start)
+        label = first["sessionTitle"].split(":")[0]
+        self.assertEqual((self.record()["seat"], self.record()["state"]), ("ZC", "active"))
+        resume = {"hook_event_name": "SessionStart", "session_id": SID, "source": "resume",
+                  "session_title": "%s: Fix The Build" % label}
+        out = hook(resume, start + 30)
+        self.assertNotIn("No Operator letter yet", json.dumps(out))
+        self.assertEqual((note()["state"], note()["label"]), ("open", label))
+        hook({"hook_event_name": "SessionEnd", "session_id": SID, "reason": "logout"}, start + 60)
+        self.assertEqual(self.record()["state"], "closed")
+        self.assertEqual(note()["state"], "closed")
+        # Ended, the chat is not given a letter under that seat again:  it reads why and carries on.
+        out = hook(resume, start + 90)
+        self.assertIn(
+            "No Operator letter yet (platform claude registers under seat CLAUDE, not ZC)", out["additionalContext"]
+        )
+        self.assertEqual(self.record()["state"], "closed")
+
+    def test_a_chat_filed_under_another_seat_earlier_gets_its_letter_back_once_its_seat_is_right(self) -> None:
+        # The heal (AFC-772):  the host's seat is fixed, the hook registers as CLAUDE, and the registry
+        # re-seats the row the chat already held and answers its letter, so the chat keeps AA.
+        start = time.time()
+
+        def hook(env: dict, payload: dict, now: float) -> dict | None:
+            out = io.StringIO()
+            code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=no_runner, now=now, platform="darwin")
+            self.assertEqual(code, 0)
+            text = out.getvalue().strip()
+            return json.loads(text)["hookSpecificOutput"] if text else None
+
+        wrong = dict(self.api_env, CLAUDE_CODE_ENTRYPOINT="cli", AGENT_SEAT="ZC")
+        with mock.patch.object(OR, "check_seat_platform", lambda *_: None):  # filed before the check existed
+            first = hook(wrong, {"hook_event_name": "SessionStart", "session_id": SID, "source": "startup"}, start)
+        label = first["sessionTitle"].split(":")[0]
+        self.assertEqual(self.record()["seat"], "ZC")
+        right = dict(self.api_env, CLAUDE_CODE_ENTRYPOINT="cli", AGENT_SEAT="CLAUDE")
+        resume = {
+            "hook_event_name": "SessionStart",
+            "session_id": SID,
+            "source": "resume",
+            "session_title": "%s: Fix The Build" % label,
+        }
+        out = hook(right, resume, start + 30)
+        self.assertNotIn("No Operator letter yet", json.dumps(out))
+        self.assertEqual((self.record()["seat"], self.record()["state"]), ("CLAUDE", "active"))
+        self.assertEqual(self.record()["label"], label)
+
+    def test_a_closed_row_filed_under_another_seat_is_reseated_then_the_chat_reopens_it(self) -> None:
+        # The registry re-seats a closed row and leaves it closed;  the chat's own reopen (which a seat may
+        # ask only for its own row) then brings it back, so the heal needs no hand work.
+        start = time.time()
+
+        def hook(env: dict, payload: dict, now: float) -> dict | None:
+            out = io.StringIO()
+            code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=no_runner, now=now, platform="darwin")
+            self.assertEqual(code, 0)
+            text = out.getvalue().strip()
+            return json.loads(text)["hookSpecificOutput"] if text else None
+
+        wrong = dict(self.api_env, CLAUDE_CODE_ENTRYPOINT="cli", AGENT_SEAT="ZC")
+        with mock.patch.object(OR, "check_seat_platform", lambda *_: None):
+            hook(wrong, {"hook_event_name": "SessionStart", "session_id": SID, "source": "startup"}, start)
+        registry = OR.SessionRegistry(self.db)
+        try:
+            self.assertTrue(registry.close(self.record()["record_id"]))
+        finally:
+            registry.close_db()
+        right = dict(self.api_env, CLAUDE_CODE_ENTRYPOINT="cli", AGENT_SEAT="CLAUDE")
+        out = hook(right, {"hook_event_name": "SessionStart", "session_id": SID, "source": "resume"}, start + 30)
+        self.assertNotIn("No Operator letter yet", json.dumps(out))
+        self.assertEqual((self.record()["seat"], self.record()["state"]), ("CLAUDE", "active"))
 
     # ---- AFC-702:  the end-of-turn report on the API transport ----
 

@@ -91,7 +91,7 @@ class SeatKeySchema(unittest.TestCase):
             creds = "file"
             bot = "Codex"
             bearer_file = "/home/x/.secrets/fleet-tools/codex"
-            budget = { wakes_per_hour = 4, usd_per_day = 2.0 }
+            budget = { wakes_per_hour = 4 }
             held_back = { max = 50 }
             live = { per_hour = 7 }
             """
@@ -199,7 +199,7 @@ class SeatKeySchema(unittest.TestCase):
         self.assertEqual(len(cfg.warnings), 1)
         self.assertIn("seat.CODEX.routes_per_day is deprecated", cfg.warnings[0])
 
-    def test_legacy_budget_keys_warn_but_the_wake_caps_and_usd_do_not(self) -> None:
+    def test_legacy_budget_keys_and_usd_warn_but_the_wake_caps_do_not(self) -> None:
         cfg = load(
             """
             [seat.CODEX]
@@ -214,11 +214,54 @@ class SeatKeySchema(unittest.TestCase):
                 "seat.CODEX.budget.%s is deprecated:  it still works as before, and goes away with the "
                 "wake types it belongs to" % key
                 for key in ("board_per_day", "route_topic_minutes", "routes_per_day", "routes_per_hour")
+            ]
+            + [
+                # Accepted, so the seat keeps loading, but nothing enforces a dollar limit.
+                "seat.CODEX.budget.usd_per_day is accepted but sets no ceiling:  nothing enforces a "
+                "dollar limit (wake accounting is frequency-only, owner 2026-10-13)"
             ],
         )
         budget = cfg.seats["CODEX"].budget
         self.assertEqual((budget["board_per_day"], budget["routes_per_hour"]), (1, 2))
         self.assertEqual((budget["wakes_per_hour"], budget["owner_per_day"]), (5, 6))
+
+    def test_a_bad_live_limit_warns_and_the_seat_keeps_its_wake(self) -> None:
+        # No live limit has a default (owner, Nov 10, 2026), so a value live_limits drops is no
+        # limit:  say so, without an error and without touching the seat's wake.
+        before = load(ROUTINE_SEAT % "")
+        plain = before.seats["JET"]
+        dropped = (
+            "seat.JET.live.%s must be a whole number of at least 0;  it is ignored, so that "
+            "limit is off"
+        )
+        cases = (
+            ("live = { per_hour = 2.0, per_day = -1 }", [dropped % "per_day", dropped % "per_hour"]),
+            ("live = 5", ["seat.JET.live must be a table;  it is ignored, so no live limit applies"]),
+        )
+        for given, want in cases:
+            with self.subTest(given=given):
+                cfg = load(ROUTINE_SEAT % given)
+                self.assertEqual(cfg.errors, [])
+                self.assertEqual([w for w in cfg.warnings if w not in before.warnings], want)
+                seat = cfg.seats["JET"]
+                self.assertEqual(seat.live, {})
+                self.assertEqual((seat.wake, seat.mode), ("http", "routine"))
+                self.assertEqual(seat.config_problems, [])
+                self.assertEqual(seat.routine.describe(), plain.routine.describe())
+
+    def test_an_unknown_live_key_warns_and_a_known_one_does_not(self) -> None:
+        # A typo in the `live` table used to fall back to a live default;  with none, it is no limit.
+        before = load(ROUTINE_SEAT % "")
+        cfg = load(ROUTINE_SEAT % "live = { per_hr = 2, per_day = 5 }")
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual(
+            [w for w in cfg.warnings if w not in before.warnings],
+            ["seat.JET.live.per_hr is not a known live limit;  it is ignored, so that limit is off"],
+        )
+        seat = cfg.seats["JET"]
+        self.assertEqual(seat.live, {"per_day": 5}, "the known key still applies")
+        self.assertEqual((seat.wake, seat.mode), ("http", "routine"))
+        self.assertEqual(seat.config_problems, [])
 
     def test_the_retired_keys_keep_their_own_refusal_and_add_no_unknown_key_warning(self) -> None:
         cfg = load('[seat.CODEX]\nbot = "Codex"\nbearer_locator = "x"\nallow_admin = true\n')
@@ -296,7 +339,7 @@ class SeatMode(unittest.TestCase):
 
 
 class WakeCapsHaveNoDefault(unittest.TestCase):
-    def test_the_five_wake_caps_have_no_default_and_the_rest_keep_theirs(self) -> None:
+    def test_the_five_wake_caps_have_no_default_and_neither_do_the_dollar_and_route_caps(self) -> None:
         self.assertEqual(
             C.WAKE_CAP_KEYS,
             ("wakes_per_hour", "wakes_per_day", "per_topic_per_hour", "owner_per_day",
@@ -304,8 +347,23 @@ class WakeCapsHaveNoDefault(unittest.TestCase):
         )
         for key in C.WAKE_CAP_KEYS:
             self.assertNotIn(key, C.BUDGET_DEFAULTS)
-        for key in ("usd_per_day", "board_per_day", "routes_per_hour", "routes_per_day", "route_topic_minutes"):
-            self.assertIn(key, C.BUDGET_DEFAULTS)
+        # Owner, Nov 10, 2026:  wakes are liberal and nothing throttles them, so the $2 a day and the
+        # route caps (3 an hour, 10 a day, 30 minutes a topic) have no default either.  Only the board
+        # filing switch keeps one, and its 0 is an off switch, not a throttle.
+        self.assertEqual(C.BUDGET_DEFAULTS, {"board_per_day": 0})
+        for key in ("usd_per_day", "routes_per_hour", "routes_per_day", "route_topic_minutes"):
+            self.assertNotIn(key, C.BUDGET_DEFAULTS)
+            self.assertIn(key, C.KNOWN_BUDGET_KEYS, "a config that sets it still loads")
+
+    def test_a_budget_key_with_no_default_is_kept_when_a_config_sets_it(self) -> None:
+        budget = load(
+            LEGACY_CLAUDE_SEAT
+            + "budget = { usd_per_day = 3.5, routes_per_hour = 1, routes_per_day = 2, route_topic_minutes = 15 }\n"
+        ).seats["CLAUDE"].budget
+        self.assertEqual(
+            (budget["usd_per_day"], budget["routes_per_hour"], budget["routes_per_day"], budget["route_topic_minutes"]),
+            (3.5, 1, 2, 15),
+        )
 
     def test_a_seat_with_no_budget_table_has_no_caps(self) -> None:
         cfg = load(LEGACY_CLAUDE_SEAT)
@@ -406,27 +464,26 @@ class WakeBudgetCaps(unittest.TestCase):
         self.assertFalse(W.at_cap(2, {"x": 3}, "x"))
         self.assertTrue(W.at_cap(3, {"x": 3}, "x"))
 
-    def test_the_board_and_route_caps_keep_their_defaults(self) -> None:
+    def test_the_board_cap_keeps_its_default(self) -> None:
         self.assertEqual(W.board_block({}, dict(C.BUDGET_DEFAULTS), self.now), "board_per_day")
 
 
 class LiveOwnerCap(unittest.TestCase):
-    """live.py's own table (`live = { owner_per_day = ... }`) keeps its default;  the comparison only
-    learned to skip a limit a table does not carry."""
+    """live.py's own table (`live = { owner_per_day = ... }`) has no default for any limit (owner, Nov 10,
+    2026:  wakes are liberal and nothing throttles them), so only a limit the table names applies."""
 
     now = 9000.0
 
     def owners(self, count: int) -> dict[str, Any]:
         return {"turns": [{"ts": 1000.0 + i * 100, "topic": "t%d" % i, "owner": True} for i in range(count)]}
 
-    def test_the_live_table_still_defaults_to_twenty_owner_turns_a_day(self) -> None:
-        self.assertEqual(L.LIVE_DEFAULTS["owner_per_day"], 20)
-        self.assertEqual(L.live_limits({}, "CLAUDE")["owner_per_day"], 20)
-        self.assertEqual(L.live_room(self.owners(20), "new", True, self.now, dict(L.LIVE_DEFAULTS)), "owner_per_day")
-        self.assertIsNone(L.live_room(self.owners(19), "new", True, self.now, dict(L.LIVE_DEFAULTS)))
+    def test_the_live_table_has_no_default_owner_cap(self) -> None:
+        self.assertNotIn("owner_per_day", L.LIVE_DEFAULTS)
+        self.assertNotIn("owner_per_day", L.live_limits({}, "CLAUDE"))
+        self.assertIsNone(L.live_room(self.owners(500), "new", True, self.now, dict(L.LIVE_DEFAULTS)))
 
     def test_a_table_without_the_limit_does_not_hold_owner_turns(self) -> None:
-        limits = {k: v for k, v in L.LIVE_DEFAULTS.items() if k != "owner_per_day"}
+        limits = {"per_hour": 6, "per_day": 30, "per_topic_minutes": 5, "loop_turns": 3}
         self.assertIsNone(L.live_room(self.owners(500), "new", True, self.now, limits))
 
     def test_zero_blocks_at_once_and_a_positive_limit_blocks_at_the_limit(self) -> None:
@@ -436,10 +493,10 @@ class LiveOwnerCap(unittest.TestCase):
         self.assertIsNone(L.live_room(self.owners(2), "new", True, self.now, limits))
         self.assertEqual(L.live_room(self.owners(3), "new", True, self.now, limits), "owner_per_day")
 
-    def test_peer_limits_are_untouched(self) -> None:
-        limits = {k: v for k, v in L.LIVE_DEFAULTS.items() if k != "owner_per_day"}
+    def test_peer_limits_apply_only_when_the_table_names_them(self) -> None:
         hour = {"turns": [{"ts": 1000.0 + i, "topic": "t%d" % i, "owner": False} for i in range(6)]}
-        self.assertEqual(L.live_room(hour, "new", False, 1100.0, limits), "per_hour")
+        self.assertIsNone(L.live_room(hour, "new", False, 1100.0, {}), "no table, no limit")
+        self.assertEqual(L.live_room(hour, "new", False, 1100.0, {"per_hour": 6}), "per_hour")
 
 
 class StatusCapText(unittest.TestCase):
