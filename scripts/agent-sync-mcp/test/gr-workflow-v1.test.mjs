@@ -293,7 +293,7 @@ test('merge queue closed inputs fixed own-bearer calls and unknown writes',async
  }
 });
 test('fixed PR controls and thread reads preserve scope and UNKNOWN',async()=>{
- for(const action of ['wf_pr_ready','wf_pr_draft','wf_automerge_disable','wf_automerge_enable','wf_review_threads']){
+ for(const action of ['wf_pr_ready','wf_pr_draft','wf_pr_close','wf_pr_reopen','wf_automerge_disable','wf_automerge_enable','wf_review_threads']){
   const args={repo,number:1,...(action==='wf_automerge_enable'?{method:'SQUASH'}:{})};
   const t=harness(async(url)=>{assert.ok(url.endsWith('/v1/'+action));return new Response(JSON.stringify(action==='wf_review_threads'?{threads:{nodes:[]}}:{pull:{id:'PR_abc'}}));});
   assert.ok(!(await t.call('gr_'+action,args)).isError,action);
