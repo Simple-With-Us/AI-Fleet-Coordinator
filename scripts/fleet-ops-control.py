@@ -144,8 +144,9 @@ the one request that stores the trust list, so the route stays inert (every appr
 `no_trust_list`) until a chain has been accepted.
 
 Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
-eavesdropper-status`, `server operator-sessions` and `server operator-wakes` alone, the store
-could not be read: result `unavailable`, with no command failed), 2 refused.
+eavesdropper-status`, `server operator-sessions`, `server operator-wakes` and
+`server router-health` alone, the store or router could not be read: result `unavailable`, with no
+command failed), 2 refused.
 """
 
 from __future__ import annotations
