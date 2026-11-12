@@ -1739,6 +1739,15 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
                 str(reload.get("code") or "reload_skipped").replace("_", " "),
             )
         lines = [str(line) for line in document.get("diff") or []]
+        plan_hash = document.get("planSHA256")
+        if (
+            result == "planned"
+            and isinstance(plan_hash, str)
+            and EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(plan_hash)
+        ):
+            # The apply must name this hash (`--expect`, or `expectPlanSHA256` over ssh), so a
+            # plan in plain text says it too, not only the JSON answer.
+            lines.append("planSHA256: " + plan_hash)
         for change in changed:
             # A sub-key a whole-table value drops is said in words, not left to the diff.
             removes = change.get("removes") if isinstance(change, dict) else None
@@ -3942,6 +3951,10 @@ def run_eavesdropper_settings(argv, ctx, out):
             raise Refused("plan takes no --expect or --yes")
         if action == "apply" and not args.yes:
             raise Refused("pass --yes to apply, or use plan to see the changes")
+        if args.file is not None and not args.file.strip():
+            # The editor reads an empty path as the live file, so an empty --file must never
+            # count as "a file was named" and slip past the live-file rules below.
+            raise Refused("--file needs a path", error_code="usage")
         if args.file is None and not ctx.platform.startswith("linux"):
             raise Refused("pass --file PATH:  the live file is in the server's container")
         if action == "apply" and args.file is None:
@@ -3949,7 +3962,8 @@ def run_eavesdropper_settings(argv, ctx, out):
             # the plan's hash, as the server `--yes` form must.  Refused before the action lock.
             if args.expect is None:
                 raise Refused(
-                    "an apply to the live file must carry the plan's hash as --expect;  run plan first",
+                    "an apply to the live file must carry the plan's hash as --expect;  "
+                    "run plan first and pass the planSHA256 it prints",
                     error_code="plan_hash_required",
                 )
             if not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(args.expect):

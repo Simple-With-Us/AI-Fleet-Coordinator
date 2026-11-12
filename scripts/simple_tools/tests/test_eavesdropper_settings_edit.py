@@ -1489,6 +1489,34 @@ class ControlVerbTests(Case):
         )
         self.assertEqual((code, answer["result"]), (0, "applied"), answer)
 
+    def test_an_empty_file_is_refused_and_never_reaches_the_live_file(self) -> None:
+        # The editor reads an empty path as the live file, so `--file ""` must not count as a
+        # file and slip past the live-file rules.
+        self.allow_apply()
+        taken = self.watch_the_lock()
+        for action in ("plan", "apply"):
+            for empty in ("", "   "):
+                with self.subTest(action=action, empty=empty):
+                    reader = FakeReader({"tool": "eavesdropper-settings", "ok": True, "result": "applied"})
+                    argv = ["eavesdropper-settings", action, "--set", "seat.ZC.enabled=false", "--file", empty, "--json"]
+                    if action == "apply":
+                        argv.insert(-1, "--yes")
+                    code, answer = self.run_main(argv, self.ctx(platform="linux", reader=reader))
+                    self.assertEqual((code, answer["result"], answer["errorCode"]), (2, "refused", "usage"))
+                    self.assertEqual(reader.calls, [])
+        self.assertEqual(taken, [])
+        self.assert_untouched()
+
+    def test_a_plan_says_its_hash_in_its_output(self) -> None:
+        # The apply must name the plan's hash, so the plan's text output carries it, not only
+        # the JSON document.
+        code, answer = self.run_main(
+            ["eavesdropper-settings", "plan", "--set", "seat.ZC.enabled=false", "--file", str(self.live), "--json"]
+        )
+        self.assertEqual((code, answer["result"]), (0, "planned"), answer)
+        sha = answer["eavesdropperSettings"]["planSHA256"]
+        self.assertIn("planSHA256: " + sha + "\n", answer["output"])
+
     def test_the_command_line_apply_to_the_live_file_needs_the_plan_hash(self) -> None:
         # Without `--file`, on the server, the command-line form edits the live file in the
         # container, so it needs `--expect` as the server `--yes` form needs `expectPlanSHA256`.
