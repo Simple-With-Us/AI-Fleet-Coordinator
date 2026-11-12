@@ -12,7 +12,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "scripts", "autofix_claude_failure_log.sh")
 
-TOKEN = "abcDEF123456ghiJKL"
+TOKEN = "not-a-real-" + "fixture-credential-placeholder"
 
 
 def run_log(result_field: str) -> str:
