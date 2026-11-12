@@ -136,6 +136,8 @@ lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it i
 planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
 before a SIGTERM, and its terminal rows name message ids and effect reasons - an id and free
 text are exactly what this document never emits, and the apps have no drain surface to feed.
+`registry_sweep` (AFC-721) is not read:  it is the one stale sweeper's last pass on the server,
+with letters and record ids in it, for the Eavesdropper's own status readers.
 """
 
 from __future__ import annotations

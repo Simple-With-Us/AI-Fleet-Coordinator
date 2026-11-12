@@ -233,12 +233,12 @@ class SeatPolicyFile(unittest.TestCase):
 
     def test_repositories_are_the_two_reviewed_namespaces(self):
         # 2026-11-01 every-repo widening (owner instruction):  each seat reaches every
-        # repository in the two verified namespaces - the org and Jay's personal account -
+        # repository in the org namespace (legacy personal-owner remotes still redirect) -
         # through the owner/* form the relay engine matches (policy._repo_allowed).  A
         # repository the org moved in keeps its old owner's name only as a redirect, so the
         # org namespace uses the current owner.  Nothing broader passes:  no bare "*", no
         # other owner, and no per-seat variation.
-        reviewed = ["Simple-With-Us/*", "jaywedgeworth22/*"]
+        reviewed = ["Simple-With-Us/*"]
         for slug, cfg in SEATS.items():
             self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
@@ -291,7 +291,7 @@ class SeatPolicyFile(unittest.TestCase):
         fleet = SEATS["swu-claude"]
         for identity in GB_SEATS | BF_SEATS:
             cfg = by_identity[identity]
-            self.assertEqual(cfg["repos"], ["Simple-With-Us/*", "jaywedgeworth22/*"], identity)
+            self.assertEqual(cfg["repos"], ["Simple-With-Us/*"], identity)
             self.assertEqual(cfg["actions"], fleet["actions"], identity)
             self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], identity)
 
@@ -300,7 +300,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "aedc385e5047240d")
+        self.assertEqual(seat_policy.digest(SEATS), "1f422f0b82cacc0f")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))

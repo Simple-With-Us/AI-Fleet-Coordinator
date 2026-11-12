@@ -51,6 +51,10 @@ Owner preference, 2026-08-06.
 
 Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Gemini, Grok, Monet, Copilot, …).  Owner ruling, 2026-10-21.
 
+## One Operator, No Special Seats (owner — ALL agents, ALL platforms, 2026-11-11)
+
+No seat or platform gets its own copy of a fleet tool.  There is one shared tool per function (the Operator's router, letter assigner and sweeper are the examples), and a platform adds data to its platform table, never its own client, router, bridge, sweeper, timer, unit, token or registry.  Only last-mile wake delivery may differ, and only where the platform forces it.  Source: Jay, November 11, 2026: "there is one operator that has one tool/process for all platforms and only last mile wake delivery can be unique if necessary".
+
 ## Kody reviews are requested by hand (owner — ALL agents, ALL platforms, 2026-10-25)
 
 Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".
@@ -559,6 +563,7 @@ and platform.  Product UI stays the viewer's timezone.  A market bell stays as
   - **Canonical private infrastructure inventory:** [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
   - **Seats without a local clone:** a seat with read access to the private repo reads it through the relay (`gr_wf_file_get` on the hosted front, `wf_file_get` through GR-MCP, path `ATTACK-MAP.md` in Simple-With-Us/Fleet-OPS); `gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'` is the logged backup only; a seat without access asks a Mac seat or the owner.  The old `GET https://mac.jays.services/files/ATTACK-MAP.md` relay was retired on 2026-10-19 (AFC-363).
   - **Secret reads:** On the Mac read a fleet key with `fleet-secrets get NAME`, or run a command with only the keys it needs via `fleet-secrets run --only A,B -- CMD` (both come from Infisical Fleet-OPS; cookbook in `INFISICAL.md` § `fleet-secrets`).  Never log, grep, or print raw `KEY=value` lines.  Never commit or refer to cloud storage / Google Drive backups of secrets.
+- **Service tokens only, Infisical sole source (owner, Nov 11, 2026).**  Infisical is the sole source of truth for every secret and for non-secret settings knobs and variables.  Nothing is stored in env files, Coolify, Cloudflare, GitHub Actions or anywhere else, except where truly necessary, and then it is synced from Infisical and never hand-set.  The one bootstrap service token a host needs to reach Infisical is the standing exception.  Apps, tools, scripts and services use scoped Infisical service tokens exclusively, and Infisical automation or machine identities (universal auth, a client id and client secret) are retired:  never create, store, bind or document one as a current credential.  Each token is one narrow grant (one project, environment and folder, read-only unless a write is proven necessary, with an expiry) and is logged on the service-tokens tab of the Google Sheets fleet references workbook.  Agents may mint service tokens with the Infisical CLI themselves, following the `service-tokens` skill, and the value is never printed or written anywhere but its consumer's own store.  Retirement is still in progress, not finished:  the one piece of code that still carries the old route (the `--linux-private-bootstrap` launcher in `scripts/install-fleet-secrets.sh`; the universal-auth login in `scripts/simple_tools/zulip.py` was already deleted, AFC-711) is being deleted, and the shared automation identity itself is revoked only after nothing consumes it.  `scripts/fleet_secrets` and `scripts/fleet_rag/infisical_settings.py` already accept only an explicit service-token binding.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
   Fleet keys live in Infisical Fleet-OPS and are read with `fleet-secrets`;
   nothing reads `~/.secrets` (AFC-359), and no deployed app depends on it.  Cross-app keys
@@ -690,7 +695,7 @@ https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).
   `$VAR`-adjacent glyph.  Keep `scripts/*.sh` pure ASCII — use `...`/`-`/`->`, never
   `…`/`—`/`→`; check with `grep -nP '[^\x00-\x7F]' scripts/*.sh` and the
   `\$\{?\w+\}?[^\x00-\x7F]` adjacency pattern.  Cost this the hard way once:
-  `docs/rollouts/2026-06-26-infisical-universal-auth.md`.
+  `docs/rollouts/2026-06-26-infisical-universal-auth.md` (a historical rollout record:  its universal-auth route is retired, see the service-tokens-only rule in the secrets notes above).
 
 ## Conventions
 

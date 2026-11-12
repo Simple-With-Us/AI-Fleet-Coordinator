@@ -75,13 +75,25 @@ PLAN_KEYS = {
     "WAKE_ROUTER_CONFIRM_SECONDS",
     "WAKE_ROUTER_SETTINGS_REFRESH_SECONDS",
     "WAKE_ROUTER_MAC_SSH",
+    "WAKE_ROUTER_KEY",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
 }
+# The signing key, the wake router's one bearer and its registry signing key.
+SECRETS = ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_KEY", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"]
 
 
 class InventoryTests(unittest.TestCase):
-    def test_the_registry_holds_every_planned_knob_and_only_one_secret(self):
+    def test_the_registry_holds_every_planned_knob_and_only_these_secrets(self):
         self.assertEqual({s.name for s in REGISTRY}, PLAN_KEYS)
-        self.assertEqual([s.name for s in REGISTRY if s.secret], ["FLEET_FACTS_SIGNING_KEY"])
+        self.assertEqual([s.name for s in REGISTRY if s.secret], SECRETS)
+
+    def test_a_knob_outside_the_root_says_its_folder_in_the_table(self):
+        for spec in REGISTRY:
+            row = next(r for r in inventory.rows() if r.startswith(f"| `{spec.name}` |"))
+            with self.subTest(name=spec.name):
+                self.assertEqual(f"in folder `{spec.folder}`" in row, spec.folder != "/")
+                self.assertEqual(len([c for c in row.strip("|").split("|")]), 7)
 
     def test_infisical_md_carries_the_generated_block(self):
         text = (REPO / "INFISICAL.md").read_text(encoding="utf-8")

@@ -23,8 +23,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum
-# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
 # platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
@@ -61,7 +60,14 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 # The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048, the shared wake
 # router and Claude's delivery;  `simple-chat wake-deliver` has to run on the Mac, so they ship).
 # The 168th is simple_tools/wake_settings.py (OPS-1048, the router's settings through fleet_knobs).
-MAX_FILES = 168
+# The 169th and 170th are simple_tools/thread_registry.py (the Operator chat-thread registry the listener
+# keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
+# modules), added for that review.
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
+# registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
+# fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
+MAX_FILES = 180
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
 # Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
@@ -141,6 +147,9 @@ EXACT = frozenset(
         "scripts/simple_tools/operator_sheets_google.mjs",
         # OPS-1037:  the production drain runner, shipped beside the exporter and adapter it wires.
         "scripts/simple_tools/operator_sheets_drain.mjs",
+        # The Operator chat-thread registry drain:  the same shape as the outbox exporter above — the Node
+        # writer that owns the service-account auth, shipped as a data file beside the Python modules.
+        "scripts/simple_tools/thread_registry_export.mjs",
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
