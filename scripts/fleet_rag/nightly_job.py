@@ -90,7 +90,7 @@ MACHINE_IDENTITY_ENV = (
 )
 
 ALERT_TAG = "[GB-ORACLE \U0001f4c1AFC]"
-ALERT_STREAM = "Alerts"
+ALERT_STREAM = "OPS"
 ALERT_TOPIC = "fleet-rag-nightly"
 GAP = "\u00a0 "
 
@@ -225,7 +225,7 @@ def _zulip_credentials(
     project = (env.get("FLEET_RAG_ZULIP_INFISICAL_PROJECT") or "").strip()
     if not project:
         raise NightlyError("missing:FLEET_RAG_ZULIP_INFISICAL_PROJECT")
-    folder = (env.get("FLEET_RAG_ZULIP_INFISICAL_PATH") or "/zulip").strip() or "/zulip"
+    folder = (env.get("FLEET_RAG_ZULIP_INFISICAL_PATH") or "/fleet-rag-nightly").strip() or "/fleet-rag-nightly"
     site_name = (env.get("FLEET_RAG_ZULIP_SITE_NAME") or "ZULIP_SITE").strip()
     email_name = (env.get("FLEET_RAG_ZULIP_EMAIL_NAME") or "ZULIP_EMAIL").strip()
     key_name = (env.get("FLEET_RAG_ZULIP_API_KEY_NAME") or "ZULIP_API_KEY").strip()
@@ -266,7 +266,48 @@ def write_summary(path: Path, summary: dict) -> None:
     os.replace(tmp, path)
 
 
-def alert_text(summary: dict, tag: str, host: str) -> str:
+def _mirror_alert_reason(summary: dict) -> str | None:
+    mirror = summary.get("mirror") or {}
+    reason = (mirror.get("reason") or "").strip()
+    if not reason or reason == "fresh" or mirror.get("fresh"):
+        return None
+    return reason
+
+
+def alert_fingerprint(summary: dict) -> str:
+    """Stable identity for the same failure across consecutive nights."""
+    pieces: list[str] = []
+    sync_exit = summary.get("code_sync_exit")
+    if sync_exit not in (None, 0):
+        pieces.append(f"sync={sync_exit}")
+    if summary.get("ok") is False:
+        pieces.append("ok=0")
+    for trip in sorted(
+        (summary.get("guard_trips") or []),
+        key=lambda item: (str(item.get("source") or ""), str(item.get("reason") or "")),
+    ):
+        pieces.append(f"guard:{trip.get('source')}:{trip.get('reason')}")
+    mirror_reason = _mirror_alert_reason(summary)
+    if mirror_reason:
+        pieces.append(f"mirror:{mirror_reason}")
+    errors = [item for item in (summary.get("errors") or []) if item and item != "withheld"]
+    if errors:
+        pieces.append("errors:" + ",".join(sorted(errors)))
+    return "|".join(pieces)
+
+
+def alert_text(summary: dict, tag: str, host: str, *, streak: int = 1) -> str:
+    if streak > 1:
+        return (
+            f"{tag}\n\n"
+            + GAP.join(
+                [
+                    f"Fleet RAG nightly ingest on {host} is still failing, night {streak}.",
+                    "The condition matches the previous night.",
+                ]
+            )
+            + "\n"
+        )
     if summary.get("ok"):
         lead = f"Fleet RAG nightly ingest on {host} tripped a prune guard."
     else:
@@ -275,6 +316,9 @@ def alert_text(summary: dict, tag: str, host: str) -> str:
     trips = summary.get("guard_trips") or []
     if trips:
         parts.append(f"{len(trips)} prune guard(s) tripped.")
+    mirror_reason = _mirror_alert_reason(summary)
+    if mirror_reason:
+        parts.append(f"skill/memory mirror is {mirror_reason}.")
     sync_exit = summary.get("code_sync_exit")
     if sync_exit not in (None, 0):
         parts.append(f"code-main-sync exited {sync_exit}.")
@@ -288,7 +332,17 @@ def alert_text(summary: dict, tag: str, host: str) -> str:
         source = trip.get("source") or "ingest"
         reason = trip.get("reason") or "guard"
         lines.append(f"- `{source}`: {reason}")
+    if mirror_reason and not any((trip.get("source") == "mirror" for trip in trips)):
+        lines.append(f"- `mirror`: {mirror_reason}")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _read_previous_summary(path: Path) -> dict:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def zulip_post(site: str, email: str, api_key: str, fields: dict[str, str]) -> None:
@@ -318,20 +372,47 @@ def zulip_post(site: str, email: str, api_key: str, fields: dict[str, str]) -> N
 
 
 def _should_alert(summary: dict) -> bool:
-    return bool(summary.get("ran") and (not summary.get("ok") or summary.get("guard_trips")))
+    if not summary.get("ran"):
+        return False
+    if summary.get("ok") is False:
+        return True
+    if summary.get("guard_trips"):
+        return True
+    return _mirror_alert_reason(summary) is not None
 
 
-def send_alert(summary: dict, env: dict, *, post: Callable | None = None) -> str:
+def send_alert(
+    summary: dict,
+    env: dict,
+    *,
+    post: Callable | None = None,
+    store_path: Path | None = None,
+) -> str:
     """Post when the run failed or a guard tripped.  Returns a short status word."""
     if not _should_alert(summary):
+        summary["alert_fingerprint"] = ""
+        summary["alert_streak"] = 0
         return "quiet"
     site = (env.get("ZULIP_SITE") or "").strip()
     email = (env.get("ZULIP_EMAIL") or "").strip()
     api_key = (env.get("ZULIP_API_KEY") or "").strip()
+    fingerprint = alert_fingerprint(summary)
+    streak = 1
+    if store_path is not None:
+        previous = _read_previous_summary(store_path)
+        prev_fp = (previous.get("alert_fingerprint") or "").strip()
+        if fingerprint and fingerprint == prev_fp:
+            try:
+                streak = int(previous.get("alert_streak") or 0) + 1
+            except (TypeError, ValueError):
+                streak = 2
+    summary["alert_fingerprint"] = fingerprint
+    summary["alert_streak"] = streak
     if not (site and email and api_key):
         return "unconfigured"
     host = os.uname().nodename
-    body = alert_text(summary, (env.get("FLEET_RAG_ALERT_TAG") or ALERT_TAG), host)
+    tag = env.get("FLEET_RAG_ALERT_TAG") or ALERT_TAG
+    body = alert_text(summary, tag, host, streak=streak)
     if scan_secrets(body):
         body = (
             (env.get("FLEET_RAG_ALERT_TAG") or ALERT_TAG)
@@ -514,7 +595,8 @@ def execute(
             alert_env.update(_zulip_credentials(env, read_file or read_token_file, fetch or _fetch))
         except NightlyError:
             pass
-        summary["alert"] = send_alert(summary, alert_env, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, alert_env, post=post, store_path=state_path)
         return summary
     home = Path(env.get("HOME") or str(Path.home()))
     lock_path = Path(
@@ -551,19 +633,22 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
     except NightlyError as exc:
         summary["ok"] = False
         summary["errors"] = [_public(exc.reason)]
-        summary["alert"] = send_alert(summary, env, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, env, post=post, store_path=state_path)
         return summary
     except FleetRagError as exc:
         summary["ok"] = False
         summary["errors"] = [_public(str(exc))]
-        summary["alert"] = send_alert(summary, env, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, env, post=post, store_path=state_path)
         return summary
     sync_exit = code_sync(sync, env)
     summary["code_sync_exit"] = sync_exit
     if sync_exit != 0:
         summary["ok"] = False
         summary["errors"] = [f"code-main-sync-exit-{sync_exit}"]
-        summary["alert"] = send_alert(summary, {**env, **loaded}, post=post)
+        state_path = summary_path(env)
+        summary["alert"] = send_alert(summary, {**env, **loaded}, post=post, store_path=state_path)
         return summary
     mirror_env = (env.get(mirror.MIRROR_ENV) or "").strip()
     updates = dict(loaded)
@@ -574,6 +659,8 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
     else:
         status = mirror.mirror_status(Path(mirror_env), now, mirror.max_age_s(env))
         summary["mirror"] = {"fresh": status.fresh, "reason": status.reason, "at": status.at}
+        if not status.fresh:
+            summary["guard_trips"] = [{"source": "mirror", "reason": status.reason}]
     updates["FLEET_RAG_REQUIRE_CODE_ROOT"] = "1"
     saved = _apply(updates)
     try:
@@ -613,7 +700,8 @@ def _locked(summary, env, *, read_file, fetch, sync, ingest_runner, post, now) -
     if not summary["ok"] and not summary["errors"]:
         summary["errors"] = [f"ingest-exit-{code}"]
     alert_env = {**env, **loaded}
-    summary["alert"] = send_alert(summary, alert_env, post=post)
+    state_path = summary_path(env)
+    summary["alert"] = send_alert(summary, alert_env, post=post, store_path=state_path)
     return summary
 
 
