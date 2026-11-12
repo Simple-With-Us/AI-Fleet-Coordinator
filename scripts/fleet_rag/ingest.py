@@ -1261,9 +1261,7 @@ def prune_refusal(
     if diet_ids:
         diet_gone = [did for did in gone if did in diet_ids]
         tracked_n = sum(
-            1
-            for _did, rec in state.items()
-            if isinstance(rec, dict) and rec.get("source") == name
+            1 for _did, rec in state.items() if isinstance(rec, dict) and rec.get("source") == name
         )
         if diet_gone and tracked_n and len(gone) * 100 > tracked_n * PRUNE_MAX_PERCENT:
             pct = (len(gone) * 100) // tracked_n
@@ -1286,9 +1284,7 @@ def _authorize_excluded(held: set[str], prune_excluded: bool) -> set[str]:
     for did in held:
         for rule in rules:
             prefix = rule[:-1] if rule.endswith("*") else ""
-            if prefix and did.startswith(prefix):
-                released.add(did)
-            elif did == rule:
+            if prefix and did.startswith(prefix) or did == rule:
                 released.add(did)
     return released
 
