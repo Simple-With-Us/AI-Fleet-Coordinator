@@ -1744,7 +1744,6 @@ class Tools:
                     operator_user_id=DMP.operator_user_id(env, self.operator_user_id or None),
                     self_id=_int(self.me.get("user_id")),
                 ),
-                clarifying=bool(args.get("clarifying_question")),
                 owner_user_id=self.owner_user_id or None,
             )
         except DMP.DmRefused as refused:
