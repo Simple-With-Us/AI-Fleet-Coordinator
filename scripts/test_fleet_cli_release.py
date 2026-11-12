@@ -832,6 +832,27 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(list(parsed["mcp_servers"]), ["simple-chat"])
         self.assertEqual(parsed["mcp_servers"]["simple-chat"]["command"], command)
 
+    def test_a_seat_installed_codex_registration_does_not_block_the_routine_update(self):
+        # AFC-595: a host whose Codex registration a seat installed, not this tool, must still get
+        # its wrappers updated.  The routine update path never writes that file, so it must not
+        # refuse the host.
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        original = b'[mcp_servers.simple-chat]\ncommand = "/opt/seat/codex-simple-tools"\n'
+        config.write_bytes(original)
+        plan = release.new_wrapper_plan(self.home)
+        self.assertNotIn(config, plan)
+        self.assertEqual(config.read_bytes(), original)
+
+    def test_install_still_refuses_a_seat_installed_codex_registration(self):
+        # The install path writes that file, so a registration this tool did not write stays
+        # refused there.
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b'[mcp_servers.simple-chat]\ncommand = "/opt/seat/codex-simple-tools"\n')
+        with self.assertRaisesRegex(release.Refused, "existing_simple_chat_mcp_conflict"):
+            release.install_plan(self.home)
+
     def test_a_hand_edited_codex_registration_is_still_refused(self):
         config = self.home / ".codex/config.toml"
         config.parent.mkdir()

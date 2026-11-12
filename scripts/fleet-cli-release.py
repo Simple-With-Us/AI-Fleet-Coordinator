@@ -535,11 +535,20 @@ def codex_mcp_expected(bin_dir: Path) -> dict:
     }
 
 
-def migrate_codex_mcp(home: Path, files: dict, replacement: tuple[str, str] | None = None) -> None:
+def migrate_codex_mcp(
+    home: Path,
+    files: dict,
+    replacement: tuple[str, str] | None = None,
+    may_write_config: bool = False,
+) -> None:
     """Validate the current registration and optionally replace an explicitly selected managed entry.
 
     The caller supplies the source table key and wrapper basename. Only an exact managed
     command/environment shape can be rewritten; custom or ambiguous tables are refused.
+
+    A registration this tool did not write is refused only when this call may write the config:
+    the install path does, and the routine update path does not.  The update path never writes
+    that file, so a seat-installed registration must not block the rest of the host's update.
     """
     bin_dir = home / ".local/bin"
     expected = codex_mcp_expected(bin_dir)
@@ -557,7 +566,8 @@ def migrate_codex_mcp(home: Path, files: dict, replacement: tuple[str, str] | No
     if not isinstance(servers, dict):
         raise Refused("invalid_codex_config")
     current = servers.get(CODEX_KEY)
-    if current is not None and current != expected:
+    writes_config = may_write_config or replacement is not None
+    if writes_config and current is not None and current != expected:
         raise Refused("existing_simple_chat_mcp_conflict")
     if replacement is None:
         return
@@ -630,7 +640,7 @@ def install_plan(
         ):
             raise Refused("existing_unmanaged_wrapper")
     expected = codex_mcp_expected(bin_dir)
-    migrate_codex_mcp(home, files, replacement)
+    migrate_codex_mcp(home, files, replacement, may_write_config=True)
     config = home / ".codex/config.toml"
     original = config.read_bytes() if config.exists() else b""
     try:
