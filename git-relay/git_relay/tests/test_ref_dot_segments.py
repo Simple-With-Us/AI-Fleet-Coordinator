@@ -35,7 +35,11 @@ DEFAULT_SPELLINGS = [
     "Main",
     "refs/heads/Main",
 ]
-BAD_NAMES = DOT_SPELLINGS + DEFAULT_SPELLINGS + ["feature/x.", "feature/.x", "x//y", "feature/y.lock/z.lock"]
+BAD_NAMES = (
+    DOT_SPELLINGS
+    + DEFAULT_SPELLINGS
+    + ["feature/x.", "feature/.x", "x//y", "feature/y.lock/z.lock"]
+)
 GOOD_NAMES = ["main", "claude/fix-thing", "release/v1.2.3", "feature/a.b", "a-b_c", "x/y/z"]
 
 
@@ -108,8 +112,9 @@ class BranchUpdateDelete(unittest.TestCase):
                     {"default_branch": "main"},
                     {"ref": ref, "object": {"sha": SHA}},
                 )
-                with self.subTest(action=action, ref=ref), self.assertRaisesRegex(
-                    Refused, "default branch mutation refused"
+                with (
+                    self.subTest(action=action, ref=ref),
+                    self.assertRaisesRegex(Refused, "default branch mutation refused"),
                 ):
                     h.run(action, self.args(action, "feature/x"))
                 only_reads(self, c)
@@ -196,8 +201,9 @@ class FileVerbs(unittest.TestCase):
         # The provider calls the branch the default branch: refused, with the reason.
         for provider in ("main", "MAIN", "refs/heads/main", "./main"):
             h, c = handle("wf_file_put", {"default_branch": "main"}, {"name": provider})
-            with self.subTest(provider=provider), self.assertRaisesRegex(
-                Refused, "default branch is not writable"
+            with (
+                self.subTest(provider=provider),
+                self.assertRaisesRegex(Refused, "default branch is not writable"),
             ):
                 h.run("wf_file_put", args)
             only_reads(self, c)
@@ -247,8 +253,9 @@ class FileVerbs(unittest.TestCase):
                 {"default_branch": "main"},
                 {"name": provider, "commit": {"sha": SHA}},
             )
-            with self.subTest(provider=provider), self.assertRaisesRegex(
-                PreReadUnavailable, "no write attempted"
+            with (
+                self.subTest(provider=provider),
+                self.assertRaisesRegex(PreReadUnavailable, "no write attempted"),
             ):
                 h.run("wf_file_delete", args)
             only_reads(self, c)
