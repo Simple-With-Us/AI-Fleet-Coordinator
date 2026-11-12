@@ -705,7 +705,9 @@ class SessionRegistry:
         doubled = tuple(p for p in PRIMARY_ORDER if p in members)
         # Where the lap is:  the last doubled pair issued in the newest generation.  A pair issued late, to catch up
         # on a generation it missed while live, is an older generation, so it does not move the lap.
-        doubled_sql = "platform = ? AND length(letter) = 2 AND substr(letter, 1, 1) = substr(letter, 2, 1)"
+        doubled_sql = (
+            "platform = ? AND length(letter) = 2 AND substr(letter, 1, 1) = substr(letter, 2, 1)"
+        )
         last = conn.execute(
             f"SELECT letter FROM alias_assignments WHERE {doubled_sql} AND generation ="
             f" (SELECT MAX(generation) FROM alias_assignments WHERE {doubled_sql})"
@@ -714,7 +716,9 @@ class SessionRegistry:
         ).fetchone()
         start = doubled.index(last["letter"]) + 1 if last and last["letter"] in doubled else 0
         position = {p: (i - start) % len(doubled) for i, p in enumerate(doubled)} if doubled else {}
-        main = sorted((p for p in doubled if p not in live), key=lambda p: (issued.get(p, 0), position[p]))
+        main = sorted(
+            (p for p in doubled if p not in live), key=lambda p: (issued.get(p, 0), position[p])
+        )
         follow = [p for p in pairs_after(after) if p in members and p not in live] if after else []
         for letter in follow + [p for p in main if p not in follow]:
             generation = issued.get(letter, 0) + 1
@@ -891,7 +895,9 @@ class SessionRegistry:
                 identity["native_session_id"],
                 identity.get("parent_letter") or "",
             )
-            letter, generation = self._allocate(conn, identity["platform"], record_id, now, after=parent_pair)
+            letter, generation = self._allocate(
+                conn, identity["platform"], record_id, now, after=parent_pair
+            )
             # The parent's pair when this chat really took a pair after it, else "" (no parent, or its row was full).
             placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
             self._insert_event(
@@ -1044,7 +1050,9 @@ class SessionRegistry:
                 parent_pair = self._parent_pair(
                     conn, namespace, parent_session_id, row["native_session_id"], parent_letter
                 )
-                letter, generation = self._allocate(conn, namespace, record_id, now, after=parent_pair)
+                letter, generation = self._allocate(
+                    conn, namespace, record_id, now, after=parent_pair
+                )
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
                 " WHERE record_id = ?",
@@ -1120,7 +1128,9 @@ class SessionRegistry:
                     " WHERE record_id = ? AND retired_at IS NULL",
                     (now, record_id),
                 )
-            letter, new_generation = self._allocate(conn, row["platform"], record_id, now, after=parent_pair)
+            letter, new_generation = self._allocate(
+                conn, row["platform"], record_id, now, after=parent_pair
+            )
             placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
             details = "previous letter %s" % current if current else ""
             self._insert_event(
@@ -1737,7 +1747,9 @@ def touch_session(
         if row["closed_at"]:
             closed: dict[str, Any] = {"record_id": row["record_id"], "outcome": "closed"}
             if held_issues:
-                closed["issues"] = held_issues  # a closed session keeps its list, as update reports it
+                closed["issues"] = (
+                    held_issues  # a closed session keeps its list, as update reports it
+                )
             return closed
         registry.mark_seen(row["record_id"])
         out: dict[str, Any] = {"record_id": row["record_id"], "outcome": "seen"}

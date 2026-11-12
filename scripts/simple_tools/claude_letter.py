@@ -573,7 +573,10 @@ def evict_oldest(OR: Any, db: str, keep: tuple[str, str], size: int = 0) -> int:
 def refused_text(OR: Any, limit: int = 0) -> str:
     """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
     limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
-    return "all %d Claude main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter" % limit
+    return (
+        "all %d Claude main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter"
+        % limit
+    )
 
 
 def _with_room(

@@ -773,9 +773,12 @@ def _with_room(
 def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
     """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
     limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
-    return "all %d %s main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter" % (
-        limit,
-        platform,
+    return (
+        "all %d %s main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter"
+        % (
+            limit,
+            platform,
+        )
     )
 
 

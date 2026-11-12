@@ -26,7 +26,14 @@ SYNTHETIC_SECRET = "A1b2C3d4" * 4
 
 
 # The seat each platform namespace belongs to, for fixtures that name only a platform.
-SEATS = {"claude": "CLAUDE", "codex": "CODEX", "cursor": "CURSOR", "grok-leader": "GROK", "minimax": "MM", "muse": "MC"}
+SEATS = {
+    "claude": "CLAUDE",
+    "codex": "CODEX",
+    "cursor": "CURSOR",
+    "grok-leader": "GROK",
+    "minimax": "MM",
+    "muse": "MC",
+}
 
 
 def ident(seat=None, platform="zulip", host="mac-1", scope="simplewithus", native="native-1", **kw):
@@ -210,7 +217,9 @@ class RegistryTest(unittest.TestCase):
     def test_a_caller_that_names_the_single_space_still_gets_a_pair(self):
         # "The order lives in the allocator":  no caller moves a main chat off the doubled pairs.
         one = self.reg.resolve_or_register(
-            ident(platform="minimax", native="native-1", letter_space="single", letter_pick="lowest")
+            ident(
+                platform="minimax", native="native-1", letter_space="single", letter_pick="lowest"
+            )
         )
         two = self.reg.resolve_or_register(ident(platform="minimax", native="native-2"))
         self.assertEqual((one["label"], two["label"]), ("AA", "BB"))
@@ -335,7 +344,8 @@ class RegistryTest(unittest.TestCase):
         single = self.reg.resolve_or_register(ident(platform="claude", native="n-2"))
         with self.reg._conn:
             self.reg._conn.execute(
-                "UPDATE alias_assignments SET letter = 'A' WHERE record_id = ?", (single["record_id"],)
+                "UPDATE alias_assignments SET letter = 'A' WHERE record_id = ?",
+                (single["record_id"],),
             )
         self.reg.close(single["record_id"])
         self.assertEqual(self.reg.reopen(single["record_id"]), ("AA", 1, "A"))
@@ -384,7 +394,11 @@ class RegistryTest(unittest.TestCase):
             self.reg.resolve_or_register(
                 ident(platform="claude", native=n, letter_space=space, letter_pick=pick)
             )["label"]
-            for n, space, pick in (("n-1", "single", "primary"), ("n-2", "single", "lowest"), ("n-3", None, None))
+            for n, space, pick in (
+                ("n-1", "single", "primary"),
+                ("n-2", "single", "lowest"),
+                ("n-3", None, None),
+            )
         ]
         self.assertEqual(labels, ["AA", "BB", "CC"])
 
@@ -451,7 +465,9 @@ class RegistryTest(unittest.TestCase):
         self._labels(["a"])  # AA
         row = self._labels(["a-%d" % i for i in range(25)], parent="a")  # AB ... AZ
         self.assertEqual(row[-1], "AZ")
-        self.reg.close(self.reg.lookup("claude", "mac-1", "simplewithus", "a")["record_id"])  # AA is free
+        self.reg.close(
+            self.reg.lookup("claude", "mac-1", "simplewithus", "a")["record_id"]
+        )  # AA is free
         # A child of AZ wraps past Z to A, which would be AA, the row's doubled pair:  it is skipped, the rest of row A
         # is live, so the subthread takes the main-chat pair, BB, and not AA.
         child = self._pair("p-1", "primary", "a-24")
@@ -466,7 +482,8 @@ class RegistryTest(unittest.TestCase):
         # A single letter from before the pair rule:  only legacy rows hold one now.
         with self.reg._conn:
             self.reg._conn.execute(
-                "UPDATE alias_assignments SET letter = 'A' WHERE record_id = ?", (single["record_id"],)
+                "UPDATE alias_assignments SET letter = 'A' WHERE record_id = ?",
+                (single["record_id"],),
             )
         self.assertEqual(
             self._pair("k-3", "primary", "s")["label"], "DD"
@@ -528,7 +545,9 @@ class RegistryTest(unittest.TestCase):
             first = self._pair("n-1", "primary")  # AA
             self.reg.close(first["record_id"])
             self._labels(["n-2", "n-3"])  # BB, CC:  AA is not handed out again in generation 1
-            self.assertEqual(self._pair("n-4", "primary")["label"], "AA")  # generation 2 starts at AA
+            self.assertEqual(
+                self._pair("n-4", "primary")["label"], "AA"
+            )  # generation 2 starts at AA
             self.reg.close(self.reg.lookup("claude", "mac-1", "simplewithus", "n-2")["record_id"])
             letter, generation, previous = self.reg.reopen(first["record_id"], pick="primary")
         self.assertEqual((letter, generation, previous), ("BB", 2, "AA"))
@@ -689,7 +708,9 @@ class RegistryTest(unittest.TestCase):
                 self.reg.close(m["record_id"])
         return made
 
-    def test_keep_advancing_mc_last_got_cc_so_the_next_is_dd_even_when_aa_and_bb_were_released(self):
+    def test_keep_advancing_mc_last_got_cc_so_the_next_is_dd_even_when_aa_and_bb_were_released(
+        self,
+    ):
         self.assertEqual([m["label"] for m in self._issue("mc", 3)], ["AA", "BB", "CC"])
         self._close_native("mc-0")  # AA released
         self._close_native("mc-1")  # BB released
@@ -800,7 +821,9 @@ class RegistryTest(unittest.TestCase):
         self._seat_pair("k-2", parent="mc-0")  # AC
         self.reg.close(first["record_id"])
         third = self._seat_pair("k-3", parent="mc-0")
-        self.assertEqual((third["label"], third["generation"]), ("AB", 2))  # the first free pair after AA, as before
+        self.assertEqual(
+            (third["label"], third["generation"]), ("AB", 2)
+        )  # the first free pair after AA, as before
         fourth = self._seat_pair("k-4", parent="mc-0")
         self.assertEqual(fourth["label"], "AD")  # AB and AC are live
         dupes = self.reg._conn.execute(
@@ -821,10 +844,9 @@ class RegistryTest(unittest.TestCase):
     def test_an_integrity_error_is_not_reported_as_exhaustion(self):
         # Only a live pair is refused;  any other integrity error (here a record that does not exist) surfaces as
         # itself rather than as "all 26 letters are active".
-        with self.assertRaises(sqlite3.IntegrityError):
-            with self.reg._write_txn() as conn:
-                conn.execute("PRAGMA foreign_keys")
-                self.reg._allocate(conn, "muse", "no-such-record", "2026-11-11T00:00:00.000Z")
+        with self.assertRaises(sqlite3.IntegrityError), self.reg._write_txn() as conn:
+            conn.execute("PRAGMA foreign_keys")
+            self.reg._allocate(conn, "muse", "no-such-record", "2026-11-11T00:00:00.000Z")
 
     def test_concurrent_registrations_never_share_a_pair(self):
         out: list[str] = []
@@ -832,7 +854,9 @@ class RegistryTest(unittest.TestCase):
         lock = threading.Lock()
 
         def work(index: int) -> None:
-            reg = R.SessionRegistry(self.db)  # one connection per thread, as two processes would hold
+            reg = R.SessionRegistry(
+                self.db
+            )  # one connection per thread, as two processes would hold
             try:
                 for n in range(5):
                     got = reg.resolve_or_register(
@@ -858,7 +882,9 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(out), 20)
         self.assertEqual(len(set(out)), 20)  # no pair handed out twice
-        self.assertEqual(sorted(out), sorted(R.PRIMARY_ORDER[:20]))  # and the losers took the next ones in order
+        self.assertEqual(
+            sorted(out), sorted(R.PRIMARY_ORDER[:20])
+        )  # and the losers took the next ones in order
 
     def test_legacy_rows_count_each_pairs_issues(self):
         # History the old lowest-first pick left behind:  AA issued 4 times, BB twice, DD once, CC never.  The fewest
@@ -867,7 +893,9 @@ class RegistryTest(unittest.TestCase):
         old = self.reg.resolve_or_register(ident(seat="MC", platform="muse", native="old"))
         self.reg.close(old["record_id"])
         with self.reg._conn:
-            self.reg._conn.execute("DELETE FROM alias_assignments WHERE record_id = ?", (old["record_id"],))
+            self.reg._conn.execute(
+                "DELETE FROM alias_assignments WHERE record_id = ?", (old["record_id"],)
+            )
             for letter, generation in rows:
                 self.reg._conn.execute(
                     "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at, retired_at)"
@@ -897,16 +925,32 @@ class RegistryTest(unittest.TestCase):
         # The Operator's own ask-and-answer path registers a chat with no space or pick (operator_registration,
         # daemon).  Owner, Nov 11 2026:  "if a Muse Code seat asks for a letter then it will get a DD since the last
         # assigned to MC was CC".  Every seat, not only Claude and MiniMax.
-        for platform in ("claude", "minimax", "muse", "codex", "cursor", "grok-leader", "opencode", "botfleet"):
+        for platform in (
+            "claude",
+            "minimax",
+            "muse",
+            "codex",
+            "cursor",
+            "grok-leader",
+            "opencode",
+            "botfleet",
+        ):
             with self.subTest(platform=platform):
                 self.assertEqual(
-                    [self._register("%s-000%d" % (platform, i), platform=platform)["label"] for i in (1, 2, 3)],
+                    [
+                        self._register("%s-000%d" % (platform, i), platform=platform)["label"]
+                        for i in (1, 2, 3)
+                    ],
                     ["AA", "BB", "CC"],
                 )
         # a caller that names a space or a pick changes nothing:  the order is the allocator's
-        self.assertEqual(self._register("muse-0004", platform="muse", letter_space="single")["label"], "DD")
         self.assertEqual(
-            self._register("muse-0005", platform="muse", letter_space="double", letter_pick="lowest")["label"],
+            self._register("muse-0004", platform="muse", letter_space="single")["label"], "DD"
+        )
+        self.assertEqual(
+            self._register(
+                "muse-0005", platform="muse", letter_space="double", letter_pick="lowest"
+            )["label"],
             "EE",
         )
         with self.assertRaises(ValueError):
@@ -939,8 +983,12 @@ class RegistryTest(unittest.TestCase):
     def test_two_seats_under_one_label_share_its_namespace(self):
         # The namespace is the platform label, folded (one seat, many labels:  above).  Two seats under one label
         # share it, as before:  whether the key should be the seat tag itself is the owner's call (AFC-724).
-        self.assertEqual(self._register("bf-1", platform="botfleet", seat="BF-BUILDER")["label"], "AA")
-        self.assertEqual(self._register("bf-2", platform="botfleet", seat="BF-DEPLOYER")["label"], "BB")
+        self.assertEqual(
+            self._register("bf-1", platform="botfleet", seat="BF-BUILDER")["label"], "AA"
+        )
+        self.assertEqual(
+            self._register("bf-2", platform="botfleet", seat="BF-DEPLOYER")["label"], "BB"
+        )
 
     # ---- callers cannot move a main chat (owner, Nov 11 2026:  the order lives in the allocator) ----
 
@@ -976,7 +1024,8 @@ class RegistryTest(unittest.TestCase):
         """Turn a registration into one that holds a single letter, as a chat lettered before the pair rule does."""
         with self.reg._conn:
             self.reg._conn.execute(
-                "UPDATE alias_assignments SET letter = ? WHERE record_id = ?", (letter, made["record_id"])
+                "UPDATE alias_assignments SET letter = ? WHERE record_id = ?",
+                (letter, made["record_id"]),
             )
         return made
 
