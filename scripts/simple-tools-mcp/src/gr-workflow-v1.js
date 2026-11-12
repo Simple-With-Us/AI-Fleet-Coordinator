@@ -579,13 +579,15 @@ const discussionBase={id:z.number().int().positive(),author:discussionAuthor,bod
 const discussionValid=v=>!v.body_withheld||v.body==='<withheld: credential-shaped text>';
 const ISSUE_BODY_WITHHELD = '<withheld: credential-shaped text>';
 const issueBodyText = z.string().refine((v) => !v.includes('\0') && !/[\uD800-\uDFFF]/u.test(v) && utf8Bytes(v) <= 65536);
+// The relay withholds sk- only at a lexical boundary. Review text keeps the stricter embedded-shape check.
+const issueBodyCredential = /(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
 const issueGetReceipt = z.object({
   issue: z.object({
     number: positive,
     state: z.enum(['open', 'closed']),
     body: issueBodyText,
     body_withheld: z.boolean(),
-  }).catchall(jsonValue).refine((v) => (v.body_withheld ? v.body === ISSUE_BODY_WITHHELD : !discussionCredential.test(v.body))),
+  }).catchall(jsonValue).refine((v) => (v.body_withheld ? v.body === ISSUE_BODY_WITHHELD : !issueBodyCredential.test(v.body))),
 }).strict();
 const discussionReview=z.object({...discussionBase,state:z.enum(['APPROVED','CHANGES_REQUESTED','COMMENTED','DISMISSED','PENDING']),commit_id:shaValue}).strict().refine(discussionValid);
 const discussionComment=z.object(discussionBase).strict().refine(discussionValid);

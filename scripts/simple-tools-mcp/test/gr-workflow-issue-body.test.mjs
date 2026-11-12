@@ -31,6 +31,8 @@ test('wf_issue_get accepts a bounded body and refuses an unfenced one', () => {
   assert.equal(validWfV1Response('wf_issue_get', {issue: {number: 2, state: 'open'}}, args), false);
   const secret = 'AKIA' + '0'.repeat(16);
   assert.equal(validWfV1Response('wf_issue_get', {issue: {...issue, body: 'key ' + secret}}, args), false);
+  assert.equal(validWfV1Response('wf_issue_get', {issue: {...issue, body: 'prefixsk-' + 'a'.repeat(20)}}, args), true);
+  assert.equal(validWfV1Response('wf_issue_get', {issue: {...issue, body: 'sk-' + 'a'.repeat(20)}}, args), false);
   assert.equal(validWfV1Response('wf_issue_get', {issue: {...issue, body: '<withheld: credential-shaped text>', body_withheld: true}}, args), true);
   assert.equal(validWfV1Response('wf_issue_get', {issue: {...issue, body: 'key ' + secret, body_withheld: true}}, args), false);
   assert.equal(validWfV1Response('wf_issue_get', {issue: {...issue, body: 'still here', body_withheld: true}}, args), false);
