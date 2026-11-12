@@ -428,7 +428,10 @@ class RenameTests(Base):
     def test_the_program_is_found_on_the_path_or_where_grok_installs_itself(self) -> None:
         folder = os.path.dirname(self.fake)
         self.assertEqual(G.grok_binary(self.env(PATH=folder)), self.fake)
-        self.assertEqual(G.grok_binary(self.env(PATH="/nonexistent")), "")
+        # Only the home-relative places count here:  a Mac with Grok installed at an absolute path would answer it.
+        own = tuple(c for c in G.BIN_CANDIDATES if not os.path.isabs(c))
+        with mock.patch.object(G, "BIN_CANDIDATES", own):
+            self.assertEqual(G.grok_binary(self.env(PATH="/nonexistent")), "")
         installed = self.exe("home", ".grok", "bin", "grok")
         self.assertEqual(G.grok_binary(self.env(PATH="/nonexistent", HOME=os.path.join(self.tmp.name, "home"))), installed)
 
