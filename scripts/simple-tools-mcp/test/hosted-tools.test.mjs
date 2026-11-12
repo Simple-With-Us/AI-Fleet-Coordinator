@@ -551,8 +551,13 @@ test("a long body is cut and flagged, and every request is redirect manual on th
   const { fake, tools } = harness();
   fake.addMessage("Codex", "simple-tools", "long", "x".repeat(5000));
   const item = fence((await tools.call("zulip_read_topic", { topic: "long" })).content[0].text)[0];
-  assert.equal(item.body.length, 4000);
+  assert.ok(item.body.length <= 283);
   assert.equal(item.truncated, true);
+  const full = fence(
+    (await tools.call("zulip_read_topic", { topic: "long", full: true })).content[0].text,
+  )[0];
+  assert.equal(full.body.length, 4000);
+  assert.equal(full.truncated, true);
   assert.ok(fake.requests.every((r) => r.redirect === "manual"));
 });
 

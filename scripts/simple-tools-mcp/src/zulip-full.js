@@ -18,6 +18,11 @@
 // HostedTools.  No `cloudflare:` imports:  node tests run it against the fake Zulip.
 
 import {
+  COMPACT_BODY_LIMIT,
+  effectiveLimit,
+  splitFullArg,
+} from "./list-presentation.js";
+import {
   BODY_LIMIT,
   NAME_LIMIT,
   MAX_CONTENT_LENGTH,
@@ -213,15 +218,17 @@ export const ZULIP_FULL_METHODS = {
   // ---------------------------------------------------------------- messages
 
   async tool_get_message(args, audit) {
+    const { args: workArgs, full } = splitFullArg(args);
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     await this.ensureSeat();
-    const message = await this.visibleMessage(args.message_id);
-    audit.message_id = args.message_id;
+    const message = await this.visibleMessage(workArgs.message_id);
+    audit.message_id = workArgs.message_id;
     if (isInt(message.stream_id)) audit.channel_id = message.stream_id;
     await this.reserve("read");
-    const item = await this.messageItem(message, await this.users());
+    const item = await this.messageItem(message, await this.users(), bodyLimit);
     item.flags = (Array.isArray(message.flags) ? message.flags : []).filter((f) => typeof f === "string").slice(0, 20).map((f) => c(f, 40));
     item.reactions = Array.isArray(message.reactions) ? message.reactions.length : 0;
-    return this.listResult("get_message", [["message_id", String(args.message_id)]], "1 message", [item], { count: 1, ids: isInt(item.id) ? [item.id] : [] });
+    return this.listResult("get_message", [["message_id", String(workArgs.message_id)]], "1 message", [item], { count: 1, ids: isInt(item.id) ? [item.id] : [] });
   },
 
   async tool_edit_message(args, audit) {
@@ -265,20 +272,23 @@ export const ZULIP_FULL_METHODS = {
   },
 
   async tool_message_history(args, audit) {
+    const { args: workArgs, full } = splitFullArg(args);
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
     await this.ensureSeat();
-    const message = await this.visibleMessage(args.message_id);
-    audit.message_id = args.message_id;
+    const message = await this.visibleMessage(workArgs.message_id);
+    audit.message_id = workArgs.message_id;
     if (isInt(message.stream_id)) audit.channel_id = message.stream_id;
     await this.reserve("read");
-    const rows = (await this.zulip.get(`messages/${args.message_id}/history`)).message_history ?? [];
-    const items = rows.filter((r) => r && typeof r === "object").map((r) => ({
+    const rows = (await this.zulip.get(`messages/${workArgs.message_id}/history`)).message_history ?? [];
+    const items = rows.filter((r) => r && typeof r === "object").slice(0, limit).map((r) => ({
       user_id: isInt(r.user_id) ? r.user_id : null,
       time: formatTime(Number(r.timestamp) || 0),
       topic: c(r.topic ?? ""),
       prev_topic: typeof r.prev_topic === "string" ? c(r.prev_topic) : null,
-      body: clean(r.content ?? "", BODY_LIMIT)[0],
+      body: clean(r.content ?? "", bodyLimit)[0],
     }));
-    return this.listResult("message_history", [["message_id", String(args.message_id)]], plural(items.length, "version"), items, { count: items.length, message_id: args.message_id });
+    return this.listResult("message_history", [["message_id", String(workArgs.message_id)]], plural(items.length, "version"), items, { count: items.length, message_id: workArgs.message_id });
   },
 
   async tool_move_topic(args, audit) {
@@ -404,9 +414,12 @@ export const ZULIP_FULL_METHODS = {
   // ---------------------------------------------------------------- search
 
   async tool_search(args, audit) {
-    const channel = args.channel !== undefined ? normalizeChannel(args.channel) : null;
-    const topic = args.topic !== undefined ? normalizeTopic(args.topic) : null;
-    const dmWith = [...new Set(args.dm_with ?? [])].sort((a, b) => a - b);
+    const { args: workArgs, full } = splitFullArg(args);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
+    const channel = workArgs.channel !== undefined ? normalizeChannel(workArgs.channel) : null;
+    const topic = workArgs.topic !== undefined ? normalizeTopic(workArgs.topic) : null;
+    const dmWith = [...new Set(workArgs.dm_with ?? [])].sort((a, b) => a - b);
     if (channel !== null && dmWith.length) throw new ToolError("invalid_argument", "a search names a channel or a direct-message conversation, not both");
     if (topic !== null && channel === null) throw new ToolError("invalid_argument", "a topic search needs its channel");
     await this.ensureSeat();
@@ -418,26 +431,26 @@ export const ZULIP_FULL_METHODS = {
     }
     if (topic !== null) narrow.push({ operator: "topic", operand: topic });
     if (dmWith.length) narrow.push({ operator: "dm", operand: dmWith });
-    if (args.sender !== undefined) narrow.push({ operator: "sender", operand: args.sender });
-    for (const has of args.has ?? []) narrow.push({ operator: "has", operand: has });
-    if (args.is !== undefined) narrow.push(SEARCH_IS[args.is] ?? { operator: "is", operand: args.is });
-    if (args.query !== undefined) narrow.push({ operator: "search", operand: args.query });
+    if (workArgs.sender !== undefined) narrow.push({ operator: "sender", operand: workArgs.sender });
+    for (const has of workArgs.has ?? []) narrow.push({ operator: "has", operand: has });
+    if (workArgs.is !== undefined) narrow.push(SEARCH_IS[workArgs.is] ?? { operator: "is", operand: workArgs.is });
+    if (workArgs.query !== undefined) narrow.push({ operator: "search", operand: workArgs.query });
     if (!narrow.length) throw new ToolError("invalid_argument", "a search needs at least one term:  query, channel, sender, has, is or dm_with");
     await this.reserve("read");
     let messages;
-    if (args.since_id === undefined && args.near !== undefined) {
-      const half = Math.max(1, Math.floor(args.limit / 2));
-      const result = await this.zulip.get("messages", { narrow, anchor: args.near, num_before: half, num_after: args.limit - half, include_anchor: true, apply_markdown: false });
+    if (workArgs.since_id === undefined && workArgs.near !== undefined) {
+      const half = Math.max(1, Math.floor(limit / 2));
+      const result = await this.zulip.get("messages", { narrow, anchor: workArgs.near, num_before: half, num_after: limit - half, include_anchor: true, apply_markdown: false });
       messages = [...(result.messages ?? [])].filter((m) => m && isInt(m.id)).sort((a, b) => a.id - b.id);
     } else {
-      messages = await this.page(narrow, args.since_id, args.limit);
+      messages = await this.page(narrow, workArgs.since_id, limit);
     }
-    const next = this.constructor.nextSince(messages, args.since_id);
+    const next = this.constructor.nextSince(messages, workArgs.since_id);
     const allowed = await this.channelSet();
     // The channel rule on every result;  direct messages only when the caller named the conversation.
     const shown = messages.filter((m) => (m.type === "stream" && allowed.has(m.stream_id)) || (m.type === "private" && dmWith.length));
-    const shownArgs = ["query", "channel", "topic", "sender"].filter((k) => args[k] !== undefined).map((k) => [k, args[k]]);
-    return this.messagesResult("search", shownArgs, shown, next);
+    const shownArgs = ["query", "channel", "topic", "sender"].filter((k) => workArgs[k] !== undefined).map((k) => [k, workArgs[k]]);
+    return this.messagesResult("search", shownArgs, shown, next, { bodyLimit });
   },
 
   // ---------------------------------------------------------------- channels

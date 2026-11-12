@@ -68,6 +68,11 @@
             ],
             "type": "string"
           },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "kind": {
             "enum": [
               "agent-report",
@@ -574,6 +579,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "max_chars": {
             "default": 24000,
             "maximum": 1000000,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SEAT_NAME_ALIASES } from "./identity-aliases.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
+import { FULL_ARG } from "./linear-full-arg.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
 import { resolveSecret } from "./infisical.js";
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
@@ -741,6 +742,8 @@ const ISSUE_ID = {
 // Linear body is written the same way in both places.
 const SESSION = { type: "string", maxLength: 100, description: "Your session id, for the seat tag line." };
 
+export { FULL_ARG } from "./linear-full-arg.js";
+
 export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_whoami",
@@ -776,6 +779,7 @@ export const LINEAR_TOOLS = Object.freeze([
         env: { type: "string", enum: ["mac", "cloud"] },
         label: { type: "string", enum: [...FLAT_LABELS], description: "Only the flat workspace labels are accepted; a claim or seat label is never one of them." },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        full: FULL_ARG,
       },
     },
     outputSchema: {
@@ -904,6 +908,7 @@ export const LINEAR_TOOLS = Object.freeze([
       query: { type: "string", minLength: 1, maxLength: 24000 },
       variables: { type: "object", default: {} },
       max_chars: { type: "integer", minimum: 1000, maximum: 1000000, default: 24000 },
+      full: FULL_ARG,
     } },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },

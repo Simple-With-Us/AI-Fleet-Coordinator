@@ -1104,8 +1104,13 @@ class ReadToolTests(McpHarness):
         item = self.assert_fence(
             session.call("zulip_read_topic", {"topic": "long"})["content"][0]["text"]
         )[0]
-        self.assertEqual(len(item["body"]), T.BODY_LIMIT)
+        self.assertLessEqual(len(item["body"]), 283)
         self.assertIs(item["truncated"], True)
+        full = self.assert_fence(
+            session.call("zulip_read_topic", {"topic": "long", "full": True})["content"][0]["text"]
+        )[0]
+        self.assertEqual(len(full["body"]), T.BODY_LIMIT)
+        self.assertIs(full["truncated"], True)
 
 
 class WriteToolTests(McpHarness):

@@ -52,6 +52,13 @@ import {
   instructionsFor,
 } from "./contract.js";
 import {
+  COMPACT_BODY_LIMIT,
+  FULL_ZULIP_BODY_LIMIT,
+  effectiveLimit,
+  splitFullArg,
+  toolWantsCompact,
+} from "./list-presentation.js";
+import {
   RECALL_TOOLS,
   RECALL_READ_TOOLS,
   RECALL_WRITE_TOOLS,
@@ -863,13 +870,13 @@ export class HostedTools {
 
   // ---------------------------------------------------------------- reads
 
-  async messageItem(message, members) {
+  async messageItem(message, members, bodyLimit = BODY_LIMIT) {
     const senderId = isInt(message.sender_id) ? message.sender_id : null;
     const own = String(message.sender_email ?? "").toLowerCase() === this.email;
     const user = members.find((u) => senderId !== null && u.user_id === senderId);
     const isBot = own ? true : user ? Boolean(user.is_bot) : null;
     const owner = senderId === this.config.ownerUserId && this.config.ownerClients.includes(String(message.client ?? ""));
-    const [body, truncated] = clean(message.content ?? "", BODY_LIMIT);
+    const [body, truncated] = clean(message.content ?? "", bodyLimit);
     const people = message.type === "private" ? dmPeople(message) : null;
     return {
       id: isInt(message.id) ? message.id : null,
@@ -888,10 +895,10 @@ export class HostedTools {
     };
   }
 
-  async messagesResult(tool, args, messages, nextSinceId) {
+  async messagesResult(tool, args, messages, nextSinceId, { bodyLimit = BODY_LIMIT } = {}) {
     const members = messages.length ? await this.users() : [];
     const items = [];
-    for (const m of messages) items.push(await this.messageItem(m, members));
+    for (const m of messages) items.push(await this.messageItem(m, members, bodyLimit));
     const ids = items.map((i) => i.id).filter((id) => id !== null);
     const summary = `${items.length} message${items.length === 1 ? "" : "s"}, next_since_id ${nextSinceId ?? "none"}`;
     return okResult(envelope(tool, args, summary, items), { count: items.length, ids, next_since_id: nextSinceId ?? null });
@@ -953,21 +960,27 @@ export class HostedTools {
   }
 
   async tool_read_topic(args, audit) {
-    const channel = normalizeChannel(args.channel);
-    const topic = normalizeTopic(args.topic);
+    const { args: workArgs, full } = splitFullArg(args);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
+    const channel = normalizeChannel(workArgs.channel);
+    const topic = normalizeTopic(workArgs.topic);
     audit.topic = await this.auditTopic(topic);
     await this.ensureSeat();
     const streamId = await this.channelId(channel);
     audit.channel_id = streamId;
     await this.reserve("read");
-    const messages = await this.page([{ operator: "channel", operand: streamId }, { operator: "topic", operand: topic }], args.since_id, args.limit);
-    const next = HostedTools.nextSince(messages, args.since_id);
+    const messages = await this.page([{ operator: "channel", operand: streamId }, { operator: "topic", operand: topic }], workArgs.since_id, limit);
+    const next = HostedTools.nextSince(messages, workArgs.since_id);
     // Hosted hides this bot's own posts unless include_self (spec 1).
-    const shown = messages.filter((m) => args.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
-    return this.messagesResult("read_topic", [["channel", channel], ["topic", topic]], shown, next);
+    const shown = messages.filter((m) => workArgs.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
+    return this.messagesResult("read_topic", [["channel", channel], ["topic", topic]], shown, next, { bodyLimit });
   }
 
   async tool_inbox(args, audit) {
+    const { args: workArgs, full } = splitFullArg(args);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
     await this.ensureSeat();
     await this.reserve("read");
     const allowed = await this.channelSet();
@@ -976,15 +989,15 @@ export class HostedTools {
     // one) never reaches the client.  Direct messages come from their own
     // `is:dm` query (spec 1.2), never from the mention query, and the bot's own
     // sends are left out (`-sender:<this bot>` keeps them from using up the page).
-    const mentions = await this.page([{ operator: "is", operand: "mentioned" }], args.since_id, args.limit);
-    const direct = await this.page([{ operator: "is", operand: "dm" }, { operator: "sender", operand: this.email, negated: true }], args.since_id, args.limit);
+    const mentions = await this.page([{ operator: "is", operand: "mentioned" }], workArgs.since_id, limit);
+    const direct = await this.page([{ operator: "is", operand: "dm" }, { operator: "sender", operand: this.email, negated: true }], workArgs.since_id, limit);
     const kept = [
       ...mentions.filter((m) => m.type === "stream" && allowed.has(m.stream_id)),
       ...direct.filter((m) => m.type === "private" && String(m.sender_email ?? "").toLowerCase() !== this.email),
     ];
     const merged = [...new Map(kept.map((m) => [m.id, m])).values()].sort((a, b) => a.id - b.id);
-    const { shown, next } = HostedTools.inboxWindow({ pages: [mentions, direct], merged, sinceId: args.since_id, limit: args.limit });
-    return this.messagesResult("inbox", [], shown, next);
+    const { shown, next } = HostedTools.inboxWindow({ pages: [mentions, direct], merged, sinceId: workArgs.since_id, limit });
+    return this.messagesResult("inbox", [], shown, next, { bodyLimit });
   }
 
   /**
@@ -1312,20 +1325,23 @@ export class HostedTools {
   }
 
   async tool_dm_read(args, audit) {
-    HostedTools.needPeople(args);
+    const { args: workArgs, full } = splitFullArg(args);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
+    const bodyLimit = full ? BODY_LIMIT : COMPACT_BODY_LIMIT;
+    HostedTools.needPeople(workArgs);
     await this.ensureSeat();
-    const { userIds } = await this.resolveDm(args, { active: false });
+    const { userIds } = await this.resolveDm(workArgs, { active: false });
     audit.recipient_ids = userIds;
     await this.reserve("read");
     const selfId = this.me.user_id;
     const expected = [...new Set([selfId, ...userIds])].sort((a, b) => a - b).join(",");
-    const messages = (await this.page([{ operator: "dm", operand: userIds.length ? userIds : [selfId] }], args.since_id, args.limit)).filter(
+    const messages = (await this.page([{ operator: "dm", operand: userIds.length ? userIds : [selfId] }], workArgs.since_id, limit)).filter(
       // Zulip answers only for conversations this bot is in;  this keeps the answer to exactly the one asked for.
       (m) => m.type === "private" && dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
     );
-    const next = HostedTools.nextSince(messages, args.since_id);
-    const shown = messages.filter((m) => args.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
-    return this.messagesResult("dm_read", [["with", userIds.join(",")]], shown, next);
+    const next = HostedTools.nextSince(messages, workArgs.since_id);
+    const shown = messages.filter((m) => workArgs.include_self || String(m.sender_email ?? "").toLowerCase() !== this.email);
+    return this.messagesResult("dm_read", [["with", userIds.join(",")]], shown, next, { bodyLimit });
   }
 
   // The opener of one DM conversation:  its oldest message, fetched anchored at "oldest".
@@ -2114,41 +2130,43 @@ export class HostedTools {
   }
 
   async tool_linear_list(args, audit) {
+    const { args: workArgs, full } = splitFullArg(args);
+    const limit = effectiveLimit(workArgs, { schemaDefault: 20, full });
     await this.reserveLinear("read");
     const filter = {};
-    if (args.team) filter.team = { key: { eq: args.team.toUpperCase() } };
-    if (args.status) {
-      const states = LIST_STATUS_STATES[args.status];
-      if (!states) throw new ToolError("invalid_argument", `unknown status ${JSON.stringify(args.status)};  use ${STATUS_WORDS.join(", ")}.`);
+    if (workArgs.team) filter.team = { key: { eq: workArgs.team.toUpperCase() } };
+    if (workArgs.status) {
+      const states = LIST_STATUS_STATES[workArgs.status];
+      if (!states) throw new ToolError("invalid_argument", `unknown status ${JSON.stringify(workArgs.status)};  use ${STATUS_WORDS.join(", ")}.`);
       filter.state = { name: { in: [...states] } };
     }
     // Severity is a grouped `Severity/<sev>` label, not the flat `P0`, and P3
     // and P4 share Linear priority 4.  So the filter is the priority, and the
     // P3/P4 split is made here from the labels on the row (board severity_of).
-    const sevs = args.severity ? Object.values(SEV_PRIORITY).filter((p) => p === SEV_PRIORITY[args.severity]) : [];
-    if (args.severity) filter.priority = { eq: SEV_PRIORITY[args.severity] };
+    const sevs = workArgs.severity ? Object.values(SEV_PRIORITY).filter((p) => p === SEV_PRIORITY[workArgs.severity]) : [];
+    if (workArgs.severity) filter.priority = { eq: SEV_PRIORITY[workArgs.severity] };
     const labelClauses = [];
-    if (args.kind) labelClauses.push({ labels: { some: { name: { eq: args.kind }, parent: { name: { eq: "Kind" } } } } });
-    if (args.env) labelClauses.push({ labels: { some: { name: { eq: ENVS[args.env] }, parent: { name: { eq: "Env" } } } } });
-    if (args.label) {
-      this.checkLabels([args.label]);
-      labelClauses.push({ labels: { some: { name: { eq: args.label } } } });
+    if (workArgs.kind) labelClauses.push({ labels: { some: { name: { eq: workArgs.kind }, parent: { name: { eq: "Kind" } } } } });
+    if (workArgs.env) labelClauses.push({ labels: { some: { name: { eq: ENVS[workArgs.env] }, parent: { name: { eq: "Env" } } } } });
+    if (workArgs.label) {
+      this.checkLabels([workArgs.label]);
+      labelClauses.push({ labels: { some: { name: { eq: workArgs.label } } } });
     }
     if (labelClauses.length === 1) filter.labels = labelClauses[0].labels;
     else if (labelClauses.length > 1) filter.and = labelClauses;
-    const data = await this.linearCall(() => this.requireLinear().call(Q_LIST, { filter, first: args.limit }));
+    const data = await this.linearCall(() => this.requireLinear().call(Q_LIST, { filter, first: limit }));
     const nodes = data?.issues?.nodes ?? [];
     // board severity_of:  priority is the source of truth, and P4 only when the
     // workspace has a Severity/P4 group label, otherwise P3.
     const keep = (issue) => {
-      if (!args.severity) return true;
+      if (!workArgs.severity) return true;
       const p = issue?.priority;
       if (!sevs.includes(p)) return false;
-      if (args.severity !== "P4") return true;
+      if (workArgs.severity !== "P4") return true;
       return (issue?.labels?.nodes ?? []).some((l) => l?.parent?.name === "Severity" && l.name === "P4");
     };
     const items = nodes.filter(keep).map(issueItem);
-    const header = `simple-tools linear_list${args.status ? `:  status ${JSON.stringify(args.status)}` : ""}${args.team ? `, team ${JSON.stringify(args.team.toUpperCase())}` : ""}`;
+    const header = `simple-tools linear_list${workArgs.status ? `:  status ${JSON.stringify(workArgs.status)}` : ""}${workArgs.team ? `, team ${JSON.stringify(workArgs.team.toUpperCase())}` : ""}`;
     const summary = `${items.length} issue${items.length === 1 ? "" : "s"}`;
     return okResult(linearEnvelope(header, summary, items, newNonce()), { count: items.length, ids: items.map((i) => i.id) });
   }

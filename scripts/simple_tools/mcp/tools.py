@@ -64,6 +64,7 @@ from ..textfmt import fix_outbound
 from . import fleetlink_tools as FLEETLINK
 from . import guide as GUIDE
 from . import linear_tools as LINEAR
+from . import list_presentation as LP
 from . import recall_tools as RECALL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -988,12 +989,12 @@ class Tools:
         if not self.codex_thread_meta:
             self.posted_ids.add(message_id)
 
-    def _message_item(self, message: Mapping[str, Any]) -> dict[str, Any]:
+    def _message_item(self, message: Mapping[str, Any], body_limit: int = BODY_LIMIT) -> dict[str, Any]:
         # MCP does not expose CLI sibling/mention attribution.  Computing it
         # would reread the full native ownership ledger for every shown item.
         j = message
         is_bot = self.agent.sender_is_bot(message)
-        body, truncated = clean(j.get("content") or "", BODY_LIMIT)
+        body, truncated = clean(j.get("content") or "", body_limit)
         sender_id = _int(j.get("sender_id"))
         owner = (
             bool(self.owner_user_id)
@@ -1033,8 +1034,10 @@ class Tools:
         args: list[tuple[str, Any]],
         messages: list[Mapping[str, Any]],
         next_since_id: int | None,
+        *,
+        body_limit: int = BODY_LIMIT,
     ) -> dict[str, Any]:
-        items = [self._message_item(m) for m in messages]
+        items = [self._message_item(m, body_limit) for m in messages]
         ids = [item["id"] for item in items if item["id"] is not None]
         summary = "%d message%s, next_since_id %s" % (
             len(items),
@@ -1284,12 +1287,19 @@ class Tools:
             {"count": len(items), "max_ids": max_ids},
         )
 
+    def _zulip_message_read_limits(self, args: Mapping[str, Any], *, schema_default: int = 20) -> tuple[dict[str, Any], int, int]:
+        work, full = LP.split_full_arg(dict(args))
+        limit = LP.effective_limit(work, schema_default=schema_default, full=full)
+        body_limit = LP.FULL_ZULIP_BODY_LIMIT if full else LP.COMPACT_BODY_LIMIT
+        return work, limit, body_limit
+
     def _tool_zulip_read_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
-        since_id = args.get("since_id")
-        messages = self._page(CLI.topic_narrow(channel, topic), since_id, args["limit"])
+        work, limit, body_limit = self._zulip_message_read_limits(args)
+        channel, topic = self._channel(work["channel"]), self._topic(work["topic"])
+        since_id = work.get("since_id")
+        messages = self._page(CLI.topic_narrow(channel, topic), since_id, limit)
         next_since_id = self._next_since(messages, since_id)
-        if args["include_self"]:
+        if work["include_self"]:
             shown = messages
         elif self.codex_thread_meta:
             # Snapshot only this call's full-thread receipts once for the page.
@@ -1299,17 +1309,18 @@ class Tools:
         else:
             shown = [m for m in messages if not self._generic_is_self(m)]
         return self._messages_result(
-            "read_topic", [("channel", channel), ("topic", topic)], shown, next_since_id
+            "read_topic", [("channel", channel), ("topic", topic)], shown, next_since_id, body_limit=body_limit
         )
 
     def _tool_zulip_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        since_id = args.get("since_id")
-        messages = self._page([{"operator": "is", "operand": "mentioned"}], since_id, args["limit"])
+        work, limit, body_limit = self._zulip_message_read_limits(args)
+        since_id = work.get("since_id")
+        messages = self._page([{"operator": "is", "operand": "mentioned"}], since_id, limit)
         next_since_id = self._next_since(messages, since_id)
         shown = [
             m for m in messages if m.get("type") == "stream"
         ]  # channel mentions only, never DMs
-        return self._messages_result("inbox", [], shown, next_since_id)
+        return self._messages_result("inbox", [], shown, next_since_id, body_limit=body_limit)
 
     def _tool_zulip_post(self, args: Mapping[str, Any]) -> dict[str, Any]:
         channel, topic = self._channel(args["channel"]), self._topic(args["topic"])
@@ -1630,22 +1641,23 @@ class Tools:
             )
 
     def _tool_zulip_dm_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        self._need_people(args)
+        work, limit, body_limit = self._zulip_message_read_limits(args)
+        self._need_people(work)
         ids = [
             int(p["user_id"])
             for p in self._people(
-                args.get("user_ids") or [], args.get("emails") or [], active=False
+                work.get("user_ids") or [], work.get("emails") or [], active=False
             )
         ]
         me = _int(self.me.get("user_id"))
         expected = sorted(set(ids) | ({me} if me is not None else set()))
-        since_id = args.get("since_id")
+        since_id = work.get("since_id")
         messages = [
             m
             for m in self._page(
                 [{"operator": "dm", "operand": ids or ([me] if me else [])}],
                 since_id,
-                args["limit"],
+                limit,
             )
             if m.get("type") == "private"
             and sorted(p.get("id") for p in m.get("display_recipient") or [] if isinstance(p, dict))
@@ -1654,11 +1666,11 @@ class Tools:
         next_since_id = self._next_since(messages, since_id)
         shown = (
             messages
-            if args["include_self"]
+            if work["include_self"]
             else [m for m in messages if not self.agent.sent_by_this_bot(m)]
         )
         return self._messages_result(
-            "dm_read", [("with", ",".join(str(i) for i in ids))], shown, next_since_id
+            "dm_read", [("with", ",".join(str(i) for i in ids))], shown, next_since_id, body_limit=body_limit
         )
 
     def _check_dm_rule(self, people: Sequence[Mapping[str, Any]], args: Mapping[str, Any]) -> None:
@@ -1791,8 +1803,9 @@ class Tools:
 
     # ---- messages -------------------------------------------------------------------------
     def _tool_zulip_get_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        message = OPS.get_message(self.agent, int(args["message_id"]))
-        item = self._message_item(message)
+        work, _, body_limit = self._zulip_message_read_limits(args, schema_default=1)
+        message = OPS.get_message(self.agent, int(work["message_id"]))
+        item = self._message_item(message, body_limit)
         flags = [f for f in message.get("flags") or [] if isinstance(f, str)]
         item.update(
             flags=[self._c(f, 40) for f in flags][:20],
@@ -1800,7 +1813,7 @@ class Tools:
         )
         return self._list_result(
             "get_message",
-            [("message_id", str(args["message_id"]))],
+            [("message_id", str(work["message_id"]))],
             "1 message",
             [item],
             {"count": 1, "ids": [item["id"]] if item["id"] is not None else []},
@@ -1828,15 +1841,16 @@ class Tools:
         )
 
     def _tool_zulip_message_history(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        message_id = int(args["message_id"])
-        rows = OPS.message_history(self.agent, message_id)
+        work, limit, body_limit = self._zulip_message_read_limits(args)
+        message_id = int(work["message_id"])
+        rows = OPS.message_history(self.agent, message_id)[:limit]
         items = [
             {
                 "user_id": r["user_id"],
                 "time": CLI.format_time(float(r.get("timestamp") or 0)),
                 "topic": self._c(r.get("topic") or ""),
                 "prev_topic": self._c(r.get("prev_topic")),
-                "body": clean(r.get("content") or "", BODY_LIMIT)[0],
+                "body": clean(r.get("content") or "", body_limit)[0],
             }
             for r in rows
         ]
@@ -1933,32 +1947,33 @@ class Tools:
 
     # ---- search ---------------------------------------------------------------------------
     def _tool_zulip_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        channel = self._channel(args["channel"]) if args.get("channel") is not None else None
-        topic = self._topic(args["topic"]) if args.get("topic") is not None else None
-        dm_with = list(args.get("dm_with") or [])
+        work, limit, body_limit = self._zulip_message_read_limits(args)
+        channel = self._channel(work["channel"]) if work.get("channel") is not None else None
+        topic = self._topic(work["topic"]) if work.get("topic") is not None else None
+        dm_with = list(work.get("dm_with") or [])
         try:
             narrow = OPS.search_narrow(
-                query=args.get("query"),
+                query=work.get("query"),
                 channel=channel,
                 topic=topic,
-                sender=args.get("sender"),
-                has=args.get("has") or [],
-                is_=args.get("is"),
+                sender=work.get("sender"),
+                has=work.get("has") or [],
+                is_=work.get("is"),
                 dm_with=dm_with or None,
             )
         except Z.UsageError as exc:
             raise ToolError("invalid_argument", str(exc)) from None
-        since_id = args.get("since_id")
+        since_id = work.get("since_id")
         messages = OPS.search(
-            self.agent, narrow, limit=args["limit"], since_id=since_id, near=args.get("near")
+            self.agent, narrow, limit=limit, since_id=since_id, near=work.get("near")
         )
         next_since_id = self._next_since(messages, since_id)
         # Direct messages only when the caller named the conversation.
         shown = [m for m in messages if m.get("type") == "stream" or dm_with]
         shown_args = [
-            (k, args[k]) for k in ("query", "channel", "topic", "sender") if args.get(k) is not None
+            (k, work[k]) for k in ("query", "channel", "topic", "sender") if work.get(k) is not None
         ]
-        return self._messages_result("search", shown_args, shown, next_since_id)
+        return self._messages_result("search", shown_args, shown, next_since_id, body_limit=body_limit)
 
     # ---- channels -------------------------------------------------------------------------
     def _tool_zulip_channels(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -2500,7 +2515,19 @@ class Tools:
         return self._notes_call("read", args)
 
     def _tool_notes_list(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        return self._notes_call("list", args)
+        work, full = LP.split_full_arg(dict(args))
+        if not full and work.get("limit") is None:
+            work = dict(work, limit=LP.COMPACT_DEFAULT_LIMIT)
+        result = self._notes_call("list", work)
+        if full or not isinstance(result.get("structuredContent"), dict):
+            return result
+        structured = dict(result["structuredContent"])
+        listed = LP.compact_notes_list_result(structured)
+        header = "notes_list:  %d of %d notes" % (
+            len(listed.get("notes") or []),
+            int(listed.get("total") or 0),
+        )
+        return self.ok(self._notes_fenced(header, listed), listed)
 
     def _tool_notes_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
         try:
@@ -2801,12 +2828,18 @@ class Tools:
     LINEAR_SAVED_STDOUT = 8000  # bytes of board's answer kept in the row, to return on a repeat
 
     def _tool_linear(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        work, full = LP.split_full_arg(dict(args))
         spec = self.linear[name]
-        self._scan(arguments=json.dumps(dict(args), ensure_ascii=False))
+        self._scan(arguments=json.dumps(work, ensure_ascii=False))
         if name in self.LINEAR_CORE_WRITES:
-            return self._linear_write_once(name, spec, args)
+            return self._linear_write_once(name, spec, work)
+        if name == "linear_list" and not full and work.get("limit") is None:
+            work = dict(work, limit=LP.COMPACT_DEFAULT_LIMIT)
         try:
-            return self._linear_text(name, self._linear_run(spec, args).stdout)
+            stdout = self._linear_run(spec, work).stdout
+            if LP.tool_wants_compact(name, full=full):
+                stdout = LP.compact_linear_list_stdout(stdout, top_n=LP.COMPACT_DEFAULT_LIMIT)
+            return self._linear_text(name, stdout)
         except _OutcomeUnknown as exc:
             # A timed-out mutation or named write may have landed:  say so, never a generic internal error.
             raise ToolError("outcome_unknown", str(exc)) from None

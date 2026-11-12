@@ -30,6 +30,7 @@ import NOTES_JSON from "../../simple_tools/mcp/notes-tools.json" with { type: "j
 import FLEET_APPS from "../../../fleet-apps.json" with { type: "json" };
 import { z } from "zod";
 import { ToolError, okResult, clean, NAME_LIMIT, MESSAGE_LIMIT, newNonce, scanSecret } from "./contract.js";
+import { compactNotesListResult, effectiveLimit } from "./list-presentation.js";
 import { parseArgs } from "./args.js";
 import { listenerBaseUrl } from "./eavesdropper.js";
 import { OPERATOR_NOTES_SECRET } from "./config.js";
@@ -137,6 +138,7 @@ export const NotesReadArgs = z.strictObject({ ...TITLE_SHAPE, format: z.enum(FOR
 export const NotesListArgs = z.strictObject({
   query: z.string().optional(),
   limit: z.number().int().min(1).max(LIST_LIMIT_MAX).optional(),
+  full: z.boolean().optional(),
   request_id: z.string().optional(),
   wait_seconds: waitSeconds,
 });
@@ -679,7 +681,7 @@ export const NOTES_METHODS = {
     if (action === "read") fields.format = args.format;
     if (action === "list") {
       fields.query = args.query;
-      fields.limit = args.limit;
+      fields.limit = effectiveLimit(args, { schemaDefault: LIST_LIMIT_DEFAULT, full: args.full === true });
     }
     const request = makeRequest(fields);
     if (WRITE_ACTIONS.includes(action)) {
@@ -767,7 +769,8 @@ export const NOTES_METHODS = {
     if (record.state === "done") {
       const listed = listNotes(record.result);
       if (!listed) throw noResult(record, "list");
-      Object.assign(out, listed);
+      const full = rawArgs?.full === true;
+      Object.assign(out, full ? listed : compactNotesListResult(listed));
     }
     const shown = [...(request.query ? [["query", request.query]] : []), ["limit", String(request.limit)]];
     return okResult(notesEnvelope("notes_list", shown, out), out);
