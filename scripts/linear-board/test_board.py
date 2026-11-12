@@ -1743,6 +1743,28 @@ class OwnIntroTagTests(unittest.TestCase):
                 self.assertEqual(cli.tagged("GB-PLUMBER", None, text), text)
                 self.assertEqual(cli.tagged("GB-PLUMBER", ["abcd-1234-ffff"], text), text)
                 self.assertTrue(cli.comment_body("GB-PLUMBER", None, text).startswith(text))
+                self.assertIn("Reported by: GB-PLUMBER", cli.comment_body("GB-PLUMBER", None, text))
+                self.assertNotIn("[GB-PLUMBER]", cli.comment_body("GB-PLUMBER", None, "PR opened"))
+
+    def test_parse_comment_reads_reported_by_on_an_untagged_body(self):
+        """AFC-692:  [needs-owner] is not a seat tag;  the footer names the signer."""
+        cli = load_cli()
+        parsed = cli.parse_comment({
+            "id": "c1",
+            "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x\n\nReported by: CLAUDE",
+            "createdAt": "2026-10-11T08:00:00.000Z",
+            "user": {"id": "fleet", "name": "Fleet", "app": True},
+        })
+        self.assertEqual(parsed["author"], "CLAUDE")
+        self.assertEqual(parsed["text"], "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x")
+        tagged = cli.parse_comment({
+            "id": "c2",
+            "body": "[CODEX·abcd1234] owner replied:  msg 5",
+            "createdAt": "2026-10-11T08:00:00.000Z",
+            "user": {"id": "fleet", "name": "Fleet", "app": True},
+        })
+        self.assertEqual(tagged["author"], "CODEX")
+        self.assertEqual(tagged["text"], "owner replied:  msg 5")
 
 
 class SeatAliasTests(unittest.TestCase):
@@ -2439,7 +2461,7 @@ class WriteTests(BoardTest):
         self.assertEqual(iss["state"], "Done")
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
+            f"Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
         )
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["resolution"], "Landed in #2894.")
@@ -2455,7 +2477,7 @@ class WriteTests(BoardTest):
             self.assertEqual(self.mock.issues[hy(B_C)]["state"], state)
         self.assertEqual(
             self.comments_of(self.mock.issues[hy(B_C)])[-1],
-            f"Status: parked\n\nSessions: {BASE_SESSION}",
+            f"Status: parked\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
         )
         self.board("status", B_C[:8], "bogus", code=2)
         self.board("status", B_C[:8], "completed", "--of", "OPS-10", code=2)
@@ -2505,10 +2527,10 @@ class WriteTests(BoardTest):
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
         self.assertEqual(
             body,
-            "Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
+            "Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2\n\nReported by: CLAUDE",
         )
         p = self.board("show", "OPS-10")
-        self.assertIn("Fleet (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
+        self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
 
 
 def footer(line: str) -> str:
@@ -4013,7 +4035,7 @@ class FileInputTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
+            f"Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}\n\nReported by: CLAUDE",
         )
         n = len(self.mock.comments)
         p = self.board(
@@ -4032,7 +4054,7 @@ class FileInputTests(BoardTest):
             "sess-1",
             stdin="From standard input.\n",
         )
-        self.assertEqual(self.comments_of(iss)[-1], "From standard input.\n\nSessions: sess-1")
+        self.assertEqual(self.comments_of(iss)[-1], "From standard input.\n\nSessions: sess-1\n\nReported by: CLAUDE")
         ops = len(self.mock.ops)
         p = self.board("comment", "OPS-10", "--text-file", f, code=2)
         self.assertIn("--by", p.stderr)
