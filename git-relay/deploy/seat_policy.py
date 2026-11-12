@@ -84,7 +84,7 @@ UNIT_ENV = ("PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_ENVIRONMENT")
 ENV_FILE = re.compile(r"(\S+) \(ignore_errors=(?:yes|no)\)")
 TOP_KEYS = {"//", "profiles", "seats"}
 PROFILE_KEYS = {"//", "actions", "mint_permissions", "repos"}
-SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert"}
+SEAT_KEYS = {"identity", "app_slug", "profile", "oauth_assert", "default_branch_paths"}
 
 
 class PolicyFileError(ValueError):
@@ -118,6 +118,19 @@ def _profile(profiles: dict, name: str) -> dict:
             raise PolicyFileError(f"profile {name!r}: {field} is empty")
         out[field] = value
     return out
+
+
+def _default_branch_paths(identity: str, raw, repos):
+    """The same exact-path rules SeatPolicy enforces, so a bad grant never renders."""
+    relay_dir = str(HERE.parent)
+    if relay_dir not in sys.path:
+        sys.path.insert(0, relay_dir)
+    from git_relay.policy import PolicyError, parse_default_branch_paths
+
+    try:
+        return parse_default_branch_paths(identity, raw, repos)
+    except PolicyError as exc:
+        raise PolicyFileError(str(exc)) from None
 
 
 def render(doc: dict) -> dict:
@@ -159,6 +172,11 @@ def render(doc: dict) -> dict:
             if row["oauth_assert"] is not True:
                 raise PolicyFileError(f"seat {identity!r}: oauth_assert must be true when present")
             seats[slug]["oauth_assert"] = True
+        if "default_branch_paths" in row:
+            grants = _default_branch_paths(identity, row["default_branch_paths"], resolved["repos"])
+            seats[slug]["default_branch_paths"] = {
+                repo: list(paths) for repo, paths in grants.items()
+            }
     if not seats:
         raise PolicyFileError("the policy names no seat")
     return seats

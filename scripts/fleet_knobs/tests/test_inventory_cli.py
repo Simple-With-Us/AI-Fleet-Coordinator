@@ -25,7 +25,8 @@ REPO = SCRIPTS.parent
 # The inventory the open-loops plan (K1) names, key by key, plus FLEET_LOOPS_DATA_ALLOWED_APPS:  the one decision the
 # F7 publisher's repository gate leaves to the owner (which installed apps may read fleet-loops-data;  empty by default), and
 # FLEET_FACTS_PUBLISH_FULL_COPY (the path-bearing mac-facts.json is published only when the owner turns it on) and the publisher's
-# time cap and load limit (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1).
+# time cap and load limit (FLEET_FACTS_PUBLISH_CAP_MINUTES, FLEET_FACTS_PUBLISH_MAX_LOAD1), and the
+# git-relay publish route (FLEET_FACTS_RELAY_URL, FLEET_FACTS_RELAY_BRANCH, FLEET_FACTS_RELAY_TOKEN).
 PLAN_KEYS = {
     "FLEET_AUTOPUSH_MODE",
     "FLEET_AUTOPUSH_REPOS",
@@ -52,6 +53,9 @@ PLAN_KEYS = {
     "FLEET_FACTS_PUBLISH_FULL_COPY",
     "FLEET_FACTS_PUBLISH_CAP_MINUTES",
     "FLEET_FACTS_PUBLISH_MAX_LOAD1",
+    "FLEET_FACTS_RELAY_URL",
+    "FLEET_FACTS_RELAY_BRANCH",
+    "FLEET_FACTS_RELAY_TOKEN",
     "OPERATOR_API_URL",  # AFC-486:  where Apple Notes requests go off a Mac (the Operator notes queue)
     "FLEET_SHEET_INGEST_ENABLED",
     "FLEET_SHEET_INGEST_TIMEOUT_MS",  # AFC-423:  the sheet sync's Fleet RAG ingest
@@ -79,8 +83,13 @@ PLAN_KEYS = {
     "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
     "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
 }
-# The signing key, the wake router's one bearer and its registry signing key.
-SECRETS = ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_KEY", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"]
+# The signing key, the facts relay bearer, the wake router's one bearer and its registry signing key.
+SECRETS = [
+    "FLEET_FACTS_SIGNING_KEY",
+    "FLEET_FACTS_RELAY_TOKEN",
+    "WAKE_ROUTER_KEY",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+]
 
 
 class InventoryTests(unittest.TestCase):

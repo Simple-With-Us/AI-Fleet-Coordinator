@@ -3,6 +3,7 @@
 
 import datetime
 import fnmatch
+import importlib.util
 import json
 import os
 import pathlib
@@ -302,7 +303,18 @@ def verify_live(target):
     mcp_canary(target)
 
 
+def load_secret_sync():
+    """The secret sync lives next to this file.  Loaded by path so `python3 scripts/deploy-mapped-worker.py` works from the repo root."""
+    path = pathlib.Path(__file__).resolve().parent / "worker_secret_sync.py"
+    spec = importlib.util.spec_from_file_location("worker_secret_sync", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--secrets":
+        raise SystemExit(load_secret_sync().cli(sys.argv[2:], account=ACCOUNT, guard=guard_tripped))
     name = sys.argv[1]
     if name not in TARGETS:
         raise SystemExit("Unknown mapped Worker")

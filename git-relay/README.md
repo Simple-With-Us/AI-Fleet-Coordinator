@@ -53,6 +53,8 @@ Only opening a PR is authored as the owner through the scoped PR-only token.  E
 replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
 seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats never get a raw token or a `git push`:  the file-write verbs (`wf_file_put`, `wf_files_put`) commit through the API, on a non-default branch only and never under `.github/workflows`;  no seat policy can exceed its GitHub credential.
 
+`wf_file_put` and `wf_file_delete` may also write the default branch, and only for an exact path named in that seat's `default_branch_paths` for that exact repository.  The relay prefixes the commit message with `default-branch-path: ` and requires `prior_sha` to equal the blob it just read.  Omit `prior_sha` only when that read says the file is absent.  `wf_files_put`, `wf_file_patch`, rename and branch moves stay refused on the default branch, and so does every path that is not listed.
+
 ## Scope and action catalog (owner direction 2026-10-21)
 
 The relay covers every GitHub task seats need.  It knows the seat from its bearer token and picks
@@ -74,7 +76,10 @@ is only a policy entry.
 | merge_pr (squash/merge/rebase) | seat's App (contents+pull_requests write) | implemented |
 | workflow_dispatch | seat's App (actions write) | implemented |
 | resolve_thread | seat's App (contents write + pull_requests write) | implemented |
-| create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection, create_repo | seat's App | registered, refused until implemented |
+| create_repo | seat's App, namespace token (not returned) | implemented |
+| create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection | seat's App | registered, refused until implemented |
+
+`create_repo` creates a repository under `Simple-With-Us` (organization) or `jaywedgeworth22` (user).  A seat needs `create_repo` in its own policy row; nothing grants it by default.  Visibility is private unless the request says `public` and that same row sets `create_repo_public` to true.  The relay reads the repository first, never follows a redirect, and returns `already_exists` when the repository is already there, so a second call does not create again.  The call uses a namespace installation token minted only for this verb (`organization_administration: write` plus `metadata: read` for the org, `administration: write` plus `metadata: read` for the user).  That token is not the seat's mint ceiling, `mint_token` cannot request those writes, the token is not cached, it is revoked when the call finishes, and it is never returned or written to the audit log.  GitHub's default for `private` is false, so the relay always sends `private: true` unless public was both requested and allowed.  The GitHub App installation has to already hold those administration permissions or GitHub refuses the mint.
 
 App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read together - one
 `fleet-secrets` call per App - from the /github-apps folder (GIT_RELAY_SECRETS_PATH
@@ -118,6 +123,10 @@ Seats come from `GIT_RELAY_SEATS_JSON` at process start:
   }
 }
 ```
+
+### Default-branch paths
+
+A seat may name `default_branch_paths`.  It is a map from an exact `owner/name` to one to eight exact paths.  The repository must already match that seat's `repos`.  A path is matched exactly.  Globs, a `.` or `..` segment, a repeated path and anything under `.github` are refused when the policy loads.  Missing or empty means the default branch stays closed.  The reviewed `deploy/seat-policy.json` grants none.  Put the grant on the publishing seat's own row.  A grant on the fleet profile reaches every seat that uses it.  `deploy/seat_policy.py` checks the same rules as `SeatPolicy` before it renders.
 
 A seat's `app_slug` must be that seat's own bot identity:  one bearer = one Zulip bot = one
 GitHub App (owner decision 2026-10-22, Q7).  A config entry naming another bot's App is refused
@@ -241,12 +250,14 @@ gap this attestation exists to close:
 | `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
 | `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
 | `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
-| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `b46549565f659d145f30d6ff1ede3af6515de64d` | `9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `96347025cd70ce52bafb94f9f14261b9ce9afbd0` | `23856d7de9e04ce7fb133b685516cdc06d6f26b93e69d528de8cc57991b7ddfb` |
 | `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `804d547cb96bba4cade20a058e76ec32c1fa7022` | `8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2` |
 | `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
 | `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
 | `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
 | `scripts/fleet_lanes/tests/test_install_mcp.py` | `6b2392ff3238806f7ad251b347e424b8bb99b57d` | `a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b` |
+
+The `gr-front.test.mjs` row was refreshed for the `create_repo` tool list (AFC-632).  The change adds `gr_create_repo` to the pinned name list.  The previous blob `b46549565f659d145f30d6ff1ede3af6515de64d` is no longer the attested bytes.
 
 The table records the current 13-entry source registry, not an installed-state claim.
 The Infisical API-route row is separately refreshed from immutable main
