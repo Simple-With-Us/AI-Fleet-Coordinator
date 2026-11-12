@@ -92,8 +92,6 @@ struct WakeSettingsView: View {
                 }
                 daemonSection
                 operatorSection
-                ServerListenerSettingsSection()
-                Divider()
                 seatFilterBar
                 ForEach(filteredSeats) { seat in
                     seatSection(seat)

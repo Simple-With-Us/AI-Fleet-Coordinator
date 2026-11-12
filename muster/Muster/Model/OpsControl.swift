@@ -78,15 +78,10 @@ enum OpsControlRoute {
     static let serverRunTimeout: TimeInterval = 180
     /// How long a timed-out helper has to exit after SIGTERM before it gets SIGKILL.
     static let killGrace: TimeInterval = 5
-    /// A run of the server Eavesdropper's settings editor.  The helper gives the editor 180
-    /// seconds of its own, and the file lock and ssh come on top, so a slow apply that worked
-    /// still answers inside this wait and is not shown as unknown.
-    static let serverListenerSettingsRunTimeout: TimeInterval = 240
 
     /// The longest Muster waits for a run of this action.
     static func runWait(for action: OpsAction) -> TimeInterval {
-        if case .serverListenerSettings = action { return serverListenerSettingsRunTimeout }
-        return action.runsOnServer ? serverRunTimeout : runTimeout
+        action.runsOnServer ? serverRunTimeout : runTimeout
     }
 }
 
@@ -138,10 +133,6 @@ enum OpsAction: Equatable {
     /// (active state,  sub-state,  result and times),  read only and `--plan` only.  The unit
     /// is an allowlisted server unit or a `watch` unit;  `OpsUnitStatusReader` checks that.
     case unitStatus(unit: String)
-    /// `server eavesdropper-settings server`,  run on the server:  a plan of allowlisted changes to
-    /// the server Eavesdropper's live config (`--plan`,  with the changes on standard input),  and
-    /// the apply of the approved plan (`--yes`,  with its hash).  `ServerListenerSettings.swift`.
-    case serverListenerSettings(ServerListenerSettingsRequest)
 
     /// The verb the helper names in its answer to `.eavesdropperStatus`.
     static let eavesdropperStatusVerb = "server eavesdropper-status"
@@ -149,8 +140,6 @@ enum OpsAction: Equatable {
     static let unitStatusVerb = "server unit-status"
     /// The verb the helper names in its answer to `.logs`.
     static let logsVerb = "server logs"
-    /// The verb the helper names in its answer to `.serverListenerSettings`.
-    static let listenerSettingsVerb = "server eavesdropper-settings"
 
     /// The machine the action runs on.
     ///
@@ -160,7 +149,7 @@ enum OpsAction: Equatable {
     var runsOn: FleetHost {
         switch self {
         case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-             .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .eavesdropperStatus, .unitStatus:
             return .server
         case .macAgent, .knobSet, .knobUnset, .pm2App:
             return .mac
@@ -172,7 +161,7 @@ enum OpsAction: Equatable {
         switch self {
         case .knobSet, .knobUnset: return .acrossFleet
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .pm2App, .logs,
-             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return .machine(runsOn)
         }
     }
@@ -187,7 +176,7 @@ enum OpsAction: Equatable {
         case .logs, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return true
         case .macAgent, .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .pm2App,
-             .serverResource, .serverListenerSettings:
+             .serverResource:
             return false
         }
     }
@@ -206,7 +195,6 @@ enum OpsAction: Equatable {
         case .serverResource(let field, _, _): return ResourcePolicyField(rawValue: field)?.title ?? "Resource Policy"
         case .resourceStatus: return "The Resource Policy"
         case .eavesdropperStatus: return "The Eavesdropper's Status"
-        case .serverListenerSettings: return "The Server Eavesdropper's Settings"
         case .unitStatus(let unit): return OpsNames.unitTitle(unit)
         }
     }
@@ -228,9 +216,6 @@ enum OpsAction: Equatable {
             return "\(ResourcePolicyField.changePhrase(field: field, value: value)) \(place)"
         case .resourceStatus: return "Read the resource policy \(place)"
         case .eavesdropperStatus: return "Read the eavesdropper's status \(place)"
-        case .serverListenerSettings(let request):
-            let count = request.set.count
-            return "Change \(count) eavesdropper setting\(count == 1 ? "" : "s") \(place)"
         case .unitStatus: return "Read the state of \(subjectTitle) \(place)"
         }
     }
@@ -252,7 +237,7 @@ enum OpsAction: Equatable {
             guard let read = plan?.logsUnit, read != unit else { return title }
             return "Read the last logs of \(read) \(place)"
         case .macAgent, .serverUnit, .serverUpdate, .knobSet, .knobUnset, .pm2App, .serverResource,
-             .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .resourceStatus, .eavesdropperStatus, .unitStatus:
             return title
         }
     }
@@ -308,9 +293,6 @@ enum OpsAction: Equatable {
             return "Reads the eavesdropper's status \(place).\(gap)Nothing changes."
         case .unitStatus:
             return "Reads the state of \(subjectTitle) \(place).\(gap)Nothing changes."
-        case .serverListenerSettings(let request):
-            let keys = request.keys.joined(separator: ", ")
-            return "Sets \(keys) in the server eavesdropper's live config \(place), then reloads it.\(gap)The server checks the change with the Eavesdropper's own rules, and applies only the plan you approve."
         }
     }
 
@@ -340,7 +322,7 @@ enum OpsAction: Equatable {
             }
             return "It stops right away on the server, and stays stopped until you start it again."
         case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs, .serverResource, .resourceStatus,
-             .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .eavesdropperStatus, .unitStatus:
             return nil
         }
     }
@@ -368,7 +350,6 @@ enum OpsAction: Equatable {
         case .resourceStatus: return .resourceStatus
         case .eavesdropperStatus: return .eavesdropperStatus
         case .unitStatus: return .unitStatus
-        case .serverListenerSettings: return .serverListenerSettings
         }
     }
 
@@ -386,7 +367,6 @@ enum OpsAction: Equatable {
         case .serverResource: return "server resource policy"
         case .resourceStatus: return "server resource status"
         case .eavesdropperStatus: return "server eavesdropper status"
-        case .serverListenerSettings: return "server eavesdropper settings"
         case .unitStatus: return "server unit status"
         }
     }
@@ -409,8 +389,6 @@ enum OpsAction: Equatable {
         case .resourceStatus: return "coding"
         case .eavesdropperStatus: return "server"
         case .unitStatus(let unit): return unit
-        // The server's own row names no setting and no value,  and neither does this one.
-        case .serverListenerSettings: return "eavesdropper settings"
         }
     }
 
@@ -432,8 +410,6 @@ enum OpsAction: Equatable {
         // other, because the container it reads is the server's.
         case .eavesdropperStatus: return ["server", "eavesdropper-status", "server"]
         case .unitStatus(let unit): return ["server", "unit-status", unit]
-        // The changes go on standard input,  never into a word of the command.
-        case .serverListenerSettings: return ["server", "eavesdropper-settings", "server"]
         }
     }
 }
@@ -443,7 +419,6 @@ enum OpsAction: Equatable {
 enum OpsActionCase: CaseIterable {
     case macAgent, serverUnit, serverUpdate, coolifyRedeploy, knobSet, knobUnset
     case pm2App, logs, serverResource, resourceStatus, eavesdropperStatus, unitStatus
-    case serverListenerSettings
 
     /// One valid action of this case.
     var sample: OpsAction {
@@ -461,11 +436,6 @@ enum OpsActionCase: CaseIterable {
         case .resourceStatus: return .resourceStatus
         case .eavesdropperStatus: return .eavesdropperStatus
         case .unitStatus: return .unitStatus(unit: OpsNames.reportTimerUnit)
-        case .serverListenerSettings:
-            return .serverListenerSettings(ServerListenerSettingsRequest(
-                set: ["seat.CLAUDE.enabled": .bool(false)],
-                expectPlanSHA256: String(repeating: "b", count: 64)
-            ))
         }
     }
 
@@ -586,9 +556,6 @@ struct OpsInvocation: Equatable {
     var workingDirectory: String
     var environment: [String: String]
     var timeout: TimeInterval
-    /// What the process reads on standard input,  or nil for none (it reads an empty,  closed
-    /// input).  Only `server eavesdropper-settings` sends anything here.
-    var standardInput: Data? = nil
 }
 
 enum OpsControlError: Error, Equatable, LocalizedError {
@@ -794,8 +761,6 @@ struct OpsCommandBuilder {
             guard isSafeResourceRevision(revision) else { throw OpsControlError.invalidArgument("resource revision") }
         case .unitStatus(let unit):
             guard isUnitName(unit) else { throw OpsControlError.invalidArgument("unit name") }
-        case .serverListenerSettings(let request):
-            guard request.isSendable else { throw OpsControlError.invalidArgument("eavesdropper settings request") }
         case .resourceStatus, .eavesdropperStatus:
             break
         }
@@ -816,7 +781,7 @@ struct OpsCommandBuilder {
             case .macAgent, .pm2App: return helperURL
             case .knobSet, .knobUnset: return repoRoot.appendingPathComponent(OpsControlRoute.knobsEntryPoint)
             case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-                 .eavesdropperStatus, .unitStatus, .serverListenerSettings: return nil
+                 .eavesdropperStatus, .unitStatus: return nil
             }
         }
     }
@@ -866,16 +831,6 @@ struct OpsCommandBuilder {
         }
         return serverInvocation(
             tail: ["server", "update-status", "\(name).\(invocationID).\(baselineStartMonotonic)", "--plan", "--json"],
-            timeout: OpsControlRoute.planTimeout
-        )
-    }
-
-    /// The read of the server Eavesdropper's allowlisted settings:  `server eavesdropper-settings
-    /// server --plan --json` with nothing on standard input,  which the editor answers as a get.
-    /// It changes nothing,  so it needs no sheet and no Touch ID.
-    func listenerSettingsReadInvocation() -> OpsInvocation {
-        serverInvocation(
-            tail: ["server", "eavesdropper-settings", "server", "--plan", "--json"],
             timeout: OpsControlRoute.planTimeout
         )
     }
@@ -932,16 +887,7 @@ struct OpsCommandBuilder {
             // `--` ends ssh's own options,  so nothing after the alias is read as one.  The
             // server's forced command reads the rest from SSH_ORIGINAL_COMMAND and checks it
             // against its own allowlist again.
-            var invocation = serverInvocation(tail: tail, timeout: timeout)
-            if case .serverListenerSettings(let request) = action {
-                // A run carries the approved plan's hash,  so the server applies exactly the plan
-                // the owner approved or nothing.  A run without one is never built.
-                guard let input = request.standardInput(for: mode) else {
-                    throw OpsControlError.invalidArgument("approved plan")
-                }
-                invocation.standardInput = input
-            }
-            return invocation
+            return serverInvocation(tail: tail, timeout: timeout)
         case .mac:
             switch action {
             case .macAgent, .pm2App:
@@ -961,7 +907,7 @@ struct OpsCommandBuilder {
                     timeout: timeout
                 )
             case .serverUnit, .serverUpdate, .coolifyRedeploy, .logs, .serverResource, .resourceStatus,
-                 .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+                 .eavesdropperStatus, .unitStatus:
                 // `runsOn` says these are the server's,  so this cannot be reached.  It
                 // refuses rather than running a server action on the Mac.
                 throw OpsControlError.invalidArgument("route")
@@ -1051,20 +997,7 @@ struct OpsProcessRunner: OpsRunning {
         process.arguments = invocation.arguments
         process.currentDirectoryURL = URL(fileURLWithPath: invocation.workingDirectory, isDirectory: true)
         process.environment = invocation.environment
-        if let input = invocation.standardInput {
-            // The input is a private file,  like the output,  so nothing can block on a pipe.
-            let stdinURL = scratch.appendingPathComponent("stdin.json")
-            guard fileManager.createFile(atPath: stdinURL.path, contents: input,
-                                         attributes: [.posixPermissions: 0o600]),
-                  let handle = try? FileHandle(forReadingFrom: stdinURL) else {
-                try? stdoutHandle.close()
-                try? stderrHandle.close()
-                throw OpsControlError.launchFailed("the request could not be written")
-            }
-            process.standardInput = handle
-        } else {
-            process.standardInput = FileHandle.nullDevice
-        }
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
         do {
@@ -1341,8 +1274,6 @@ struct OpsOutcome: Equatable {
     /// answer that carried one;  nil for every other action.  Its version is not checked here:
     /// `ServerEavesdropperReading(outcome:)` does that.
     var eavesdropperStatus: ReducedEavesdropperStatus? = nil
-    /// The server editor's answer,  for a `server eavesdropper-settings` plan or run.
-    var listenerSettings: ServerSettingsAnswer? = nil
     /// One unit's systemd state,  for a planned `server unit-status` answer about the unit the
     /// action names whose state words are in their own shape;  nil for every other answer.
     var unitState: ServerUnitState? = nil
@@ -1472,10 +1403,6 @@ struct OpsOutcome: Equatable {
             return "The way the server runs this update changed after the plan.\(gap)Plan it again."
         case "invocation_replaced":
             return "Another update run replaced this one before Muster could see it finish."
-        case "apply_disabled":
-            return ServerSettingsCopy.applyOff
-        case "plan_mismatch", "changed_underneath":
-            return "The server's config changed after the plan you approved, so nothing was applied.\(gap)Show the plan again."
         case "read_only_required":
             return "This only reads, so the server takes it as a plan and never as a run."
         case "unit_status_unavailable", "unit_unavailable", "unit_status_invalid":
@@ -1542,15 +1469,6 @@ enum OpsResultParser {
         }
         var kind = OpsResultKind(rawValue: answer.result ?? "") ?? .unknown
         var detail = ApplyCopy.normalize(answer.detail ?? "")
-        // The settings editor has its own words.  A plan stands only with a plan hash and the
-        // Eavesdropper's own check behind it;  an apply is done only when the editor applied it.
-        var listenerSettings: ServerSettingsAnswer?
-        if case .serverListenerSettings = action,
-           answer.verb == nil || answer.verb == OpsAction.listenerSettingsVerb {
-            listenerSettings = ServerSettingsAnswer(stdout: result.stdout)
-            (kind, detail) = ServerSettingsAnswer.outcome(listenerSettings, helperKind: kind,
-                                                          mode: mode, detail: detail)
-        }
         // A plan changes nothing.  A plan that answers "done" is a helper that did something
         // it was not asked to,  and the app says so rather than calling it a plan.
         if mode == .plan && (kind == .done || kind == .submitted) {
@@ -1677,7 +1595,6 @@ enum OpsResultParser {
                 (0...answer.commands.count).contains($0) ? $0 : nil
             },
             eavesdropperStatus: eavesdropperStatus,
-            listenerSettings: listenerSettings,
             unitState: unitState,
             logsUnit: logsUnit,
             resourceName: resourceName,
@@ -2207,15 +2124,6 @@ final class OpsController: ObservableObject {
     /// Counts every `--yes` run that ended,  and every recheck that settled one,  so a view
     /// can read its data again.
     @Published private(set) var completedRuns = 0
-    /// The action of the run `completedRuns` last counted, set just before the count moves, so a
-    /// view reads its data again only after a run of its own action.  Nil before the first.
-    @Published private(set) var lastCompletedAction: OpsAction?
-    /// True when the run `completedRuns` last counted was a server listener settings run, the one
-    /// kind of run after which the settings section reads the server again.  False before the first.
-    var lastRunWasListenerSettings: Bool {
-        if case .serverListenerSettings? = lastCompletedAction { return true }
-        return false
-    }
     @Published private(set) var isRechecking = false
     /// True while the approval question is up,  so every window holds its buttons.
     @Published private(set) var isAsking = false
@@ -2379,7 +2287,6 @@ final class OpsController: ObservableObject {
             if outcome.kind != .submitted {
                 self.record(action, result: outcome.kind.rawValue, runID: OpsController.makeRunID(),
                             outcome: outcome, extra: ["recheck": "true"])
-                self.lastCompletedAction = action
                 self.completedRuns += 1
             }
         }
@@ -2476,7 +2383,7 @@ final class OpsController: ObservableObject {
         case .pm2App(let verb, _), .macAgent(let verb, _):
             guard verb == .start else { return nil }
         case .serverUnit, .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .logs,
-             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus, .serverListenerSettings:
+             .serverResource, .resourceStatus, .eavesdropperStatus, .unitStatus:
             return nil
         }
         guard !isBusy, !isPresenting, task == nil else { return nil }
@@ -2502,7 +2409,6 @@ final class OpsController: ObservableObject {
             let outcome = try await launch(invocation, action: action, mode: .yes)
             record(action, result: outcome.kind.rawValue, runID: runID, outcome: outcome)
             remember(action, outcome)
-            lastCompletedAction = action
             completedRuns += 1
             return outcome
         } catch {
@@ -2522,7 +2428,6 @@ final class OpsController: ObservableObject {
                                      runNotKnown: true)
             record(action, result: outcome.kind.rawValue, runID: runID)
             remember(action, outcome)
-            lastCompletedAction = action
             completedRuns += 1
             return outcome
         }
@@ -2628,9 +2533,7 @@ final class OpsController: ObservableObject {
                 fresh.knobChange?.old == reviewed.knobChange?.old,
                 fresh.knobChange?.oldSource == reviewed.knobChange?.oldSource,
                 // A redeploy whose resource was renamed after the review is not the one approved.
-                fresh.resourceName == reviewed.resourceName,
-                // A settings plan is the same plan only when it hashes the same.
-                fresh.listenerSettings?.planSHA256 == reviewed.listenerSettings?.planSHA256
+                fresh.resourceName == reviewed.resourceName
             else {
                 phase = .review(action, fresh)
                 notice = ApplyCopy.join(
@@ -2639,18 +2542,7 @@ final class OpsController: ObservableObject {
                 )
                 return
             }
-            var runAction = action
-            if case .serverListenerSettings(var request) = action {
-                // The apply carries the approved plan's hash,  and the server applies that plan or
-                // nothing.  A reviewed plan with no hash is never run.
-                guard let hash = reviewed.listenerSettings?.planSHA256 else {
-                    phase = .failed(action, "Nothing ran:\(ServerStatusCopy.sentenceGap)the plan you approved carried no plan hash.")
-                    return
-                }
-                request.expectPlanSHA256 = hash
-                runAction = .serverListenerSettings(request)
-            }
-            let invocation = try prepare(runAction, mode: .yes)
+            let invocation = try prepare(action, mode: .yes)
             enterStage(.running)
             // The row goes in before the run,  so a Muster that quits or crashes part way
             // still leaves a trace that something was sent.
@@ -2685,10 +2577,7 @@ final class OpsController: ObservableObject {
                 if started { record(action, result: OpsResultKind.failed.rawValue, runID: runID) }
             }
         }
-        if started {
-            lastCompletedAction = action
-            completedRuns += 1
-        }
+        if started { completedRuns += 1 }
         // The helper may have acted on the unit,  so its state is read again,  newer than the
         // report the plan was made from.
         if started, readsUnitStateAfterRun, case .serverUnit(_, let unit) = action {
