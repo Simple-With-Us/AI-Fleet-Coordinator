@@ -209,7 +209,9 @@ class RelayGitHubError(Exception):
         # transport failure, the HTTP status otherwise, 200 for a mismatch), and the number
         # the create named but the read-back did not confirm.  Numbers, never upstream text.
         self.readback_status = (
-            readback_status if type(readback_status) is int and 0 <= readback_status <= 599 else None
+            readback_status
+            if type(readback_status) is int and 0 <= readback_status <= 599
+            else None
         )
         self.unconfirmed_number = (
             unconfirmed_number
@@ -371,9 +373,7 @@ class GitHubClient:
             },
         )
         try:
-            with self._opener(
-                req, timeout=TIMEOUT_SECONDS if timeout is None else timeout
-            ) as resp:
+            with self._opener(req, timeout=TIMEOUT_SECONDS if timeout is None else timeout) as resp:
                 raw = resp.read(limit + 1)
                 completion_body_ok = not raw
                 if allow_empty_object and expected_status in (201, 202):
@@ -779,13 +779,12 @@ class GitHubClient:
         head_ref = head_row.get("ref") if isinstance(head_row, dict) else None
         head_label = head_row.get("label") if isinstance(head_row, dict) else None
         prefix = "refs/heads/"
-        want_base = base[len(prefix) :] if base.startswith(prefix) else base
+        want_base = base.removeprefix(prefix)
         # ``owner:branch`` or ``owner:repo:branch``:  the owner is before the first colon and
         # the branch after the last (a branch name cannot contain a colon).
         want_owner, sep, _ = head.partition(":")
         want_head = head.rpartition(":")[2]
-        if want_head.startswith(prefix):
-            want_head = want_head[len(prefix) :]
+        want_head = want_head.removeprefix(prefix)
         if (
             not urls_ok
             or type(found.get("number") if isinstance(found, dict) else None) is not int

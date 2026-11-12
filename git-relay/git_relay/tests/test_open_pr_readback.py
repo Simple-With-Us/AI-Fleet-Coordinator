@@ -75,7 +75,10 @@ class OpenPrReadBack(unittest.TestCase):
                 if relay is None or reload:
                     # reload:  every call is a restarted relay reading the store from disk.
                     relay = Relay(
-                        SeatPolicy(POLICY), client, AuditLog(str(path)), outcomes=OutcomeStore(store)
+                        SeatPolicy(POLICY),
+                        client,
+                        AuditLog(str(path)),
+                        outcomes=OutcomeStore(store),
                     )
                 responses.append(relay.handle(TOKEN, "open_pr", args))
             rows = [json.loads(line) for line in path.read_text().splitlines()]
@@ -196,7 +199,9 @@ class OpenPrReadBack(unittest.TestCase):
             len(github_client.READBACK_BACKOFF_SECONDS), github_client.READBACK_ATTEMPTS - 1
         )
         self.run_open(fails(500))
-        self.assertTrue(all(1 <= t <= github_client.READBACK_TIMEOUT_SECONDS for t in self.timeouts))
+        self.assertTrue(
+            all(1 <= t <= github_client.READBACK_TIMEOUT_SECONDS for t in self.timeouts)
+        )
 
     def test_non_json_read_back_is_unknown(self):
         (response,), calls, rows = self.run_open(RawResponse(b"<html>not json</html>"))
