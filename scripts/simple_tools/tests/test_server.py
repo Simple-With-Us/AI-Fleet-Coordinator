@@ -482,6 +482,32 @@ class ConfigTests(unittest.TestCase):
                         cfg = self.router_cfg(sections["CLAUDE"], sections["ZC"], daemon=daemon)
                         self.assert_both_dropped(cfg, token)
 
+    def test_a_seat_whose_routine_reads_its_own_outgoing_webhook_token_falls_back_to_inbox(
+        self,
+    ) -> None:
+        env_name = C.outgoing_webhook_token_env("CLAUDE")
+        misuses = {
+            "routine key_env": self.router_routine(
+                "CLAUDE_ROUTINE_URL", key_env=env_name, auth="header"
+            ),
+            "routine url_env": self.router_routine(env_name),
+        }
+        listings = {"listed": 'outgoing_webhook_seats = ["CLAUDE"]', "not listed": ""}
+        for role, misuse in misuses.items():
+            for listing, daemon in listings.items():
+                with self.subTest(role=role, owner_is=listing):
+                    cfg = self.router_cfg(
+                        misuse,
+                        self.router_routine("ZC_ROUTINE_URL"),
+                        daemon=daemon,
+                    )
+                    self.assertIn("may not read " + env_name, " ".join(cfg.errors))
+                    self.assertEqual(cfg.skipped_seats, {})
+                    self.assertEqual(sorted(cfg.seats), ["CLAUDE", "CODEX", "ZC"])
+                    seat = cfg.seats["CLAUDE"]
+                    self.assertEqual((seat.wake, seat.routine), ("inbox", None))
+                    self.assertTrue(seat.config_problems)
+
     def test_seats_in_outgoing_webhook_seats_with_their_own_names_still_load(self) -> None:
         cfg = self.router_cfg(
             self.router_routine("CLAUDE_ROUTINE_URL"),
