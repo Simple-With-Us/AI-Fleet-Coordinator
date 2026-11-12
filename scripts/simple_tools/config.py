@@ -406,6 +406,11 @@ ROUTINE_RESERVED_HEADERS = frozenset(
     }
 )
 ROUTINE_TIMEOUT_DEFAULT = 15.0
+# The one bearer the one wake router checks for every seat it serves (OPS-1048):  each router seat's
+# routine names it as `key_env` with `auth = "bearer"`, and the listener's loader takes it from
+# Infisical /wake-router (server/infisical_env.py, a stdlib-only script that keeps its own copy of the
+# name;  a test holds the two equal).  The only variable two seats may share (_refuse_shared_env).
+ROUTER_BEARER_ENV = "WAKE_ROUTER_KEY"
 OUTGOING_WEBHOOK_DEFAULT_PORT = 8787
 LISTENER_API_DEFAULT_PORT = 8788
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
@@ -1667,29 +1672,78 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
     return cfg
 
 
+def listener_api_key_env(seat: str, routine: RoutineConfig | None) -> str:
+    """The variable that holds a seat's read-API key (daemon.listener_api_keys):  its routine key
+    when the routine is hmac-sha256 (the key the Worker holds as WAKE_HMAC_KEY_<SEAT>), else
+    <CODE>_ROUTINE_KEY, whether or not the seat's config names that variable."""
+    if routine is not None and routine.auth == "hmac-sha256":
+        return routine.key_env
+    return env_code(seat) + "_ROUTINE_KEY"
+
+
 def _refuse_shared_env(cfg: Config) -> None:
     """Two seats reading the same variable would alias one bot (or send one seat's wakes to
-    another's routine):  every seat that shares a name is dropped with an error."""
+    another's routine, or one seat's read-API key to another's):  every seat that shares a name is
+    dropped with an error.  A seat's names are its Zulip `email_env` and `key_env`, its routine's
+    `url_env` and `key_env`, and the variable its read-API key is read from (listener_api_key_env),
+    which a seat on the router's bearer still reads though its config no longer names it.  Enabled
+    and disabled seats are checked alike.
+
+    One exception, ROUTER_BEARER_ENV, the one wake router's bearer (One Operator rule:  one router,
+    one bearer, nothing per seat).  Any number of seats may name it as `routine.key_env` with
+    `auth = "bearer"`, and that is the only role it may have.  The router checks the bearer and
+    routes by the seat in the path of each seat's own URL, and a wake whose body names another seat
+    is refused, so a shared bearer cannot send one seat's wakes to another's routine;  that is why
+    every seat's `routine.url_env` must still be its own.  In any other role (a seat's Zulip
+    `email_env`, `key_env` or `site_env`, a `routine.url_env`, or the key of a `header` or
+    `hmac-sha256` routine, which for hmac-sha256 is also that seat's read-API key) the name would
+    send the router's bearer somewhere other than the router.  So a seat that reads it that way is
+    dropped even when no other seat names it, and when other seats name it too, every one of them
+    is dropped with the shared-name error, as before."""
     users: dict[str, set[str]] = {}
+    shareable: dict[str, bool] = {}
     for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values()):
-        names = [seat_cfg.email_env, seat_cfg.key_env]
-        if seat_cfg.routine is not None:
-            names += [seat_cfg.routine.url_env, seat_cfg.routine.key_env]
-        for name in names:
+        routine = seat_cfg.routine
+        uses = [
+            (seat_cfg.email_env, False),
+            (seat_cfg.key_env, False),
+            (listener_api_key_env(seat_cfg.seat, routine), False),
+        ]
+        if seat_cfg.site_env == ROUTER_BEARER_ENV:
+            # Every env seat reads the one ZULIP_SITE, so the site name meets only the bearer rule.
+            uses.append((seat_cfg.site_env, False))
+        if routine is not None:
+            router_bearer = routine.key_env == ROUTER_BEARER_ENV and routine.auth == "bearer"
+            uses += [(routine.url_env, False), (routine.key_env, router_bearer)]
+        for name, may_share in uses:
             if name:
                 users.setdefault(name, set()).add(seat_cfg.seat)
+                shareable[name] = shareable.get(name, True) and may_share
     for name, seats in sorted(users.items()):
+        if shareable[name]:
+            continue
         if len(seats) > 1:
-            cfg.errors.append(
-                "environment variable %s is named by more than one seat (%s); a seat's variables must be "
-                "its own, so none of them gets a queue" % (name, ", ".join(sorted(seats)))
+            error = (
+                "environment variable %s is named by more than one seat (%s); a seat's variables "
+                "must be its own, so none of them gets a queue" % (name, ", ".join(sorted(seats)))
             )
-            for seat in seats:
-                cfg.seats.pop(seat, None)
-                cfg.disabled.pop(seat, None)
-                cfg.skipped_seats.setdefault(seat, []).append(
-                    "environment variable %s is shared with another seat" % name
-                )
+            reason = "environment variable %s is shared with another seat" % name
+        elif name == ROUTER_BEARER_ENV:
+            error = (
+                "environment variable %s is the wake router's bearer and may be named only as a "
+                'routine key_env with auth = "bearer"; seat %s names it in another role, so it '
+                "gets no queue" % (name, next(iter(seats)))
+            )
+            reason = (
+                "environment variable %s is the wake router's bearer, named in another role" % name
+            )
+        else:
+            continue
+        cfg.errors.append(error)
+        for seat in seats:
+            cfg.seats.pop(seat, None)
+            cfg.disabled.pop(seat, None)
+            cfg.skipped_seats.setdefault(seat, []).append(reason)
 
 
 def load(root: str, path: str | None = None) -> Config:

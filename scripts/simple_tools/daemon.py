@@ -1181,16 +1181,12 @@ class Daemon:
     def listener_api_keys(self) -> dict[str, str]:
         """Each held seat's read-API key:  the seat's routine key when its wake is an hmac-sha256 http
         routine (the key the Worker holds as WAKE_HMAC_KEY_<SEAT>), else <CODE>_ROUTINE_KEY.  A seat
-        with neither, or with a key under 32 characters, gets no read API."""
+        with neither, or with a key under 32 characters, gets no read API.  The name is
+        C.listener_api_key_env's, which the config check also holds to one seat."""
         keys: dict[str, str] = {}
         for seat in sorted(self.seats):
             seat_cfg = self.config.seats.get(seat)
-            routine = getattr(seat_cfg, "routine", None)
-            name = (
-                routine.key_env
-                if routine is not None and routine.auth == "hmac-sha256"
-                else "%s_ROUTINE_KEY" % C.env_code(seat)
-            )
+            name = C.listener_api_key_env(seat, getattr(seat_cfg, "routine", None))
             value = Z._strip_quotes(self.env.get(name) or "")
             if len(value) >= LAPI.MIN_KEY_LEN:
                 keys[seat] = value
