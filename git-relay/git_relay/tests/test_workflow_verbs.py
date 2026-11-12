@@ -225,10 +225,11 @@ class Tests(unittest.TestCase):
         }
         s, c = svc(
             {"default_branch": "main"},
+            {"name": "wise/x"},
             {"commit": {"sha": "c" * 40}, "content": {"path": "docs/a.md"}},
         )
         self.assertEqual(s.run("wf_file_put", good)["commit"], "c" * 40)
-        self.assertEqual(c.calls[1][2]["branch"], "wise/x")
+        self.assertEqual(c.calls[2][2]["branch"], "wise/x")
         s, _ = svc({"default_branch": "main"})
         with self.assertRaises(Refused):
             s.run("wf_file_put", {**good, "branch": "main"})
@@ -406,7 +407,10 @@ class Tests(unittest.TestCase):
         T0, T1 = "b" * 40, "c" * 40
         routes = {
             ("GET", f"/repos/{REPO}"): {"default_branch": default},
-            ("GET", f"/repos/{REPO}/git/ref/heads/feat/x"): {"object": {"sha": head}},
+            ("GET", f"/repos/{REPO}/git/ref/heads/feat/x"): {
+                "ref": "refs/heads/feat/x",
+                "object": {"sha": head},
+            },
             ("GET", f"/repos/{REPO}/git/commits/{SHA}"): {"tree": {"sha": T0}},
             ("GET", f"/repos/{REPO}/git/trees/{T0}"): {
                 "tree": [{"path": "scripts", "type": "tree", "sha": T1, "mode": "040000"}]

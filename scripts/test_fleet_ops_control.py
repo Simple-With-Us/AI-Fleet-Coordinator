@@ -2242,6 +2242,7 @@ GOLDEN_ACTIONS = {
     "eavesdropperStatus": "eavesdropper-status",
     # Inert until Muster's fixture has a line for it (that line belongs to the Muster change).
     "unitStatus": "unit-status",
+    "serverListenerSettings": "eavesdropper-settings",
 }
 
 

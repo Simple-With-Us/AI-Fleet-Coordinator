@@ -23,7 +23,11 @@ class Shapes(unittest.TestCase):
             self.assertEqual(error.exception.status, 502)
 
     def test_file_write_malformed_receipt_stays_unknown(self):
-        c = Client({"default_branch": "main"}, [])
+        # The replies are, in order:  the repository, the provider's own record of the branch (a
+        # valid one, so the pre-read passes and the write is attempted), then the malformed write
+        # receipt.  Without the second reply the pre-read would consume the malformed one and
+        # refuse before any write, which is a different case with a different status.
+        c = Client({"default_branch": "main"}, {"name": "feature", "commit": {"sha": SHA}}, [])
         h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_file_put", REPO)
         with self.assertRaises(RelayGitHubError) as error:
             h.run(
@@ -37,6 +41,7 @@ class Shapes(unittest.TestCase):
                 },
             )
         self.assertEqual(error.exception.status, 502)
+        self.assertEqual(c.calls[-1][0], "PUT")
 
     def test_malformed_review_preread_is_definitely_unsent(self):
         from git_relay.server import PreReadUnavailable

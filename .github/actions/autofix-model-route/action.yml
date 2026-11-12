@@ -1,0 +1,34 @@
+name: Autofix Model Route
+description: Resolve SWU_AUTOFIX_* into Claude Code env for MiniMax or Meta Model API.
+inputs:
+  var_base:
+    description: SWU_AUTOFIX_MODEL_BASE_URL
+    required: false
+    default: ""
+  var_model:
+    description: SWU_AUTOFIX_MODEL
+    required: false
+    default: ""
+  default_model:
+    description: Workflow input default when var_model is unset
+    required: true
+outputs:
+  route:
+    description: minimax or meta
+    value: ${{ steps.route.outputs.route }}
+  anthropic_api_key_mode:
+    description: minimax when claude-code-action needs anthropic_api_key, else none
+    value: ${{ steps.route.outputs.anthropic_api_key_mode }}
+  effective_model:
+    description: Model id sent to Claude Code
+    value: ${{ steps.route.outputs.effective_model }}
+runs:
+  using: composite
+  steps:
+    - id: route
+      shell: bash
+      env:
+        VAR_BASE: ${{ inputs.var_base }}
+        VAR_MODEL: ${{ inputs.var_model }}
+        DEFAULT_MODEL: ${{ inputs.default_model }}
+      run: bash "$GITHUB_ACTION_PATH/autofix-model-route.sh"

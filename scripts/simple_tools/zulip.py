@@ -1123,9 +1123,8 @@ DM_GUARD_TYPES = frozenset({"direct", "private"})
 #: 3:35 AM:  "DM one to one since from bot to another bot but since deterministic bot not something
 #: about like the project or details I want to be able to see").  It tells the sender what became
 #: of a wake.  The kind is never `wake` or `route`:  the router reads those as seat replies and
-#: would count them on the loop guard.  A clarifying question is not here yet, because its reply
-#: leg is not built:  the answer would be a direct message from the sender to the Operator, which
-#: the owner guard refuses for a bot, and nothing reads that answer.
+#: would count them on the loop guard.  There is no clarifying-question tag:  the Operator asks
+#: nobody (owner ruling, Nov 10, 2026).
 #:
 #: The tag alone is not what lets a message through:  `check_operator_status_send` accepts only a
 #: content that is exactly a text the fixed vocabulary builds (operator_status_text.is_status_text).
