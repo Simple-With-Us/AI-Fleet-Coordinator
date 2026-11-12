@@ -475,7 +475,7 @@ def location_problem(where: str) -> str:
     if not where and not _on_mac():
         return (
             "this host is not the Mac: pass --location server "
-            "(or install over a bundle that has it), else every chat here is a \"??\" chat"
+            '(or install over a bundle that has it), else every chat here is a "??" chat'
         )
     return ""
 
