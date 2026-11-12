@@ -215,7 +215,6 @@ class SeatPolicy:
         "wf_tag_delete",
         "wf_pr_draft",
         "wf_pr_ready",
-        "wf_pr_close",
         "wf_pr_reopen",
         "wf_automerge_enable",
         "wf_automerge_disable",

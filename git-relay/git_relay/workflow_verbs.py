@@ -194,7 +194,6 @@ SPECS = {
     "wf_tag_delete": ({"contents": "write"}, True),
     "wf_pr_draft": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_pr_ready": ({"pull_requests": "write", "contents": "write"}, True),
-    "wf_pr_close": ({"pull_requests": "write"}, True),
     "wf_pr_reopen": ({"pull_requests": "write"}, True),
     "wf_automerge_enable": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_automerge_disable": ({"pull_requests": "write", "contents": "write"}, True),
@@ -3447,16 +3446,12 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
         return {"pull": {"id": node, "state": wanted.lower()}}
 
-    def wf_pr_close(self, repo, args):
-        """Close without merging.  GitHub refuses a merged PR.  Who may close whose PR is fleet policy, in AGENTS.md.
+    def wf_pr_reopen(self, repo, args):
+        """Reopen a closed PR.  GitHub refuses a merged one.  Closing is wf_pr_close, with its required pins and receipt.
 
         expected_head_sha, when given, is checked against a read just before the write.  It narrows the race and does not
-        close it:  the write names the PR, not its head, so a push between the read and the write still loses to the close.
+        close it:  the write names the PR, not its head.
         """
-        _only(args, ("repo", "number", "expected_head_sha"))
-        return self._pr_set_state(repo, args, "closePullRequest", "CLOSED")
-
-    def wf_pr_reopen(self, repo, args):
         _only(args, ("repo", "number", "expected_head_sha"))
         return self._pr_set_state(repo, args, "reopenPullRequest", "OPEN")
 

@@ -41,30 +41,23 @@ class PrControls(unittest.TestCase):
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(action, {**args, "query": "arbitrary"}, REPO)
 
-    def test_close_and_reopen_use_a_fixed_mutation_and_check_the_result(self):
-        for action, field, wanted in (
-            ("wf_pr_close", "closePullRequest", "CLOSED"),
-            ("wf_pr_reopen", "reopenPullRequest", "OPEN"),
-        ):
-            pull = {"id": "PR_abc", "state": wanted}
-            c = Client({"node_id": "PR_abc"}, {"data": {field: {"pullRequest": pull}}})
-            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
-            args = {"repo": REPO, "number": 1}
-            self.assertEqual(
-                h.run(action, args), {"pull": {"id": "PR_abc", "state": wanted.lower()}}
-            )
-            self.assertEqual(c.calls[0][1], "/repos/" + REPO + "/pulls/1")
-            self.assertEqual(c.calls[1][1], "/graphql")
-            self.assertIn(field, c.calls[1][2]["query"])
-            self.assertEqual(c.calls[1][2]["variables"], {"id": "PR_abc"})
-            with self.assertRaises(Refused):
-                WorkflowVerbs.check_shape(action, {**args, "query": "arbitrary"}, REPO)
+    def test_reopen_uses_a_fixed_mutation_and_checks_the_result(self):
+        pull = {"id": "PR_abc", "state": "OPEN"}
+        c = Client({"node_id": "PR_abc"}, {"data": {"reopenPullRequest": {"pullRequest": pull}}})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_reopen", REPO)
+        args = {"repo": REPO, "number": 1}
+        self.assertEqual(h.run("wf_pr_reopen", args), {"pull": {"id": "PR_abc", "state": "open"}})
+        self.assertEqual(c.calls[0][1], "/repos/" + REPO + "/pulls/1")
+        self.assertEqual(c.calls[1][1], "/graphql")
+        self.assertIn("reopenPullRequest", c.calls[1][2]["query"])
+        self.assertEqual(c.calls[1][2]["variables"], {"id": "PR_abc"})
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape("wf_pr_reopen", {**args, "query": "arbitrary"}, REPO)
 
     def test_a_pr_already_in_that_state_writes_nothing(self):
         cases = (
             ("wf_pr_draft", {"draft": True}, {"id": "PR_abc", "isDraft": True}),
             ("wf_pr_ready", {"draft": False}, {"id": "PR_abc", "isDraft": False}),
-            ("wf_pr_close", {"state": "closed"}, {"id": "PR_abc", "state": "closed"}),
             ("wf_pr_reopen", {"state": "open"}, {"id": "PR_abc", "state": "open"}),
         )
         for action, fields, pull in cases:
@@ -74,12 +67,11 @@ class PrControls(unittest.TestCase):
             self.assertEqual(len(c.calls), 1, action)
 
     def test_a_merged_pr_is_refused_before_any_write(self):
-        for action in ("wf_pr_close", "wf_pr_reopen"):
-            c = Client({"node_id": "PR_abc", "merged": True, "state": "closed"})
-            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
-            with self.assertRaises(Refused):
-                h.run(action, {"repo": REPO, "number": 1})
-            self.assertEqual(len(c.calls), 1, action)
+        c = Client({"node_id": "PR_abc", "merged": True, "state": "closed"})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_reopen", REPO)
+        with self.assertRaises(Refused):
+            h.run("wf_pr_reopen", {"repo": REPO, "number": 1})
+        self.assertEqual(len(c.calls), 1)
 
     def test_graphql_pr_mutations_mint_contents_write(self):
         from git_relay.workflow_verbs import SPECS
@@ -97,31 +89,31 @@ class PrControls(unittest.TestCase):
         for action in ("wf_pr_close", "wf_pr_reopen"):
             self.assertEqual(SPECS[action][0], {"pull_requests": "write"}, action)
 
-    def test_close_is_fenced_on_the_head_when_asked(self):
+    def test_reopen_is_fenced_on_the_head_when_asked(self):
         good, bad = "a" * 40, "b" * 40
-        pull = {"id": "PR_abc", "state": "CLOSED"}
-        read = {"node_id": "PR_abc", "state": "open", "head": {"sha": good}}
-        c = Client(read, {"data": {"closePullRequest": {"pullRequest": pull}}})
-        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+        pull = {"id": "PR_abc", "state": "OPEN"}
+        read = {"node_id": "PR_abc", "state": "closed", "head": {"sha": good}}
+        c = Client(read, {"data": {"reopenPullRequest": {"pullRequest": pull}}})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_reopen", REPO)
         self.assertEqual(
-            h.run("wf_pr_close", {"repo": REPO, "number": 1, "expected_head_sha": good}),
-            {"pull": {"id": "PR_abc", "state": "closed"}},
+            h.run("wf_pr_reopen", {"repo": REPO, "number": 1, "expected_head_sha": good}),
+            {"pull": {"id": "PR_abc", "state": "open"}},
         )
         c = Client(read)
-        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_reopen", REPO)
         with self.assertRaises(Refused):
-            h.run("wf_pr_close", {"repo": REPO, "number": 1, "expected_head_sha": bad})
+            h.run("wf_pr_reopen", {"repo": REPO, "number": 1, "expected_head_sha": bad})
         self.assertEqual(len(c.calls), 1, "no write after a refused fence")
 
     def test_a_malformed_head_is_refused_before_any_read(self):
-        c = Client({"node_id": "PR_abc", "state": "open"})
-        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+        c = Client({"node_id": "PR_abc", "state": "closed"})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_reopen", REPO)
         args = {"repo": REPO, "number": 1, "expected_head_sha": "not-a-sha"}
         with self.assertRaises(Refused):
-            h.run("wf_pr_close", args)
+            h.run("wf_pr_reopen", args)
         self.assertEqual(c.calls, [])
         with self.assertRaises(Refused):
-            WorkflowVerbs.check_shape("wf_pr_close", args, REPO)
+            WorkflowVerbs.check_shape("wf_pr_reopen", args, REPO)
 
     def test_an_unexpected_pre_read_writes_nothing(self):
         for fields in (
@@ -133,18 +125,45 @@ class PrControls(unittest.TestCase):
             {"head": "abc"},
         ):
             c = Client({"node_id": "PR_abc", **fields})
-            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_reopen", REPO)
             with self.assertRaises(PreReadUnavailable):
-                h.run("wf_pr_close", {"repo": REPO, "number": 1})
+                h.run("wf_pr_reopen", {"repo": REPO, "number": 1})
             self.assertEqual(len(c.calls), 1, fields)
 
-    def test_close_is_unknown_when_the_state_did_not_change(self):
-        for pull in ({"id": "PR_abc", "state": "OPEN"}, {"id": "PR_other", "state": "CLOSED"}):
-            c = Client({"node_id": "PR_abc"}, {"data": {"closePullRequest": {"pullRequest": pull}}})
-            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_close", REPO)
+    def test_reopen_is_unknown_when_the_state_did_not_change(self):
+        for pull in ({"id": "PR_abc", "state": "CLOSED"}, {"id": "PR_other", "state": "OPEN"}):
+            c = Client(
+                {"node_id": "PR_abc"}, {"data": {"reopenPullRequest": {"pullRequest": pull}}}
+            )
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_reopen", REPO)
             with self.assertRaises(RelayGitHubError) as error:
-                h.run("wf_pr_close", {"repo": REPO, "number": 1})
+                h.run("wf_pr_reopen", {"repo": REPO, "number": 1})
             self.assertEqual(error.exception.status, 502)
+
+    def test_there_is_one_close_and_it_needs_its_pins(self):
+        from git_relay.policy import SeatPolicy
+
+        self.assertEqual(SeatPolicy.WORKFLOW_ACTIONS.count("wf_pr_close"), 1)
+        source = Path(WorkflowVerbs.wf_pr_close.__code__.co_filename).read_text()
+        self.assertEqual(source.count("def wf_pr_close("), 1)
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape("wf_pr_close", {"repo": REPO, "number": 1}, REPO)
+
+    def test_no_table_holds_a_second_close_entry(self):
+        """A dict, a set or a JS object keeps one entry silently, so the source text is what can show a repeat."""
+        root = Path(__file__).resolve().parents[3]
+        relay = root / "git-relay" / "git_relay"
+        for path, needle, wanted in (
+            (relay / "workflow_verbs.py", '"wf_pr_close":', 1),
+            (relay / "policy.py", '"wf_pr_close"', 1),
+            (relay / "server.py", '"wf_pr_close"', 1),
+            # One entry in the tool specs and one in the response keys.
+            (root / "scripts" / "agent-sync-mcp" / "src" / "gr-workflow-v1.js", "wf_pr_close:", 2),
+        ):
+            with self.subTest(path=path.name):
+                if not path.exists():
+                    self.skipTest("this copy has no such file")
+                self.assertEqual(path.read_text().count(needle), wanted)
 
     def test_graphql_errors_are_unknown_not_definitely_unsent(self):
         c = Client({"node_id": "PR_abc"}, {"data": {}, "errors": [{"message": "private"}]})
