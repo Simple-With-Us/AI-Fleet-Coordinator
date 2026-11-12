@@ -122,7 +122,6 @@ class ReleaseTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parent.parent
         for path in (
-            "scripts/simple_tools/mcp/fixtures.jsonl",
             "scripts/simple_tools/notes_runner.py",
             "scripts/simple_tools/wake_alerter.py",
             "scripts/simple_tools/textsafe.py",
@@ -1202,8 +1201,11 @@ class ShippedDataFilesTests(unittest.TestCase):
             and "/server/" not in p
         ]
         self.assertTrue(data)
-        missing = [p for p in data if not release.allowed_path(p)]
+        missing = [p for p in data if not release.allowed_path(p) and p not in release.REPO_ONLY]
         self.assertEqual(missing, [], "add these to EXACT in scripts/fleet-cli-release.py")
+        self.assertIn("scripts/simple_tools/mcp/fixtures.jsonl", release.REPO_ONLY)
+        self.assertFalse(release.allowed_path("scripts/simple_tools/mcp/fixtures.jsonl"))
+        self.assertFalse(release.shipped_path("scripts/simple_tools/mcp/fixtures.jsonl"))
 
     def test_listener_tools_is_required_of_new_bundles_only(self):
         # A new bundle must carry it (simple-chat mcp reads it at startup), but retained releases

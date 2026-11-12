@@ -67,6 +67,7 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
 # modules), added for that review.
 # The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
 # From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
 # registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
 # fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
@@ -127,7 +128,6 @@ EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -169,25 +169,34 @@ EXACT = frozenset(
         "scripts/ag-wake-bridge",
     }
 )
-# Modules in scripts/simple_tools/ that match the shipped pattern but that nothing runs, on any host, so they
-# stay in the repository and out of the release (AFC-768, Nov 11, 2026).  Every module that a host or an
-# installer still runs or loads stays in the release, even when today's hosts run it from a git checkout:
-# the release path is dormant (the server runs from git since Oct 19, 2026), and a release must still be
-# whole if it is ever used again.  Each one below has no importer outside this set and the repo-only tests:
+# Paths that match the allowlist pattern (or were previously named in EXACT) but that nothing runs, on any
+# host, so they stay in the repository and out of the release (AFC-768, Nov 11, 2026).  Every module that a
+# host or an installer still runs or loads stays in the release, even when today's hosts run it from a git
+# checkout:  the release path is dormant (the server runs from git since Oct 19, 2026), and a release must
+# still be whole if it is ever used again.  Each Python module below has no importer outside this set and
+# the repo-only tests:
 #   - operator_github_client, operator_github_policy, operator_github_secrets:  the OPS-966 token broker's
 #     outer layers, which git-relay replaced as the one minting path (owner decision Oct 22, 2026);  kept for
 #     review history and their repo-only tests.
 #   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
-# A new module still ships by default:  this list only ever names a module that nothing runs.
+#   - mcp/fixtures.jsonl:  golden cases the unit suites load from the checkout;  `simple-chat mcp` does not
+#     read them at runtime.  Leaving them out of the bundle keeps the encoded sender payload under the 8 MiB
+#     cap after AFC-756 (list_presentation plus the compact/full catalog fields).
+# A new module still ships by default:  this list only ever names a path that nothing runs.
 REPO_ONLY = frozenset(
-    "scripts/simple_tools/" + name + ".py"
-    for name in (
-        "clarify",
-        "operator_github_client",
-        "operator_github_policy",
-        "operator_github_secrets",
-        "operator_send",
-    )
+    {
+        *(
+            "scripts/simple_tools/" + name + ".py"
+            for name in (
+                "clarify",
+                "operator_github_client",
+                "operator_github_policy",
+                "operator_github_secrets",
+                "operator_send",
+            )
+        ),
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+    }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
 # release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.

@@ -43,6 +43,7 @@ ARGUMENT_MAP = {
     "format": ("option", "--format"),
     "query": ("option", "--query"),
     "limit": ("option", "--limit"),
+    "full": ("option", "--full"),
     "since_hours": ("option", "--since-hours"),
     "by_seat": ("option", "--by-seat"),
     "action": ("option", "--action"),

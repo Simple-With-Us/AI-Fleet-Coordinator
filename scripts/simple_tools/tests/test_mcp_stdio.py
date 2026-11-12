@@ -1112,8 +1112,13 @@ class ReadToolTests(McpHarness):
         item = self.assert_fence(
             session.call("zulip_read_topic", {"topic": "long"})["content"][0]["text"]
         )[0]
-        self.assertEqual(len(item["body"]), T.BODY_LIMIT)
+        self.assertLessEqual(len(item["body"]), 283)
         self.assertIs(item["truncated"], True)
+        full = self.assert_fence(
+            session.call("zulip_read_topic", {"topic": "long", "full": True})["content"][0]["text"]
+        )[0]
+        self.assertEqual(len(full["body"]), T.BODY_LIMIT)
+        self.assertIs(full["truncated"], True)
 
 
 class WriteToolTests(McpHarness):
@@ -2067,7 +2072,7 @@ class StartupTests(McpHarness):
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "zulip_read_topic", "arguments": {"topic": "big", "limit": 50}},
+                "params": {"name": "zulip_read_topic", "arguments": {"topic": "big", "limit": 50, "full": True}},
             }
             os.write(in_w, (json.dumps(call) + "\n").encode("ascii"))
             os.close(in_w)

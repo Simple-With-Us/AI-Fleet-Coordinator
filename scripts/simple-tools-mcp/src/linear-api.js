@@ -2,6 +2,7 @@
 import { Kind, print } from "graphql";
 import { ToolError, okResult, sha256Hex, stableJson, scanSecret, newNonce } from "./contract.js";
 import { LinearError, linearClean, linearEnvelope, Q_ISSUE } from "./linear.js";
+import { compactLinearGraphql, splitFullArg, toolWantsCompact } from "./list-presentation.js";
 import { outboundGap } from "./outbound-gap.js";
 import { prepareGraphql } from "./linear-graphql.js";
 
@@ -65,13 +66,15 @@ export async function apiSchema(tools, args) {
   }, { max_chars: 64000, operation: "schema" });
 }
 
-export async function apiQuery(tools, args) {
+export async function apiQuery(tools, args, { compactName = "linear_query" } = {}) {
+  const { args: workArgs, full } = splitFullArg(args);
   const client = tools.requireLinear();
-  const prepared = prepareGraphql(args.query, args.variables, "query");
+  const prepared = prepareGraphql(workArgs.query, workArgs.variables, "query");
   tools.scanLinear({ query: prepared.query, variables: JSON.stringify(prepared.variables) });
   await tools.reserveLinear("read");
-  const data = await tools.linearCall(() => client.call(prepared.query, prepared.variables));
-  return apiResult(tools, data, args);
+  let data = await tools.linearCall(() => client.call(prepared.query, prepared.variables));
+  if (toolWantsCompact(compactName, full)) ({ data } = compactLinearGraphql(data));
+  return apiResult(tools, data, { ...workArgs, max_chars: args.max_chars, operation: "query" });
 }
 
 async function protectLabels(tools, prepared) {
