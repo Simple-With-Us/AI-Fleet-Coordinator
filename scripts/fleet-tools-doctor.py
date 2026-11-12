@@ -133,6 +133,7 @@ SHIPPED = (
     "scripts/simple-chat",
     "scripts/simple-notes",
     "scripts/simple-board",
+    "scripts/simple-peer-actions",
     # The git tools CLI entry wrapper and implementation (mirrors the release policy).
     "scripts/simple-git",
     "scripts/git-tools/",
@@ -183,6 +184,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/simple_tools/mcp/recall-tools.json",
         "scripts/linear-board/catalog/core-tools.json",
         "scripts/simple_tools/mcp/fleetlink-tools.json",
+        "scripts/simple-peer-actions",
+        "scripts/simple_tools/mcp/peer-actions-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
         "scripts/simple_tools/operator_sheets_export.mjs",
         "scripts/simple_tools/operator_sheets_google.mjs",

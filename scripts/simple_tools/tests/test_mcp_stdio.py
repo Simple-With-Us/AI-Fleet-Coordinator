@@ -118,6 +118,7 @@ WRITE_TOOLS = {
     "recall_contribute",
     "recall_correct",
     "recall_retract",
+    "peer_actions_log",
     "fleetlink_create_share",
     "fleetlink_create_link",
     "fleetlink_share_to_team",
@@ -812,6 +813,7 @@ class ProtocolTests(McpHarness):
                         "recall_",
                         "linear_",
                         "fleetlink_",
+                        "peer_actions_",
                     )
                 ),
                 name,
@@ -828,7 +830,7 @@ class ProtocolTests(McpHarness):
     def test_every_tool_maps_to_a_cli_command_that_parses(self):
         """tools.json is the contract:  every MCP tool (and every eavesdropper tool) names the CLI command
         that does the same job, and that command exists in the CLI's parser."""
-        external = ("recall_", "fleetlink_")  # the recall CLI and FleetLink's own CLI, fleetlink
+        external = ("recall_", "fleetlink_", "peer_actions_")  # recall, FleetLink, simple-peer-actions
         served = [
             t["name"]
             for t in T.load_served_tools()["tools"]
@@ -840,7 +842,12 @@ class ProtocolTests(McpHarness):
             set(T.EXTERNAL_CLI),
         )
         for name, command in T.EXTERNAL_CLI.items():
-            program = "fleetlink" if name.startswith("fleetlink_") else "recall"
+            if name.startswith("fleetlink_"):
+                program = "fleetlink"
+            elif name.startswith("peer_actions_"):
+                program = "simple-peer-actions"
+            else:
+                program = "recall"
             self.assertEqual(command.split()[0], program, name)
         # Each verb must exist in the parser of the command that owns it:  the chat verbs on
         # simple-chat, the notes verbs on simple-notes.
