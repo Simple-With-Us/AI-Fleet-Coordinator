@@ -1057,7 +1057,11 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = _call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {"error": refused_text(OR, args.platform), "code": "labels_exhausted", "swept": 0}
+            return {
+                "error": refused_text(OR, args.platform),
+                "code": "labels_exhausted",
+                "swept": 0,
+            }
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
