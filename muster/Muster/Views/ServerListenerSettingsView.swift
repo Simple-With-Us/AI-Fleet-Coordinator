@@ -20,13 +20,15 @@ struct ServerListenerSettingsSection: View {
                 Button("Read Server Settings") { Task { await store.refresh() } }
                     .disabled(store.isReading)
             }
-            Text("The server listener holds every seat.\(ServerStatusCopy.sentenceGap)Its settings live in its own config on the server, and change only through the server's allowlisted editor.")
+            Text("The server listener holds every seat.\(ServerStatusCopy.sentenceGap)A seat's on or off switch and wake type change only through the server's allowlisted editor.\(ServerStatusCopy.sentenceGap)Every other setting here is read only, and each row says why.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             content
         }
-        .task { if store.reading == nil { await store.refresh() } }
+        // Read every time the panel appears:  the store outlives the panel, so an old read would
+        // otherwise be shown.
+        .task { await store.refresh() }
         .onChange(of: controller.completedRuns) { _, _ in
             // A run may have changed the server's config, so it is read again and the edits it
             // carried are cleared.
@@ -100,9 +102,9 @@ struct ServerListenerSettingsSection: View {
 
     private func draftBinding(_ row: ServerSettingRow) -> Binding<String> {
         Binding(
-            get: { store.drafts[row.id] ?? row.current?.fieldText ?? "" },
+            get: { store.drafts[row.id] ?? row.effective?.fieldText ?? "" },
             set: { newValue in
-                if newValue == (row.current?.fieldText ?? "") {
+                if newValue == (row.effective?.fieldText ?? "") {
                     store.drafts[row.id] = nil
                 } else {
                     store.drafts[row.id] = newValue
@@ -122,10 +124,18 @@ private struct ServerSettingRowView: View {
             Text(row.title)
                 .font(.system(size: 11))
                 .frame(width: 240, alignment: .leading)
-            control
+            VStack(alignment: .leading, spacing: 2) {
+                control
+                if let note = row.defaultNote {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Spacer(minLength: 0)
         }
-        .help(row.readOnlyReason ?? "")
+        .help(row.readOnlyReason ?? row.defaultNote ?? "")
     }
 
     @ViewBuilder

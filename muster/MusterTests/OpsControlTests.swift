@@ -60,7 +60,11 @@ final class OpsCommandBuilderTests: XCTestCase {
         for tag in OpsActionCase.allCases where !tag.isPlanOnly {
             let action = tag.sample
             let run = try exampleBuilder().invocation(for: action, mode: .yes)
-            XCTAssertEqual(run.timeout, action.runsOnServer ? 180 : 900, "\(tag)")
+            // The server settings editor has its own longer wait.
+            let expected: TimeInterval = tag == .serverListenerSettings
+                ? OpsControlRoute.serverListenerSettingsRunTimeout
+                : (action.runsOnServer ? 180 : 900)
+            XCTAssertEqual(run.timeout, expected, "\(tag)")
             XCTAssertEqual(OpsControlRoute.runWait(for: action), run.timeout, "\(tag)")
             XCTAssertEqual(try exampleBuilder().invocation(for: action, mode: .plan).timeout, 90, "\(tag)")
         }
@@ -788,6 +792,13 @@ final class OpsWireContractTests: XCTestCase {
         case "resourceStatus": return .resourceStatus
         case "eavesdropperStatus": return .eavesdropperStatus
         case "unitStatus": return .unitStatus(unit: target)
+        // The changes travel on standard input, so the line is the same for any request;  an
+        // apply needs an approved plan's hash to be built at all.
+        case "serverListenerSettings":
+            return .serverListenerSettings(ServerListenerSettingsRequest(
+                set: ["seat.CLAUDE.enabled": .bool(false)],
+                expectPlanSHA256: String(repeating: "b", count: 64)
+            ))
         default: return nil
         }
     }
@@ -1145,6 +1156,8 @@ private final class FakeOpsRunner: OpsRunning, @unchecked Sendable {
     init(handler: @escaping (OpsInvocation, Int) -> OpsProcessResult) { self.handler = handler }
 
     var recorded: [[String]] { lock.lock(); defer { lock.unlock() }; return calls.map(\.arguments) }
+    /// Every invocation whole,  standard input included.
+    var invocations: [OpsInvocation] { lock.lock(); defer { lock.unlock() }; return calls }
 
     func run(_ invocation: OpsInvocation) async throws -> OpsProcessResult {
         lock.lock()
@@ -1330,6 +1343,158 @@ final class OpsControllerFlowTests: XCTestCase {
         ])
         XCTAssertEqual(ops.completedRuns, 1)
         XCTAssertFalse(ops.isBusy)
+    }
+
+    // MARK: The server Eavesdropper's settings
+
+    /// The one change these tests send:  a seat's routing switch, the only kind Muster may send.
+    private let settingsRequest = ServerListenerSettingsRequest(
+        set: ["seat.CLAUDE.enabled": .bool(false)],
+        expectPlanSHA256: nil
+    )
+
+    /// The helper's answer to `server eavesdropper-settings server`, in the shape the server gives
+    /// it:  the helper's own fields around the editor's whole answer as `eavesdropperSettings`.
+    /// `editorResult` is `planned` for a plan and `applied` for an apply;  a nil hash leaves
+    /// `planSHA256` out.
+    private func settingsAnswer(_ editorResult: String, planSHA256: String?) throws -> String {
+        let applies = editorResult == "applied"
+        let diff = ["--- listener.toml", "+++ listener.toml", "@@ -12 +12 @@", "-enabled = true", "+enabled = false"]
+        var editor: [String: Any] = [
+            "schemaVersion": 1,
+            "tool": "eavesdropper-settings",
+            "action": applies ? "apply" : "plan",
+            "file": "listener.toml",
+            "ok": true,
+            "result": editorResult,
+            "baseSHA256": String(repeating: "1", count: 64),
+            "newSHA256": String(repeating: "2", count: 64),
+            "changes": [
+                ["key": "seat.CLAUDE.enabled", "set": true, "from": true, "to": false, "removes": [String]()] as [String: Any],
+            ],
+            "diff": diff,
+            "check": ["ok": true, "problems": [String](), "warnings": 0] as [String: Any],
+        ]
+        if let planSHA256 { editor["planSHA256"] = planSHA256 }
+        if applies { editor["reload"] = ["ok": true, "confirmed": true, "code": "reloaded"] as [String: Any] }
+        let answer: [String: Any] = [
+            "ok": true,
+            "verb": "server eavesdropper-settings",
+            "target": "server",
+            "commands": [[String]](),
+            "result": editorResult,
+            "detail": applies
+                ? "1 setting(s) changed; reloaded"
+                : "1 setting(s) would change; the Eavesdropper would take the result",
+            "output": diff.joined(separator: "\n") + "\n",
+            "eavesdropperSettings": editor,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: answer, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// A runner that answers the first settings plan with `first`, every later one with `second`,
+    /// and an apply with the editor's `applied`.
+    private func settingsRunner(first: String?, second: String?) throws -> FakeOpsRunner {
+        let firstPlan = try settingsAnswer("planned", planSHA256: first)
+        let secondPlan = try settingsAnswer("planned", planSHA256: second)
+        let applied = try settingsAnswer("applied", planSHA256: second)
+        return FakeOpsRunner { invocation, count in
+            if invocation.arguments.contains("--plan") {
+                return OpsProcessResult(exitCode: 0, stdout: count == 1 ? firstPlan : secondPlan, stderr: "")
+            }
+            return OpsProcessResult(exitCode: 0, stdout: applied, stderr: "")
+        }
+    }
+
+    func test_the_server_reads_a_full_settings_plan_with_its_hash() throws {
+        let hash = String(repeating: "a", count: 64)
+        let outcome = OpsResultParser.parse(
+            OpsProcessResult(exitCode: 0, stdout: try settingsAnswer("planned", planSHA256: hash), stderr: ""),
+            mode: .plan, action: .serverListenerSettings(settingsRequest), timeout: 90
+        )
+        XCTAssertEqual(outcome.kind, .planned)
+        XCTAssertTrue(outcome.isSuccess(for: .plan))
+        let settings = try XCTUnwrap(outcome.listenerSettings)
+        XCTAssertEqual(settings.result, "planned")
+        XCTAssertEqual(settings.planSHA256, hash)
+        XCTAssertEqual(settings.checkOK, true)
+        XCTAssertEqual(settings.changes.map(\.key), ["seat.CLAUDE.enabled"])
+        XCTAssertEqual(settings.changes.first?.from, .bool(true))
+        XCTAssertEqual(settings.changes.first?.to, .bool(false))
+        XCTAssertEqual(settings.diff.count, 5)
+    }
+
+    func test_a_settings_apply_carries_the_hash_both_plans_gave() async throws {
+        let hash = String(repeating: "a", count: 64)
+        let fake = try settingsRunner(first: hash, second: hash)
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(.serverListenerSettings(settingsRequest)))
+        try await waitFor(ops, until: isReview)
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") }, "nothing may run before the confirmation")
+
+        ops.confirm()
+        try await waitFor(ops, until: isFinished)
+        guard case .finished(_, let outcome) = ops.phase else { return XCTFail("\(ops.phase)") }
+        XCTAssertTrue(outcome.isSuccess(for: .yes), outcome.detail)
+        XCTAssertEqual(ops.completedRuns, 1)
+
+        let sent = fake.invocations
+        XCTAssertEqual(sent.count, 3)
+        let plans = sent.filter { $0.arguments.contains("--plan") }
+        XCTAssertEqual(plans.count, 2)
+        // Both plans send the same change, and neither names a hash.
+        let planInput = try XCTUnwrap(plans.first?.standardInput)
+        XCTAssertEqual(plans.last?.standardInput, planInput)
+        XCTAssertEqual(ServerSettingJSON.parse(String(decoding: planInput, as: UTF8.self)),
+                       .table(["set": .table(settingsRequest.set)]))
+
+        let applies = sent.filter { $0.arguments.contains("--yes") }
+        XCTAssertEqual(applies.count, 1)
+        let apply = try XCTUnwrap(applies.first)
+        XCTAssertEqual(apply.arguments.suffix(5).map { $0 }, [
+            "server", "eavesdropper-settings", "server", "--yes", "--json",
+        ])
+        let applyInput = try XCTUnwrap(apply.standardInput)
+        XCTAssertEqual(ServerSettingJSON.parse(String(decoding: applyInput, as: UTF8.self)),
+                       .table(["set": .table(settingsRequest.set), "expectPlanSHA256": .text(hash)]))
+    }
+
+    func test_a_settings_plan_whose_hash_changed_after_review_is_not_run() async throws {
+        let first = String(repeating: "a", count: 64)
+        let second = String(repeating: "c", count: 64)
+        let fake = try settingsRunner(first: first, second: second)
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(.serverListenerSettings(settingsRequest)))
+        try await waitFor(ops, until: isReview)
+        ops.confirm()
+        // The new plan comes back for review instead of being run.
+        try await waitFor(ops) { phase in
+            if case .review(_, let outcome) = phase {
+                return outcome.listenerSettings?.planSHA256 == second
+            }
+            return false
+        }
+        XCTAssertTrue(ops.notice?.contains("changed") == true, ops.notice ?? "no notice")
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        XCTAssertEqual(fake.recorded.filter { $0.contains("--plan") }.count, 2)
+        XCTAssertEqual(ops.completedRuns, 0)
+    }
+
+    func test_a_settings_plan_with_no_hash_is_never_offered_or_run() async throws {
+        let fake = try settingsRunner(first: nil, second: nil)
+        let ops = controller(fake)
+        XCTAssertTrue(ops.plan(.serverListenerSettings(settingsRequest)))
+        try await waitFor(ops, until: isFinished)
+        guard case .finished(_, let outcome) = ops.phase else { return XCTFail("\(ops.phase)") }
+        XCTAssertFalse(outcome.isSuccess(for: .plan))
+        XCTAssertNil(outcome.listenerSettings?.planSHA256)
+        // There is no review to confirm, so a confirmation is refused and nothing runs.
+        ops.confirm()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertFalse(fake.recorded.contains { $0.contains("--yes") })
+        XCTAssertEqual(fake.recorded.count, 1)
+        XCTAssertEqual(ops.completedRuns, 0)
     }
 
     func test_closing_a_pending_recheck_does_not_reopen_the_sheet_or_run_an_update() async throws {

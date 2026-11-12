@@ -78,10 +78,15 @@ enum OpsControlRoute {
     static let serverRunTimeout: TimeInterval = 180
     /// How long a timed-out helper has to exit after SIGTERM before it gets SIGKILL.
     static let killGrace: TimeInterval = 5
+    /// A run of the server Eavesdropper's settings editor.  The helper gives the editor 180
+    /// seconds of its own, and the file lock and ssh come on top, so a slow apply that worked
+    /// still answers inside this wait and is not shown as unknown.
+    static let serverListenerSettingsRunTimeout: TimeInterval = 240
 
     /// The longest Muster waits for a run of this action.
     static func runWait(for action: OpsAction) -> TimeInterval {
-        action.runsOnServer ? serverRunTimeout : runTimeout
+        if case .serverListenerSettings = action { return serverListenerSettingsRunTimeout }
+        return action.runsOnServer ? serverRunTimeout : runTimeout
     }
 }
 
@@ -458,7 +463,7 @@ enum OpsActionCase: CaseIterable {
         case .unitStatus: return .unitStatus(unit: OpsNames.reportTimerUnit)
         case .serverListenerSettings:
             return .serverListenerSettings(ServerListenerSettingsRequest(
-                set: ["daemon.held_back_catch_up": .bool(true)],
+                set: ["seat.CLAUDE.enabled": .bool(false)],
                 expectPlanSHA256: String(repeating: "b", count: 64)
             ))
         }
@@ -865,11 +870,6 @@ struct OpsCommandBuilder {
         )
     }
 
-    /// The typed, read-only route that asks the server what one platform has installed:
-    /// `server seat-inventory PLATFORM --plan --json`.  It changes nothing, so it needs no
-    /// confirmation sheet and no Touch ID, and the helper accepts only `--plan` for it.  The
-    /// platform is a plain lower-case id and nothing else, so no word reaches the server that
-    /// could be read as a flag or a second verb.
     /// The read of the server Eavesdropper's allowlisted settings:  `server eavesdropper-settings
     /// server --plan --json` with nothing on standard input,  which the editor answers as a get.
     /// It changes nothing,  so it needs no sheet and no Touch ID.
@@ -880,6 +880,11 @@ struct OpsCommandBuilder {
         )
     }
 
+    /// The typed, read-only route that asks the server what one platform has installed:
+    /// `server seat-inventory PLATFORM --plan --json`.  It changes nothing, so it needs no
+    /// confirmation sheet and no Touch ID, and the helper accepts only `--plan` for it.  The
+    /// platform is a plain lower-case id and nothing else, so no word reaches the server that
+    /// could be read as a flag or a second verb.
     func seatInventoryInvocation(platform: String) throws -> OpsInvocation {
         guard SeatInventoryDecoder.isPlatformId(platform) else {
             throw OpsControlError.invalidArgument("seat inventory platform")

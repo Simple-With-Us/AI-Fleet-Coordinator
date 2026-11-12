@@ -430,6 +430,13 @@ struct OpsActionSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let backup = settings.backup {
+                Text("Backup of the old file:  \(backup)")
+                    .font(.caption)
+                    .foregroundStyle(settings.replaced == true ? Color.orange : Color.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !settings.diff.isEmpty {
                 DisclosureGroup("The Lines That Change") {
                     Text(settings.diff.joined(separator: "\n"))

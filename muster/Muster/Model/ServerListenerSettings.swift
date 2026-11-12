@@ -19,14 +19,16 @@ import Foundation
 //     exactly what was shown or nothing.  There is no other write path here.
 //   * the server's allowlist (`scripts/fleet-ops-eavesdropper-settings.json` beside its helper) is
 //     the judge.  Muster reads this checkout's copy only to know the type and range of each key,
-//     and offers a key only when that copy lists it and the server answered with it or may set it.
+//     and offers a key only when it is a seat's `enabled` or `wake` and that copy lists it.
 //     It never adds a key to either copy, and a key the server answers that this copy does not
 //     list is shown read only.
 //   * a pin, a credential name or a key that reads as a secret, a path or a URL is never offered,
 //     whatever any allowlist says, and every read-only row says why.
-//   * a table (`budget`, `live`, `routine`) is set whole, from the values the server answered with
-//     the owner's edits laid over them, so no sub-key is ever dropped and nothing is sent to remove
-//     one.  A seat with no routine table is never given one.
+//   * only a seat's `enabled` and `wake` can be sent (`ServerSettingsBuilder.seatStructureKeys`).
+//     Every other allowlisted key (a seat's `routine`, `budget` and `live` tables, and every key of
+//     the daemon and feature tables) is shown read only, because a knob's home is Infisical (the
+//     owner's rule, Nov 11, 2026) and AFC-773 registers them there.  Nothing is ever sent to
+//     remove a key, and a seat with no routine table is never given one.
 
 // MARK: - Values
 
@@ -80,7 +82,13 @@ indirect enum ServerSettingValue: Equatable {
         case .number(let value):
             return value == value.rounded() && abs(value) < 1e15 ? String(format: "%.1f", value) : String(value)
         case .text(let value): return value
-        case .list(let items): return items.map(\.display).joined(separator: ", ")
+        case .list(let items):
+            // An item that is itself a list (a channel and topic pair) is bracketed, so the pairs
+            // of `daemon.presence_topics` can be told apart.
+            return items.map { item -> String in
+                if case .list = item { return "[" + item.display + "]" }
+                return item.display
+            }.joined(separator: ", ")
         case .table(let entries):
             return entries.keys.sorted().map { "\($0) = \(entries[$0]?.display ?? "")" }.joined(separator: ", ")
         }
@@ -455,6 +463,24 @@ struct ServerSettingsAnswer: Equatable {
     /// The reload's code after an apply, such as `reloaded` or `reload_unconfirmed`.
     var reloadCode: String?
     var rolledBack: Bool?
+    /// After a failed apply, whether the live file holds the new bytes:  false when it was never
+    /// replaced or the old bytes went back.
+    var replaced: Bool?
+    /// The name of the copy an apply made of the old file, when the editor named one.
+    var backup: String?
+
+    /// The editor's backup name prefix, `listener.toml` plus its `BACKUP_INFIX`.
+    static let backupPrefix = "listener.toml.bak-settings-"
+
+    /// Whether a text is a bare backup file name in the editor's own form:  the prefix, then only
+    /// letters, digits, dots, dashes and underscores, never a slash, and at most 80 characters.
+    static func isBackupName(_ value: String) -> Bool {
+        guard value.count <= 80, value.hasPrefix(backupPrefix), value.count > backupPrefix.count else { return false }
+        return value.unicodeScalars.allSatisfy { scalar in
+            (65...90).contains(scalar.value) || (97...122).contains(scalar.value) || (48...57).contains(scalar.value)
+                || scalar == "." || scalar == "-" || scalar == "_"
+        }
+    }
 
     static func isHash(_ value: String) -> Bool {
         value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
@@ -519,6 +545,8 @@ struct ServerSettingsAnswer: Equatable {
             reloadCode = text("code", in: reload).flatMap { OpsResultParser.isErrorCode($0) ? $0 : nil }
         }
         rolledBack = flag("rolledBack", in: document)
+        replaced = flag("replaced", in: document)
+        backup = text("backup", in: document).flatMap { Self.isBackupName($0) ? OpsResultParser.sanitizedForDisplay($0) : nil }
     }
 }
 
@@ -557,10 +585,13 @@ extension ServerSettingsAnswer {
             return (.refused, answer.detail ?? detail)
         case (_, "failed"):
             // A failed apply may have replaced the file and not put it back:  the answer says.
-            if mode == .yes, answer.rolledBack != true {
-                return (.unknown, answer.detail ?? detail)
+            // `replaced` false means the live file does not hold the new bytes, so the apply failed
+            // and nothing changed;  only a replaced (or unsaid) file that was not rolled back is unknown.
+            let words = (answer.detail ?? detail) + (answer.backup.map { " (a copy of the old file is kept as \($0))" } ?? "")
+            if mode == .yes, answer.replaced != false, answer.rolledBack != true {
+                return (.unknown, words)
             }
-            return (.failed, answer.detail ?? detail)
+            return (.failed, words)
         default:
             return (mode == .yes ? .unknown : .failed, "The server answered \"\(answer.result)\", which is not an answer to this request.")
         }
@@ -569,8 +600,9 @@ extension ServerSettingsAnswer {
 
 // MARK: - A change request
 
-/// What one Show Plan sends:  the settings to set, each by its full key (`seat.CLAUDE.budget`,
-/// `daemon.coalesce_seconds`).  A table is sent whole.  Nothing is ever removed.
+/// What one Show Plan sends:  the settings to set, each by its full key (`seat.CLAUDE.enabled`,
+/// `seat.CLAUDE.wake`).  Only a seat's `enabled` and `wake` can be sent;  every other key is a
+/// knob whose home is Infisical (AFC-773).  Nothing is ever removed.
 struct ServerListenerSettingsRequest: Equatable {
     var set: [String: ServerSettingValue]
     /// The approved plan's hash, set only on the run that follows the approval.
@@ -593,8 +625,10 @@ struct ServerListenerSettingsRequest: Equatable {
         return ServerSettingValue.table(document).json.map { Data($0.utf8) }
     }
 
-    /// Whether a full key is one Muster may send:  `seat.SEAT.name` or `table.name`, in the editor's
-    /// own shapes, and never a pin, a credential name or a name that reads as a secret.
+    /// Whether a full key is one Muster may send:  only `seat.SEAT.name` where `name` is one of
+    /// `ServerSettingsBuilder.seatStructureKeys`, in the editor's own shape, and never a pin, a
+    /// credential name or a name that reads as a secret.  Every `table.name` key and every other
+    /// seat key is refused, because a knob's home is Infisical (AFC-773).
     static func isOfferableKey(_ key: String) -> Bool {
         let parts = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         func isName(_ text: String) -> Bool {
@@ -606,11 +640,8 @@ struct ServerListenerSettingsRequest: Equatable {
             let seat = parts[1]
             guard (1...40).contains(seat.count), let first = seat.unicodeScalars.first, (65...90).contains(first.value),
                   seat.unicodeScalars.allSatisfy({ (65...90).contains($0.value) || (48...57).contains($0.value) || $0 == "-" }),
-                  isName(parts[2]) else { return false }
+                  isName(parts[2]), ServerSettingsBuilder.seatStructureKeys.contains(parts[2]) else { return false }
             return ServerSettingsAllowlist.mayOffer(table: "seat", name: parts[2])
-        }
-        if parts.count == 2, parts[0] != "seat", isName(parts[0]), isName(parts[1]) {
-            return ServerSettingsAllowlist.mayOffer(table: parts[0], name: parts[1])
         }
         return false
     }
@@ -639,7 +670,8 @@ enum ServerSettingControl: Equatable {
 struct ServerSettingRow: Identifiable, Equatable {
     /// The full path:  `seat.CLAUDE.budget.wakes_per_day`, `daemon.coalesce_seconds`.
     let id: String
-    /// The key a request sets:  `seat.CLAUDE.budget`, `daemon.coalesce_seconds`.
+    /// The key a request would set:  `seat.CLAUDE.enabled`, `seat.CLAUDE.wake`.  For a read-only
+    /// row it is the key the server answered with, such as `seat.CLAUDE.budget`.
     let settingKey: String
     /// The key inside a table, for a table's setting.
     let subKey: String?
@@ -654,11 +686,23 @@ struct ServerSettingRow: Identifiable, Equatable {
     /// For a table's setting, the whole table as the server answered it, every sub-key included,
     /// so an edit is laid over it and nothing the server holds is dropped.
     var table: [String: ServerSettingValue]? = nil
+    /// The value the daemon takes when the file sets none, for a seat's `enabled` (on) and `wake`
+    /// (`inbox`) only.  `current` stays nil, so a plan still reads "not set" for the old value.
+    var defaultValue: ServerSettingValue? = nil
 
     var isEditable: Bool { control != nil }
 
+    /// The value the daemon acts on:  the server's answer, else the daemon's default.
+    var effective: ServerSettingValue? { current ?? defaultValue }
+
+    /// Whether the value shown is the daemon's default because the file sets none.
+    var showsDefault: Bool { current == nil && defaultValue != nil }
+
+    /// A note under the row, when the value shown is the daemon's default.
+    var defaultNote: String? { showsDefault ? ServerSettingsCopy.daemonDefault : nil }
+
     /// The current value, in words.
-    var currentText: String { current?.display ?? (isEditable ? "Not set" : "Not read") }
+    var currentText: String { effective?.display ?? (isEditable ? "Not set" : "Not read") }
 }
 
 /// One table on screen:  a seat, the daemon, or one of the switches.
@@ -673,7 +717,8 @@ enum ServerSettingsCopy {
 
     static let neverOffered = "A pin or a credential name.\(gap)The server's editor refuses it whatever its allowlist says, so Muster never offers it, and the server never sends its value."
     static let variableName = "This names the variable that holds the routine's address or key, never its value.\(gap)The server lets it be only the seat's own name, so Muster shows it and offers no control."
-    static let routerContract = "The router contract fixes this (POST, signed with a bearer key in the Authorization header), so Muster shows it and offers no control for it."
+    static let routerContract = "How a routine is signed and sent is fixed by the receiver it calls, so Muster shows it and offers no control for it."
+    static let daemonDefault = "The file sets no value here, so this is the daemon's default."
     static let pairs = "A list of channel and topic pairs.\(gap)Muster shows it and offers no control for it."
     static let notEnforced = "The eavesdropper counts wakes and not dollars, so this cap is never enforced and Muster will not write it."
     static let noRoutine = "The seat has no routine table, so it Captures Only.\(gap)Muster does not give a seat a routine."
@@ -710,10 +755,16 @@ enum ServerSettingsCopy {
 }
 
 enum ServerSettingsBuilder {
-    /// A seat's routing structure:  whether the seat is on, how it is woken, and its routine table.  These
-    /// have no Infisical home.  Every other allowlisted setting (a seat's budget and live caps, and every
-    /// key of the daemon and feature tables) is a knob and is shown read only (`ServerSettingsCopy.knobHome`).
-    static let seatStructureKeys: Set<String> = ["enabled", "wake", "routine"]
+    /// A seat's routing structure:  whether the seat is on and how it is woken.  These have no
+    /// Infisical home, and they are the only settings Muster sends.  Every other allowlisted setting
+    /// (every sub-key of a seat's routine, budget and live tables, and every key of the daemon and
+    /// feature tables) is shown read only:  a timing or a cap is a knob (`ServerSettingsCopy.knobHome`),
+    /// and the rest says its own reason.
+    static let seatStructureKeys: Set<String> = ["enabled", "wake"]
+
+    /// The value the daemon takes for a structure key the file does not set
+    /// (`scripts/simple_tools/config.py`:  `enabled` defaults to true, `wake` to `inbox`).
+    static let seatStructureDefaults: [String: ServerSettingValue] = ["enabled": .bool(true), "wake": .text("inbox")]
 
     /// The rows for a get's settings, against this checkout's allowlist copy.
     static func groups(settings: [String: ServerSettingValue], allowlist: ServerSettingsAllowlist) -> [ServerSettingsGroup] {
@@ -791,7 +842,8 @@ enum ServerSettingsBuilder {
                 control = nil
             }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil, title: ServerSettingsCopy.rowTitle(name),
-                                     current: current, control: control, readOnlyReason: reason)]
+                                     current: current, control: control, readOnlyReason: reason,
+                                     defaultValue: isStructure ? seatStructureDefaults[name] : nil)]
         }
         let entries = current?.tableEntries ?? [:]
         return keys.keys.sorted().map { sub in
@@ -802,13 +854,17 @@ enum ServerSettingsBuilder {
                 reason = ServerSettingsCopy.variableName
             } else if name == "routine", ["method", "auth", "header", "signature_prefix"].contains(sub) {
                 reason = ServerSettingsCopy.routerContract
+            } else if name == "routine", ["timeout_seconds", "cost_usd"].contains(sub) {
+                // A timing and a cap:  knobs, whatever the seat's routine holds.
+                reason = ServerSettingsCopy.knobHome
             } else if name == "budget", sub == "usd_per_day" {
                 reason = ServerSettingsCopy.notEnforced
             } else if name == "routine", !hasRoutine {
                 reason = ServerSettingsCopy.noRoutine
             } else if control == nil {
                 reason = ServerSettingsCopy.pairs
-            } else if !isStructure {
+            } else {
+                // No sub-key of a table is a seat's routing structure, so every one is read only.
                 reason = ServerSettingsCopy.knobHome
             }
             if reason != nil { control = nil }
@@ -890,8 +946,12 @@ enum ServerSettingsBuilder {
             case .success(let parsed): value = parsed
             case .failure(let problem): return .failure(problem)
             }
-            if let current = row.current, sameValue(current, value) { continue }
+            // Against the daemon's default when the file sets none, so On on a seat that is on by
+            // default plans nothing.
+            if let current = row.effective, sameValue(current, value) { continue }
             if let sub = row.subKey {
+                // A table is sent whole, the edit laid over what the server answered.  No row can
+                // reach this until AFC-773 registers the knobs:  every table's sub-key is read only.
                 var table = tables[row.settingKey] ?? row.table ?? [:]
                 table[sub] = value
                 tables[row.settingKey] = table
@@ -1006,11 +1066,23 @@ final class ServerListenerSettingsStore: ObservableObject {
         return nil
     }
 
+    /// Set when a read is asked for while one is running, so one more read follows it and a read
+    /// asked for after an apply is never dropped.
+    private var readAgain = false
+
+    /// Reads the server's settings.  Called while a read is running, it asks for one more read
+    /// after that one, however many times it was called, so no call starts a read of its own.
     func refresh() async {
-        guard !isReading else { return }
+        guard !isReading else {
+            readAgain = true
+            return
+        }
         isReading = true
         defer { isReading = false }
-        reading = await reader.read()
+        repeat {
+            readAgain = false
+            reading = await reader.read()
+        } while readAgain
     }
 
     func revert() {
