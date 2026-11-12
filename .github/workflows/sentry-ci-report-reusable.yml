@@ -1,0 +1,245 @@
+name: Sentry CI Report (Reusable)
+
+# Fleet-wide CI observability, shared by every repo that calls this file.
+# It receives completion events from the caller's observed workflows, but only
+# reserves a runner for failures or scheduled check-ins.  It reports those
+# actionable events to the shared `fleet-infra` Sentry project (org
+# simple-with-us).  ADDITIVE ONLY — this file must never modify the behavior
+# of the workflows it observes, in the caller's repository or anywhere else.
+#
+# Two independent signals per completed run:
+#   1. On conclusion == failure / timed_out / startup_failure: a Sentry error
+#      event, tagged with {app, workflow, branch, actor}, carrying the run URL,
+#      fingerprinted on [ci-failure, app, workflow] so every failure of one
+#      workflow groups into ONE Sentry issue instead of paging separately every
+#      time.  The branch is a TAG only, never a fingerprint component (it was
+#      until 2026-08-12, which minted a permanent issue per feature branch —
+#      ~85 of the fleet's unresolved fleet-infra issues).  The `app` tag +
+#      fingerprint component are REQUIRED: the fleet-infra project is shared
+#      across repos, and this repo shares workflow names ("CI", "Security",
+#      "Effort Issues Sync") with peer apps, so without `app` a "CI" failure
+#      here would dedup into the same Sentry issue as a "CI" failure there.
+#      See FLEET-PROTOCOL.md "Observability".  The `app` value is the
+#      CALLER's repository name, passed in as an input,  because this reporter
+#      is shared and a hard-coded app tag would collapse every repo's failures
+#      into one issue.
+#   2. On event == schedule (i.e. the completed run was a cron-triggered
+#      run of a workflow that defines `schedule:`): a Sentry Crons check-in
+#      (ok on success, error on failure) with an upsert monitor_config whose
+#      schedule mirrors that workflow's own cron expression, slug
+#      `ci-<app-identity>-<workflow-slug>`.  This means a nightly/weekly job that
+#      silently STOPS firing (not "runs and fails" but "never runs again")
+#      raises a missed-check-in alert instead of going unnoticed.
+#
+# Raw Sentry envelope HTTP via python3 — no action marketplace dependency, no
+# new job permissions beyond what's needed to read the triggering run.
+#
+# THE CALLER'S DATA, NOT THIS FILE'S:
+#   The observed workflow names and the mirrored cron schedules belong to the
+#   repository that calls this workflow,  so they are inputs,  not constants
+#   here:
+#     observed_workflows — JSON array of the caller's observed workflow `name:`
+#                          values (the ones the caller's workflow_run listener
+#                          names).
+#     cron_schedules    — JSON object mapping one of those names to its cron
+#                          expression.
+#   The reporter validates the cron map's keys against the observed names on
+#   every run and raises a Sentry issue on drift,  so a rename cannot silently
+#   kill a monitor.  That check needs the observed names:  this reporter runs
+#   from a checkout of ITS OWN repository,  not the caller's,  so the caller's
+#   workflow files are not on disk to discover.
+#
+# THE SCRIPT IS THIS REPOSITORY'S, NOT THE CALLER'S — TWO LAYERS:
+#   1. WHICH reusable runs:  the caller pins a commit SHA of this file in
+#      `uses:` and passes the same SHA in the `reusable_ref` input.  The job
+#      asserts that the checked-out commit equals `reusable_ref`,  so a caller
+#      that pins one SHA and passes another is caught.  That assertion is a
+#      CONSISTENCY check between two CALLER-supplied values,  not a security
+#      boundary:  the caller controls both.
+#   2. WHICH script revision runs:  the repository-owned blob SHA pinned below.
+#      The job asserts that scripts/sentry-ci-report.py in the checked-out
+#      commit hashes to that value.  A blob SHA is content-addressed,  so it
+#      survives a squash, rebase or merge,  and the caller cannot supply it:
+#      pinning an unreviewed commit in `uses:` still cannot run an unreviewed
+#      reporter script with the caller's token and DSN.
+#   Update the pinned blob SHA whenever the reporter script changes:
+#     git hash-object scripts/sentry-ci-report.py
+#
+# Secret: the caller's repo (or org) Actions secret `SENTRY_FLEET_DSN` must be
+# set to the fleet-infra project DSN.  Name only — never commit or print the
+# value.  The reporter exits 0 with a warning when the secret is absent, so CI
+# itself is never red-X'd by a missing DSN.
+#
+# Gold copy: Usage-Monitor origin/main (PR #1394).  Adapted for AI-Fleet-Coordinator.
+
+on:
+  workflow_call:
+    inputs:
+      observed_workflows:
+        description: >-
+          JSON array of the observed workflow `name:` values, exactly the names the
+          caller's workflow_run listener observes.  A stale entry here silently
+          disables alerting for that pipeline.
+        required: true
+        type: string
+      cron_schedules:
+        description: >-
+          JSON object mapping an observed workflow `name:` to its cron expression.
+          The keys must match the caller's observed names;  the reporter raises a
+          Sentry config-drift issue when one does not.
+        required: true
+        type: string
+      reusable_ref:
+        description: >-
+          Commit SHA of this reusable workflow in Simple-With-Us/AI-Fleet-Coordinator.
+          It must be the SAME SHA the caller pins in `uses:`.  The job checks the
+          script out at this SHA,  refuses to run when the checked-out commit
+          differs from this input,  and separately verifies that the reporter
+          script itself is the reviewed revision.
+        required: true
+        type: string
+      app:
+        description: >-
+          The calling repository's display name,  used as the `app` tag on every
+          Sentry event.  It must be the caller's own name:  the fleet-infra project
+          is shared,  so one hard-coded name would collapse every repo's failures
+          into a single issue.
+        required: true
+        type: string
+      app_identity:
+        description: >-
+          Stable lowercase identity of the calling repository,  used in the issue
+          fingerprint,  the monitor slug and the check-in id.  Defaults to a
+          slugified `app`.  Set it when the caller's existing reporter used a
+          different identity,  so the existing monitors and open issues are not
+          orphaned.
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SENTRY_FLEET_DSN:
+        description: >-
+          The fleet-infra project DSN.  Optional:  the reporter warns and exits 0
+          when it is absent,  so a caller without it is never red-X'd.
+        required: false
+
+jobs:
+  # The script has no side effect for an ordinary successful push/PR/manual
+  # run.  Gate those events before runner scheduling so observability cannot
+  # starve CI with guaranteed no-op jobs.  Keep this list in lockstep with
+  # ALERT_CONCLUSIONS in scripts/sentry-ci-report.py.  Every scheduled run
+  # remains eligible because Sentry Crons needs both success and error
+  # check-ins.
+  report:
+    if: >-
+      (github.event.action == 'requested' && github.event.workflow_run.event == 'schedule') ||
+      (github.event.action == 'completed' && (github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'timed_out' ||
+      github.event.workflow_run.conclusion == 'startup_failure' ||
+      github.event.workflow_run.event == 'schedule'))
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require a usable observed_workflows list
+        # The cron-drift guard needs the CALLER's workflow names:  the reporter
+        # runs from a sparse checkout of THIS repository,  so the caller's
+        # workflow files are not on disk to discover.  Without this list a
+        # renamed workflow can never be detected,  so the shared run fails
+        # instead of reporting a "no drift" it cannot know about.
+        shell: bash
+        env:
+          OBSERVED_WORKFLOWS: ${{ inputs.observed_workflows }}
+        run: |
+          set -euo pipefail
+          if python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          raw = os.environ.get("OBSERVED_WORKFLOWS", "").strip()
+          try:
+              parsed = json.loads(raw)
+          except ValueError:
+              sys.exit(1)
+          if not isinstance(parsed, list):
+              sys.exit(1)
+          if not [name for name in parsed if isinstance(name, str) and name.strip()]:
+              sys.exit(1)
+          PY
+          then
+            echo "observed_workflows is a usable JSON array of workflow names"
+          else
+            echo "::error::observed_workflows must be a JSON array with at least one non-blank entry;  the shared reporter cannot detect a renamed workflow without it"
+            exit 1
+          fi
+
+      - name: Checkout the canonical reporter script
+        # Deliberately NOT the caller's copy and NOT the caller's default branch:
+        # this repository owns the reporter,  so the script is checked out here at
+        # the SHA the caller pinned.  The sparse checkout keeps the caller's
+        # workspace out of it entirely.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Simple-With-Us/AI-Fleet-Coordinator
+          ref: ${{ inputs.reusable_ref }}
+          path: reusable
+          persist-credentials: false
+          sparse-checkout: scripts/sentry-ci-report.py
+          sparse-checkout-cone-mode: false
+
+      - name: Assert the checked-out commit matches the pinned ref
+        # CONSISTENCY check between two CALLER-supplied values:  the SHA the
+        # caller pinned in `uses:` and the SHA it passed as `reusable_ref`.
+        # The caller controls both,  so this is NOT the security boundary —
+        # the repository-owned blob SHA in the next step is.
+        shell: bash
+        env:
+          EXPECTED_REF: ${{ inputs.reusable_ref }}
+        run: |
+          set -euo pipefail
+          actual="$(git -C reusable rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_REF" ]; then
+            echo "::error::checked out commit $actual but reusable_ref is $EXPECTED_REF;  the caller must pass the same SHA in uses: and in reusable_ref"
+            exit 1
+          fi
+
+      - name: Assert the reporter script is the reviewed revision
+        # THE security boundary.  The pinned value is the git BLOB SHA of
+        # scripts/sentry-ci-report.py as reviewed in this repository:  it is
+        # content-addressed,  so it survives a squash, rebase or merge,  and the
+        # caller cannot supply it.  A caller that pins an unreviewed commit in
+        # `uses:` still cannot run an unreviewed reporter script with the
+        # caller's token and SENTRY_FLEET_DSN.
+        shell: bash
+        env:
+          EXPECTED_SCRIPT_BLOB: dbdd998751d61d8c3810c1f72933b54af42e88ec
+        run: |
+          set -euo pipefail
+          actual_blob="$(git -C reusable rev-parse HEAD:scripts/sentry-ci-report.py)"
+          if [ "$actual_blob" != "$EXPECTED_SCRIPT_BLOB" ]; then
+            echo "::error::scripts/sentry-ci-report.py has blob $actual_blob but the reviewed revision is $EXPECTED_SCRIPT_BLOB;  the reporter script revision is not the reviewed one"
+            exit 1
+          fi
+
+      - name: Report failure + cron check-in to Sentry fleet-infra
+        shell: bash
+        env:
+          SENTRY_FLEET_DSN: ${{ secrets.SENTRY_FLEET_DSN }}
+          SENTRY_OBSERVED_WORKFLOWS: ${{ inputs.observed_workflows }}
+          SENTRY_CRON_SCHEDULES: ${{ inputs.cron_schedules }}
+          SENTRY_APP: ${{ inputs.app }}
+          SENTRY_APP_IDENTITY: ${{ inputs.app_identity }}
+          GITHUB_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN_ACTION: ${{ github.event.action }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW_ACTOR: ${{ github.event.workflow_run.actor.login }}
+          WORKFLOW_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: python3 reusable/scripts/sentry-ci-report.py

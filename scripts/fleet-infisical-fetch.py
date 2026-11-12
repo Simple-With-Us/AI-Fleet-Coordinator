@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch named secrets from Infisical using a machine identity found in the ENVIRONMENT.
+"""Fetch named secrets with the dedicated Fleet Recall scoped service-token binding.
 
 Built for cloud sandboxes (Claude Code Cloud, Codespaces, Cursor cloud, any throwaway
-clone), where there is no ~/.secrets handoff file but the platform can inject environment
-variables.  On the Mac, scripts/fleet_rag/core.py reads the same universal-auth identity
-out of the chmod-600 handoff file instead; this helper reuses core.py's login endpoint,
-project, environment and HTTP client so both paths behave identically.
+clone), where there is no `fleet-secrets` but the platform can inject a scoped token.
+The same binding is used on the Mac and cloud environments, and each request validates
+the service-token grant before reading.
 
-Identity env names use the fleet's existing prefix convention (see core.py `_identity`):
-
-    INFISICAL_SHARED_CLIENT_ID     / INFISICAL_SHARED_CLIENT_SECRET
-    INFISICAL_AUTOMATION_CLIENT_ID / INFISICAL_AUTOMATION_CLIENT_SECRET
+Token env name: ``FLEET_RECALL_INFISICAL_TOKEN``.
 
 Usage:
     fleet-infisical-fetch.py --env-file PATH KEY [KEY ...]   # write a 0600 env file
@@ -19,8 +15,9 @@ Usage:
 Values are NEVER printed, logged, or passed on a command line -- only key NAMES and
 booleans reach stdout.  The env file is created under umask 077.
 
-Exit codes: 0 ok  ·  2 usage  ·  3 no identity in the environment  ·  4 fetch failed.
+Exit codes: 0 ok  ·  2 usage  ·  3 scoped token missing  ·  4 fetch failed.
 """
+
 from __future__ import annotations
 
 import os
@@ -31,43 +28,34 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from fleet_rag.core import (  # noqa: E402
+from fleet_rag.core import (
     FleetRagError,
-    http_json,
     infisical_api,
     infisical_env,
     infisical_project,
 )
+from fleet_secrets.core import SecretsError, check_service_token
 
-# Same prefixes, same order, as core.infisical_login().
-PREFIXES = ("INFISICAL_SHARED", "INFISICAL_AUTOMATION")
-
-
-def env_identity() -> tuple[str | None, str | None, str | None]:
-    """Return (prefix, client_id, client_secret) from the environment, or (None, None, None)."""
-    for prefix in PREFIXES:
-        cid = (os.environ.get(f"{prefix}_CLIENT_ID") or "").strip()
-        csec = (os.environ.get(f"{prefix}_CLIENT_SECRET") or "").strip()
-        if cid and csec:
-            return prefix, cid, csec
-    return None, None, None
+TOKEN_ENV = "FLEET_RECALL_INFISICAL_TOKEN"
 
 
-def login(cid: str, csec: str) -> str:
-    return http_json(f"{infisical_api()}/v1/auth/universal-auth/login",
-                     {"clientId": cid, "clientSecret": csec}, retries=1)["accessToken"]
+def env_identity() -> tuple[str | None, None, None]:
+    """Report only whether the recall-specific service-token binding exists."""
+    return (
+        (TOKEN_ENV, None, None) if (os.environ.get(TOKEN_ENV) or "").strip() else (None, None, None)
+    )
 
 
 def fetch(token: str, wanted: list[str]) -> dict[str, str]:
-    got = http_json(
-        f"{infisical_api()}/v3/secrets/raw?workspaceId={infisical_project()}"
-        f"&environment={infisical_env()}&secretPath=%2F",
-        headers={"Authorization": f"Bearer {token}"}, retries=1)
-    out: dict[str, str] = {}
-    for s in got.get("secrets", []):
-        if s.get("secretKey") in wanted and s.get("secretValue"):
-            out[s["secretKey"]] = s["secretValue"]
-    return out
+    from fleet_secrets import core as secrets
+
+    env = dict(os.environ)
+    env[secrets.ENV_API] = infisical_api()
+    try:
+        infisical_env()
+        return secrets.fetch_project(infisical_project(), "/", env, token=token, names=wanted)
+    except secrets.SecretsError as exc:
+        raise FleetRagError("scoped Infisical read failed: " + exc.message) from None
 
 
 def read_env_file(path: pathlib.Path) -> dict[str, str]:
@@ -94,8 +82,10 @@ def read_env_file(path: pathlib.Path) -> dict[str, str]:
 def write_env_file(path: pathlib.Path, values: dict[str, str]) -> None:
     """Write KEY='value' lines to a 0600 file via temp-file + rename.  Never echoes a value."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = ("# Fleet recall credentials -- written by scripts/cloud-setup.sh from Infisical.\n"
-            "# Load with:  set -a; . " + str(path) + "; set +a\n")
+    body = (
+        "# Fleet recall credentials -- written by scripts/cloud-setup.sh from Infisical.\n"
+        "# Load with:  set -a; . " + str(path) + "; set +a\n"
+    )
     for k in sorted(values):
         body += f"{k}={shlex.quote(values[k])}\n"
     old = os.umask(0o077)
@@ -112,8 +102,10 @@ def write_env_file(path: pathlib.Path, values: dict[str, str]) -> None:
 def main(argv: list[str]) -> int:
     if len(argv) >= 1 and argv[0] == "--identity":
         prefix, _, _ = env_identity()
-        print(f"identity: {'true' if prefix else 'false'}"
-              + (f" ({prefix})" if prefix else ""))
+        print(
+            f"service-token-binding: {'true' if prefix else 'false'}"
+            + (f" ({prefix})" if prefix else "")
+        )
         return 0 if prefix else 3
     if len(argv) < 3 or argv[0] != "--env-file":
         print("usage: fleet-infisical-fetch.py --env-file PATH KEY [KEY ...]", file=sys.stderr)
@@ -123,16 +115,17 @@ def main(argv: list[str]) -> int:
     path = pathlib.Path(argv[1]).expanduser()
     wanted = argv[2:]
 
-    prefix, cid, csec = env_identity()
+    prefix, _, _ = env_identity()
     if not prefix:
         print("no-identity")
         return 3
-    print(f"identity: true ({prefix})")
+    print(f"service-token-binding: true ({prefix})")
 
     try:
-        token = login(cid, csec)  # type: ignore[arg-type]
+        token = (os.environ.get(TOKEN_ENV) or "").strip()
+        token = check_service_token(token)
         got = fetch(token, wanted)
-    except (FleetRagError, KeyError, TypeError) as e:
+    except (FleetRagError, SecretsError, KeyError, TypeError, ValueError) as e:
         print(f"fetch-failed: {type(e).__name__}", file=sys.stderr)
         return 4
 

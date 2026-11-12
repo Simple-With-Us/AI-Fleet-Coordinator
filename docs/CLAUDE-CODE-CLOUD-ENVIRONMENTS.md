@@ -56,13 +56,13 @@ in a Claude setup script.
 
 | Field | Fleet default |
 |-------|----------------|
-| Network access | **Full** (Infisical, Coolify, private package fetches, `mac.jays.services`) |
+| Network access | **Full** (Infisical, Coolify, private package fetches) |
 | Environment variables | Non-secret selectors only. No API keys. Cloud environments have no secrets store; anyone who can open the dialog can read the values. |
 | Base branch | `main` |
 
-Do not paste Infisical client secrets, Zulip bot keys, the Linear Fleet app's `LINEAR_CLIENT_SECRET`, or `MAC_COLLAB_TOKEN` into
+Do not paste Infisical client secrets, Zulip bot keys, or the Linear Fleet app's `LINEAR_CLIENT_SECRET` into
 the environment dialog. Apps that need Infisical stay keyless in cloud and
-resolve secrets only when identities are injected by a later, private path.
+resolve secrets only when a scoped read-only service token is bound on a private path.
 
 ## Fleet recall in a cloud sandbox
 
@@ -70,25 +70,14 @@ resolve secrets only when identities are injected by a later, private path.
 shared fleet corpus, so a cloud seat stops concluding that the corpus is
 unreachable when it meets the Cloudflare Access login page.
 
-When an Infisical machine identity is present **in the environment**
-(`INFISICAL_SHARED_CLIENT_ID` / `INFISICAL_SHARED_CLIENT_SECRET`, or the
-`INFISICAL_AUTOMATION_*` pair), setup performs the same universal-auth login the
-Mac-side `recall` CLI performs and writes `RECALL_API_TOKEN`,
-`CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` to a `0600`
-`~/.fleet-recall.env`.  It then registers the `fleet-recall` remote MCP server
-(`https://recall.jays.services/mcp`) in `~/.claude.json` with `${...}` header
-**placeholders** — never values.  Load the file before starting the agent:
+When `FLEET_RECALL_INFISICAL_TOKEN` is present in the environment (a read-only Infisical service token for the recall project's prod `/` folder), setup reads `RECALL_API_TOKEN`, `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` with that token and writes them to a `0600` `~/.fleet-recall.env`.  A missing or malformed token is reported by name and setup still exits 0.  It does not log in with a machine identity, and it does not read `INFISICAL_SHARED_CLIENT_ID`, `INFISICAL_SHARED_CLIENT_SECRET`, or an `INFISICAL_AUTOMATION_*` pair.  It then registers the `fleet-recall` remote MCP server in `~/.claude.json` with `${...}` header **placeholders** — never values.  Load the file before starting the agent:
 
 ```bash
 set -a; . ~/.fleet-recall.env; set +a
 bash scripts/cloud-setup.sh --check     # names and booleans only
 ```
 
-This does **not** change the rule above: the identity still never goes in the
-environment-variables dialog, which anyone who can open it can read.  With no
-identity, setup says so, points at
-[RECALL-ACCESS-CHECK.md](RECALL-ACCESS-CHECK.md), and still exits 0 — a docs/infra
-repo must not fail a sandbox.
+This does **not** change the rule above: the service token still never goes in the environment-variables dialog, which anyone who can open it can read.  With no token, setup says so, points at [RECALL-ACCESS-CHECK.md](RECALL-ACCESS-CHECK.md), and still exits 0 — a docs/infra repo must not fail a sandbox.
 
 ## Repos to add on claude.ai/code
 

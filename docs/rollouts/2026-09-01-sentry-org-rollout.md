@@ -35,9 +35,9 @@ Do not invent a second org-wide PagerDuty workflow.  Scope `3930764` with
 
 | Workflow | Id | Scope | Action |
 |---|---|---|---|
-| Fleet high-priority production issues → #agent-sync | 3930668 | org-wide `environment=production`; also Seer `rca_completed` / `pr_ready_for_review` | Slack `#agent-sync` |
+| Fleet high-priority production issues → #Work-In-Progress | 3930668 | org-wide `environment=production`; also Seer `rca_completed` / `pr_ready_for_review` | Slack `#Work-In-Progress` |
 | P0 production → PagerDuty (ST/UM/fleet/BF issues + prod uptime) | 3930764 | detector_ids: ST/UM/fleet/BF issue streams + ST/UM/CT/fleet/BF uptime | PagerDuty `jays.services` critical |
-| Live scheduler cron failures → #agent-sync | 3932162 | `scheduler-tick`, `usage-monitor-scheduler` | Slack `#agent-sync` |
+| Live scheduler cron failures → #Work-In-Progress | 3932162 | `scheduler-tick`, `usage-monitor-scheduler` | Slack `#Work-In-Progress` |
 
 CT **error-stream** is intentionally **not** on PagerDuty (PDF XRef noise).  CT
 **uptime** (`congress.trade /api/health`) **is** on PagerDuty because a site

@@ -1,7 +1,7 @@
 """cordis_patch: marked blocks inside Clutch's home-level cordis patch (`~/.clutch/dsh/cordis.patch.yml`).
 
 The patch is a top-level YAML array of loader patch entries.  Two fleet installers add entries to it, each as its own
-marked block (`mcp-agent-sync` from install_mcp, `hooks-fleet-guards` from install_tools), and neither touches
+marked block (`mcp-simple-chat` from install_mcp, `hooks-fleet-guards` from install_tools), and neither touches
 anything outside its block.
 
 One fact shapes everything here, measured with the pinned engine on 2026-10-10:  an EMPTY patch file, or one that

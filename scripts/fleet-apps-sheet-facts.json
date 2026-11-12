@@ -8,6 +8,10 @@
     "6820881005": {
       "status": "Successor, in progress",
       "action": "Successor Usage Monitor Client app, in progress under the Simple With Us (SWU) domain with a slightly changed name.  It replaces usage (Usage Client Monitor, 6799230435).  Owner Oct 11.  Its bundle id and App Store data stay as they are."
+    },
+    "6814951477": {
+      "status": "Retired by owner",
+      "action": "CodeCaps for Mac.  Retired from TestFlight and the Mac App Store (CC-169, owner 2026-10-19);  the Mac app ships through GitHub release DMGs (mac-release.yml), not TestFlight.  Its apps.json entry was removed on that ruling, so the ASC record is listed here instead of the registry.  The record still exists, and no build may be uploaded to it."
     }
   },
   "appNotes": {
@@ -34,6 +38,7 @@
     "MA": "Muse Assist (Meta cloud VM)",
     "MC": "Muse Code",
     "OPENCODE": "OpenCode",
+    "ZC": "Z Code",
     "JET": "ChatGPT (OpenAI dot)",
     "WISE": "Wise (hosted)",
     "ECHO": "Instinct (hosted)"
@@ -42,7 +47,7 @@
     "JET": {
       "notesName": "Jet",
       "zulipBotEmail": "openai-dot-bot@simplewithus.zulipchat.com",
-      "notes": "Its own identity, never a Codex default.  Wake-eligible (AFC #387) and bridged through the hosted MCP Worker (AFC #394, #403).  Its wake POSTs to https://agent-sync.jays.services/internal/wake/JET, which sends an OpenAI MCP Events zulip.mention to every subscribed ChatGPT chat (scripts/agent_sync/server/listener.toml)."
+      "notes": "Its own identity, never a Codex default.  Wake-eligible (AFC #387) and bridged through the hosted MCP Worker (AFC #394, #403).  Its wake POSTs to https://agents.simplewithus.com/internal/wake/JET, which sends an OpenAI MCP Events zulip.mention to every subscribed ChatGPT chat (scripts/simple_tools/server/listener.toml)."
     },
     "WISE": {
       "notesName": "Wise",

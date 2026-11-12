@@ -1,0 +1,337 @@
+import Foundation
+
+/// Why the Control app could not change a fleet service.
+public enum FleetServiceError: LocalizedError, Equatable {
+    case managerMissing
+    case refused(String)
+    /// The change was made,  and nothing could say how it ended.  It is not a refusal.
+    case notKnown(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .managerMissing:
+            return "The process manager for this service is not installed on the Mac."
+        case .refused(let message), .notKnown(let message):
+            return message
+        }
+    }
+}
+
+/// Watches the fleet services on this Mac, and changes them when the owner
+/// asks.
+///
+/// Every service is observed and changed through the manager that owns it: a
+/// pm2 application through pm2, a launchd agent through launchctl.  The
+/// BotFleet MCP Server is the one exception, because its own health endpoint
+/// is the only authority on whether it is running.
+public final class FleetServiceControl {
+    /// How often the BotFleet Server's own stop is looked for.
+    ///
+    /// The server answers the stop request before it has exited, so the
+    /// Control app waits for it to go rather than assuming it did.  The
+    /// window is the same twenty seconds the pm2 wait gives: eight looks
+    /// two and a half seconds apart.
+    public static let settleInterval: TimeInterval = 2.5
+
+    private let pm2: PM2Client
+    private let startup: StartupPolicy
+    private let mcpServer: McpServerControl?
+    /// How the BotFleet Server is asked to stop.
+    ///
+    /// The server stops itself.  launchd does not always own the process:
+    /// the installed wrapper exits when the harness is already healthy, and
+    /// the desktop app forks its own harness when nothing answers on the
+    /// port, so booting the agent out can leave a server that is still
+    /// serving.  Asking the server is the only stop that is the server's.
+    private let stopServer: (() async throws -> Void)?
+    /// How the BotFleet Server's own state is observed.
+    ///
+    /// The server's LaunchAgent is a wrapper that exits once the harness is
+    /// healthy, so launchd can report it stopped while the server is still
+    /// serving.  The caller that knows the server's API and port observes it
+    /// here;  without one, launchd's view is all there is.
+    private let observeServer: (() async -> ManagedServiceState)?
+    /// How long a LaunchAgent is given between two looks after a change,  and
+    /// the BotFleet Server between two looks after it is asked to stop.
+    ///
+    /// launchctl and the agent do not settle at the same moment:  a row can
+    /// still carry a process right after a bootout,  and carry none right
+    /// after a kickstart.  The window is the one a pm2 change gets.
+    private let agentSettleInterval: TimeInterval
+
+    public init(pm2: PM2Client = PM2Client(),
+                startup: StartupPolicy = StartupPolicy(),
+                mcpServer: McpServerControl? = nil,
+                stopServer: (() async throws -> Void)? = nil,
+                observeServer: (() async -> ManagedServiceState)? = nil,
+                agentSettleInterval: TimeInterval = FleetServiceControl.settleInterval) {
+        self.pm2 = pm2
+        self.startup = startup
+        self.mcpServer = mcpServer
+        self.stopServer = stopServer
+        self.observeServer = observeServer
+        self.agentSettleInterval = agentSettleInterval
+    }
+
+    /// True when pm2 and the node that runs it are on this Mac.  A pm2 that is there and did
+    /// not answer is a different problem from one that is not installed.
+    public var pm2IsInstalled: Bool { pm2.isAvailable }
+
+    /// A service's state once it reached the wanted one,  or once the budget
+    /// ran out,  so a change that landed is not read as one that did not.
+    ///
+    /// A look can take a whole timeout when launchctl or the server is wedged,
+    /// so the budget is time and not a number of looks.
+    private func settledState(wanted: ManagedServiceState,
+                              attempts: Int,
+                              observe: () async -> ManagedServiceState) async -> ManagedServiceState {
+        await ManagedServices.settle(to: wanted,
+                                     within: Double(max(attempts, 0)) * agentSettleInterval,
+                                     interval: agentSettleInterval,
+                                     observe: observe)
+    }
+
+    /// A LaunchAgent's state once it settled.
+    private func settledAgentState(_ label: String,
+                                   wanted: ManagedServiceState,
+                                   attempts: Int) async -> ManagedServiceState {
+        await settledState(wanted: wanted, attempts: attempts) {
+            self.startup.state(ofAgent: label).managedState
+        }
+    }
+
+    /// The BotFleet Server's state as its own API and port show it, or
+    /// launchd's view of its agent when nothing better was given.
+    private func serverObservation(label: String) async -> ManagedServiceState {
+        if let observeServer { return await observeServer() }
+        return startup.state(ofAgent: label).managedState
+    }
+
+    /// Reads the state of every fleet service.
+    ///
+    /// The pm2 applications are read in one command, so the menu never waits
+    /// for ten separate calls.
+    public func states(serverState: ManagedServices.ServerState) async -> [String: ManagedServiceState] {
+        let pm2States = pm2.appStates()
+        var states: [String: ManagedServiceState] = [:]
+        for descriptor in FleetServiceRegistry.all {
+            switch descriptor.kind {
+            case .pm2(let appName):
+                if descriptor.policy == .whileServerRuns {
+                    // The MCP server's health endpoint is the only authority
+                    // on whether it is running, so it decides the state and
+                    // pm2 only changes it.
+                    states[descriptor.id] = await mcpServer?.state() ?? .unknown
+                } else if let pm2States {
+                    // pm2 answered.  An application it has no record of is not stopped,
+                    // it is not in this Mac's pm2,  and it is not offered a start.
+                    states[descriptor.id] = pm2States[appName] ?? .notInPM2
+                } else {
+                    states[descriptor.id] = .unknown
+                }
+            case .launchAgent(let label):
+                if descriptor.id == FleetServiceRegistry.server.id {
+                    // The BotFleet Server's own agent is a wrapper that
+                    // exits as soon as the harness is healthy, so what the
+                    // Control app knows about the server is the truth
+                    // about it.
+                    states[descriptor.id] = serverState.managedState
+                } else {
+                    states[descriptor.id] = startup.state(ofAgent: label).managedState
+                }
+            }
+        }
+        return states
+    }
+
+    /// Starts, stops or restarts one fleet service and reports what the
+    /// Control app can see afterwards.
+    ///
+    /// The state that is reported is the one observed after the change, so a
+    /// manager that refused the change is never reported as a success.
+    @discardableResult
+    public func perform(_ action: ManagedServiceAction,
+                        serviceID: String,
+                        attempts: Int = PM2Client.settleAttempts) async throws -> ManagedServiceState {
+        guard let descriptor = FleetServiceRegistry.descriptor(for: serviceID) else {
+            throw FleetServiceError.refused("That is not a fleet service.")
+        }
+        switch action {
+        case .start:
+            return try await setRunning(true, descriptor: descriptor, attempts: attempts)
+        case .stop:
+            return try await setRunning(false, descriptor: descriptor, attempts: attempts)
+        case .restart:
+            return try await restart(descriptor, attempts: attempts)
+        case .none:
+            return await state(of: descriptor)
+        }
+    }
+
+    /// Brings one service to the wanted state and reports what was seen.
+    private func setRunning(_ running: Bool,
+                            descriptor: FleetServiceDescriptor,
+                            attempts: Int) async throws -> ManagedServiceState {
+        switch descriptor.kind {
+        case .pm2(let appName):
+            if descriptor.policy == .whileServerRuns {
+                guard let mcpServer else { throw FleetServiceError.managerMissing }
+                do {
+                    return try await mcpServer.setRunning(running, within: PM2Client.mcpSettleWindow)
+                } catch let error as McpServerError {
+                    throw Self.mcpFailure(error, fallback: "The BotFleet MCP Server could not be changed.")
+                }
+            }
+            do {
+                return try await pm2.setRunning(running, appName: appName, attempts: attempts)
+            } catch {
+                throw pm2Failure(error, action: "change", appName: appName)
+            }
+        case .launchAgent(let label):
+            if descriptor.id == FleetServiceRegistry.server.id {
+                // The BotFleet Server has a start of its own: it checks
+                // the installed wrapper and clears the deliberate-stop
+                // marker, so the server stays up afterwards.
+                if running {
+                    try startup.startServer()
+                    // The wrapper exits once the server is healthy, so there
+                    // is no state of its to wait for:  the caller that knows
+                    // the port waits for that instead.
+                    return startup.state(ofAgent: label).managedState
+                }
+                guard let stopServer else {
+                    throw FleetServiceError.refused("The BotFleet Server has to stop itself, and Muster could not ask it to.")
+                }
+                try await stopServer()
+                // The server's own shutdown is asynchronous, so what is
+                // reported is the state that was observed after it, not
+                // a constant that happens to be the expected one.  It is
+                // the server's own state, not launchd's view of the
+                // wrapper, which can already say stopped while the
+                // server is still serving.
+                return await settledState(wanted: .stopped, attempts: attempts) {
+                    await self.serverObservation(label: label)
+                }
+            }
+            if running {
+                try startup.startAgent(label: label)
+            } else {
+                try startup.stopAgent(label: label)
+            }
+            return await settledAgentState(label, wanted: running ? .running : .stopped, attempts: attempts)
+        }
+    }
+
+    /// Restarts one service and reports what was seen.
+    private func restart(_ descriptor: FleetServiceDescriptor,
+                         attempts: Int) async throws -> ManagedServiceState {
+        switch descriptor.kind {
+        case .pm2(let appName):
+            if descriptor.policy == .whileServerRuns {
+                guard let mcpServer else { throw FleetServiceError.managerMissing }
+                do {
+                    return try await mcpServer.restart(within: PM2Client.mcpSettleWindow)
+                } catch let error as McpServerError {
+                    throw Self.mcpFailure(error, fallback: "The BotFleet MCP Server could not be restarted.")
+                }
+            }
+            do {
+                try pm2.restart(appName: appName)
+            } catch {
+                throw pm2Failure(error, action: "restart", appName: appName)
+            }
+            return await ManagedServices.settle(to: .running,
+                                                attempts: attempts,
+                                                interval: PM2Client.settleInterval) {
+                self.pm2.state(ofApp: appName)
+            }
+        case .launchAgent(let label):
+            if descriptor.id == FleetServiceRegistry.server.id {
+                // The BotFleet Server has a restart of its own: it clears the
+                // deliberate-stop marker first, because the installed wrapper
+                // stays down while that marker exists.
+                let deliberateStop = try startup.restartServer()
+                // A restart replaces the process the launchd job owns.  When
+                // the job owns no process - the server was started by
+                // something else, such as the desktop app's own fork - a
+                // kickstart cannot replace it, and the restart is not
+                // reported as a success.
+                let observed = await ManagedServices.settle(to: .running,
+                                                            attempts: attempts,
+                                                            interval: 0.25) {
+                    startup.state(ofAgent: label).managedState
+                }
+                if observed != .running {
+                    // Only an observation that proves the server is not
+                    // running puts the marker back.  An unknown state means
+                    // launchctl could not be asked, not that the restart
+                    // failed, and the marker must not be re-created on it.
+                    // launchd's view alone is not that proof, because the
+                    // wrapper exits once the server is healthy, so the
+                    // server's own state has to say stopped as well.
+                    // Without an observer, launchd's view is all there is, and
+                    // it is not asked a second time.
+                    let server = observeServer == nil ? observed : await serverObservation(label: label)
+                    if observed != .unknown && server == .stopped { deliberateStop.restore() }
+                    // The kickstart was issued,  so a state nobody can read is not a
+                    // restart that was refused.
+                    if observed == .unknown {
+                        throw FleetServiceError.notKnown("launchctl could not be asked after the restart")
+                    }
+                    throw FleetServiceError.refused("The BotFleet Server was not replaced: its LaunchAgent owns no process, so the server that is running was not started by launchd.")
+                }
+                return observed
+            }
+            try startup.restartAgent(label: label)
+            return await settledAgentState(label, wanted: .running, attempts: attempts)
+        }
+    }
+
+    /// The state of one service, as the Control app sees it.
+    private func state(of descriptor: FleetServiceDescriptor) async -> ManagedServiceState {
+        switch descriptor.kind {
+        case .pm2(let appName):
+            if descriptor.policy == .whileServerRuns {
+                return await mcpServer?.state() ?? .unknown
+            }
+            return pm2.state(ofApp: appName)
+        case .launchAgent(let label):
+            return startup.state(ofAgent: label).managedState
+        }
+    }
+
+    /// The error the Control app reports for the BotFleet MCP Server's own control.  A change
+    /// that may have landed is not a refused one.
+    ///
+    /// `managerMissingIsOwnError` is how a missing manager is reported:  as its own error
+    /// (the pm2 path),  or in the manager's own words as a refusal (the MCP server's control).
+    private static func mcpFailure(_ error: McpServerError, fallback: String,
+                                   managerMissingIsOwnError: Bool = false) -> FleetServiceError {
+        switch error {
+        case .managerMissing:
+            return managerMissingIsOwnError ? .managerMissing : .refused(error.errorDescription ?? fallback)
+        case .notKnown(let why):
+            return .notKnown(why)
+        case .refused(let why):
+            return .refused(why.isEmpty ? fallback : why)
+        }
+    }
+
+    /// The error the Control app reports when pm2 refused a change or could not be asked.
+    private func pm2Failure(_ error: Error, action: String, appName: String) -> FleetServiceError {
+        switch error {
+        case let failure as McpServerError:
+            return Self.mcpFailure(failure, fallback: "pm2 could not \(action) \(appName).",
+                                   managerMissingIsOwnError: true)
+        case let failure as CommandExitError:
+            let why = failure.reason
+            return .refused(why.isEmpty ? "pm2 could not \(action) \(appName)." : why)
+        case is CommandTimedOutError:
+            // pm2 can take a change and then be slow to answer,  so a timeout says nothing
+            // about whether it landed.
+            return .notKnown("pm2 did not finish in time to \(action) \(appName), so it is not known whether it did.")
+        default:
+            return .refused("pm2 could not \(action) \(appName).")
+        }
+    }
+}

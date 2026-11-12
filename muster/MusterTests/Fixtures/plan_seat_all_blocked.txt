@@ -1,0 +1,20 @@
+Plan for CODEX:  5 entries,  0 auto-fixable.
+  MISSING     codex-instructions-lane-map  instructions  codex
+      the instructions config for codex is missing;  install_rules would write .codex/AGENTS.md
+      installer:  python3 -m fleet_lanes.install_rules apply codex --create --home <HOME>
+      file:  .codex/AGENTS.md
+      autofix:  no  (the manifest does not allow an automatic fix for this rule)
+  MISSING     codex-hooks-lane-guard  hooks  codex
+      the hooks config for codex is missing;  install_tools would write .codex/hooks.json
+      installer:  python3 -m fleet_lanes.install_tools apply codex --home <HOME>
+      file:  .codex/hooks.json
+      autofix:  no  (the manifest does not allow an automatic fix for this rule)
+  MISSING     codex-mcp-fleet-servers  mcp  codex
+      the mcp config for codex is missing;  no installer can create it
+      autofix:  no  (the manifest does not allow an automatic fix for this rule)
+  MISSING     codex-skills-fleet  skills  codex
+      the skills config for codex is missing;  no installer can create it
+      autofix:  no  (the manifest does not allow an automatic fix for this rule)
+  MISSING     codex-subagents-fleet  subagents  codex
+      the subagents config for codex is missing;  no installer can create it
+      autofix:  no  (the manifest does not allow an automatic fix for this rule)

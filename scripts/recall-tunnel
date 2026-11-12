@@ -48,7 +48,7 @@
 #
 # No secrets here: SSH auth is the box's own key-based access (the "coolify" ~/.ssh/config
 # alias), and QDRANT_URL / TEI_URL carry no credential -- Qdrant/TEI auth, if any, still comes
-# from the usual handoff file / Infisical path via fleet_rag.core.load_config().
+# from the usual environment / fleet-secrets / Infisical path via fleet_rag.core.load_config().
 set -euo pipefail
 
 HOST="coolify"

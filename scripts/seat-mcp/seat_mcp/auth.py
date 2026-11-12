@@ -7,35 +7,32 @@ from __future__ import annotations
 
 import hmac
 import os
-import secrets
-from pathlib import Path
+import subprocess
 
-from .config import SECRETS_FILE
-
-
-def ensure_token_file() -> Path:
-    """Create ~/.secrets/seat-mcp.env with a random token if missing."""
-    SECRETS_FILE.parent.mkdir(mode=0o700, exist_ok=True)
-    if not SECRETS_FILE.is_file():
-        token = secrets.token_urlsafe(32)
-        SECRETS_FILE.write_text("SEAT_MCP_TOKEN=" + token + "\n", encoding="utf-8")
-    os.chmod(SECRETS_FILE, 0o600)
-    return SECRETS_FILE
+from .config import FLEET_SECRETS_BIN, TOKEN_FOLDER, TOKEN_NAME
 
 
 def load_token() -> str:
-    """Read SEAT_MCP_TOKEN.  Empty file is a hard fail."""
-    ensure_token_file()
-    token = ""
-    for raw in SECRETS_FILE.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("SEAT_MCP_TOKEN="):
-            token = line.split("=", 1)[1].strip().strip("'").strip('"')
-            break
+    """SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through `fleet-secrets`
+    (AFC-359).  Empty or absent is a hard fail that names the folder and key, never a value."""
+    token = os.environ.get(TOKEN_NAME, "").strip()
     if not token:
-        raise RuntimeError("SEAT_MCP_TOKEN empty in %s" % SECRETS_FILE)
+        binary = os.environ.get("FLEET_SECRETS_BIN") or str(FLEET_SECRETS_BIN)
+        try:
+            proc = subprocess.run(
+                [binary, "get", TOKEN_NAME, "--path", TOKEN_FOLDER],
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=60,
+            )
+            if proc.returncode == 0:
+                token = proc.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            token = ""
+    if not token:
+        raise RuntimeError("%s missing in Infisical %s" % (TOKEN_NAME, TOKEN_FOLDER))
     return token
 
 
@@ -62,9 +59,7 @@ ACCESS_HEADERS = (
     "Cf-Access-Authenticated-User-Email",
 )
 
-ALLOWED_PUBLIC_ORIGINS = (
-    "https://agents.jays.services",
-)
+ALLOWED_PUBLIC_ORIGINS = ("https://agents.jays.services",)
 
 
 def access_authenticated(headers) -> bool:

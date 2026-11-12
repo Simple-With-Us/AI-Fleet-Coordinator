@@ -1,7 +1,7 @@
 """Ingest orchestrator for the fleet-agents corpus.
 
     python3 -m fleet_rag.ingest --all [--dry-run] [--limit N] [--prune]
-    python3 -m fleet_rag.ingest --source board,doc [--since 2026-08-01 | --since 7d]
+    python3 -m fleet_rag.ingest --source linear,doc [--since 2026-08-01 | --since 7d]
     python3 -m fleet_rag.ingest --fix-seeds
 
 Pipeline per document (see docs/RAG-FLEET-INFRA.md, payload schema v2):
@@ -24,37 +24,47 @@ many documents; state is written after every group, so an interrupted run resume
 and re-embeds nothing that already landed.  A non-blocking flock on
 ~/apps/fleet-rag/state/ingest.lock keeps two ingests from interleaving (exit 3 when held).
 
-Every non-dry run ends by upserting the ingest sentinel (fleet_rag.health) with ok=true/false
-so the Hetzner health rows see the outcome; the heartbeat-URL GET is an optional extra.
+A full untruncated `ingest --all --prune` run ends by upserting the ingest sentinel
+(fleet_rag.health) with ok=true/false so the Hetzner health rows see the outcome;  the
+heartbeat-URL GET is an optional extra.  That nightly pass attests health, and so does
+the server nightly set (linear, doc, skill, memory).  A partial or unpruned run still
+writes its log and state, but leaves the sentinel and last-run.json alone, so it cannot
+hide a stale or failed night.  Apple Notes stay in `--all` and are never pruned.
 
 Known limitation — shared chunks: identical chunk text collapses to ONE point (the id is the
-content hash), and a point carries a single doc_id.  When a group writes a row whose id is
+content hash).  A point keeps the first document's fields.  Later files in the same run that
+share the chunk body are not embedded again; their paths are listed on ``also_paths`` (capped)
+with ``also_path_count`` for the full extra total.  The state file still credits the id to
+every document so neither document's edit deletes it.  When a group writes a row whose id is
 already present but whose stored doc_id is not a document seen in this run (a renamed or
-removed document), the point's document fields are refreshed to the current writer.  If two
-live documents share a chunk, the payload names whichever wrote it last; the state file still
-credits the id to both so neither document's edit deletes it.
+removed document), the point's document fields are refreshed to the current writer.
 
-Report: ~/apps/fleet-rag/state/last-run.json plus one line in ~/apps/fleet-rag/logs/ingest.log.
+Report: ~/apps/fleet-rag/state/last-run.json (written by the nightly pass only) plus one line in
+~/apps/fleet-rag/logs/ingest.log (every run).
 """
+
 from __future__ import annotations
 
 import argparse
 import datetime as _dt
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import pathlib
 import re
+import socket
 import sys
 import tempfile
 import time
 import traceback
 import urllib.request
 import uuid
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
-from . import core, health, sources, telemetry
+from . import core, health, mirror, qdrant_snapshot, search_cache, sources, telemetry
 from .chunk import chunk_markdown
 from .core import FleetRagError, Qdrant, build_point, content_hash, eprint, match_filter, now_ms
 from .scrub import GitleaksError, gitleaks_flagged, scrub
@@ -66,20 +76,28 @@ STATE_PATH = STATE_DIR / "ingest-state.json"
 LAST_RUN_PATH = STATE_DIR / "last-run.json"
 LOCK_PATH = STATE_DIR / "ingest.lock"
 LOG_PATH = LOG_DIR / "ingest.log"
-HEARTBEAT_ENV = pathlib.Path.home() / ".secrets" / "fleet-rag.env"
 HEARTBEAT_KEY = "FLEET_RAG_INGEST_HEARTBEAT_URL"
 
 SEED_DOC_ID = "seed/fleet-standards"
-SEED_ISO = "2026-08-31T22:00:00+00:00"   # the real seed time
-SEED_MS = int(_dt.datetime.fromisoformat(SEED_ISO).timestamp() * 1000)   # 1788213600000
+SEED_ISO = "2026-08-31T22:00:00+00:00"  # the real seed time
+SEED_MS = int(_dt.datetime.fromisoformat(SEED_ISO).timestamp() * 1000)  # 1788213600000
 
 UPSERT_BATCH = 64
 DELETE_BATCH = 256
-GROUP_DOCS = 48                    # documents per gitleaks / existence-check / embed group
+GROUP_DOCS = 48  # documents per gitleaks / existence-check / embed group
 GROUP_CHUNKS = 512
-EMBED_RATE = 24.0                  # texts per second budget for the shared TEI box
+ALSO_PATHS_CAP = 32  # extra source paths stored on a shared chunk payload
+EMBED_RATE = 24.0  # texts per second budget for the shared TEI box
 PROGRESS_EVERY = 200
 EXIT_LOCKED = 3
+INGEST_LOCK_STALE_ENV = "FLEET_RAG_INGEST_LOCK_STALE_S"
+DEFAULT_INGEST_LOCK_STALE_S = 6 * 3600
+NIGHTLY_SUMMARY_ENV = "FLEET_RAG_NIGHTLY_SUMMARY"
+#  The marker a pending nightly leaves behind, so a partial refresh that arrives while the
+#  nightly is still waiting cannot steal the lock in the gap between the waiter's polls and
+#  then hold it for its whole budget.  The file holds the nightley's deadline in epoch ms;
+#  an expired marker is treated as absent, so a killed nightly cannot wedge the fleet.
+PENDING_NIGHTLY_NAME = "ingest.nightly.pending"
 
 # Payload fields that describe the owning document (everything except the content fields).
 _CONTENT_FIELDS = ("text", "content_hash", "embed_model")
@@ -96,36 +114,228 @@ GENERATORS = sources.GENERATORS
 class IngestLocked(FleetRagError):
     """Another ingest holds the lock file."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "lock_busy",
+        pid: int | None = None,
+        host: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.pid = pid
+        self.host = host
+
+
+class NightlyPending(FleetRagError):
+    """A nightly ingest is pending, so a partial refresh must not take the lock."""
+
 
 # --------------------------------------------------------------------------- lock
 
-class IngestLock:
-    """Non-blocking exclusive flock; raises IngestLocked when another process holds it."""
 
-    def __init__(self, path: pathlib.Path):
+def _ingest_lock_hostname() -> str:
+    return socket.gethostname()
+
+
+def _ingest_pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _ingest_lock_stale_age_s() -> float:
+    raw = (os.environ.get(INGEST_LOCK_STALE_ENV) or "").strip()
+    if not raw:
+        return float(DEFAULT_INGEST_LOCK_STALE_S)
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return float(DEFAULT_INGEST_LOCK_STALE_S)
+
+
+def _parse_ingest_lock_line(line: str) -> dict[str, Any] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    parts = stripped.split()
+    meta: dict[str, Any] = {"raw": stripped}
+    try:
+        meta["pid"] = int(parts[0])
+    except ValueError:
+        meta["pid"] = None
+    if len(parts) >= 3:
+        meta["host"] = parts[-1]
+        meta["at"] = parts[1]
+    elif len(parts) == 2:
+        meta["host"] = None
+        meta["at"] = parts[1]
+    else:
+        meta["host"] = None
+        meta["at"] = None
+    return meta
+
+
+def _read_ingest_lock_meta(path: pathlib.Path) -> dict[str, Any] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    line = text.splitlines()[0] if text.splitlines() else ""
+    return _parse_ingest_lock_line(line)
+
+
+def _ingest_lock_age_s(path: pathlib.Path, meta: dict[str, Any] | None) -> float:
+    if meta and meta.get("at"):
+        try:
+            at = _dt.datetime.fromisoformat(str(meta["at"]))
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=_dt.UTC)
+            return max(0.0, time.time() - at.timestamp())
+        except ValueError:
+            pass
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _remove_ingest_lock(path: pathlib.Path) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _reconcile_stale_ingest_lock(path: pathlib.Path, log=eprint) -> None:
+    """Drop cosmetic or expired lock files before the flock attempt."""
+    if not path.exists():
+        return
+    meta = _read_ingest_lock_meta(path)
+    local = _ingest_lock_hostname()
+    pid = meta.get("pid") if meta else None
+    host = meta.get("host") if meta else None
+    if pid is not None and host in (None, local):
+        if not _ingest_pid_alive(int(pid)):
+            log(f"ingest lock: removing stale lock at {path} (pid {pid} is not running on {local})")
+            _remove_ingest_lock(path)
+        return
+    if pid is None or host is None:
+        age_s = _ingest_lock_age_s(path, meta)
+        if age_s >= _ingest_lock_stale_age_s():
+            log(
+                f"ingest lock: removing stale lock at {path} "
+                f"(missing pid or host, age {int(age_s)}s)"
+            )
+            _remove_ingest_lock(path)
+
+
+def _nightly_summary_path() -> pathlib.Path:
+    raw = (os.environ.get(NIGHTLY_SUMMARY_ENV) or "").strip()
+    if raw:
+        return pathlib.Path(raw)
+    return pathlib.Path.home() / ".local" / "state" / "fleet-rag-nightly" / "last.json"
+
+
+def _write_lock_held_nightly_summary(pid: int, host: str) -> None:
+    path = _nightly_summary_path()
+    summary = {
+        "ok": False,
+        "ran": True,
+        "reason": "lock_held",
+        "ingest_lock_pid": pid,
+        "ingest_lock_host": host,
+        "errors": ["lock_held"],
+        "warnings": [],
+        "guard_trips": [],
+    }
+    try:
+        _write_json(path, summary)
+    except OSError:
+        pass
+
+
+def _raise_ingest_lock_held(path: pathlib.Path, *, attests_health: bool, log=eprint) -> None:
+    meta = _read_ingest_lock_meta(path) or {}
+    pid = meta.get("pid")
+    host = meta.get("host") or _ingest_lock_hostname()
+    local = _ingest_lock_hostname()
+    if isinstance(pid, int) and meta.get("host") in (None, local) and _ingest_pid_alive(pid):
+        log(f"ingest lock: held by live pid {pid} on {host}")
+        if attests_health:
+            _write_lock_held_nightly_summary(pid, str(host))
+        raise IngestLocked(
+            f"another ingest is running (lock held: {path}, pid {pid}); exit {EXIT_LOCKED}",
+            reason="lock_held",
+            pid=pid,
+            host=str(host),
+        ) from None
+    raise IngestLocked(
+        f"another ingest is running (lock held: {path}); "
+        f"wait for it or remove a stale lock, exit {EXIT_LOCKED}"
+    ) from None
+
+
+class IngestLock:
+    """Exclusive flock; raises IngestLocked when another process still holds the lock
+    after timeout_s (0 = non-blocking, the partial-refresh behavior)."""
+
+    def __init__(
+        self,
+        path: pathlib.Path,
+        timeout_s: float = 0,
+        *,
+        attests_health: bool = False,
+        log=eprint,
+    ):
         self.path = pathlib.Path(path)
+        self.timeout_s = timeout_s
+        self.attests_health = attests_health
+        self.log = log
         self._fd: int | None = None
 
-    def __enter__(self) -> "IngestLock":
+    def __enter__(self) -> IngestLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as e:
-            os.close(fd)
-            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
-                raise IngestLocked(f"another ingest is running (lock held: {self.path}); "
-                                   f"wait for it or remove a stale lock, exit {EXIT_LOCKED}") from None
-            raise
+        _reconcile_stale_ingest_lock(self.path, log=self.log)
+        deadline = time.monotonic() + self.timeout_s
+        while True:
+            fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as e:
+                os.close(fd)
+                if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                    if time.monotonic() >= deadline:
+                        _raise_ingest_lock_held(
+                            self.path, attests_health=self.attests_health, log=self.log
+                        )
+                    time.sleep(min(5.0, max(0.1, deadline - time.monotonic())))
+                    continue
+                raise
         try:
             os.ftruncate(fd, 0)
-            os.write(fd, f"{os.getpid()} {_dt.datetime.now().isoformat(timespec='seconds')}\n".encode())
+            os.write(
+                fd,
+                (
+                    f"{os.getpid()} "
+                    f"{_dt.datetime.now().isoformat(timespec='seconds')} "
+                    f"{_ingest_lock_hostname()}\n"
+                ).encode(),
+            )
         except OSError:
             pass
         self._fd = fd
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         if self._fd is not None:
             try:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
@@ -135,6 +345,7 @@ class IngestLock:
 
 
 # --------------------------------------------------------------------------- state
+
 
 def load_state(path: pathlib.Path = STATE_PATH) -> dict:
     try:
@@ -150,6 +361,34 @@ def save_state(state: dict, path: pathlib.Path = STATE_PATH) -> None:
     os.replace(tmp, path)
 
 
+def _commit_linear_cursor(state: dict, receipt: dict) -> bool:
+    """Advance the Linear updatedAt cursor after a fully successful source run.
+
+    A failed, limited, dry, since-filtered, or incomplete read leaves the stored cursor alone.
+    A full sweep also stamps the sweep clock.  An incremental read keeps the
+    previous sweep clock so the weekly full read still comes due.
+    """
+    if not receipt.get("cursor_advance"):
+        return False
+    candidate = receipt.get("cursor_candidate")
+    if not isinstance(candidate, str) or sources._LINEAR_CURSOR_RE.fullmatch(candidate) is None:
+        return False
+    prev = state.get(sources.LINEAR_CURSOR_KEY)
+    last_full = None
+    if isinstance(prev, dict):
+        last_full = sources._linear_epoch_ms(prev.get("last_full_sweep_at_ms"))
+    record: dict = {"kind": "linear-sync", "updated_at_cursor": candidate}
+    if receipt.get("full_scan"):
+        stamped = sources.parse_ts_ms(candidate)
+        if stamped <= 0:
+            return False
+        record["last_full_sweep_at_ms"] = stamped
+    elif last_full is not None:
+        record["last_full_sweep_at_ms"] = last_full
+    state[sources.LINEAR_CURSOR_KEY] = record
+    return True
+
+
 def _write_json(path: pathlib.Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -159,12 +398,15 @@ def _write_json(path: pathlib.Path, obj: Any) -> None:
 
 # --------------------------------------------------------------------------- qdrant helpers
 
+
 def existing_points(qd: Qdrant, ids: list[str], batch: int = 256) -> dict[str, str | None]:
     """{id: stored doc_id} for the ids already present (POST /collections/{c}/points, read key)."""
     found: dict[str, str | None] = {}
     for i in range(0, len(ids), batch):
-        res = qd._call(qd._cpath("/points"), {"ids": ids[i:i + batch], "with_payload": ["doc_id"],
-                                              "with_vector": False})
+        res = qd._call(
+            qd._cpath("/points"),
+            {"ids": ids[i : i + batch], "with_payload": ["doc_id"], "with_vector": False},
+        )
         for p in res.get("result", []):
             pl = p.get("payload") or {}
             found[str(p.get("id"))] = pl.get("doc_id") if isinstance(pl, dict) else None
@@ -198,11 +440,20 @@ def _embed_throttled(cfg: dict, texts: list[str]) -> list[list[float]]:
 
 # --------------------------------------------------------------------------- rows
 
-def _payload(doc: sources.Doc, ch, text: str, kinds: list[str], count: int, run_id: str) -> dict:  # noqa: ANN001
+
+def _payload(doc: sources.Doc, ch, text: str, kinds: list[str], count: int, run_id: str) -> dict:
     p = {
-        "source": doc.source, "app": doc.app, "category": doc.category, "seat": doc.seat,
-        "doc_id": doc.doc_id, "chunk_index": ch.index, "chunk_count": count, "heading": ch.heading,
-        "title": doc.title, "url": doc.url or "", "path": doc.path or "",
+        "source": doc.source,
+        "app": doc.app,
+        "category": doc.category,
+        "seat": doc.seat,
+        "doc_id": doc.doc_id,
+        "chunk_index": ch.index,
+        "chunk_count": count,
+        "heading": ch.heading,
+        "title": doc.title,
+        "url": doc.url or "",
+        "path": doc.path or "",
         "created_at": int(doc.created_at_ms or doc.updated_at_ms or 0),
         "updated_at": int(doc.updated_at_ms or doc.created_at_ms or 0),
         "ingest_run": run_id,
@@ -239,8 +490,13 @@ def gitleaks_drop(rows: list[dict]) -> tuple[list[dict], int]:
         return rows, 0
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as fh:
         for r in rows:
-            fh.write(json.dumps({"doc_id": r["payload"]["doc_id"], "text": r["payload"]["text"]},
-                                ensure_ascii=False) + "\n")
+            fh.write(
+                json.dumps(
+                    {"doc_id": r["payload"]["doc_id"], "text": r["payload"]["text"]},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         staged = fh.name
     try:
         flagged = gitleaks_gate(staged)
@@ -256,6 +512,7 @@ def gitleaks_drop(rows: list[dict]) -> tuple[list[dict], int]:
 
 
 # --------------------------------------------------------------------------- core write path
+
 
 class Writer:
     """Embeds + upserts point rows, honouring dry-run and the existence check."""
@@ -283,8 +540,12 @@ class Writer:
                 out.append(r)
                 continue
             owner = present[r["id"]]
-            if live_owners is not None and owner and owner != r["payload"]["doc_id"] \
-                    and owner not in live_owners:
+            if (
+                live_owners is not None
+                and owner
+                and owner != r["payload"]["doc_id"]
+                and owner not in live_owners
+            ):
                 self.repoint(r)
         return out
 
@@ -298,9 +559,11 @@ class Writer:
         if not rows or self.dry_run:
             return len(rows)
         for i in range(0, len(rows), UPSERT_BATCH):
-            batch = rows[i:i + UPSERT_BATCH]
+            batch = rows[i : i + UPSERT_BATCH]
             vecs = _embed_throttled(self.cfg, [r["payload"]["text"] for r in batch])
-            points = [{"id": r["id"], "vector": v, "payload": r["payload"]} for r, v in zip(batch, vecs)]
+            points = [
+                {"id": r["id"], "vector": v, "payload": r["payload"]} for r, v in zip(batch, vecs)
+            ]
             self.qd.upsert(points, wait=True)
             self.embedded += len(batch)
             if self.embedded - self._progress_mark >= PROGRESS_EVERY:
@@ -313,12 +576,27 @@ class Writer:
         if not ids or self.dry_run or self.qd is None:
             return
         for i in range(0, len(ids), DELETE_BATCH):
-            self.qd.delete_ids(ids[i:i + DELETE_BATCH], wait=True)
+            self.qd.delete_ids(ids[i : i + DELETE_BATCH], wait=True)
+
+    def annotate(self, point_id: str, payload: dict) -> None:
+        """Merge provenance fields onto an existing point.  No embed."""
+        if not point_id or not payload or self.dry_run or self.qd is None:
+            return
+        self.qd.set_payload([point_id], payload, wait=True)
 
 
 def _empty_stats() -> dict:
-    return {"docs_seen": 0, "docs_changed": 0, "docs_pruned": 0, "chunks_new": 0, "chunks_deleted": 0,
-            "chunks_repointed": 0, "chunks_dropped_by_gitleaks": 0, "chunks_scrubbed": 0}
+    return {
+        "docs_seen": 0,
+        "docs_changed": 0,
+        "docs_pruned": 0,
+        "chunks_new": 0,
+        "chunks_deleted": 0,
+        "chunks_repointed": 0,
+        "chunks_dropped_by_gitleaks": 0,
+        "chunks_scrubbed": 0,
+        "chunks_deduped": 0,
+    }
 
 
 def _parse_since(since: str | int | None) -> int | None:
@@ -334,7 +612,9 @@ def _parse_since(since: str | int | None) -> int | None:
         return int(s)
     ts = sources.parse_ts_ms(s)
     if not ts:
-        raise FleetRagError(f"--since must be YYYY-MM-DD, an ISO stamp, Nd, or epoch ms (got {s!r})")
+        raise FleetRagError(
+            f"--since must be YYYY-MM-DD, an ISO stamp, Nd, or epoch ms (got {s!r})"
+        )
     return ts
 
 
@@ -349,9 +629,157 @@ def _dedupe_rows(rows: list[dict]) -> list[dict]:
     return out
 
 
-def process_group(docs: list[tuple[sources.Doc, str]], state: dict, writer: Writer, run_id: str,
-                  stats: dict, state_path: pathlib.Path, live_owners: set[str] | None = None) -> None:
+def _chunk_body(text: str) -> str:
+    """Chunk text without the leading ``[heading]`` line the chunker prepends."""
+    first, sep, rest = text.partition("\n")
+    if sep and len(first) >= 2 and first.startswith("[") and first.endswith("]"):
+        return rest
+    return text
+
+
+def _chunk_label(row: dict) -> str:
+    payload = row.get("payload") or {}
+    return str(payload.get("path") or payload.get("doc_id") or "")
+
+
+def _remember_label(entry: dict, label: str, pending: list[dict]) -> None:
+    """Record another source on a chunk already claimed in this run."""
+    if not label or label in entry["labels"]:
+        return
+    entry["labels"].append(label)
+    extras = [item for item in entry["labels"] if item and item != entry["primary"]]
+    entry["payload"]["also_paths"] = extras[:ALSO_PATHS_CAP]
+    entry["payload"]["also_path_count"] = len(extras)
+    if entry.get("written"):
+        pending.append(entry)
+
+
+def _claim_chunk(
+    row: dict,
+    seen: dict[str, dict],
+    pending: list[dict],
+    stats: dict | None,
+) -> str:
+    """Return the point id to keep.  The first body in the run is the one embedded."""
+    label = _chunk_label(row)
+    body_hash = content_hash(_chunk_body(row["payload"]["text"]))
+    entry = seen.get(body_hash)
+    if entry is None:
+        seen[body_hash] = {
+            "id": row["id"],
+            "payload": row["payload"],
+            "labels": [label] if label else [],
+            "primary": label,
+            "written": False,
+        }
+        return row["id"]
+    if stats is not None:
+        stats["chunks_deduped"] = stats.get("chunks_deduped", 0) + 1
+    _remember_label(entry, label, pending)
+    return entry["id"]
+
+
+def _flush_also_paths(writer: Writer, pending: list[dict]) -> None:
+    sent: set[int] = set()
+    for entry in pending:
+        marker = id(entry)
+        if marker in sent:
+            continue
+        sent.add(marker)
+        payload = entry["payload"]
+        writer.annotate(
+            entry["id"],
+            {
+                "also_paths": list(payload.get("also_paths") or []),
+                "also_path_count": int(payload.get("also_path_count") or 0),
+            },
+        )
+    pending.clear()
+
+
+def _sync_unchanged_chunks(
+    doc: sources.Doc,
+    state: dict,
+    writer: Writer,
+    stats: dict,
+    seen: dict[str, dict],
+    pending: list[dict],
+    run_id: str,
+    state_path: pathlib.Path,
+) -> bool:
+    """Point an unchanged document at chunks already claimed in this run.
+
+    Returns True when state chunk ids changed and were saved.  The new ids are written
+    before any Qdrant delete, so a crash cannot leave state pointing at a point that
+    this run already removed.  A chunker drift that would invent a point id not already
+    stored aborts without deleting.
+    """
+    rows, _scrubbed = doc_rows(doc, run_id)
+    prev = state.get(doc.doc_id) if isinstance(state.get(doc.doc_id), dict) else {}
+    old_ids = list(prev.get("chunk_ids") or [])
+    old_set = set(old_ids)
+    adopted: list[str] = []
+    replaced_ids: list[str] = []
+    for row in rows:
+        body_hash = content_hash(_chunk_body(row["payload"]["text"]))
+        entry = seen.get(body_hash)
+        if entry is None:
+            if row["id"] not in old_set:
+                return False
+            label = _chunk_label(row)
+            seen[body_hash] = {
+                "id": row["id"],
+                "payload": row["payload"],
+                "labels": [label] if label else [],
+                "primary": label,
+                "written": True,
+            }
+            adopted.append(row["id"])
+            continue
+        if not entry.get("written") and entry["id"] not in old_set:
+            return False
+        adopted.append(entry["id"])
+        if entry["id"] != row["id"] and row["id"] in old_set:
+            replaced_ids.append(row["id"])
+        _remember_label(entry, _chunk_label(row), pending)
+    # Ids credited to this doc that no recomputed chunk replaced stay.  An orphan
+    # shared with another document is not a duplicate body.
+    extras = [i for i in old_ids if i not in adopted and i not in replaced_ids]
+    new_ids = adopted + extras
+    if new_ids == old_ids:
+        return False
+    others: set[str] = set()
+    for did, rec in state.items():
+        if did == doc.doc_id or not isinstance(rec, dict):
+            continue
+        others.update(rec.get("chunk_ids") or [])
+    adopted_set = set(adopted)
+    stale = [i for i in replaced_ids if i not in others and i not in adopted_set]
+    stats["chunks_deleted"] += len(stale)
+    stats["chunks_deduped"] = stats.get("chunks_deduped", 0) + len(replaced_ids)
+    if writer.dry_run:
+        return False
+    prev["chunk_ids"] = new_ids
+    state[doc.doc_id] = prev
+    save_state(state, state_path)
+    writer.delete(stale)
+    return True
+
+
+def process_group(
+    docs: list[tuple[sources.Doc, str]],
+    state: dict,
+    writer: Writer,
+    run_id: str,
+    stats: dict,
+    state_path: pathlib.Path,
+    live_owners: set[str] | None = None,
+    seen_chunks: dict[str, dict] | None = None,
+    pending_annotations: list[dict] | None = None,
+) -> None:
     """Chunk/scrub/gate/embed/upsert a group of changed documents, then update state."""
+    seen = seen_chunks if seen_chunks is not None else {}
+    pending = pending_annotations if pending_annotations is not None else []
     per_doc: list[tuple[sources.Doc, str, list[dict]]] = []
     all_rows: list[dict] = []
     for doc, doc_hash in docs:
@@ -359,27 +787,44 @@ def process_group(docs: list[tuple[sources.Doc, str]], state: dict, writer: Writ
         stats["chunks_scrubbed"] += scrubbed
         per_doc.append((doc, doc_hash, rows))
         all_rows.extend(rows)
-    kept, dropped = gitleaks_drop(_dedupe_rows(all_rows))     # raises GitleaksError: fail closed
+    kept, dropped = gitleaks_drop(all_rows)  # raises GitleaksError: fail closed
     stats["chunks_dropped_by_gitleaks"] += dropped
-    kept_ids = {r["id"] for r in kept}
+    kept_objs = {id(row) for row in kept}
+    embed_rows: list[dict] = []
+    embed_ids: set[str] = set()
+    per_doc_ids: list[list[str]] = []
+    for _doc, _doc_hash, rows in per_doc:
+        ids: list[str] = []
+        for row in rows:
+            if id(row) not in kept_objs:
+                continue
+            canonical = _claim_chunk(row, seen, pending, stats)
+            ids.append(canonical)
+            if canonical == row["id"] and canonical not in embed_ids:
+                embed_ids.add(canonical)
+                embed_rows.append(row)
+        per_doc_ids.append(ids)
     before = writer.repointed
-    new_rows = writer.missing(kept, live_owners)
+    new_rows = writer.missing(embed_rows, live_owners)
     stats["chunks_repointed"] += writer.repointed - before
     stats["chunks_new"] += len(new_rows)
     writer.write(new_rows)
+    for entry in seen.values():
+        if entry["id"] in embed_ids:
+            entry["written"] = True
+    _flush_also_paths(writer, pending)
 
     # Ids owned by other documents must survive a stale-chunk delete (identical text collapses
     # to one point shared by several documents).
     group_ids = {d.doc_id for d, _, _ in per_doc}
     shared: set[str] = set()
     for did, rec in state.items():
-        if did not in group_ids:
+        if did not in group_ids and isinstance(rec, dict):
             shared.update(rec.get("chunk_ids", []))
-    for d, _, rows in per_doc:
-        shared.update(r["id"] for r in rows if r["id"] in kept_ids)
+    for ids in per_doc_ids:
+        shared.update(ids)
 
-    for doc, doc_hash, rows in per_doc:
-        new_ids = [r["id"] for r in rows if r["id"] in kept_ids]
+    for (doc, doc_hash, _rows), new_ids in zip(per_doc, per_doc_ids):
         old_ids = list(state.get(doc.doc_id, {}).get("chunk_ids", []))
         for pid in collection_ids_for_doc(writer.qd, doc.doc_id):
             if pid not in old_ids:
@@ -389,21 +834,26 @@ def process_group(docs: list[tuple[sources.Doc, str]], state: dict, writer: Writ
         writer.delete(stale)
         stats["chunks_deleted"] += len(stale)
         if not writer.dry_run:
-            state[doc.doc_id] = {"doc_hash": doc_hash, "chunk_ids": new_ids,
-                                 "updated_at": int(doc.updated_at_ms or 0), "source": doc.source}
+            state[doc.doc_id] = {
+                "doc_hash": doc_hash,
+                "chunk_ids": new_ids,
+                "updated_at": int(doc.updated_at_ms or 0),
+                "refreshed_at": now_ms(),
+                "source": doc.source,
+            }
     if not writer.dry_run:
         save_state(state, state_path)
 
 
-def prune_source(name: str, yielded: set[str], state: dict, writer: Writer, stats: dict,
-                 state_path: pathlib.Path) -> list[str]:
+def prune_source(
+    name: str, yielded: set[str], state: dict, writer: Writer, stats: dict, state_path: pathlib.Path
+) -> list[str]:
     """Delete the chunks of documents `name` no longer yields and drop their state rows.
 
     Ids still credited to any surviving state row are kept (shared chunks).  Returns the
     pruned doc_ids.  Only ever deletes by explicit id.
     """
-    gone = sorted(did for did, rec in state.items()
-                  if isinstance(rec, dict) and rec.get("source") == name and did not in yielded)
+    gone = _prune_candidates(name, yielded, state)
     if not gone:
         return []
     gone_set = set(gone)
@@ -428,38 +878,271 @@ def prune_source(name: str, yielded: set[str], state: dict, writer: Writer, stat
     return gone
 
 
-def run(source_names: Iterable[str] | str = "all", dry_run: bool = False, since: str | int | None = None,
-        limit: int | None = None, state_path: pathlib.Path = STATE_PATH,
-        last_run_path: pathlib.Path = LAST_RUN_PATH, log_path: pathlib.Path = LOG_PATH,
-        cfg: dict | None = None, qd: Qdrant | None = None, log=eprint, heartbeat: bool = True,
-        prune: bool = False, lock_path: pathlib.Path | None = None) -> dict:
+def _pending_nightly_dir(state_path: pathlib.Path) -> pathlib.Path:
+    """Where the pending-nightly claims live, beside the lock they guard."""
+    return pathlib.Path(state_path).parent / PENDING_NIGHTLY_NAME
+
+
+def _pending_owner() -> str:
+    """A name for one run's claim, unique per process and per run."""
+    return f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
+
+
+def _write_pending_nightly(directory: pathlib.Path, deadline_ms: int, owner: str) -> bool:
+    """Claim the queue for a nightly that is about to wait for the lock.
+
+    Each claim is its own file, named for the run that made it, so two runs can never
+    overwrite each other's claim and neither can clear the other's.  One shared marker
+    file could only name one owner, so the run that finished first cleared the claim of
+    the run that was still waiting, and a partial could then take the lock from it
+    (Sentry review, PR #813).
+    """
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        _prune_expired_claims(directory)
+        path = directory / owner
+        tmp = directory / f".{owner}.tmp"
+        tmp.write_text(
+            json.dumps({"pid": os.getpid(), "deadline_ms": deadline_ms}) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        #  A claim that cannot be written must not stop the nightly:  the lock still
+        #  serializes the runs, and a partial that slips in is no worse than before.
+        return False
+
+
+def _clear_pending_nightly(directory: pathlib.Path, owner: str) -> bool:
+    """Release one run's claim.  Only that run's claim:  the path is named for it."""
+    try:
+        (directory / owner).unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _claim_deadline_ms(entry: pathlib.Path) -> int | None:
+    """The deadline of one claim file, or None when it cannot be read."""
+    try:
+        payload = json.loads(entry.read_text(encoding="utf-8"))
+        return int(payload.get("deadline_ms", 0))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _prune_expired_claims(directory: pathlib.Path) -> None:
+    """Drop the claims that have expired, so a killed nightly leaves nothing behind."""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.startswith("."):
+            #  A temp file on its way in, not a claim.
+            continue
+        deadline_ms = _claim_deadline_ms(entry)
+        if deadline_ms is None or deadline_ms <= now_ms():
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+def _nightly_pending(directory: pathlib.Path) -> bool:
+    """Whether any nightly has claimed the queue and its claim has not expired.
+
+    An expired claim is treated as absent, so a nightly that was killed leaves nothing
+    behind that wedges the partial refreshes.
+    """
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.name.startswith("."):
+            #  A temp file on its way in, not a claim.
+            continue
+        deadline_ms = _claim_deadline_ms(entry)
+        if deadline_ms is not None and deadline_ms > now_ms():
+            return True
+    return False
+
+
+def _resolve_names(source_names: Iterable[str] | str | None) -> list[str]:
+    """The source list a run will actually use.
+
+    One resolver, so every caller decides on the same list.  The command line needs it to
+    answer "is this run a health-attesting nightly?" before the run starts, and the run
+    needs it to decide the same thing after it resolves the names (AFC-423).
+    """
+    if source_names in ("all", None):
+        return list(sources.NIGHTLY_SOURCES)
+    if isinstance(source_names, str):
+        return [s.strip() for s in source_names.split(",") if s.strip()]
+    return [s.strip() for s in source_names if s.strip()]
+
+
+def _attests_health(
+    names: list[str],
+    prune: bool,
+    since_ms: int | None,
+    limit: int | None,
+    dry_run: bool = False,
+) -> bool:
+    """Whether this run writes the sentinel and last-run.json, and so can attest health.
+
+    One predicate, used by the run that writes the sentinel and by the command line that
+    decides the wait budget.  The two used to disagree -- the sentinel was keyed on the
+    resolved source set and the wait on the `--all` flag -- so an explicitly enumerated
+    nightly run attested health and still failed at once with exit 3 when the lock was
+    held, which is the exact hole the wait was added to close (AFC-423).
+
+    A dry run attests nothing:  the sentinel write sits behind `if not dry_run:`, so a dry
+    run writes no sentinel and no last-run.json.  It must therefore be given no wait and
+    must not claim the queue either, or a diagnostic would lock the partial refreshes
+    out for the length of the claim (Sentry review, PR #813).
+    """
+    nightly_sets = {
+        frozenset(sources.NIGHTLY_SOURCES),
+        frozenset(sources.SERVER_NIGHTLY_SOURCES),
+    }
+    return (
+        not dry_run
+        and prune
+        and frozenset(names) in nightly_sets
+        and since_ms is None
+        and limit is None
+    )
+
+
+def run(
+    source_names: Iterable[str] | str = "all",
+    dry_run: bool = False,
+    since: str | int | None = None,
+    limit: int | None = None,
+    state_path: pathlib.Path = STATE_PATH,
+    last_run_path: pathlib.Path = LAST_RUN_PATH,
+    log_path: pathlib.Path = LOG_PATH,
+    cfg: dict | None = None,
+    qd: Qdrant | None = None,
+    log=eprint,
+    heartbeat: bool = True,
+    prune: bool = False,
+    lock_path: pathlib.Path | None = None,
+    lock_timeout_s: float = 0,
+    prune_excluded: bool = False,
+) -> dict:
     """Run the ingest over the named sources.  Returns the report dict (also written to disk).
 
     Raises IngestLocked (exit 3 from the CLI) when another ingest holds the lock.
     """
-    names = list(sources.NIGHTLY_SOURCES) if source_names in ("all", None) else \
-        [s.strip() for s in (source_names.split(",") if isinstance(source_names, str) else source_names) if s.strip()]
+    names = _resolve_names(source_names)
     unknown = [n for n in names if n not in GENERATORS]
     if unknown:
-        raise FleetRagError(f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}")
+        raise FleetRagError(
+            f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}"
+        )
+    allowed_linear_prune = {
+        frozenset(sources.NIGHTLY_SOURCES),
+        frozenset(sources.SERVER_NIGHTLY_SOURCES),
+    }
+    if prune and "linear" in names and frozenset(names) not in allowed_linear_prune:
+        raise FleetRagError(
+            "Linear prune requires a separately verified complete deletion inventory; "
+            "this generator is incremental even with FLEET_RAG_LINEAR_FULL. "
+            "Use --source linear without --prune to refresh."
+        )
     if prune and limit:
-        raise FleetRagError("--prune cannot be combined with --limit: a truncated source would prune "
-                            "every document past the limit")
+        raise FleetRagError(
+            "--prune cannot be combined with --limit: a truncated source would prune "
+            "every document past the limit"
+        )
     since_ms = _parse_since(since)
     lock_path = lock_path or (state_path.parent / "ingest.lock")
-    with IngestLock(lock_path):
-        return _run_locked(names, dry_run, since_ms, limit, state_path, last_run_path, log_path,
-                           cfg, qd, log, heartbeat, prune)
+    pending_dir = _pending_nightly_dir(state_path)
+    attests = _attests_health(names, prune, since_ms, limit, dry_run)
+    #  Claim the queue BEFORE the lock, but only when this run will actually wait for it.
+    #  A run that waits for no time, or one that attests nothing, must not lock the partial
+    #  refreshes out for the length of the claim.
+    owner = _pending_owner()
+    claimed = False
+    if attests and lock_timeout_s > 0:
+        #  A partial refresh that arrives while this run is still waiting would otherwise
+        #  take the lock in the gap between the waiter's polls and then hold it for its
+        #  whole budget, which is how a nightly gets locked out even though it is willing
+        #  to wait (AFC-423).  The claim expires, so a killed nightly leaves nothing behind.
+        claimed = _write_pending_nightly(
+            pending_dir,
+            now_ms() + int((2 * max(lock_timeout_s, 3600)) * 1000),
+            owner,
+        )
+    if not attests and _nightly_pending(pending_dir):
+        #  A partial refresh never waits:  it fails fast, because the sheet sync's ingest is
+        #  best-effort and a long wait there would hold its own budget open.  It must not take
+        #  the lock from a nightly that is waiting for it either.  A dry run is in the same
+        #  case:  it writes nothing, but it would still take the lock from the waiter.
+        raise NightlyPending(
+            f"a nightly ingest is pending ({pending_dir}); this run must not take the lock, "
+            f"exit {EXIT_LOCKED}"
+        )
+    try:
+        with IngestLock(lock_path, timeout_s=lock_timeout_s, attests_health=attests, log=log):
+            return _run_locked(
+                names,
+                dry_run,
+                since_ms,
+                limit,
+                state_path,
+                last_run_path,
+                log_path,
+                cfg,
+                qd,
+                log,
+                heartbeat,
+                prune,
+                prune_excluded,
+            )
+    finally:
+        if claimed:
+            #  Release this run's claim and only this run's claim:  another nightly may be
+            #  waiting for the same lock, and its claim is its own file.
+            _clear_pending_nightly(pending_dir, owner)
 
 
-def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: int | None,
-                state_path: pathlib.Path, last_run_path: pathlib.Path, log_path: pathlib.Path,
-                cfg: dict | None, qd: Qdrant | None, log, heartbeat: bool, prune: bool) -> dict:  # noqa: ANN001
-    run_id = f"{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
+def _run_locked(
+    names: list[str],
+    dry_run: bool,
+    since_ms: int | None,
+    limit: int | None,
+    state_path: pathlib.Path,
+    last_run_path: pathlib.Path,
+    log_path: pathlib.Path,
+    cfg: dict | None,
+    qd: Qdrant | None,
+    log,
+    heartbeat: bool,
+    prune: bool,
+    prune_excluded: bool = False,
+) -> dict:
+    run_id = f"{_dt.datetime.now(_dt.UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
     started = now_ms()
-    report: dict[str, Any] = {"run_id": run_id, "started_at": started, "finished_at": None, "ok": True,
-                              "dry_run": dry_run, "prune": prune, "sources": names, "per_source": {},
-                              "errors": [], "warnings": []}
+    report: dict[str, Any] = {
+        "run_id": run_id,
+        "started_at": started,
+        "finished_at": None,
+        "ok": True,
+        "dry_run": dry_run,
+        "prune": prune,
+        "sources": names,
+        "per_source": {},
+        "errors": [],
+        "warnings": [],
+        "guard_trips": [],
+        "mirror_stale": mirror.stale_record(
+            mirror.configured_root(), time.time(), mirror.max_age_s()
+        ),
+    }
 
     if cfg is None or (qd is None and not dry_run):
         try:
@@ -480,43 +1163,147 @@ def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: in
             qd = None
     writer = Writer(cfg, qd, dry_run, log)
     state = load_state(state_path)
+    state_touched = False
     t_run = time.monotonic()
-    seen_run: dict[str, str] = {}          # doc_id -> source, for the duplicate guard
-    live_owners: set[str] = set()          # doc_ids yielded so far (shared-chunk re-pointing)
-    sources.take_warnings()                # drop anything left over from an earlier call
+    seen_run: dict[str, str] = {}  # doc_id -> source, for the duplicate guard
+    live_owners: set[str] = set()  # doc_ids yielded so far (shared-chunk re-pointing)
+    sources.take_warnings()  # drop anything left over from an earlier call
+    sources.DOC_HELD_IDS.clear()
+    sources.DOC_EXCLUDED_NEW.clear()
+    sources.LAST_DOC_WALK = None
+    pending_prunes: list[tuple[str, set[str], dict, set[str]]] = []
 
     for name in names:
         stats = _empty_stats()
         report["per_source"][name] = stats
+        seen_chunks: dict[str, dict] = {}
+        pending_annotations: list[dict] = []
         t0 = time.monotonic()
         log(f"[{name}] start")
+        if report["mirror_stale"] and name in mirror.MIRROR_BACKED_SOURCES:
+            # A missing or stale marker must not read or delete these corpora.
+            # Force does not lift it, and the source is not a failure, so the
+            # other sources in the run still ingest and may still prune.
+            stale = report["mirror_stale"]
+            age = stale.get("age_s")
+            age_text = "unknown" if age is None else f"{age}s"
+            msg = (
+                f"{name}: ingest and prune skipped; mirror {stale.get('reason')} "
+                f"(marker age {age_text})"
+            )
+            report["warnings"].append(msg)
+            report["guard_trips"].append({"source": name, "reason": stale.get("reason")})
+            log(f"[{name}] WARNING {msg}")
+            continue
         group: list[tuple[sources.Doc, str]] = []
         group_chunks = 0
         yielded: set[str] = set()
+        since_skipped = False
         source_ok = True
+        linear_receipt = (
+            {} if name == "linear" and GENERATORS[name] is sources.iter_linear else None
+        )
+        if linear_receipt is not None:
+            report["linear_read_receipt"] = linear_receipt
         try:
-            for doc in GENERATORS[name](limit=limit):
+            kwargs = {"limit": limit}
+            if linear_receipt is not None:
+                kwargs["receipt"] = linear_receipt
+            for doc in GENERATORS[name](**kwargs):
                 stats["docs_seen"] += 1
                 if doc.doc_id in seen_run:
-                    raise FleetRagError(f"duplicate doc_id {doc.doc_id!r}: already yielded by "
-                                        f"source {seen_run[doc.doc_id]!r} in this run")
+                    raise FleetRagError(
+                        f"duplicate doc_id {doc.doc_id!r}: already yielded by "
+                        f"source {seen_run[doc.doc_id]!r} in this run"
+                    )
                 seen_run[doc.doc_id] = name
                 yielded.add(doc.doc_id)
                 live_owners.add(doc.doc_id)
                 if since_ms and (doc.updated_at_ms or doc.created_at_ms) < since_ms:
+                    # Counted as seen, and still in the yielded set so prune cannot
+                    # treat the filter as a deletion.  The Linear cursor must not
+                    # move past an issue this filter dropped.
+                    since_skipped = True
                     continue
                 doc_hash = content_hash(doc.text_markdown)
                 prev = state.get(doc.doc_id)
                 if prev and prev.get("doc_hash") == doc_hash:
+                    # Content verified unchanged against the committed corpus:  the hash
+                    # match is proof the corpus holds this exact content, so record the
+                    # verification and carry the provider timestamp forward.  A state row
+                    # advances only through this hash check or a committed upsert - a
+                    # fetched-but-uncommitted doc (failed upsert, dry run, crashed run)
+                    # advances nothing and is retried.
+                    prev["refreshed_at"] = now_ms()
+                    doc_updated = int(doc.updated_at_ms or 0)
+                    if doc_updated > int(prev.get("updated_at") or 0):
+                        prev["updated_at"] = doc_updated
+                    state_touched = True
+                    if group:
+                        process_group(
+                            group,
+                            state,
+                            writer,
+                            run_id,
+                            stats,
+                            state_path,
+                            live_owners,
+                            seen_chunks,
+                            pending_annotations,
+                        )
+                        group, group_chunks = [], 0
+                    if _sync_unchanged_chunks(
+                        doc,
+                        state,
+                        writer,
+                        stats,
+                        seen_chunks,
+                        pending_annotations,
+                        run_id,
+                        state_path,
+                    ):
+                        state_touched = True
+                    _flush_also_paths(writer, pending_annotations)
                     continue
                 stats["docs_changed"] += 1
                 group.append((doc, doc_hash))
                 group_chunks += max(len(doc.text_markdown) // 1400, 1)
                 if len(group) >= GROUP_DOCS or group_chunks >= GROUP_CHUNKS:
-                    process_group(group, state, writer, run_id, stats, state_path, live_owners)
+                    process_group(
+                        group,
+                        state,
+                        writer,
+                        run_id,
+                        stats,
+                        state_path,
+                        live_owners,
+                        seen_chunks,
+                        pending_annotations,
+                    )
                     group, group_chunks = [], 0
             if group:
-                process_group(group, state, writer, run_id, stats, state_path, live_owners)
+                process_group(
+                    group,
+                    state,
+                    writer,
+                    run_id,
+                    stats,
+                    state_path,
+                    live_owners,
+                    seen_chunks,
+                    pending_annotations,
+                )
+            if (
+                linear_receipt is not None
+                and linear_receipt.get("full")
+                and any(
+                    row.get("status") == "skipped"
+                    for row in linear_receipt.get("issues", {}).values()
+                )
+            ):
+                raise sources.LinearSourceError(
+                    "linear: FULL read skipped issues; replacement is incomplete"
+                )
         except Exception as e:  # noqa: BLE001 — one bad source must not sink the others
             source_ok = False
             msg = f"{name}: {type(e).__name__}: {e}"
@@ -526,35 +1313,380 @@ def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: in
             telemetry.capture_exception(e, operation="ingest", source=name)
             if os.environ.get("FLEET_RAG_DEBUG"):
                 traceback.print_exc()
+        if linear_receipt is not None:
+            # Read completeness is not deletion authority. State verification describes
+            # committed document hashes only, not independent Qdrant/chunk coverage.
+            verified = 0
+            for uid, row in linear_receipt.get("issues", {}).items():
+                prev = state.get(f"linear/{uid}", {})
+                matches = (
+                    not dry_run
+                    and row.get("status") == "fetched"
+                    and prev.get("doc_hash") == row.get("content_sha256")
+                )
+                row["state_hash_verified"] = bool(matches)
+                verified += bool(matches)
+            linear_receipt["state_hash_verified_count"] = verified
+            linear_receipt["source_ok"] = source_ok
+            linear_receipt["deletion_authorized"] = False
+            if since_skipped:
+                # --since dropped issues the scan already counted.  Advancing the
+                # updatedAt cursor would hide them until the next full sweep.
+                linear_receipt["cursor_advance"] = False
+            if not source_ok:
+                linear_receipt["source_complete"] = False
+            elif not dry_run and _commit_linear_cursor(state, linear_receipt):
+                # The cursor moves only with the committed outcome of this source.
+                # A later source failure must not roll it back: the Linear read
+                # itself finished, and the next run's overlap covers the gap.
+                save_state(state, state_path)
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")
-        if prune and source_ok:
-            try:
-                gone = prune_source(name, yielded, state, writer, stats, state_path)
-                if gone:
-                    log(f"[{name}] {'would prune' if dry_run else 'pruned'} {len(gone)} document(s): "
-                        + ", ".join(gone[:10]) + (" ..." if len(gone) > 10 else ""))
-            except Exception as e:  # noqa: BLE001
-                msg = f"{name}: prune: {type(e).__name__}: {e}"
-                report["errors"].append(msg)
-                report["ok"] = False
-                log(f"[{name}] ERROR {msg}")
-                telemetry.capture_exception(e, operation="ingest-prune", source=name)
+        released: set[str] = set()
+        if name == "doc":
+            held = sources.take_held_doc_ids()
+            released = _authorize_excluded(held, prune_excluded)
+            withheld = held - released
+            yielded |= withheld
+            if withheld:
+                msg = (
+                    f"doc: {len(withheld)} newly excluded document(s) held from prune; "
+                    "dry-run the diet report, then pass --prune-excluded or "
+                    f"{PRUNE_EXCLUDED_ALLOW_ENV}"
+                )
+                report["warnings"].append(msg)
+                log(f"[{name}] WARNING {msg}")
+            walk = sources.LAST_DOC_WALK
+            if dry_run and source_ok and walk is not None:
+                census = doc_diet_census(walk)
+                census["excluded_held"] = len(withheld)
+                census["excluded_released"] = len(released)
+                report["doc_diet"] = census
+                _write_diet_stamp(state_path, census)
+                log(
+                    f"[{name}] diet docs {census['docs_before']} -> {census['docs_after']}, "
+                    f"chunks {census['chunks_before']} -> {census['chunks_after']}"
+                )
+        # Linear is a delta stream, not an authoritative deletion inventory. Even
+        # FULL refetch can skip incomplete/truncated issues. Never prune its
+        # unyielded rows from this pipeline; explicit migration reconciliation
+        # owns deletion separately after per-document coverage verification.
+        if prune and source_ok and name == "linear":
+            report["warnings"].append(
+                "linear: pruning skipped; generator is not a complete deletion inventory"
+            )
+        if prune and source_ok and name == "apple-note":
+            # Notes are upserted at write time (AFC-685).  Force does not override this:
+            # the source never enters the pending prune list.
+            report["warnings"].append(
+                "apple-note: pruning skipped; write-time upserts own the corpus"
+            )
+        if prune and source_ok and name not in ("linear", "apple-note"):
+            # Deferred:  no source prunes until every source in the run has finished
+            # cleanly (AFC-677).  A failure anywhere means the run cannot vouch that a
+            # missing document is really gone.
+            gate = _prune_gate(name)
+            if gate:
+                report["warnings"].append(gate[0])
+                report["guard_trips"].append({"source": name, "reason": gate[1]})
+            else:
+                pending_prunes.append((name, yielded, stats, released))
         log(f"[{name}] done in {time.monotonic() - t0:.1f}s: {json.dumps(stats)}")
 
+    if pending_prunes:
+        if qdrant_snapshot.maybe_snapshot_before_prune(
+            prune=prune,
+            dry_run=dry_run,
+            pending_prunes=pending_prunes,
+            report=report,
+            qd=qd,
+            state_path=state_path,
+            log=log,
+        ):
+            _run_pending_prunes(pending_prunes, report, state, writer, state_path, dry_run, log)
+        else:
+            msg = "prune skipped for every source: pre-prune Qdrant snapshot failed"
+            report["warnings"].append(msg)
+            log(f"[prune] WARNING {msg}")
+
+    if state_touched and not dry_run:
+        save_state(state, state_path)
     report["finished_at"] = now_ms()
     report["wall_s"] = round(time.monotonic() - t_run, 1)
     if not dry_run:
-        _write_sentinel_safely(cfg, qd, report, log)
-        _write_json(last_run_path, report)
+        # Only an untruncated full nightly-source pass can attest global health.
+        # Partial/manual refreshes keep their log and state without hiding a stale night.
+        nightly = _attests_health(names, prune, since_ms, limit, dry_run)
+        if nightly:
+            _write_sentinel_safely(cfg, qd, report, log)
+            _write_json(last_run_path, report)
+            if report["ok"] and heartbeat:
+                _heartbeat()
         _append_log(log_path, report)
-        if report["ok"] and heartbeat:
-            _heartbeat()
+        search_cache.note_ingest_complete(
+            report,
+            epoch_path=last_run_path.with_name(search_cache.EPOCH_NAME),
+        )
     return report
 
 
-def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, log) -> None:  # noqa: ANN001
+# Prune safety (AFC-677).  On 2026-11-09 a real `--all --prune` run with a failed linear
+# source still pruned 1,650 doc documents, 1,644 of them live files in a checkout the walk
+# had stopped finding (DOC_APP_REPOS named Socratic.Trade;  the checkout is Socratic-Trade).
+# A prune now needs (1) every source in the run to have finished without error, (2) no more
+# documents to go than the source yielded, and (3) no whole doc repository to vanish at once,
+# which is a missing root, not a deletion.  FLEET_RAG_PRUNE_FORCE=1 lifts (2) and (3) for a
+# deliberate one-off cleanup;  nothing lifts (1).  The diet adds (4) a cap on the share of a
+# source that may go when newly excluded documents are released, and (5) a dry-run stamp
+# before that release.  Force lifts (4) the same way it lifts (2) and (3).  It does not lift
+# (1) or (5).
+PRUNE_FORCE_ENV = "FLEET_RAG_PRUNE_FORCE"
+PRUNE_EXCLUDED_ENV = "FLEET_RAG_PRUNE_EXCLUDED"
+PRUNE_EXCLUDED_ALLOW_ENV = "FLEET_RAG_PRUNE_EXCLUDED_ALLOW"
+PRUNE_ROOT_MIN_DOCS = 5  # a repo with fewer tracked docs may legitimately empty out
+PRUNE_MAX_PERCENT = 20  # of a source's tracked docs, when diet excludes are in the prune set
+DIET_REPORT_NAME = "doc-diet-report.json"
+
+
+def _prune_gate(name: str) -> tuple[str, str] | None:
+    """Why this source must not be pruned, as (warning, guard reason), or None.
+
+    A stale or missing skill/memory mirror is a guard trip and is not a failed
+    source, so doc and linear can still prune.  The ingest loop skips reading
+    those sources, and apple-note, before this gate.  Force does not lift it.
+    The code-root gate applies only when the server job asks for it, so a Mac
+    nightly that reads ~/Code keeps its current prune behavior.  The mirror
+    root is the same one the freshness check uses, including the default
+    server tree when FLEET_RAG_MIRROR is unset.
+    """
+    if name == "doc" and os.environ.get("FLEET_RAG_REQUIRE_CODE_ROOT") == "1":
+        if not (os.environ.get("FLEET_CODE_ROOT") or "").strip():
+            return ("doc: pruning skipped; FLEET_CODE_ROOT is unset", "code-root-unset")
+    if name not in mirror.MIRROR_SOURCES:
+        return None
+    root = mirror.configured_root()
+    if root is None:
+        return None
+    status = mirror.mirror_status(root, time.time(), mirror.max_age_s())
+    if status.fresh:
+        return None
+    return (f"{name}: pruning skipped; mirror {status.reason}", status.reason)
+
+
+def _prune_candidates(name: str, yielded: set[str], state: dict) -> list[str]:
+    return sorted(
+        did
+        for did, rec in state.items()
+        if isinstance(rec, dict) and rec.get("source") == name and did not in yielded
+    )
+
+
+def _repo_key(doc_id: str) -> str | None:
+    parts = doc_id.split("/")
+    return "/".join(parts[:2]) if len(parts) >= 3 else None
+
+
+def prune_refusal(
+    name: str,
+    yielded: set[str],
+    state: dict,
+    diet_ids: set[str] | None = None,
+) -> str | None:
+    """Why pruning `name` this run is unsafe, or None when it may go ahead."""
+    gone = _prune_candidates(name, yielded, state)
+    if not gone:
+        return None
+    if not yielded:
+        return f"{name}: prune refused: the source yielded no documents but {len(gone)} would go"
+    if len(gone) > len(yielded):
+        return (
+            f"{name}: prune refused: {len(gone)} document(s) would go but the source yielded "
+            f"only {len(yielded)}; the walk is probably missing a root"
+        )
+    tracked: dict[str, int] = {}
+    live: set[str] = set()
+    for did, rec in state.items():
+        if isinstance(rec, dict) and rec.get("source") == name:
+            key = _repo_key(did)
+            if key:
+                tracked[key] = tracked.get(key, 0) + 1
+    for did in yielded:
+        key = _repo_key(did)
+        if key:
+            live.add(key)
+    vanished = sorted(k for k, n in tracked.items() if n >= PRUNE_ROOT_MIN_DOCS and k not in live)
+    if vanished:
+        return (
+            f"{name}: prune refused: every document under {', '.join(vanished[:5])}"
+            f"{' (+more)' if len(vanished) > 5 else ''} would go at once; that is a missing "
+            f"checkout or renamed root, not a deletion"
+        )
+    if diet_ids:
+        diet_gone = [did for did in gone if did in diet_ids]
+        tracked_n = sum(
+            1 for _did, rec in state.items() if isinstance(rec, dict) and rec.get("source") == name
+        )
+        if diet_gone and tracked_n and len(gone) * 100 > tracked_n * PRUNE_MAX_PERCENT:
+            pct = (len(gone) * 100) // tracked_n
+            return (
+                f"{name}: prune refused: {len(gone)} of {tracked_n} document(s) would go "
+                f"({pct}%), over the {PRUNE_MAX_PERCENT}% cap"
+            )
+    return None
+
+
+def _authorize_excluded(held: set[str], prune_excluded: bool) -> set[str]:
+    """Diet doc_ids this run may prune.  The rest stay in the yielded set."""
+    if not held:
+        return set()
+    if prune_excluded or os.environ.get(PRUNE_EXCLUDED_ENV) == "1":
+        return set(held)
+    raw = os.environ.get(PRUNE_EXCLUDED_ALLOW_ENV) or ""
+    rules = [part.strip() for part in raw.split(",") if part.strip()]
+    released: set[str] = set()
+    for did in held:
+        for rule in rules:
+            prefix = rule[:-1] if rule.endswith("*") else ""
+            if prefix and did.startswith(prefix) or did == rule:
+                released.add(did)
+    return released
+
+
+def diet_rules_hash() -> str:
+    """Identity of the exclude rules a dry-run stamp authorizes."""
+    payload = {
+        "version": sources.DOC_DIET_VERSION,
+        "legacy_dirs": sorted(sources.DOC_SKIP_DIR_NAMES_LEGACY),
+        "diet_dirs": sorted(sources.DOC_DIET_DIR_NAMES),
+        "lockfiles": sorted(sources.DOC_LOCKFILE_NAMES),
+        "binary": sorted(sources.DOC_BINARY_SUFFIXES),
+        "min_line": sources.MINIFIED_LINE_CHARS,
+        "min_ws": sources.MINIFIED_WHITESPACE_MAX,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _diet_stamp_path(state_path: pathlib.Path) -> pathlib.Path:
+    return pathlib.Path(state_path).parent / DIET_REPORT_NAME
+
+
+def doc_diet_census(walk: dict) -> dict:
+    """Doc and chunk counts before the diet and after excludes plus body dedupe."""
+    kept = [pathlib.Path(p) for p in (walk.get("kept") or [])]
+    excluded_pairs = list(walk.get("excluded_new") or [])
+    excluded = [pathlib.Path(path) for _reason, path in excluded_pairs]
+    by_rule: dict[str, int] = {}
+    for reason, _path in excluded_pairs:
+        by_rule[str(reason)] = by_rule.get(str(reason), 0) + 1
+
+    def tally(paths: list[pathlib.Path]) -> tuple[int, set[str]]:
+        total = 0
+        unique: set[str] = set()
+        for path in paths:
+            try:
+                text = sources.read_text(path)
+            except OSError:
+                continue
+            title = sources.first_heading(text, path.name)
+            for chunk in chunk_markdown(text, prefix=title):
+                total += 1
+                unique.add(content_hash(_chunk_body(chunk.text)))
+        return total, unique
+
+    before_n, _before_unique = tally(kept + excluded)
+    after_n, after_unique = tally(kept)
+    return {
+        "docs_before": len(kept) + len(excluded),
+        "docs_after": len(kept),
+        "chunks_before": before_n,
+        "chunks_after": len(after_unique),
+        "chunks_after_excludes_before_dedupe": after_n,
+        "chunks_deduped": after_n - len(after_unique),
+        "docs_excluded": len(excluded),
+        "excluded_by_rule": by_rule,
+        "rules_version": sources.DOC_DIET_VERSION,
+        "rules_hash": diet_rules_hash(),
+    }
+
+
+def _write_diet_stamp(state_path: pathlib.Path, census: dict) -> None:
+    body = {"written_at": now_ms(), **census, "rules_hash": diet_rules_hash()}
+    path = _diet_stamp_path(state_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def _diet_stamp_ok(state_path: pathlib.Path) -> bool:
+    path = _diet_stamp_path(state_path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return data.get("rules_hash") == diet_rules_hash()
+
+
+def _run_pending_prunes(
+    pending: list[tuple[str, set[str], dict, set[str]]],
+    report: dict,
+    state: dict,
+    writer: Writer,
+    state_path: pathlib.Path,
+    dry_run: bool,
+    log,
+) -> None:
+    if report["errors"]:
+        msg = (
+            "prune skipped for every source: the run had a failed source "
+            f"({len(report['errors'])} error(s)), so a missing document cannot be told from a failed read"
+        )
+        report["warnings"].append(msg)
+        log(f"[prune] WARNING {msg}")
+        return
+    force = os.environ.get(PRUNE_FORCE_ENV) == "1"
+    for name, yielded, stats, released in pending:
+        if released and not dry_run and not _diet_stamp_ok(state_path):
+            msg = (
+                "doc: prune refused: newly excluded documents need a --dry-run "
+                "diet report for the current exclude rules before they can be pruned"
+            )
+            report["errors"].append(msg)
+            report["ok"] = False
+            report.setdefault("guard_trips", []).append(
+                {"source": name, "reason": "diet-prune-needs-dry-run"}
+            )
+            log(f"[{name}] ERROR {msg}")
+            continue
+        refusal = prune_refusal(name, yielded, state, diet_ids=released)
+        if refusal and not force:
+            report["errors"].append(refusal)
+            report["ok"] = False
+            report.setdefault("guard_trips", []).append({"source": name, "reason": "prune-refused"})
+            log(f"[{name}] ERROR {refusal}")
+            continue
+        if refusal:
+            report["warnings"].append(f"{refusal} (overridden by {PRUNE_FORCE_ENV}=1)")
+        try:
+            gone = prune_source(name, yielded, state, writer, stats, state_path)
+            if gone:
+                log(
+                    f"[{name}] {'would prune' if dry_run else 'pruned'} {len(gone)} document(s): "
+                    + ", ".join(gone[:10])
+                    + (" ..." if len(gone) > 10 else "")
+                )
+        except Exception as e:  # noqa: BLE001
+            msg = f"{name}: prune: {type(e).__name__}: {e}"
+            report["errors"].append(msg)
+            report["ok"] = False
+            log(f"[{name}] ERROR {msg}")
+            telemetry.capture_exception(e, operation="ingest-prune", source=name)
+
+
+def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, log) -> None:
     """Upsert the ingest sentinel with the run outcome (ok=false on a failed run too)."""
     if cfg is None or qd is None:
         report["sentinel"] = None
@@ -573,11 +1705,15 @@ def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, lo
 def _append_log(log_path: pathlib.Path, report: dict) -> None:
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        totals = {k: sum(s.get(k, 0) for s in report["per_source"].values()) for k in _empty_stats()}
-        line = (f"{_dt.datetime.now().isoformat(timespec='seconds')} run={report['run_id']} "
-                f"ok={report['ok']} wall={report.get('wall_s')}s sources={','.join(report['sources'])} "
-                f"{json.dumps(totals)} errors={len(report['errors'])} "
-                f"warnings={len(report.get('warnings', []))}\n")
+        totals = {
+            k: sum(s.get(k, 0) for s in report["per_source"].values()) for k in _empty_stats()
+        }
+        line = (
+            f"{_dt.datetime.now().isoformat(timespec='seconds')} run={report['run_id']} "
+            f"ok={report['ok']} wall={report.get('wall_s')}s sources={','.join(report['sources'])} "
+            f"{json.dumps(totals)} errors={len(report['errors'])} "
+            f"warnings={len(report.get('warnings', []))}\n"
+        )
         with open(log_path, "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
@@ -585,15 +1721,11 @@ def _append_log(log_path: pathlib.Path, report: dict) -> None:
 
 
 def _heartbeat() -> None:
-    """GET the heartbeat URL from ~/.secrets/fleet-rag.env if defined.  Never prints the URL."""
-    url = None
-    try:
-        for line in HEARTBEAT_ENV.read_text(encoding="utf-8").splitlines():
-            m = re.match(rf"^\s*(?:export\s+)?{HEARTBEAT_KEY}\s*=\s*(.+?)\s*$", line)
-            if m:
-                url = m.group(1).strip().strip('"').strip("'")
-    except OSError:
-        return
+    """GET the heartbeat URL (environment, then Infisical `fleet-secrets get`) if defined.  Never
+    prints the URL.  No credential file is read (AFC-359)."""
+    url = (os.environ.get(HEARTBEAT_KEY) or "").strip()
+    if not url:
+        url = (core.fleet_secret(HEARTBEAT_KEY) or "").strip()
     if not url:
         return
     try:
@@ -605,15 +1737,22 @@ def _heartbeat() -> None:
 
 # --------------------------------------------------------------------------- raw JSONL rows
 
-def ingest_rows(rows: list[dict], defaults: dict, dry_run: bool = False, cfg: dict | None = None,
-                qd: Qdrant | None = None, log=eprint) -> dict:
+
+def ingest_rows(
+    rows: list[dict],
+    defaults: dict,
+    dry_run: bool = False,
+    cfg: dict | None = None,
+    qd: Qdrant | None = None,
+    log=eprint,
+) -> dict:
     """Scrub + gitleaks-gate + upsert pre-chunked rows (the `fleet-rag.py ingest FILE` path).
 
     Each row needs `text`; other payload v2 fields fall back to `defaults`.  No state tracking
     — raw rows are addressed purely by content hash.  Raises GitleaksError (nothing written)
     when the gate cannot complete.
     """
-    run_id = f"rows-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    run_id = f"rows-{_dt.datetime.now(_dt.UTC).strftime('%Y%m%dT%H%M%SZ')}"
     if cfg is None:
         cfg = load_config(need_write=not dry_run)
     if qd is None:
@@ -633,10 +1772,14 @@ def ingest_rows(rows: list[dict], defaults: dict, dry_run: bool = False, cfg: di
             "category": row.get("category", defaults.get("category", "lesson")),
             "seat": sources.seat_tag(row.get("seat", defaults.get("seat", "CLAUDE"))),
             "doc_id": row.get("doc_id", defaults.get("doc_id", "rows/unnamed")),
-            "chunk_index": int(row.get("chunk_index", i)), "chunk_count": int(row.get("chunk_count", len(rows))),
-            "heading": row.get("heading", ""), "title": row.get("title", defaults.get("title", "")),
-            "url": row.get("url", ""), "path": row.get("path", ""),
-            "created_at": created, "updated_at": int(row.get("updated_at") or created),
+            "chunk_index": int(row.get("chunk_index", i)),
+            "chunk_count": int(row.get("chunk_count", len(rows))),
+            "heading": row.get("heading", ""),
+            "title": row.get("title", defaults.get("title", "")),
+            "url": row.get("url", ""),
+            "path": row.get("path", ""),
+            "created_at": created,
+            "updated_at": int(row.get("updated_at") or created),
             "ingest_run": run_id,
         }
         if kinds:
@@ -645,14 +1788,26 @@ def ingest_rows(rows: list[dict], defaults: dict, dry_run: bool = False, cfg: di
     kept, dropped = gitleaks_drop(_dedupe_rows(points))
     new_rows = writer.missing(kept)
     writer.write(new_rows)
-    return {"rows": len(rows), "scrubbed": scrubbed, "dropped_by_gitleaks": dropped,
-            "already_present": len(kept) - len(new_rows), "written": 0 if dry_run else len(new_rows),
-            "would_write": len(new_rows) if dry_run else 0, "run_id": run_id}
+    result = {
+        "rows": len(rows),
+        "scrubbed": scrubbed,
+        "dropped_by_gitleaks": dropped,
+        "already_present": len(kept) - len(new_rows),
+        "written": 0 if dry_run else len(new_rows),
+        "would_write": len(new_rows) if dry_run else 0,
+        "run_id": run_id,
+    }
+    if not dry_run:
+        search_cache.note_ingest_complete(result)
+    return result
 
 
 # --------------------------------------------------------------------------- seeds
 
-def fix_seeds(dry_run: bool = False, cfg: dict | None = None, qd: Qdrant | None = None, log=eprint) -> int:
+
+def fix_seeds(
+    dry_run: bool = False, cfg: dict | None = None, qd: Qdrant | None = None, log=eprint
+) -> int:
     """Stamp the hand-seeded points (doc_id seed/fleet-standards) with the real seed time."""
     if cfg is None:
         cfg = load_config(need_write=not dry_run)
@@ -671,22 +1826,63 @@ def fix_seeds(dry_run: bool = False, cfg: dict | None = None, qd: Qdrant | None 
 
 # --------------------------------------------------------------------------- CLI
 
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python3 -m fleet_rag.ingest", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        prog="python3 -m fleet_rag.ingest",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("--all", action="store_true",
-                   help="nightly sources (board, effort-log, doc, skill, memory, apple-note; "
-                        "excludes chat-log — pass --source chat-log for the rare policy scan)")
+    g.add_argument(
+        "--all",
+        action="store_true",
+        help="nightly sources (linear, doc, skill, memory; apple-note is write-time only — "
+        "pass --source apple-note for a manual refresh; excludes chat-log)",
+    )
     g.add_argument("--source", help="comma-separated: " + ",".join(GENERATORS))
-    g.add_argument("--fix-seeds", action="store_true", help=f"stamp {SEED_DOC_ID} points with the real seed time")
-    ap.add_argument("--dry-run", action="store_true", help="chunk/scrub/gate and count, but never embed or write")
+    g.add_argument(
+        "--fix-seeds",
+        action="store_true",
+        help=f"stamp {SEED_DOC_ID} points with the real seed time",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="chunk/scrub/gate and count, but never embed or write",
+    )
     ap.add_argument("--limit", type=int, help="max documents per source")
     ap.add_argument("--since", help="only documents updated since YYYY-MM-DD | ISO | Nd | epoch ms")
-    ap.add_argument("--prune", action="store_true",
-                    help="after a source finishes cleanly, delete chunks of documents it no longer yields "
-                         "(refused with --limit)")
+    ap.add_argument(
+        "--full",
+        action="store_true",
+        help="force a full Linear read this run (sets FLEET_RAG_LINEAR_FULL for the process; "
+        "a scheduled sweep uses FLEET_RAG_LINEAR_SWEEP_DAYS and still honors the per-issue cache)",
+    )
+    ap.add_argument(
+        "--prune",
+        action="store_true",
+        help="after a source finishes cleanly, delete chunks of documents it no longer yields "
+        "(refused with --limit)",
+    )
+    ap.add_argument(
+        "--prune-excluded",
+        action="store_true",
+        help=(
+            "also prune documents the doc diet newly excludes; requires a prior "
+            "--dry-run of the same exclude rules"
+        ),
+    )
     ap.add_argument("--no-heartbeat", action="store_true")
+    ap.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="wait up to SECONDS for the ingest lock instead of failing at once "
+        "(default: 0 for a partial refresh; 6000 for a full `--all --prune` nightly, "
+        "so a 90-minute sheet-sync ingest can never lock out the health-attesting run)",
+    )
     args = ap.parse_args(argv)
     try:
         if args.fix_seeds:
@@ -694,9 +1890,42 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.all and not args.source:
             ap.error("choose --all, --source, or --fix-seeds")
-        report = run("all" if args.all else args.source, dry_run=args.dry_run, since=args.since,
-                     limit=args.limit, heartbeat=not args.no_heartbeat, prune=args.prune)
-    except IngestLocked as e:
+        # The nightly is the only run that attests health (sentinel + last-run.json),
+        # so it waits out a partial refresh instead of exiting 3 into a stale sentinel.
+        # A partial refresh keeps the fast exit and itself backs off (Kody review, PR #740).
+        # The wait is keyed on the SAME predicate that gates the sentinel, not on the
+        # `--all` flag, so an explicitly enumerated nightly run waits too (Kody review,
+        # PR #800):  keying them differently let a health-attesting run be locked out.
+        names = _resolve_names("all" if args.all else args.source)
+        attests = _attests_health(
+            names, args.prune, _parse_since(args.since), args.limit, args.dry_run
+        )
+        lock_timeout = (
+            args.lock_timeout if args.lock_timeout is not None else (6000.0 if attests else 0.0)
+        )
+        previous_full = os.environ.get("FLEET_RAG_LINEAR_FULL")
+        if args.full:
+            os.environ["FLEET_RAG_LINEAR_FULL"] = "1"
+        try:
+            report = run(
+                "all" if args.all else args.source,
+                dry_run=args.dry_run,
+                since=args.since,
+                limit=args.limit,
+                heartbeat=not args.no_heartbeat,
+                prune=args.prune,
+                prune_excluded=args.prune_excluded,
+                lock_timeout_s=lock_timeout,
+            )
+        finally:
+            if args.full:
+                if previous_full is None:
+                    os.environ.pop("FLEET_RAG_LINEAR_FULL", None)
+                else:
+                    os.environ["FLEET_RAG_LINEAR_FULL"] = previous_full
+    except (IngestLocked, NightlyPending) as e:
+        #  Both are the same class of refusal —  this run must not hold the lock now —  so
+        #  both exit 3, which is what the sheet sync's best-effort ingest expects.
         eprint(f"error: {e}")
         return EXIT_LOCKED
     except (FleetRagError, GitleaksError) as e:

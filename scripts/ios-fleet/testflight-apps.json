@@ -61,12 +61,11 @@
       "bundleId": "net.dealdex",
       "platform": "IOS",
       "repo": "DealDex",
-      "paths": ["native/ios"],
+      "paths": ["apps/ios"],
       "ship": { "workflow": "ios-ship.yml", "inputs": {} },
       "sourceWorkflows": ["ios-ship.yml"],
-      "compileCheck": null,
-      "autoRemedy": false,
-      "manualReason": "no iOS compile check runs on DealDex main (ci.yml builds the web app only), and a catch-up needs a green one;  add an iOS compile job, name it here, and set autoRemedy true"
+      "compileCheck": "ios / xcodebuild (unsigned)",
+      "autoRemedy": true
     },
     "contactlogo": {
       "displayName": "ContactLogo",
@@ -74,7 +73,7 @@
       "bundleId": "com.contactlogo",
       "platform": "IOS",
       "repo": "ContactLogo",
-      "paths": ["Apps/ContactLogoiOS", "Sources/ContactLogoKit", "project.yml"],
+      "paths": ["apps/ios", "Sources/ContactLogoKit", "project.yml"],
       "ship": { "workflow": "ios-testflight.yml", "inputs": {} },
       "sourceWorkflows": ["ios-testflight.yml"],
       "compileCheck": "apple (ContactLogoiOS*",
@@ -86,8 +85,11 @@
       "bundleId": "com.contactlogo.macos",
       "platform": "MAC_OS",
       "repo": "ContactLogo",
-      "paths": ["Apps/ContactLogoMac", "Sources", "project.yml"],
-      "skip": "the Mac app ships through Sparkle GitHub releases (mac-release.yml), not TestFlight"
+      "paths": ["apps/macos", "apps/macos-app-store", "Sources/ContactLogoKit", "project.yml"],
+      "ship": { "workflow": "mac-testflight.yml", "inputs": {} },
+      "sourceWorkflows": ["mac-testflight.yml", "testflight.yml"],
+      "compileCheck": "Mac TestFlight*",
+      "autoRemedy": false
     },
     "botfleet": {
       "displayName": "BotFleet",
@@ -128,7 +130,17 @@
       "bundleId": "com.simplewithus.codecaps.ios",
       "platform": "IOS",
       "repo": "CodeCaps",
-      "paths": ["ios/CodeCapsCompanion"],
+      "paths": [
+        "ios/CodeCapsCompanion",
+        "Sources/QuotaCore/CompanionReadTokenStore.swift",
+        "Sources/QuotaCore/FleetSourceDisagreement.swift",
+        "Sources/QuotaCore/QuotaWindowVocabulary.swift",
+        "Sources/QuotaCore/ResetAlarmCadence.swift",
+        "Sources/QuotaCore/ResetAlarmMessage.swift",
+        "Sources/QuotaCore/ResetAlarmTracker.swift",
+        "Sources/QuotaCore/WidgetPlatformDisplay.swift",
+        "Sources/QuotaCore/WidgetSnapshotFetcher.swift"
+      ],
       "ship": { "workflow": "ios-ship.yml", "inputs": {} },
       "sourceWorkflows": ["ios-ship.yml"],
       "compileCheck": "iOS companion compile",
@@ -141,11 +153,7 @@
       "platform": "MAC_OS",
       "repo": "CodeCaps",
       "paths": ["ios/CodeCapsCompanion"],
-      "ship": { "workflow": "macos-ship.yml", "inputs": {} },
-      "sourceWorkflows": ["macos-ship.yml"],
-      "compileCheck": null,
-      "autoRemedy": false,
-      "manualReason": "macos-ship.yml is manual only by design (workflow_dispatch, no push trigger)"
+      "skip": "retired from TestFlight and the Mac App Store (CC-169, owner 2026-10-19);  the Mac app ships through GitHub release DMGs (mac-release.yml)"
     },
     "hoghunter": {
       "displayName": "Hog Hunter",

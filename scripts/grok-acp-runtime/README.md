@@ -13,7 +13,7 @@ Always-on **localhost-only** Grok ACP.
 - Cloud agents do not run this CLI.  They call `https://agents.jays.services/mcp` (Access + Bearer).
 - Bind is loopback only.  Never `:2419`.
 
-Auth token lives in `~/.secrets/grok-acp.env` (`GROK_AGENT_SECRET`).
+Auth token lives in Infisical Fleet-OPS `/grok-acp` (`GROK_AGENT_SECRET`), read with `fleet-secrets get GROK_AGENT_SECRET --path /grok-acp`.
 Never print it.  Clients send it as:
 
 - `Authorization: Bearer <token>`, or

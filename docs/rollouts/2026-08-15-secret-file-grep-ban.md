@@ -8,12 +8,12 @@ rules forbid the next seat from doing the same.
 
 ## Changes Made
 
-- `AGENT-SYNC.md` — new § Handoff-file grep trap (forbidden greps, names-only
+- `FLEET-PROTOCOL.md` — new § Handoff-file grep trap (forbidden greps, names-only
   `grep -oE`, one-key extract).
 - `TEMPLATE-AGENTS.md` — one-liner under Secrets.
 - `docs/ONBOARDING-NEW-AGENT.md` hard rule 6 and `docs/ONBOARDING-NEW-APP.md`
   hard rule 5 now name the trap.
-- Live machine copies (not in this repo): `~/apps/AGENT-SYNC.md`,
+- Live machine copies (not in this repo): `~/apps/FLEET-PROTOCOL.md`,
   `~/.grok/GROK.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
   `~/.gemini/config/AGENTS.md`, `~/.cursor/rules/fleet-standards.mdc`,
   `~/.claude/skills/secret-safety/SKILL.md`.
@@ -26,8 +26,8 @@ rules forbid the next seat from doing the same.
 
 ## Verification State
 
-Docs-only.  Text review of the trap section in AGENT-SYNC vs the live
-`~/apps/AGENT-SYNC.md` copy (sections match).
+Docs-only.  Text review of the trap section in FLEET-PROTOCOL vs the live
+`~/apps/FLEET-PROTOCOL.md` copy (sections match).
 
 ## Next Steps & Blockers
 

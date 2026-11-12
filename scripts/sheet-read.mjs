@@ -2,26 +2,46 @@
 /**
  * sheet-read.mjs — read-only dump of the Fleet ASC / TestFlight registry sheet.
  * Spreadsheet: 1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY (strictly private).
- * Auth: service account ~/.secrets/google-sheets-sa.json. Never prints credentials.
+ * Auth: service account from GOOGLE_SHEETS_SA (env) or Infisical /google-sheets-sa via fleet-secrets.
+ * Never prints credentials.
  *
  * Usage:
  *   node sheet-read.mjs                 # metadata + all tabs, first 60 rows each
  *   node sheet-read.mjs "<SheetName>"   # one tab
  *   node sheet-read.mjs --meta          # tab names + grid sizes only
  */
-import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import crypto from "node:crypto";
 
 const SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
-const SA_KEY_PATH = "/Users/jay/.secrets/google-sheets-sa.json";
 
 function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// AFC-359: the service account JSON comes from GOOGLE_SHEETS_SA in the environment, else
+// Infisical Fleet-OPS /google-sheets-sa through fleet-secrets.  Never written to disk or printed.
+function loadServiceAccount() {
+  let raw = process.env.GOOGLE_SHEETS_SA || "";
+  if (!raw) {
+    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
+    try {
+      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).replace(/\n$/, "");
+    } catch {
+      raw = "";
+    }
+  }
+  if (!raw) throw new Error("Google service account missing: set GOOGLE_SHEETS_SA or add it to Infisical /google-sheets-sa");
+  return JSON.parse(raw);
+}
+
 async function getGoogleAccessToken() {
-  if (!existsSync(SA_KEY_PATH)) throw new Error(`missing service account key at ${SA_KEY_PATH}`);
-  const sa = JSON.parse(readFileSync(SA_KEY_PATH, "utf8"));
+  const sa = loadServiceAccount();
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
   const payload = {
