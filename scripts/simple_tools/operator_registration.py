@@ -85,6 +85,10 @@ SETTLED_KEEP_SECONDS = 7 * 24 * 3600
 MAX_ID = 140
 
 
+# The reason an answer is refused when every one of the seat's 26 doubled pairs is live.
+LABELS_EXHAUSTED = "labels_exhausted"
+
+
 class RegistrationRefused(ValueError):
     """Caller-supplied text looked like a credential;  nothing was stored.
 
@@ -569,13 +573,25 @@ def answer(
                 "reason": "no discovery evidence corroborates a seat-bot answer",
                 "entry_id": entry["entry_id"],
             }
-        out = register(
-            platform=entry["platform"],
-            verified_host=word,
-            profile_scope=entry["profile_scope"],
-            native_session_id=entry["session_id"],
-            seat=entry["seat"],
-        )
+        try:
+            out = register(
+                platform=entry["platform"],
+                verified_host=word,
+                profile_scope=entry["profile_scope"],
+                native_session_id=entry["session_id"],
+                seat=entry["seat"],
+            )
+        except RuntimeError as exc:
+            # All 26 of the seat's doubled pairs are live:  the registry refuses the letter (owner, Nov 11 2026:
+            # "ok just refuse actually is fine").  It is a refusal, not a crash, and the question stays answerable
+            # so a later answer, once a pair is freed, can still letter the chat.  Matched by name so this module
+            # never imports the registry.
+            if type(exc).__name__ != "LabelExhausted":
+                raise
+            entry["answered_at"] = round(now, 3)
+            entry["reason"] = "register:" + LABELS_EXHAUSTED
+            save(registry_db, data)
+            return {"status": "refused", "reason": LABELS_EXHAUSTED, "entry_id": entry["entry_id"]}
         outcome = str(out.get("outcome") or "")
         label = str(out.get("label") or "")
         if outcome not in ("registered", "resumed") or not label:
@@ -905,6 +921,11 @@ def answer_reply(result: Mapping[str, Any]) -> str:
             "Not registered:  no discovery evidence corroborates this chat's location, "
             "so the seat bot's answer cannot assign its letter - the owner's answer can "
             "(ref %s)." % entry_id
+        )
+    if status == "refused" and result.get("reason") == LABELS_EXHAUSTED:
+        return (
+            "Not registered:  all 26 of this seat's main-chat pairs (AA to ZZ) are live, so the Operator refused "
+            "a letter;  the chat carries on without one (ref %s)." % entry_id
         )
     if status == "refused":
         return (

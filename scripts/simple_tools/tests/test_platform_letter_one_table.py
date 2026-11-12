@@ -234,7 +234,7 @@ class SharedBehaviour(Base):
     def test_a_refusal_takes_the_letter_off(self) -> None:
         note = {"state": "open", "label": "CC"}
         chat = PL.Chat(self.spec, self.env(), "server", "s-0001", now=1.0)
-        self.assertEqual(PL._apply(chat, {"error": "all double letters are in use"}, dict(note))["label"], "")
+        self.assertEqual(PL._apply(chat, {"error": PL.refused_text(None, "codex")}, dict(note))["label"], "")
         self.assertEqual(PL._apply(chat, {"error": PL.NO_REGISTRATION}, dict(note))["label"], "")
         self.assertEqual(PL._apply(chat, {"error": "the registry did not answer"}, dict(note))["label"], "CC")
 

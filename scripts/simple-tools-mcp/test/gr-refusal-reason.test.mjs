@@ -90,6 +90,9 @@ const MAPPED = [
   ["auto-merge is not armed", 400, "bad_request_auto_merge_not_armed"],
   ["auto-merge enable was refused", 400, "bad_request_auto_merge_refused"],
   ["auto-merge is armed with a different method", 400, "bad_request_auto_merge_method_mismatch"],
+  ["repository owner is not allowed", 400, "bad_request_owner_not_allowed"],
+  ["invalid repository", 400, "bad_request_invalid_repository"],
+  ["action 'create_repo_public' not allowed for this seat", 403, "seat_policy"],
 ];
 
 test("every mapped relay string classifies, on the workflow path and the seven-action path", async () => {

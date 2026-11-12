@@ -729,6 +729,16 @@ def _api_identity(args: Any, sid: str) -> dict[str, Any]:
     }
 
 
+#: The tail of the refusal a chat reads when every main-chat pair is live (`refused_text`), which `refused` matches.
+REFUSED_TAIL = "the Operator refused this chat a letter"
+
+
+def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
+    """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
+    limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
+    return "all %d %s main-chat pairs (AA to ZZ) are live:  %s" % (limit, platform, REFUSED_TAIL)
+
+
 def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[str, Any]:
     """Register one chat through the registry API:  resume it, or reopen it when it comes back closed.
 
@@ -757,7 +767,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         params["parent_session_id"] = parent
     out = _call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+        return {"error": refused_text(OR, args.platform), "swept": 0}
     error = _api_error(out)
     if error is not None:
         return error
@@ -772,7 +782,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = _call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+            return {"error": refused_text(OR, args.platform), "swept": 0}
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
@@ -1223,11 +1233,7 @@ def refused(answer: Mapping[str, Any]) -> bool:
     """The assigner answered, and the answer is no letter:  every pair is live, or it holds no registration for the
     chat.  Anything else that carries an error is a call that got no answer (not configured, unreachable, a timeout)."""
     error = str(answer.get("error") or "")
-    return (
-        error == NO_REGISTRATION
-        or error.startswith("all ")
-        and error.endswith(" letters are in use")
-    )
+    return error == NO_REGISTRATION or (error.startswith("all ") and error.endswith(REFUSED_TAIL))
 
 
 def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[str, Any]:
