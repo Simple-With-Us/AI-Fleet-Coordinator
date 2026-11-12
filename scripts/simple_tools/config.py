@@ -1002,7 +1002,9 @@ def _parse_registry(raw: Mapping[str, Any], cfg: Config, errors: list[str]) -> N
             errors.append("registry.%s must be a number above 0 and at most 1" % name)
         else:
             setattr(cfg, "registry_" + name, float(share))
-    window = section.get("gone_report_window_minutes", REGISTRY_DEFAULTS["gone_report_window_minutes"])
+    window = section.get(
+        "gone_report_window_minutes", REGISTRY_DEFAULTS["gone_report_window_minutes"]
+    )
     if isinstance(window, bool) or not isinstance(window, int) or not 1 <= window <= 1440:
         errors.append("registry.gone_report_window_minutes must be a whole number from 1 to 1440")
     else:

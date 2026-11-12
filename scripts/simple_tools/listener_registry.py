@@ -72,9 +72,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
-import math
 import sqlite3
 import threading
 import time
@@ -752,7 +752,9 @@ def _close_row_in_txn(
     The same four writes as close (the row, the alias, the event and the export upsert), so a
     caller can count, guard and close under one lock.  A row already closed is left alone and
     answers None."""
-    row = conn.execute("SELECT closed_at FROM sessions WHERE record_id = ?", (record_id,)).fetchone()
+    row = conn.execute(
+        "SELECT closed_at FROM sessions WHERE record_id = ?", (record_id,)
+    ).fetchone()
     if row is None or row["closed_at"]:
         return None
     letter, generation = registry._active_alias(conn, record_id)
@@ -899,7 +901,12 @@ class Sweeper:
                     groups: dict[tuple[str, str, str, str], list[Any]] = {}
                     hosts: dict[tuple[str, str], int] = {}
                     for row in rows:
-                        key = (row["platform"], row["seat"], row["verified_host"], row["profile_scope"])
+                        key = (
+                            row["platform"],
+                            row["seat"],
+                            row["verified_host"],
+                            row["profile_scope"],
+                        )
                         groups.setdefault(key, []).append(row)
                         pair = (row["platform"], row["verified_host"])
                         hosts[pair] = hosts.get(pair, 0) + 1
