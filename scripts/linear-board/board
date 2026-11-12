@@ -378,9 +378,7 @@ def app_name_ok(name, accepted, seat: str = "") -> bool:
 
 
 def seat_for_linear_author(name: str | None) -> str | None:
-    """The seat whose Linear app (primary name, alias, or tag) this viewer or comment
-    author belongs to.  None when the name is empty, unknown, or shared by more than
-    one seat (JET and JET-CHAT both sign as Jet)."""
+    """Map a Linear viewer or comment name to one seat (app name, alias, or tag).  None if empty, unknown, or shared (JET and JET-CHAT both sign as Jet)."""
     if not isinstance(name, str) or not name.strip():
         return None
     key = name.casefold()
@@ -390,7 +388,6 @@ def seat_for_linear_author(name: str | None) -> str | None:
         accepted.update(a.casefold() for a in SEAT_APP_ALIASES.get(seat, ()))
         if key in accepted:
             hits.append(seat)
-    # Preserve table order and drop duplicates (JET / JET-CHAT).
     unique = list(dict.fromkeys(hits))
     return unique[0] if len(unique) == 1 else None
 
@@ -2808,10 +2805,8 @@ def parse_comment(c: dict) -> dict:
         body, where, sessions = _where_sessions(body)
         author_seat = seat_for_linear_author(author)
     body = HTML_COMMENT_RE.sub("\n", body).strip()
-    # `author` is the name a reader shows:  a legacy `[SEAT]` tag line when one is present,
-    # otherwise Linear's own user name (the seat app that wrote the comment).  Anyone can
-    # type a tag line, so a consumer that has to know WHO wrote it (the needs-owner notifier)
-    # reads `author_seat` (tag or mapped Linear app name), `author_id` and `author_app`.
+    # `author` is the display name (legacy tag or Linear user).  A consumer that has to know
+    # WHO wrote it reads `author_seat`, `author_id` and `author_app`.
     user = c.get("user") or {}
     author_id = user.get("id") if isinstance(user.get("id"), str) and user.get("id") else None
     author_app = user.get("app") if isinstance(user.get("app"), bool) else None
