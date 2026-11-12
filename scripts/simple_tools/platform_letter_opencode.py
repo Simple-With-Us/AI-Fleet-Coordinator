@@ -36,7 +36,7 @@ How it fits together.
 Who takes a letter.  Every OpenCode chat the plugin sees, except the ones that say they take none.  Where the plugin
 runs decides what it can see.  `opencode run` and `opencode mini` use the background service (`opencode serve
 --service`), one detached process that serves every client; its environment is the environment of whichever client
-started it, so AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, `SESSION_LETTER=0` and `OPENCODE_LETTER=0` say nothing about the
+started it, so AGENT_LAUNCHER, AGENT_LAUNCH_SEAT and `SESSION_LETTER=0` say nothing about the
 client of a chat, and the plugin ignores them there (and runs the hook without them, so that one launcher-run client
 cannot switch the letters off for every later chat, nor one plain client switch them on for a launcher's).  A private
 server (`serve --stdio`, which the client starts as its own child: ACP, which BotFleet uses, and `--standalone`) has

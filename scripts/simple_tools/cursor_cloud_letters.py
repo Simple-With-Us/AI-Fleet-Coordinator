@@ -68,6 +68,9 @@ STEER_RETRY = 30 * 60
 STEER_DONE = ("sent", "unknown")
 STEER_RETRY_NOW = ("busy", "not-started")
 STEER_STOP = ("unavailable", "refused")
+# A DM the chat tool refused sent nothing (an unknown bot name, say), so a later run asks again;  after this many
+# refusals for one letter it is final.
+MAX_DM_REFUSALS = 3
 # Cursor keeps a finished Cloud agent IDLE until it is archived, so the open list holds agents untouched for weeks.  Only
 # one updated within the registry's own stale window takes a letter (and wakes its bot);  an older one would hold a
 # letter it never uses and wake a bot about a dead chat.  An agent with no readable updated_at is skipped too.
@@ -77,6 +80,24 @@ API_TIMEOUT = 30
 
 Runner = Callable[..., Any]
 Transport = Callable[[list[str]], Mapping[str, Any]]
+
+
+def agent_problem(agent: object) -> str:
+    """What is wrong with one discovered agent's shape, or "" when every field the sweep reads has its type.  The
+    list comes from Cursor's API, so it is checked here, before the registry, the steer or a DM reads a field."""
+    if not isinstance(agent, Mapping):
+        return "the agent must be an object"
+    sid = agent.get("session_id")
+    if not isinstance(sid, str) or not sid.strip():
+        return "session_id must be a non-empty string"
+    for name in ("title", "state", "url"):
+        value = agent.get(name)
+        if value is not None and not isinstance(value, str):
+            return "%s must be a string" % name
+    when = agent.get("updated_at")
+    if when is not None and (isinstance(when, bool) or not isinstance(when, (int, float, str))):
+        return "updated_at must be a number or a string"
+    return ""
 
 
 def bot_of(title: str) -> tuple[str, str]:
@@ -158,9 +179,14 @@ def message(bot: str, agent: Mapping[str, Any], label: str, generation: int, wor
 
 
 def plain(text: object) -> str:
-    """A chat title as plain words for a Zulip DM:  one line with the marks Zulip reads as markup or a mention taken
-    out, so a title can neither format the message nor @-mention anyone."""
-    return PL.one_line(MARKUP.sub("", PL.one_line(text)))[:200]
+    """A chat title as plain words for a Zulip DM:  one line, with any secret-shaped word dropped (a title can carry a
+    pasted key, and a DM leaves this host) and the marks Zulip reads as markup or a mention taken out, so a title can
+    neither leak a credential, format the message nor @-mention anyone."""
+    words = [w for w in PL.one_line(text).split(" ") if w and not PL.secretscan.scan(w)]
+    line = " ".join(words)
+    if PL.secretscan.scan(line):
+        return ""
+    return PL.one_line(MARKUP.sub("", line))[:200]
 
 
 def wanted_title(label: str, current: object) -> str:
@@ -217,6 +243,9 @@ def dm_already(told: Mapping[str, Any], label: str, generation: int) -> bool:
         return False
     if told.get("dm") in STEER_DONE:
         return True
+    if told.get("dm") == "refused":
+        # A refusal sent nothing, so it is retryable, but not for ever:  after MAX_DM_REFUSALS it is final.
+        return int(told.get("dm_refusals") or 1) >= MAX_DM_REFUSALS
     return "steer" not in told and told.get("outcome") in STEER_DONE
 
 
@@ -319,46 +348,53 @@ def sweep(
     found = discover()
     # Whether the discovery saw every open agent:  only then is an agent missing from it gone.
     whole = complete() if complete is not None else True
-    agents = [a for a in found if recent(a, now)]
     state = read_state(env)
-    rows = []
-    for agent in agents:
-        sid = str(agent.get("session_id") or "")
-        if not sid:
+    rows: list[dict[str, Any]] = []
+    # Each discovered agent is checked before anything reads it:  one of the wrong shape gets a row naming the field
+    # and takes no part, and the others go on.
+    usable: list[Mapping[str, Any]] = []
+    for item in found:
+        problem = agent_problem(item)
+        if not problem:
+            usable.append(item)
             continue
-        row: dict[str, Any] = {"session_id": sid}
+        bad: dict[str, Any] = {"error": "invalid agent: " + problem}
+        named = item.get("session_id") if isinstance(item, Mapping) else None
+        if isinstance(named, str) and named.strip():
+            bad["session_id"] = named[:80]
+        rows.append(bad)
+    agents = [a for a in usable if recent(a, now)]
+
+    def visit(agent: Mapping[str, Any], row: dict[str, Any]) -> None:
+        sid = str(agent["session_id"])
         bot, words = bot_of(str(agent.get("title") or ""))
         if bot:
             row["bot"] = bot
         if dry_run:
-            rows.append(row)
-            continue
+            return
         answer = register(env, agent, now=now, transport=transport)
         label = str(answer.get("label") or "")
         if "error" in answer or not label:
             row["error"] = str(answer.get("error") or "no letter")[:200]
-            rows.append(row)
-            continue
+            return
         generation = int(answer.get("generation") or 1)
         row["label"] = label
         told = state.get(sid) if isinstance(state.get(sid), dict) else {}
         current = PL.one_line(agent.get("title"))
         if current.startswith(label + ": "):
             row["title"] = "set"
-            rows.append(row)
-            continue
+            return
         just_steered = False
         if steer_due(told, label, generation, now):
             if clock() - started > budget:
                 row["steer"] = "deferred"  # the next run sends it
-                rows.append(row)
-                continue
+                return
             outcome = steer(
                 sid, rename_prompt(wanted_title(label, current), agent.get("state") == "busy")
             )
             row["steer"] = outcome
             # A sent steer is done for this pass, and so is one whose outcome is unknown: it may have reached the
-            # agent.  A refusal is not asked again.  A steer that sent nothing is retried next run, so it is not
+            # agent.  A refusal is not asked again.  A steer that sent nothing is retried next run, so it is not
             # recorded.
             if outcome in STEER_DONE or outcome in STEER_STOP:
                 told = _remember(
@@ -373,28 +409,49 @@ def sweep(
                 )
                 just_steered = True
             else:
-                rows.append(row)
-                continue
-        # The title is still bare on a later pass.  Ask the Grok Bot only when steering cannot do it, or both
-        # steers have already been spent.  The pass that spends the second steer waits, so that steer can land.
+                return
+        # The title is still bare on a later pass.  Ask the Grok Bot only when steering cannot do it, or both
+        # steers have already been spent.  The pass that spends the second steer waits, so that steer can land.
         # A bot is never told twice for one letter.
         spent = told.get("steer") in STEER_STOP or (
             told.get("steer") in STEER_DONE and int(told.get("attempts") or 0) >= MAX_STEERS
         )
-        # A steer that was just sent still has this pass to land.  A refusal will not land, so the bot is asked now.
+        # A steer that was just sent still has this pass to land.  A refusal will not land, so the bot is asked now.
         wait_for_steer = just_steered and told.get("steer") in STEER_DONE
         if bot and spent and not wait_for_steer and not dm_already(told, label, generation):
             if clock() - started > budget:
                 row["dm"] = "deferred"
-            else:
-                dm = send_dm(bot, message(bot, agent, label, generation, words), env, runner)
-                row["dm"] = dm
-                if dm in ("sent", "unknown"):
-                    record = dict(state.get(sid) or {})
-                    record.update(
-                        bot=bot, label=label, generation=generation, dm=dm, outcome=dm, at=now
-                    )
-                    state[sid] = record
+                return
+            text = message(bot, agent, label, generation, words)
+            # The DM's row is on disk before the DM is sent:  a run that dies between the send and the next write
+            # finds "unknown" and never sends the same letter's DM twice.
+            before = dict(state.get(sid) or {})
+            refusals = int(before.get("dm_refusals") or 0) if _same_letter(before, label, generation) else 0
+            pending = dict(before)
+            pending.update(bot=bot, label=label, generation=generation, dm="unknown", outcome="unknown", at=now)
+            state[sid] = pending
+            write_state(env, state)
+            dm = send_dm(bot, text, env, runner)
+            row["dm"] = dm
+            if dm == "sent":
+                state[sid] = dict(pending, dm="sent", outcome="sent")
+            elif dm == "refused":
+                # Nothing went out.  It is asked again on a later run, MAX_DM_REFUSALS times in all (`dm_already`).
+                state[sid] = dict(pending, dm="refused", outcome="refused", dm_refusals=refusals + 1)
+            elif dm == "not-started":
+                # It could not run, so nothing went out and nothing is remembered:  the next run tries.
+                if before:
+                    state[sid] = before
+                else:
+                    state.pop(sid, None)
+            write_state(env, state)
+
+    for agent in agents:
+        row: dict[str, Any] = {"session_id": str(agent["session_id"])}
+        try:
+            visit(agent, row)
+        except Exception as exc:  # noqa: BLE001 - one agent's failure never stops the others
+            row["error"] = "failed (%s)" % type(exc).__name__  # the type only:  a message can carry a title
         rows.append(row)
     if not dry_run:
         if whole:
@@ -402,13 +459,16 @@ def sweep(
             # more agents than the cap) would forget what a bot was told, and tell it again next time.
             # Every open agent counts, the stale ones too:  an agent past the window still holds its letter until the
             # registry frees it, so forgetting the DM now would tell its bot again if it woke before then.
-            open_ids = {str(a.get("session_id") or "") for a in found}
+            open_ids = {
+                a["session_id"] for a in found if isinstance(a, Mapping) and isinstance(a.get("session_id"), str)
+            }
             for sid in [k for k in state if k not in open_ids]:
                 del state[sid]  # the agent is gone; its letter is the registry's to free
         write_state(env, state)
     return {
         "agents": len(agents),
-        "stale": len(found) - len(agents),
+        "stale": len(usable) - len(agents),
+        "invalid": len(found) - len(usable),
         "complete": whole,
         "rows": rows,
     }

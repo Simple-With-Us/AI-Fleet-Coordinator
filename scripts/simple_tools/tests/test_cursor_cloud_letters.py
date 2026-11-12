@@ -170,6 +170,81 @@ class SweepTests(unittest.TestCase):
         self.assertNotIn("javascript", text)
         self.assertIn(A1, text)
 
+    def test_an_agent_of_the_wrong_shape_gets_a_row_and_the_others_go_on(self) -> None:
+        self.agents = ["nope", {"title": "x"}, dict(agent(A1, "GB-Director: tidy"), title=7),
+                       dict(agent(A1, "GB-Director: tidy"), updated_at=True), agent(A2, "fix the login page")]
+        out = self.run_sweep()
+        self.assertEqual([r["error"] for r in out["rows"] if "error" in r], [
+            "invalid agent: the agent must be an object",
+            "invalid agent: session_id must be a non-empty string",
+            "invalid agent: title must be a string",
+            "invalid agent: updated_at must be a number or a string",
+        ])
+        self.assertEqual((out["invalid"], out["agents"]), (4, 1))
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A2])  # the one good agent is registered and steered
+        self.assertRegex(self.label(A2), r"^[A-Z]{2}$")
+
+    def test_one_agents_failure_does_not_stop_the_next(self) -> None:
+        class Boom(Steer):
+            def __call__(self, sid: str, text: str) -> str:
+                if sid == A1:
+                    raise RuntimeError("words from a title")
+                return super().__call__(sid, text)
+
+        self.steer = Boom()
+        out = self.run_sweep()
+        self.assertEqual(out["rows"][0]["error"], "failed (RuntimeError)")  # the type only, never the message
+        self.assertNotIn("words from a title", json.dumps(out))
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A2])
+        self.assertIn("label", out["rows"][1])
+
+    def test_a_secret_shaped_word_in_a_title_never_reaches_the_dm(self) -> None:
+        key = "ghp_" + "a1B2" * 9  # built here, so no key-shaped literal is in the file
+        self.steer = Steer("unavailable")
+        self.agents = [agent(A1, "GB-Director: rotate %s today" % key)]
+        self.run_sweep()
+        text = self.dm.calls[0][-1]
+        self.assertNotIn(key, text)
+        self.assertIn("rotate", text)
+        self.assertIn("today", text)
+        self.assertEqual(CCL.plain(key), "")
+
+    def test_a_refused_dm_is_asked_again_and_is_final_after_three_refusals(self) -> None:
+        self.steer = Steer("unavailable")
+        self.dm = Fake(code=2, out="refused: unknown name GB-Director")
+        for n in (1, 2, 3):
+            self.assertEqual(self.run_sweep()["rows"][0]["dm"], "refused")
+            self.assertEqual(len(self.dm.calls), n)
+        self.assertNotIn("dm", self.run_sweep()["rows"][0])  # the fourth pass does not ask
+        self.assertEqual(len(self.dm.calls), 3)
+        self.assertEqual(CCL.read_state(self.env)[A1]["dm_refusals"], 3)
+
+    def test_a_run_that_dies_in_the_send_does_not_send_the_dm_again(self) -> None:
+        self.steer = Steer("unavailable")
+
+        def dies(argv, **kw):
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            CCL.sweep(self.env, discover=lambda: list(self.agents), runner=dies, steer=self.steer,
+                      transport=self.transport)
+        self.assertEqual(CCL.read_state(self.env)[A1]["dm"], "unknown")  # written before the send
+        self.run_sweep()
+        self.assertEqual(self.dm.calls, [])
+
+    def test_a_dm_that_could_not_start_is_not_remembered_and_is_tried_again(self) -> None:
+        self.steer = Steer("unavailable")
+
+        def missing(argv, **kw):
+            raise OSError("no such program")
+
+        out = CCL.sweep(self.env, discover=lambda: list(self.agents), runner=missing, steer=self.steer,
+                        transport=self.transport)
+        self.assertEqual(out["rows"][0]["dm"], "not-started")
+        self.assertNotIn("dm", CCL.read_state(self.env)[A1])
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+
     def test_a_gone_agent_is_forgotten(self) -> None:
         self.run_sweep()
         self.agents = [self.agents[1]]
