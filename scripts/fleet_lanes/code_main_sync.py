@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import re
 import subprocess
@@ -405,6 +406,8 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
 # message when the set of problem clones changes, and again once a day while any remain.  Nothing is posted when all
 # clones are clean, and a failed post is only logged:  alerting never changes the sync's own exit code.
 ALERT_STATE = "code-main-sync-alert.json"
+# Optional JSON stamp the nightly can read.  Unset writes nothing.  See docs/RAG-NIGHTLY-INGEST.md.
+ENV_CODE_SYNC_STATE = "FLEET_CODE_SYNC_STATE"
 ALERT_REPEAT_S = 24 * 3600
 ALERT_DEFAULT_TAG = "[GB-ORACLE \U0001f4c1OPS]"
 ALERT_DEFAULT_STREAM = "Alerts"
@@ -509,6 +512,27 @@ def _zulip_post(site: str, email: str, api_key: str, fields: Mapping[str, str]) 
         if resp.status != 200:
             raise RuntimeError(f"HTTP {resp.status}")
 
+def write_sync_stamp(env: Mapping[str, str], exit_code: int, now: float | None = None) -> None:
+    """Record this run for the nightly.  A missing path or a failed write does not fail the sync."""
+    raw = (env.get(ENV_CODE_SYNC_STATE) or "").strip()
+    if not raw:
+        return
+    path = Path(raw)
+    payload = {"at": time.time() if now is None else now, "exit": exit_code, "ok": exit_code == 0}
+    try:
+        parent = path.parent
+        created = not parent.exists()
+        parent.mkdir(parents=True, mode=0o755, exist_ok=True)
+        if created:
+            os.chmod(parent, 0o755)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError as exc:  # the sync result stands either way
+        log(f"stamp: state write failed ({type(exc).__name__})")
+
+
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description="Fetch and fast-forward clean clones in the Code root to origin/main.")
@@ -550,7 +574,10 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         log("summary: " + " ".join(f"{key}={value}" for key, value in counters.items()))
         if not args.dry_run:
             alert_problems(problems, env, state)
-        return 1 if counters["failed"] else 0
+        code = 1 if counters["failed"] else 0
+        if not args.dry_run:
+            write_sync_stamp(env, code)
+        return code
     finally:
         os.close(lock_fd)
 
