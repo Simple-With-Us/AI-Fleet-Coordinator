@@ -371,3 +371,146 @@ test("a seat policy still only raises a default, and the cooldown still refuses"
   await S.noteRateLimited(cool, { retryAfterS: 30 }, T0);
   assert.equal((await S.reserve(cool, { kind: "read" }, T0 + 1000)).code, "rate_limited");
 });
+
+test("wake release: released_delivered behaves like a resolved wake", async () => {
+  const store = S.memoryStore();
+  const c = await S.eventClaimWake(store, { wakeId: "w-r1" }, T0);
+  await S.eventSettleWake(store, { wakeId: "w-r1", token: c.token, outcome: "uncertain" }, T0);
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-r1" }, T0 + 1000)).verdict, "duplicate", "tombstoned before release");
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r1", decision: "released_delivered" }, T0 + 2000), { ok: true });
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-r1" }, T0 + 3000)).verdict, "duplicate", "settled marker dedupes the window");
+  const t = T0 + S.WAKE_SEEN_WINDOW_MS + 4000;
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-r1" }, t)).verdict, "go", "forgotten past the window like any resolved wake");
+});
+
+test("wake release: released_abandoned is a permanent terminal rejection", async () => {
+  const store = S.memoryStore();
+  const c = await S.eventClaimWake(store, { wakeId: "w-r2" }, T0);
+  await S.eventSettleWake(store, { wakeId: "w-r2", token: c.token, outcome: "uncertain" }, T0);
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r2", decision: "released_abandoned" }, T0 + 1000), { ok: true });
+  const t = T0 + S.WAKE_SEEN_WINDOW_MS + 5000;
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-r2" }, t)).verdict, "duplicate", "refused past the GC");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-r2" }, t + 7 * 24 * 3600 * 1000)).verdict, "duplicate", "refused a week later");
+  const tomb = await store.get("wake_tomb");
+  assert.equal(tomb["w-r2"].released, "abandoned", "tagged in the tomb");
+});
+
+test("wake release: a late release resolves custody from the tomb alone", async () => {
+  const store = S.memoryStore();
+  const c = await S.eventClaimWake(store, { wakeId: "w-r3" }, T0);
+  await S.eventSettleWake(store, { wakeId: "w-r3", token: c.token, outcome: "uncertain" }, T0);
+  const t = T0 + S.WAKE_SEEN_WINDOW_MS + 60_000;
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r3", decision: "released_delivered" }, t), { ok: true });
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-r3" }, t + 1000)).verdict, "duplicate", "settled marker dedupes after a late release");
+});
+
+test("wake release: idempotent releases, stale releases fail closed", async () => {
+  const store = S.memoryStore();
+  const c = await S.eventClaimWake(store, { wakeId: "w-r4" }, T0);
+  await S.eventSettleWake(store, { wakeId: "w-r4", token: c.token, outcome: "uncertain" }, T0);
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r4", decision: "released_abandoned" }, T0 + 1), { ok: true });
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r4", decision: "released_abandoned" }, T0 + 2), { ok: true, idempotent: true });
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r4", decision: "released_delivered" }, T0 + 3), { ok: false }, "an abandoned id never becomes delivered");
+  const d = await S.eventClaimWake(store, { wakeId: "w-r5" }, T0);
+  await S.eventSettleWake(store, { wakeId: "w-r5", token: d.token, outcome: "uncertain" }, T0);
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r5", decision: "released_delivered" }, T0 + 1), { ok: true });
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-r5", decision: "released_delivered" }, T0 + 2), { ok: true, idempotent: true });
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-never", decision: "released_abandoned" }, T0), { ok: false }, "never-held id is not created");
+  assert.equal(Object.hasOwn(await store.get("wake_tomb") ?? {}, "w-never"), false);
+  await assert.rejects(S.eventReleaseWake(store, { wakeId: "w-r5", decision: "drop" }, T0), /unknown wake release decision/);
+});
+
+test("wake release: abandoned custody does not count against the unknown-custody cap", async () => {
+  const { WEBHOOK_EVENT_NAME } = await import("../src/events.js");
+  // Tight hourly envelope:  the budget is clamped to WAKE_SEEN_CAP and counts
+  // settled entries too, so a 1024-claim fill would be refused by the
+  // envelope, not the custody cap.  The custody cap under test is windowless
+  // (the tomb has no horizon) - space the claims 100ms apart inside a 250ms
+  // window so the envelope never bites and only custody can refuse.
+  const budget = { max: 10, windowMs: 250 };
+  const store = S.memoryStore();
+  for (let i = 0; i < S.WAKE_CUSTODY_CAP; i++) {
+    const at = T0 + i * 100;
+    const c = await S.eventClaimWake(store, { wakeId: `w-x-${i}`, name: WEBHOOK_EVENT_NAME, budget }, at);
+    assert.equal(c.verdict, "go", `claim ${i} admitted before the cap fills`);
+    assert.deepEqual(await S.eventSettleWake(store, { wakeId: `w-x-${i}`, token: c.token, outcome: "uncertain" }, at), { ok: true });
+  }
+  const full = await S.eventClaimWake(store, { wakeId: "w-new", name: WEBHOOK_EVENT_NAME, budget }, T0 + 2 * S.WAKE_CUSTODY_CAP * 100);
+  assert.equal(full.verdict, "rate_limited", "cap full of unknowns refuses new admissions");
+  for (let i = 0; i < S.WAKE_CUSTODY_CAP; i++) {
+    assert.deepEqual(await S.eventReleaseWake(store, { wakeId: `w-x-${i}`, decision: "released_abandoned" }, T0 + 3 * S.WAKE_CUSTODY_CAP * 100 + i), { ok: true });
+  }
+  const after = await S.eventClaimWake(store, { wakeId: "w-new", name: WEBHOOK_EVENT_NAME, budget }, T0 + 4 * S.WAKE_CUSTODY_CAP * 100);
+  assert.equal(after.verdict, "go", "tagged abandonments free the custody cap");
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-x-0" }, T0 + 4 * S.WAKE_CUSTODY_CAP * 100 + 100)).verdict, "duplicate", "released ids stay refused");
+});
+
+async function fillTombToGap(store, gap) {
+  // Seed wake_tomb with tagged abandoned entries until the counted size is
+  // within `gap` bytes of the tagged budget.  Sizes are accumulated
+  // arithmetically - same formula the module counts with - so the fill is
+  // O(n), not a re-serialization per entry.
+  const taggedBudget = S.WAKE_TOMB_BUDGET_BYTES - S.WAKE_TOMB_RESERVE_BYTES;
+  const enc = (s) => new TextEncoder().encode(s).length;
+  const entry = (k) => `${JSON.stringify(k)}:{"at":${T0},"released":"abandoned"}`;
+  const counted = (keys) => Math.ceil((2 + keys.reduce((a, k) => a + enc(entry(k)), 0) + Math.max(0, keys.length - 1)) * 1.5);
+  const keys = [];
+  const big = "w".padEnd(128, "x");
+  let i = 0;
+  while (counted([...keys, `${i}${big}`.slice(0, 128)]) < taggedBudget - gap - 400) {
+    keys.push(`${i}${big}`.slice(0, 128));
+    i++;
+  }
+  let j = 0;
+  while (counted([...keys, `k${j}`]) < taggedBudget - gap) {
+    keys.push(`k${j}`);
+    j++;
+  }
+  const tomb = {};
+  for (const k of keys) tomb[k] = { at: T0, released: "abandoned" };
+  await store.put("wake_tomb", tomb);
+  return tomb;
+}
+
+test("wake release: tagged saturation refuses safely and keeps every terminal id", async () => {
+  const store = S.memoryStore();
+  const tomb = await fillTombToGap(store, 400);
+  const claims = [];
+  for (let i = 0; i < 12; i++) claims.push(await S.eventClaimWake(store, { wakeId: `w-sat-${i}` }, T0 + i));
+  for (let i = 0; i < 12; i++) {
+    assert.deepEqual(await S.eventMarkDispatched(store, { wakeId: `w-sat-${i}`, token: claims[i].token }, T0 + 20 + i), { ok: true });
+    assert.deepEqual(await S.eventSettleWake(store, { wakeId: `w-sat-${i}`, token: claims[i].token, outcome: "uncertain" }, T0 + 40 + i), { ok: true });
+  }
+  const results = [];
+  for (let i = 0; i < 12; i++) {
+    results.push(await S.eventReleaseWake(store, { wakeId: `w-sat-${i}`, decision: "released_abandoned" }, T0 + 60 + i));
+  }
+  const firstSat = results.findIndex((r) => r.ok === false);
+  assert.ok(firstSat > 0, `saturation reached after ${firstSat} taggings`);
+  assert.ok(results.slice(0, firstSat).every((r) => r.ok === true), "taggings before the boundary succeed");
+  assert.ok(results.slice(firstSat).every((r) => r.ok === false && r.reason === "saturated"), "everything past the boundary refuses");
+  for (let i = 0; i < 12; i++) {
+    assert.equal((await S.eventClaimWake(store, { wakeId: `w-sat-${i}` }, T0 + 100)).verdict, "duplicate", `w-sat-${i} stays spent, tagged or not`);
+  }
+  assert.equal((await S.eventClaimWake(store, { wakeId: "k0" }, T0 + 100)).verdict, "duplicate", "seeded terminal ids intact");
+  // Removal only shrinks:  a delivered release succeeds on the saturated tomb.
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-sat-11", decision: "released_delivered" }, T0 + 200), { ok: true });
+});
+
+test("wake release: saturation never blocks dispatch-marks or uncertain settles of admitted claims", async () => {
+  const store = S.memoryStore();
+  await fillTombToGap(store, 10);
+  const claims = [];
+  for (let i = 0; i < 5; i++) claims.push(await S.eventClaimWake(store, { wakeId: `w-adm-${i}` }, T0 + i));
+  for (let i = 0; i < 5; i++) {
+    assert.deepEqual(await S.eventMarkDispatched(store, { wakeId: `w-adm-${i}`, token: claims[i].token }, T0 + 10 + i), { ok: true }, "mark never size-refused after admission");
+  }
+  for (let i = 0; i < 5; i++) {
+    assert.deepEqual(await S.eventSettleWake(store, { wakeId: `w-adm-${i}`, token: claims[i].token, outcome: "uncertain" }, T0 + 20 + i), { ok: true }, "uncertain settle never size-refused");
+  }
+  for (let i = 0; i < 5; i++) {
+    assert.equal((await S.eventClaimWake(store, { wakeId: `w-adm-${i}` }, T0 + 30)).verdict, "duplicate");
+  }
+  assert.deepEqual(await S.eventReleaseWake(store, { wakeId: "w-adm-0", decision: "released_abandoned" }, T0 + 40), { ok: false, reason: "saturated" });
+  assert.equal((await S.eventClaimWake(store, { wakeId: "w-adm-0" }, T0 + 41)).verdict, "duplicate", "the untaggable id stays spent");
+});

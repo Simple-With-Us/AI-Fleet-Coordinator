@@ -1011,6 +1011,43 @@ export const WAKE_SEEN_WINDOW_MS = WAKE_RATE_WINDOW_MS + MINUTE_MS;
 // (rate_limited) until custody is reconciled;  unknowns are never evicted to
 // make room.  The Zulip listener wake is never refused by the cap.
 export const WAKE_CUSTODY_CAP = 1024;
+
+// Deliberate serialized-size bound for the single wake_tomb value.  Verified
+// platform limit (SQLite-backed Durable Objects): key+value combined 8 MiB -
+// https://developers.cloudflare.com/durable-objects/platform/limits/
+// Entry size, measured not guessed:  wake_id is caller text of 1-128 chars
+// (WAKE_ID_RE in webhook-wake.js);  a numeric tomb entry encodes to at most
+// ~145 JSON bytes and a tagged abandoned entry to ~180;  the counted figure
+// is the TextEncoder length of JSON.stringify plus a 50% structured-clone
+// overhead reserve.  4 MiB reserves half the verified limit;  writes that
+// would cross the budget are refused BEFORE the put, so a saturated tomb
+// never throws mid-write and never loses or rewrites an existing terminal id.
+export const WAKE_TOMB_BUDGET_BYTES = 4 * 1024 * 1024;
+
+// Headroom invariant:  numeric tombstones are written at dispatch-mark time,
+// BEFORE the dispatch whose fate may stay unknown, so size-refusing one after
+// admission would lose nonreplay protection for a wake that may already have
+// fired.  Tagged abandoned entries therefore never consume the space a full
+// WAKE_CUSTODY_CAP of outstanding numeric entries could later need:  only the
+// webhook route creates numeric entries (the listener never marks dispatched
+// or settles uncertain), and settle-uncertain rewrites a same-size key.
+//   bytes(tagged) <= WAKE_TOMB_BUDGET_BYTES - WAKE_TOMB_RESERVE_BYTES
+//   bytes(numeric) <= WAKE_TOMB_RESERVE_BYTES   (by the custody cap)
+// so the value never exceeds the budget and no post-admission tombstone write
+// is ever size-refused.
+export const WAKE_TOMB_NUMERIC_ENTRY_BYTES = 256;
+export const WAKE_TOMB_RESERVE_BYTES = WAKE_CUSTODY_CAP * WAKE_TOMB_NUMERIC_ENTRY_BYTES;
+
+function tombBytes(tomb) {
+  return Math.ceil(new TextEncoder().encode(JSON.stringify(tomb)).length * 1.5);
+}
+
+// UNKNOWN custody for WAKE_CUSTODY_CAP:  numeric entries only.  Tagged
+// abandoned entries are terminal rejections with known fate;  counting them
+// would let releases eventually fill the cap and disable the route forever.
+function unknownCustody(tomb) {
+  return Object.values(tomb).filter((v) => typeof v === "number").length;
+}
 async function wakeTomb(store) {
   return (await store.get("wake_tomb")) ?? {};
 }
@@ -1236,7 +1273,7 @@ export async function eventClaimWake(store, { wakeId, messageId = null, name = E
   // eavesdropper-server.md).  Releasing held entries is the webhook route's
   // reconciliation design, required before that route is enabled.
   if (name === WEBHOOK_EVENT_NAME) {
-    const custody = Object.keys(tomb).length;
+    const custody = unknownCustody(tomb);
     if (custody >= WAKE_CUSTODY_CAP) {
       await audit(store, { event: "event_wake_custody_full", wake_ref: wakeRefOf(wakeId), custody }, now);
       return { verdict: "rate_limited", retryAfterS: 3600 };
@@ -1360,6 +1397,71 @@ export async function eventSettleWake(store, { wakeId, token, outcome, delivered
   } else {
     await audit(store, { event: "event_wake_settled", wake_ref: wakeRef, outcome, delivered: Number.isSafeInteger(delivered) ? delivered : 0 }, now);
   }
+  return { ok: true };
+}
+
+// Release decisions for UNKNOWN wake custody (WAKE_RELEASE_DECISIONS).  The
+// webhook route's reconciliation, required before that route is enabled:
+// "released_delivered" resolves custody exactly like a resolving settle - the
+// id leaves the tomb and a settled marker dedupes the window, the same
+// protection every delivered wake gets;  "released_abandoned" has no
+// execution evidence, so the terminal refusal stands forever, tagged and
+// outside the unknown-custody count.  Both are idempotent.  Who may invoke a
+// release, and through which route, is a separate authorization surface -
+// the existing webhook key does NOT imply release authority.
+export const WAKE_RELEASE_DECISIONS = Object.freeze(["released_delivered", "released_abandoned"]);
+
+export async function eventReleaseWake(store, { wakeId, decision }, now = Date.now()) {
+  if (!WAKE_RELEASE_DECISIONS.includes(decision)) throw new Error("unknown wake release decision");
+  const wakeRef = wakeRefOf(wakeId);
+  const tomb = await wakeTomb(store);
+  const seen = await wakeSeen(store, now);
+  const entry = tomb[wakeId];
+  const isTaggedAbandoned = typeof entry === "object" && entry !== null && entry.released === "abandoned";
+  if (decision === "released_delivered") {
+    if (!Object.hasOwn(tomb, wakeId) || isTaggedAbandoned) {
+      const prior = wakeEntry(seen[wakeId]);
+      if (prior?.s === "settled" && prior.outcome === "released_delivered") return { ok: true, idempotent: true };
+      await audit(store, { event: "event_wake_release_stale", wake_ref: wakeRef, decision }, now);
+      return { ok: false };
+    }
+    // Removal only shrinks the value:  always safe under the budget.
+    delete tomb[wakeId];
+    await store.put("wake_tomb", tomb);
+    seen[wakeId] = { s: "settled", at: now, outcome: "released_delivered" };
+    await putWakeSeen(store, seen);
+    await audit(store, { event: "event_wake_released", wake_ref: wakeRef, decision }, now);
+    return { ok: true };
+  }
+  // released_abandoned:  keep the id permanently refused, tagged, and outside
+  // the unknown-custody count.
+  if (!Object.hasOwn(tomb, wakeId)) {
+    await audit(store, { event: "event_wake_release_stale", wake_ref: wakeRef, decision }, now);
+    return { ok: false };
+  }
+  if (isTaggedAbandoned) return { ok: true, idempotent: true };
+  const tagged = { at: typeof entry === "number" ? entry : now, released: "abandoned" };
+  const projected = { ...tomb, [wakeId]: tagged };
+  // The bound applies to TAGGED bytes alone:  numeric entries (outstanding
+  // dispatch-marks, bounded to the reserve by WAKE_CUSTODY_CAP) never draw on
+  // tagged headroom.  Charging the whole value would let a few outstanding
+  // claims size-refuse abandonment tags near the budget and strand
+  // reconciliation - the exact post-admission refusal the reserve exists to
+  // prevent.
+  const projectedTagged = {};
+  for (const [k, v] of Object.entries(projected)) {
+    if (typeof v !== "number") projectedTagged[k] = v;
+  }
+  if (tombBytes(projectedTagged) > WAKE_TOMB_BUDGET_BYTES - WAKE_TOMB_RESERVE_BYTES) {
+    // Fail closed with custody intact:  the numeric tombstone keeps the id
+    // spent;  the release is refused, nothing is rewritten or dropped, and
+    // the reserved headroom stays available for future dispatch-marks.
+    await audit(store, { event: "event_wake_tomb_saturated", wake_ref: wakeRef, bytes: tombBytes(tomb) }, now);
+    return { ok: false, reason: "saturated" };
+  }
+  tomb[wakeId] = tagged;
+  await store.put("wake_tomb", tomb);
+  await audit(store, { event: "event_wake_released", wake_ref: wakeRef, decision }, now);
   return { ok: true };
 }
 
