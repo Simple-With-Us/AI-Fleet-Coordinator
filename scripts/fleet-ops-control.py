@@ -1288,6 +1288,7 @@ class Context:
         self.reader = reader or run_bounded_read
         # The bounded read of this process's own standard input (`server eavesdropper-settings`).
         self.stdin = stdin or read_bounded_stdin
+        self.router_health = router_health or read_router_health_http
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
