@@ -5752,7 +5752,10 @@ class RouterHealthTests(Base):
         self.assertEqual(self.audit_rows(), [])
 
     def test_hostile_values_and_seat_cap_are_bounded_without_leaks(self):
-        seats = {f"SEAT{i:02d}": {"healthy": True, "delivery": True} for i in range(foc.OPERATOR_MAX_SEATS + 3)}
+        seats = {
+            f"SEAT{i:02d}": {"healthy": True, "delivery": True}
+            for i in range(foc.OPERATOR_MAX_SEATS + 3)
+        }
         seats["!BAD"] = {"healthy": True, "delivery": True}
         seats["AG"] = {
             "healthy": 1,
