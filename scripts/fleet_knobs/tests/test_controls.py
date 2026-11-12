@@ -81,7 +81,13 @@ class RegistryFactsTests(KnobTestCase):
         doc = json.loads(inventory.json_text())
         secret = [k for k in doc["knobs"] if k["secret"]]
         self.assertEqual(
-            [k["name"] for k in secret], ["FLEET_FACTS_SIGNING_KEY", "WAKE_ROUTER_CLAUDE_KEY"]
+            [k["name"] for k in secret],
+            [
+                "FLEET_FACTS_SIGNING_KEY",
+                "FLEET_FACTS_RELAY_TOKEN",
+                "WAKE_ROUTER_KEY",
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+            ],
         )
         for entry in secret:
             self.assertIsNone(entry["default"])
@@ -94,9 +100,12 @@ class RegistryFactsTests(KnobTestCase):
         folders = {k["name"]: k["folder"] for k in doc["knobs"]}
         self.assertEqual(folders, {s.name: s.folder for s in REGISTRY})
         self.assertEqual(folders["LANE_SWEEP_MODE"], "/")
+        # The router's knobs, and the Operator registry's address and key, which keep registry_api's
+        # one name for each value.
+        registry = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"}
         self.assertEqual(
             {n for n, f in folders.items() if f == "/wake-router"},
-            {n for n in folders if n.startswith("WAKE_ROUTER_")},
+            {n for n in folders if n.startswith("WAKE_ROUTER_")} | registry,
         )
 
 

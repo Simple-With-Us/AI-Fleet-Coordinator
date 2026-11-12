@@ -55,8 +55,16 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 168th is simple_tools/wake_settings.py (OPS-1048).
 # The 169th and 170th are simple_tools/thread_registry.py and thread_registry_export.mjs (the Operator
 # chat-thread registry and its Google drain);  fleet-cli-release.py carries the same ledger.
-MAX_FILES = 170
-MAX_BYTES = 8 * 1024 * 1024
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
+# fleet-cli-release.py carries the same number and the reason.
+MAX_FILES = 180
+# Step 2 of the two-step cap raise:  ships at most 11 MiB, leaving at least 1 MiB under
+# fleet-cli-release.py MAX_BUNDLE_BYTES (12 MiB).  The receiver that runs is the published
+# scripts/fleet-cli-release.py blob from the same source commit, and receiver_policy()
+# refuses if that receiver's cap is below this one.
+MAX_BYTES = 11 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -246,7 +254,7 @@ def receiver_policy(text: bytes):
             finally:
                 sys.modules.pop(spec.name, None)
         if (
-            module.MAX_BUNDLE_BYTES != MAX_BYTES
+            module.MAX_BUNDLE_BYTES < MAX_BYTES
             or not callable(module.allowed_path)
             or not callable(module.manifest_digest)
         ):
@@ -270,7 +278,17 @@ def build_bundle(source: Path, runner: Runner | None = None) -> tuple[dict, byte
         raise SyncError("receiver_blob_refused")
     receiver_text = blobs(runner, source, [receiver])[RECEIVER_PATH]
     policy = receiver_policy(receiver_text)
-    selected = [row for row in entries if policy.allowed_path(row[0])]
+    # A receiver without shipped_path (before the repo-only list) ships everything it allows.
+    ships = getattr(policy, "shipped_path", None)
+    ships = ships if callable(ships) else policy.allowed_path
+    selected = [row for row in entries if ships(row[0])]
+    # A path in REQUIRED that is also in REPO_ONLY would build a bundle every host refuses
+    # with bad_file_set.  Only paths present in the source tree are checked, so a fixture
+    # tree that uses the real receiver but not the full allowlist still builds.
+    required = getattr(policy, "REQUIRED", set())
+    present = {row[0] for row in entries}
+    if not (required & present).issubset({row[0] for row in selected}):
+        raise SyncError("receiver_policy_invalid")
     if len(selected) > MAX_FILES:
         raise SyncError("bundle_too_many_files")
     if not selected:

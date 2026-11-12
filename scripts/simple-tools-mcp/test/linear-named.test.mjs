@@ -116,7 +116,7 @@ test('save aliases route to create/update and preserve body attribution and idem
   const create = await tools.call('linear_save_project', { input, idempotency_key: 'save-new' });
   assert.notEqual(create.isError, true);
   assert.match(requests[0].query, /projectCreate/);
-  assert.match(requests[0].variables.input.description, /^\[GROK-WEB/);
+  assert.equal(requests[0].variables.input.description, "Details");
   assert.equal(input.description, 'Details');
   await tools.call('linear_save_project', { input, idempotency_key: 'save-new' });
   assert.equal(requests.length, 1, 'the same mutation is not sent twice');
@@ -179,4 +179,26 @@ test('attachment-from-upload alias consumes the previously uploaded asset URL', 
   assert.equal(requests[0].variables.input.url, 'https://uploads.example.test/asset');
   assert.match(LINEAR_NAMED_BY_NAME.linear_create_attachment_from_upload.description, /already uploaded asset/);
   assert.match(LINEAR_NAMED_BY_NAME.linear_create_attachment_from_upload.description, /does not upload file bytes/);
+});
+
+test('AFC-722:  named Linear writes put the house gap in body and description, unless sentence_gap is false', async () => {
+  const { tools, requests } = fixture();
+  let result = await tools.call('linear_save_comment', { input: { issueId: 'issue', body: 'One. Two.' }, idempotency_key: 'gap-comment' });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  assert.match(requests.at(-1).variables.input.body, /One\.  Two\.$/);
+  result = await tools.call('linear_create_issue', { input: { teamId: 'team', title: 'T', description: 'One. two.' }, idempotency_key: 'gap-issue' });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  assert.match(requests.at(-1).variables.input.description, /One\.  two\.$/);
+  result = await tools.call('linear_save_comment', { input: { issueId: 'issue', body: 'One. Two.' }, idempotency_key: 'gap-off', sentence_gap: false });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  assert.match(requests.at(-1).variables.input.body, /One\. Two\.$/);
+  assert.ok(!JSON.stringify(requests.at(-1).variables).includes('sentence_gap'));
+});
+
+test('AFC-722 review:  a Linear document content gets the house gap and no seat tag line', async () => {
+  const { tools, requests } = fixture();
+  const result = await tools.call('linear_create_document', { input: { title: 'Log. One', content: 'Relay failed. gh was used.' }, idempotency_key: 'gap-doc' });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  assert.equal(requests.at(-1).variables.input.content, 'Relay failed.  gh was used.');
+  assert.equal(requests.at(-1).variables.input.title, 'Log. One', 'the title is untouched');
 });

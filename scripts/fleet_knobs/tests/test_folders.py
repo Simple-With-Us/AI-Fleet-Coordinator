@@ -17,7 +17,7 @@ from fleet_knobs.registry import BY_NAME, FOLDERS, REGISTRY, Spec, names_in
 from ._fake import SIGNING, KnobTestCase, ScopedReadAPI
 
 ROUTER = "/wake-router"
-ROUTER_KEY = "WAKE_ROUTER_CLAUDE_KEY"
+ROUTER_KEY = "WAKE_ROUTER_KEY"
 KEY = "k3y-" + "0123456789abcdef" * 2
 ROOT_VALUES = {"LANE_SWEEP_MODE": "act", "FLEET_FACTS_SIGNING_KEY": SIGNING}
 ROUTER_VALUES = {"WAKE_ROUTER_MAX_ATTEMPTS": "9", ROUTER_KEY: KEY}
@@ -26,8 +26,12 @@ ROUTER_VALUES = {"WAKE_ROUTER_MAX_ATTEMPTS": "9", ROUTER_KEY: KEY}
 class RegistryTests(KnobTestCase):
     def test_the_router_knobs_and_only_they_are_in_its_folder(self):
         self.assertEqual(FOLDERS, ("/", ROUTER))
+        # The router's knobs, and the Operator registry's address and key, which keep registry_api's
+        # one name for each value.
+        registry = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"}
         self.assertEqual(
-            set(names_in(ROUTER)), {s.name for s in REGISTRY if s.name.startswith("WAKE_ROUTER_")}
+            set(names_in(ROUTER)),
+            {s.name for s in REGISTRY if s.name.startswith("WAKE_ROUTER_")} | registry,
         )
         self.assertIn(ROUTER_KEY, names_in(ROUTER))
         self.assertTrue(BY_NAME[ROUTER_KEY].secret)

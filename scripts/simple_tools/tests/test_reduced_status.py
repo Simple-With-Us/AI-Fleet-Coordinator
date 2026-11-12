@@ -60,11 +60,13 @@ KEY_CHUNKS = ("aB3dE6g", "H9jK2mN", "5pQ8sT1", "vW4yZ7b", "C0eF")
 VALUE = "".join(KEY_CHUNKS)  # 32 characters, shaped like a Zulip API key
 HUGE = "x" * 100_000
 CONTROL = "ok\x00\x1b[31m‮​\ud800go"
+# A registry record id in the shape the live server writes (a ULID).
+RECORD_ID = "01M6" + "QZ7K" + "4T9V" + "B2XR" + "8N3C" + "5W1HJ"
 
 # Strings that must never be in the output, wherever they were put in the input.
 PROBES = (
     PATH, WINDOWS, TILDE, EMAIL, URL, WWW, UUID, USER_ID, KEY, KEY2, VALUE, HUGE[:50],
-    "Letters Work",
+    "Letters Work", RECORD_ID,
 )  # fmt: skip
 HOSTILE_STRINGS = (
     PATH,
@@ -134,8 +136,18 @@ TOP = {
     "seats",
     "skipped",
     "disabled",
+    "registry_sweep",
 }
 VOICE = {"available", "code", "since"}
+SWEEP = {
+    "ran_at",
+    "ok",
+    "ended",
+    "error",
+    "stale_after_minutes",
+    "refused",
+    "refused_platforms",
+}
 PAUSE = {"paused", "since", "wakes_only", "set_by"}
 SEAT_KEYS = {
     "seat",
@@ -274,6 +286,19 @@ def check_shape(case: unittest.TestCase, doc: Any) -> None:
     case.assertLessEqual(len(doc["disabled"]), RS.MAX_NAMES)
     for name in doc["disabled"]:
         case.assertTrue(SEAT.fullmatch(name))
+    sweep = doc["registry_sweep"]
+    case.assertEqual(set(sweep), SWEEP)
+    optional(sweep["ran_at"], is_iso)
+    optional(sweep["ok"], is_bool)
+    optional(sweep["ended"], is_count)
+    optional(sweep["error"], lambda v: case.assertTrue(CODE.fullmatch(v), repr(v)))
+    optional(sweep["stale_after_minutes"], is_count)
+    optional(sweep["refused"], is_count)
+    case.assertIsInstance(sweep["refused_platforms"], list)
+    case.assertLessEqual(len(sweep["refused_platforms"]), RS.MAX_SWEEP_PLATFORMS)
+    case.assertEqual(sweep["refused_platforms"], sorted(set(sweep["refused_platforms"])))
+    for platform in sweep["refused_platforms"]:
+        is_token(platform)
     text = json.dumps(doc, ensure_ascii=False)
     case.assertLess(len(text), 512 * 1024)
     # No string value in the document holds a control, format, surrogate or private character
@@ -390,6 +415,28 @@ def seat_row(**changes: Any) -> dict[str, Any]:
     return row
 
 
+def live_sweep() -> dict[str, Any]:
+    """The server's `registry_sweep` as the live status.json carried it on November 11, 2026
+    (record ids replaced by a made-up one of the same shape)."""
+    return {
+        "ran_at": 1794453203.19,
+        "ok": False,
+        "ended": 11,
+        "error": "sweep_share_exceeded",
+        "stale_after_minutes": 2160,
+        "refused": [{"host": "mac", "open": 3, "platform": "antigravity", "would_end": 2}],
+        "platforms": {
+            "cursor": {"CURSOR": [{"label": "CC", "record_id": RECORD_ID}]},
+            "claude-code": {
+                "CLAUDE": [
+                    {"label": "QQ", "record_id": RECORD_ID},
+                    {"label": None, "record_id": RECORD_ID},
+                ]
+            },
+        },
+    }
+
+
 def status_document(**changes: Any) -> dict[str, Any]:
     """A listener status.json as the server's eavesdropper writes it, a few seats of each kind."""
     quota = {
@@ -468,6 +515,7 @@ def status_document(**changes: Any) -> dict[str, Any]:
             "code": "operator_credential_rejected",
             "since": iso(NOW - 3600),
         },
+        "registry_sweep": dict(live_sweep(), ran_at=NOW - 600),
         "seats": seats,
     }
     document.update(changes)
@@ -527,6 +575,9 @@ class StatusDocumentTests(unittest.TestCase):
             "sess-1",
             "weekly cap reached",
             "424242",
+            RECORD_ID,
+            "record_id",
+            "would_end",
         ):
             self.assertNotIn(private, text)
 
@@ -1008,6 +1059,163 @@ class OperatorVoiceTests(unittest.TestCase):
         self.assertEqual(len(out["seats"]), 7)
 
 
+class RegistrySweepTests(unittest.TestCase):
+    """`registry_sweep`: the server's one stale sweeper's last pass (AFC-721), as counts only."""
+
+    NONE = {
+        "ran_at": None,
+        "ok": None,
+        "ended": None,
+        "error": None,
+        "stale_after_minutes": None,
+        "refused": None,
+        "refused_platforms": [],
+    }
+
+    def reduced(self, block: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        document = status_document()
+        if block is ABSENT:
+            document.pop("registry_sweep")
+        else:
+            document["registry_sweep"] = block
+        out = RS.reduce_status(document, NOW, "server")
+        check_shape(self, out)
+        self.assertEqual(len(out["seats"]), 7, "the rest of the document is still reduced")
+        return out, out["registry_sweep"]
+
+    def sweep(self, block: Any) -> dict[str, Any]:
+        return self.reduced(block)[1]
+
+    def test_the_live_servers_block_reduces_to_counts(self) -> None:
+        self.assertEqual(
+            self.sweep(live_sweep()),
+            {
+                "ran_at": iso(1794453203.19),
+                "ok": False,
+                "ended": 11,
+                "error": "sweep_share_exceeded",
+                "stale_after_minutes": 2160,
+                "refused": 1,
+                "refused_platforms": ["antigravity"],
+            },
+        )
+        self.assertEqual(iso(1794453203.19), "2026-11-12T03:13:23Z")
+
+    def test_no_record_id_letter_or_host_reaches_the_output(self) -> None:
+        out, sweep = self.reduced(live_sweep())
+        whole = json.dumps(out)
+        self.assertNotIn(RECORD_ID, whole)
+        for key in ('"record_id"', '"label"', '"platforms"', '"host"', '"would_end"', '"open"'):
+            self.assertNotIn(key, whole)
+        text = json.dumps(sweep)
+        for value in ("CC", "QQ", "CURSOR", "cursor", "claude-code", "mac", "server"):
+            self.assertNotIn(value, text)
+
+    def test_a_clean_pass_and_its_platforms(self) -> None:
+        block = {
+            "ran_at": NOW - 60,
+            "ok": True,
+            "ended": 0,
+            "stale_after_minutes": 2160,
+            "refused": [],
+            "platforms": {},
+        }
+        self.assertEqual(
+            self.sweep(block),
+            dict(self.NONE, ran_at=iso(NOW - 60), ok=True, ended=0, stale_after_minutes=2160, refused=0),
+        )
+
+    def test_refused_platforms_are_each_valid_name_once_sorted_and_capped(self) -> None:
+        refused = [{"host": "mac", "platform": name} for name in ("zed", "cursor", "cursor", "codex")]
+        refused += [{"host": "server", "platform": "p%02d" % n} for n in range(40)]
+        refused += [
+            {"host": "mac", "platform": hostile}
+            for hostile in (PATH, EMAIL, KEY, KEY2, VALUE, UUID, USER_ID, HUGE, CONTROL, "a b", "")
+        ]
+        refused += [{"host": "mac"}, {"platform": 5}, "antigravity", None, 3]
+        sweep = self.sweep(dict(live_sweep(), refused=refused))
+        # Every dict entry is a refusal, valid platform or not;  the other entries are not.
+        self.assertEqual(sweep["refused"], 4 + 40 + 11 + 2)
+        self.assertEqual(
+            sweep["refused_platforms"],
+            sorted({"zed", "cursor", "codex"} | {"p%02d" % n for n in range(40)})[
+                : RS.MAX_SWEEP_PLATFORMS
+            ],
+        )
+        self.assertEqual(len(sweep["refused_platforms"]), RS.MAX_SWEEP_PLATFORMS)
+
+    def test_a_store_problem_names_a_fixed_code_and_never_its_message(self) -> None:
+        for error, code in (
+            ("RegistryUnavailable: the registry " + PATH + " is not there", "registry_unavailable"),
+            ("OperationalError: database is locked", "registry_error"),
+            ("FileNotFoundError: [Errno 2] " + PATH, "registry_error"),
+            ("ValueError: " + EMAIL, "registry_error"),
+            ("sweep_share_exceeded", "sweep_share_exceeded"),
+            ("Something: " + PATH, None),
+            ("https://example.invalid: x", None),
+            ("valueError: x", None),
+            ("ValueError:" + PATH, None),
+        ):
+            with self.subTest(error=error[:30]):
+                sweep = self.sweep(dict(live_sweep(), ok=False, error=error))
+                self.assertEqual(sweep["error"], code)
+                self.assertNotIn(PATH, json.dumps(sweep))
+
+    def test_a_malformed_field_is_null_and_the_others_stand(self) -> None:
+        good = self.sweep(live_sweep())
+        bad = {
+            "ran_at": ("yesterday", PATH, HUGE, "", -1, 0, 1e12, True, [], {}, float("nan"), 10**400),
+            "ok": (1, 0, 1.0, 0.0, "true", "false", "yes", [], {}, [True], b"x"),
+            "ended": ("11", "eleven", -1, 1.5, 11.0, True, False, [], {}, float("nan")),
+            "stale_after_minutes": ("2160", -5, 2160.0, True, [], {}, None),
+            "error": (
+                PATH, EMAIL, URL, WWW, UUID, KEY, KEY2, VALUE, USER_ID, HUGE, CONTROL,
+                "Sweep_Share_Exceeded", "sweep share exceeded", "a" * 49, "sweep_share_exceeded\n",
+                5, True, ["sweep_share_exceeded"], {}, "",
+            ),
+            "refused": ("antigravity", 1, True, {"platform": "antigravity"}, None),
+        }  # fmt: skip
+        for field, values in bad.items():
+            for value in values:
+                with self.subTest(field=field, value=repr(value)[:30]):
+                    got = self.sweep(dict(live_sweep(), **{field: value}))
+                    self.assertIsNone(got[field])
+                    if field == "refused":
+                        self.assertEqual(got["refused_platforms"], [])
+                    for other in good:
+                        if other != field and not (field == "refused" and other == "refused_platforms"):
+                            self.assertEqual(got[other], good[other], other)
+                    text = json.dumps(got)
+                    for probe in (PATH, EMAIL, KEY, KEY2, VALUE, UUID, USER_ID, "Sweep"):
+                        self.assertNotIn(probe, text)
+
+    def test_a_block_that_is_absent_null_or_not_an_object_reads_as_all_null(self) -> None:
+        for block in (ABSENT, None, "ok", 5, True, 1.5, [], [live_sweep()], (), b"{}"):
+            with self.subTest(block=repr(block)[:30]):
+                self.assertEqual(self.sweep(block), self.NONE)
+
+    def test_a_real_sweeper_with_no_store_reduces_to_a_code_without_its_path(self) -> None:
+        from simple_tools import listener_registry as LREG
+
+        service = mock.Mock(db_path=PATH)
+        sweeper = LREG.Sweeper(service, interval_minutes=15, stale_after_hours=36)
+        written = sweeper.run(NOW - 30)
+        self.assertIn(PATH, written["error"])
+        sweep = self.sweep(json.loads(json.dumps(written)))
+        self.assertEqual(
+            sweep,
+            dict(
+                self.NONE,
+                ran_at=iso(NOW - 30),
+                ok=False,
+                ended=0,
+                error="registry_unavailable",
+                stale_after_minutes=36 * 60,
+                refused=0,
+            ),
+        )
+
+
 class LeaseTitleTests(unittest.TestCase):
     """Lease titles are never emitted (the design owner's privacy ruling)."""
 
@@ -1389,7 +1597,12 @@ class FromRealDaemonStatusTests(DaemonHarness):
     def test_every_key_a_real_status_emits_is_either_read_or_deliberately_not(self) -> None:
         """A new field in `Daemon.status()` shows up here, so someone decides about it."""
         document = self.written_status()
-        read = {"updated", "instance", "disabled", "skipped_seats", "pause", "seats", "operator_voice"}
+        read = {
+            "updated", "instance", "disabled", "skipped_seats", "pause", "seats", "operator_voice",
+            # AFC-721's one stale sweeper's last pass, as counts only:  its letters, record ids
+            # and hosts are not read (see reduced_status.py, `registry_sweep`).
+            "registry_sweep",
+        }  # fmt: skip
         not_read = {
             "pid", "version", "started", "config_errors", "reload_refused",
             "reload_at", "partition_file", "owner_user_id", "chat_nudges", "wake_loop_prevention",

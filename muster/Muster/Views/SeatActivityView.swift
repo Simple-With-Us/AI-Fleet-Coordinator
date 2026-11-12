@@ -289,6 +289,13 @@ struct SeatActivityView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // The registry's stale sweep is a fact about the whole server, so it is shown only
+            // from a current reading, like the global pause in the line above.
+            if group.kind == .server,
+               let sweep = serverStatus.reading?.currentStatus(now: now)?.registrySweep,
+               sweep.isReported {
+                registrySweepLine(sweep, now: now)
+            }
             if group.kind == .server, let note = model.otherServerSeatsNote {
                 Text(SeatActivityText.display(note))
                     .font(.caption)
@@ -300,6 +307,31 @@ struct SeatActivityView: View {
                 rowView(row, readAt: model.readAt, now: now)
             }
         }
+    }
+
+    /// The server registry's last stale sweep (AFC-721):  when it ran,  OK or its error,  how many
+    /// chats it closed,  and the platforms the share guard held back.
+    private func registrySweepLine(_ sweep: ServerRegistrySweepFields, now: Date) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: sweep.symbolName)
+                .foregroundStyle(sweep.isProblem ? Color.orange : Color.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(ServerRegistrySweepFields.title)
+                        .font(.caption.weight(.semibold))
+                    Text(sweep.label)
+                        .font(.caption.weight(.semibold).monospaced())
+                        .foregroundStyle(sweep.isProblem ? Color.orange : Color.secondary)
+                }
+                Text(SeatActivityText.display(sweep.sentence(now: now)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: The table
