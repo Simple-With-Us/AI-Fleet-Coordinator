@@ -44,7 +44,7 @@ If `FLEET_RAG_MIRROR` is unset, the job points it at a directory that is not cre
 
 The server source set attests health, and so does `--all`.  Merging this change leaves a Mac `--all --prune` able to update the sentinel.  Apple Notes remain in `--all`.
 
-A successful run is quiet.  Zulip gets a post on the Alerts stream, topic `fleet-rag-nightly`, when `ok` is false or a guard tripped.  The tag is `[GB-ORACLE 📁AFC]`.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600. It holds reasons and counts.  Secret values are withheld.
+A successful run is quiet.  Zulip gets a post on the OPS stream, topic `fleet-rag-nightly`, when `ok` is false, a prune guard trips, the mirror is missing or stale, or `code-main-sync` failed or is too old to count for tonight.  The tag is `[GB-ORACLE 📁AFC]`.  The same failure on consecutive nights posts a short “still failing, night N” line instead of repeating the full detail.  A failed alert post does not change the ingest exit.  The summary is `~/.local/state/fleet-rag-nightly/last.json`, mode 0600.  It holds reasons, counts, `alert_fingerprint`, and `alert_streak`.  Secret values are withheld.
 
 ## Mac job
 
@@ -130,7 +130,7 @@ sudo systemctl start fleet-rag-nightly.service
 sudo systemctl enable --now fleet-rag-nightly.timer
 ```
 
-8. Read `last.json` after the first real run.  Success stays off Zulip.  A guard trip or a failure posts to Alerts.
+8. Read `last.json` after the first real run.  Success stays off Zulip.  A guard trip, stale mirror, code-sync failure, or ingest failure posts to OPS.
 
 ## Enable the Mac job
 
