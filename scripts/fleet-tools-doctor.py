@@ -537,6 +537,7 @@ SHIPPED_REPO_ONLY = frozenset(
     )
 )
 
+
 def is_shipped(path: str) -> bool:
     policy = release_policy()
     if policy is not None and callable(getattr(policy, "allowed_path", None)):
