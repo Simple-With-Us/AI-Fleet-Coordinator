@@ -364,6 +364,36 @@ class UnitRunTests(unittest.TestCase):
         for sid in (A1, A2):
             self.assertIsNone(self.fake.lookup("cursor", "cloud", PL.SCOPE, sid))
 
+    def _second_agent_answers(self, answer: dict):
+        real = CCL.register
+
+        def register(env, agent_row, **kw):
+            if str(agent_row.get("session_id")) == A2:
+                return dict(answer)
+            return real(env, agent_row, **kw)
+
+        return mock.patch.object(CCL, "register", side_effect=register)
+
+    def test_a_refusal_because_every_pair_is_live_does_not_fail_the_run(self) -> None:
+        # Jay's rule:  when all 26 main-chat pairs are live the letter is refused and the chat carries on.  That is the
+        # registry working as designed, so the row says refused, not error, and the unit does not read as failed.
+        refused = {"error": PL.refused_text(None, "cursor", 26), "code": "labels_exhausted", "swept": 0}
+        with self._second_agent_answers(refused):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertIn("label", rows[A1])
+        self.assertNotIn("error", rows[A2])
+        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[A2]["refused"])
+
+    def test_any_other_registration_error_still_fails_the_run(self) -> None:
+        with self._second_agent_answers({"error": "the registry did not answer in time", "code": "timeout"}):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 1, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertEqual(rows[A2]["error"], "the registry did not answer in time")
+        self.assertNotIn("refused", rows[A2])
+
     def test_api_only_and_remote_cannot_be_combined(self) -> None:
         with self.assertRaises(SystemExit), mock.patch("sys.stderr", io.StringIO()):
             CCL.main(["sweep", "--api-only", "--remote", "mac"])

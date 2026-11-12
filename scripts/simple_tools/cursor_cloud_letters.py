@@ -546,6 +546,12 @@ def sweep(
             api_only=api_only,
         )
         label = str(answer.get("label") or "")
+        if answer.get("code") == "labels_exhausted":
+            # Jay's rule:  when every main-chat pair is live the letter is refused and the chat carries on.  That is
+            # the registry working as designed, so it is a refused row, not an error, and it does not fail the run.
+            row["refused"] = str(answer.get("error") or "labels_exhausted")[:200]
+            rows.append(row)
+            continue
         if "error" in answer or not label:
             row["error"] = str(answer.get("error") or "no letter")[:200]
             rows.append(row)
