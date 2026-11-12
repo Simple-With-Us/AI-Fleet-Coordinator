@@ -23,6 +23,12 @@ payload=$(
         assistant_error: (
           [$msgs[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text]
           | if length > 0 then .[-1] else "" end
+        ),
+        tool_error: (
+          [$msgs[].message.content[]? | select(.type == "tool_result" and .is_error == true) | .content]
+          | flatten
+          | map(select(type == "string"))
+          | if length > 0 then .[0] else "" end
         )
       }
   ' "$input" 2>/dev/null || echo '{}'
@@ -35,6 +41,7 @@ fi
 
 reason=$(jq -r '.reason // empty' <<< "$payload")
 assistant=$(jq -r '.assistant_error // empty' <<< "$payload")
+tool_error=$(jq -r '.tool_error // empty' <<< "$payload")
 subtype=$(jq -r '.subtype // "unknown"' <<< "$payload")
 duration=$(jq -r '.duration_ms // empty' <<< "$payload")
 
@@ -47,6 +54,9 @@ sanitize() {
 }
 
 detail="$reason"
+if [ -z "$detail" ] && [ -n "$tool_error" ]; then
+  detail="$tool_error"
+fi
 if [ -z "$detail" ] && [ -n "$assistant" ]; then
   detail="$assistant"
 fi

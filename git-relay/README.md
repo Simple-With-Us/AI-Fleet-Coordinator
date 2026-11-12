@@ -42,18 +42,43 @@ the owner's cutover decision.
 
 | Action | Endpoint | Body | GitHub call |
 | --- | --- | --- | --- |
-| open_pr | POST /v1/open_pr | repo, base, head, title, body | POST /repos/{repo}/pulls |
+| open_pr | POST /v1/open_pr | repo, base, head, title, body, draft? | POST /repos/{repo}/pulls, then GET /repos/{repo}/pulls/{number} |
 | edit_pr | POST /v1/edit_pr | repo, number, title?, body? | PATCH /repos/{repo}/pulls/{number} |
 | reply_thread | POST /v1/reply_thread | repo, number, comment_id, body | POST /repos/{repo}/pulls/{number}/comments (in_reply_to) |
 | comment_pr | POST /v1/comment_pr | repo, number, body | POST /repos/{repo}/issues/{number}/comments |
 
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
 
+`open_pr` never reports a number for a pull request it has not seen.  After the create answers,
+the relay reads the pull request back by number with the same owner token and checks the number,
+the repository, the base branch and the head branch (and the owner, for an `owner:branch` or
+`owner:repo:branch` head), and draft when a draft was requested.  The `url` is checked too:  the
+create and the read-back must both name `https://github.com/{repo}/pull/{number}`.
+A success is `{"number", "url", "verified": true}`.  When the create answered but the read-back
+fails (a transport error or any HTTP error, 404 and 429 included) or does not match, the answer
+is 502 with `"outcome": "unknown"`, `"retryable": false` and `github_code`
+`open_pr_readback_failed` or `open_pr_readback_mismatch` (`open_pr_receipt_invalid` when the
+create answer had no usable number), and no number or URL.  `github_status` is 502 for every
+read-back failure, because 502 is the relay's classification (outcome unknown, key held);  the
+cause is in `github_code`, and what the read-back itself answered is in `readback_status` (the
+HTTP status, 0 for a transport failure or an unreadable body, 200 for a mismatch) with
+`readback_retry_after_seconds` when GitHub named a wait.  The read-back is bounded:  at most 3
+reads of 3 seconds each inside 8 seconds in total, waiting 0.5 then 1 second (or GitHub's
+Retry-After, when it fits) after a transport failure, 404, 408, 429, 5xx or a 403 that names a
+Retry-After;  any other status, or a mismatch, is not retried.  The budget is a real deadline, not only a per-read timeout:  the body is read one raw receive at a time (`read1`), the deadline is checked after each, and a read that trickles past it fails the attempt as a transport failure (at most one socket operation, 3 seconds, can overshoot; a peer that trickles the response headers before the body is not bounded by this deadline).  The budget also starts when `open_pr` starts:  it is the smaller of 8 seconds and the 30 seconds the MCP wrapper waits (`CALLER_BUDGET_SECONDS`) less the time the create used and a 4 second margin (`READBACK_MARGIN_SECONDS`);  when less than 1 second is left the read-back is skipped, and the answer is the same outcome unknown with `github_code` `open_pr_readback_skipped` and `readback_status` 0.  A draft create whose own receipt does not verify (another URL, or draft not true) is `open_pr_receipt_mismatch`, with the number kept in the audit row only.  The read-back uses the same credential as the create.  The MCP wrapper's `outcome_unknown` answer carries `github_code`, `readback_status` and `readback_retry_after_seconds` from this answer, never a number or URL.  The outcome store holds that key as
+unknown:  an identical call answers 409 with no GitHub call, so it can neither open a second
+pull request nor replay an unconfirmed success.  A held key is never evicted and counts toward
+the store's capacity until an operator reconciles it;  the audit row carries the number the
+create named as `unconfirmed_number` for that.  Look for the pull request in the repository
+before any retry.
+
 Only opening a PR is authored as the owner through the scoped PR-only token.  Edits, review
 replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
 seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats never get a raw token or a `git push`:  the file-write verbs (`wf_file_put`, `wf_file_delete`, `wf_file_rename`, `wf_files_put`) commit through the API, on a non-default branch by default (the default branch takes only the exact paths in `default_branch_paths`);  a path under `.github/workflows` is refused unless the request names it, and then the relay mints that one write under a token that also holds the `workflows` permission (`wf_file_patch` refuses every such path);  no seat policy can exceed its GitHub credential.
 
 **Pull request writes.**  `wf_pr_create` and `wf_pr_edit` are deliberately ungranted: no seat policy grants them.  `gr_open_pr` is the route to open a pull request, authored as the owner by design, and `gr_edit_pr` is the route to edit a title or body, which the current seat policy grants.
+
+How the default branch is recognised (AFC-775): GitHub drops `.` segments from a URL path, so `./main` reaches `main`.  The ref validator therefore refuses any branch, tag or ref name with an empty, `.`, `..` or dot-leading segment, or a segment ending in `.` or `.lock`.  One helper, `_is_default_branch`, decides for every verb that refuses the default branch (`wf_branch_update`, `wf_branch_delete`, `wf_file_put`, `wf_file_delete`, `wf_file_rename`, `wf_file_patch`, `wf_files_put`).  It compares case-folded names with any `refs/heads/` or `heads/` prefix and any `.` segment removed, and counts an unknown default branch as the default.  Each of those verbs also checks the provider's own answer against the default branch before any write:  the ref it returned (`refs/heads/<name>`) for the ref-based verbs, the branch name it returned for `wf_file_put` and `wf_file_delete`.  An answer that lacks the ref or name, or names a branch other than the one asked for, is refused.  For `wf_file_put` and `wf_file_delete` such an answer is a retryable pre-read failure with no write attempted, so the idempotency key is released;  the ref-based verbs refuse it outright.  GitHub branch names are case-sensitive, so a case or prefix variant of the default branch (`Main`, `MAIN`, `refs/heads/main`) is still the default branch and is refused by every file verb.  Only the exact default name, byte for byte, can take the exact-path route below, and on that route `wf_file_put` makes no separate branch read because the contents read already proves the branch exists.
 
 `wf_file_put` and `wf_file_delete` may also write the default branch, and only for an exact path named in that seat's `default_branch_paths` for that exact repository.  The relay prefixes the commit message with `default-branch-path: ` and requires `prior_sha` to equal the blob it just read.  Omit `prior_sha` only when that read says the file is absent.  `wf_files_put`, `wf_file_patch`, rename and branch moves stay refused on the default branch, and so does every path that is not listed.
 
@@ -143,10 +168,10 @@ returned to the caller as a retryable refusal.
 
 [deploy/seat-policy.json](deploy/seat-policy.json) is the production policy.  It holds no secret:
 every seat is `auth: shared` and signs in with its own admin-minted bearer.  It lists one entry
-for each of the 41 identities in this file (source, not live: the live seats file differs, for example it also carries BF-BUILDER, which is omitted here), each acting as the `swu-` App
+for each of the 40 identities in this file (source, not live: the live seats file differs - it also carries BF-BUILDER, omitted here, and it does not yet carry swu-zc, whose admission is the proof-gated first-seat runbook in this document), each acting as the `swu-` App
 whose GitHub description names that seat.  Five slugs are not `swu-<identity>`:  MA is
 `swu-rob`, GROK is `swu-grok-build`, MM is `swu-minimax`, JET-CHAT is `swu-jet` and AMP is `swu-amp-agent` (`swu-amp` is reserved for an account).  JET-CHAT is the full Jet login on its own policy entry; the original JET wake-only login has no Git entry (Q7).  Seats share the `fleet` profile
-(the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names the org namespace `Simple-With-Us/*`;  Echo's profile survives but resolves to the same set.  The fleet profile carries a 187-action list (8 relay actions, including `git_read`, plus 179 workflow actions, including `wf_pr_close`, `wf_pr_reopen`, the metadata-read rule reads `wf_branch_rules` and `wf_rulesets`, and the seven verbs AFC-629 grants: `wf_pr_search`, `wf_repo_list`, `wf_review_thread_comments`, `wf_file_patch`, `wf_issue_state_set`, `wf_issue_milestone_set` and `wf_release_notes_preview`) and the live 10-key mint ceiling.  The two rule reads reach a seat only once the live seats file on the relay host carries them, so they are added there at relay install.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-11-01:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
+(the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names both reviewed namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*` (the legacy namespace covers repositories still held by the personal account; a renamed or transferred repository is refused as `repository moved`, with `moved_to` only when the seat's own App can read the destination and the seat's repo allowlist covers it - the relay never follows a redirect);  Echo's profile survives but resolves to the same set.  The fleet profile carries a 187-action list (8 relay actions, including `git_read`, plus 179 workflow actions, including `wf_pr_close`, `wf_pr_reopen`, the metadata-read rule reads `wf_branch_rules` and `wf_rulesets`, and the seven verbs AFC-629 grants: `wf_pr_search`, `wf_repo_list`, `wf_review_thread_comments`, `wf_file_patch`, `wf_issue_state_set`, `wf_issue_milestone_set` and `wf_release_notes_preview`) and the live 10-key mint ceiling.  The two rule reads reach a seat only once the live seats file on the relay host carries them, so they are added there at relay install.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-10-29 5:50am CT:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
 Worker's identity lists and each action's permission needs.
 
 On the relay host, as root.  Root runs only a root-owned copy that only root can write, never
@@ -178,7 +203,7 @@ A brand-new seat cannot produce `ExternalProof` until the row is loaded, because
 
 The proof key is owned by root, the relay host operator.  Mint it once, as root, with `python3 -I <copy>/seat_policy.py proof-key` and `GIT_RELAY_PROOF_KEY_FILE` set to a new file in a directory root owns and only root can write.  The file is mode 0600.  The command never prints the key and never overwrites an existing one.  The service user does not own it, and the seat does not own it either.
 
-After this change is merged, admitting `swu-zc` is a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above.
+After this change is merged, admitting `swu-zc` is a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above.  The reviewed policy file carries no `swu-zc` row:  a wholesale `install` renders the whole file with no per-seat ExternalProof, so an unproven row must never ride the image.  Render the row from the reviewed fleet profile with the real renderer instead:
 
 ```
 # Proof key, once. <root-only-dir> is a directory root owns and only root can write.
@@ -189,9 +214,8 @@ stat -c '%u %a' "$GIT_RELAY_PROOF_KEY_FILE"    # 0 600. Do not print the file.
 # ZC bearer, one token, root-owned 0600. Write it without displaying it.
 export GIT_RELAY_FIRST_SEAT_BEARER_FILE=<root-only-dir>/zc-bearer
 
-python3 -I <copy>/seat_policy.py render \
-  | python3 -c 'import json,sys; json.dump(json.load(sys.stdin)["swu-zc"], sys.stdout); sys.stdout.write("\n")' \
-  > <root-only-dir>/swu-zc.json
+python3 -I -c 'import importlib.util as u, json, sys; spec = u.spec_from_file_location("seat_policy", sys.argv[1]); sp = u.module_from_spec(spec); sys.modules["seat_policy"] = sp; spec.loader.exec_module(sp); doc = sp.load(); doc["seats"].append({"identity": "ZC", "app_slug": "swu-zc", "profile": "fleet"}); json.dump(sp.render(doc)["swu-zc"], sys.stdout); sys.stdout.write("\n")' \
+  <copy>/seat_policy.py > <root-only-dir>/swu-zc.json
 chmod 600 <root-only-dir>/swu-zc.json
 
 # Prints expect-before, then expect-after. <relay-workdir> is the unit WorkingDirectory.
@@ -355,7 +379,9 @@ arguments, with explicit pending / ok / refused / unknown states.  A 4xx answer 
 definite refusal and releases the key, with two exceptions:  408 (request timeout) can arrive
 after GitHub applied the write, so it is treated as outcome UNKNOWN, and 429 is simply
 retryable.  A transport failure or 5xx likewise leaves the outcome UNKNOWN:  the relay answers 502 with `"retryable": false`, and an identical
-replay is refused with 409 until the seat checks GitHub and changes the request.  A replay of a
+replay is refused with 409 until the seat checks GitHub and changes the request.  An `open_pr`
+whose create answered but whose read-back failed or did not match is recorded the same way, as
+unknown and never as ok, so no later call replays its number.  A replay of a
 successful call returns the stored result without touching GitHub twice.  A crash mid-write loads
 as unknown - the store fails closed, never replays.  The registry is bounded:  ok rows are
 evicted after a 24 h replay window, refused rows are evicted oldest-first under capacity, and
