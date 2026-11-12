@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import health, ingest, mirror, qdrant_snapshot, sources
+from fleet_rag import health, ingest, mirror, qdrant_snapshot, search_cache, sources
 from fleet_rag.core import content_hash, point_id
 from fleet_rag.scrub import GitleaksError
 
@@ -150,6 +150,26 @@ class IngestTests(unittest.TestCase):
         kw.setdefault("prune", not (kw.get("limit") or kw.get("since")))
         return ingest.run("doc", cfg={"x": "y"}, qd=self.qd, state_path=self.state, last_run_path=self.last,
                           log_path=self.logf, log=lambda *a: None, **kw)
+
+    def test_completed_run_writes_the_search_cache_epoch(self) -> None:
+        report = self._run()
+        epoch = self.last.with_name(search_cache.EPOCH_NAME)
+        self.assertTrue(epoch.is_file())
+        body = json.loads(epoch.read_text())
+        self.assertEqual(body["run_id"], report["run_id"])
+        self.assertTrue(body["ok"])
+
+    def test_dry_run_does_not_write_the_search_cache_epoch(self) -> None:
+        self._run(dry_run=True)
+        self.assertFalse(self.last.with_name(search_cache.EPOCH_NAME).exists())
+
+    def test_partial_run_writes_the_epoch_without_replacing_last_run(self) -> None:
+        self.last.write_text('{"ok": false, "started_at": 1}')
+        before = self.last.read_bytes()
+        report = self._run(limit=1)
+        self.assertEqual(self.last.read_bytes(), before)
+        epoch = json.loads(self.last.with_name(search_cache.EPOCH_NAME).read_text())
+        self.assertEqual(epoch["run_id"], report["run_id"])
 
     def test_full_nonpruning_ingest_cannot_attest_nightly_health(self) -> None:
         with mock.patch.object(ingest, "_heartbeat") as heartbeat:

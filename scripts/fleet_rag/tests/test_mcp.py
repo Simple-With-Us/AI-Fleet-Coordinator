@@ -323,6 +323,8 @@ class SearchOptionsTests(unittest.TestCase):
             self.assertEqual(props[key]["type"], "boolean")
             self.assertIs(props[key]["default"], True)
             self.assertIn("description", props[key])
+        self.assertIs(props["compact"]["default"], True)
+        self.assertIs(props["full"]["default"], False)
         self.assertEqual(self.mod.TOOLS[0]["inputSchema"]["required"], ["query"])
         self.assertIn("per_doc", self.mod.TOOLS[0]["description"])
 

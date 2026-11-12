@@ -107,6 +107,16 @@ TOOLS = [
                     "default": False,
                     "description": "Include retracted contributions for audit; normal search hides them.",
                 },
+                "compact": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Cache key for the excerpt view. Hit text stays complete.",
+                },
+                "full": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Cache key for the whole-chunk view. Hit text stays complete.",
+                },
             },
             "required": ["query"],
         },
@@ -309,6 +319,8 @@ def call_tool(name: str, args: dict) -> dict:
         _bool(args, "rerank")
         _bool(args, "prefer_lessons")
         _bool(args, "include_retracted")
+        _bool(args, "compact")
+        _bool(args, "full")
         # The log names who asked:  the bearer's seat, never an argument.  (`seat` itself stays a corpus filter.)
         caller_seat = (
             verified
@@ -317,7 +329,7 @@ def call_tool(name: str, args: dict) -> dict:
             or os.environ.get("AGENT_TAG")
         )
         # A null for an optional flag means "default", not False.
-        for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted"):
+        for key in ("per_doc", "rerank", "prefer_lessons", "include_retracted", "compact", "full"):
             if key in args and args[key] is None:
                 del args[key]
         t0 = time.time()

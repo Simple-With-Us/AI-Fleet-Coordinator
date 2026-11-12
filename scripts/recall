@@ -149,7 +149,9 @@ def cmd_search(a: argparse.Namespace) -> int:
     res = public_fallback.call_with_fallback(
         "recall_search",
         {**kwargs, "query": a.query},
-        lambda: recall_api.recall_search(a.query, **kwargs),
+        lambda: recall_api.recall_search(
+            a.query, compact=not a.full, full=bool(a.full), **kwargs
+        ),
     )
     if a.json:
         # Keep stdout's machine contract unchanged. The warning is not corpus text.

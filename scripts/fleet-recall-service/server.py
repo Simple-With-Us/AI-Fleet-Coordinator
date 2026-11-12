@@ -112,6 +112,8 @@ MANAGED_KEYS = (
         "RECALL_ADMIN_TOKEN",
         "RECALL_OWNER_TOKEN",
         "RECALL_SOCKET_TIMEOUT",
+        "RECALL_SEARCH_CACHE_SIZE",
+        "RECALL_SEARCH_CACHE_TTL_SECONDS",
         "SETTINGS_REFRESH_SECONDS",
         "HOST",
         "PORT",
@@ -202,6 +204,16 @@ TOOLS: list[JsonDict] = [
                     "type": "boolean",
                     "default": False,
                     "description": "Include retracted contributions for audit; normal search hides them.",
+                },
+                "compact": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Cache key for the excerpt view. Hit text stays complete.",
+                },
+                "full": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Cache key for the whole-chunk view. Hit text stays complete.",
                 },
             },
             "required": ["query"],
@@ -359,6 +371,8 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
         _bool(args, "rerank")
         _bool(args, "prefer_lessons")
         _bool(args, "include_retracted")
+        _bool(args, "compact")
+        _bool(args, "full")
         return recall_api.recall_search(**args)
     if name == "recall_stats":
         return recall_api.recall_stats()
