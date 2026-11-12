@@ -502,7 +502,25 @@ class LetterParse(unittest.TestCase):
     def test_the_line_start_form_takes_the_seat_tag(self) -> None:
         self.assertEqual(self.letter("CLAUDE CC please"), "CC")
         self.assertEqual(self.letter("one\n  CLAUDE CC please"), "CC")
-        self.assertEqual(self.letter("ZC NN please", "ZC", "ZCode"), "NN")
+
+    def test_a_two_capital_seat_tag_is_not_read_in_the_plain_forms(self) -> None:
+        # A seat tag of two capitals is itself letter-shaped:  "ZC PR is merged" must not give PR.
+        for text in (
+            "ZC NN please",
+            "ZC PR is merged, please look",
+            "@ZC CI is red",
+            "one\n  ZC UI needs work",
+        ):
+            self.assertEqual(self.letter(text, "ZC", "ZCode"), "", text)
+        # The mention name still addresses, and so does the header's recipient list, where the tag
+        # is explicit.
+        self.assertEqual(self.letter("ZCode NN please", "ZC", "ZCode"), "NN")
+        self.assertEqual(self.letter("@ZCode NN please", "ZC", "ZCode"), "NN")
+        header = "[CLAUDE: BB.3.S \U0001f4c1AFC → ZC NN] text"
+        self.assertEqual(self.letter(header, "ZC", "ZCode"), "NN")
+        # A longer tag keeps both plain forms.
+        self.assertEqual(self.letter("CLAUDE CC please"), "CC")
+        self.assertEqual(self.letter("@CLAUDE CC please"), "CC")
 
     # The router's own last resort (`sole_plain_letter`):  a plain name later in a line, written as
     # an address.

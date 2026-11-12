@@ -432,7 +432,9 @@ def letter_of(payload: Mapping[str, Any], mention: str) -> str:
        (`sole_plain_letter`).
 
     In 2 to 4, and where the name is said again, it is the platform's mention name or its seat
-    tag;  the mention in 1 and the name in 5 are the mention name alone.  3 to 5 do not read code
+    tag, except that 3 and 4 leave out a seat tag of two capitals (ZC, MC), which is itself
+    letter-shaped ("ZC PR is merged" names no chat);  the mention in 1 and the name in 5 are the
+    mention name alone.  3 to 5 do not read code
     (`uncoded`).  Within a form the first letter wins.  The seat's own tag is not a letter, though
     a post often opens with it under the mention ("ZC, can you").  A silent mention (@_**Name**)
     in the body addresses nobody by itself;  the name said again after one that opens the body is the plain form of 4
@@ -448,19 +450,32 @@ def letter_of(payload: Mapping[str, Any], mention: str) -> str:
         return ""
     names = "(?:" + "|".join(known) + ")"
     again = r"(?:%s[ \t]+)?" % names  # the name said again after a mention of it
+    # A seat tag of two capitals (ZC, MC) is itself letter-shaped, so in the plain forms "ZC PR is
+    # merged" would read PR as a letter.  Those forms take such a tag out;  the header's recipient
+    # list, where the tag is explicit, keeps it.
+    plain_known = [
+        re.escape(name)
+        for name in dict.fromkeys((mention, "" if re.fullmatch(r"[A-Z]{2}", seat) else seat))
+        if name
+    ]
+    plain = "(?:" + "|".join(plain_known) + ")" if plain_known else ""
     prose = uncoded(text)
 
     def first(letters: Iterable[str]) -> str:
         return next((letter for letter in letters if letter != seat), "")
 
     mentioned = r"@\*\*%s(?:\|\d+)?\*\*\s*%s([A-Z]{2})\b" % (re.escape(mention), again)
-    at_form = NOT_A_TAIL + r"@(?ai:%s)[ \t]+%s([A-Z]{2})\b" % (names, again)
-    line_start = r"(?m)^[ \t]*" + PLAIN_LETTER % names
+    at_form = NOT_A_TAIL + r"@(?ai:%s)[ \t]+%s([A-Z]{2})\b" % (plain, again) if plain else ""
+    line_start = r"(?m)^[ \t]*" + PLAIN_LETTER % plain if plain else ""
     return (
         first(re.findall(mentioned, text))
         or first(header_letters(excerpt, names))
-        or first(re.findall(at_form, prose))
-        or first(re.findall(line_start, uncoded(opening_lines(excerpt, text))))
+        or (first(re.findall(at_form, prose)) if at_form else "")
+        or (
+            first(re.findall(line_start, uncoded(opening_lines(excerpt, text))))
+            if line_start
+            else ""
+        )
         # The router's own last resort, on its own line so it can go alone:  without it a plain
         # name later in a line is a reference and addresses nobody.
         or sole_plain_letter(prose, mention, seat)
