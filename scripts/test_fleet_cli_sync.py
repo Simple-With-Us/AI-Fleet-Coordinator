@@ -152,6 +152,30 @@ class SourceTests(Fixture):
         self.assertTrue(policy.allowed_path("scripts/simple_tools/seat_control.py"))
         self.assertNotIn("scripts/simple_tools/seat_control.py", bundle["files"])
 
+    def test_repo_only_cannot_drop_required_files(self):
+        actual = Path(__file__).with_name("fleet-cli-release.py")
+        if not actual.is_file():
+            self.skipTest("Receiver integration runs from the owned source lane")
+        text = actual.read_text()
+        old_set = """REPO_ONLY = frozenset(
+    {
+        "scripts/simple_tools/seat_control.py",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+    }
+)"""
+        new_set = """REPO_ONLY = frozenset(
+    {
+        "scripts/simple_tools/seat_control.py",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+        "fleet-apps.json",
+    }
+)"""
+        if old_set not in text:
+            self.fail("REPO_ONLY block missing from receiver")
+        self.put("scripts/fleet-cli-release.py", text.replace(old_set, new_set, 1))
+        self.commit()
+        self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
+
     def test_receiver_cap_may_exceed_sender_cap_but_never_trail_it(self):
         self.assertEqual(S.MAX_BYTES, 8 * 1024 * 1024)
         self.put("scripts/fleet-cli-release.py", POLICY.replace("12*1024*1024", "4*1024*1024"))

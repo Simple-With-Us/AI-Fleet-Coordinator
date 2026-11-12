@@ -154,11 +154,18 @@ SHIPPED = (
     "docs/FLEET-MODE.md",
     "docs/protocols/simple-tools-guide.md",
 )
-# What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
+# What a fleet-cli release ships:  mirrors shipped_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
 # The fallback copy of what a release ships, for a host with no checkout.  With a checkout,
-# is_shipped asks scripts/fleet-cli-release.py itself, so the two cannot drift;  a test pins this
-# copy to the release's EXACT.
+# is_shipped asks the receiver's shipped_path (or allowed_path on an older receiver), so the
+# copies cannot drift;  a test pins this copy to the release's EXACT minus REPO_ONLY.
+# Allowed on a retained release, never in a new bundle.  Mirrors fleet-cli-release.REPO_ONLY.
+SHIPPED_REPO_ONLY = frozenset(
+    {
+        "scripts/simple_tools/seat_control.py",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+    }
+)
 SHIPPED_EXACT = frozenset(
     {
         "scripts/simple-chat",
@@ -173,7 +180,6 @@ SHIPPED_EXACT = frozenset(
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
         "scripts/simple_tools/mcp/tools.json",
-        "scripts/simple_tools/mcp/fixtures.jsonl",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
         "scripts/simple_tools/mcp/gb-identities.json",
@@ -523,6 +529,8 @@ def is_shipped(path: str) -> bool:
     for name in ("shipped_path", "allowed_path"):
         if policy is not None and callable(getattr(policy, name, None)):
             return bool(getattr(policy, name)(path))
+    if path in SHIPPED_REPO_ONLY:
+        return False
     return path in SHIPPED_EXACT or bool(
         re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
         or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")

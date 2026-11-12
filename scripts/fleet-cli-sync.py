@@ -280,6 +280,13 @@ def build_bundle(source: Path, runner: Runner | None = None) -> tuple[dict, byte
     ships = getattr(policy, "shipped_path", None)
     ships = ships if callable(ships) else policy.allowed_path
     selected = [row for row in entries if ships(row[0])]
+    # A path in REQUIRED that is also in REPO_ONLY would build a bundle every host refuses
+    # with bad_file_set.  Only paths present in the source tree are checked, so a fixture
+    # tree that uses the real receiver but not the full allowlist still builds.
+    required = getattr(policy, "REQUIRED", set())
+    present = {row[0] for row in entries}
+    if not (required & present).issubset({row[0] for row in selected}):
+        raise SyncError("receiver_policy_invalid")
     if len(selected) > MAX_FILES:
         raise SyncError("bundle_too_many_files")
     if not selected:
