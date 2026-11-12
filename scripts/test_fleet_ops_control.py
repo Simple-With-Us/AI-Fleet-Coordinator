@@ -5635,6 +5635,328 @@ class LogsUnitTests(Base):
             self.assertNotIn(timer, commands[0], timer)
 
 
+class RouterHealthTests(Base):
+    """`server router-health server --plan`: read-only reduction of loopback 8794 `/health`."""
+
+    SECRET_URL = "https://" + "secret-host.example/hook/123"
+    SECRET_WORD = "private-router-detail-not-shown"
+
+    def health_document(self):
+        return {
+            "healthy": False,
+            "seats": {
+                "CLAUDE": {"healthy": True, "delivery": True},
+                "AG": {"healthy": True, "delivery": False},
+                "CODEX": {
+                    "healthy": False,
+                    "delivery": True,
+                    "reason": "registry-not-configured",
+                },
+                "GROK": {
+                    "healthy": False,
+                    "delivery": False,
+                    "reason": "routine-key-unavailable:missing",
+                },
+                "MC": {"healthy": False, "reason": "not-installed"},
+                "ZC": {
+                    "healthy": False,
+                    "reason": "seat-not-served:start-error-OSError",
+                },
+            },
+        }
+
+    def plan_health(self, doc=None, reason=None, argv=None, **ctx_args):
+        context = self.ctx(**ctx_args)
+        if doc is None and reason is None:
+            doc = self.health_document()
+        context.router_health = lambda: (doc, reason)
+        return self.run_main(
+            argv or ["server", "router-health", "server", "--plan", "--json"], context
+        )
+
+    def test_the_router_health_answer_has_the_documented_shape(self):
+        code, answer = self.plan_health()
+        self.assertEqual(
+            (code, answer["ok"], answer["result"], answer["verb"], answer["target"]),
+            (0, True, "planned", "server router-health", "server"),
+        )
+        self.assertEqual(
+            answer["routerHealth"],
+            {
+                "schema": 1,
+                "generated_at": stamp(NOW),
+                "instance": "server",
+                "healthy": False,
+                "counts": {
+                    "total": 6,
+                    "installed": 5,
+                    "not_installed": 1,
+                    "healthy": 2,
+                    "delivery_on": 2,
+                    "registry_configured": 2,
+                },
+                "truncated": False,
+                "dropped": 0,
+                "seats": [
+                    {
+                        "seat": "AG",
+                        "installed": True,
+                        "healthy": True,
+                        "delivery": False,
+                        "registry_configured": True,
+                        "reason": None,
+                    },
+                    {
+                        "seat": "CLAUDE",
+                        "installed": True,
+                        "healthy": True,
+                        "delivery": True,
+                        "registry_configured": True,
+                        "reason": None,
+                    },
+                    {
+                        "seat": "CODEX",
+                        "installed": True,
+                        "healthy": False,
+                        "delivery": True,
+                        "registry_configured": False,
+                        "reason": "registry_not_configured",
+                    },
+                    {
+                        "seat": "GROK",
+                        "installed": True,
+                        "healthy": False,
+                        "delivery": False,
+                        "registry_configured": None,
+                        "reason": "routine_key_unavailable",
+                    },
+                    {
+                        "seat": "MC",
+                        "installed": False,
+                        "healthy": False,
+                        "delivery": None,
+                        "registry_configured": None,
+                        "reason": "not_installed",
+                    },
+                    {
+                        "seat": "ZC",
+                        "installed": True,
+                        "healthy": False,
+                        "delivery": None,
+                        "registry_configured": None,
+                        "reason": "seat_not_served",
+                    },
+                ],
+            },
+        )
+        self.assertEqual(self.audit_rows(), [])
+
+    def test_hostile_values_and_seat_cap_are_bounded_without_leaks(self):
+        seats = {
+            f"SEAT{i:02d}": {"healthy": True, "delivery": True}
+            for i in range(foc.OPERATOR_MAX_SEATS + 3)
+        }
+        seats["AG"] = {
+            "healthy": False,
+            "delivery": False,
+            "reason": f"{self.SECRET_URL} {self.SECRET_WORD}",
+        }
+        code, answer = self.plan_health(doc={"healthy": "yes", "seats": seats})
+        self.assertEqual(code, 0)
+        rh = answer["routerHealth"]
+        self.assertIsNone(rh["healthy"])
+        self.assertTrue(rh["truncated"])
+        self.assertEqual(rh["dropped"], 0)
+        by_seat = {row["seat"]: row for row in rh["seats"]}
+        self.assertEqual(
+            by_seat["AG"],
+            {
+                "seat": "AG",
+                "installed": True,
+                "healthy": False,
+                "delivery": False,
+                "registry_configured": None,
+                "reason": "other",
+            },
+        )
+        text = json.dumps(answer)
+        self.assertNotIn(self.SECRET_URL, text)
+        self.assertNotIn(self.SECRET_WORD, text)
+        for bad_seats in (
+            {"!BAD": {"healthy": True, "delivery": True}},
+            {"AG": "not-a-dict"},
+            {"AG": {"healthy": 1, "delivery": True}},
+            {"AG": {"healthy": True, "delivery": "yes"}},
+            {"AG": {"healthy": True, "delivery": False, "reason": 123}},
+        ):
+            with self.subTest(bad_seats=bad_seats):
+                bad_code, bad_ans = self.plan_health(doc={"healthy": True, "seats": bad_seats})
+                self.assertEqual(
+                    (bad_code, bad_ans["ok"], bad_ans["result"], bad_ans["errorCode"]),
+                    (1, False, "unavailable", "not_json"),
+                )
+
+    def test_refusals_and_unavailable_states(self):
+        code, mac_target = self.plan_health(
+            argv=["server", "router-health", "mac", "--plan", "--json"]
+        )
+        self.assertEqual((code, mac_target["result"]), (2, "refused"))
+        code, darwin_ans = self.plan_health(platform="darwin")
+        self.assertEqual((code, darwin_ans["result"]), (2, "refused"))
+        for err_code in foc.ROUTER_HEALTH_UNAVAILABLE:
+            with self.subTest(errorCode=err_code):
+                code, ans = self.plan_health(doc=None, reason=err_code)
+                self.assertEqual(
+                    (code, ans["ok"], ans["result"], ans["errorCode"]),
+                    (1, False, "unavailable", err_code),
+                )
+        code, bad_doc = self.plan_health(doc={"healthy": True, "seats": "not-a-dict"})
+        self.assertEqual(
+            (code, bad_doc["ok"], bad_doc["result"], bad_doc["errorCode"]),
+            (1, False, "unavailable", "not_json"),
+        )
+        self.assertEqual(self.audit_rows(), [])
+        code, yes_ans = self.plan_health(
+            argv=["server", "router-health", "server", "--yes", "--json"]
+        )
+        self.assertEqual((code, yes_ans["result"]), (2, "refused"))
+        rows = self.audit_rows()
+        self.assertEqual(
+            [(r["verb"], r["result"]) for r in rows], [("server router-health", "refused")]
+        )
+
+    def test_ssh_forced_command_accepts_router_health(self):
+        words = foc.parse_ssh_command("server router-health server --plan --json")
+        self.assertEqual(words, ["server", "router-health", "server", "--plan", "--json"])
+        ctx = self.ctx(
+            environ={"SSH_ORIGINAL_COMMAND": "server router-health server --plan --json"}
+        )
+        ctx.router_health = lambda: (self.health_document(), None)
+        out = io.StringIO()
+        code = foc.main(["--from-ssh"], ctx=ctx, out=out)
+        answer = json.loads(out.getvalue())
+        self.assertEqual((code, answer["ok"], answer["result"]), (0, True, "planned"))
+        self.assertIn("routerHealth", answer)
+
+    def test_read_router_health_http_handles_200_503_errors_redirects_and_limits(self):
+        import http.server
+        import socketserver
+        import threading
+
+        state = {
+            "status": 200,
+            "body": b'{"healthy": true, "seats": {"CLAUDE": {"healthy": true, "delivery": true}}}',
+            "headers": {},
+        }
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(state["status"])
+                for k, v in state["headers"].items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(state["body"])
+
+            def log_message(self, format, *args):
+                pass
+
+        class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+
+        with Server(("127.0.0.1", 0), Handler) as srv:
+            port = srv.server_address[1]
+            url = f"http://127.0.0.1:{port}/health"
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                old_proxy = os.environ.get("HTTP_PROXY")
+                os.environ["HTTP_PROXY"] = "http://127.0.0.1:9"
+                try:
+                    doc, err = foc.read_router_health_http(url=url)
+                    self.assertIsNone(err)
+                    self.assertEqual(doc["healthy"], True)
+                    state.update(
+                        status=503,
+                        body=b'{"healthy": false, "seats": {"MC": {"healthy": false, "reason": "not-installed"}}}',
+                    )
+                    doc, err = foc.read_router_health_http(url=url)
+                    self.assertIsNone(err)
+                    self.assertEqual(doc["healthy"], False)
+                    state.update(status=500, body=b"{}")
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "bad_status"))
+                    state.update(
+                        status=302, body=b"{}", headers={"Location": "https://example.invalid/"}
+                    )
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "bad_status"))
+                    state.update(status=200, headers={}, body=b"not-json")
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
+                    state.update(status=200, body=b'{"healthy": true}')
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
+                    state.update(status=200, body=b'{"healthy": true, "seats": {}}')
+                    self.assertEqual(
+                        foc.read_router_health_http(url=url, max_bytes=8), (None, "too_large")
+                    )
+                    deep_body = (b"[" * 20) + b"0" + (b"]" * 20)
+                    state.update(
+                        status=200,
+                        body=b'{"healthy": true, "seats": {}, "deep": ' + deep_body + b"}",
+                    )
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
+                    wide_body = (
+                        b'{"healthy": true, "seats": {}, "extra": ['
+                        + b",".join([b"0"] * 10050)
+                        + b"]}"
+                    )
+                    state.update(status=200, body=wide_body)
+                    self.assertEqual(foc.read_router_health_http(url=url), (None, "not_json"))
+                finally:
+                    if old_proxy is None:
+                        os.environ.pop("HTTP_PROXY", None)
+                    else:
+                        os.environ["HTTP_PROXY"] = old_proxy
+            finally:
+                srv.shutdown()
+        self.assertEqual(foc.read_router_health_http(url=url), (None, "router_not_running"))
+
+    def test_read_router_health_http_times_out_slow_trickle_peer(self):
+        import http.server
+        import socketserver
+        import threading
+
+        class TrickleHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                try:
+                    for _ in range(20):
+                        self.wfile.write(b"{")
+                        self.wfile.flush()
+                        time.sleep(0.05)
+                except OSError:
+                    pass
+
+            def log_message(self, format, *args):
+                pass
+
+        class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+
+        with Server(("127.0.0.1", 0), TrickleHandler) as srv:
+            port = srv.server_address[1]
+            url = f"http://127.0.0.1:{port}/health"
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                started = time.monotonic()
+                result = foc.read_router_health_http(url=url, timeout=0.25)
+                elapsed = time.monotonic() - started
+                self.assertEqual(result, (None, "timeout"))
+                self.assertLess(elapsed, 0.9)
+            finally:
+                srv.shutdown()
+
+
 class SourceTests(unittest.TestCase):
     def test_no_shell_true_anywhere(self):
         text = Path(HERE, "fleet-ops-control.py").read_text()
