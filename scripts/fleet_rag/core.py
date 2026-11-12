@@ -665,6 +665,7 @@ class Qdrant:
         method: str | None = None,
         write: bool = False,
         timeout: int = DEFAULT_TIMEOUT,
+        retries: int | None = None,
     ) -> Any:
         key = self._write_key if write else self._read_key
         if write and not key:
@@ -680,7 +681,13 @@ class Qdrant:
         try:
             options = {"before_attempt": check_storage} if write else {}
             return http_json(
-                f"{self.base}{path}", body, {"api-key": key}, method, timeout=timeout, **options
+                f"{self.base}{path}",
+                body,
+                {"api-key": key},
+                method,
+                timeout=timeout,
+                retries=retries,
+                **options,
             )
         except FleetRagError as e:
             # A staged read-only key that the server has not loaded yet answers 401/403.
@@ -698,6 +705,7 @@ class Qdrant:
                     {"api-key": self._write_key},
                     method,
                     timeout=timeout,
+                    retries=retries,
                 )
             raise
 
@@ -929,6 +937,7 @@ class Qdrant:
             method="POST",
             write=True,
             timeout=1800,
+            retries=0,
         )["result"]
 
     def snapshot(self) -> dict:

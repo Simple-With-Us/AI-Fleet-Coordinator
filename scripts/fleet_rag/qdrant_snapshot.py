@@ -83,47 +83,52 @@ def take_prune_snapshot(qd: Qdrant, *, state_parent: Path | None = None) -> dict
     """Create one snapshot and enforce retention.  Raises PruneSnapshotError on failure."""
     keep = snapshot_keep()
     try:
-        result = qd.create_snapshot(wait=True)
-    except FleetRagError as exc:
-        raise PruneSnapshotError(str(exc)) from None
-    name = str(result.get("name") or "").strip()
-    if not name:
-        raise PruneSnapshotError("Qdrant snapshot API returned no name")
+        try:
+            result = qd.create_snapshot(wait=True)
+        except FleetRagError as exc:
+            raise PruneSnapshotError(str(exc)) from None
+        name = str(result.get("name") or "").strip()
+        if not name:
+            raise PruneSnapshotError("Qdrant snapshot API returned no name")
 
-    collection = qd.collection
-    volume_root = (os.environ.get(VOLUME_ENV) or "").strip()
-    archive_dir = snapshot_dir(state_parent)
-    if archive_dir.exists() and not archive_dir.is_dir():
-        raise PruneSnapshotError(f"snapshot dir path is not a directory: {archive_dir}")
-    archive_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-    with contextlib.suppress(OSError):
-        os.chmod(archive_dir, 0o700)
+        collection = qd.collection
+        volume_root = (os.environ.get(VOLUME_ENV) or "").strip()
+        archive_dir = snapshot_dir(state_parent)
+        if archive_dir.exists() and not archive_dir.is_dir():
+            raise PruneSnapshotError(f"snapshot dir path is not a directory: {archive_dir}")
+        archive_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(archive_dir, 0o700)
 
-    archived_path: str | None = None
-    if volume_root:
-        src = Path(volume_root).expanduser() / "snapshots" / collection / name
-        if not src.is_file() or src.stat().st_size <= 0:
+        archived_path: str | None = None
+        if volume_root:
+            src = Path(volume_root).expanduser() / "snapshots" / collection / name
+            if not src.is_file() or src.stat().st_size <= 0:
+                with contextlib.suppress(FleetRagError):
+                    qd.delete_snapshot(name)
+                raise PruneSnapshotError(f"snapshot file missing on volume: {src}")
+            stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+            dest = archive_dir / f"{collection}-{stamp}.snapshot"
+            shutil.move(str(src), dest)
+            os.chmod(dest, 0o600)
             with contextlib.suppress(FleetRagError):
                 qd.delete_snapshot(name)
-            raise PruneSnapshotError(f"snapshot file missing on volume: {src}")
-        stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-        dest = archive_dir / f"{collection}-{stamp}.snapshot"
-        shutil.move(str(src), dest)
-        os.chmod(dest, 0o600)
-        with contextlib.suppress(FleetRagError):
-            qd.delete_snapshot(name)
-        _prune_local_files(archive_dir, keep)
-        archived_path = str(dest)
-    else:
-        _prune_remote_snapshots(qd, keep)
+            _prune_local_files(archive_dir, keep)
+            archived_path = str(dest)
+        else:
+            _prune_remote_snapshots(qd, keep)
 
-    return {
-        "name": name,
-        "collection": collection,
-        "path": archived_path,
-        "dir": str(archive_dir),
-        "keep": keep,
-    }
+        return {
+            "name": name,
+            "collection": collection,
+            "path": archived_path,
+            "dir": str(archive_dir),
+            "keep": keep,
+        }
+    except PruneSnapshotError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — archive steps must not abort the whole ingest
+        raise PruneSnapshotError(f"{type(exc).__name__}: {exc}") from None
 
 
 def maybe_snapshot_before_prune(
