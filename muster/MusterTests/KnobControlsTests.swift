@@ -201,9 +201,37 @@ final class KnobControlsTests: XCTestCase {
     func test_groups_keep_the_registry_order() throws {
         let registry = try realRegistry()
         let groups = KnobRegistry.grouped(registry.rows)
-        XCTAssertEqual(groups.first?.title, "Autopush")
+        // The Operator section is pinned first;  the rest keep the registry order.
+        XCTAssertEqual(groups.first?.title, KnobRegistry.operatorSection)
+        XCTAssertEqual(groups.dropFirst().first?.title, "Autopush")
         XCTAssertEqual(groups.map { $0.rows.count }.reduce(0, +), registry.knobs.count)
         XCTAssertEqual(Set(groups.map { $0.title }).count, groups.count)
+    }
+
+    func test_the_operator_knobs_are_one_pinned_section_first() throws {
+        let registry = try realRegistry()
+        let groups = KnobRegistry.grouped(registry.rows)
+        XCTAssertEqual(groups.first?.title, KnobRegistry.operatorSection)
+        let pinned = Set((groups.first?.rows ?? []).compactMap { $0.knob?.name })
+        for name in ["OPERATOR_API_URL", "WAKE_ROUTER_DELIVERY_ENABLED", "WAKE_ROUTER_KEY",
+                     "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"] {
+            XCTAssertTrue(pinned.contains(name), "\(name) is in the Operator section")
+        }
+        XCTAssertFalse(pinned.contains("FLEET_AUTOPUSH_MODE"))
+        XCTAssertEqual(Set(groups.map { $0.title }).count, groups.count)
+        XCTAssertEqual(groups.map { $0.rows.count }.reduce(0, +), registry.knobs.count)
+        // A filtered view keeps the section pinned first when it still has a knob.
+        let found = registry.filtered(.all, host: .any, query: "wake router")
+        XCTAssertEqual(KnobRegistry.grouped(found).first?.title, KnobRegistry.operatorSection)
+    }
+
+    func test_search_and_the_changed_filter_work_together() throws {
+        let registry = try realRegistry().applying(try statusFixture())
+        let changed = registry.filtered(.changed, host: .any, query: "sweep")
+        XCTAssertFalse(changed.isEmpty)
+        XCTAssertTrue(changed.allSatisfy { $0.knob?.isChanged == true })
+        XCTAssertTrue(registry.filtered(.all, host: .any, query: "OPERATOR_API_URL")
+            .contains { $0.knob?.name == "OPERATOR_API_URL" })
     }
 
     // MARK: The live read
