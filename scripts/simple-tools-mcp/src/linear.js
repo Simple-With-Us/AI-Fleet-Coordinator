@@ -580,7 +580,7 @@ export const Q_COMMENTS = `query BoardComments($id: String!, $first: Int!, $afte
   issue(id: $id) {
     comments(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id body createdAt user { id name app } }
+      nodes { id body createdAt user { id name displayName app } }
     }
   }
 }`;

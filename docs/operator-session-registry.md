@@ -187,4 +187,5 @@ duplicate Record ID rows reported and left alone, header mismatch writing nothin
 a failed write stopping the sync partial and the next run reconciling), and the CLI
 export-rows/stats payloads.  The exporter's header list is verified byte-equal to
 the Python HEADERS.  Neighbouring suites re-run clean (112 tests:
-test_operator_service, test_operator_registration, test_operator_registration_ask).
+test_operator_service, test_operator_registration, test_operator_registration_ask;  the last two
+have since been removed with the registration question).
