@@ -1,72 +1,114 @@
-"""source.fetch_named:  the CLI is asked for just the named secrets of one folder, prod only (OPS-818)."""
+"""Named knob reads use the scoped REST helper, never an auth-capable CLI fallback."""
 
 from __future__ import annotations
 
+from unittest import mock
+
 from fleet_knobs import source
 
-from ._fake import UNRELATED, KnobTestCase
+from ._fake import KnobTestCase, fixture_service_token
 
 PROJECT = "11111111-2222-3333-4444-555555555555"
+TOKEN = fixture_service_token()
+GENERIC_TOKEN = fixture_service_token()
+WRITER_TOKEN = fixture_service_token()
+
+
+class FakeHelper:
+    def __init__(self, result=None, error=None):
+        self.result = result or {}
+        self.error = error
+        self.calls = []
+
+    def fetch_project(self, project_id, path, env, *, token=None, names=None, timeout=None):
+        if token != env.get(source.ENV_AI_FLEET_COORDINATOR_TOKEN):
+            raise AssertionError("explicit scoped reader required")
+        self.calls.append((project_id, path, dict(env), names, timeout))
+        if self.error:
+            raise self.error
+        return self.result
 
 
 class FetchNamedTests(KnobTestCase):
-    def test_asks_the_cli_for_only_the_named_secrets_in_prod(self):
-        names = ("CLAUDE_ZULIP_KEY", "CLAUDE_ZULIP_EMAIL")
-        self.fake.set(
-            shape="api",
-            secrets={
-                "CLAUDE_ZULIP_KEY": "k",
-                "CLAUDE_ZULIP_EMAIL": "e",
-                "CODEX_ZULIP_KEY": UNRELATED,
-            },
+    def setUp(self):
+        super().setUp()
+        self.helper = FakeHelper(
+            {"CLAUDE_ZULIP_KEY": "k", "CLAUDE_ZULIP_EMAIL": "e", "OTHER": "drop"}
         )
+        self.loader = mock.patch.object(source, "HELPER_LOADER", return_value=self.helper)
+        self.loader.start()
+        self.addCleanup(self.loader.stop)
+
+    def test_named_fetch_routes_exact_project_path_and_name_set_with_only_scoped_binding(self):
+        os_token = source.ENV_KNOBS_TOKEN
+        from os import environ
+
+        environ[os_token] = TOKEN
+        environ[source.ENV_TOKEN] = GENERIC_TOKEN
+        environ["INFISICAL_WRITE_TOKEN"] = WRITER_TOKEN
+        names = ("CLAUDE_ZULIP_KEY", "CLAUDE_ZULIP_EMAIL")
+
         got = source.fetch_named(names, project_id=PROJECT, path="/zulip")
-        self.assertEqual(
-            got, {"CLAUDE_ZULIP_KEY": "k", "CLAUDE_ZULIP_EMAIL": "e"}
-        )  # the unrelated one is dropped
-        (argv,) = self.fake.calls()
-        self.assertEqual(argv[:4], ["secrets", "get", "CLAUDE_ZULIP_EMAIL", "CLAUDE_ZULIP_KEY"])
-        for flag in ("--env=prod", f"--projectId={PROJECT}", "--path=/zulip", "--output=json"):
-            self.assertIn(flag, argv)
-        self.assertNotIn("export", argv)
-        self.assertIn("--expand=true", argv)  # OPS-818: Fleet-OPS values may be bare references
-        self.assertNotIn("--expand=false", argv)
 
-    def test_failure_is_a_reason_token_never_output(self):
-        self.fake.set(mode="fail", leak="sentinel-leak")
+        self.assertEqual(got, {"CLAUDE_ZULIP_KEY": "k", "CLAUDE_ZULIP_EMAIL": "e"})
+        self.assertEqual(len(self.helper.calls), 1)
+        project, path, child, requested, timeout = self.helper.calls[0]
+        self.assertEqual((project, path, requested), (PROJECT, "/zulip", set(names)))
+        self.assertGreater(timeout, 0)
+        self.assertEqual(child[source.ENV_AI_FLEET_COORDINATOR_TOKEN], TOKEN)
+        self.assertNotIn(source.ENV_TOKEN, child)
+        self.assertNotIn("INFISICAL_WRITE_TOKEN", child)
+        self.assertNotIn(source.ENV_KNOBS_TOKEN, child)
+
+    def test_missing_malformed_or_generic_only_token_fails_before_helper(self):
+        for token in (None, "not-a-token", "st.short", "st.bad token"):
+            with self.subTest(token_present=token is not None):
+                self.new_process()
+                if token is None:
+                    from os import environ
+
+                    environ.pop(source.ENV_KNOBS_TOKEN, None)
+                else:
+                    from os import environ
+
+                    environ[source.ENV_KNOBS_TOKEN] = token
+                from os import environ
+
+                environ[source.ENV_TOKEN] = TOKEN
+                environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "legacy-test-client"
+                environ["INFISICAL_AUTOMATION_CLIENT_SECRET"] = "legacy-test-secret"
+
+                with self.assertRaises(source.FetchFailed) as ctx:
+                    source.fetch_named(("A",), project_id=PROJECT, path="/zulip")
+
+                self.assertEqual(ctx.exception.reason, "service-token-required")
+                self.assertEqual(self.helper.calls, [])
+
+    def test_helper_failure_is_sanitized_and_never_retried(self):
+        from os import environ
+
+        environ[source.ENV_KNOBS_TOKEN] = TOKEN
+        self.helper.error = RuntimeError("provider body includes secret-like sentinel")
+
         with self.assertRaises(source.FetchFailed) as ctx:
             source.fetch_named(("A",), project_id=PROJECT, path="/zulip")
-        self.assertEqual(ctx.exception.reason, "exit-1")
-        self.assertNotIn("sentinel-leak", str(ctx.exception))
 
-    def test_a_cli_that_is_not_installed_is_cli_missing(self):
-        self.fake.bin_dir.joinpath("infisical").unlink()
-        with self.assertRaises(source.FetchFailed) as ctx:
-            source.fetch_named(("A",), project_id=PROJECT, path="/zulip")
-        self.assertEqual(ctx.exception.reason, "cli-missing")
+        self.assertEqual(ctx.exception.reason, "scoped-read-failed")
+        self.assertNotIn("sentinel", str(ctx.exception))
+        self.assertEqual(len(self.helper.calls), 1)
 
-    def test_garbage_output_is_bad_output(self):
-        self.fake.set(mode="garbage")
-        with self.assertRaises(source.FetchFailed) as ctx:
-            source.fetch_named(("A",), project_id=PROJECT, path="/zulip")
-        self.assertEqual(ctx.exception.reason, "bad-output")
+    def test_unresolved_bare_reference_fails_closed_but_embedded_reference_is_data(self):
+        from os import environ
 
-    def test_the_cli_not_found_placeholder_means_absent(self):
-        # `infisical secrets get` exits 0 and answers an unknown name with "*not found*".
-        self.fake.set(shape="api", secrets={"A": "real", "B": "*not found*"})
-        got = source.fetch_named(("A", "B"), project_id=PROJECT, path="/zulip")
-        self.assertEqual(got, {"A": "real"})
-
-    def test_a_bare_reference_that_survived_expansion_fails_closed_without_echoing_it(self):
-        self.fake.set(shape="api", secrets={"A": "${prod.global-api-keys.SENTINEL_REF_7c1e}"})
+        environ[source.ENV_KNOBS_TOKEN] = TOKEN
+        self.helper.result = {"A": "${prod.some-folder.SENTINEL_REF}"}
         with self.assertRaises(source.FetchFailed) as ctx:
             source.fetch_named(("A",), project_id=PROJECT, path="/zulip")
         self.assertEqual(ctx.exception.reason, "unresolved-reference")
-        self.assertNotIn("SENTINEL_REF_7c1e", str(ctx.exception))
+        self.assertNotIn("SENTINEL_REF", str(ctx.exception))
 
-    def test_a_value_that_merely_contains_a_reference_is_not_flagged(self):
-        self.fake.set(shape="api", secrets={"A": "prefix-${prod.a.B}"})
+        self.helper.result = {"A": "prefix-${prod.some-folder.B}"}
         self.assertEqual(
             source.fetch_named(("A",), project_id=PROJECT, path="/zulip"),
-            {"A": "prefix-${prod.a.B}"},
+            {"A": "prefix-${prod.some-folder.B}"},
         )

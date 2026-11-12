@@ -3,10 +3,10 @@
 
     python3 scripts/test_check_ci_runner_policy.py
 
-Pins policy_states_ban() against AGENT-SYNC.md's CI Runners ban line and scan_inventory().
+Pins policy_states_ban() against AGENTS.md's CI runners ban line and scan_inventory().
 
 CI: .github/workflows/ci.yml runs this file in the step named
-``CI runner policy lint tracks AGENT-SYNC ban text``.
+``CI runner policy lint tracks the AGENTS.md ban text``.
 """
 
 from __future__ import annotations
@@ -32,13 +32,13 @@ def _load():
 
 
 mod = _load()
-# The document was renamed:  the mirror carries one name now, and the old one is gone.
-AGENT_SYNC = (SCRIPTS.parent / "FLEET-PROTOCOL.md").read_text()
+# The ban lives in AGENTS.md;  the FLEET-PROTOCOL.md mirror is a tools manual now.
+AGENTS = (SCRIPTS.parent / "AGENTS.md").read_text()
 
 
 class PolicyBan(unittest.TestCase):
-    def test_live_agent_sync_states_ban(self) -> None:
-        self.assertTrue(mod.policy_states_ban(AGENT_SYNC))
+    def test_live_agents_md_states_ban(self) -> None:
+        self.assertTrue(mod.policy_states_ban(AGENTS))
 
     def test_current_wording_without_markdown(self) -> None:
         self.assertTrue(
@@ -65,9 +65,9 @@ class ScanInventory(unittest.TestCase):
         self.assertEqual(mod.scan_inventory(row), [])
 
 
-class DefaultPolicyRename(unittest.TestCase):
-    def test_default_policy_resolves_to_the_current_document(self) -> None:
-        self.assertEqual(mod.DEFAULT_POLICY.name, "FLEET-PROTOCOL.md")
+class DefaultPolicy(unittest.TestCase):
+    def test_default_policy_resolves_to_agents_md(self) -> None:
+        self.assertEqual(mod.DEFAULT_POLICY.name, "AGENTS.md")
         self.assertTrue(mod.DEFAULT_POLICY.is_file())
 
 

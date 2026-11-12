@@ -11,5 +11,5 @@ a pre-read, not atomic with repository settings.  Malformed successful write rec
 stay UNKNOWN; malformed pre-read is definitely unsent.  No file was deleted to test
 this source.  Source capability is not authority to delete user files.
 
-Standalone rename and workflow-file writes remain unimplemented.
+Bounded standalone rename is implemented separately in FILE-RENAME.md. Workflow-file writes remain unimplemented.
 Schema: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json

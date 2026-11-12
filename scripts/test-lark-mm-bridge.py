@@ -101,7 +101,7 @@ def make_args(argv=None, **overrides):
     # The seat inbox is the real one on this Mac, so the suite writes to a
     # temp root instead: a test that ran a turn must not leave a row in the
     # seat's own queue.
-    args.agent_sync_root = _TEST_ROOT
+    args.simple_tools_root = _TEST_ROOT
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
@@ -1000,13 +1000,13 @@ class BridgeTests(unittest.TestCase):
     def test_lark_exchange_lands_in_the_seat_inbox(self):
         import tempfile
 
-        from agent_sync import live as L
+        from simple_tools import live as L
 
         with tempfile.TemporaryDirectory() as root:
             bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
             bridge.args = make_args(seat="MM")
             bridge.args.seat = "MM"
-            bridge.args.agent_sync_root = root
+            bridge.args.simple_tools_root = root
             bridge._record_in_seat_inbox(
                 "oc_6ca9549d8ed34274afc4e50108eb1754",
                 "om_1",
@@ -2248,11 +2248,11 @@ class LarkSurfaceTests(unittest.TestCase):
         self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"outcome": "ok"})
 
     def test_a_signal_turn_is_attributed_to_the_operator(self):
-        from agent_sync import live as L
+        from simple_tools import live as L
 
         with tempfile.TemporaryDirectory() as root:
             bridge = self.make_bridge()
-            bridge.args.agent_sync_root = root
+            bridge.args.simple_tools_root = root
             bridge.args.seat = "MM"
             bridge._record_in_seat_inbox(
                 "oc_1",

@@ -30,10 +30,35 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+// Failures the in-test origin must never produce: aborted subresources
+// (missing files), console errors, and uncaught page exceptions.  Collected
+// here so specs can assert the page was fully clean (this would have caught
+// the stale digest's missing agent-logos/app-harness.png).
+const errorsKey = '__serveRepoErrors';
+
+export function serveErrors(page: Page): string[] {
+  return (page as unknown as Record<string, string[]>)[errorsKey] ?? [];
+}
+
 export async function serveRepo(
   page: Page,
   opts: { stripMetaRefresh?: boolean; deferMetaRefresh?: boolean } = {},
 ): Promise<void> {
+  (page as unknown as Record<string, string[]>)[errorsKey] = [];
+  const errors = serveErrors(page);
+  page.on('requestfailed', (request) => {
+    errors.push(
+      `requestfailed: ${request.url()} ${request.failure()?.errorText ?? ''}`.trim(),
+    );
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error') {
+      errors.push(`console.error: ${message.text()}`);
+    }
+  });
+  page.on('pageerror', (error) => {
+    errors.push(`pageerror: ${error.message}`);
+  });
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== TEST_ORIGIN) {

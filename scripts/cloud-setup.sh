@@ -11,9 +11,9 @@
 # What it does beyond the registry check: a cloud seat has no `fleet-secrets` (the Mac's credential source),
 # so without help it hits the Cloudflare Access login page on recall.jays.services and
 # concludes the fleet corpus is unreachable.  When the sandbox injects an Infisical
-# machine identity into the ENVIRONMENT, this script provisions the three recall
+# recall-scoped service token, this script provisions the three recall
 # credentials into a 0600 env file and registers the remote MCP server — with header
-# PLACEHOLDERS, never values.  With no identity it says so and still exits 0: this repo
+# PLACEHOLDERS, never values.  With no scoped token it says so and still exits 0: this repo
 # is docs/infra, and setup must not fail a sandbox.
 #
 #   bash scripts/cloud-setup.sh            # set up
@@ -29,7 +29,7 @@ FETCH="scripts/fleet-infisical-fetch.py"
 SERVER_NAME="fleet-recall"
 MCP_URL="https://recall.jays.services/mcp"
 KEYS=(RECALL_API_TOKEN CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET)
-IDENTITY_PREFIXES=(INFISICAL_SHARED INFISICAL_AUTOMATION)
+TOKEN_ENV="FLEET_RECALL_INFISICAL_TOKEN"
 DOC="docs/RECALL-ACCESS-CHECK.md"
 
 MODE="setup"
@@ -37,15 +37,10 @@ if [[ "${1:-}" == "--check" ]]; then MODE="check"; fi
 
 # ---------------------------------------------------------------- helpers
 
-# identity_prefix -> echoes the prefix whose *_CLIENT_ID and *_CLIENT_SECRET are both set
-# in the environment (names only; a value never reaches stdout).  Empty when there is none.
-identity_prefix() {
-  local p id sec
-  for p in "${IDENTITY_PREFIXES[@]}"; do
-    id="${p}_CLIENT_ID"; sec="${p}_CLIENT_SECRET"
-    if [[ -n "${!id:-}" && -n "${!sec:-}" ]]; then printf '%s' "$p"; return 0; fi
-  done
-  return 0
+# have_service_token -> true only for a well-shaped scoped token (never prints its value).
+have_service_token() {
+  local token="${!TOKEN_ENV:-}"
+  [[ "$token" =~ ^st\.[^[:space:]]{17,2045}$ ]]
 }
 
 # env_file_has <KEY> -> 0 when the env file assigns that key a non-empty value.
@@ -77,11 +72,10 @@ PY
 
 if [[ "$MODE" == "check" ]]; then
   echo "==> fleet recall access check (names and booleans only)"
-  prefix="$(identity_prefix)"
-  if [[ -n "$prefix" ]]; then
-    echo "    infisical identity in environment: true ($prefix)"
+  if have_service_token; then
+    echo "    recall-scoped Infisical service token: true ($TOKEN_ENV)"
   else
-    echo "    infisical identity in environment: false"
+    echo "    recall-scoped Infisical service token: false"
   fi
   if [[ -f "$ENV_FILE" ]]; then
     mode="$(python3 -c 'import os,sys;print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$ENV_FILE")"
@@ -107,13 +101,12 @@ echo "==> Checking fleet registry"
 python3 scripts/check-fleet-registry.py || echo "==> registry check skipped (ok if extra local-only files)"
 
 echo "==> Fleet recall credentials"
-PREFIX="$(identity_prefix)"
 HAVE_CREDS=0
-if [[ -z "$PREFIX" ]]; then
-  echo "    no Infisical machine identity in the environment"
-  echo "    (looked for ${IDENTITY_PREFIXES[0]}_CLIENT_ID/_CLIENT_SECRET and ${IDENTITY_PREFIXES[1]}_CLIENT_ID/_CLIENT_SECRET)"
+if ! have_service_token; then
+  echo "    no valid recall-scoped Infisical service token in the environment"
+  echo "    (expected $TOKEN_ENV)"
 elif env_file_has "${KEYS[0]}" && env_file_has "${KEYS[1]}" && env_file_has "${KEYS[2]}"; then
-  echo "    identity: true ($PREFIX)"
+  echo "    service token: true ($TOKEN_ENV)"
   echo "    $ENV_FILE: unchanged (${KEYS[*]})"
   HAVE_CREDS=1
 else
@@ -212,8 +205,7 @@ if [[ "$HAVE_CREDS" == "1" ]]; then
 else
   echo "    No recall credentials were provisioned, so the fleet corpus is NOT reachable"
   echo "    from this sandbox yet.  A 302 to a Cloudflare login page is the symptom."
-  echo "    Fix: inject an Infisical machine identity into this sandbox's environment as"
-  echo "    ${IDENTITY_PREFIXES[0]}_CLIENT_ID / ${IDENTITY_PREFIXES[0]}_CLIENT_SECRET and re-run this"
+  echo "    Fix: bind a scoped read token for the Recall project and path to $TOKEN_ENV, then re-run this"
   echo "    script — through a private path, NOT the cloud environment-variables dialog,"
   echo "    which anyone who can open it can read.  Manual fallback: $DOC."
 fi

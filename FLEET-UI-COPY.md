@@ -209,6 +209,7 @@ the gap BETWEEN sentences.)
 - **Claude Code Code tab and MiniMax Code chat panes (the one exception, owner ruling 2026-10-23):**
   the `&nbsp;` entity plus a normal space, outside code spans.  These panes normalize a raw U+00A0 away and collapse two ASCII spaces, so the entity is the form that renders a real gap there
   (owner-verified 2026-10-08 with a screenshot for the Code tab and 2026-10-18 for the MiniMax Code pane, and confirmed by the owner for both on 2026-10-24).
+- **Apple Note bodies (no exception):**  a note in the Coding folder, written by `scripts/apple-notes-coding.sh`, takes the same real U+00A0 plus a normal space as every other surface.  Notes turns the no-break space into an ordinary space on import and still shows the pair as a wide gap (measured Oct 29, 2026).
 - **Chat replies in every other pane, Zulip, Linear, Slack, cloud and BotFleet chat:**  a real U+00A0 plus a
   space.  If a pane strips it, leave the text as it is, report the pane, and do not switch to the entity.
 - **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts**
@@ -261,7 +262,7 @@ while GitHub, Zulip, docs and UI text take a real U+00A0 plus a space.  Also no
 worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
-code signing and is wiped by auto-update; do not attempt).  (Two literal ASCII spaces in chat
+code signing and is wiped by auto-update; do not attempt).  (History only — two literal ASCII spaces in chat
 were logged here as not working on 2026-08-19, and they still do not work in the Code tab
 (re-confirmed 2026-10-08); the Code tab and the MiniMax Code pane use the entity instead — see
 "HOW to emit it" above.)

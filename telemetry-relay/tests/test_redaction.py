@@ -1,4 +1,5 @@
-"""Relay blocked_values stay in lockstep with scripts/agent_sync/secretscan.py."""
+"""Relay blocked_values stay in lockstep with scripts/simple_tools/secretscan.py."""
+
 from __future__ import annotations
 
 import re
@@ -9,12 +10,16 @@ from pathlib import Path
 from relay_common import SCRIPTS, block, config_text
 
 sys.path.insert(0, str(SCRIPTS))
-from agent_sync.secretscan import scan  # noqa: E402
+from simple_tools.secretscan import scan
 
 
 def _canon(pattern: str) -> str:
     """Python raw-string vs YAML quote escaping (`\\"` vs `"`) is the same regex."""
-    return pattern.replace('\\"', '"').replace("\\'", "'")
+    normalized = pattern.replace('\\"', '"').replace("\\'", "'")
+    # The scanner's trailing value capture is metadata for source-expression
+    # classification. Collector masking deliberately keeps the stricter raw
+    # pattern, without that scanner-only classification or capture metadata.
+    return re.sub(r"\(\?P<value>(\[[^\]]+\]\{[0-9]+,\})\)$", r"\1", normalized)
 
 
 # Patterns that cannot be transcribed 1:1 into the collector's RE2
@@ -26,7 +31,7 @@ _DIVERGENCES = {
 
 
 def _secretscan_raw_patterns() -> list[str]:
-    src = (SCRIPTS / "agent_sync" / "secretscan.py").read_text(encoding="utf-8")
+    src = (SCRIPTS / "simple_tools" / "secretscan.py").read_text(encoding="utf-8")
     chunk = src[src.index("_PATTERNS") : src.index("_ZULIP_SHAPED")]
     # File text, not eval: r"\b..." in the source is backslash + b, which is the pattern.
     found = re.findall(r're\.compile\(r("(?:\\.|[^"\\])*")\)', chunk)
@@ -70,6 +75,16 @@ class RedactionParityTests(unittest.TestCase):
                 % pattern,
             )
 
+    def test_capture_normalization_preserves_literal_matching_boundaries(self) -> None:
+        raw = r"token=[A-Za-z0-9]{16,}"
+        captured = r"token=(?P<value>[A-Za-z0-9]{16,})"
+        self.assertEqual(_canon(captured), raw)
+        self.assertNotEqual(_canon(captured.replace("16", "8")), raw)
+        self.assertNotEqual(_canon(captured.replace("value", "other")), raw)
+        self.assertNotEqual(_canon(captured + "suffix"), raw)
+        for text in ("token=" + "a" * 16, "token=" + "a" * 15, "ordinary"):
+            self.assertEqual(bool(re.search(raw, text)), bool(re.search(captured, text)))
+
     def test_github_and_coolify_standins_are_present(self) -> None:
         self.assertIn(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b", self.blocked)
         self.assertIn(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b", self.blocked)
@@ -108,7 +123,7 @@ class RedactionParityTests(unittest.TestCase):
 class SecretscanSourceTests(unittest.TestCase):
     def test_relay_imports_the_repo_copy(self) -> None:
         path = Path(scan.__code__.co_filename).resolve()
-        self.assertEqual(path, (SCRIPTS / "agent_sync" / "secretscan.py").resolve())
+        self.assertEqual(path, (SCRIPTS / "simple_tools" / "secretscan.py").resolve())
 
 
 if __name__ == "__main__":

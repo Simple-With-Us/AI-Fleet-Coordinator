@@ -31,6 +31,17 @@ ONE_HOME = ROOT / "docs" / "fleet-skills" / "sentence-gap" / "SKILL.md"
 # The pattern a converter is written as:  a perl substitution with a sentence-end group.
 _PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
 
+# Follow-on substitutions that run on a body that is already converted and create no
+# gap of their own, so they are not converters and carry no markup group.  Each one is
+# named exactly:  any other substitution is still counted as a converter and asserted,
+# so a gap-writer spelled some new way cannot slip past the markup-group checks.
+_NON_GAP_STEPS = frozenset(
+    {
+        # Apple Notes:  turn an existing NBSP gap into a narrow NBSP.
+        r"s/\x{a0} /\x{202f} /g",
+    }
+)
+
 # The markup group:  the characters that may sit between a sentence end and the space.
 _MARKUP_GROUP = r'((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)'
 
@@ -169,6 +180,12 @@ PROTOCOL_FILES = (
     ".cursor/rules/sentence-gap.mdc",
 )
 
+# The slim always-on Cursor rule keeps the pinned blocks but not the full shared region.
+PROTOCOL_FILES_IDENTICAL_REGION = (
+    "docs/fleet-skills/sentence-gap/SKILL.md",
+    "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
+)
+
 REQUIRED_BLOCKS = (
     "**Source files are a different surface and are NOT affected.**",
     "Two more traps, both hit 2026-10-18:",
@@ -203,6 +220,20 @@ SHAPES = (
 )
 
 NBSP = " "
+
+# AFC-510 (owner Nov 1 2026):  no gap when a sentence ends at a line break, a blank line,
+# or the end of the text.  The composite body holds (a) a newline between sentences,
+# (b) a blank line between paragraphs, and a same-line pair that must still convert.
+LINE_END_UNCHANGED_PREFIX = (
+    "First sentence.\nNext sentence.\n\nEnd of paragraph.\n\nNew paragraph.\n"
+)
+LINE_END_SAME_LINE_PAIR = "Same line.  Gapped here.\n"
+LINE_END_COMPOSITE_BODY = LINE_END_UNCHANGED_PREFIX + LINE_END_SAME_LINE_PAIR
+
+EOF_LINE_END_BODIES = (
+    ("no_trailing_newline", "Ends at text."),
+    ("trailing_newline", "Ends at text.\n"),
+)
 
 # The converter runs through perl, because that is how the fleet produces the gap.
 HAVE_PERL = shutil.which("perl") is not None
@@ -273,8 +304,9 @@ def run_grep(command: str) -> int:
 
 
 def patterns_in(text: str) -> list[str]:
-    """Every converter pattern a text holds, in the order it holds them."""
-    return _PATTERN_RE.findall(text)
+    """Every converter pattern a text holds, in the order it holds them.  The named
+    follow-on steps in _NON_GAP_STEPS are skipped;  every other substitution counts."""
+    return [p for p in _PATTERN_RE.findall(text) if p not in _NON_GAP_STEPS]
 
 
 def one_home_patterns() -> list[str]:
@@ -421,6 +453,61 @@ class ConverterBehaviourTests(unittest.TestCase):
     def test_a_body_with_no_gaps_at_all_still_converts(self) -> None:
         out = convert(self.pattern, "First.  Second.  Third.\n")
         self.assertEqual(out.count(NBSP), 2)
+
+    def test_line_end_closes_stay_byte_for_byte_and_same_line_still_gaps(self) -> None:
+        """AFC-510:  newline and blank-line sentence ends take no gap;  same-line still does."""
+        body = LINE_END_COMPOSITE_BODY
+        out = convert(self.pattern, body)
+        self.assertEqual(
+            out[: len(LINE_END_UNCHANGED_PREFIX)],
+            LINE_END_UNCHANGED_PREFIX,
+            "line-break and paragraph-end closes must stay byte for byte",
+        )
+        self.assertEqual(out.count(NBSP), 1, "only the same-line pair may gain a gap")
+        self.assertIn(
+            "Same line." + NBSP + " Gapped here.",
+            out,
+            "the same-line pair in the same body must still convert",
+        )
+
+    def test_eof_sentence_closes_stay_byte_for_byte(self) -> None:
+        """AFC-510:  a sentence at end of text, with or without a trailing newline, stays alone."""
+        for name, body in EOF_LINE_END_BODIES:
+            with self.subTest(case=name):
+                out = convert(self.pattern, body)
+                self.assertEqual(out, body, "end-of-text closes must not gain a gap")
+                self.assertNotIn(NBSP, out)
+
+
+@unittest.skipUnless(HAVE_PERL and HAVE_BASH, "perl or bash is not on PATH")
+class LineEndAssertionTests(unittest.TestCase):
+    """AFC-510:  the shipped leftover check must not flag line-end closes as missed gaps."""
+
+    def setUp(self) -> None:
+        with open(ONE_HOME, encoding="utf-8") as fh:
+            text = fh.read()
+        self.pattern = one_home_patterns()[0]
+        _, self.leftover_pattern = assertion_patterns(text)
+
+    def _leftover_command(self, path: Path) -> str:
+        return "grep -cE $'%s' '%s'" % (self.leftover_pattern, path)
+
+    def test_converted_line_end_bodies_carry_no_leftover(self) -> None:
+        bodies = (
+            LINE_END_COMPOSITE_BODY,
+            "First.\nSecond.\n\nThird.\n",
+        ) + tuple(body for _, body in EOF_LINE_END_BODIES)
+        for body in bodies:
+            with self.subTest(body=body.split("\n", 1)[0]):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "body.nbsp.txt"
+                    path.write_text(convert(self.pattern, body), encoding="utf-8")
+                    leftover = run_grep(self._leftover_command(path))
+                self.assertEqual(
+                    leftover,
+                    0,
+                    "line-end closes must not read as a missed same-line gap",
+                )
 
 
 @unittest.skipUnless(HAVE_GIT, "git is not on PATH")
@@ -755,6 +842,26 @@ class AssertionCommandTests(unittest.TestCase):
                 )
 
 
+class PatternExtractionTests(unittest.TestCase):
+    """Only the named follow-on NBSP step is skipped;  every other substitution counts."""
+
+    def test_only_the_named_follow_on_step_is_not_a_converter(self) -> None:
+        text = (
+            "perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z])/$1\\x{a0} /g' body.txt\n"
+            "perl -CSDA -pe 's/\\x{a0} /\\x{202f} /g' body.nbsp.txt\n"
+            "perl -CSDA -pe 's/([?!.])\\s+(?=[A-Z])/$1\\x{a0} /g' body.txt\n"
+            "perl -CSDA -pe 's/ +/\\x{a0} /g' body.txt\n"
+        )
+        self.assertEqual(
+            patterns_in(text),
+            [
+                "s/(?<![0-9])([.!?]) +(?=[A-Z])/$1\\x{a0} /g",
+                "s/([?!.])\\s+(?=[A-Z])/$1\\x{a0} /g",
+                "s/ +/\\x{a0} /g",
+            ],
+        )
+
+
 class GeneratedMirrorTests(unittest.TestCase):
     """FLEET-PROTOCOL.md is the file every seat reads first, so it is asserted, not skipped.
 
@@ -881,6 +988,24 @@ class GeneratedMirrorTests(unittest.TestCase):
                 )
 
 
+def entity_body_from_nbsp(body: str) -> str:
+    """The entity-mode bytes that match a real-byte converted body."""
+    return body.replace("\u00a0 ", "&nbsp; ")
+
+
+RAW_LINK_BODY = "[Sentence.](https://example.com) Next sentence.\n"
+
+
+def write_assertion_fixtures(tmp: str, nbsp_body: str) -> None:
+    """The files the documented assertion blocks name."""
+    root = Path(tmp)
+    for name in ("reply.txt", "body.nbsp.txt"):
+        (root / name).write_text(nbsp_body, encoding="utf-8")
+    # The raw body the documented `gap.pl` recipe converts.
+    (root / "body.txt").write_text(RAW_LINK_BODY, encoding="utf-8")
+    (root / "body.entity.txt").write_text(entity_body_from_nbsp(nbsp_body), encoding="utf-8")
+
+
 @unittest.skipUnless(HAVE_BASH and HAVE_PERL, "bash and perl are required")
 class DocumentationExecutionTests(unittest.TestCase):
     def test_actual_documented_grep_blocks_execute_as_copied(self):
@@ -896,8 +1021,11 @@ class DocumentationExecutionTests(unittest.TestCase):
                 script = "\n".join(line.removeprefix(indent) for line in block.splitlines())
                 with tempfile.TemporaryDirectory() as tmp:
                     body = convert(canonical, "[Sentence.](https://example.com) Next sentence.\n")
-                    for name in ("reply.txt", "body.nbsp.txt"):
-                        (Path(tmp) / name).write_text(body, encoding="utf-8")
+                    write_assertion_fixtures(tmp, body)
+                    if "body.entity.prose.txt" in block:
+                        entity = (Path(tmp) / "body.entity.txt").read_text(encoding="utf-8")
+                        prose = re.sub(r"(`+)([^\n]*?)\1", " ", entity)
+                        (Path(tmp) / "body.entity.prose.txt").write_text(prose, encoding="utf-8")
                     proc = subprocess.run(
                         ["bash", "-c", script],
                         cwd=tmp,
@@ -911,6 +1039,9 @@ class DocumentationExecutionTests(unittest.TestCase):
                     self.assertTrue(
                         all(line.strip().isdigit() for line in proc.stdout.splitlines()), rel
                     )
+                    if "cat > gap.pl" in block:
+                        # The recipe's cmp lines are silent and its entity leftover is 0.
+                        self.assertEqual(proc.stdout.split(), ["0"], rel + ": gap.pl recipe")
             self.assertGreater(checked, 0, rel + " has no executable assertion block")
 
     def test_each_documented_grep_pair_detects_link_boundaries(self):
@@ -920,6 +1051,8 @@ class DocumentationExecutionTests(unittest.TestCase):
             text = (ROOT / rel).read_text(encoding="utf-8")
             blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.DOTALL)
             for _, block in blocks:
+                if "cat > gap.pl" in block:
+                    continue
                 commands = [
                     line.strip().split(" #", 1)[0].rstrip()
                     for line in block.splitlines()
@@ -927,12 +1060,18 @@ class DocumentationExecutionTests(unittest.TestCase):
                 ]
                 if not commands:
                     continue
-                self.assertEqual(len(commands), 2, rel)
+                if len(commands) not in (2, 3):
+                    continue
                 with tempfile.TemporaryDirectory() as tmp:
                     for fixed in (False, True):
                         body = convert(canonical, raw) if fixed else raw
-                        for name in ("reply.txt", "body.nbsp.txt"):
-                            (Path(tmp) / name).write_text(body, encoding="utf-8")
+                        write_assertion_fixtures(tmp, body)
+                        if "body.entity.prose.txt" in block:
+                            entity = (Path(tmp) / "body.entity.txt").read_text(encoding="utf-8")
+                            prose = re.sub(r"(`+)([^\n]*?)\1", " ", entity)
+                            (Path(tmp) / "body.entity.prose.txt").write_text(
+                                prose, encoding="utf-8"
+                            )
                         values = []
                         for command in commands:
                             proc = subprocess.run(
@@ -945,12 +1084,22 @@ class DocumentationExecutionTests(unittest.TestCase):
                             self.assertIn(proc.returncode, (0, 1), rel + proc.stderr)
                             self.assertEqual(proc.stderr, "", rel)
                             values.append(int(proc.stdout.strip()))
-                        if fixed:
-                            self.assertGreater(values[0], 0, rel)
-                            self.assertEqual(values[1], 0, rel)
+                        if len(commands) == 2:
+                            if fixed:
+                                self.assertGreater(values[0], 0, rel)
+                                self.assertEqual(values[1], 0, rel)
+                            else:
+                                self.assertEqual(values[0], 0, rel)
+                                self.assertGreater(values[1], 0, rel)
                         else:
-                            self.assertEqual(values[0], 0, rel)
-                            self.assertGreater(values[1], 0, rel)
+                            if fixed:
+                                self.assertGreater(values[0], 0, rel)
+                                self.assertGreater(values[1], 0, rel)
+                                self.assertEqual(values[2], 0, rel)
+                            else:
+                                self.assertEqual(values[0], 0, rel)
+                                self.assertEqual(values[1], 0, rel)
+                                self.assertGreater(values[2], 0, rel)
 
     def test_link_conversion_and_both_assertions_agree(self):
         text = ONE_HOME.read_text(encoding="utf-8")
@@ -993,7 +1142,7 @@ class ProtocolContentTests(unittest.TestCase):
     def test_the_protocol_region_is_byte_identical_across_the_three(self) -> None:
         """Making the three agree must not cost any of them content."""
         regions = {}
-        for rel in PROTOCOL_FILES:
+        for rel in PROTOCOL_FILES_IDENTICAL_REGION:
             text = (ROOT / rel).read_text(encoding="utf-8")
             start = text.index(PROTOCOL_REGION_START)
             end = text.index(PROTOCOL_REGION_END, start)

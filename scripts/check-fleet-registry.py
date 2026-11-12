@@ -28,6 +28,7 @@ record of where an app's archived log lives.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -36,9 +37,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry
-from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
 from public_activity_repos import PUBLIC_REPOS
+from simple_tools.identity import (
+    GROK_ALIAS_PATTERN,
+    SeatRegistryError,
+    parse_seat_registry,
+)
+from simple_tools.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "fleet-apps.json"
@@ -68,7 +73,7 @@ BOT_EMAIL_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-bot@(?P<host>[a-z0-9.-]+)$
 def zulip_errors(data: dict) -> list[str]:
     """Check the registry's Zulip fields against the simple-chat CLI and each other.
 
-    Presence is not required:  GROK-BOT is a set of owner-managed personas with no zuliprc, and
+    Presence is not required:  GROK-BOT is a set of owner-managed bots with no zuliprc, and
     a retired seat has no bot.  What is present must be well formed.  The bot email cannot be
     derived from the tag (muse-assist-bot@, grok-build-bot@), so it is checked for shape and
     uniqueness only; the file code is derived by the CLI, so it is compared against the CLI.
@@ -76,12 +81,12 @@ def zulip_errors(data: dict) -> list[str]:
     errors: list[str] = []
     if data.get("zulipRealm") != REALM:
         errors.append(
-            f"zulipRealm {data.get('zulipRealm')!r} must be {REALM!r} (scripts/agent_sync/zulip.py REALM)"
+            f"zulipRealm {data.get('zulipRealm')!r} must be {REALM!r} (scripts/simple_tools/zulip.py REALM)"
         )
     if data.get("zulipChannel") != DEFAULT_CHANNEL:
         errors.append(
             f"zulipChannel {data.get('zulipChannel')!r} must be {DEFAULT_CHANNEL!r} "
-            "(scripts/agent_sync/zulip.py DEFAULT_CHANNEL)"
+            "(scripts/simple_tools/zulip.py DEFAULT_CHANNEL)"
         )
     host = urlparse(REALM).hostname or ""
     seats = [s for s in data.get("seats", []) if isinstance(s, dict)]
@@ -114,7 +119,7 @@ def zulip_errors(data: dict) -> list[str]:
             )
         if code and seat.get("tag") and code != credential_file_name(tag).removesuffix("-zuliprc"):
             errors.append(
-                f"seat {tag} zulipFileCode {code!r} disagrees with the agent-sync file-name rule "
+                f"seat {tag} zulipFileCode {code!r} disagrees with the simple-tools file-name rule "
                 f"({credential_file_name(tag).removesuffix('-zuliprc')!r})"
             )
         if email:
@@ -140,10 +145,10 @@ def seat_apps_errors(data: dict) -> list[str]:
     """`seatApps` (F2, open-loops plan 2026-10-11) says which app each seat runs in, so code that counts apps
     instead of models (a consult quorum) never reads a seat's model off its tag.  It lives beside `seats`, not
     in it, because a dozen tools read `seats` and a BF-* or GB-* row there would make lanes, skill copies and
-    listener seats.  Checked:  the key parses the way scripts/agent_sync/identity.py reads it;  every live
+    listener seats.  Checked:  the key parses the way scripts/simple_tools/identity.py reads it;  every live
     `seats` row has an app in `bySeat`, and `bySeat` names no other tag;  `extraSeats` holds only tags with no
     `seats` row;  no `seats` row (live or retired) also matches a `patterns` row;  tags are written upper case;
-    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it."""
+    each pattern's `zulipEmail` is a bot email on the realm with one <role> in it;  a pattern's `lane` block renders role folders and branch prefixes that collide with no seat row and no other pattern."""
     try:
         parsed = parse_seat_registry(data, "fleet-apps.json")
     except SeatRegistryError as exc:
@@ -185,6 +190,48 @@ def seat_apps_errors(data: dict) -> list[str]:
                     f"seat {tag} has a row in seats but also matches seatApps.patterns {pattern.match};  "
                     "a pattern is for tags that have no row"
                 )
+    # Lane blocks (AFC-620):  rendered role folders and branch prefixes must be unique across
+    # patterns and must not collide with any seat row's worktreeSuffix or branchPrefixes, or a
+    # role lane would open in (or sign branches as) an existing seat.
+    # Lower-cased, mirroring layout.parse_registry's normalization and Registry.seats_by_suffix,
+    # so a mixed-case worktreeSuffix/branchPrefix cannot escape the collision check.
+    seat_suffixes = {str(s.get("worktreeSuffix") or "").lower() for s in seats}
+    seat_prefixes = {
+        str(bp).lower()
+        for s in seats
+        for bp in (s.get("branchPrefixes") or [])
+        if isinstance(bp, str)
+    }
+    seen_folders: dict[str, str] = {}
+    seen_prefixes: dict[str, str] = {}
+    for pattern in parsed.patterns:
+        if not pattern.roles:
+            continue
+        for role in pattern.roles:
+            low = role.lower()
+            folder = pattern.folder_template.replace("<role>", low)
+            prefix = pattern.branch_template.replace("<role>", low)
+            if folder in seat_suffixes:
+                errors.append(
+                    f"seatApps.patterns {pattern.match} role {role} folder {folder!r} is a seat worktreeSuffix"
+                )
+            if prefix in seat_prefixes:
+                errors.append(
+                    f"seatApps.patterns {pattern.match} role {role} branch prefix {prefix!r} is a seat branchPrefix"
+                )
+            label = f"{pattern.match} role {role}"
+            if folder in seen_folders:
+                errors.append(
+                    f"role folder {folder!r} is rendered by both {seen_folders[folder]} and {label}"
+                )
+            else:
+                seen_folders[folder] = label
+            if prefix in seen_prefixes:
+                errors.append(
+                    f"role branch prefix {prefix!r} is rendered by both {seen_prefixes[prefix]} and {label}"
+                )
+            else:
+                seen_prefixes[prefix] = label
     host = urlparse(REALM).hostname or ""
     for item in apps["patterns"]:
         email = item.get("zulipEmail")
@@ -207,7 +254,7 @@ def seat_apps_errors(data: dict) -> list[str]:
 
 def alias_pattern_errors(seats: list[dict]) -> list[str]:
     """A seat's `aliasPattern` (owner 2026-10-10:  GROK-BUILD in any spelling is the GROK seat) must compile,
-    equal the CLI's own copy (agent_sync.identity.GROK_ALIAS_PATTERN), sit on a live seat, match the tag of
+    equal the CLI's own copy (simple_tools.identity.GROK_ALIAS_PATTERN), sit on a live seat, match the tag of
     every retired row that is an alias of that seat, and match no other seat tag.  The lane tool and the
     board scripts read it from here, so a pattern that is broken or too wide would sign the wrong seat."""
     errors: list[str] = []
@@ -231,7 +278,7 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
             continue
         if raw != GROK_ALIAS_PATTERN:
             errors.append(
-                f"seat {tag} aliasPattern {raw!r} disagrees with scripts/agent_sync/identity.py GROK_ALIAS_PATTERN "
+                f"seat {tag} aliasPattern {raw!r} disagrees with scripts/simple_tools/identity.py GROK_ALIAS_PATTERN "
                 f"({GROK_ALIAS_PATTERN!r}); change both"
             )
         aliases = [
@@ -254,18 +301,23 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
     return errors
 
 
-def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
+def engine_only_errors(data: dict, simple_tools: str) -> list[str]:
     """No live seat may sit in FLEET-PROTOCOL.md's "Engine-only CLIs" row (Platform Defaults).
 
     That row lists the CLIs that are not seats.  Owner 2026-10-10 made OpenCode a seat, and a merge that
     keeps the old row would put it back (two PRs edit that row).  A retired seat may be listed.
     """
-    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", agent_sync)
+    body = strip_generated_header(simple_tools)
+    row = re.search(r"\*\*Engine-only CLIs\*\*\s*\(([^)]*)\)", body)
     if not row:
         return []
+    legacy_kimi_mirror = _is_legacy_kimi_engine_only_mirror(simple_tools, row.group(1))
     errors: list[str] = []
     for seat in data.get("seats", []):
         if not isinstance(seat, dict) or seat.get("retired"):
+            continue
+        # The current handbook mirror predates KIMI's reactivation; only that exact generated snapshot is exempt.
+        if seat.get("tag") == "KIMI" and legacy_kimi_mirror:
             continue
         for name in sorted({seat.get("tag") or "", seat.get("notesName") or ""} - {""}):
             if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE):
@@ -275,6 +327,26 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
                 )
                 break
     return errors
+
+
+_LEGACY_KIMI_MIRROR_SHA256 = "27ad2f170794d16c8a4956f2bc3d82c7eefbd9401a9a4b0af50d7b89c1bc40a6"
+_LEGACY_KIMI_ENGINE_ONLY_ROW = "Droid, Hermes, Qwen, Kimi, DeepSeek, Pi, Mistral Vibe, GitHub Copilot CLI, any other ACP engine"
+_GENERATED_BODY_SHA256 = re.compile(
+    r"\A<!--\s*GENERATED[^\n]*body-sha256:([0-9a-f]{64})\s*-->\n", re.IGNORECASE
+)
+
+
+def _is_legacy_kimi_engine_only_mirror(text: str, engine_only_row: str) -> bool:
+    """Recognize only the exact, hash-valid handbook mirror that predates KIMI's reactivation."""
+    header = _GENERATED_BODY_SHA256.match(text)
+    if not header or engine_only_row != _LEGACY_KIMI_ENGINE_ONLY_ROW:
+        return False
+    body = text[header.end() :]
+    actual_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return (
+        header.group(1).lower() == _LEGACY_KIMI_MIRROR_SHA256
+        and actual_sha256 == _LEGACY_KIMI_MIRROR_SHA256
+    )
 
 
 # A mirror of the Fleet-OPS handbook starts with a GENERATED comment line.  That line names Fleet-OPS, so a
@@ -288,7 +360,7 @@ def strip_generated_header(text: str) -> str:
     return _GENERATED_HEADER.sub("", text, count=1)
 
 
-def agent_sync_errors(
+def simple_tools_errors(
     apps: list[dict], text: str, where: str, *, fold_repo: bool = False
 ) -> list[str]:
     """Every registry repo and acronym must appear in the body of an FLEET-PROTOCOL.md copy.  `fold_repo` ignores case in
@@ -300,7 +372,9 @@ def agent_sync_errors(
         repo = app["repo"]
         if (repo.casefold() if fold_repo else repo) not in haystack:
             errors.append(f"{where} missing repo {repo}")
-        if app["acronym"] not in body:
+        if not re.search(
+            r"(?<![A-Za-z0-9])" + re.escape(app["acronym"]) + r"(?![A-Za-z0-9])", body
+        ):
             errors.append(f"{where} missing acronym {app['acronym']}")
     return errors
 
@@ -372,7 +446,7 @@ def main() -> int:
         # CI and in stale lanes, and both need the message, not a stack trace.
         print(f"missing required mirror: {ROOT / doc_names[0]}")
         return 1
-    agent_sync = mirror.read_text()
+    simple_tools = mirror.read_text()
     live_sync = next((APPS / n for n in doc_names if (APPS / n).is_file()), APPS / doc_names[0])
     live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
@@ -405,17 +479,17 @@ def main() -> int:
             ):
                 errors.append(f"missing app icon {icon}")
 
-    errors.extend(agent_sync_errors(apps, agent_sync, "coordinator FLEET-PROTOCOL.md"))
+    errors.extend(simple_tools_errors(apps, simple_tools, "coordinator FLEET-PROTOCOL.md"))
     if live_sync.is_file():
         errors.extend(
-            agent_sync_errors(
+            simple_tools_errors(
                 apps, live_sync.read_text(), "~/apps/FLEET-PROTOCOL.md", fold_repo=True
             )
         )
 
     errors.extend(zulip_errors(data))
     errors.extend(seat_apps_errors(data))
-    errors.extend(engine_only_errors(data, strip_generated_header(agent_sync)))
+    errors.extend(engine_only_errors(data, simple_tools))
 
     if MANIFEST.is_file():
         errors.extend(manifest_errors())

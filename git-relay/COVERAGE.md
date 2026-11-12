@@ -4,7 +4,18 @@ This is an implementation checklist, not a claim of complete rollout or of worki
 accounts. Source review and focused tests qualify code. No new account setup or
 live verification is required to make this checklist honest.
 
-## Existing and in flight
+## Current qualification note (2026-10-28)
+
+The historical inventory below is not a current merge or rollout ledger. Many
+listed gaps now have code. Current-main command specs and per-family documents
+are the source inventory; an open reviewed PR is not merged code. This branch adds
+bounded regular-file rename (FILE-RENAME.md), not full GitHub coverage. Review-state
+holds on other PRs do not authorize dismissal or imply completion. Binary asset
+upload remains 180 KiB raw; general large binary support is incomplete. Relationship
+writes/transfer and broader repository/admin/configuration families still need
+source reconciliation before any completion claim. No deployment or live proof.
+
+## Historical inventory (not current status)
 
 - Original PR open/edit/comment/reply/thread resolution/merge/workflow dispatch.
 - Workflow source: PR list/files, contents/tree/branches/commits/code search,

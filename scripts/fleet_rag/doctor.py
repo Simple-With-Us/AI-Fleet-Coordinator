@@ -11,6 +11,7 @@ The digest lists agent contributions in a window grouped by app, then category, 
 Oracle routine and the owner's note.  It only reads (scroll with the recall_api filter, which
 carries the meta must_not).
 """
+
 from __future__ import annotations
 
 import datetime
@@ -22,7 +23,8 @@ import subprocess
 import urllib.error
 import urllib.request
 import zoneinfo
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import core, health, recall_api, search_log
 from .core import FleetRagError, now_ms
@@ -42,11 +44,21 @@ SSH_TIMEOUT = 30
 _CT = zoneinfo.ZoneInfo("America/Chicago")
 
 
-def _row(status: str, check: str, detail: str = "") -> dict:
-    return {"status": status, "check": check, "detail": detail}
+def _row(status: str, check: str, detail: str = "", hint: str = "") -> dict:
+    out: dict[str, str] = {"status": status, "check": check, "detail": detail}
+    if hint:
+        out["hint"] = hint
+    return out
+
+
+def _finalize_rows(rows: list[dict]) -> dict:
+    statuses = ("OK", "WARN", "FAIL", "SKIP")
+    counts = {s: sum(1 for r in rows if r["status"] == s) for s in statuses}
+    return {"rows": rows, "ok": counts["FAIL"] == 0, "counts": counts}
 
 
 # --------------------------------------------------------------------------- config files
+
 
 def mcp_config_paths(home: pathlib.Path) -> list[tuple[str, pathlib.Path, str, bool]]:
     """(label, path, kind, optional) for every MCP config the installer manages."""
@@ -83,7 +95,9 @@ def toml_has_server(path: pathlib.Path) -> bool | None:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    header = re.compile(r"^\s*\[\s*mcp_servers\.(?:\"?)" + re.escape(SERVER_NAME) + r"(?:\"?)\s*\]\s*$")
+    header = re.compile(
+        r"^\s*\[\s*mcp_servers\.(?:\"?)" + re.escape(SERVER_NAME) + r"(?:\"?)\s*\]\s*$"
+    )
     return any(header.match(line) for line in text.splitlines())
 
 
@@ -102,8 +116,13 @@ def _config_rows(home: pathlib.Path) -> list[dict]:
         else:
             rows.append(_row("FAIL", check, f"{path.name} missing {SERVER_NAME}"))
     for label, path in skill_dirs(home):
-        rows.append(_row("OK" if path.is_file() else "FAIL", f"skill:{label}",
-                         f"{path.parent.name}/SKILL.md {'present' if path.is_file() else 'missing'}"))
+        rows.append(
+            _row(
+                "OK" if path.is_file() else "FAIL",
+                f"skill:{label}",
+                f"{path.parent.name}/SKILL.md {'present' if path.is_file() else 'missing'}",
+            )
+        )
     return rows
 
 
@@ -113,7 +132,10 @@ def expected_hook_commands(hooks_dir: pathlib.Path) -> dict[str, str]:
     Ownership is equality on this string (mirrors the installer's is_ours): a wrapper that merely
     mentions the hook file is somebody else's entry.
     """
-    return {"SessionStart": f"{hooks_dir}/{HOOK_FILES[0]}", "Stop": f"python3 {hooks_dir}/{HOOK_FILES[1]}"}
+    return {
+        "SessionStart": f"{hooks_dir}/{HOOK_FILES[0]}",
+        "Stop": f"python3 {hooks_dir}/{HOOK_FILES[1]}",
+    }
 
 
 def _hook_commands(settings_path: pathlib.Path) -> dict[str, list[str]]:
@@ -137,7 +159,9 @@ def _hook_commands(settings_path: pathlib.Path) -> dict[str, list[str]]:
     return out
 
 
-def hooks_registered(settings_path: pathlib.Path, hooks_dir: pathlib.Path | None = None) -> dict[str, bool]:
+def hooks_registered(
+    settings_path: pathlib.Path, hooks_dir: pathlib.Path | None = None
+) -> dict[str, bool]:
     """Which of our two hooks settings.json registers with exactly the installer's command.
 
     hooks_dir defaults to the hooks/ directory next to settings.json (~/.claude/hooks).
@@ -147,12 +171,16 @@ def hooks_registered(settings_path: pathlib.Path, hooks_dir: pathlib.Path | None
     return {event: exact[event] in found[event] for event in exact}
 
 
-def hooks_foreign(settings_path: pathlib.Path, hooks_dir: pathlib.Path | None = None) -> dict[str, bool]:
+def hooks_foreign(
+    settings_path: pathlib.Path, hooks_dir: pathlib.Path | None = None
+) -> dict[str, bool]:
     """Events with an entry that mentions our hook file but is not the installer's exact command."""
     exact = expected_hook_commands(hooks_dir or settings_path.parent / "hooks")
     found = _hook_commands(settings_path)
-    return {event: any(fname in c and c != exact[event] for c in found[event])
-            for event, fname in zip(("SessionStart", "Stop"), HOOK_FILES)}
+    return {
+        event: any(fname in c and c != exact[event] for c in found[event])
+        for event, fname in zip(("SessionStart", "Stop"), HOOK_FILES)
+    }
 
 
 def _hook_rows(home: pathlib.Path) -> list[dict]:
@@ -166,16 +194,26 @@ def _hook_rows(home: pathlib.Path) -> list[dict]:
         if installed and reg[event]:
             rows.append(_row("OK", f"hook:{event}", f"{fname} installed and registered"))
         elif installed and foreign[event]:
-            rows.append(_row("WARN", f"hook:{event}",
-                             f"{fname} installed, settings.json entry is not the installer's (foreign)"))
+            rows.append(
+                _row(
+                    "WARN",
+                    f"hook:{event}",
+                    f"{fname} installed, settings.json entry is not the installer's (foreign)",
+                )
+            )
         elif installed:
             rows.append(_row("WARN", f"hook:{event}", f"{fname} installed, not in settings.json"))
         else:
-            rows.append(_row("WARN", f"hook:{event}", f"{fname} not installed (install-fleet-rag.sh --hooks)"))
+            rows.append(
+                _row(
+                    "WARN", f"hook:{event}", f"{fname} not installed (install-fleet-rag.sh --hooks)"
+                )
+            )
     return rows
 
 
 # --------------------------------------------------------------------------- services
+
 
 def default_http_get(url: str, timeout: int = HTTP_TIMEOUT) -> Any:
     """GET JSON; raises on any failure.  The body is parsed and never logged."""
@@ -207,8 +245,10 @@ def _routine_rows(http_get: Callable[[str], Any]) -> list[dict]:
     try:
         body = http_get(BOTFLEET_ROUTINES)
     except Exception as e:  # noqa: BLE001
-        return [_row("FAIL", f"botfleet:{name}", f"api unreachable ({type(e).__name__})")
-                for name in REQUIRED_ROUTINES]
+        return [
+            _row("FAIL", f"botfleet:{name}", f"api unreachable ({type(e).__name__})")
+            for name in REQUIRED_ROUTINES
+        ]
     items = body.get("routines") if isinstance(body, dict) else body
     by_name: dict[str, dict] = {}
     for r in items if isinstance(items, list) else []:
@@ -245,11 +285,17 @@ def _last_run_row(home: pathlib.Path, now: int) -> dict:
     return _row("OK", "ingest:last-run", detail)
 
 
-DIRECT_PATH_BLOCKED_DETAIL = "tailscale logged out; direct path skipped (use recall-tunnel or tailscale login)"
-RERANK_BLOCKED_DETAIL = "direct path skipped (Tailscale down); rerank served by recall.jays.services"
+DIRECT_PATH_BLOCKED_DETAIL = (
+    "tailscale logged out; direct path skipped (use recall-tunnel or tailscale login)"
+)
+RERANK_BLOCKED_DETAIL = (
+    "direct path skipped (Tailscale down); rerank served by recall.jays.services"
+)
 
 
-def _sentinel_row(qdrant_factory: Callable[[], Any], now: int, direct_path_blocked: bool = False) -> dict:
+def _sentinel_row(
+    qdrant_factory: Callable[[], Any], now: int, direct_path_blocked: bool = False
+) -> dict:
     if direct_path_blocked:
         # The caller (recall's cmd_doctor) has already established Tailscale is believed down
         # with no operator override -- never even attempt the Qdrant call, which would otherwise
@@ -301,13 +347,21 @@ def _rerank_row(rerank_check: Callable[[], bool | None], direct_path_blocked: bo
     except Exception as e:  # noqa: BLE001 - class only
         return _row("WARN", "tei:rerank", f"check unavailable ({type(e).__name__})")
     if healthy is None:
-        return _row("WARN", "tei:rerank", "not configured (TEI_RERANK_URL/TEI_RERANK_API_KEY unset)")
-    return _row("OK" if healthy else "FAIL", "tei:rerank", "reachable" if healthy else "unreachable")
+        return _row(
+            "WARN", "tei:rerank", "not configured (TEI_RERANK_URL/TEI_RERANK_API_KEY unset)"
+        )
+    return _row(
+        "OK" if healthy else "FAIL", "tei:rerank", "reachable" if healthy else "unreachable"
+    )
 
 
 def default_ssh_run(host: str, command: str, timeout: int = SSH_TIMEOUT) -> tuple[int, str]:
-    proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, command],
-                          capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, command],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
     return proc.returncode, proc.stdout
 
 
@@ -339,17 +393,22 @@ def _box_rows(ssh_run: Callable[[str, str], tuple[int, str]]) -> list[dict]:
 
 # --------------------------------------------------------------------------- report
 
+
 def default_qdrant_factory() -> Any:
     cfg = recall_api.get_config(need_write=False)
     return recall_api.Qdrant(cfg)
 
 
-def platforms_report(home: pathlib.Path | str | None = None, box: bool = False,
-                     http_get: Callable[[str], Any] | None = None,
-                     ssh_run: Callable[[str, str], tuple[int, str]] | None = None,
-                     qdrant_factory: Callable[[], Any] | None = None,
-                     rerank_check: Callable[[], bool | None] | None = None,
-                     now: int | None = None, direct_path_blocked: bool = False) -> dict:
+def platforms_report(
+    home: pathlib.Path | str | None = None,
+    box: bool = False,
+    http_get: Callable[[str], Any] | None = None,
+    ssh_run: Callable[[str, str], tuple[int, str]] | None = None,
+    qdrant_factory: Callable[[], Any] | None = None,
+    rerank_check: Callable[[], bool | None] | None = None,
+    now: int | None = None,
+    direct_path_blocked: bool = False,
+) -> dict:
     """{"rows": [...], "ok": bool, "counts": {"OK": n, "WARN": n, "FAIL": n}}.
 
     `direct_path_blocked` is decided by the caller (recall's cmd_doctor, via
@@ -376,8 +435,7 @@ def platforms_report(home: pathlib.Path | str | None = None, box: bool = False,
     rows.append(_rerank_row(rerank_check, direct_path_blocked=direct_path_blocked))
     if box:
         rows += _box_rows(ssh_run)
-    counts = {s: sum(1 for r in rows if r["status"] == s) for s in ("OK", "WARN", "FAIL")}
-    return {"rows": rows, "ok": counts["FAIL"] == 0, "counts": counts}
+    return _finalize_rows(rows)
 
 
 def format_platforms(report: dict) -> str:
@@ -386,17 +444,20 @@ def format_platforms(report: dict) -> str:
     for r in report["rows"]:
         lines.append(f"{r['status']:<6} {r['check']:<{width}}  {r['detail']}")
     c = report["counts"]
+    parts = [f"OK {c.get('OK', 0)}", f"WARN {c.get('WARN', 0)}", f"FAIL {c.get('FAIL', 0)}"]
+    if c.get("SKIP"):
+        parts.append(f"SKIP {c['SKIP']}")
     lines.append("")
-    lines.append(f"overall: {'ok' if report['ok'] else 'PROBLEMS'}  "
-                 f"(OK {c['OK']}, WARN {c['WARN']}, FAIL {c['FAIL']})")
+    lines.append(f"overall: {'ok' if report['ok'] else 'PROBLEMS'}  ({', '.join(parts)})")
     return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- digest
 
+
 def _first_line(text: str, n: int = 100) -> str:
     line = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
-    return line if len(line) <= n else line[:n - 3].rstrip() + "..."
+    return line if len(line) <= n else line[: n - 3].rstrip() + "..."
 
 
 def _day(ms: int) -> str:
@@ -405,9 +466,14 @@ def _day(ms: int) -> str:
     return datetime.datetime.fromtimestamp(int(ms) / 1000, _CT).strftime("%Y-%m-%d")
 
 
-def contribution_digest(qdrant: Any, days: int = 7, app: str | None = None,
-                        now: int | None = None, include_searches: bool = False,
-                        state_dir: str | None = None) -> dict:
+def contribution_digest(
+    qdrant: Any,
+    days: int = 7,
+    app: str | None = None,
+    now: int | None = None,
+    include_searches: bool = False,
+    state_dir: str | None = None,
+) -> dict:
     """Agent contributions from the last `days` days grouped app -> category -> [entries].
 
     Each entry: seat, date (Central), doc_id, title (or the first line of the text), url.
@@ -427,16 +493,18 @@ def contribution_digest(qdrant: Any, days: int = 7, app: str | None = None,
         pl = p.get("payload") or {}
         seat_name = pl.get("seat") or "-"
         seat_contribs[seat_name] = seat_contribs.get(seat_name, 0) + 1
-        entries.append({
-            "app": pl.get("app") or "fleet",
-            "category": pl.get("category") or "lesson",
-            "seat": seat_name,
-            "created_at": int(pl.get("created_at") or 0),
-            "date": _day(int(pl.get("created_at") or 0)),
-            "doc_id": pl.get("doc_id") or str(p.get("id", "")),
-            "title": pl.get("title") or _first_line(pl.get("text", "")),
-            "url": pl.get("url") or "",
-        })
+        entries.append(
+            {
+                "app": pl.get("app") or "fleet",
+                "category": pl.get("category") or "lesson",
+                "seat": seat_name,
+                "created_at": int(pl.get("created_at") or 0),
+                "date": _day(int(pl.get("created_at") or 0)),
+                "doc_id": pl.get("doc_id") or str(p.get("id", "")),
+                "title": pl.get("title") or _first_line(pl.get("text", "")),
+                "url": pl.get("url") or "",
+            }
+        )
     entries.sort(key=lambda e: (e["app"], e["category"], -e["created_at"], e["doc_id"]))
     apps: dict[str, dict[str, list[dict]]] = {}
     for e in entries:
@@ -478,12 +546,20 @@ def format_digest(d: dict) -> str:
         s = d["searches"]
         lines.append("")
         lines.append(f"=== Fleet Retrieval Telemetry ({d['days']}d) ===")
-        lines.append(f"Total searches: {s.get('total_searches', 0)} across {len(s.get('by_seat', {}))} seat(s) (avg latency: {s.get('avg_latency_ms', 0)} ms)")
+        lines.append(
+            f"Total searches: {s.get('total_searches', 0)} across {len(s.get('by_seat', {}))} seat(s) (avg latency: {s.get('avg_latency_ms', 0)} ms)"
+        )
         if d.get("ratios"):
             lines.append("Search-to-Contribute Ratios (target >= 3.0x; search before diagnosing):")
             for r in d["ratios"]:
                 ratio_str = f"{r['ratio']:.2f}x" if r["ratio"] is not None else "N/A"
-                warn = "  [WARN: low retrieval ratio - search before diagnosing]" if r.get("warning") else ""
-                lines.append(f"  {r['seat']:<10} {r['searches']:>3} search(es) / {r['contributions']:>3} contrib(s) = {ratio_str}{warn}")
+                warn = (
+                    "  [WARN: low retrieval ratio - search before diagnosing]"
+                    if r.get("warning")
+                    else ""
+                )
+                lines.append(
+                    f"  {r['seat']:<10} {r['searches']:>3} search(es) / {r['contributions']:>3} contrib(s) = {ratio_str}{warn}"
+                )
 
     return "\n".join(lines)

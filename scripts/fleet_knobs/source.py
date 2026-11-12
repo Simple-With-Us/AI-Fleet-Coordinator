@@ -1,44 +1,14 @@
-"""Fetch knobs from Infisical through the installed ``infisical`` CLI.
+"""Fetch registered knob names with their dedicated scoped read binding.
 
-Prod is the only environment (owner 2026-10-10):  every call passes ``--env=prod`` itself,
-because the CLI's own default is dev, and a stray ``INFISICAL_ENVIRONMENT`` other than prod
-is refused before anything runs.  The knobs live in the "AI Fleet Coordinator" project at
-the root path.
-
-One ``export`` call returns the whole path.  This module keeps only the names it was asked
-for and drops the rest at once, so no other secret outlives the call.  The CLI's output is
-never printed or logged, and neither is its stderr:  a failure is reduced to a short reason
-token (``cli-missing``, ``timeout``, ``exit-1``, ``bad-output``, ``unresolved-reference``).
-
-Why the CLI and not HTTP:  a stable copy run with ``python3 -I`` then needs no sibling
-package.  ``fleet_rag/infisical_settings.py`` is the reference for the contract (prod only,
-load once, keep the last-known-good, names only in logs).
-
-Auth, first match wins, the same order as ``fleet-secrets`` (scripts/fleet_secrets/core.py):
-``INFISICAL_TOKEN`` already in the environment;  else, on the Hetzner server, the automation
-pair in the environment, logged in through fleet-secrets' own helper;  else the universal-auth
-machine identity in the login Keychain, then in the System keychain;  else the CLI's own login
-session.  The machine identity matters for pm2:  pm2 runs as the
-system LaunchDaemon ``com.pm2.daemon``, in the launchd System session, where the login
-Keychain (and so the CLI's session) is unreachable, and a session-only fetch there exits 1 or
-hangs.  The helper is loaded opportunistically (``FLEET_SECRETS_HOME``, then a sibling
-``fleet_secrets`` package, then ``~/.local/share/fleet-secrets``);  when none is found this
-module falls back to the CLI session, so it stays stdlib-only and standalone.  The access
-token goes only into the child's environment:  it is never logged, never in an argument
-list and never written to disk, and neither do the automation credentials it was derived from.
+The REST helper verifies grant metadata and exact project, prod environment, and folder before reading named rows.  Missing or malformed bindings fail closed, and results contain only requested knob names.  The caller retains the last-known-good cache when a read fails.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 import re
 import shutil
-import subprocess
-import sys
-import threading
-import time
 from collections.abc import Callable, Iterable, Mapping
 from types import ModuleType
 
@@ -47,12 +17,8 @@ ENVIRONMENT = "prod"
 CLI_NAME = "infisical"
 # A LaunchAgent's PATH is minimal, so look in the usual install places after PATH.
 FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
-# Short on purpose:  a hung CLI (a locked keychain under launchd) must not stall a job or an MCP
-# start for long, and lkg.py's negative cache spares sibling processes the wait (fail fast).
-# It is ONE budget for the whole fetch:  the keychain lookups, the machine-identity login and the
-# export all share it (see _Deadline), so no step can run past it.
+# Bound one metadata-plus-read operation; the negative cache spares sibling processes a repeat wait.
 TIMEOUT_SECONDS = 8.0
-MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
 # ``infisical secrets get NAME`` exits 0 and answers a name it does not hold with this value
 # (verified against the real CLI, OPS-818), so it means "absent", never a secret's value.
@@ -64,19 +30,12 @@ UNRESOLVED_REFERENCE = re.compile(r"^\$\{[^}]+\}$")
 
 
 ENV_TOKEN = "INFISICAL_TOKEN"
-# The server's own universal-auth identity (Linux only).  The helper reads the pair out of the
-# environment to log in, but the export child never carries it:  a readonly fetch needs only the
-# token that login resolves from it.
+ENV_AI_FLEET_COORDINATOR_TOKEN = "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
+ENV_KNOBS_TOKEN = "FLEET_KNOBS_INFISICAL_TOKEN"
+# Legacy identity names are stripped from helper environments and never authenticate a request.
 ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
 ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
-# The modes fleet-secrets' helper can log in with, mirrored from its MACHINE_MODES so this module
-# stays stdlib-only and never imports the helper for a constant.
-MACHINE_MODES = ("keychain", "system-keychain", "automation-env")
 ENV_HELPER_HOME = "FLEET_SECRETS_HOME"
-# FLEET_KNOBS_AUTH=session skips the machine identity and uses only the CLI's own session (the
-# old behaviour).  For hermetic tests that run a fake CLI in a subprocess on a Mac whose System
-# keychain holds the real identity;  anything else in it is ignored.
-ENV_AUTH = "FLEET_KNOBS_AUTH"
 HELPER_HOME = "~/.local/share/fleet-secrets"
 HELPER_MODULE = "_fleet_knobs_fleet_secrets_core"
 
@@ -132,11 +91,7 @@ def fetch(names: Iterable[str]) -> dict[str, str]:
 
     Raises FetchFailed with a reason token.  Never logs or returns anything but the
     requested names."""
-    wanted = set(names)
-    cli = find_cli()
-    if not cli:
-        raise FetchFailed("cli-missing")
-    return _pick(_run(argv_for(cli)), wanted)
+    return _scoped_fetch(names, PROJECT_ID, "/", named=True)
 
 
 def argv_named(cli: str, names: Iterable[str], project_id: str, path: str) -> list:
@@ -156,43 +111,50 @@ def argv_named(cli: str, names: Iterable[str], project_id: str, path: str) -> li
 
 
 def fetch_named(names: Iterable[str], *, project_id: str, path: str) -> dict[str, str]:
-    """Only the named secrets of one folder of another project (``infisical secrets get``).
+    """Only named secrets of one folder, checked against the caller's expected project.
 
-    Unlike ``fetch`` the CLI itself is asked for just these names, so no other secret in the
-    folder reaches this process.  Absent names are left out.  Same contract otherwise:  prod only,
-    the CLI's output and stderr never printed, a failure reduced to a reason token."""
+    The verifier checks metadata before per-name REST requests, so unrelated folder values
+    never enter this process.  Absent names are left out.  Prod only; failures are reduced to
+    reason tokens and provider output is never printed."""
+    return _scoped_fetch(names, project_id, path, named=True)
+
+
+def _scoped_fetch(
+    names: Iterable[str], project_id: str, path: str, *, named: bool
+) -> dict[str, str]:
+    refusal = environment_refusal()
+    if refusal:
+        raise FetchFailed("environment-refused")
+    helper = HELPER_LOADER()
+    if helper is None:
+        raise FetchFailed("scoped-reader-unavailable")
     wanted = set(names)
-    cli = find_cli()
-    if not cli:
-        raise FetchFailed("cli-missing")
-    return _pick(_run(argv_named(cli, wanted, project_id, path)), wanted)
-
-
-_DEADLINE = threading.local()
-
-
-def _remaining() -> float | None:
-    """Seconds left in this thread's fetch budget, or None outside a fetch."""
-    deadline = getattr(_DEADLINE, "at", None)
-    return None if deadline is None else deadline - time.monotonic()
-
-
-class _ClampedSubprocess:
-    """Stands in for ``subprocess`` inside the loaded helper:  every ``run`` gets at most the time
-    left in the current fetch's budget, so a hung ``security`` or ``infisical login`` is killed at
-    the deadline instead of at the helper's own (longer) timeout."""
-
-    def __getattr__(self, name):
-        return getattr(subprocess, name)
-
-    def run(self, *args, **kwargs):
-        left = _remaining()
-        if left is not None:
-            if left <= 0:
-                raise subprocess.TimeoutExpired(args[0] if args else kwargs.get("args"), 0)
-            given = kwargs.get("timeout")
-            kwargs["timeout"] = left if given is None else min(float(given), left)
-        return subprocess.run(*args, **kwargs)
+    env = dict(os.environ)
+    token = (env.get(ENV_KNOBS_TOKEN) or "").strip()
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 8192
+        or any(c.isspace() for c in token)
+    ):
+        raise FetchFailed("service-token-required")
+    env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
+    env.pop(ENV_TOKEN, None)
+    env.pop("INFISICAL_WRITE_TOKEN", None)
+    env.pop(ENV_KNOBS_TOKEN, None)
+    try:
+        result = helper.fetch_project(
+            project_id,
+            path,
+            env,
+            token=token,
+            names=wanted if named else None,
+            timeout=TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        raise FetchFailed("timeout") from None
+    except Exception:
+        raise FetchFailed("scoped-read-failed") from None
+    return _pick(result, wanted)
 
 
 def _helper_candidates() -> list:
@@ -223,9 +185,7 @@ def _load_helper() -> ModuleType | None:
             spec.loader.exec_module(module)
         except Exception:  # noqa: BLE001 - optional helper
             continue
-        if all(hasattr(module, n) for n in ("auth_mode", "machine_token", "find_cli")):
-            if hasattr(module, "subprocess"):
-                module.subprocess = _ClampedSubprocess()  # this private copy only
+        if all(hasattr(module, n) for n in ("fetch_project", "SecretsError")):
             _HELPER_CACHE["core"] = module
             return module
     return None
@@ -237,127 +197,28 @@ HELPER_LOADER: Callable[[], ModuleType | None] = _load_helper
 
 
 def _without_automation(env: Mapping[str, str]) -> dict[str, str]:
-    """The child environment: the caller's, minus the automation credentials it was read with.
-
-    The pair is resolved to an access token by the helper's login and never travels to the
-    export subprocess, which is a readonly call that has no use for it."""
+    """Remove retired universal-auth credentials from the scoped-read environment."""
     out = dict(env)
     out.pop(ENV_AUTOMATION_ID, None)
     out.pop(ENV_AUTOMATION_SECRET, None)
     return out
 
 
-def _incomplete_reason(env: Mapping[str, str]) -> str:
-    """Which machine identity was left half-filled.  On Linux that is the automation pair and
-    there is no keychain to blame, so it keeps its own reason token for triage."""
-    if sys.platform.startswith("linux") and (
-        bool((env.get(ENV_AUTOMATION_ID) or "").strip())
-        != bool((env.get(ENV_AUTOMATION_SECRET) or "").strip())
-    ):
-        missing = (
-            ENV_AUTOMATION_SECRET
-            if (env.get(ENV_AUTOMATION_ID) or "").strip()
-            else ENV_AUTOMATION_ID
-        )
-        # Lowercase here:  the negative-cache marker lowercases every reason, so the live report and
-        # a sibling's `recent-<token>` must spell it the same way.
-        return "automation-env-incomplete:missing-" + missing.lower()
-    return "keychain-incomplete"
-
-
 def child_env() -> dict[str, str]:
-    """The environment for one CLI call, with a machine-identity token when one is available.
-
-    ``INFISICAL_TOKEN`` already set wins.  Otherwise fleet-secrets' helper picks the mode;  a
-    machine identity (keychain, System keychain, or the automation pair in the environment on the
-    server) is logged in and its token put in the returned dict only, which never carries the
-    automation credentials themselves.  With no helper or no identity (mode ``session``) the CLI's
-    own login session is used, as before.  Raises FetchFailed (``keychain-incomplete``,
-    ``automation-env-incomplete``, ``login-failed``) when an identity exists but cannot be used,
-    rather than quietly trying a session that cannot work under launchd."""
+    """Return an isolated child environment with the dedicated knob reader binding."""
     env = dict(os.environ)
-    env["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
-    if (env.get(ENV_TOKEN) or "").strip():
-        return _without_automation(env)
+    token = (env.get(ENV_KNOBS_TOKEN) or "").strip()
+    if (
+        not token.startswith("st.")
+        or not 20 <= len(token) <= 8192
+        or any(c.isspace() for c in token)
+    ):
+        raise FetchFailed("service-token-required")
+    env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
     env.pop(ENV_TOKEN, None)
-    if (env.get(ENV_AUTH) or "").strip().lower() == "session":
-        return _without_automation(env)
-    try:
-        helper = HELPER_LOADER()
-    except Exception:  # noqa: BLE001 - optional helper
-        helper = None
-    if helper is None:
-        return _without_automation(env)
-    try:
-        mode = helper.auth_mode(env)
-    except Exception:  # noqa: BLE001 - half-filled identity, never its text
-        _raise_if_out_of_time()
-        raise FetchFailed(_incomplete_reason(env)) from None
-    # A lookup the budget cut short answers "absent", which would look like mode "session".
-    _raise_if_out_of_time()
-    if mode not in MACHINE_MODES:
-        return _without_automation(env)
-    cli = find_cli()
-    if not cli:
-        raise FetchFailed("cli-missing")
-    try:
-        token = helper.machine_token(cli, env, mode)
-    except Exception:  # noqa: BLE001 - never carry its text
-        _raise_if_out_of_time()
-        raise FetchFailed("login-failed") from None
-    _raise_if_out_of_time()
-    if not isinstance(token, str) or not token.strip():
-        raise FetchFailed("login-failed")
-    env[ENV_TOKEN] = token
+    env.pop("INFISICAL_WRITE_TOKEN", None)
+    env.pop(ENV_KNOBS_TOKEN, None)
     return _without_automation(env)
-
-
-def _raise_if_out_of_time() -> None:
-    left = _remaining()
-    if left is not None and left <= 0:
-        raise FetchFailed("timeout")
-
-
-def _run(argv: list):
-    """Run the CLI and parse its JSON.  Raises FetchFailed with a reason token.
-
-    TIMEOUT_SECONDS bounds the whole call:  auth (keychain lookups and the machine-identity
-    login, through the helper's clamped subprocess) and the export share one deadline, and
-    running out anywhere is reason ``timeout``."""
-    _DEADLINE.at = time.monotonic() + TIMEOUT_SECONDS
-    env: dict = {}
-    try:
-        env = child_env()
-        left = _remaining()
-        if left is None or left <= 0:
-            raise FetchFailed("timeout")
-        proc = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=left,
-            cwd="/",
-            env=env,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise FetchFailed("timeout") from None
-    except OSError:
-        raise FetchFailed("cli-missing") from None
-    finally:
-        env = {}
-        _DEADLINE.at = None
-    if proc.returncode != 0:
-        raise FetchFailed(f"exit-{proc.returncode}")
-    out = proc.stdout
-    if len(out) > MAX_OUTPUT_BYTES:
-        raise FetchFailed("bad-output")
-    try:
-        return json.loads(out.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        raise FetchFailed("bad-output") from None
-    finally:
-        out = b""
 
 
 def _pick(payload, wanted) -> dict[str, str]:

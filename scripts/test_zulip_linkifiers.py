@@ -124,7 +124,9 @@ class LinearTeamKeysTest(unittest.TestCase):
 class PlanTest(unittest.TestCase):
     def live(self, **overrides):
         rules = [
-            {"id": i, "pattern": p, "url_template": u} for i, p, u in L.TARGET if i is not None
+            #  A row with no id yet is a rule Zulip has numbered once it exists, so give it one here.
+            {"id": i if i is not None else 9000 + n, "pattern": p, "url_template": u}
+            for n, (i, p, u) in enumerate(L.TARGET)
         ]
         for rule in rules:
             rule.update(overrides.get(str(rule["id"]), {}))
@@ -161,10 +163,11 @@ class PlanTest(unittest.TestCase):
 
     def test_row_without_an_id_is_matched_by_pattern_not_added_again(self):
         row = (None, "NEW#(?P<id>[0-9]+)", "https://example.invalid/{id}")
-        live = self.live() + [{"id": 8000, "pattern": row[1], "url_template": row[2]}]
+        before = self.live()
+        live = before + [{"id": 8000, "pattern": row[1], "url_template": row[2]}]
         with mock.patch.object(L, "TARGET", [*L.TARGET, row]):
             self.assertEqual(L.plan(live), ([], []))
-            self.assertEqual([s[0] for s in L.plan(self.live())[0]], ["add"])
+            self.assertEqual([s[0] for s in L.plan(before)[0]], ["add"])
 
 
 class FakeZulip:
@@ -184,7 +187,7 @@ class FakeZulip:
         if method == "POST":
             self.posts += 1
             if self.posts == self.fail_post:
-                raise SystemExit("POST realm/filters:  HTTP 400 refused")
+                raise L.ZulipError("POST realm/filters:  HTTP 400 refused")
             rule = {"id": 9000 + self.posts, **data}
             self.live.append(rule)
         elif method == "PATCH" and path == "realm/linkifiers":
@@ -196,8 +199,8 @@ class FakeZulip:
 class ApplyTest(unittest.TestCase):
     def two_missing(self):
         live = [
-            {"id": i, "pattern": p, "url_template": u}
-            for i, p, u in L.TARGET
+            {"id": i if i is not None else 9000 + n, "pattern": p, "url_template": u}
+            for n, (i, p, u) in enumerate(L.TARGET)
             if i not in (5142, 5143)
         ]
         return FakeZulip(live, fail_post=2), live
@@ -205,7 +208,7 @@ class ApplyTest(unittest.TestCase):
     def test_failure_part_way_still_moves_the_generic_rule_last(self):
         zulip, live = self.two_missing()
         steps, _ = L.plan(live)
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(L.ZulipError):
             L.apply_plan(zulip, steps, [])
         self.assertEqual(zulip.live[-1]["id"], L.GENERIC_ID)
         self.assertEqual(len(zulip.live), len(live) + 1)
@@ -213,7 +216,7 @@ class ApplyTest(unittest.TestCase):
     def test_rerun_after_a_failure_adds_only_what_is_left(self):
         zulip, live = self.two_missing()
         steps, _ = L.plan(live)
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(L.ZulipError):
             L.apply_plan(zulip, steps, [])
         rerun, unlisted = L.plan(zulip.linkifiers())
         self.assertEqual([s[0] for s in rerun], ["add"])
@@ -223,6 +226,33 @@ class ApplyTest(unittest.TestCase):
             L.apply_plan(zulip, rerun, [])
         self.assertEqual(L.plan(zulip.linkifiers()), ([], []))
         self.assertIsNone(L.order(zulip.linkifiers()))
+
+
+class ZulipErrorTests(unittest.TestCase):
+    def test_call_raises_zulip_error_not_system_exit(self):
+        import urllib.error
+
+        body = io.BytesIO(b'{"msg": "refused"}')
+        err = urllib.error.HTTPError("https://x/api/v1/realm/filters", 400, "Bad Request", {}, body)
+        zulip = L.Zulip("e", "k", L.REALM)
+        with mock.patch.object(L.urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(L.ZulipError) as caught:
+                zulip.call("POST", "realm/filters", {"pattern": "P-X-1"})
+        self.assertIsInstance(caught.exception, Exception)
+        self.assertNotIsInstance(caught.exception, SystemExit)
+        self.assertIn("HTTP 400", str(caught.exception))
+
+    def test_main_reports_zulip_errors_with_exit_1_not_a_traceback(self):
+        with (
+            mock.patch.object(L, "credentials", return_value=("e", "k", L.REALM)),
+            mock.patch.object(
+                L.Zulip, "linkifiers", side_effect=L.ZulipError("GET x: HTTP 400 bad")
+            ),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(L.main([]), 1)
+            self.assertIn("zulip:", err.getvalue())
 
 
 class CredentialTests(unittest.TestCase):

@@ -27,7 +27,7 @@ What it does, per lane found under ~/apps/lanes (the disk is read at run time, n
     the whole folder is deferred.  No symlink is made for it: the two spellings are one path.
   * empty leftovers (lanes/_managed/*, lanes/_review/*, lanes/_notes) are removed with rmdir, which refuses
     anything that is not empty.  A `.DS_Store` is the only file deleted.
-  * lanes/_managed/fleet/agent-sync-runtime is live infrastructure and is always skipped.
+  * lanes/_managed/fleet/simple-tools-runtime is live infrastructure and is always skipped.
 
 What it refuses (skip, with the reason in the plan; run again when the cause is gone):
   * a lane with a process whose working directory is inside it, or when lsof cannot be read at all
@@ -81,7 +81,7 @@ EXIT_USAGE = 64
 
 LOG_NAME = ".lanes-v2-migration.json"
 GRACE_DAYS = 7
-RUNTIME_NAME = "agent-sync-runtime"
+RUNTIME_NAME = "simple-tools-runtime"
 
 # Actions in a plan.
 MOVE = "move"  # a lane to its new folder, with a symlink left behind
@@ -649,7 +649,7 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
     if cname == RUNTIME_NAME:
         it.action = SKIP
         it.reasons.append(
-            "live infrastructure: the Operator, ~/.local/bin/agent-sync and the runtime-sync "
+            "live infrastructure: the Operator and the runtime-sync "
             "LaunchAgent use this path, so it needs its own coordinated step and the owner's choice of a new path"
         )
         return it

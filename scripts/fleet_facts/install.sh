@@ -7,10 +7,11 @@
 #   fleet-facts           the entry script          (python3 -I $HOME/apps/fleet-facts/fleet-facts --help)
 #   mac-facts-publish     the launcher the LaunchAgent com.jay.mac-facts-publish runs (it does not load anything)
 #   fleet_facts/*.py      the package, without its tests
-#   agent_sync/           an empty __init__.py plus the two F3 helpers the package loads by path:
+#   simple_tools/           an empty __init__.py plus the two F3 helpers the package loads by path:
 #                         textsafe.py (render_untrusted) and secretscan.py (redact_fields)
 #   fleet_knobs/*.py      the K1 knob reader, without its tests:  `publish` and `publish-mac` fetch the signing key
 #                         and the allowed-apps list through it (imported only then)
+#   fleet_secrets/        only the low-level scoped verifier library; no CLI entrypoint
 # and $HOME/.local/bin/fleet-facts is a symlink to the entry script.
 #
 # It touches nothing else:  no LaunchAgent, no pm2, no network, and no credential files.  Every path is
@@ -39,30 +40,32 @@ link_dir="$HOME/.local/bin"
 link="$link_dir/fleet-facts"
 
 for need in "$scripts_dir/fleet-facts" "$here/mac-facts-publish" "$here/cli.py" \
-            "$scripts_dir/agent_sync/textsafe.py" "$scripts_dir/agent_sync/secretscan.py" "$scripts_dir/fleet_knobs/knobs.py"; do
+            "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$scripts_dir/fleet_knobs/knobs.py" \
+            "$scripts_dir/fleet_secrets/__init__.py" "$scripts_dir/fleet_secrets/core.py"; do
   [ -f "$need" ] || { echo "install.sh: missing $need (run this from a full checkout)" >&2; exit 1; }
 done
 
 say() { if [ "$apply" -eq 1 ]; then echo "$*"; else echo "would: $*"; fi; }
 
-say "copy the package, the entry script, the launcher, the two F3 helpers and fleet_knobs to $dest"
+say "copy the package, the entry script, the launcher, the two F3 helpers, fleet_knobs and its scoped verifier library to $dest"
 if [ "$apply" -eq 1 ]; then
   mkdir -p "$HOME/apps"
   stage="$HOME/apps/.fleet-facts.new.$$"
   trap 'rm -rf "$stage"' EXIT
   rm -rf "$stage"
-  mkdir -p "$stage/fleet_facts" "$stage/agent_sync" "$stage/fleet_knobs"
+  mkdir -p "$stage/fleet_facts" "$stage/simple_tools" "$stage/fleet_knobs" "$stage/fleet_secrets"
   for f in "$here"/*.py; do
     case "$(basename "$f")" in check_fixtures.py) continue ;; esac   # a CI tool, not part of the runtime
     cp "$f" "$stage/fleet_facts/"
   done
   cp "$scripts_dir/fleet-facts" "$stage/fleet-facts"
   cp "$here/mac-facts-publish" "$stage/mac-facts-publish"
-  cp "$scripts_dir/agent_sync/textsafe.py" "$scripts_dir/agent_sync/secretscan.py" "$stage/agent_sync/"
+  cp "$scripts_dir/simple_tools/textsafe.py" "$scripts_dir/simple_tools/secretscan.py" "$stage/simple_tools/"
   cp "$scripts_dir"/fleet_knobs/*.py "$stage/fleet_knobs/"
-  : > "$stage/agent_sync/__init__.py"
+  cp "$scripts_dir/fleet_secrets/__init__.py" "$scripts_dir/fleet_secrets/core.py" "$stage/fleet_secrets/"
+  : > "$stage/simple_tools/__init__.py"
   chmod 755 "$stage/fleet-facts" "$stage/mac-facts-publish"
-  chmod 644 "$stage"/fleet_facts/*.py "$stage"/agent_sync/*.py "$stage"/fleet_knobs/*.py
+  chmod 644 "$stage"/fleet_facts/*.py "$stage"/simple_tools/*.py "$stage"/fleet_knobs/*.py "$stage"/fleet_secrets/*.py
   prev="$dest.prev"
   rm -rf "$prev"
   if [ -e "$dest" ]; then mv "$dest" "$prev"; fi

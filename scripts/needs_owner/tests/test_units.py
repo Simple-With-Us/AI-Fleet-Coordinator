@@ -79,7 +79,7 @@ class LinkTests(unittest.TestCase):
         other = self.OK.replace("simplewithus.zulipchat.com", "chat.example.test")
         with self.assertRaises(Refusal):
             links.parse_topic_link(other, {})
-        self.assertEqual(links.parse_topic_link(other, {"AGENT_SYNC_REALM": "https://chat.example.test"}).message_id, 777)
+        self.assertEqual(links.parse_topic_link(other, {"SIMPLE_TOOLS_REALM": "https://chat.example.test"}).message_id, 777)
 
     def test_bad_links(self) -> None:
         # the slug comes from the one canonical channel, so a rename cannot leave a stale no-op replace here
@@ -155,6 +155,45 @@ class BlockTests(unittest.TestCase):
         self.assertEqual(a.scope, "CLAUDE")
         self.assertEqual(sample(uid=T.make_uid("AFC-5", "Revive PR 761 or close it?", ["Revive it", "Close it"]), parent="AFC-5").scope, "AFC-5")
 
+    def test_the_reason_class_is_an_optional_line(self) -> None:
+        plain = B.render_block(sample())
+        self.assertNotIn("Why owner", plain, "no class, no line:  the block is the old block byte for byte")
+        marked = sample(why_owner="credential", version=2, again_of="AFC-12", mirror_of=None)
+        text = B.render_block(marked)
+        self.assertIn("\nContext: PR 761 is stale\nWhy owner: credential\nVersion: 2\n", text)
+        self.assertEqual(B.parse_block(text), marked)
+        self.assertEqual(B.parse_block(text).why_owner, "credential")
+        self.assertEqual(B.parse_block(B.render_description(marked)), marked)
+        self.assertEqual(B.parse_block(rewrite("[CLAUDE·abc] Filed.\n\n" + B.render_description(marked))).why_owner, "credential")
+        self.assertIsNone(B.parse_block(plain).why_owner)
+
+    def test_a_reason_class_is_read_by_its_shape_so_a_retired_class_still_reads(self) -> None:
+        good = B.render_block(sample())
+        for word in ("money", "some-later-class", "a" * 24):
+            got = B.parse_block(good.replace("Context:", "Why owner: %s\nContext:" % word))
+            self.assertEqual(got.why_owner, word)
+        for bad in ("", "Credential", "two words", "1money", "-money", "a" * 25, "money!"):
+            with self.assertRaises(B.BlockError, msg=repr(bad)):
+                B.parse_block(good.replace("Context:", "Why owner: %s\nContext:" % bad))
+        with self.assertRaises(B.BlockError):
+            B.parse_block(good.replace("Context:", "Why owner: money\nWhy owner: legal\nContext:"))
+
+    def test_the_reason_class_is_not_part_of_the_request(self) -> None:
+        a = sample()
+        self.assertTrue(a.same_request(sample(why_owner="money")))
+        self.assertTrue(sample(why_owner="money").same_request(sample(why_owner="legal")))
+        self.assertTrue(sample(why_owner="money").hash_matches_uid(), "and it is not in the uid hash")
+
+    def test_the_json_carries_the_class_only_when_there_is_one(self) -> None:
+        def row(block):
+            item = I.Item(identifier="AFC-1", id="x", url="u", title="OWNER DECISION:  q", status="Todo", severity="P2", app="AFC",
+                          created_at=None, labels=["needs-owner"], kind="agent-report", reported_by="CLAUDE", block=block)
+            return I.to_json(item, I.now())
+
+        self.assertNotIn("why_owner", row(sample()))
+        self.assertEqual(row(sample(why_owner="policy"))["why_owner"], "policy")
+        self.assertNotIn("why_owner", row(None), "an unadopted item has no class")
+
     def test_for_seat(self) -> None:
         self.assertEqual(sample(context="for GB-PLUMBER").for_seat, "GB-PLUMBER")
         self.assertIsNone(sample(context="background for GB-PLUMBER").for_seat)
@@ -219,14 +258,14 @@ class F3Tests(unittest.TestCase):
         self.assertEqual(f3.textsafe.render_untrusted("@x", 10, code_span=False), "＠x")
         self.assertIsNone(f3.secretscan.scan("plain words"))
 
-    def test_the_package_never_imports_agent_sync(self) -> None:
+    def test_the_package_never_imports_simple_tools(self) -> None:
         import subprocess
         import sys
 
         from .world import SCRIPTS
 
         code = ("import sys; sys.path.insert(0, %r); import needs_owner.cli, needs_owner.verbs; "
-                "bad = [m for m in sys.modules if m == 'agent_sync' or m.startswith('agent_sync.')]; "
+                "bad = [m for m in sys.modules if m == 'simple_tools' or m.startswith('simple_tools.')]; "
                 "sys.exit(1 if bad else 0)" % str(SCRIPTS))
         self.assertEqual(subprocess.run([sys.executable, "-I", "-c", code]).returncode, 0)
 
@@ -324,7 +363,7 @@ class TrustedBinaryTests(unittest.TestCase):
         bad = self.make(0o777, 0o755)
         self.addCleanup(setattr, S, "MANAGED_BIN_DIR", S.MANAGED_BIN_DIR)
         S.MANAGED_BIN_DIR = bad
-        env = {"PATH": bad, S.LOCATOR_ENV: "/fleet-seats:CLAUDE_SEAT_BEARER"}
+        env = {"PATH": bad, S.BEARER_FILE_ENV: "/run/seat-bearers/claude"}
         with self.assertRaises(Refusal):
             S.verified_seat("CLAUDE", env)
 
@@ -332,7 +371,7 @@ class TrustedBinaryTests(unittest.TestCase):
         planted = self.make(0o755, 0o755)  # user-owned and tidy:  only the caller's PATH and HOME point at it
         self.addCleanup(setattr, S, "MANAGED_BIN_DIR", S.MANAGED_BIN_DIR)
         S.MANAGED_BIN_DIR = None
-        env = {"PATH": planted, "HOME": os.path.dirname(planted), S.LOCATOR_ENV: "/fleet-seats:CLAUDE_SEAT_BEARER"}
+        env = {"PATH": planted, "HOME": os.path.dirname(planted), S.BEARER_FILE_ENV: "/run/seat-bearers/claude"}
         from needs_owner import proc
 
         self.assertNotEqual(proc.find_tool("simple-board", env), os.path.join(planted, "simple-board"))
@@ -410,7 +449,7 @@ class TrustedBinaryTests(unittest.TestCase):
 class VerifiedSeatTests(unittest.TestCase):
     """The seat is proven by the board CLI's bearer verification, never by AGENT_SEAT or a launcher variable."""
 
-    LOCATOR = {"SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:CLAUDE_SEAT_BEARER"}
+    LOCATOR = {"SIMPLE_BOARD_BEARER_FILE": "/run/seat-bearers/claude"}
 
     def probe(self, out, code=0):
         calls = []
@@ -426,7 +465,7 @@ class VerifiedSeatTests(unittest.TestCase):
         run = self.probe("seat:        CLAUDE (bearer-verified)\nidentity:    Claude\n")
         self.assertEqual(S.verified_seat("claude", dict(self.LOCATOR, AGENT_SEAT="CODEX"), probe=run), "CLAUDE")
 
-    def test_no_locator_refuses_even_with_agent_seat(self) -> None:
+    def test_no_bearer_file_refuses_even_with_agent_seat(self) -> None:
         from needs_owner import seat as S
         run = self.probe("seat:        CLAUDE (bearer-verified)\n")
         with self.assertRaises(Refusal):
@@ -446,12 +485,12 @@ class VerifiedSeatTests(unittest.TestCase):
         with self.assertRaises(Refusal):
             S.verified_seat("CODEX", self.LOCATOR, probe=self.probe("seat:        CLAUDE (bearer-verified)\n"))
 
-    def test_children_lose_every_identity_variable_and_keep_the_locator(self) -> None:
+    def test_children_lose_every_identity_variable_and_keep_the_bearer_file(self) -> None:
         from needs_owner import seat as S
         env = S.child_environment(dict(self.LOCATOR, AGENT_SEAT="CODEX", AGENT_LAUNCH_SEAT="CODEX", PATH="/bin"))
         self.assertNotIn("AGENT_SEAT", env)
         self.assertNotIn("AGENT_LAUNCH_SEAT", env)
-        self.assertEqual(env["SIMPLE_BOARD_BEARER_LOCATOR"], self.LOCATOR["SIMPLE_BOARD_BEARER_LOCATOR"])
+        self.assertEqual(env["SIMPLE_BOARD_BEARER_FILE"], self.LOCATOR["SIMPLE_BOARD_BEARER_FILE"])
 
 
 if __name__ == "__main__":

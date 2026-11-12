@@ -60,12 +60,12 @@ class WorkflowStatic(unittest.TestCase):
             line = self.raw[: m.start()].count("\n")
             self.assertIn("HEAD_SHA", self.raw.splitlines()[line])
 
-    def test_permissions_minimal(self):
+    def test_permissions_include_disarm_repository_write(self):
         perms = self.doc["permissions"]
         self.assertEqual(
             perms,
             {
-                "contents": "read",
+                "contents": "write",
                 "pull-requests": "write",
                 "issues": "write",
                 "checks": "write",

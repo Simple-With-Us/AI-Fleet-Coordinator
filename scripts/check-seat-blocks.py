@@ -39,7 +39,7 @@ HOME_FILES = (
     "~/.claude/CLAUDE.md",
     "~/AGENTS.md",
     "~/.codex/AGENTS.md",
-    "~/.cursor/rules/agent-sync-zulip.mdc",
+    "~/.cursor/rules/simple-tools-zulip.mdc",
     "~/.gemini/config/AGENTS.md",
     "~/.grok/GROK.md",
     "~/.fx/AGENTS.md",
@@ -62,8 +62,8 @@ HOME_TREES = (
     "~/.clutch/dsh/skills",
 )
 # Catalog copies of retired seats are history, not anyone's working pack.
-RETIRED_CATALOG = {"monet", "renoir", "deepseek", "kimi", "grok-build"}
-RETIRED_SEATS = ("MONET", "RENOIR", "HARNESS", "DSH", "KIMI", "GROK-BUILD")
+RETIRED_CATALOG = {"monet", "renoir", "deepseek", "grok-build"}
+RETIRED_SEATS = ("MONET", "RENOIR", "HARNESS", "DSH", "GROK-BUILD")
 
 BARE_EXPORT = re.compile(r"(?m)^\s*export\s+AGENT_SEAT=(?![\"']?\$)[A-Za-z0-9<]")
 LAUNCHER_WRITE = re.compile(

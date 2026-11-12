@@ -5,7 +5,7 @@
 //
 // Normalized event:
 //   {
-//     source:    "datadog" | "betterstack" | "sentry" | "generic",
+//     source:    "datadog" | "betterstack" | "sentry" | "pagerduty" | "generic",
 //     key:       stable identity of the alertable thing (dedupe key),
 //     service:   what to name it in the topic / status line,
 //     firing:    true | false,
@@ -74,7 +74,14 @@ export function fromDatadog(payload) {
   // A multi-alert monitor fires once per group; ALERT_SCOPE identifies the
   // triggering group, so it belongs in the state key -- otherwise one group's
   // recovery resolves every other group still down on the same monitor.
-  const scope = oneLine(first(payload.scope)).toLowerCase().slice(0, 128);
+  // The whole scope is scanned before it is cut:  a cut can leave a token shorter
+  // than its shape, which the scan of the finished key would not recognise, and its
+  // prefix would then name durable rows.
+  const wholeScope = oneLine(first(payload.scope)).toLowerCase();
+  const scopeRedacted = carriesCredential(wholeScope);
+  const scope = scopeRedacted
+    ? `redacted-${stableDigest(wholeScope)}`
+    : wholeScope.slice(0, 128);
   const key = monitorId
     ? `datadog:${monitorId}${scope ? `:${scope}` : ""}`
     : `datadog:${title.toLowerCase()}${scope ? `:${scope}` : ""}`;
@@ -83,6 +90,7 @@ export function fromDatadog(payload) {
   return {
     source: "datadog",
     key,
+    ...(scopeRedacted ? { identityRedacted: true } : {}),
     service,
     firing,
     // A recovered event carries no severity; INFO keeps the close quiet.
@@ -196,18 +204,22 @@ function sentryFirst(...vals) {
 }
 
 /**
- * Credential shapes worth refusing in a vendor-supplied identity.
+ * Credential shapes to keep out of anything this worker stores or posts.
  *
  * These are the high-confidence vendor prefixes this fleet actually holds, plus
  * the two generic forms that carry no legitimate identity.  They are anchored
  * and deliberately narrow: a Sentry identity is a short id such as `PROJ-1ABC`
  * or a numeric metric-alert id, so nothing ordinary matches, and an over-broad
- * pattern would refuse real alerts.  The patterns mirror the ones in
- * `scripts/agent-sync-mcp/src/contract.js`, which scans the same fleet's
+ * pattern would blank real alert text.  The patterns mirror the ones in
+ * `scripts/simple-tools-mcp/src/contract.js`, which scans the same fleet's
  * credentials for the same reason.
+ *
+ * A private key is matched through its END marker, or to the end of the value when
+ * the marker is missing or cut off, because the secret is the body and not the
+ * marker.  Whitespace in the body may be real newlines or, after `oneLine`, spaces.
  */
 const CREDENTIAL_SHAPES = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/,
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
   /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/,
   /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/,
@@ -221,10 +233,19 @@ const CREDENTIAL_SHAPES = [
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
 ];
 
-/** True when `value` carries a credential shape rather than an identity. */
-function credentialShape(value) {
-  const text = String(value || "");
-  return CREDENTIAL_SHAPES.some((shape) => shape.test(text));
+// Both ignore case, so what the key scan calls a credential is never left in the text.
+// A false match blanks one word of a line whose alert still lands.
+const CREDENTIAL_SHAPES_GLOBAL = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "gi"));
+const CREDENTIAL_SHAPES_ANY_CASE = CREDENTIAL_SHAPES.map((shape) => new RegExp(shape.source, "i"));
+
+/** `text` with every credential shape replaced, for the raw copy of a delivery. */
+export function redactCredentials(text) {
+  return CREDENTIAL_SHAPES_GLOBAL.reduce((out, shape) => out.replace(shape, "[redacted]"), String(text ?? ""));
+}
+
+/** True when `text` carries a credential shape.  Parsers lower-case most keys, so case is ignored. */
+function carriesCredential(text) {
+  return CREDENTIAL_SHAPES_ANY_CASE.some((shape) => shape.test(text));
 }
 
 /**
@@ -315,21 +336,8 @@ export function fromSentry(payload) {
   if (!issue && !metric) throw new Error("sentry payload carries no alert");
   if (issue && !issueIdentity) throw new Error("sentry issue has no identity");
   if (metric && !metricIdentity) throw new Error("sentry metric alert has no identity");
-  // The identity is vendor-supplied text that becomes a durable storage key and
-  // is relayed into the standing block, so it is scanned for a credential
-  // before it is used as one.  A body that puts a token where an identity
-  // belongs is refused rather than filed:  persisting or relaying it would copy
-  // secret material out of the payload and into this worker's own storage.
-  // The message names the field and never the value or a prefix of it.
-  const identityField = issue ? "sentry issue identity" : "sentry metric identity";
-  if (credentialShape(issue ? issueIdentity : metricIdentity)) {
-    // The code lets the webhook route answer a bad request that names the
-    // field, instead of the refusal escaping as a writer outage.
-    const error = new Error(`${identityField} looks like a credential`);
-    error.code = "invalid_identity";
-    error.field = identityField;
-    throw error;
-  }
+  // A credential-shaped identity is not refused:  normalize() files it under a
+  // digest of the key, the same as every other source, so the alert still lands.
   const key = issue
     ? `sentry:${issueIdentity.toLowerCase()}`
     : `sentry:metric:${metricIdentity.toLowerCase()}`;
@@ -351,6 +359,69 @@ export function fromSentry(payload) {
     text,
     link,
     prodDown: false,
+  };
+}
+
+/**
+ * PagerDuty v3 webhook.
+ *
+ * Every delivery is an envelope, `{ event: { event_type, resource_type, data } }`,
+ * and for an incident event `data` is the incident itself.  The incident is
+ * the alertable thing, so its id is the key:  one PagerDuty incident is one row
+ * in the standing block of its PagerDuty service, from trigger to resolve, and
+ * an acknowledgement or a reassignment edits that row instead of posting.
+ *
+ * The incident's own status decides firing, not the event type:  a
+ * `incident.reassigned` on a resolved incident must not reopen it, and an
+ * unknown status stays firing, which is the safe direction.
+ */
+export function fromPagerDuty(payload) {
+  const envelope =
+    payload && typeof payload.event === "object" && payload.event ? payload.event : {};
+  const data =
+    envelope.data && typeof envelope.data === "object" ? envelope.data : {};
+  const id = sentryFirst(data.id);
+  if (!id) throw new Error("pagerduty incident has no identity");
+  const eventType = sentryFirst(envelope.event_type).toLowerCase();
+  const status = sentryFirst(data.status).toLowerCase();
+  const firing = status
+    ? status !== "resolved"
+    : eventType !== "incident.resolved";
+
+  const service =
+    data.service && typeof data.service === "object" ? data.service : {};
+  const priority =
+    data.priority && typeof data.priority === "object" ? data.priority : {};
+  // P1 and P2 outrank the urgency, which every incident carries.  Any other
+  // priority name is the account's own vocabulary, so the urgency decides:
+  // high urgency pages, so it reads SEVERE, and a missing one is SEVERE too.
+  const urgency = sentryFirst(data.urgency).toLowerCase();
+  const level = sentryFirst(priority.summary).toUpperCase();
+  const severity =
+    level === "P1"
+      ? "SEVERE"
+      : level === "P2"
+        ? "MODERATE"
+        : urgency === "low"
+          ? "MODERATE"
+          : "SEVERE";
+
+  const number = sentryFirst(data.number);
+  const title = oneLine(sentryFirst(data.title, "PagerDuty incident"));
+  const acked = status === "acknowledged" ? " (acknowledged)" : "";
+
+  return {
+    source: "pagerduty",
+    key: `pagerduty:${id.toLowerCase()}`,
+    service: oneLine(sentryFirst(service.summary, service.name, "pagerduty")),
+    firing,
+    severity: firing ? severity : "INFO",
+    text: `${number ? `#${number} ` : ""}${title}${acked}`,
+    link: sentryFirst(data.html_url),
+    prodDown: /production|prod down|site down/i.test(title),
+    // Only a reopen may revive an incident that already closed:  a late
+    // retry of the original trigger must not.
+    reopened: eventType === "incident.reopened",
   };
 }
 
@@ -396,6 +467,7 @@ const PARSERS = {
   datadog: fromDatadog,
   betterstack: fromBetterStack,
   sentry: fromSentry,
+  pagerduty: fromPagerDuty,
 };
 
 /**
@@ -407,7 +479,15 @@ const PARSERS = {
 export function normalize(source, payload) {
   const hint = strip(source).toLowerCase();
   const parser = PARSERS[hint] || fromGeneric;
-  const event = parser(payload || {});
+  const parsed = parser(payload || {});
+  // A credential a vendor echoed back never reaches a state row, a queued line or
+  // a Zulip post.  Redacted rather than refused, because the alert is still real.
+  const event = {
+    ...parsed,
+    service: redactCredentials(parsed.service),
+    text: parsed.text == null ? parsed.text : redactCredentials(parsed.text),
+    link: parsed.link == null ? parsed.link : redactCredentials(parsed.link),
+  };
   // Generic routes: the route name is the only authority for the state-key
   // namespace.  A payload claiming source:"datadog" on /webhook/<other> must
   // not overwrite a real datadog incident's state.
@@ -415,9 +495,42 @@ export function normalize(source, payload) {
     const tail = event.key.includes(":")
       ? event.key.split(":").slice(1).join(":")
       : event.key;
-    return { ...event, source: hint, key: `${hint}:${tail}` };
+    return withSafeKey({ ...event, source: hint, key: `${hint}:${tail}` }, hint);
   }
-  return event;
+  return withSafeKey(event, hint);
 }
 
-export const __testing = { oneLine, first, credentialShape };
+/**
+ * The key names durable rows, so a credential in it would be stored even though
+ * the values are redacted.  It becomes a digest of itself, so the alert still
+ * files, one incident stays one key and two stay two, where refusing would lose a
+ * real alert and `[redacted]` would merge unrelated ones.  A false match costs only
+ * a less readable key.  This is the one rule for every source, Sentry and PagerDuty
+ * included:  no parser refuses a delivery over the shape of its identity.
+ */
+function withSafeKey(event, hint) {
+  if (!carriesCredential(event.key)) return event;
+  return {
+    ...event,
+    key: `${hint || "generic"}:redacted-${stableDigest(event.key)}`,
+    identityRedacted: true,
+  };
+}
+
+// Not a cryptographic hash, because normalize() is synchronous and Web Crypto is
+// not.  It need not be one:  53 bits cannot give a token back, and its only job is
+// to keep the few incidents this ever applies to apart.
+function stableDigest(text) {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+export const __testing = { oneLine, first };

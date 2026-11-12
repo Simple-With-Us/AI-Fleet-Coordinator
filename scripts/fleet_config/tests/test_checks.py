@@ -329,8 +329,13 @@ class HooksTests(TempHome):
         result = check_hook_registered(rule, "claude", self.ctx)
         self.assertIs(result.state, CheckState.MISSING)
 
-    def test_hook_registered_passes_without_the_file_when_the_rule_expects_no_hook(self):
-        """The seeded `<seat>-hooks-none` rules:  a harness with no settings file passes."""
+    def test_a_rule_that_expects_no_hook_is_not_applicable_without_the_file(self):
+        """The seeded `<seat>-hooks-none` rules:  no settings file means no guard.
+
+        PASS means every check the rule asks for was proven,  and there is no guard to
+        prove for a harness with no hook surface,  so the result is never a PASS.  It is
+        not applicable,  which the verdict leaves out instead of counting as proof.
+        """
         rule = make_rule(
             CheckType.HOOK_REGISTERED,
             "~/.fx/settings.json",
@@ -339,9 +344,162 @@ class HooksTests(TempHome):
             kind=ConfigKind.HOOKS,
         )
         result = check_hook_registered(rule, "fx", self.ctx)
-        self.assertIs(result.state, CheckState.PASS)
-        self.assertIs(result.proof_level_achieved, ProofLevel.L0)
+        self.assertIs(result.state, CheckState.UNSUPPORTED)
+        self.assertIs(result.reason_code, ReasonCode.NOT_APPLICABLE)
+        self.assertIsNone(result.proof_level_achieved)
         self.assertFalse(result.observed.present)
+        self.assertIn("No guard to check", result.reason)
+        self.assertFalse(contract.is_failing(result))
+        self.assertTrue(contract.is_not_applicable(result))
+
+    def test_a_rule_that_expects_no_hook_is_not_applicable_with_no_entry_either(self):
+        self.write_json(".fx/settings.json", {"env": {}})
+        rule = make_rule(
+            CheckType.HOOK_REGISTERED,
+            "~/.fx/settings.json",
+            detail="PreToolUse",
+            expected=ExpectedState(description="d", names=(), present=False),
+            kind=ConfigKind.HOOKS,
+        )
+        result = check_hook_registered(rule, "fx", self.ctx)
+        self.assertIs(result.state, CheckState.UNSUPPORTED)
+        self.assertIs(result.reason_code, ReasonCode.NOT_APPLICABLE)
+
+    def test_a_hook_that_appears_for_a_no_hook_rule_is_still_drift(self):
+        self.write_json(".fx/settings.json", self.claude_settings())
+        rule = make_rule(
+            CheckType.HOOK_REGISTERED,
+            "~/.fx/settings.json",
+            detail="PreToolUse",
+            expected=ExpectedState(description="d", names=(), present=False),
+            kind=ConfigKind.HOOKS,
+        )
+        result = check_hook_registered(rule, "fx", self.ctx)
+        self.assertIs(result.state, CheckState.DRIFT)
+
+    def _scoped_rule(self, guards: tuple[str, ...]) -> Rule:
+        return make_rule(
+            CheckType.HOOK_REGISTERED,
+            "~/.claude/settings.json",
+            detail="PreToolUse",
+            expected=ExpectedState(description="d", names=("lane-guard",), guards=guards),
+            kind=ConfigKind.HOOKS,
+        )
+
+    def _settings_with_matcher(self, matcher: str | None) -> dict[str, Any]:
+        settings = self.claude_settings()
+        group = settings["hooks"]["PreToolUse"][0]
+        if matcher is None:
+            del group["matcher"]
+        else:
+            group["matcher"] = matcher
+        return settings
+
+    def test_a_shell_rule_passes_with_a_matcher_that_delivers_the_shell_tool(self):
+        self.write_json(".claude/settings.json", self.claude_settings())
+        result = check_hook_registered(self._scoped_rule(("shell",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS)
+
+    def test_a_shell_rule_drifts_when_the_matcher_never_delivers_the_shell_tool(self):
+        """A hook registered for `Read` passes every probe piped into it and never runs."""
+        self.write_json(".claude/settings.json", self._settings_with_matcher("Read"))
+        result = check_hook_registered(self._scoped_rule(("shell",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.DRIFT)
+        self.assertIn("Bash", result.reason)
+        self.assertIn("'Read'", result.reason)
+
+    def test_an_entry_with_no_matcher_delivers_every_tool(self):
+        self.write_json(".claude/settings.json", self._settings_with_matcher(None))
+        for guards in (("shell",), ("file",)):
+            result = check_hook_registered(self._scoped_rule(guards), "claude", self.ctx)
+            self.assertIs(result.state, CheckState.PASS, guards)
+
+    def test_a_file_rule_is_unproven_when_the_matcher_is_bash_only(self):
+        """A shell-only hook is not broken.  It is partly proven,  and the cell says why."""
+        self.write_json(".claude/settings.json", self.claude_settings())
+        result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNPROVEN)
+        self.assertIs(result.reason_code, ReasonCode.PROOF_NOT_RUN)
+        self.assertIs(result.proof_level_achieved, ProofLevel.L0)
+        self.assertIn("File guarding is not proven", result.reason)
+        self.assertIn("Write", result.reason)
+        self.assertFalse(contract.is_failing(result))
+
+    def test_a_file_rule_passes_the_l0_check_with_a_broad_matcher(self):
+        self.write_json(
+            ".claude/settings.json", self._settings_with_matcher("Bash|Read|Edit|Write")
+        )
+        result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS)
+
+    def test_a_claude_file_rule_needs_the_read_tool_too(self):
+        """Claude's file guard also refuses reads of the secrets folder, so Read must reach it."""
+        self.write_json(".claude/settings.json", self._settings_with_matcher("Bash|Edit|Write"))
+        result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNPROVEN)
+        self.assertIn("Read", result.reason)
+
+    def _claude_two_groups(self) -> dict[str, Any]:
+        """The shape install_tools writes:  the shell group, then the file-guard group."""
+        settings = self.claude_settings()
+        settings["hooks"]["PreToolUse"].append(
+            {
+                "matcher": "Read|Write|Edit|MultiEdit|NotebookEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/opt/fixture/lane-tools/claude-file-guard-hook",
+                        "timeout": 10,
+                    }
+                ],
+            }
+        )
+        return settings
+
+    def test_the_claude_file_rule_passes_on_its_own_file_guard_group(self):
+        self.write_json(".claude/settings.json", self._claude_two_groups())
+        file_rule = make_rule(
+            CheckType.HOOK_REGISTERED,
+            "~/.claude/settings.json",
+            detail="PreToolUse",
+            expected=ExpectedState(
+                description="d",
+                names=("claude-file-guard-hook",),
+                timeout_seconds=10,
+                guards=("file",),
+            ),
+            kind=ConfigKind.HOOKS,
+        )
+        result = check_hook_registered(file_rule, "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS, result.reason)
+        # The shell rule still reads the shell group, whose matcher is Bash.
+        result = check_hook_registered(self._scoped_rule(("shell",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS, result.reason)
+        # And a shell-hook file rule stays unproven:  the shell group never sees Read.
+        result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNPROVEN)
+
+    def test_a_file_rule_does_not_apply_where_the_payload_carries_no_file_tool(self):
+        """Nothing can be sent to a hook that never receives a file tool,  so the rule asks
+        for nothing and the verdict leaves it out instead of holding the fleet off PASS."""
+        self.write_json(".claude/settings.json", self.claude_settings())
+        result = check_hook_registered(self._scoped_rule(("file",)), "cursor", self.ctx)
+        self.assertIs(result.state, CheckState.UNSUPPORTED)
+        self.assertIs(result.reason_code, ReasonCode.NOT_APPLICABLE)
+        self.assertTrue(contract.is_not_applicable(result))
+        self.assertIn("does not apply", result.reason)
+
+    def test_a_matcher_that_is_not_text_delivers_nothing(self):
+        settings = self.claude_settings()
+        settings["hooks"]["PreToolUse"][0]["matcher"] = 7
+        self.write_json(".claude/settings.json", settings)
+        result = check_hook_registered(self._scoped_rule(("shell",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.DRIFT)
+
+    def test_a_rule_with_no_scope_ignores_the_matcher(self):
+        self.write_json(".claude/settings.json", self._settings_with_matcher("Read"))
+        result = check_hook_registered(self._scoped_rule(()), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS)
 
     def test_hook_registered_is_missing_without_an_entry_for_the_event(self):
         self.write_json(".claude/settings.json", {"env": {"HOME": "/tmp"}})

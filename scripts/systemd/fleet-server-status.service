@@ -1,5 +1,5 @@
-# A user unit for the user the read-only doctor key's forced command runs as (root, per
-# docs/protocols/fleet-tool-parity.md), because that doctor reads the report from its own HOME.
+# A user unit for the same login the server doctor runs as (see fleet-tools-doctor.service),
+# because that doctor reads the report from its own HOME.
 # As that user:  copy it and fleet-server-status.timer to ~/.config/systemd/user/, run
 # `loginctl enable-linger <that user>`, then
 # `systemctl --user daemon-reload && systemctl --user enable --now fleet-server-status.timer`.

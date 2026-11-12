@@ -10,13 +10,13 @@
 //
 // Data sources:
 //   1. Usage Monitor `GET /api/agent-model-mix?days=7`
-//      Bearer USAGE_READ_TOKEN.  May 404 / connection-refused if the sibling
+//      Authorized with the USAGE_READ_TOKEN env var.  May 404 / connection-refused if the sibling
 //      PR (Usage-Monitor `claude/agent-model-mix-endpoint`) is not yet
 //      merged/deployed -- handled gracefully as "unavailable this week".
 //   2. Sentry `agent-sessions` project, events endpoint, dataset=ourlogs,
 //      query `message:*subagent*` (matches `claude_code.subagent_completed`;
 //      an exact `message:subagent_completed` query returns zero results).
-//      Bearer SENTRY_AUTH_TOKEN_FULLSCOPE (plain SENTRY_AUTH_TOKEN 403s on
+//      Authorized with the SENTRY_AUTH_TOKEN_FULLSCOPE env var (plain SENTRY_AUTH_TOKEN 403s on
 //      this endpoint -- confirmed against this org).
 //
 // Usage:
@@ -67,8 +67,8 @@ const REQUEST_TIMEOUT_MS = 20_000;
 // recurring post, so it threads in a single standing topic.
 const DIGEST_TOPIC = "fleet-mode digest";
 // cron and launchd run with a minimal PATH, so call the CLI by absolute path.
-const AGENT_SYNC_BIN =
-  process.env.AGENT_SYNC_BIN || `${process.env.HOME}/.local/bin/agent-sync`;
+const SIMPLE_CHAT_BIN =
+  process.env.SIMPLE_CHAT_BIN || `${process.env.HOME}/.local/bin/simple-chat`;
 
 // Claude-family tier vocabulary, mirroring
 // ~/.claude/hooks/subagent-economy-pretooluse.py's resolve_tier: bare tier
@@ -407,7 +407,7 @@ function postToZulip(text) {
   // Zulip needs a channel AND a topic on every message, so the topic is passed
   // explicitly rather than left to the transport.
   const result = spawnSync(
-    AGENT_SYNC_BIN,
+    SIMPLE_CHAT_BIN,
     ["post", "--as", "CLAUDE", "--topic", DIGEST_TOPIC, text],
     {
       env: { ...process.env },
@@ -416,11 +416,11 @@ function postToZulip(text) {
     },
   );
   if (result.error) {
-    throw new Error(`agent-sync failed to launch: ${result.error.message}`);
+    throw new Error(`simple-chat failed to launch: ${result.error.message}`);
   }
   if (result.status !== 0) {
     throw new Error(
-      `agent-sync exited ${result.status}: ${(result.stderr || "").trim()}`,
+      `simple-chat exited ${result.status}: ${(result.stderr || "").trim()}`,
     );
   }
   return result.stdout;
@@ -462,7 +462,7 @@ async function main() {
     process.exit(0);
   }
 
-  log("posting via agent-sync, to the channel the CLI resolves");
+  log("posting via simple-chat, to the channel the CLI resolves");
   postToZulip(message);
   log("posted.");
 }

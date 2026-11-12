@@ -6,6 +6,7 @@
 #   1. Copies scripts/fleet_rag/ (no tests, no __pycache__), scripts/recall, scripts/recall-tunnel,
 #      scripts/fleet-recall-mcp.py and scripts/fleet-rag.py from this checkout into
 #      $FLEET_RAG_HOME (default $HOME/apps/fleet-rag/) and creates state/ cache/ logs/ there.
+#      Includes only fleet_secrets/{__init__.py,core.py} for scoped reads; no secrets CLI.
 #   2. Symlinks $HOME/.local/bin/recall -> <install root>/recall and $HOME/.local/bin/recall-tunnel
 #      -> <install root>/recall-tunnel, always.  It also links $HOME/apps/mac-collab/{recall,
 #      recall-tunnel} when that directory already exists (agent shells used to prepend
@@ -19,9 +20,9 @@
 #      The harnesses with a different config format (OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax, fx)
 #      go through `python3 -m fleet_lanes.install_mcp`, which this script calls with --home "$HOME"; it writes
 #      each tool's native shape, skips a tool that is not installed, and leaves a hand-registered entry alone.
-#      Clutch is not touched here: it carries fleet-recall as a native agent preset.  agent-sync is not
-#      registered here (run install_mcp with --with-simple-chat; docs/protocols/agent-sync-mcp.md).
-#   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py into
+#      Clutch is not touched here: it carries fleet-recall as a native agent preset.  simple-chat is not
+#      registered here (run install_mcp with --with-simple-chat; docs/protocols/simple-tools-mcp.md).
+#   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py + server.py into
 #      $HOME/apps/seat-mcp/seat_mcp/ and prints the pm2 restart command (does not run it).
 #   5. With --hooks, copies scripts/hooks/fleet-recall-session-start.sh and
 #      fleet-recall-stop.py into $HOME/.claude/hooks/ and appends one matcher entry each to
@@ -109,7 +110,7 @@ mode_word() {
 
 install_files() {
   local missing=0
-  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py; do
+  for f in fleet_rag recall recall-tunnel fleet-recall-mcp.py fleet-rag.py fleet_secrets/__init__.py fleet_secrets/core.py linear-board/board simple_tools/secretscan.py; do
     if [[ ! -e "$SRC/$f" ]]; then
       say "MISSING $SRC/$f (this checkout is incomplete; the install would fail)"
       missing=1
@@ -117,6 +118,7 @@ install_files() {
   done
   if [[ "$DRY" -eq 1 ]]; then
     say "plan: rsync --delete $SRC/fleet_rag/ -> $DST/fleet_rag/ (excluding tests, __pycache__)"
+    say "plan: copy only fleet_secrets/__init__.py and core.py -> $DST/fleet_secrets/"
     say "plan: copy recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py -> $DST/ (chmod +x recall, recall-tunnel, mcp server)"
     say "plan: mkdir -p $DST/{state,cache,logs}"
     note "$DST" "planned"
@@ -129,23 +131,34 @@ install_files() {
   mkdir -p "$DST/state" "$DST/cache" "$DST/logs"
   rsync -a --delete --exclude 'tests' --exclude '__pycache__' --exclude '*.pyc' \
     "$SRC/fleet_rag/" "$DST/fleet_rag/"
+  rm -rf "$DST/fleet_secrets"
+  mkdir -p "$DST/fleet_secrets"
+  cp "$SRC/fleet_secrets/__init__.py" "$SRC/fleet_secrets/core.py" "$DST/fleet_secrets/"
+  chmod 644 "$DST/fleet_secrets/__init__.py" "$DST/fleet_secrets/core.py"
+  # fleet_rag.linear_board loads the board CLI from ../linear-board, and recall's remote mode loads
+  # ../simple_tools/secretscan.py;  both are code the installed copy needs (AFC-677).
+  rsync -a --delete --exclude 'test_*.py' --exclude '__pycache__' --exclude 'testdata' \
+    "$SRC/linear-board/" "$DST/linear-board/"
+  mkdir -p "$DST/simple_tools"
+  cp "$SRC/simple_tools/secretscan.py" "$DST/simple_tools/secretscan.py"
+  chmod 644 "$DST/simple_tools/secretscan.py"
   cp -p "$SRC/recall" "$DST/recall"
   cp -p "$SRC/recall-tunnel" "$DST/recall-tunnel"
   cp -p "$SRC/fleet-recall-mcp.py" "$DST/fleet-recall-mcp.py"
   cp -p "$SRC/fleet-rag.py" "$DST/fleet-rag.py"
   chmod +x "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
-  say "installed $DST (fleet_rag/, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
+  say "installed $DST (fleet_rag/, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
   note "$DST" "installed"
 }
 
 uninstall_files() {
   if [[ "$DRY" -eq 1 ]]; then
-    say "plan: remove $DST/fleet_rag/, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py (keep state/ cache/ logs/)"
+    say "plan: remove $DST/fleet_rag/, fleet_secrets/, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py (keep state/ cache/ logs/)"
     note "$DST" "planned-remove"
     return 0
   fi
   if [[ -d "$DST" ]]; then
-    rm -rf "$DST/fleet_rag" "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
+    rm -rf "$DST/fleet_rag" "$DST/fleet_secrets" "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
     say "removed code from $DST (state/ cache/ logs/ kept; delete by hand if unwanted)"
     note "$DST" "removed"
   else
@@ -387,10 +400,15 @@ PY
 }
 
 register_all() {
-  local action="$1" r
+  local action="$1" r gemini_create=1
+  # The installer creates ~/.gemini/config when run on its own.  The reconciler sets
+  # FLEET_RAG_SKIP_ABSENT_GEMINI=1 so a host with no Gemini tool home stays that way.
+  if [[ "${FLEET_RAG_SKIP_ABSENT_GEMINI:-}" == "1" && ! -d "$HOME_DIR/.gemini" ]]; then
+    gemini_create=0
+  fi
   r="$(json_cfg "$CLAUDE_JSON" "$action" 0)";  say "$CLAUDE_JSON: $r";  note "$CLAUDE_JSON" "$r"
   r="$(json_cfg "$CURSOR_JSON" "$action" 0)";  say "$CURSOR_JSON: $r";  note "$CURSOR_JSON" "$r"
-  r="$(json_cfg "$GEMINI_JSON" "$action" 1)";  say "$GEMINI_JSON: $r";  note "$GEMINI_JSON" "$r"
+  r="$(json_cfg "$GEMINI_JSON" "$action" "$gemini_create")";  say "$GEMINI_JSON: $r";  note "$GEMINI_JSON" "$r"
   r="$(toml_cfg "$CODEX_TOML" "$action" "")";  say "$CODEX_TOML: $r";  note "$CODEX_TOML" "$r"
   # Grok's existing [mcp_servers.X] blocks use command / args / enabled.
   r="$(toml_cfg "$GROK_TOML" "$action" "enabled = true")"; say "$GROK_TOML: $r"; note "$GROK_TOML" "$r"
@@ -423,7 +441,7 @@ FAILED_MORE=0
 # ---------------------------------------------------------------- step 4: seat-mcp
 
 install_seat_mcp() {
-  local files=(tools.py recall_bridge.py)
+  local files=(tools.py recall_bridge.py server.py)
   for f in "${files[@]}"; do
     if [[ ! -f "$SRC/seat-mcp/seat_mcp/$f" ]]; then
       say "MISSING $SRC/seat-mcp/seat_mcp/$f" >&2
@@ -431,14 +449,14 @@ install_seat_mcp() {
     fi
   done
   if [[ "$DRY" -eq 1 ]]; then
-    say "plan: copy seat_mcp/{tools.py,recall_bridge.py} -> $SEAT_DST/"
+    say "plan: copy seat_mcp/{tools.py,recall_bridge.py,server.py} -> $SEAT_DST/"
     note "$SEAT_DST" "planned"
   else
     mkdir -p "$SEAT_DST"
     for f in "${files[@]}"; do
       cp -p "$SRC/seat-mcp/seat_mcp/$f" "$SEAT_DST/$f"
     done
-    say "installed $SEAT_DST/{tools.py,recall_bridge.py}"
+    say "installed $SEAT_DST/{tools.py,recall_bridge.py,server.py}"
     note "$SEAT_DST" "installed"
   fi
   say "next: pm2 restart seat-mcp   # not run by this script"

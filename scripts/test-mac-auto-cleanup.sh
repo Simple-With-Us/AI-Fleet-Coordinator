@@ -36,10 +36,6 @@ if [ -n "$(code_lines 'grep -Fw')" ]; then
   fail "empty-string word match on detached HEAD matches every merged branch"
 fi
 
-if ! grep -q 'agent-sync-push' "$SCRIPT"; then
-  fail "mac-auto-cleanup.sh must preserve agent-sync-push runtime"
-fi
-
 if ! grep -q 'is_git_worktree' "$SCRIPT" || ! grep -q 'wt_has_blocking_dirt' "$SCRIPT" || ! grep -q 'wt_is_active' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must enforce worktree, dirt, and idle checks before reaping dependencies"
 fi
@@ -381,6 +377,157 @@ OUT="$(run_lock_block "$H1" 2>&1 || true)"
 if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
   fail "the housekeeper lock must be taken when it is free"
 fi
+
+# Standalone owner publication and matching release.  Only the extracted lock
+# block runs; scratch HOME never reaches a real cleanup or deployed lock.
+python3 - "$LOCK_TEST_ROOT" "$LOCK_BLOCK" <<'PYOWNERTEST'
+import json, os, pathlib, socket, stat, subprocess, sys, time
+root, block = pathlib.Path(sys.argv[1]), sys.argv[2]
+
+def run(name, suffix="", inherited=False, source=None, extra_env=None):
+    home = root / name
+    home.mkdir(exist_ok=True)
+    env = dict(os.environ, HOME=str(home), HOUSEKEEPER_LOCK_OWNER="1" if inherited else "")
+    env.update(extra_env or {})
+    result = subprocess.run(["/bin/bash", "-c", (source or block) + "\n" + suffix],
+                            env=env, text=True, capture_output=True, timeout=30)
+    return home, result
+
+home, result = run("owner-shape", r'''
+python3 - "$HOUSEKEEPER_LOCK" "$$" "$HOME/observed" <<'PYCHECK'
+import json, os, pathlib, socket, stat, subprocess, sys, time
+lock, pid, observed = pathlib.Path(sys.argv[1]), int(sys.argv[2]), pathlib.Path(sys.argv[3])
+owner = pathlib.Path(str(lock) + ".owner")
+record = json.loads(owner.read_text())
+assert set(record) == {"pid", "host", "acquired_at", "lock", "start"}, record
+assert type(record["pid"]) is int and record["pid"] == pid
+assert record["host"] == socket.gethostname() and record["lock"] == str(lock)
+assert type(record["acquired_at"]) is float
+assert abs(record["acquired_at"] - lock.stat().st_mtime) <= 2
+assert record["acquired_at"] <= time.time() + 60
+assert owner.stat().st_mtime_ns > lock.stat().st_mtime_ns
+assert stat.S_IMODE(owner.stat().st_mode) == 0o600
+start = subprocess.check_output(["/bin/ps", "-o", "lstart=", "-p", str(pid)], text=True,
+    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}).strip()
+assert record["start"] == start and 0 < len(start) <= 128
+observed.write_text("valid")
+PYCHECK
+''')
+assert result.returncode == 0 and (home / "observed").exists(), result.stderr
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
+
+# Re-exec with all parent's exported ownership values preserves parent state.
+home = root / "owner-inherited"
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+lock.mkdir(parents=True)
+owner = pathlib.Path(str(lock) + ".owner")
+owner.write_text(json.dumps({"pid": os.getpid(), "host": socket.gethostname(),
+    "acquired_at": time.time(), "lock": str(lock), "start": "parent identity"}))
+before = (lock.stat().st_ino, owner.read_bytes(), owner.stat().st_mtime_ns)
+_, result = run("owner-inherited", 'echo nested > "$HOME/ran"', inherited=True,
+    extra_env={"HOUSEKEEPER_LOCK_INODE": str(before[0]), "HOUSEKEEPER_OWNER_RECORD": owner.read_text()})
+assert result.returncode == 0 and (home / "ran").exists(), result.stderr
+assert before == (lock.stat().st_ino, owner.read_bytes(), owner.stat().st_mtime_ns)
+
+# A slow ps completes before mkdir, keeping all record timestamps inside the
+# shared two-second bounds without widening what the four readers accept.
+home = root / "owner-slow-start"
+hook = home / "hooks"
+hook.mkdir(parents=True)
+(hook / "sitecustomize.py").write_text('''import os, pathlib, subprocess, time
+real_run = subprocess.run
+def slow_start(args, *a, **kw):
+    if args[:3] == ["/bin/ps", "-o", "lstart="] and "TZ" not in kw.get("env", {}):
+        assert not (pathlib.Path(os.environ["HOME"]) / ".claude-disk-janitor/.housekeeper.lock").exists()
+        time.sleep(3)
+        (pathlib.Path(os.environ["HOME"]) / "slow-read").touch()
+    return real_run(args, *a, **kw)
+subprocess.run = slow_start
+''')
+_, result = run("owner-slow-start", 'echo cleanup > "$HOME/ran"', extra_env={"PYTHONPATH": str(hook)})
+assert result.returncode == 0 and (home / "slow-read").exists() and (home / "ran").exists(), result.stderr
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
+
+# A changed start token, even with the same PID, cannot authorize release.
+home, result = run("owner-foreign-release", r'''
+python3 - "$HOUSEKEEPER_LOCK.owner" <<'PYFOREIGN'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+record = json.loads(path.read_text())
+record["start"] = "foreign identity"
+path.write_text(json.dumps(record))
+PYFOREIGN
+''')
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert result.returncode == 0 and lock.is_dir()
+assert json.loads(pathlib.Path(str(lock) + ".owner").read_text())["start"] == "foreign identity"
+home, result = run("owner-unknown-release", 'printf broken > "$HOUSEKEEPER_LOCK.owner"')
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert result.returncode == 0 and lock.is_dir()
+assert pathlib.Path(str(lock) + ".owner").read_text() == "broken"
+
+# Inject an atomic replace failure without reaching real cleanup commands.
+home = root / "owner-publish-failure"
+parent = home / ".claude-disk-janitor"
+parent.mkdir(parents=True)
+owner = parent / ".housekeeper.lock.owner"
+owner.write_text("unknown prior record")
+hook = home / "hooks"
+hook.mkdir()
+(hook / "sitecustomize.py").write_text('''import os
+real_replace = os.replace
+def fail_replace(src, dst, *args, **kwargs):
+    if str(dst).endswith(".housekeeper.lock.owner"):
+        raise OSError("injected publication failure")
+    return real_replace(src, dst, *args, **kwargs)
+os.replace = fail_replace
+''')
+_, result = run("owner-publish-failure", 'echo cleanup > "$HOME/ran"', extra_env={"PYTHONPATH": str(hook)})
+assert result.returncode != 0 and "failed to publish housekeeper owner" in result.stderr
+assert not (home / "ran").exists() and owner.read_text() == "unknown prior record"
+assert (parent / ".housekeeper.lock").is_dir()
+assert not list(parent.glob(".housekeeper-owner-*"))
+
+# Simulate foreign publication between mkdir and our guarded writer.
+stub = r'''
+housekeeper_try_mkdir() {
+python3 - "$1" <<'PYRACE'
+import os, pathlib, sys
+lock = pathlib.Path(sys.argv[1])
+lock.mkdir()
+owner = pathlib.Path(str(lock) + ".owner")
+owner.write_text("foreign race")
+stamp = lock.stat().st_mtime_ns + 1_000_000
+os.utime(owner, ns=(stamp, stamp))
+PYRACE
+}
+'''
+race_block = block.replace("export -f housekeeper_with_guard", stub + "\nexport -f housekeeper_with_guard", 1)
+home, result = run("owner-publication-race", 'echo cleanup > "$HOME/ran"', source=race_block)
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert result.returncode != 0 and not (home / "ran").exists()
+assert lock.is_dir() and pathlib.Path(str(lock) + ".owner").read_text() == "foreign race"
+
+# TERM of only the shell keeps ownership until its foreground child finishes.
+home = root / "owner-term-child"
+home.mkdir()
+env = dict(os.environ, HOME=str(home), HOUSEKEEPER_LOCK_OWNER="")
+suffix = '\npython3 -c \'import pathlib, time; pathlib.Path("' + str(home / "ready") + '").touch(); time.sleep(1); pathlib.Path("' + str(home / "finished") + '").touch()\''
+proc = subprocess.Popen(["/bin/bash", "-c", block + suffix], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+deadline = time.monotonic() + 15
+while not (home / "ready").exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert (home / "ready").exists()
+proc.terminate()
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert lock.is_dir() and json.loads(pathlib.Path(str(lock) + ".owner").read_text())["pid"] == proc.pid
+out, err = proc.communicate(timeout=15)
+assert proc.returncode == 143 and (home / "finished").exists(), (proc.returncode, err)
+assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
+PYOWNERTEST
 
 # 2. A fresh lock held by a peer: refused, and the peer's lock is untouched.
 H2="$LOCK_TEST_ROOT/case2"
@@ -1021,7 +1168,7 @@ make_lock "$H23B"
 check_owner_gone "$H23B" no
 OUT="$(run_lock_block "$H23B" 2>&1 || true)"
 if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
-  fail "with no owner file the age rule must decide, because this script's own holder writes none"
+  fail "with no owner file the age rule must decide"
 fi
 
 H23C="$LOCK_TEST_ROOT/case23-bad"

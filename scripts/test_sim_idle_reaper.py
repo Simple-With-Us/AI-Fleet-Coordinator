@@ -700,7 +700,12 @@ class Reaper(Base):
         self.assertIn("--no-tag", argv)  # the #Alerts line starts with its severity, not a seat tag
         self.assertEqual(argv[argv.index("--channel") + 1], "Alerts")
         self.assertEqual(argv[argv.index("--topic") + 1], "sim-idle-reaper")
-        self.assertEqual(argv[-1], "SEVERE • sim-idle-reaper • x • y")
+        # The first line keeps the house format;  the second tags both Housekeepers and Jay (owner, Oct 29 2026).
+        self.assertEqual(
+            argv[-1],
+            "SEVERE • sim-idle-reaper • x • y\n@**BF-Housekeeper|1216054** @**GB-Housekeeper|1215533** @**Jay Wedgeworth|1211974**",
+        )
+        self.assertNotIn("@**all**", argv[-1])  # load is never an out-of-space issue
         self.assertIn("fleet alert posted", log)
 
     def test_fleet_alert_explicit_cli_override_wins_over_path(self):

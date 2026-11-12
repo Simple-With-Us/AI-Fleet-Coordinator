@@ -6,7 +6,7 @@ description: >-
 
 # Fleet mode
 
-> **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
+> **Runtime fork (Cursor).**  Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
 
 Fleet mode is not a special mode.  It is how every agent on this fleet is expected to work by default, on every platform, forever.  The trigger phrases exist only to *remind* an agent that has drifted back into grinding everything inline.
@@ -27,6 +27,8 @@ Where the two pull apart, say so rather than silently optimising for cost.
 **Pick the most affordable sufficiently competent model.**  *Sufficiently competent* means at least a 90% chance it finishes the task for no more total tokens than a pricier model would have needed.  Below that confidence, go up a tier.  Compare **total tokens for the finished task**, never price per token — a cheap model that needs three attempts already cost more than one competent attempt, plus the owner's time waiting for an answer that was not coming.
 
 **Escalate as freely as you delegate down.**  A money-path kernel, an ambiguous design call, or a security-subtle diff deserves a frontier child even from a cheap session.  If you can *name* a reason you will likely struggle, hand it up before burning turns — not after five failed attempts.
+
+A parent may choose a subagent that is more capable, higher-tier, or more expensive than itself whenever the task warrants it.  The parent model’s tier or price is not a ceiling.  Keep the expensive assignment narrow and provide only the context and tools it needs, where the platform allows.  A smaller context and toolset may reduce total cost, but savings are not guaranteed; the capability the task needs is sufficient reason to escalate.
 
 **Keep turns short.**  Twenty tool calls inline makes you unreachable for the whole grind, and the owner's next message either waits or lands mid-run and derails it.  Spawn workers and return.  End turns often rather than batching into one long one.
 

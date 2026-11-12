@@ -137,8 +137,10 @@ exists) · `infra` (PR gate only — do not require digest/publish jobs).
    `git clone https://github.com/Simple-With-Us/<repo>.git ~/Code/<App>`.
 3. If `~/Code/<App>` already has uncommitted product work, **do not**
    `git init` on top of it. Commit or move that work first.
-4. `code-main-keeper` auto-discovers new `~/Code/*` git repos. No edit needed
-   unless the folder should be denylisted (`code-main-keeper.sh` `SKIP_NAMES`).
+4. `code-main-keeper` fast-forwards only the repos on its allowlist and reports every
+   other `~/Code/*` clone without touching it (AFC-618).  Add the new app's
+   folder to `ALLOWLIST_DEFAULT` in `scripts/code-main-keeper.sh`, then copy that file to
+   `~/apps/code-main-keeper.sh`.
 5. Do **not** create `~/Code/copilot-worktrees/<App>/` or any other new folder under
    `~/Code`.  Lanes are per task and live under `~/apps/lanes` (Phase 2).
 

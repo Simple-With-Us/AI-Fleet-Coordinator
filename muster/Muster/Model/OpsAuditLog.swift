@@ -63,9 +63,12 @@ struct OpsAuditEntry: Decodable, Identifiable, Equatable {
     /// The state the row reads as:  done is a pass,  refused is drift,  failed is a failure.
     var state: CellState {
         switch result ?? "" {
+        case "submitted": return .unproven
         case "done": return .passed
         case "planned": return .passed
         case "refused": return .drift
+        // Muster's own row for a run whose helper could not be started:  nothing ran.
+        case "not-run": return .drift
         case "failed": return .missing
         default: return .unproven
         }

@@ -7,12 +7,11 @@
 #
 # ${SERVICE_PASSWORD_RECALLTOKEN} is Coolify's magic variable: it generates the bearer token and
 # shows it under the resource's environment variables.  Infisical is the source of truth
-# for the service's settings (see INFISICAL.md at the repo root): the server loads
-# QDRANT_* / TEI_* / RECALL_* from the "AI Fleet Coordinator" project at startup, so the
-# ${VAR} references below are bootstrap fallbacks only (used when no Infisical identity is
-# configured).  Set INFISICAL_ENVIRONMENT=prod here, and inject the Infisical machine
-# identity (INFISICAL_AUTOMATION_CLIENT_ID / INFISICAL_AUTOMATION_CLIENT_SECRET) so the
-# service reads prod.  No token value lives in this file.
+# for the service's settings (see INFISICAL.md at the repo root): its Infisical-read route verifies
+# a scoped read token before loading QDRANT_* / TEI_* / RECALL_* at startup.  Bind INFISICAL_TOKEN
+# for that route and, separately, INFISICAL_WRITE_TOKEN if admin settings writes are needed.
+# With no reader, the existing complete explicit-environment route remains; required
+# RECALL_API_TOKEN configuration still refuses startup if absent.  No token value lives here.
 #
 # Network reality check (2026-09-02, from a python:3.12-slim container on the `coolify` network):
 # http://100.69.77.26:6333/healthz -> 200 and http://100.69.77.26:8081/health -> 200.  The docker0
@@ -49,6 +48,8 @@ services:
         os.execv("/bin/bash", ["bash", boot])
     environment:
       - RECALL_API_TOKEN=${SERVICE_PASSWORD_RECALLTOKEN}
+      - INFISICAL_TOKEN=${INFISICAL_TOKEN}
+      - INFISICAL_WRITE_TOKEN=${INFISICAL_WRITE_TOKEN:-}
       - RECALL_REF=${RECALL_REF:-main}
       # bootstrap.sh installs this gitleaks release (GitHub release tarball, ~10 MB) so
       # recall_contribute is secret-gated exactly as on the Mac; a failed download is logged

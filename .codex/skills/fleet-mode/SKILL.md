@@ -25,6 +25,8 @@ Where the two pull apart, say so rather than silently optimising for cost.
 
 **Escalate as freely as you delegate down.**  A money-path kernel, an ambiguous design call, or a security-subtle diff deserves a frontier child even from a cheap session.  If you can *name* a reason you will likely struggle, hand it up before burning turns — not after five failed attempts.
 
+A parent may choose a subagent that is more capable, higher-tier, or more expensive than itself whenever the task warrants it.  The parent model’s tier or price is not a ceiling.  Keep the expensive assignment narrow and provide only the context and tools it needs, where the platform allows.  A smaller context and toolset may reduce total cost, but savings are not guaranteed; the capability the task needs is sufficient reason to escalate.
+
 **Keep turns short.**  Twenty tool calls inline makes you unreachable for the whole grind, and the owner's next message either waits or lands mid-run and derails it.  Spawn workers and return.  End turns often rather than batching into one long one.
 
 **Delegation protects work from interruption — that is its own saving.**  Interrupting a mid-grind session is not free: whatever was in flight may be abandoned half-done or started over later, and repeated work is wasted tokens on top of lost time.  Work that is out with sub-agents does not have that problem — the owner's message reaches you, the workers never notice.  So the more freely they interrupt, the MORE delegation pays.  That is a reason to delegate more, never a reason to ask them to interrupt less.

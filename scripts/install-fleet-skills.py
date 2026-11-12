@@ -14,12 +14,17 @@ The shared ~/.claude/skills home renders as CLAUDE, the only Claude seat.
 Usage:
     python3 scripts/install-fleet-skills.py              # repo trees AND tool homes
     python3 scripts/install-fleet-skills.py --repo-only  # repo trees only
+    python3 scripts/install-fleet-skills.py --home-only  # tool homes only
 
 --repo-only re-renders everything tracked or catalogued inside this checkout
 (skills/, docs/fleet-skills zips, .claude/.cursor/.grok skills, by-seat) and
 writes nothing under the home directory: no tool-home skill dirs and no fx
 scan-tree description folding.  Use it from a lane after editing the canonical
 pack, so a session started in this repo loads the same text the pack says.
+
+--home-only is the inverse: it writes tool homes that already exist and does
+not re-render the checkout.  The reconciler uses it so a host apply cannot
+dirty the git tree it was launched from.
 """
 
 from __future__ import annotations
@@ -31,7 +36,6 @@ import zipfile
 
 from fleet_skill_identity import (
     NEVER_INSTALL,
-    RENAMED_SKILL_OLD_NAMES,
     catalog_seats,
     catalog_skill_names,
     platform_installs,
@@ -142,19 +146,11 @@ def _zip_skill(zip_path: str, skill_name: str, md_path: str) -> bool:
     return True
 
 
-def _purge_retired(dest_base: str, *, install_target: bool = False) -> None:
-    """Delete the skills that must not live in dest_base.
-
-    A renamed-away skill name is purged only from install targets (seat homes, tool trees, by-seat copies).  It is never
-    purged from the canonical pack or the root skills tree: removing a renamed skill from the repo is a git operation,
-    and deleting a source copy here would lose local edits.
-    """
+def _purge_retired(dest_base: str) -> None:
+    """Delete the skills that must not live in dest_base."""
     if not dest_base or not os.path.isdir(dest_base):
         return
-    names = set(NEVER_INSTALL)
-    if install_target:
-        names |= RENAMED_SKILL_OLD_NAMES
-    for name in sorted(names):
+    for name in sorted(NEVER_INSTALL):
         path = os.path.join(dest_base, name)
         if os.path.isdir(path):
             shutil.rmtree(path)
@@ -168,7 +164,7 @@ def _install_skill_set(
 ) -> list[str]:
     written: list[str] = []
     os.makedirs(dest_base, exist_ok=True)
-    _purge_retired(dest_base, install_target=True)
+    _purge_retired(dest_base)
     for name, monet_src in sources.items():
         if not skill_allowed_for_seat(name, seat):
             leftover = os.path.join(dest_base, name)
@@ -194,7 +190,14 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="re-render only trees inside this checkout; never write the home directory",
     )
+    parser.add_argument(
+        "--home-only",
+        action="store_true",
+        help="write tool homes that already exist; do not re-render this checkout",
+    )
     args = parser.parse_args(argv)
+    if args.repo_only and args.home_only:
+        parser.error("--home-only and --repo-only cannot be combined")
 
     skill_names = catalog_skill_names(DOCS_SKILLS)
     print(f"Found {len(skill_names)} installable fleet skills in {DOCS_SKILLS}:")
@@ -206,11 +209,6 @@ def main(argv: list[str] | None = None) -> None:
         for name in skipped:
             print(f"  - {name}")
 
-    os.makedirs(ROOT_SKILLS, exist_ok=True)
-    os.makedirs(BY_SEAT, exist_ok=True)
-    _purge_retired(DOCS_SKILLS)
-    _purge_retired(ROOT_SKILLS)
-
     sources: dict[str, str] = {}
     for name in skill_names:
         src_md = os.path.join(DOCS_SKILLS, name, "SKILL.md")
@@ -218,44 +216,50 @@ def main(argv: list[str] | None = None) -> None:
             continue
         with open(src_md, encoding="utf-8") as f:
             sources[name] = f.read()
-        root_dest = os.path.join(ROOT_SKILLS, name)
-        os.makedirs(root_dest, exist_ok=True)
-        universal = specialize_universal(sources[name], skill_name=name)
-        _write_skill(os.path.join(root_dest, "SKILL.md"), universal)
-        _zip_skill(os.path.join(DOCS_SKILLS, f"{name}.zip"), name, src_md)
 
-    if args.repo_only:
-        print("\nHome-dir installs: skipped (--repo-only)")
-    else:
-        print("\nHome-dir installs:")
-        for dest, seat in platform_installs():
-            if not tool_home_exists(dest):
-                print(f"  {seat.tag:12}  skip (no tool home)  {dest}")
-                continue
+    if not args.home_only:
+        os.makedirs(ROOT_SKILLS, exist_ok=True)
+        os.makedirs(BY_SEAT, exist_ok=True)
+        _purge_retired(DOCS_SKILLS)
+        _purge_retired(ROOT_SKILLS)
+        for name, body in sources.items():
+            src_md = os.path.join(DOCS_SKILLS, name, "SKILL.md")
+            root_dest = os.path.join(ROOT_SKILLS, name)
+            os.makedirs(root_dest, exist_ok=True)
+            universal = specialize_universal(body, skill_name=name)
+            _write_skill(os.path.join(root_dest, "SKILL.md"), universal)
+            _zip_skill(os.path.join(DOCS_SKILLS, f"{name}.zip"), name, src_md)
+
+        print("\nRepo-tracked platform copies:")
+        for dest, seat in repo_platform_copies(REPO_ROOT):
             written = _install_skill_set(dest, sources, seat)
             print(f"  {seat.tag:12}  {dest}  ({len(written)} skills)")
 
-        rules = _install_always_on_rules()
-        print(f"  {'':12}  always-on rule files  ({len(rules)} rules)")
+        print("\nUpload packs: docs/fleet-skills/by-seat/<seat>/")
+        for seat in catalog_seats():
+            #  A retired seat's catalog copy is still rendered from the canonical pack:  a pack that
+            #  names a channel the realm no longer has is a stale consumer, and the retirement notice
+            #  comes from the renderer (it reads the seat's own retired block), not from a hand edit.
+            key = seat.seat_key or seat.tag.lower()
+            seat_root = os.path.join(BY_SEAT, key)
+            written = _install_skill_set(seat_root, sources, seat, zip_each=True)
+            note = "  (retired)" if seat.retired else ""
+            print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills){note}")
 
-    print("\nRepo-tracked platform copies:")
-    for dest, seat in repo_platform_copies(REPO_ROOT):
+    if args.repo_only:
+        print("\nHome-dir installs: skipped (--repo-only)")
+        return
+
+    print("\nHome-dir installs:")
+    for dest, seat in platform_installs():
+        if not tool_home_exists(dest):
+            print(f"  {seat.tag:12}  skip (no tool home)  {dest}")
+            continue
         written = _install_skill_set(dest, sources, seat)
         print(f"  {seat.tag:12}  {dest}  ({len(written)} skills)")
 
-    print("\nUpload packs: docs/fleet-skills/by-seat/<seat>/")
-    for seat in catalog_seats():
-        #  A retired seat's catalog copy is still rendered from the canonical pack:  a pack that
-        #  names a channel the realm no longer has is a stale consumer, and the retirement notice
-        #  comes from the renderer (it reads the seat's own retired block), not from a hand edit.
-        key = seat.seat_key or seat.tag.lower()
-        seat_root = os.path.join(BY_SEAT, key)
-        written = _install_skill_set(seat_root, sources, seat, zip_each=True)
-        note = "  (retired)" if seat.retired else ""
-        print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills){note}")
-
-    if args.repo_only:
-        return
+    rules = _install_always_on_rules()
+    print(f"  {'':12}  always-on rule files  ({len(rules)} rules)")
 
     print("\nFolded quoted descriptions in fx-scanned trees:")
     for raw in FX_SCAN_ROOTS:
