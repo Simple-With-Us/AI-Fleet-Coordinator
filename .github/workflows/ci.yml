@@ -657,6 +657,7 @@ jobs:
       timeout-minutes: 10
       run: |
         python3 scripts/test-deploy-mapped-worker.py
+        python3 scripts/test_worker_secret_sync.py
         python3 scripts/test-deploy-alert-workers.py
     # Hosted ST-MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
