@@ -984,7 +984,9 @@ def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
     The list is JSON, and every entry must be a session id:  a list with anything else in it is refused whole,
     before any call.  An empty list makes no call.  The answer names the session ids whose rows were closed now
     (`gone`) and the letter each one held (`labels`);  a chat whose row was closed already, or that was never
-    registered at that location, is simply not among them.  A refusal is the assigner's own answer, with its `code` (`gone_share_exceeded`) and `allowed_now`."""
+    registered at that location, is simply not among them.  `kept` names the chats the assigner left open
+    because their hook ran lately:  a chat in use is not gone, whoever says so (an assigner from before that
+    rule names none).  A refusal is the assigner's own answer, with its `code` (`gone_share_exceeded`) and `allowed_now`."""
     try:
         named = json.loads(args.gone)
     except ValueError:
@@ -1021,7 +1023,14 @@ def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
         if isinstance(row, Mapping)
     }
     labels.pop("", None)
-    return {"ok": True, "gone": sorted(labels), "count": len(labels), "labels": labels}
+    kept = [sid for sid in out.get("kept") or [] if isinstance(sid, str)]
+    return {
+        "ok": True,
+        "gone": sorted(labels),
+        "count": len(labels),
+        "labels": labels,
+        "kept": sorted(kept),
+    }
 
 
 def _make_parser() -> Any:
@@ -3445,12 +3454,15 @@ def report_gone(
         return {"gone": gone, "error": str(answer.get("error") or "no answer")[:200]}
     _save_json(path, {"at": now})
     closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
+    kept = {sid for sid in answer.get("kept") or [] if isinstance(sid, str)}
     for row in gone:
+        if row["session_id"] in kept:
+            continue  # the assigner left it open (its hook ran lately):  it is offered again on a later report
         chat = Chat(spec, env, where, row["session_id"], now=now, transport=transport, seat=seat)
         note = chat.read()
         if lettered(note) and _seconds(note.get("updated_at")) == row["seen"]:
             chat.write(dict(note, gone_at=now, touched_at=0))
-    return {"gone": gone, "closed": closed}
+    return {"gone": gone, "closed": closed, "kept": sorted(kept)}
 
 
 def report_gone_elsewhere(
@@ -3502,13 +3514,15 @@ def report_gone_elsewhere(
         refused = answer.get("code") == "gone_share_exceeded"
         save(kept, max(1, _allowed(answer.get("allowed_now"))) if refused else 0)
         return {"gone": fresh, "error": str(answer.get("error") or "no answer")[:200]}
-    save(kept + ids)
+    # A chat the assigner left open because its hook ran lately is not remembered as sent:  it is offered again.
+    in_use = {sid for sid in answer.get("kept") or [] if isinstance(sid, str)}
+    save(kept + [sid for sid in ids if sid not in in_use])
     closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
     labels = answer.get("labels")
     for row in fresh:
         label = labels.get(row["session_id"]) if isinstance(labels, Mapping) else ""
         row["label"] = label if isinstance(label, str) and LABEL_RE.fullmatch(label) else ""
-    return {"gone": fresh, "closed": closed}
+    return {"gone": fresh, "closed": closed, "kept": sorted(in_use)}
 
 
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
@@ -3646,11 +3660,18 @@ def _gone_for(
             stdout.write(head + "%d gone, not reported:  %s\n" % (len(gone), done["error"]))
             code = max(code, 1)
         else:
-            closed = set(done.get("closed") or [])
+            closed, in_use = set(done.get("closed") or []), set(done.get("kept") or [])
             for row in gone:
-                word = "reported" if row["session_id"] in closed else "not open"
+                sid = row["session_id"]
+                word = (
+                    "reported" if sid in closed else "in use, kept" if sid in in_use else "not open"
+                )
                 stdout.write("%s %s\n" % (word, tag(row)))
-            stdout.write(head + "%d gone, %d closed now\n" % (len(gone), len(closed)))
+            stdout.write(
+                head
+                + "%d gone, %d closed now, %d kept (in use)\n"
+                % (len(gone), len(closed), len(in_use))
+            )
     return code
 
 

@@ -2379,6 +2379,9 @@ class GoneReportTests(Base):
         self.addCleanup(patch.stop)
         self.t0 = time.time() - 5 * 3600  # every time below is in the past, as a note's stamps are
         self.window = PL.GONE_REPORT_SECONDS
+        # These tests report rows moments after they were registered.  The assigner keeps a row its chat touched
+        # lately, so that rule is turned off here;  the tests of the rule itself turn it back on.
+        self.fake.service.gone_report_live_minutes = 0
 
     def start(self, sid: str, at: float, *, spec=None, transport=None, source: str = "startup", **flags) -> dict:
         out, err = io.StringIO(), io.StringIO()
@@ -2607,6 +2610,40 @@ class GoneReportTests(Base):
         self.assertFalse(os.path.exists(PL.gone_stamp_path(self.env(), "CODEX", "codex", "mac")))
         self.assertIsNone(make_spec().gone_sessions)  # no platform reports gone chats unless its adapter says how
 
+    def test_a_chat_the_assigner_keeps_because_it_is_in_use_is_not_marked_and_is_offered_again(self) -> None:
+        self.fake.service.gone_report_live_minutes = 45  # the assigner's own rule
+        for sid in ("s-0001", "s-0002", "s-0003"):
+            self.start(sid, self.t0)
+        self.set_seen("s-0002", "2026-01-01T00:00:00.000Z")  # its hook has been quiet;  s-0001's ran a moment ago
+        self.gone = {"s-0001", "s-0002"}
+        with self.reports() as sent:
+            self.start("s-0004", self.t0 + self.window + 1)
+            self.assertEqual(sent[-1]["native_session_ids"], ["s-0001", "s-0002"])
+            self.assertEqual((self.row_state("s-0001"), self.row_state("s-0002")), ("active", "closed"))
+            self.assertNotIn("gone_at", self.note("s-0001"))  # in use:  not marked, so it is offered again
+            self.assertIn("gone_at", self.note("s-0002"))
+            self.start("s-0005", self.t0 + 2 * self.window + 2)
+            self.assertEqual(sent[-1]["native_session_ids"], ["s-0001"])
+            self.assertEqual(self.row_state("s-0001"), "active")
+            self.set_seen("s-0001", "2026-01-01T00:00:00.000Z")
+            self.start("s-0006", self.t0 + 3 * self.window + 3)
+        self.assertEqual(self.row_state("s-0001"), "closed")
+        self.assertIn("gone_at", self.note("s-0001"))
+        # The verb says which chats the assigner kept.
+        self.start("s-0007", self.t0 + 3 * self.window + 4)
+        self.gone = {"s-0003"}
+        code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + 5 * self.window)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines(), ["in use, kept Faux %s (s-0003, mac)" % self.note("s-0003")["label"],
+                                            "Faux gone report, mac:  1 gone, 0 closed now, 1 kept (in use)"])
+        # An assigner from before the rule names no kept chats:  every chat it answered for is marked, as before.
+        code, answer = self.registry("report-gone", "--platform", "faux", "--location", "mac", "--gone=[]")
+        self.assertEqual((code, answer), (0, {"ok": True, "gone": [], "count": 0}))
+        with mock.patch.object(PL, "_call_api", return_value={"closed": [], "count": 0, "live": 3}):
+            code, answer = self.registry("report-gone", "--platform", "faux", "--location", "mac",
+                                         "--gone=" + json.dumps(["s-0003"]))
+        self.assertEqual((code, answer["kept"]), (0, []))
+
     def test_a_chat_reported_gone_that_prompts_again_registers_again(self) -> None:
         self.start("s-0001", self.t0)
         self.start("s-0002", self.t0)
@@ -2657,10 +2694,10 @@ class GoneReportTests(Base):
             code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 30)
             self.assertEqual(code, 0, out)
             self.assertEqual(out.splitlines(), ["reported Faux %s (s-0001, mac)" % label,
-                                                "Faux gone report, mac:  1 gone, 1 closed now"])
+                                                "Faux gone report, mac:  1 gone, 1 closed now, 0 kept (in use)"])
             self.assertEqual(self.row_state("s-0001"), "closed")
             code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 40)
-            self.assertEqual((code, out), (0, "Faux gone report, mac:  0 gone, 0 closed now\n"))  # idempotent
+            self.assertEqual((code, out), (0, "Faux gone report, mac:  0 gone, 0 closed now, 0 kept (in use)\n"))
         self.assertEqual(len(sent), 1)
 
     def test_a_chat_the_assigner_closed_already_is_not_named_twice(self) -> None:
@@ -2734,7 +2771,7 @@ class GoneReportTests(Base):
         argv = ["report-gone", "--platform", "faux", "--location", "mac"]
         with self.reports() as sent:
             code, answer = self.registry(*argv, "--gone=" + json.dumps(["s-0001", "s-0001", "s-7777"]))
-        self.assertEqual((code, answer), (0, {"ok": True, "gone": ["s-0001"], "count": 1,
+        self.assertEqual((code, answer), (0, {"ok": True, "gone": ["s-0001"], "count": 1, "kept": [],
                                               "labels": {"s-0001": self.note("s-0001")["label"]}}))
         self.assertEqual(sent, [{"platform": "faux", "verified_host": "mac", "profile_scope": "default",
                                  "native_session_ids": ["s-0001", "s-7777"]}])
@@ -2781,6 +2818,7 @@ class GoneElsewhereTests(Base):
         self.addCleanup(patch.stop)
         self.t0 = time.time() - 5 * 3600
         self.window = PL.GONE_REPORT_SECONDS
+        self.fake.service.gone_report_live_minutes = 0  # as in GoneReportTests:  on again where it is tested
 
     def start(self, sid: str, at: float, *, transport=None, **flags) -> dict:
         out, err = io.StringIO(), io.StringIO()
@@ -2864,6 +2902,26 @@ class GoneElsewhereTests(Base):
             self.start("m-0005", self.t0 + 4 * self.window + 4)
         self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"], ["r-0002"], ["r-0001"]])
         self.assertEqual(self.row_state("r-0001", "server"), "closed")
+
+    def test_a_chat_elsewhere_that_is_in_use_is_kept_and_not_remembered_as_sent(self) -> None:
+        self.fake.service.gone_report_live_minutes = 45  # the assigner's own rule
+        for sid in ("r-0001", "r-0002", "r-0003", "r-0004"):
+            self.server_chat(sid)
+        self.set_seen("r-0002", "2026-01-01T00:00:00.000Z")  # quiet;  r-0001's hook ran a moment ago
+        self.elsewhere = {"server": ["r-0001", "r-0002"]}
+        with self.reports() as sent:
+            self.start("m-0001", self.t0)
+            self.assertEqual(sent[-1]["native_session_ids"], ["r-0001", "r-0002"])
+            self.assertEqual((self.row_state("r-0001", "server"), self.row_state("r-0002", "server")),
+                             ("active", "closed"))
+            self.assertEqual(self.stamp()["sent"], ["r-0002"])  # the kept one is offered again
+            self.start("m-0002", self.t0 + self.window + 1)
+            self.assertEqual(sent[-1]["native_session_ids"], ["r-0001"])
+            self.assertEqual(self.row_state("r-0001", "server"), "active")
+            self.set_seen("r-0001", "2026-01-01T00:00:00.000Z")
+            self.start("m-0003", self.t0 + 2 * self.window + 2)
+        self.assertEqual(self.row_state("r-0001", "server"), "closed")
+        self.assertEqual(sorted(self.stamp()["sent"]), ["r-0001", "r-0002"])
 
     def test_the_other_locations_report_has_its_own_window(self) -> None:
         self.server_chat("r-0001")
@@ -2964,10 +3022,10 @@ class GoneElsewhereTests(Base):
             code = PL.gone_main(["--platform", "faux", "--apply"], self.env(), out, now=self.t0, platform="darwin")
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(out.getvalue().splitlines(), [
-            "Faux gone report, mac:  0 gone, 0 closed now",
+            "Faux gone report, mac:  0 gone, 0 closed now, 0 kept (in use)",
             "reported Faux %s (01234567, server)" % label,  # the assigner's answer names the letter it freed
             "not open Faux - (r-7777, server)",
-            "Faux gone report, server:  2 gone, 1 closed now",
+            "Faux gone report, server:  2 gone, 1 closed now, 0 kept (in use)",
         ])
         self.assertEqual(len(sent), 1)
         self.assertEqual(self.row_state("0123456789abcdef-remote", "server"), "closed")

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -906,6 +907,9 @@ class GoneChatsTests(HookBase):
         super().setUp()
         self.t0 = time.time() - 5 * 3600
         self.due = self.t0 + PL.GONE_REPORT_SECONDS + 1
+        # These tests report rows moments after they were registered.  The assigner keeps a row its chat touched
+        # lately, so that rule is turned off here;  the tests of the rule itself turn it back on.
+        self.fake.service.gone_report_live_minutes = 0
 
     def archived_record(self, host: str, cli: str, archived: bool = True, title: str = "Secret Title") -> str:
         return write(self.home, host, {"sessionId": host, "cliSessionId": cli, "isArchived": archived,
@@ -1046,6 +1050,9 @@ class GoneElsewhereTests(HookBase):
         super().setUp()
         self.t0 = time.time() - 5 * 3600
         self.due = self.t0 + PL.GONE_REPORT_SECONDS + 1
+        # These tests report rows moments after they were registered.  The assigner keeps a row its chat touched
+        # lately, so that rule is turned off here;  the tests of the rule itself turn it back on.
+        self.fake.service.gone_report_live_minutes = 0
         self.server_home = os.path.join(self.tmp.name, "server-home")
         os.makedirs(self.server_home)
 
@@ -1198,6 +1205,31 @@ class GoneElsewhereTests(HookBase):
         self.assertEqual(sent[-1]["native_session_ids"], ["r-0001", "r-0002"])
         self.assertEqual([self.row_state("r-000%d" % n, "server") for n in (1, 2, 3)],
                          ["closed", "closed", "active"])
+
+    def test_a_server_chat_that_is_still_in_use_keeps_its_letter_and_is_offered_again(self) -> None:
+        self.fake.service.gone_report_live_minutes = 45  # the assigner's own rule
+        for sid in ("r-0001", "r-0002", "r-0003", "r-0004"):
+            self.server_chat(sid)
+        self.record("local_aaaaaaaa-0001", "r-0001")  # archived in the app, and its hook ran a moment ago
+        with self.reports() as sent:
+            self.begin("m-0001", now=self.t0)
+            self.assertEqual(sent[-1]["native_session_ids"], ["r-0001"])
+            self.assertEqual(self.row_state("r-0001", "server"), "active")
+            stamp = PL._read_json(PL.gone_stamp_path(self.env(), "CLAUDE", "claude", "server"))
+            self.assertEqual(stamp["sent"], [])  # not remembered as sent:  it is offered again
+            self.begin("m-0002", now=self.due)
+            self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"], ["r-0001"]])
+            self.assertEqual(self.row_state("r-0001", "server"), "active")
+            # Once its hook has been quiet for longer than the assigner's window, the next report closes it.
+            conn = sqlite3.connect(self.fake.db)
+            with conn:
+                conn.execute("UPDATE sessions SET last_seen_at = '2026-01-01T00:00:00.000Z'"
+                             " WHERE native_session_id = 'r-0001'")
+            conn.close()
+            self.begin("m-0003", now=self.due + PL.GONE_REPORT_SECONDS + 1)
+        self.assertEqual(self.row_state("r-0001", "server"), "closed")
+        stamp = PL._read_json(PL.gone_stamp_path(self.env(), "CLAUDE", "claude", "server"))
+        self.assertEqual(stamp["sent"], ["r-0001"])
 
     def test_the_verb_shows_both_locations(self) -> None:
         self.server_chat("0123456789abcdef-0001")

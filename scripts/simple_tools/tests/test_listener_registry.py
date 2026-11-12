@@ -451,6 +451,25 @@ class OneWriterTest(RegistryApiTest):
     reopen no longer imports a client module, and the one Sweeper ends stale replaced letters
     for every platform."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        # The share tests below report rows the moment they are registered.  A row seen that lately is one the
+        # handler keeps (its chat is in use), so that rule is off here;  the tests of the rule turn it on.
+        self.service.gone_report_live_minutes = 0
+
+    def seen(self, sid: str, minutes_ago: float) -> None:
+        """Set when a row was last seen (its chat's hook last touched it)."""
+        when = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat(timespec="milliseconds")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE sessions SET last_seen_at = ? WHERE native_session_id = ?",
+                    (when.replace("+00:00", "Z"), sid),
+                )
+        finally:
+            conn.close()
+
     def gone(self, sids: list[str], **extra: Any) -> tuple[int, dict[str, Any]]:
         return self.call(
             "OPERATOR",
@@ -577,6 +596,51 @@ class OneWriterTest(RegistryApiTest):
         # Half is allowed at the default share.
         status, answer = self.gone(["sess-1", "sess-2"])
         self.assertEqual((status, answer["count"]), (200, 2), answer)
+
+    def test_report_gone_keeps_a_row_its_chat_touched_lately(self) -> None:
+        # A chat in use is not gone, whoever says so:  the reporting host is often not the host the chat runs on.
+        del self.service.gone_report_live_minutes  # the service's own rule:  45 minutes
+        self.assertEqual(RG.DEFAULT_GONE_REPORT_LIVE_MINUTES, 45)
+        self.create_store()
+        others = ["other-%d" % n for n in range(1, 5)]
+        for sid in ("busy-1", "busy-2", "quiet-1", "quiet-2", *others):
+            self.register("CLAUDE", sid)
+        self.seen("busy-2", 44)  # inside the window
+        self.seen("quiet-1", 46)  # just outside it
+        self.seen("quiet-2", 600)
+        status, answer = self.gone(["busy-1", "busy-2", "quiet-1", "quiet-2", "never-registered"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(sorted(row["native_session_id"] for row in answer["closed"]), ["quiet-1", "quiet-2"])
+        self.assertEqual((answer["kept"], answer["kept_count"]), (["busy-1", "busy-2"], 2))
+        # The keys a caller from before this rule reads are as they were.
+        self.assertEqual((answer["count"], answer["live"]), (2, 8))
+        self.assertEqual(self.open_sids(), {"busy-1", "busy-2", *others})
+        # Once its hook has been quiet for longer than the window, the same report closes it.
+        self.seen("busy-1", 50)
+        status, answer = self.gone(["busy-1", "busy-2"])
+        self.assertEqual((status, answer["count"], answer["kept"]), (200, 1, ["busy-2"]), answer)
+
+    def test_report_gone_counts_no_kept_row_against_the_share(self) -> None:
+        del self.service.gone_report_live_minutes
+        self.create_store()
+        for sid in ("sess-1", "sess-2", "sess-3", "sess-4"):
+            self.register("CLAUDE", sid)
+        self.seen("sess-1", 120)
+        # Three of four live rows are named, which the share would refuse:  two are in use, so one is asked of it.
+        status, answer = self.gone(["sess-1", "sess-2", "sess-3"])
+        self.assertEqual((status, answer["count"], answer["kept"]), (200, 1, ["sess-2", "sess-3"]), answer)
+        # A report that names only rows in use closes nothing and is not a refusal.
+        status, answer = self.gone(["sess-2", "sess-3", "sess-4"])
+        self.assertEqual((status, answer["closed"], answer["kept_count"]), (200, [], 3), answer)
+        # A row with no time at all is not known to be in use:  it is closed as before.
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute("UPDATE sessions SET last_seen_at = '' WHERE native_session_id = 'sess-4'")
+        finally:
+            conn.close()
+        status, answer = self.gone(["sess-4"])
+        self.assertEqual((status, answer["count"], answer["kept"]), (200, 1, []), answer)
 
     def test_report_gone_may_close_a_hosts_last_chat(self) -> None:
         self.create_store()
