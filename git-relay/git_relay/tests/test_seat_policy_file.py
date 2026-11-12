@@ -251,6 +251,9 @@ class SeatPolicyFile(unittest.TestCase):
         # rendered digest as the exact-scope pin.  What this test guards:  no bare "*",
         # no non-owner/* pattern, and no per-seat variation.
         reviewed = SEATS["swu-claude"]["repos"]
+        # Independent of the file's own content:  the approved scope is exactly two
+        # namespaces (owner 2026-11-01).  The digest pin then holds their exact values.
+        self.assertEqual(len(reviewed), 2)
         for slug, cfg in SEATS.items():
             self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
