@@ -178,7 +178,7 @@ final class OneListenerCutoverTests: XCTestCase {
         let claude = try XCTUnwrap(model.seats.first { $0.seat == "CLAUDE" })
         XCTAssertFalse(claude.settingsEditable)
         let reason = try XCTUnwrap(claude.settingsReadOnlyReason)
-        XCTAssertEqual(reason, "Held by the server eavesdropper.\u{00A0} Its settings live on the server listener, not in the Mac's file, so they are not edited here.")
+        XCTAssertEqual(reason, "Held by the server eavesdropper.\u{00A0} Its settings live on the server listener, not in the Mac's file, so they are changed under Server Eavesdropper Settings, through Show Plan and Touch ID.")
         // A Mac seat under the old partition is still editable.
         let old = WakeSettingsBuilder.build(
             sources(status: staleStatus(updated: lastWritten), partition: beforeCutover, readAt: lastWritten + 36_000))
