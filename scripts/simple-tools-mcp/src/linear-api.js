@@ -2,6 +2,8 @@
 import { Kind, print } from "graphql";
 import { ToolError, okResult, sha256Hex, stableJson, scanSecret, newNonce } from "./contract.js";
 import { LinearError, linearClean, linearEnvelope, linearFieldErrors, Q_ISSUE } from "./linear.js";
+import { compactLinearGraphql, splitFullArg, toolWantsCompact } from "./list-presentation.js";
+import { outboundGap } from "./outbound-gap.js";
 import { prepareGraphql } from "./linear-graphql.js";
 
 const PROTECTED_LABEL = /^(?:claimed:|seat:|stale-claim$)/i;
@@ -81,13 +83,21 @@ export async function apiSchema(tools, args) {
   }, { max_chars: 64000, operation: "schema" });
 }
 
-export async function apiQuery(tools, args) {
+export async function apiQuery(tools, args, { compactName = "linear_query" } = {}) {
+  const { args: workArgs, full } = splitFullArg(args);
   const client = tools.requireLinear();
-  const prepared = prepareGraphql(args.query, args.variables, "query");
+  const prepared = prepareGraphql(workArgs.query, workArgs.variables, "query");
   tools.scanLinear({ query: prepared.query, variables: JSON.stringify(prepared.variables) });
   await tools.reserveLinear("read");
-  const data = await tools.linearCall(() => client.call(prepared.query, prepared.variables, { allowPartial: true }));
-  return apiResult(tools, data, args);
+  let data = await tools.linearCall(() => client.call(prepared.query, prepared.variables, { allowPartial: true }));
+  if (toolWantsCompact(compactName, full)) {
+    const fieldErrors = data && typeof data === "object" ? data[linearFieldErrors] : undefined;
+    ({ data } = compactLinearGraphql(data));
+    if (fieldErrors && data && typeof data === "object") {
+      Object.defineProperty(data, linearFieldErrors, { value: fieldErrors, enumerable: false });
+    }
+  }
+  return apiResult(tools, data, { ...workArgs, max_chars: args.max_chars, operation: "query" });
 }
 
 async function protectLabels(tools, prepared) {
@@ -155,7 +165,9 @@ function tagInputs(tools, prepared, session) {
     if (!value || typeof value !== "object") return value;
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key,
       ["body", "description"].includes(key) && typeof child === "string"
-        ? tools.linearBody(child, session) : tagObject(child),
+        ? tools.linearBody(child, session)
+        // AFC-722 review:  a document's content gets the sentence gap but no seat tag line.
+        : key === "content" && typeof child === "string" ? outboundGap(child) : tagObject(child),
     ]));
   };
   const transform = (node) => {
@@ -167,7 +179,16 @@ function tagInputs(tools, prepared, session) {
       }
     } else if (node.kind === Kind.OBJECT) {
       for (const field of node.fields) {
-        if (["body", "description"].includes(field.name.value)) {
+        if (field.name.value === "content") {
+          if (field.value.kind === Kind.STRING) field.value.value = outboundGap(field.value.value);
+          else if (field.value.kind === Kind.VARIABLE) {
+            const name = field.value.name.value;
+            if (typeof prepared.variables[name] === "string" && !taggedVariables.has(name)) {
+              prepared.variables[name] = outboundGap(prepared.variables[name]);
+              taggedVariables.add(name);
+            }
+          }
+        } else if (["body", "description"].includes(field.name.value)) {
           if (field.value.kind === Kind.STRING) field.value.value = tools.linearBody(field.value.value, session);
           else if (field.value.kind === Kind.VARIABLE) {
             const name = field.value.name.value;

@@ -150,7 +150,7 @@ test("linear_query over max_chars is response_too_large, not {}", async () => {
   scripted(fake, {
     data: { viewer: { name: "Ada" }, projects: { nodes: [{ id: "p", name: "n".repeat(60000) }] } },
   });
-  const error = toolError(await tools.call("linear_query", { query: QUERY, max_chars: 60000 }), "linear_query", "response_too_large");
+  const error = toolError(await tools.call("linear_query", { query: QUERY, max_chars: 60000, full: true }), "linear_query", "response_too_large");
   assert.match(error.message, /max_chars/);
 });
 

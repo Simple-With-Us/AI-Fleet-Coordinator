@@ -200,7 +200,7 @@ class RegistryApiTest(unittest.TestCase):
         )
         self.assertEqual((status, marked["marked"]), (200, 1))
 
-        # relabel (Operator only):  forced, the session keeps a pair.
+        # relabel (Operator only):  forced with no parent, a pair holder keeps its pair (no pair of the lap is burned).
         status, relabelled = self.call(
             "OPERATOR",
             "POST",
@@ -208,7 +208,7 @@ class RegistryApiTest(unittest.TestCase):
             {**identity(SID_CLAUDE), "seat": "CLAUDE", "source": "test", "force": True},
         )
         self.assertEqual(status, 200, relabelled)
-        self.assertEqual(relabelled["outcome"], "relabelled")
+        self.assertEqual(relabelled["outcome"], "unchanged")
         self.assertEqual(len(relabelled["label"]), 2)
 
         # close, then reopen:  the pair comes back (a new generation of it).

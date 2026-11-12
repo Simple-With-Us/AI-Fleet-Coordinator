@@ -408,6 +408,12 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # Skill token budget (AFC-763).  The skill-token-lint job only warns.
+    # These tests are the gate: a broken estimator or a missed duplicate fails test.
+    - name: Skill token lint tests
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_skill_token_lint -v
     # The housekeeper locks, read from the one home:  the lock blocks are run
     # as written, with the ssh hop replaced by a fake, so the free, peer-held
     # and unmakeable paths are all covered and the destructive commands are
@@ -697,6 +703,9 @@ jobs:
     - name: Kody first-review prompter tests
       timeout-minutes: 10
       run: node --test scripts/kody-first-review/*.test.mjs
+    - name: Kody once-per-PR decision
+      timeout-minutes: 10
+      run: node --test scripts/kody-once/*.test.mjs
     - name: Autofix dispatcher tests
       timeout-minutes: 10
       run: node --test scripts/autofix-dispatcher/*.test.mjs
@@ -876,3 +885,20 @@ jobs:
           path: muster/.build/panel-screenshots
           if-no-files-found: error
           retention-days: 14
+
+  # AFC-763.  Prints the skill token table and shared-paragraph report.
+  # Findings are warnings: the script exits 0, and continue-on-error keeps a
+  # crash of this report off the required test check.  --strict is the later
+  # switch that fails the process.  Do not add it here until the budget is a gate.
+  skill-token-lint:
+    name: Skill token lint
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.15'
+    - name: Report skill token budget and shared paragraphs
+      run: python3 scripts/skill_token_lint.py --annotations

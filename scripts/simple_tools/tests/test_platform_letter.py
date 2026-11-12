@@ -393,13 +393,18 @@ class ContractTests(unittest.TestCase):
         self.assertTrue(PL._accepts(OR.register_session, "letter_space"))
         self.assertTrue(PL._accepts(OR.SessionRegistry.reopen, "source"))
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_a_reopen_that_would_turn_a_pair_chat_into_a_single_letter_one_is_refused_unwritten(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "registry.sqlite3")
             first = self.make(db, "s-0001")
+            filler = self.make(db, "s-0009")  # BB
             reg = OR.SessionRegistry(db)
             try:
                 reg.close(first["record_id"], source="test")
+                reg.close(filler["record_id"], source="test")
                 self.make(db, "s-0002")  # takes the pair s-0001 held
                 calls = []
 
@@ -484,11 +489,17 @@ class RegistrySideTests(Base):
         self.assertEqual((code, out["closed"]), (0, True))
         self.assertTrue(self.registry(*self.reg_argv("touch", "s-0001"))[1]["retired"])
         back = self.register("s-0001", title="Back Again")
-        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", label, 2, label))
+        # its own pair back as the same generation:  a return is not a second issue of the pair
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", label, 1, label))
         self.assertEqual(self.lookup("s-0001")["title"], "Back Again")
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_a_chat_whose_pair_went_to_another_chat_never_gets_a_single_letter(self) -> None:
         label = self.register("s-0001")["label"]
+        self.register("s-0009")  # BB
+        self.assertEqual(self.registry(*self.reg_argv("close", "s-0009"))[1]["closed"], True)
         self.assertEqual(self.registry(*self.reg_argv("close", "s-0001"))[1]["closed"], True)
         self.assertEqual(self.register("s-0002")["label"], label)  # the pair is free again, and taken
         code, back = self.register_raw("s-0001")
@@ -587,16 +598,18 @@ class RegistrySideTests(Base):
             for i in range(3):
                 self.register("s-%04d" % i)
                 self.set_seen("s-%04d" % i, seen(2 - i))
-            self.set_seen("s-0001", seen(3))  # the oldest
-            held = self.lookup("s-0001")["label"]
-            out = self.register("s-0099", now=now)
-        self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, held, 2))
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+            self.set_seen("s-0001", seen(3))  # the least recently seen, an hour older but not stale
+            code, out = self.registry(*self.reg_argv("register", "s-0099"), now=now)
+        # Owner, Nov 11 2026:  "ok just refuse actually is fine".  The chat is refused and no live chat loses its pair.
+        self.assertEqual(code, 5)
+        self.assertIn("main-chat pairs (AA to ZZ) are live", out["error"])
+        for i in range(3):
+            self.assertEqual(self.lookup("s-%04d" % i)["state"], "active")
 
-    def test_full_letters_evict_the_least_recently_seen(self) -> None:
+    def test_full_letters_refuse_and_evict_no_one(self) -> None:
         self.fill_the_letters_and_ask_for_one_more()
 
-    def test_the_eviction_does_not_depend_on_the_calendar(self) -> None:
+    def test_the_refusal_does_not_depend_on_the_calendar(self) -> None:
         """The same scenario with the real clock years away from the fixture's: the test cannot go red with the date."""
         years_on = OR.datetime(2031, 6, 1, tzinfo=OR.UTC).timestamp()
         with mock.patch("time.time", return_value=years_on):
@@ -613,7 +626,7 @@ class RegistrySideTests(Base):
                 self.set_seen(sid, "2026-01-01T00:00:00.000Z")
             code, out = self.registry(*self.reg_argv("register", "s-0001", letter_pick="lowest"))
         self.assertEqual(code, 5)
-        self.assertIn("in use", out["error"])
+        self.assertIn("are live", out["error"])
         for sid in ("op-0001", "op-0002"):
             self.assertEqual(self.lookup(sid, "mac")["state"], "active")
 
@@ -782,10 +795,15 @@ class HookTests(Base):
         self.assertNotIn("sessionTitle", out or {})  # already right
         self.assertEqual(self.lookup("s-0001")["title"], "Fleet Sweep")
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_clear_closes_and_reopen_checks_again(self) -> None:
         self.spec = make_spec(close_reasons=("clear", "logout", "other"), title_in_output=True)
         self.start("s-0001", session_title="Old Name")
         old = self.label("s-0001")
+        self.start("s-0009")  # BB
+        self.end("s-0009", "clear")
         self.end("s-0001", "clear")
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
         self.assertEqual(self.note("s-0001")["ended"]["reason"], "clear")
@@ -833,12 +851,17 @@ class HookTests(Base):
         out = self.prompt("s-0001", "write the tests", session_title="ZZ: Previous Chat")
         self.assertEqual(out["sessionTitle"], "%s: Write the Tests" % label)
 
+    # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
+    # free doubled pair issued the fewest times (owner, Nov 11 2026), so a freed AA is reissued only once BB caught up.
+    @mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA", "BB")})
     def test_a_letter_retired_while_open_is_reissued(self) -> None:
         self.start("s-0001")
         old = self.label("s-0001")
+        self.start("s-0009")  # BB
         self.prompt("s-0001", "first task", session_title="%s: New Chat" % old)
         reg = OR.SessionRegistry(self.db)
         try:
+            reg.close(self.lookup("s-0009")["record_id"], source="test")
             reg.close(self.lookup("s-0001")["record_id"], source="test")
         finally:
             reg.close_db()
