@@ -63,21 +63,23 @@ DEFAULTS: Mapping[str, Any] = {
     "agy_bin": "agy",
 }
 
-NEVER_RAN: frozenset[str] = frozenset({
-    "bad-session-id",
-    "no-ssh-destination",
-    "conversation-not-found",
-    "conversation-subagent",
-    "conversation-killed",
-    "session-cwd-gone",
-    "agy-not-found",
-    "unknown-host",
-    "unknown-platform",
-    "platform-handler-missing",
-    "platform-not-installed",
-    "bad-request",
-    WR.RELEASED,
-})
+NEVER_RAN: frozenset[str] = frozenset(
+    {
+        "bad-session-id",
+        "no-ssh-destination",
+        "conversation-not-found",
+        "conversation-subagent",
+        "conversation-killed",
+        "session-cwd-gone",
+        "agy-not-found",
+        "unknown-host",
+        "unknown-platform",
+        "platform-handler-missing",
+        "platform-not-installed",
+        "bad-request",
+        WR.RELEASED,
+    }
+)
 
 WAKE_TEXT = (
     "[AG wake] You were tagged in Zulip (wake id {wake_id}).\u00a0 {note}Read the message in "
@@ -105,8 +107,7 @@ def store_paths(env: Mapping[str, str]) -> list[Path]:
         return [Path(explicit)]
     home = str(env.get("HOME") or os.path.expanduser("~"))
     return [
-        Path(home) / ".gemini" / product / "conversation_summaries.db"
-        for product in STORE_PRODUCTS
+        Path(home) / ".gemini" / product / "conversation_summaries.db" for product in STORE_PRODUCTS
     ]
 
 
