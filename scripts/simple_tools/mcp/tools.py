@@ -1305,7 +1305,7 @@ class Tools:
         return work, limit, body_limit, full
 
     def _tool_zulip_read_topic(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, limit, body_limit = self._zulip_message_read_limits(args)
+        work, limit, body_limit, _full = self._zulip_message_read_limits(args)
         channel, topic = self._channel(work["channel"]), self._topic(work["topic"])
         since_id = work.get("since_id")
         messages = self._page(CLI.topic_narrow(channel, topic), since_id, limit)
@@ -1328,7 +1328,7 @@ class Tools:
         )
 
     def _tool_zulip_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, limit, body_limit = self._zulip_message_read_limits(args)
+        work, limit, body_limit, _full = self._zulip_message_read_limits(args)
         since_id = work.get("since_id")
         messages = self._page([{"operator": "is", "operand": "mentioned"}], since_id, limit)
         next_since_id = self._next_since(messages, since_id)
@@ -1656,7 +1656,7 @@ class Tools:
             )
 
     def _tool_zulip_dm_read(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, limit, body_limit = self._zulip_message_read_limits(args)
+        work, limit, body_limit, _full = self._zulip_message_read_limits(args)
         self._need_people(work)
         ids = [
             int(p["user_id"])
@@ -1822,7 +1822,7 @@ class Tools:
 
     # ---- messages -------------------------------------------------------------------------
     def _tool_zulip_get_message(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, _, body_limit = self._zulip_message_read_limits(args, schema_default=1)
+        work, _, body_limit, _full = self._zulip_message_read_limits(args, schema_default=1)
         message = OPS.get_message(self.agent, int(work["message_id"]))
         item = self._message_item(message, body_limit)
         flags = [f for f in message.get("flags") or [] if isinstance(f, str)]
@@ -1968,7 +1968,7 @@ class Tools:
 
     # ---- search ---------------------------------------------------------------------------
     def _tool_zulip_search(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        work, limit, body_limit = self._zulip_message_read_limits(args)
+        work, limit, body_limit, _full = self._zulip_message_read_limits(args)
         channel = self._channel(work["channel"]) if work.get("channel") is not None else None
         topic = self._topic(work["topic"]) if work.get("topic") is not None else None
         dm_with = list(work.get("dm_with") or [])
