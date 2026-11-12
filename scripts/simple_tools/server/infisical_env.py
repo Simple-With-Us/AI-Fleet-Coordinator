@@ -590,13 +590,23 @@ def is_seat_name(name: str) -> bool:
     return bool(SEAT_NAME_RE.fullmatch(name))
 
 
+def _strip_quotes(value: str) -> str:
+    """The daemon's own reading of a value (zulip._strip_quotes):  surrounding space, then one wrapping pair of
+    quotes.  A value synced as `"https://..."` is judged as the daemon will read it, not refused for its quotes."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
 def seat_value_usable(name: str, value: str) -> bool:
     """A routine pair's URL must pass the daemon's rule (routine_url_usable) and its key at least 32 characters, the same
-    floor the daemon applies;  anything else is refused for that seat alone."""
+    floor the daemon applies;  anything else is refused for that seat alone.  Both are read as the daemon reads them
+    (adapters.resolve_routine), without a wrapping pair of quotes."""
     if name.endswith("_ROUTINE_KEY"):
-        return bool(re.fullmatch(r"[!-~]{32,4096}", value.strip()))
+        return bool(re.fullmatch(r"[!-~]{32,4096}", _strip_quotes(value)))
     if name.endswith("_ROUTINE_URL"):
-        return routine_url_usable(value.strip())
+        return routine_url_usable(_strip_quotes(value))
     return True
 
 
