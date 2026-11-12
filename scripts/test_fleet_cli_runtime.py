@@ -158,7 +158,7 @@ class ActualRuntime(unittest.TestCase):
             )
         files = {}
         for name in sorted(candidates):
-            if not cls.receiver.allowed_path(name):
+            if not cls.receiver.shipped_path(name):
                 continue
             path = ROOT / name
             if path.is_symlink() or not path.is_file():
@@ -271,6 +271,9 @@ class ActualRuntime(unittest.TestCase):
         )
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
+        # The real bundle must fit what the sender ships, and the receiver cap must not trail the sender.
+        self.assertLessEqual(len(self.raw), sender.MAX_BYTES)
+        self.assertLessEqual(sender.MAX_BYTES, self.receiver.MAX_BUNDLE_BYTES)
         # The cap is checked by what it is for:  both sides agree and the real bundle fits.  It is
         # not pinned to a number, so adding a module under the cap breaks nothing here.
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)

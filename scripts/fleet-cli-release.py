@@ -22,9 +22,10 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-# 9 MiB.  The encoded allowlist crossed 8 MiB when the recall eval command landed on the
-# current runtime (383 bytes over).  Sender and receiver keep the same ceiling.
-MAX_BUNDLE_BYTES = 9 * 1024 * 1024
+# Two-step cap raise (Nov 11, 2026).  Step 1 (this value):  the receiver accepts up to 12 MiB, while the
+# sender (fleet-cli-sync.py MAX_BYTES) still ships at most 8 MiB, so every bundle stays one an 8 MiB receiver
+# also accepts.  Step 2 raises the sender cap only after every host runs this receiver.
+MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
@@ -251,6 +252,11 @@ REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 
 class Refused(Exception):
     """Only fixed, non-sensitive error codes leave this program."""
+
+
+def shipped_path(path: str) -> bool:
+    """What a new bundle carries:  the allowlist minus the repo-only files."""
+    return allowed_path(path) and path not in REPO_ONLY
 
 
 def allowed_path(path: str) -> bool:
