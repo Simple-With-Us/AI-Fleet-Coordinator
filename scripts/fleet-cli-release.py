@@ -22,10 +22,9 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-# Encoded bundles crossed 8 MiB on 2026-11-12 (8,389,997 bytes with fleet_rag/core.py
-# from main).  64 KiB of room keeps the next small edit inside the cap.  The sender
-# in fleet-cli-sync.py uses the same number.
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024 + 64 * 1024
+# 9 MiB.  The encoded allowlist crossed 8 MiB when the recall eval command landed on the
+# current runtime (383 bytes over).  Sender and receiver keep the same ceiling.
+MAX_BUNDLE_BYTES = 9 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
