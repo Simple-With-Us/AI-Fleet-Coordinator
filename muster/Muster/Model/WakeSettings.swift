@@ -446,7 +446,7 @@ enum ListenerSeatHost: Equatable {
         case .mac:
             return nil
         case .server:
-            return "Held by the server eavesdropper.\u{00A0} Its settings live on the server listener, not in the Mac's file, so they are not edited here."
+            return "Held by the server eavesdropper.\u{00A0} Its settings live on the server listener, not in the Mac's file.\u{00A0} Whether it is on and how it is woken are changed under Server Eavesdropper Settings, through Show Plan and Touch ID;  its caps, timings and routine figures are knobs, so they are read only there."
         case .noListener:
             return "No eavesdropper holds this seat."
         case .unlisted:

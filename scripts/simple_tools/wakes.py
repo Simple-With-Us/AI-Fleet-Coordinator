@@ -577,7 +577,10 @@ class LoopGuard:
     LIMIT = 3
     DM_WINDOW = 6 * HOUR
 
-    def __init__(self, path: str, *, enabled: bool = True) -> None:
+    def __init__(self, path: str, *, enabled: bool = False) -> None:
+        # Off unless the caller turns it on:  the listener passes `[daemon] wake_loop_prevention`,
+        # which is off unless the config says true (owner, Nov 10, 2026:  wakes are liberal, nothing
+        # throttles them).
         self.enabled = enabled
         self.path = path
         self.lock = threading.Lock()
@@ -1112,15 +1115,18 @@ def routes_in(views: Iterable[Mapping[str, Any]], now: float, window: float = DA
 def route_budget_block(
     views: Mapping[str, Mapping[str, Any]], budget: Mapping[str, float], *, key: str, now: float
 ) -> str | None:
-    """None when one more route fits the routing seat's caps, else the cap it hits:  routes_per_hour,
-    routes_per_day, or route_topic_minutes (the time since the last route in this topic).  Counted from
-    the routing seat's own ledger, owner triggers included:  every route needs one."""
+    """None when one more route fits the routing seat's caps, else the cap it hits:
+    routes_per_hour, routes_per_day, or route_topic_minutes (the time since the last route in this
+    topic).  Counted from the routing seat's own ledger, owner triggers included:  every route
+    needs one.  A cap the budget does not carry is no limit (they have no default, like the wake
+    count caps).  `0` is reached at once for routes_per_hour and routes_per_day, and means no
+    spacing for route_topic_minutes."""
     posted = [
         (t, v) for v in views.values() if (t := _route_time(v)) is not None and 0 <= now - t < DAY
     ]
-    if sum(1 for t, _ in posted if now - t < HOUR) >= budget.get("routes_per_hour", 0):
+    if at_cap(sum(1 for t, _ in posted if now - t < HOUR), budget, "routes_per_hour"):
         return "routes_per_hour"
-    if len(posted) >= budget.get("routes_per_day", 0):
+    if at_cap(len(posted), budget, "routes_per_day"):
         return "routes_per_day"
     spacing = float(budget.get("route_topic_minutes", 0)) * 60
     if any(v.get("topic_key") == key and now - t < spacing for t, v in posted):

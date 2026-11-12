@@ -1,0 +1,13 @@
+# Starts afc-cursor-cloud-letters.service 10 minutes after the last run ended, so two runs never overlap.  No
+# Persistent=:  it applies only to OnCalendar timers, and a missed run is simply the next one.
+[Unit]
+Description=Run the Cursor Cloud letter sweep 10 minutes after the last run ends
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=30s
+Unit=afc-cursor-cloud-letters.service
+
+[Install]
+WantedBy=timers.target
