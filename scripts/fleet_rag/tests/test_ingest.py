@@ -779,6 +779,273 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 5)
         self.assertTrue(any("overridden" in w for w in rep["warnings"]))
 
+    def _hold(self, held: set[str]):
+        docs = list(self.docs["doc"])
+
+        def gen(limit=None):  # noqa: ANN001
+            sources.DOC_HELD_IDS.update(held)
+            yield from docs[:limit] if limit else docs
+
+        return mock.patch.object(ingest, "GENERATORS", {"doc": gen})
+
+    def _stamp_diet(self) -> None:
+        ingest._write_diet_stamp(
+            self.state,
+            {"docs_before": 1, "docs_after": 1, "chunks_before": 1, "chunks_after": 1},
+        )
+
+    def test_duplicate_chunk_bodies_embed_once_and_keep_paths(self) -> None:
+        body = "Shared paragraph about the fleet diet.\n"
+        self.docs["doc"] = [
+            make_doc("doc/one", body, title="One", path="docs/one.md"),
+            make_doc("doc/two", body, title="Two", path="docs/two.md"),
+        ]
+        rep = self._run(prune=False)
+        self.assertTrue(rep["ok"])
+        s = rep["per_source"]["doc"]
+        self.assertEqual(len(self.qd.points), 1)
+        self.assertEqual(s["chunks_new"], 1)
+        self.assertEqual(s["chunks_deduped"], 1)
+        self.assertEqual(sum(len(c) for c in self.embed_calls), 1)
+        payload = next(iter(self.qd.points.values()))["payload"]
+        self.assertEqual(payload["path"], "docs/one.md")
+        self.assertEqual(payload["also_paths"], ["docs/two.md"])
+        self.assertEqual(payload["also_path_count"], 1)
+        st = json.loads(self.state.read_text())
+        canonical = st["doc/one"]["chunk_ids"]
+        self.assertEqual(canonical, st["doc/two"]["chunk_ids"])
+        self.assertEqual(canonical, [next(iter(self.qd.points))])
+
+        rows, _scrubbed = ingest.doc_rows(self.docs["doc"][1], "run")
+        own_id = rows[0]["id"]
+        self.assertNotEqual(own_id, canonical[0])
+        st["doc/two"]["chunk_ids"] = [own_id]
+        self.state.write_text(json.dumps(st))
+        self.qd.points[own_id] = {"id": own_id, "payload": dict(rows[0]["payload"])}
+        self.qd.deleted.clear()
+        self.embed_calls.clear()
+        recorded: dict = {}
+        real_delete = self.qd.delete_ids
+
+        def spy_delete(ids, wait=True):  # noqa: ANN001
+            recorded["state"] = json.loads(self.state.read_text())
+            recorded["ids"] = list(ids)
+            return real_delete(ids, wait=wait)
+
+        self.qd.delete_ids = spy_delete
+        rep2 = self._run(prune=False)
+        self.assertIn(own_id, recorded["ids"])
+        self.assertEqual(recorded["state"]["doc/two"]["chunk_ids"], canonical)
+        self.assertNotIn(own_id, recorded["state"]["doc/two"]["chunk_ids"])
+        self.assertEqual(rep2["per_source"]["doc"]["docs_changed"], 0)
+        self.assertEqual(self.embed_calls, [])
+        self.assertIn(own_id, self.qd.deleted)
+        st = json.loads(self.state.read_text())
+        self.assertEqual(st["doc/one"]["chunk_ids"], st["doc/two"]["chunk_ids"])
+        self.assertNotIn(own_id, st["doc/two"]["chunk_ids"])
+        self.assertGreaterEqual(rep2["per_source"]["doc"]["chunks_deduped"], 1)
+
+    def test_unchanged_chunker_drift_does_not_delete(self) -> None:
+        self._run(prune=False)
+        st = json.loads(self.state.read_text())
+        st["doc/a"]["chunk_ids"] = ["not-the-real-id"]
+        self.state.write_text(json.dumps(st))
+        self.qd.deleted.clear()
+        rep = self._run(prune=False)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["chunks_deleted"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertEqual(
+            json.loads(self.state.read_text())["doc/a"]["chunk_ids"], ["not-the-real-id"]
+        )
+
+    def test_diet_hold_blocks_prune_without_an_explicit_release(self) -> None:
+        extra = make_doc("doc/generated/old.md", "Generated body text here.", title="Old")
+        self.docs["doc"] = [
+            make_doc("doc/keep/a.md", "Keep body alpha text.", title="A"),
+            make_doc("doc/keep/b.md", "Keep body beta text.", title="B"),
+            extra,
+        ]
+        self._run(prune=False)
+        self.docs["doc"] = self.docs["doc"][:2]
+        with self._hold({extra.doc_id}):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertIn(extra.doc_id, json.loads(self.state.read_text()))
+        self.assertTrue(any("held from prune" in w for w in rep["warnings"]))
+
+    def test_diet_prune_needs_a_matching_dry_run_stamp(self) -> None:
+        extra = make_doc("doc/generated/old.md", "Generated body text here.", title="Old")
+        keep = [make_doc(f"doc/keep/{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(4)]
+        self.docs["doc"] = keep + [extra]
+        self._run(prune=False)
+        self.docs["doc"] = keep
+        with self._hold({extra.doc_id}):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertIn(extra.doc_id, json.loads(self.state.read_text()))
+        self.assertTrue(any(t.get("reason") == "diet-prune-needs-dry-run" for t in rep["guard_trips"]))
+        with self._hold({extra.doc_id}), mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}):
+            forced = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(forced["ok"])
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(
+            any(t.get("reason") == "diet-prune-needs-dry-run" for t in forced["guard_trips"])
+        )
+
+        self._stamp_diet()
+        stamp = self.state.parent / ingest.DIET_REPORT_NAME
+        data = json.loads(stamp.read_text())
+        data["rules_hash"] = "not-the-rules"
+        stamp.write_text(json.dumps(data))
+        os.chmod(stamp, 0o600)
+        with self._hold({extra.doc_id}):
+            mismatch = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(mismatch["ok"])
+        self.assertEqual(self.qd.deleted, [])
+
+        self._stamp_diet()
+        with self._hold({extra.doc_id}):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 1)
+        self.assertNotIn(extra.doc_id, json.loads(self.state.read_text()))
+
+    def test_diet_percentage_cap_blocks_and_force_lifts_only_with_a_stamp(self) -> None:
+        extras = [
+            make_doc("doc/generated/a.md", "Generated alpha text here.", title="Ga"),
+            make_doc("doc/generated/b.md", "Generated beta text here.", title="Gb"),
+        ]
+        keep = [make_doc(f"doc/keep/{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(4)]
+        self.docs["doc"] = keep + extras
+        self._run(prune=False)
+        self.docs["doc"] = keep
+        held = {d.doc_id for d in extras}
+        self._stamp_diet()
+        with self._hold(held):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("20%" in e for e in rep["errors"]))
+        self.assertEqual(set(json.loads(self.state.read_text())) >= held, True)
+        with self._hold(held), mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}):
+            forced = self._run(prune=True, prune_excluded=True)
+        self.assertTrue(forced["ok"], forced["errors"])
+        self.assertEqual(forced["per_source"]["doc"]["docs_pruned"], 2)
+        self.assertTrue(held.isdisjoint(json.loads(self.state.read_text())))
+        self.assertTrue(any("overridden" in w for w in forced["warnings"]))
+
+    def test_seen_guard_still_blocks_a_diet_release(self) -> None:
+        extras = [
+            make_doc("doc/generated/a.md", "Generated alpha text here.", title="Ga"),
+            make_doc("doc/generated/b.md", "Generated beta text here.", title="Gb"),
+        ]
+        keep = make_doc("doc/keep/a.md", "Keep body alpha text.", title="A")
+        self.docs["doc"] = [keep, *extras]
+        self._run(prune=False)
+        self.docs["doc"] = [keep]
+        self._stamp_diet()
+        with self._hold({d.doc_id for d in extras}):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("yielded only 1" in e for e in rep["errors"]))
+        self.assertTrue(any(t.get("reason") == "prune-refused" for t in rep["guard_trips"]))
+
+    def test_diet_allowlist_releases_only_the_named_ids(self) -> None:
+        generated = make_doc("doc/generated/old.md", "Generated body text here.", title="Old")
+        vendored = make_doc("doc/vendored/lib.md", "Vendored body text here.", title="Ven")
+        keep = [make_doc(f"doc/keep/{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(5)]
+        self.docs["doc"] = keep + [generated, vendored]
+        self._run(prune=False)
+        self.docs["doc"] = keep
+        self._stamp_diet()
+        env = {ingest.PRUNE_EXCLUDED_ALLOW_ENV: "doc/generated/*"}
+        with self._hold({generated.doc_id, vendored.doc_id}), mock.patch.dict(os.environ, env):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        st = json.loads(self.state.read_text())
+        self.assertNotIn(generated.doc_id, st)
+        self.assertIn(vendored.doc_id, st)
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 1)
+
+    def test_prune_cap_applies_only_when_diet_ids_are_among_the_gone_set(self) -> None:
+        state = {
+            f"doc/k{i}": {"source": "doc", "chunk_ids": [f"p{i}"], "doc_hash": "h"}
+            for i in range(10)
+        }
+        yielded = {f"doc/k{i}" for i in range(8)}
+        self.assertIsNone(
+            ingest.prune_refusal("doc", yielded, state, diet_ids={"doc/k8", "doc/k9"})
+        )
+        over = {f"doc/k{i}" for i in range(7)}
+        msg = ingest.prune_refusal("doc", over, state, diet_ids={"doc/k7"})
+        self.assertIsNotNone(msg)
+        self.assertIn("20%", msg)
+        small = {
+            f"doc/s{i}": {"source": "doc", "chunk_ids": [], "doc_hash": "h"} for i in range(4)
+        }
+        self.assertIsNone(
+            ingest.prune_refusal("doc", {"doc/s0", "doc/s1"}, small, diet_ids=set())
+        )
+        self.assertIsNone(ingest.prune_refusal("doc", {"doc/s0", "doc/s1"}, small))
+
+    def test_dry_run_reports_doc_and_chunk_counts(self) -> None:
+        root = pathlib.Path(self.tmp.name) / "walk"
+        repo = root / "repo"
+        docs = repo / "docs"
+        docs.mkdir(parents=True)
+        body = "Same paragraph for the diet census.\n"
+        (repo / "README.md").write_text("# Hello\n\n" + body)
+        (docs / "a.md").write_text("# A\n\n" + body)
+        (docs / "generated").mkdir()
+        (docs / "generated" / "api.md").write_text("# API\n\n" + ("generated " * 30))
+        (docs / "app.min.md").write_text("# Min\n\nnope\n")
+
+        def gen(limit=None):  # noqa: ANN001
+            yield from sources.iter_docs(
+                repo,
+                root / "no-ops",
+                extra=[],
+                limit=limit,
+                code_dir=None,
+                apps_dir=None,
+                grok_home=None,
+            )
+
+        with mock.patch.object(ingest, "GENERATORS", {"doc": gen}):
+            rep = self._run(dry_run=True, prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        diet = rep["doc_diet"]
+        self.assertEqual(diet["docs_before"], 4)
+        self.assertEqual(diet["docs_after"], 2)
+        self.assertEqual(diet["docs_excluded"], 2)
+        self.assertGreater(diet["chunks_before"], diet["chunks_after"])
+        self.assertGreaterEqual(diet["chunks_deduped"], 1)
+        self.assertEqual(diet["excluded_held"], 2)
+        self.assertEqual(diet["excluded_released"], 0)
+        stamp = self.state.parent / ingest.DIET_REPORT_NAME
+        self.assertTrue(stamp.is_file())
+        self.assertEqual(stamp.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(stamp.read_text())["rules_hash"], ingest.diet_rules_hash())
+        self.assertEqual(self.qd.points, {})
+        self.assertFalse(self.state.exists())
+
+    def test_prune_excluded_flag_reaches_run(self) -> None:
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                ingest.main(["--source", "doc", "--prune", "--prune-excluded", "--no-heartbeat"]),
+                0,
+            )
+        self.assertTrue(run.call_args.kwargs["prune_excluded"])
+
     def test_duplicate_doc_id_is_an_error(self) -> None:
         self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/a", LONG_B)]
         rep = self._run()

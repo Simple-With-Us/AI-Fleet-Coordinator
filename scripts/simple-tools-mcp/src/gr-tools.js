@@ -102,7 +102,7 @@ export function grNotConfiguredMessage({ reason, missing }) {
   );
 }
 
-// The seven fronted actions, in the order the admin panel and docs name them.
+// The fronted actions, in the order the admin panel and docs name them.
 // open_pr is the only one the relay still runs under the owner (PR-only)
 // token;  the rest run as the calling seat's own GitHub App.
 export const GR_ACTIONS = Object.freeze([
@@ -113,6 +113,7 @@ export const GR_ACTIONS = Object.freeze([
   "merge_pr",
   "workflow_dispatch",
   "resolve_thread",
+  "create_repo",
 ]);
 
 /** The upstream origin when it is a bare https origin (a trailing slash
@@ -424,6 +425,17 @@ export const GR_TOOLS = Object.freeze([
     title: "Resolve Review Thread",
     description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.",
     inputSchema: obj(["repo", "thread_id"], { repo: REPO, thread_id: { type: "string" } }),
+  },
+  {
+    name: "gr_create_repo",
+    title: "Create Repository",
+    description: "Create a repository through git-relay, as your own GitHub App. Denied unless the seat policy grants create_repo. Owners are Simple-With-Us and jaywedgeworth22. Visibility defaults to private; public also needs create_repo_public. An existing repository returns already_exists and is not created again.",
+    inputSchema: obj(["repo"], {
+      repo: REPO,
+      visibility: { type: "string", enum: ["private", "public"] },
+      description: { type: "string", maxLength: 350 },
+      license_template: { type: "string", enum: ["apache-2.0"] },
+    }),
   },
 ]);
 export const GR_TOOL_NAMES = Object.freeze(GR_TOOLS.map((tool) => tool.name));

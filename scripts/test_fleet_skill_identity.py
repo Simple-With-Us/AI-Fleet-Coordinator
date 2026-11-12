@@ -1513,6 +1513,18 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self.assertIn("Home-dir installs: skipped (--repo-only)", out)
         self.assertNotIn("fx-scanned", out)
 
+    def test_home_only_writes_home_and_skips_repo(self) -> None:
+        out = self._run(["--home-only"])
+        self.assertFalse((self.repo / "skills").exists())
+        self.assertFalse((self.repo / "docs" / "fleet-skills" / "by-seat").exists())
+        self.assertNotIn("Repo-tracked platform copies:", out)
+        self.assertIn("Home-dir installs:", out)
+        self.assertTrue((self.home / ".fx" / "skills" / "session-start" / "SKILL.md").is_file())
+
+    def test_home_only_and_repo_only_are_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            self._run(["--repo-only", "--home-only"])
+
     def test_repo_only_copies_equal_a_fresh_render(self) -> None:
         self._run(["--repo-only"])
         for dest, seat in repo_platform_copies(str(self.repo)):

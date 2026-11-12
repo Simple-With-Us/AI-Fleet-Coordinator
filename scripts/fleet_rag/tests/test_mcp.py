@@ -15,7 +15,7 @@ import sys
 import unittest
 from unittest import mock
 
-from fleet_rag import recall_api
+from fleet_rag import recall_api, recall_presentation
 from fleet_rag.core import FleetRagError, build_point
 
 SERVER = pathlib.Path(__file__).resolve().parents[2] / "fleet-recall-mcp.py"
@@ -336,11 +336,20 @@ class SearchOptionsTests(unittest.TestCase):
         with mock.patch.object(recall_api, "recall_search", spy):
             res = self.search({"query": "q", "per_doc": "2", "rerank": False, "prefer_lessons": False})
             self.assertFalse(res["isError"])
-            self.assertEqual(seen[-1], {"query": "q", "per_doc": 2, "rerank": False, "prefer_lessons": False})
+            self.assertEqual(
+                seen[-1],
+                {
+                    "query": "q",
+                    "per_doc": 2,
+                    "rerank": False,
+                    "prefer_lessons": False,
+                    "limit": recall_presentation.DEFAULT_AGENT_LIMIT,
+                },
+            )
             self.search({"query": "q"})
-            self.assertEqual(seen[-1], {"query": "q"})                      # defaults left to recall_search
+            self.assertEqual(seen[-1], {"query": "q", "limit": recall_presentation.DEFAULT_AGENT_LIMIT})
             self.search({"query": "q", "per_doc": None, "rerank": None, "prefer_lessons": None})
-            self.assertEqual(seen[-1], {"query": "q"})                      # null means default
+            self.assertEqual(seen[-1], {"query": "q", "limit": recall_presentation.DEFAULT_AGENT_LIMIT})
             self.search({"query": "q", "per_doc": 3, "rerank": True, "prefer_lessons": True, "limit": 7})
             self.assertEqual(seen[-1], {"query": "q", "per_doc": 3, "rerank": True, "prefer_lessons": True,
                                         "limit": 7})
@@ -368,8 +377,16 @@ class SearchOptionsTests(unittest.TestCase):
             recall_api.FakeQdrant.points.append({"id": pt["id"], "payload": pt["payload"]})
         one = self.search({"query": "pm2 update-env", "limit": 5})["structuredContent"]
         self.assertEqual([h["doc_id"] for h in one["hits"]].count("doc/pm2-env"), 1)
-        two = self.search({"query": "pm2 update-env", "limit": 5, "per_doc": 2,
-                                      "prefer_lessons": False, "rerank": False})["structuredContent"]
+        two = self.search(
+            {
+                "query": "pm2 update-env",
+                "limit": 5,
+                "per_doc": 2,
+                "prefer_lessons": False,
+                "rerank": False,
+                "full": True,
+            }
+        )["structuredContent"]
         self.assertEqual([h["doc_id"] for h in two["hits"]].count("doc/pm2-env"), 2)
         self.assertEqual(two["mode"], "hybrid")
         self.assertTrue(all(h["group_hits"] == 3 for h in two["hits"] if h["doc_id"] == "doc/pm2-env"))

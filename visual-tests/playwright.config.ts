@@ -4,9 +4,8 @@ import { defineConfig, devices } from '@playwright/test';
  * Automated visual verification for the fleet's web surfaces.
  *
  * Screens covered:
- *  - site/index.html        — the fleet daily digest GitHub Pages site ("Jay's Daily Log").
- *                             Content regenerates 4x daily via cron, so the lede
- *                             timestamp and every .day card are masked in snapshots.
+ *  - visual-tests/tests/fixtures/digest-2day.html — pinned digest markup (live HTML is
+ *    built by fleet-activity-site.yml; committed copies were removed from main in AFC-736).
  *  - scripts/safari-start/public/index.html — the operator start redirect fallback page.
  *
  * Pages are served to the browser via request interception (see
