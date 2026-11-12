@@ -351,7 +351,9 @@ def call_tool(name: str, args: dict) -> dict:
         res = public_fallback.call_with_fallback(
             "recall_search",
             fallback_args,
-            lambda: recall_api.recall_search(**search_args, **({"full": True} if presentation.full else {})),
+            lambda: recall_api.recall_search(
+                **search_args, **({"full": True} if presentation.full else {})
+            ),
         )
         res = recall_presentation.present_search_result(res, presentation)
         latency_ms = int((time.time() - t0) * 1000)
