@@ -59,8 +59,10 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
 # fleet-cli-release.py carries the same number and the reason.
 MAX_FILES = 180
-# Must equal fleet-cli-release.py MAX_BUNDLE_BYTES (12 MiB since Nov 11, 2026).
-MAX_BYTES = 12 * 1024 * 1024
+# Step 1 of the two-step cap raise:  stays at 8 MiB while fleet-cli-release.py MAX_BUNDLE_BYTES is 12 MiB,
+# so no host still on an 8 MiB receiver is sent a bundle it refuses.  Raise this (step 2) only after every
+# host runs the 12 MiB receiver.  The receiver cap must never be below this one.
+MAX_BYTES = 8 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -250,7 +252,7 @@ def receiver_policy(text: bytes):
             finally:
                 sys.modules.pop(spec.name, None)
         if (
-            module.MAX_BUNDLE_BYTES != MAX_BYTES
+            module.MAX_BUNDLE_BYTES < MAX_BYTES
             or not callable(module.allowed_path)
             or not callable(module.manifest_digest)
         ):
@@ -274,7 +276,10 @@ def build_bundle(source: Path, runner: Runner | None = None) -> tuple[dict, byte
         raise SyncError("receiver_blob_refused")
     receiver_text = blobs(runner, source, [receiver])[RECEIVER_PATH]
     policy = receiver_policy(receiver_text)
-    selected = [row for row in entries if policy.allowed_path(row[0])]
+    # A receiver without shipped_path (before the repo-only list) ships everything it allows.
+    ships = getattr(policy, "shipped_path", None)
+    ships = ships if callable(ships) else policy.allowed_path
+    selected = [row for row in entries if ships(row[0])]
     if len(selected) > MAX_FILES:
         raise SyncError("bundle_too_many_files")
     if not selected:

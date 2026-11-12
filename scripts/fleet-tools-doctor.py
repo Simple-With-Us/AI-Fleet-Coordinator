@@ -519,8 +519,10 @@ def release_policy():
 
 def is_shipped(path: str) -> bool:
     policy = release_policy()
-    if policy is not None and callable(getattr(policy, "allowed_path", None)):
-        return bool(policy.allowed_path(path))
+    # shipped_path leaves out the release's repo-only files;  an older release has only allowed_path.
+    for name in ("shipped_path", "allowed_path"):
+        if policy is not None and callable(getattr(policy, name, None)):
+            return bool(getattr(policy, name)(path))
     return path in SHIPPED_EXACT or bool(
         re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
         or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")

@@ -22,8 +22,9 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-# Raised from 8 MiB on Nov 11, 2026:  main's 171-file runtime encoded to 8.0003 MiB and every install refused
-# bundle_too_large.  12 MiB leaves room for the files still in review;  fleet-cli-sync.py MAX_BYTES must match.
+# Two-step cap raise (Nov 11, 2026).  Step 1 (this value):  the receiver accepts up to 12 MiB, while the
+# sender (fleet-cli-sync.py MAX_BYTES) still ships at most 8 MiB, so every bundle stays one an 8 MiB receiver
+# also accepts.  Step 2 raises the sender cap only after every host runs this receiver.
 MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
@@ -224,6 +225,22 @@ REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 
 class Refused(Exception):
     """Only fixed, non-sensitive error codes leave this program."""
+
+
+# Allowed (so retained releases that carry them still verify) but never shipped in a new bundle:
+# nothing in the runtime imports or runs them.  seat_control.py is the unwired seat-control seam
+# (docs/protocols/seat-control-mcp.md);  mcp/fixtures.jsonl holds the transport tests' golden cases.
+REPO_ONLY = frozenset(
+    {
+        "scripts/simple_tools/seat_control.py",
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+    }
+)
+
+
+def shipped_path(path: str) -> bool:
+    """What a new bundle carries:  the allowlist minus the repo-only files."""
+    return allowed_path(path) and path not in REPO_ONLY
 
 
 def allowed_path(path: str) -> bool:

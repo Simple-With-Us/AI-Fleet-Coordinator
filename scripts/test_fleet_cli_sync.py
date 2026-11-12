@@ -140,6 +140,24 @@ class SourceTests(Fixture):
         self.assertTrue(policy.allowed_path("scripts/simple_tools/core.py"))
         self.assertNotIn("docs/private-fixture.md", bundle["files"])
 
+    def test_repo_only_files_are_allowed_but_not_shipped(self):
+        actual = Path(__file__).with_name("fleet-cli-release.py")
+        if not actual.is_file():
+            self.skipTest("Receiver integration runs from the owned source lane")
+        self.put("scripts/fleet-cli-release.py", actual.read_text())
+        self.put("scripts/simple_tools/seat_control.py", "# seam\n")
+        self.commit()
+        bundle, _raw, receiver = S.build_bundle(self.repo)
+        policy = S.receiver_policy(receiver.encode())
+        self.assertTrue(policy.allowed_path("scripts/simple_tools/seat_control.py"))
+        self.assertNotIn("scripts/simple_tools/seat_control.py", bundle["files"])
+
+    def test_receiver_cap_may_exceed_sender_cap_but_never_trail_it(self):
+        self.assertEqual(S.MAX_BYTES, 8 * 1024 * 1024)
+        self.put("scripts/fleet-cli-release.py", POLICY.replace("12*1024*1024", "4*1024*1024"))
+        self.commit()
+        self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
+
     def test_only_published_allowlisted_blobs_and_regular_modes_ship(self):
         bundle, raw, receiver = S.build_bundle(self.repo)
         self.assertEqual(
@@ -233,7 +251,7 @@ class SourceTests(Fixture):
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        self.put("scripts/simple_tools/large.py", "x" * (10 * 1024 * 1024))
+        self.put("scripts/simple_tools/large.py", "x" * (6 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)
 
