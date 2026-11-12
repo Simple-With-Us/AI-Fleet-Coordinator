@@ -5897,7 +5897,7 @@ class RouterHealthTests(Base):
                         foc.read_router_health_http(url=url, max_bytes=8), (None, "too_large")
                     )
                     deep_body = (b"[" * 20) + b"0" + (b"]" * 20)
-                    sstate.update(
+                    state.update(
                         status=200,
                         body=b'{"healthy": true, "seats": {}, "deep": ' + deep_body + b"}",
                     )
