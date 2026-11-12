@@ -399,9 +399,7 @@ def deliver_local(
                 return WR.Delivery("refused", "resume", code="resume-error-%s" % type(exc).__name__)
 
             if proc.returncode == 0:
-                return WR.Delivery(
-                    "sent", "resume", ack="unknown", note="agy-exit-0"
-                )
+                return WR.Delivery("sent", "resume", ack="unknown", note="agy-exit-0")
             return WR.Delivery("refused", "resume", code="resume-exit-%d" % proc.returncode)
         finally:
             if bridge_lock is not None:
