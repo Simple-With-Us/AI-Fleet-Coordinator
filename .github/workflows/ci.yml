@@ -518,6 +518,11 @@ jobs:
     - name: Verify public activity boundary
       timeout-minutes: 10
       run: python3 scripts/test-public-activity.py
+    - name: Refuse stale fleet activity artifacts on main
+      timeout-minutes: 5
+      run: |
+        python3 scripts/test_check_fleet_activity_main_artifacts.py
+        python3 scripts/check-fleet-activity-main-artifacts.py
     - name: Verify fleet registry
       timeout-minutes: 10
       run: python3 scripts/check-fleet-registry.py
