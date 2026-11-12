@@ -1,8 +1,11 @@
 """Claude's half of the wake router:  how one wake reaches one Claude Code chat (OPS-1048).
 
-    simple-chat wake-router serve [--bind ADDR] [--port N] [--config FILE]
     simple-chat wake-deliver          one delivery on this host;  JSON in on stdin, JSON out
     simple-chat wake-ssh-gate         the forced command for the router's ssh key
+
+The router itself is the one service for every platform (`wake_service`, `simple-chat
+wake-router serve`), which builds the CLAUDE seat from `make_platform` here, with `DEFAULTS` as
+its settings and `state_dir` as its state folder (`wake_service.BUILDERS`).
 
 The join.  A registration's native_session_id is the `sessionId` in ~/.claude/sessions/<pid>.json,
 which also holds `pid`, `procStart`, `messagingSocketPath` and `kind`.  A file only counts while its
@@ -43,10 +46,14 @@ preflight has passed the real command may have started, so a 255 or an unreadabl
 The wire.  The request is
 `{"platform", "target": {"session_id", "letter", "host", "generation"}, "wake": <the annotated Wake>}`
 and the answer is `{"wake_id", "session_id", "generation", "delivery": {"outcome", "route", "ack",
-"code", "note"}}`.  `platform` is looked up in `PLATFORMS`, a fixed table:  it arrives over the wire,
-so it never names a module or a path, and an unknown one is refused.  With no `platform` the request
-is Claude's.  Each entry carries its platform's session-id pattern:  an id that does not match it is
-refused on both hosts before anything runs, and the ids an answer repeats are read with it.  The sender takes an answer only if its three ids are exactly what it sent:  anything
+"code", "note"}}`.  `platform` is looked up by platform name in `wake_service.BUILDERS`, the one
+platform table:  it arrives over the wire, so it never names a module or a path, and an unknown one
+is refused.  With no `platform` the request is Claude's.  Each entry carries its platform's
+session-id pattern:  an id that does not match it is refused on both hosts before any of the
+platform's code runs, and the ids an answer repeats are read with it.  The entry's `handler` does
+the delivery:  Claude's is `_deliver_claude` here, and any other platform's is its module's,
+checked as before (its answer must repeat the request's ids and carry a known outcome).  The
+sender takes an answer only if its three ids are exactly what it sent:  anything
 else is final, because the turn may have run.  The one exception is a Mac the runtime sync has not
 reached yet.  Its older `wake-deliver` rejects the envelope before it does anything, with exactly
 `OLD_MAC_REFUSAL` and exit 2, so that is `failed`, a bounded retry.  The sender never falls back to
@@ -56,7 +63,15 @@ The Mac asks the registry again immediately before delivering, as the router did
 letter that no longer holds that session at that generation, or is closed, is `refused`.  A registry
 that cannot be read is `failed`, since nothing has run, and so a bounded retry, never a blind
 delivery.  So is a live row that does not name a well-formed Claude chat (no seat, a malformed one
-or another seat's):  it is not proof that the letter was released.  A router from before this
+or another seat's):  it is not proof that the letter was released.  On the Mac the registry's
+address and signing key come from the shared registry env loader every Mac registry client uses
+(platform_letter.with_registry_env), as before;  only the server's router reads them from the
+/wake-router knobs, since a Mac able to read that folder would also hold the router's bearer.
+With either missing the recheck is `failed` with `registry-not-configured`.  The knob
+WAKE_ROUTER_MAC_SSH alone names where the Mac is reached.  The Mac imports the platform table
+(wake_service, and fleet_knobs under it) only for a delivery:  the gate's preflight and its
+refusals never need it, and a delivery that cannot import it answers `failed` with
+`platform-table-unavailable`.  A router from before this
 envelope sends `{"session_id", "wake"}` and reads a flat answer.
 It has no generation to check, so it is delivered to on the router's own check, as it always was.
 
@@ -73,14 +88,12 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
-import argparse
 import fcntl
 import importlib
 import json
 import os
 import re
 import shutil
-import signal
 import socket
 import stat
 import subprocess
@@ -89,17 +102,17 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from . import wake_router as WR
+
+if TYPE_CHECKING:  # imported where it is used, so the ssh gate never depends on fleet_knobs
+    from . import wake_service as SVC
 
 SEAT = "CLAUDE"
 PLATFORM = "claude"
 MENTION = "Claude"
-DEFAULT_PORT = 8793
 SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
-# A Codex thread id is a bare UUID too:  the same shape `codex_wake.SESSION_RE` checks.
-CODEX_SESSION_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 SESSION_FILE_RE = re.compile(r"^[0-9]+\.json$")
 SESSION_FILE_BYTES = 64 * 1024
 TAIL_BYTES = 256 * 1024
@@ -112,15 +125,30 @@ SSH_CONNECT_TIMEOUT = 4
 SSH_PREFLIGHT_SECONDS = 14
 SSH_MARGIN_SECONDS = 60
 SSH_UNREACHABLE = 255
-ENV_REMOTE = "CLAUDE_LETTER_REMOTE"
 REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat wake-deliver'
 PREFLIGHT_COMMAND = "true"
 ENV_SSH_COMMAND = "SSH_ORIGINAL_COMMAND"
 GATE_REFUSED = 126  # never ssh's own 255, which the sender reads as a host that did not answer
-CODEX_MODULE = "simple_tools.codex_wake"
 BAD_REQUEST = "bad-request"
 BAD_REQUEST_EXIT = 2
 UNKNOWN_PLATFORM = "unknown-platform"
+NOT_INSTALLED = "platform-not-installed"
+# The platform table (wake_service, and fleet_knobs under it) cannot be imported on this host.
+TABLE_UNAVAILABLE = "platform-table-unavailable"
+# Claude's refusals that can only come before anything ran (wake_service, The one platform
+# table).  The router adds them to its own NEVER_RAN, which lists them already today.
+NEVER_RAN = frozenset(
+    {
+        "bad-session-id",
+        "no-ssh-destination",
+        "no-transcript",
+        "session-cwd-gone",
+        "unknown-host",
+        UNKNOWN_PLATFORM,
+        NOT_INSTALLED,
+        WR.HANDLER_MISSING,
+    }
+)
 # All that a `wake-deliver` from before the envelope can say to one, before it has done anything.
 OLD_MAC_REFUSAL = asdict(WR.Delivery("refused", code=BAD_REQUEST))
 LETTER_RE = re.compile(r"[A-Z]{1,2}")
@@ -144,7 +172,6 @@ WAKE_TEXT = (
 )
 
 Runner = Callable[..., Any]
-Handler = Callable[[Mapping[str, Any], Mapping[str, str]], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -533,14 +560,17 @@ def deliver_remote(
     platform: str = PLATFORM,
     runner: Runner = subprocess.run,
 ) -> WR.Delivery:
-    """Deliver one wake to a chat on the Mac, through the one fixed command over ssh."""
-    entry = PLATFORMS.get(platform)
+    """Deliver one wake to a chat on the Mac, through the one fixed command over ssh.  The
+    destination is the setting `mac_ssh` (WAKE_ROUTER_MAC_SSH) alone."""
+    from . import wake_service as SVC  # the router's own host, where it is always there
+
+    entry = SVC.by_platform(platform)
     if entry is None:
         return WR.Delivery("refused", "ssh", code=UNKNOWN_PLATFORM)
     session_id = target.session_id
-    if not isinstance(session_id, str) or not entry.session_re.fullmatch(session_id):
+    if not isinstance(session_id, str) or not entry.session_pattern.fullmatch(session_id):
         return WR.Delivery("refused", "ssh", code="bad-session-id")
-    dest = str(config.get("mac_ssh") or env.get(ENV_REMOTE) or "").strip()
+    dest = str(config.get("mac_ssh") or "").strip()
     if not SSH_DEST_RE.fullmatch(dest):
         return WR.Delivery("refused", "ssh", code="no-ssh-destination")
     remote = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % SSH_CONNECT_TIMEOUT]
@@ -725,11 +755,33 @@ def _target_from(data: object) -> WR.Target:
     return WR.Target(session_id=session_id, letter=letter, host=host, generation=generation)
 
 
-def _platform_of(request: object) -> DeliveryPlatform | None:
-    """The `PLATFORMS` entry a request names, or None.  A request that names none is Claude's."""
+def _table() -> Any:
+    """The platform table's module, or None when it cannot be imported on this host (it pulls in
+    fleet_knobs).  Imported here, not at the top, so the ssh gate's preflight and its refusals
+    never depend on it."""
+    try:
+        from . import wake_service as SVC
+    except Exception:  # noqa: BLE001 - an import that fails is answered, never a crash
+        return None
+    return SVC
+
+
+def _platform_of(request: object) -> SVC.Builder | None:
+    """The `wake_service.BUILDERS` entry a request names by platform, or None.  A request that
+    names none is Claude's."""
     body = request if isinstance(request, Mapping) else {}
-    name = body.get("platform", PLATFORM)
-    return PLATFORMS.get(name) if isinstance(name, str) else None
+    table = _table()
+    return table.by_platform(body.get("platform", PLATFORM)) if table is not None else None
+
+
+def _session_pattern(body: Mapping[str, Any]) -> re.Pattern[str] | None:
+    """The session pattern of the platform a request names.  Claude's is this module's own, the
+    same as its table entry (a test keeps them equal), so a Claude answer correlates even when
+    the table cannot be imported."""
+    if body.get("platform", PLATFORM) == PLATFORM:
+        return SESSION_RE
+    entry = _platform_of(body)
+    return entry.session_pattern if entry is not None else None
 
 
 def _correlation(request: object) -> dict[str, Any]:
@@ -741,10 +793,10 @@ def _correlation(request: object) -> dict[str, Any]:
     wake = body.get("wake") if isinstance(body.get("wake"), Mapping) else {}
     wake_id, session_id = wake.get("wake_id"), target.get("session_id")
     generation = target.get("generation")
-    entry = _platform_of(body)
+    pattern = _session_pattern(body)
     good_wake = isinstance(wake_id, str) and WR.WAKE_ID_RE.fullmatch(wake_id)
     good_session = (
-        entry is not None and isinstance(session_id, str) and entry.session_re.fullmatch(session_id)
+        pattern is not None and isinstance(session_id, str) and pattern.fullmatch(session_id)
     )
     return {
         "wake_id": wake_id if good_wake else "",
@@ -758,7 +810,11 @@ def _answer(request: object, delivery: WR.Delivery) -> dict[str, Any]:
 
 
 def _registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """`env` with the registry's address and key:  a forced ssh command has no login profile."""
+    """`env` with the registry's address and key on this host, the Mac, from the shared registry
+    env loader every Mac registry client uses (a forced ssh command has no login profile).  Only
+    the server's router reads them from the /wake-router knobs:  a Mac that could read that folder
+    would also hold the router's bearer.  Without them every registry call answers
+    `not_configured`."""
     from . import platform_letter as PL
 
     return PL.with_registry_env(dict(env))
@@ -784,7 +840,8 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
         return WR.Delivery("failed", code="registry-unavailable")
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.Delivery("failed", code="registry-unavailable")
+        # `registry-not-configured` when this host has no registry address or key.
+        return WR.Delivery("failed", code=WR.registry_trouble(answer))
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:  # a live row that is not a well-formed Claude chat proves no release
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
@@ -819,60 +876,53 @@ def _deliver_claude(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[
     return _answer(request, _deliver_here(env, target.session_id, wake, target))
 
 
-def _module_delivery(module_name: str) -> Handler:
-    """A platform's delivery by its own module's `deliver_request`, loaded only when a request
-    names that platform.  The module's name is a constant of this file's table:  nothing from the
-    request reaches the import."""
-
-    def deliver(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
-            return _answer(request, WR.Delivery("refused", code="platform-not-installed"))
-        try:
-            answer = module.deliver_request(request, env=_registry_env(env))
-        except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
-            return _answer(
-                request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
-            )
-        delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
-        if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
-            return _answer(request, WR.Delivery("refused", code="platform-bad-answer"))
-        # Not just re-stamped with this request's ids:  an answer about something else says
-        # nothing about whether this wake ran, so even one that reads as retryable is final.
-        if not _same_ids(answer, _correlation(request)):
-            return _answer(request, WR.Delivery("refused", code="platform-mismatch"))
+def _module_delivery(
+    entry: SVC.Builder, request: Mapping[str, Any], env: Mapping[str, str]
+) -> dict[str, Any]:
+    """Another platform's delivery, by its module's handler, loaded only when a request names
+    that platform.  The module's name comes from the table entry:  nothing from the request
+    reaches the import."""
+    try:
+        module = importlib.import_module(entry.module)
+    except ImportError:
+        return _answer(request, WR.Delivery("refused", code=NOT_INSTALLED))
+    # Resolved before anything runs:  a module without its handler has run nothing.
+    handler = getattr(module, entry.handler, None)
+    if not callable(handler):
+        return _answer(request, WR.Delivery("refused", code=WR.HANDLER_MISSING))
+    try:
+        answer = handler(request, env=_registry_env(env))
+    except Exception as exc:  # noqa: BLE001 - it may have started, so it is final
         return _answer(
-            request,
-            WR.Delivery(
-                str(delivery["outcome"]),
-                _short(delivery.get("route")),
-                ack=_short(delivery.get("ack")) or "unknown",
-                code=_short(delivery.get("code")),
-                note=_short(delivery.get("note")),
-            ),
+            request, WR.Delivery("refused", code="platform-error-%s" % type(exc).__name__)
         )
+    delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
+    if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
+        return _answer(request, WR.Delivery("refused", code="platform-bad-answer"))
+    # Not just re-stamped with this request's ids:  an answer about something else says
+    # nothing about whether this wake ran, so even one that reads as retryable is final.
+    if not _same_ids(answer, _correlation(request)):
+        return _answer(request, WR.Delivery("refused", code="platform-mismatch"))
+    return _answer(
+        request,
+        WR.Delivery(
+            str(delivery["outcome"]),
+            _short(delivery.get("route")),
+            ack=_short(delivery.get("ack")) or "unknown",
+            code=_short(delivery.get("code")),
+            note=_short(delivery.get("note")),
+        ),
+    )
 
-    return deliver
 
-
-@dataclass(frozen=True)
-class DeliveryPlatform:
-    """One platform a request may name:  its delivery, and the shape of its chats' session ids.
-    A request whose session id does not match `session_re` is refused before `deliver` runs, and
-    the ids an answer repeats are read with the same pattern on both hosts."""
-
-    deliver: Handler
-    session_re: re.Pattern[str]
-
-
-#: Every platform a request may name.  Only a key of this table is ever acted on.  A platform with
-#: a module of its own registers one line:
-#: `"name": DeliveryPlatform(_module_delivery("simple_tools.name_wake"), NAME_SESSION_RE)`.
-PLATFORMS: dict[str, DeliveryPlatform] = {
-    PLATFORM: DeliveryPlatform(_deliver_claude, SESSION_RE),
-    "codex": DeliveryPlatform(_module_delivery(CODEX_MODULE), CODEX_SESSION_RE),
-}
+def _dispatch(
+    entry: SVC.Builder, request: Mapping[str, Any], env: Mapping[str, str]
+) -> dict[str, Any]:
+    """Run the entry's handler.  Claude's is this module's own and runs as it always has;  any
+    other platform's goes through `_module_delivery` and its checks."""
+    if entry.module == __name__:
+        return globals()[entry.handler](request, env)
+    return _module_delivery(entry, request, env)
 
 
 def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
@@ -890,14 +940,18 @@ def _deliver_legacy(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[
 def _handle(request: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
     if "platform" not in request and "target" not in request and "session_id" in request:
         return _deliver_legacy(request, env)
+    if _table() is None:
+        # The platform table cannot be imported here, so nothing can be looked up and nothing has
+        # run:  `failed`, a bounded retry, and an answer the sender can read.
+        return _answer(request, WR.Delivery("failed", code=TABLE_UNAVAILABLE))
     entry = _platform_of(request)
     if entry is None:
         return _answer(request, WR.Delivery("refused", code=UNKNOWN_PLATFORM))
     target = request.get("target")
     session_id = target.get("session_id") if isinstance(target, Mapping) else None
-    if not isinstance(session_id, str) or not entry.session_re.fullmatch(session_id):
+    if not isinstance(session_id, str) or not entry.session_pattern.fullmatch(session_id):
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))  # nothing has run
-    return entry.deliver(request, env)
+    return _dispatch(entry, request, env)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -941,39 +995,6 @@ def wake_ssh_gate_main(
         return wake_deliver_main(stdin, stdout, env)
     stderr.write("wake-ssh-gate: that command is not allowed on this key\n")
     return GATE_REFUSED
-
-
-def main(argv: list[str]) -> int:
-    """`simple-chat wake-router serve`."""
-    from . import platform_letter as PL
-    from . import wake_settings as WS
-
-    parser = argparse.ArgumentParser(prog="simple-chat wake-router")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    serve = sub.add_parser("serve")
-    serve.add_argument("--bind", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT)
-    serve.add_argument("--config", default="")
-    args = parser.parse_args(argv)
-    env = dict(PL.with_registry_env(dict(os.environ)))
-    named = args.config or env.get("CLAUDE_WAKE_CONFIG") or ""
-    state = state_dir(env)
-    settings = WS.WakeSettings(
-        SEAT, DEFAULTS, Path(named or state / "config.json"), required=bool(named)
-    )
-    settings.load()
-    # The routine key is the secret knob the settings read from Infisical:  there is no key file.
-    # No decider is configured:  a wake the rules cannot link goes to the most recent live chat.
-    router = WR.Router(
-        make_platform(env, settings), env, settings, state, settings.routine_key, consult=None
-    )
-    previous = signal.signal(signal.SIGHUP, lambda _signum, _frame: settings.kick())
-    settings.start_refresh()
-    try:
-        return WR.serve(router, args.bind, args.port)
-    finally:
-        settings.stop_refresh()
-        signal.signal(signal.SIGHUP, previous)
 
 
 def deliver_entry() -> int:

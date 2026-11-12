@@ -6,7 +6,7 @@ sets additionalProperties false, so a `seat` argument is a validation error.
 
 Reads keep no server-side cursor and never move the CLI's cursors.  Callers pass `since_id` in and
 get `next_since_id` out.  Every Zulip-authored string (bodies, topic names, display names) comes
-back only inside the nonce fence, NFKC-folded, stripped of format characters, with marker text in
+back only inside the nonce fence, folded (NFKC with Zs kept, format characters dropped), with marker text in
 any case or separator removed and control characters escaped.  `structuredContent` carries
 integers only for reads, and writes echo no Zulip text.
 
@@ -39,7 +39,6 @@ import os
 import re
 import threading
 import time
-import unicodedata
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -61,6 +60,7 @@ from .. import zulip_ops as OPS
 from ..idem import PENDING_FRESH, IdemStore
 from ..state import State
 from ..textfmt import fix_outbound
+from ..textfold import fold as _fold
 from . import fleetlink_tools as FLEETLINK
 from . import guide as GUIDE
 from . import linear_tools as LINEAR
@@ -464,14 +464,9 @@ def with_defaults(schema: Mapping[str, Any], arguments: Mapping[str, Any]) -> di
 # --------------------------------------------------------------------------------------------
 
 
-def _fold(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
-
-
 def clean(text: Any, limit: int | None = None) -> tuple[str, bool]:
-    """A Zulip-authored string made safe to show inside the fence:  NFKC-folded, format characters
-    dropped, marker text in any case or with any separator (or none) replaced, control characters
+    """A Zulip-authored string made safe to show inside the fence:  folded (NFKC with Zs kept),
+    format characters dropped, marker text in any case or with any separator (or none) replaced, control characters
     shown as \\xNN, line and paragraph separators as \\uXXXX.  Returns (text, truncated)."""
     folded = _BROAD_MARKER_RE.sub("[marker removed]", _fold(str(text if text is not None else "")))
     escaped = LIVE.escape_body(folded)

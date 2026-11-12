@@ -53,7 +53,7 @@ class Tests(unittest.TestCase):
         for cfg in self.data.values():
             self.assertEqual(set(cfg["repos"]), set(wise["repos"]))
             self.assertEqual(len(cfg["repos"]), 18)
-            self.assertIn("jaywedgeworth22/Fleet-OPS", cfg["repos"])
+            self.assertIn("Simple-With-Us/Fleet-OPS", cfg["repos"])
             self.assertFalse(any("*" in repo for repo in cfg["repos"]))
 
     def test_exact_minimum_aggregate_ceiling(self):
