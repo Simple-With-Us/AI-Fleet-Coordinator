@@ -1,4 +1,4 @@
-"""`simple-notes create|update|pin|unpin|read|list|status|log|runner` and `simple-chat guide` (AFC-331, AFC-486).
+"""`simple-notes create|update|pin|unpin|delete|read|list|status|log|runner` and `simple-chat guide` (AFC-331, AFC-486).
 
 The CLI twin of the notes_* tools:  one verb per tool and one option per argument (mcp/notes-tools.json is the
 contract;  tests/test_notes_parity.py keeps them equal).  It runs the same code as the tools (notes_client.call), so
@@ -164,6 +164,13 @@ def add_parsers(
         request_opts(q)
     q = add(
         sub,
+        "delete",
+        "delete one fleet-written note by exact id (from list or read) and its Fleet RAG doc",
+    )
+    q.add_argument("note_id", metavar="NOTE_ID")
+    request_opts(q)
+    q = add(
+        sub,
         "read",
         "print a note, any note in Coding (html is its content, ready for update --html)",
     )
@@ -203,7 +210,7 @@ def add_parsers(
         default=None,
         help="only the entries this seat made",
     )
-    q.add_argument("--action", choices=N.ACTIONS, default=None, help="only this mode")
+    q.add_argument("--action", choices=N.LOG_FILTER_ACTIONS, default=None, help="only this mode")
     q.add_argument(
         "--title", metavar="TEXT", default=None, help="only entries whose title contains this text"
     )
@@ -495,13 +502,14 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             action,
             identity,
             request_id=args.request_id or N.new_request_id(),
-            title=getattr(args, "title", None) if action != "list" else None,
+            title=getattr(args, "title", None) if action not in ("list", "delete") else None,
             markdown=markdown,
             flags=flags,
             session=session,
             fmt=getattr(args, "format", None) if action == "read" else None,
             query=getattr(args, "query", None) if action == "list" else None,
             limit=getattr(args, "limit", None) if action == "list" else None,
+            note_id=getattr(args, "note_id", None) if action == "delete" else None,
         )
         if action in N.WRITE_ACTIONS:
             audit["started"] = True
