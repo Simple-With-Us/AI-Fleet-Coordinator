@@ -82,6 +82,7 @@ comment.
 ### Mac seats (CLI or stdio MCP)
 
 ```bash
+recall doctor [--json]           # setup health: token file, Infisical read, Qdrant, mirror/nightly when set, install
 recall doctor --platforms        # every CLI config, skill, hook, seat-mcp, routine, ingest — expect 0 FAIL
 recall stats                     # points, by source, by app
 recall "how do I avoid leaking credentials from a secrets file" --limit 3

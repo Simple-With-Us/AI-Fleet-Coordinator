@@ -174,7 +174,15 @@ def http_json(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 raw = r.read()
-                return json.loads(raw) if raw.strip() else {}
+                try:
+                    return json.loads(raw) if raw.strip() else {}
+                except json.JSONDecodeError:
+                    # The body stays out of the message.  A 200 from a proxy or a
+                    # truncated tunnel can be HTML or a partial object, and that text
+                    # is not a reason to retry.
+                    raise FleetRagError(
+                        f"malformed JSON from {_host(url)}{urllib.parse.urlparse(url).path}"
+                    ) from None
         except urllib.error.HTTPError as e:
             last = e
             if e.code in (408, 429, 500, 502, 503, 504) and attempt < retries:
@@ -787,9 +795,19 @@ class Qdrant:
                 body["filter"] = flt
             if offset is not None:
                 body["offset"] = offset
-            res = self._call(self._cpath("/points/scroll"), body)["result"]
-            for p in res.get("points", []):
-                yield p
+            response = self._call(self._cpath("/points/scroll"), body)
+            if not isinstance(response, dict):
+                raise FleetRagError("Qdrant scroll returned a malformed response")
+            res = response.get("result")
+            if not isinstance(res, dict):
+                raise FleetRagError("Qdrant scroll returned a malformed result")
+            points = res.get("points", [])
+            if not isinstance(points, list):
+                raise FleetRagError("Qdrant scroll returned malformed points")
+            for point in points:
+                if not isinstance(point, dict):
+                    raise FleetRagError("Qdrant scroll returned a malformed point")
+                yield point
             offset = res.get("next_page_offset")
             if offset is None:
                 break

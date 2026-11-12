@@ -9147,6 +9147,7 @@
       "args": {},
       "defaults": {
         "first": 20,
+        "full": false,
         "includeArchived": false,
         "max_chars": 24000
       },
@@ -9159,6 +9160,7 @@
       },
       "defaults": {
         "first": 0,
+        "full": false,
         "includeArchived": false,
         "max_chars": 24000
       },
@@ -9171,6 +9173,7 @@
       },
       "defaults": {
         "first": 101,
+        "full": false,
         "includeArchived": false,
         "max_chars": 24000
       },
@@ -9183,6 +9186,7 @@
       },
       "defaults": {
         "first": 2.5,
+        "full": false,
         "includeArchived": false,
         "max_chars": 24000
       },
@@ -9195,6 +9199,7 @@
       },
       "defaults": {
         "first": "5",
+        "full": false,
         "includeArchived": false,
         "max_chars": 24000
       },
@@ -9208,15 +9213,17 @@
       "defaults": {
         "bogus": 1,
         "first": 20,
+        "full": false,
         "includeArchived": false,
         "max_chars": 24000
       },
       "name": "linear_list_issues",
-      "problem": "unknown argument 'bogus'; this tool takes after, filter, first, includeArchived, max_chars, selection"
+      "problem": "unknown argument 'bogus'; this tool takes after, filter, first, full, includeArchived, max_chars, selection"
     },
     {
       "args": {},
       "defaults": {
+        "full": false,
         "max_chars": 24000
       },
       "name": "linear_get_issue",
@@ -9227,6 +9234,7 @@
         "id": ""
       },
       "defaults": {
+        "full": false,
         "id": "",
         "max_chars": 24000
       },

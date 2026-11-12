@@ -64,7 +64,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from . import core, health, mirror, qdrant_snapshot, sources, telemetry
+from . import core, health, mirror, qdrant_snapshot, search_cache, sources, telemetry
 from .chunk import chunk_markdown
 from .core import FleetRagError, Qdrant, build_point, content_hash, eprint, match_filter, now_ms
 from .scrub import GitleaksError, gitleaks_flagged, scrub
@@ -1139,6 +1139,9 @@ def _run_locked(
         "errors": [],
         "warnings": [],
         "guard_trips": [],
+        "mirror_stale": mirror.stale_record(
+            mirror.configured_root(), time.time(), mirror.max_age_s()
+        ),
     }
 
     if cfg is None or (qd is None and not dry_run):
@@ -1177,6 +1180,21 @@ def _run_locked(
         pending_annotations: list[dict] = []
         t0 = time.monotonic()
         log(f"[{name}] start")
+        if report["mirror_stale"] and name in mirror.MIRROR_BACKED_SOURCES:
+            # A missing or stale marker must not read or delete these corpora.
+            # Force does not lift it, and the source is not a failure, so the
+            # other sources in the run still ingest and may still prune.
+            stale = report["mirror_stale"]
+            age = stale.get("age_s")
+            age_text = "unknown" if age is None else f"{age}s"
+            msg = (
+                f"{name}: ingest and prune skipped; mirror {stale.get('reason')} "
+                f"(marker age {age_text})"
+            )
+            report["warnings"].append(msg)
+            report["guard_trips"].append({"source": name, "reason": stale.get("reason")})
+            log(f"[{name}] WARNING {msg}")
+            continue
         group: list[tuple[sources.Doc, str]] = []
         group_chunks = 0
         yielded: set[str] = set()
@@ -1406,6 +1424,10 @@ def _run_locked(
             if report["ok"] and heartbeat:
                 _heartbeat()
         _append_log(log_path, report)
+        search_cache.note_ingest_complete(
+            report,
+            epoch_path=last_run_path.with_name(search_cache.EPOCH_NAME),
+        )
     return report
 
 
@@ -1431,16 +1453,19 @@ def _prune_gate(name: str) -> tuple[str, str] | None:
     """Why this source must not be pruned, as (warning, guard reason), or None.
 
     A stale or missing skill/memory mirror is a guard trip and is not a failed
-    source, so doc and linear can still prune.  Force does not lift the gate.
+    source, so doc and linear can still prune.  The ingest loop skips reading
+    those sources, and apple-note, before this gate.  Force does not lift it.
     The code-root gate applies only when the server job asks for it, so a Mac
-    nightly that reads ~/Code keeps its current prune behavior.
+    nightly that reads ~/Code keeps its current prune behavior.  The mirror
+    root is the same one the freshness check uses, including the default
+    server tree when FLEET_RAG_MIRROR is unset.
     """
     if name == "doc" and os.environ.get("FLEET_RAG_REQUIRE_CODE_ROOT") == "1":
         if not (os.environ.get("FLEET_CODE_ROOT") or "").strip():
             return ("doc: pruning skipped; FLEET_CODE_ROOT is unset", "code-root-unset")
     if name not in mirror.MIRROR_SOURCES:
         return None
-    root = mirror.mirror_root()
+    root = mirror.configured_root()
     if root is None:
         return None
     status = mirror.mirror_status(root, time.time(), mirror.max_age_s())
@@ -1763,7 +1788,7 @@ def ingest_rows(
     kept, dropped = gitleaks_drop(_dedupe_rows(points))
     new_rows = writer.missing(kept)
     writer.write(new_rows)
-    return {
+    result = {
         "rows": len(rows),
         "scrubbed": scrubbed,
         "dropped_by_gitleaks": dropped,
@@ -1772,6 +1797,9 @@ def ingest_rows(
         "would_write": len(new_rows) if dry_run else 0,
         "run_id": run_id,
     }
+    if not dry_run:
+        search_cache.note_ingest_complete(result)
+    return result
 
 
 # --------------------------------------------------------------------------- seeds
