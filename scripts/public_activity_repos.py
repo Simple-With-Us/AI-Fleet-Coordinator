@@ -4,6 +4,7 @@ Internal fleet registries and effort boards may include private repositories.  A
 repo must be explicitly allowlisted here and currently public on GitHub before
 its activity can enter the public HTML, Markdown, or calendar feeds.
 """
+
 from __future__ import annotations
 
 import json
@@ -60,9 +61,16 @@ def select_public_repos(owner: str, requested: list[str], token: str) -> list[st
             with urllib.request.urlopen(request, timeout=30) as response:
                 info = json.load(response)
         except (OSError, ValueError) as exc:
-            print(f"skip unverified public activity repo: {repo} ({type(exc).__name__})", file=sys.stderr)
+            print(
+                f"skip unverified public activity repo: {repo} ({type(exc).__name__})",
+                file=sys.stderr,
+            )
             continue
-        if not isinstance(info, dict) or info.get("private") is not False or info.get("visibility") != "public":
+        if (
+            not isinstance(info, dict)
+            or info.get("private") is not False
+            or info.get("visibility") != "public"
+        ):
             print(f"skip non-public activity repo: {repo}", file=sys.stderr)
             continue
         if (info.get("owner") or {}).get("login", "").casefold() != owner.casefold():
@@ -70,5 +78,7 @@ def select_public_repos(owner: str, requested: list[str], token: str) -> list[st
             continue
         selected.append(repo)
     if not selected:
-        raise RuntimeError("No configured repositories could be verified public; refusing to publish an empty feed")
+        raise RuntimeError(
+            "No configured repositories could be verified public; refusing to publish an empty feed"
+        )
     return selected
