@@ -30,8 +30,11 @@ OPERATOR_PREFIX = re.compile(r"^(WAKE_ROUTER|OPERATOR|SIMPLE_TOOLS_OPERATOR)_")
 
 # The Operator and wake-router scripts, relative to scripts/.
 SCANNED = sorted(
-    {p.relative_to(SCRIPTS).as_posix() for pattern in ("simple_tools/wake*.py", "simple_tools/operator_*.py")
-     for p in SCRIPTS.glob(pattern)}
+    {
+        p.relative_to(SCRIPTS).as_posix()
+        for pattern in ("simple_tools/wake*.py", "simple_tools/operator_*.py")
+        for p in SCRIPTS.glob(pattern)
+    }
     | {"simple_tools/router.py", "simple_tools/claude_wake.py"}
 )
 
@@ -92,7 +95,9 @@ def settings_read(source: str) -> set[str]:
         name = None
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.args:
             attr = node.func.attr
-            if (attr in ("get", "pop", "setdefault") and _env_like(node.func.value)) or attr == "getenv":
+            if (
+                attr in ("get", "pop", "setdefault") and _env_like(node.func.value)
+            ) or attr == "getenv":
                 name = _literal(node.args[0])
         elif isinstance(node, ast.Subscript) and _env_like(node.value):
             name = _literal(node.slice)
@@ -127,7 +132,8 @@ class OperatorKnobCoverage(unittest.TestCase):
         known = registered()
         outside = {n: f for n, f in read_all().items() if n not in known and n not in ALLOWLIST}
         self.assertEqual(
-            outside, {},
+            outside,
+            {},
             "These settings are read by an Operator or wake-router script but are not in the knob registry, "
             "so Muster cannot show or change them.  Register each in scripts/fleet_knobs/registry.py "
             "(then regenerate registry.json and INFISICAL.md), or allowlist it here with a reason.",
@@ -138,28 +144,40 @@ class OperatorKnobCoverage(unittest.TestCase):
         seen = read_all()
         for name, reason in ALLOWLIST.items():
             self.assertTrue(reason.strip(), f"{name} needs a reason")
-            self.assertNotIn(name, known, f"{name} is registered now;  remove it from the allowlist")
-            self.assertIn(name, seen, f"{name} is no longer read by a scanned script;  remove it from the allowlist")
+            self.assertNotIn(
+                name, known, f"{name} is registered now;  remove it from the allowlist"
+            )
+            self.assertIn(
+                name,
+                seen,
+                f"{name} is no longer read by a scanned script;  remove it from the allowlist",
+            )
 
     def test_the_scan_finds_the_known_wake_router_knobs(self) -> None:
         seen = read_all()
         known = registered()
-        for name in ("WAKE_ROUTER_DELIVERY_ENABLED", "WAKE_ROUTER_KEY", "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"):
+        for name in (
+            "WAKE_ROUTER_DELIVERY_ENABLED",
+            "WAKE_ROUTER_KEY",
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+        ):
             self.assertIn(name, seen, f"the scan no longer sees {name}")
             self.assertIn(name, known)
 
     def test_the_detector_is_narrow(self) -> None:
         source = (
-            'import os\n'
+            "import os\n"
             'a = os.environ.get("OPERATOR_X_ONE")\n'
             'b = env["SOME_OTHER_NAME"]\n'
-            'c = {"ZZ_TOP_NAME": 1}\n'           # a dict key is not a read
-            'd = "NOT_PREFIXED_CONSTANT"\n'      # an unprefixed literal is not a read
+            'c = {"ZZ_TOP_NAME": 1}\n'  # a dict key is not a read
+            'd = "NOT_PREFIXED_CONSTANT"\n'  # an unprefixed literal is not a read
             'e = "WAKE_ROUTER_THING"\n'
             'f = other.get("MIXED_CASE_name")\n'
             'g = mapping.get("PLAIN_MAP_KEY")\n'  # not an environment-like mapping
         )
-        self.assertEqual(settings_read(source), {"OPERATOR_X_ONE", "SOME_OTHER_NAME", "WAKE_ROUTER_THING"})
+        self.assertEqual(
+            settings_read(source), {"OPERATOR_X_ONE", "SOME_OTHER_NAME", "WAKE_ROUTER_THING"}
+        )
 
 
 if __name__ == "__main__":
