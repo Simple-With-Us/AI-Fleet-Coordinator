@@ -17,7 +17,6 @@ if __package__ in (None, ""):
         fleet_apps_path,
         fleet_token_visibility_note,
         load_fleet_repo_names,
-        missing_fleet_token_visibility_note,
     )
     from github import GitHubClient  # type: ignore
     from scanner import DEFAULT_MAX_RUNS, DEFAULT_ORG, build_report, render_markdown  # type: ignore
@@ -27,7 +26,6 @@ else:
         fleet_apps_path,
         fleet_token_visibility_note,
         load_fleet_repo_names,
-        missing_fleet_token_visibility_note,
     )
     from .github import GitHubClient
     from .scanner import DEFAULT_MAX_RUNS, DEFAULT_ORG, build_report, render_markdown

@@ -18,9 +18,7 @@ DEFAULT_ORG = "Simple-With-Us"
 DEFAULT_MAX_RUNS = 15
 
 
-def _repo_access_error(
-    owner: str, repo: str, exc: github.GitHubError, *, context: str
-) -> str:
+def _repo_access_error(owner: str, repo: str, exc: github.GitHubError, *, context: str) -> str:
     full = f"{owner}/{repo}"
     status = exc.status
     if status == 404:

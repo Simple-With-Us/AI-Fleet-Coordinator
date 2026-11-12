@@ -24,7 +24,9 @@ def fleet_apps_path(env: dict[str, str] | None = None) -> Path:
     return DEFAULT_FLEET_APPS
 
 
-def load_fleet_repo_names(*, path: Path | None = None, env: dict[str, str] | None = None) -> list[str]:
+def load_fleet_repo_names(
+    *, path: Path | None = None, env: dict[str, str] | None = None
+) -> list[str]:
     """Return de-duplicated `repo` values from fleet-apps.json apps list."""
     apps_path = path if path is not None else fleet_apps_path(env)
     try:
