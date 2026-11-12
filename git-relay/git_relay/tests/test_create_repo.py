@@ -256,6 +256,28 @@ class CreateRepoTests(unittest.TestCase):
         self.assertEqual(body["result"], "already_exists")
         self.assertEqual(methods(script), ["GET", "POST", "GET"])
 
+    def test_hidden_repo_stays_a_refusal_when_the_confirming_read_is_404(self):
+        # A selected-repositories installation can hide an existing repo: the
+        # pre-read is 404, the create is 422, and the confirming read is 404.
+        # That pair stays a refusal. A 422 is also a validation failure, and
+        # the create is not repeated.
+        script = Script(
+            [
+                http(404),
+                http(422, {"message": "name already exists on this account", "code": "custom"}),
+                http(404),
+            ]
+        )
+        status, body, script, _minter, audit = drive(script, {"repo": "Simple-With-Us/Widget"})
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "github refused the request")
+        self.assertEqual(body["github_status"], 422)
+        self.assertNotIn("result", body)
+        self.assertEqual(methods(script), ["GET", "POST", "GET"])
+        self.assertEqual(paths(script).count("/orgs/Simple-With-Us/repos"), 1)
+        self.assertNotIn("name already exists", json.dumps(body))
+        self.assertNotIn("name already exists", audit)
+
     def test_public_is_denied_unless_the_seat_flag_allows_it(self):
         script = Script([])
         status, body, script, minter, _audit = drive(
