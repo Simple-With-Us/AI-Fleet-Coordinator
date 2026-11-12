@@ -84,12 +84,12 @@ GB-ENGINEER = "server"
 # BotFleet still assigns the BF-<ROLE> seat at launch, which is the part that is native to it.
 #
 # The twelve BF seats are the eleven role seats of FLEET-PROTOCOL.md (owner 2026-10-09) with
-# BF-ENGINEER in place of BF-BUILDER (owner 2026-11-01), plus BF-TRADER.  BF-PRODUCER is not
+# BF-ENGINEER in place of BF-BUILDER (owner 2026-10-29), plus BF-TRADER.  BF-PRODUCER is not
 # one of them:  it stays off this partition and off the outgoing-webhook allowlist, and stays
 # on the board roster so its Linear app signs its writes.  All twelve are outgoing-webhook
 # senders, and unlike before they now hold queues too.
 #
-# BF-BUILDER is retired (owner 2026-11-01:  BF-ENGINEER replaced it).  It stays listed as
+# BF-BUILDER is retired (owner 2026-10-29:  BF-ENGINEER replaced it).  It stays listed as
 # "none" so neither listener can ever hold the retired name.
 BF-BUILDER = "none"
 BF-COMPILER = "server"

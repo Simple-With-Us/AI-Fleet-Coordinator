@@ -192,7 +192,40 @@ class ClaimTests(unittest.TestCase):
 
 
 class BudgetTests(unittest.TestCase):
-    limits = dict(L.LIVE_DEFAULTS)
+    # No live limit has a default any more (owner, Nov 10, 2026), so these tests give the table the old
+    # numbers on purpose:  what a seat gets when its own `live` table names them.
+    limits = {"per_hour": 6, "per_day": 30, "per_topic_minutes": 5, "owner_per_day": 20, "loop_turns": 3}
+
+    def test_no_limit_has_a_default_and_an_empty_table_never_holds_a_turn(self) -> None:
+        self.assertEqual(L.LIVE_DEFAULTS, {})
+        self.assertEqual(L.live_limits({}, "CLAUDE"), {})
+        busy = {
+            "turns": [{"ts": 1000.0 + i, "topic": "a", "owner": bool(i % 2)} for i in range(200)],
+            "streak": {"a": 50},
+        }
+        for owner in (False, True):
+            self.assertIsNone(L.live_room(busy, "a", owner, 1300.0, L.live_limits({}, "CLAUDE")), owner)
+
+    def test_a_limit_a_seat_writes_still_applies(self) -> None:
+        config = {"seat": {"CLAUDE": {"live": {"per_hour": 2, "loop_turns": 1, "owner_per_day": 0, "per_day": "x"}}}}
+        limits = L.live_limits(config, "CLAUDE")
+        self.assertEqual(limits, {"per_hour": 2, "loop_turns": 1, "owner_per_day": 0})
+        two = {"turns": [{"ts": 1000.0 + i, "topic": "t%d" % i, "owner": False} for i in range(2)]}
+        self.assertEqual(L.live_room(two, "new", False, 1100.0, limits), "per_hour")
+        self.assertEqual(L.live_room({"turns": [], "streak": {"k": 1}}, "k", False, 1100.0, limits), "loop_guard")
+        self.assertEqual(L.live_room({"turns": []}, "k", True, 1100.0, limits), "owner_per_day", "0 blocks at once")
+
+    def test_every_limit_a_seat_writes_is_read_and_zero_keeps_its_meaning(self) -> None:
+        table = {
+            "per_hour": 4, "per_day": 9, "per_topic_minutes": 7, "owner_per_day": 2, "loop_turns": 5
+        }
+        self.assertEqual(L.live_limits({"seat": {"CLAUDE": {"live": table}}}, "CLAUDE"), table)
+        empty = {"turns": []}
+        self.assertEqual(L.live_room(empty, "k", False, 1100.0, {"per_hour": 0}), "per_hour")
+        self.assertEqual(L.live_room(empty, "k", False, 1100.0, {"per_day": 0}), "per_day")
+        recent = {"turns": [{"ts": 1090.0, "topic": "k", "owner": False}], "streak": {"k": 9}}
+        no_spacing = {"per_topic_minutes": 0, "loop_turns": 0}
+        self.assertIsNone(L.live_room(recent, "k", False, 1100.0, no_spacing))
 
     def test_per_topic_spacing_hourly_daily_and_owner_counts(self) -> None:
         state = {"turns": [{"ts": 1000.0, "topic": "a", "owner": False}]}
