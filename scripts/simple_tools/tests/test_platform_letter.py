@@ -2474,8 +2474,6 @@ class GoneReportTests(Base):
         self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1})
 
     def test_only_this_hosts_own_quiet_lettered_chats_of_the_platform_are_candidates(self) -> None:
-        old = self.t0 - 37 * 3600
-        self.start("s-0006", old)  # idle for longer than the assigner's own sweep waits:  the sweep's to close
         self.start("s-0001", self.t0)
         self.start("c-0001", self.t0, spec=make_spec())  # another platform's chat, in the same seat's notes
         self.start("s-0002", self.t0, platform="linux", location_flag="server")  # registered at another location
@@ -2489,7 +2487,7 @@ class GoneReportTests(Base):
         self.start("s-0005", self.t0)
         self.prompt("s-0005", self.t0 + self.window - 600)  # its hook ran ten minutes before the hour was up
         # The adapter names everything it is asked about, and more:  only what was asked counts.
-        self.gone = {"s-0001", "s-0002", "s-0003", "s-0004", "s-0005", "s-0006", "c-0001", "s-9999"}
+        self.gone = {"s-0001", "s-0002", "s-0003", "s-0004", "s-0005", "c-0001", "s-9999"}
         with self.reports() as sent:
             self.start("s-0009", self.t0 + self.window + 1)
         self.assertEqual(self.asked[-1], frozenset({"s-0001"}))
@@ -2497,6 +2495,35 @@ class GoneReportTests(Base):
         self.assertEqual(self.row_state("s-0005"), "active")
         self.assertEqual(self.row_state("s-0002", "server"), "active")
         self.assertEqual(self.lookup("c-0001", "mac")["state"], "active")
+
+    def test_a_chat_archived_days_after_its_last_hook_event_is_still_reported(self) -> None:
+        # A chat is usually archived well after its last prompt, and the host may see no start for days after that.
+        self.start("s-0001", self.t0 - 30 * 86400)
+        self.start("s-0002", self.t0 - 3 * 86400)
+        self.start("s-0003", self.t0)
+        self.gone = {"s-0001", "s-0002"}
+        with self.reports() as sent:
+            self.start("s-0004", self.t0 + self.window + 1)
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003"}))
+        self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"]])  # longest quiet first
+        self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003")],
+                         ["closed", "closed", "active"])
+
+    def test_the_scan_is_bounded_by_count_and_never_by_how_long_a_chat_has_been_quiet(self) -> None:
+        for n in range(1, 6):
+            self.start("s-%04d" % n, self.t0 - n * 86400)
+        self.start("s-0006", self.t0)
+        now = self.t0 + self.window + 1
+        every = PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now)
+        self.assertEqual(sorted(every), ["s-%04d" % n for n in range(1, 7)])
+        with mock.patch.object(PL, "GONE_REPORT_IDS", 2):  # the most recently quiet chats are the ones kept
+            self.assertEqual(sorted(PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now)), ["s-0001", "s-0006"])
+        with mock.patch.object(PL, "GONE_SCAN_NOTES", 1):  # and only the newest note files are read at all
+            self.assertEqual(len(PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now)), 1)
+        # A chat that was reported is not a candidate again, so a long-kept note costs nothing after its report.
+        self.gone = {"s-0005"}
+        self.start("s-0007", now)
+        self.assertNotIn("s-0005", PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now + 10))
 
     def test_a_refused_report_changes_no_note_and_the_next_one_names_what_the_assigner_allows(self) -> None:
         for sid in ("s-0001", "s-0002", "s-0003", "s-0004"):
@@ -2613,7 +2640,7 @@ class GoneReportTests(Base):
         self.assertEqual(code, 0, out)
         self.assertEqual(out.splitlines(), [
             "would report Faux %s (01234567, mac)" % label,
-            "Faux gone report:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
+            "Faux gone report, mac:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
         ])
         self.assertNotIn("Secret", out)
         self.assertEqual(sent, [])
@@ -2630,10 +2657,10 @@ class GoneReportTests(Base):
             code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 30)
             self.assertEqual(code, 0, out)
             self.assertEqual(out.splitlines(), ["reported Faux %s (s-0001, mac)" % label,
-                                                "Faux gone report:  1 gone, 1 closed now"])
+                                                "Faux gone report, mac:  1 gone, 1 closed now"])
             self.assertEqual(self.row_state("s-0001"), "closed")
             code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 40)
-            self.assertEqual((code, out), (0, "Faux gone report:  0 gone, 0 closed now\n"))  # idempotent
+            self.assertEqual((code, out), (0, "Faux gone report, mac:  0 gone, 0 closed now\n"))  # idempotent
         self.assertEqual(len(sent), 1)
 
     def test_a_chat_the_assigner_closed_already_is_not_named_twice(self) -> None:
@@ -2644,10 +2671,10 @@ class GoneReportTests(Base):
         self.gone = {"s-0001"}
         code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 5)
         self.assertEqual(code, 0, out)
-        self.assertIn("already closed Faux %s (s-0001, mac)" % self.note("s-0001")["label"], out)
+        self.assertIn("not open Faux %s (s-0001, mac)" % self.note("s-0001")["label"], out)
         self.assertIn("1 gone, 0 closed now", out)
         self.assertEqual(self.verb("--platform", "faux", at=self.t0 + self.window + 9)[1].splitlines()[0],
-                         "Faux gone report:  0 gone  (dry run:  nothing sent;  --apply reports them now)")
+                         "Faux gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)")
 
     def test_a_refused_or_failed_apply_says_so(self) -> None:
         for sid in ("s-0001", "s-0002", "s-0003"):
@@ -2655,14 +2682,14 @@ class GoneReportTests(Base):
         self.gone = {"s-0001", "s-0002", "s-0003"}
         code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 5)
         self.assertEqual(code, 1, out)
-        self.assertIn("Faux gone report:  3 gone, not reported:  the report would close 3 of 3 live rows", out)
+        self.assertIn("Faux gone report, mac:  3 gone, not reported:  the report would close 3 of 3 live rows", out)
         self.assertEqual(self.row_state("s-0001"), "active")
         broken = make_spec(platform="faux", source="faux-hook", display="Faux",
                            gone_sessions=mock.Mock(side_effect=OSError("gone")))
         with mock.patch.dict(PL.SPECS, {"faux": broken}):
             for argv in (["--platform", "faux"], ["--platform", "faux", "--apply"]):
                 code, out = self.verb(*argv, at=self.t0 + 2 * self.window + 9)
-                self.assertEqual((code, out), (1, "Faux gone report:  could not read this host's chats (OSError)\n"))
+                self.assertEqual((code, out), (1, "Faux gone report, mac:  could not read this host's chats (OSError)\n"))
 
     def test_the_verb_checks_its_arguments(self) -> None:
         code, out = self.verb("--platform", "codex")
@@ -2676,7 +2703,7 @@ class GoneReportTests(Base):
         self.assertEqual(code, 2)
         self.assertIn("fleet location is not stated", out)
         code, out = self.verb("--platform", "faux", "--location", "server", platform="linux")
-        self.assertEqual((code, out.splitlines()[-1].split("  (")[0]), (0, "Faux gone report:  0 gone"))
+        self.assertEqual((code, out.splitlines()[-1].split("  (")[0]), (0, "Faux gone report, server:  0 gone"))
 
     def test_without_a_platform_every_platform_that_names_its_gone_chats_is_shown(self) -> None:
         self.start("s-0001", self.t0)
@@ -2689,14 +2716,14 @@ class GoneReportTests(Base):
             out = io.StringIO()
             self.assertEqual(PL.main([name, "--location", "mac"], env=self.env(), stdout=out, stderr=out), 0)
             self.assertIn("would report Faux %s (s-0001, mac)" % label, out.getvalue())
-        shown = [line.split(" gone report:")[0] for line in out.getvalue().splitlines() if " gone report:" in line]
+        shown = {line.split(" gone report, ")[0] for line in out.getvalue().splitlines() if " gone report, " in line}
         self.assertIn("Faux", shown)
         self.assertNotIn("Codex", shown)
-        self.assertEqual(len(shown), len(set(shown)))
         for name in PL.adapter_platforms():
             spec = PL.load_spec(name)
             if spec is not None:
-                self.assertEqual(spec.display in shown, spec.gone_sessions is not None, name)
+                names = spec.gone_sessions is not None or spec.gone_elsewhere is not None
+                self.assertEqual(spec.display in shown, names, name)
         self.assertIn("gone [--platform P] [--location L] [--apply]", PL.USAGE)
 
     # ---- the registry side's `report-gone` op ----
@@ -2707,7 +2734,8 @@ class GoneReportTests(Base):
         argv = ["report-gone", "--platform", "faux", "--location", "mac"]
         with self.reports() as sent:
             code, answer = self.registry(*argv, "--gone=" + json.dumps(["s-0001", "s-0001", "s-7777"]))
-        self.assertEqual((code, answer), (0, {"ok": True, "gone": ["s-0001"], "count": 1}))
+        self.assertEqual((code, answer), (0, {"ok": True, "gone": ["s-0001"], "count": 1,
+                                              "labels": {"s-0001": self.note("s-0001")["label"]}}))
         self.assertEqual(sent, [{"platform": "faux", "verified_host": "mac", "profile_scope": "default",
                                  "native_session_ids": ["s-0001", "s-7777"]}])
         self.assertEqual(self.row_state("s-0001"), "closed")
@@ -2729,6 +2757,322 @@ class GoneReportTests(Base):
         for op in ("register", "title", "touch", "close", "show", "issues"):
             code, answer = self.registry(op, "--platform", "faux", "--location", "mac", "--seat", "CODEX")
             self.assertEqual((code, answer), (2, {"error": "bad arguments"}), op)
+
+
+class GoneElsewhereTests(Base):
+    """A platform's app on one host can run, and archive, chats on another, whose notes this host does not hold.
+    The adapter names those from its own records (`gone_elsewhere`), and they go in a report of their own for the
+    location they run at, with its own stamp, through the same `report-gone` call."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.gone: set[str] = set()
+        self.elsewhere: dict[str, list] = {}
+        self.asked: list[str] = []
+
+        def gone_elsewhere(env, there):
+            self.asked.append(there)
+            return self.elsewhere.get(there)
+
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                              gone_sessions=lambda env, ids: self.gone, gone_elsewhere=gone_elsewhere)
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.t0 = time.time() - 5 * 3600
+        self.window = PL.GONE_REPORT_SECONDS
+
+    def start(self, sid: str, at: float, *, transport=None, **flags) -> dict:
+        out, err = io.StringIO(), io.StringIO()
+        flags.setdefault("platform", "darwin")
+        code = PL.hook(self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"})), out, now=at,
+            transport=transport, stderr=err, **flags)
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        return json.loads(out.getvalue())["hookSpecificOutput"] if out.getvalue().strip() else {}
+
+    def server_chat(self, sid: str) -> str:
+        """A chat registered at the server, by its own hook there:  this host holds no note of it."""
+        code, answer = self.registry("register", "--platform", "faux", "--location", "server", "--session-id", sid,
+                                     "--seat", "CODEX", "--source", "faux-hook")
+        self.assertEqual(code, 0, answer)
+        return answer["label"]
+
+    def row_state(self, sid: str, location: str) -> str:
+        return self.lookup(sid, location, platform="faux")["state"]
+
+    def stamp(self, there: str = "server") -> dict:
+        with open(PL.gone_stamp_path(self.env(), "CODEX", "faux", there)) as fh:
+            return json.load(fh)
+
+    @contextmanager
+    def reports(self):
+        seen: list[dict] = []
+        real = registry_api._open
+
+        def capture(request, timeout):
+            if request.full_url.endswith("/report-gone"):
+                seen.append(json.loads(request.data.decode("utf-8")))
+            return real(request, timeout)
+
+        with mock.patch.object(registry_api, "_open", capture):
+            yield seen
+
+    def test_a_mac_start_sends_one_report_for_its_own_chats_and_one_for_the_other_location(self) -> None:
+        for sid in ("m-0001", "m-0002"):
+            self.start(sid, self.t0)
+        for sid in ("r-0001", "r-0002", "r-0003"):
+            self.server_chat(sid)
+        self.gone = {"m-0001"}
+        self.elsewhere = {"server": ["r-0001", "r-9999"]}  # the second is not registered anywhere
+        with self.reports() as sent:
+            out = self.start("m-0003", self.t0 + self.window + 1)
+        self.assertEqual(sent, [
+            {"platform": "faux", "verified_host": "mac", "profile_scope": "default",
+             "native_session_ids": ["m-0001"]},
+            {"platform": "faux", "verified_host": "server", "profile_scope": "default",
+             "native_session_ids": ["r-0001", "r-9999"]},
+        ])
+        self.assertEqual(set(self.asked), {"server"})  # only the location that is not this host's
+        self.assertEqual((self.row_state("m-0001", "mac"), self.row_state("m-0002", "mac")), ("closed", "active"))
+        self.assertEqual([self.row_state(sid, "server") for sid in ("r-0001", "r-0002", "r-0003")],
+                         ["closed", "active", "active"])
+        self.assertIsNone(self.lookup("r-9999", "server", platform="faux"))  # an id nobody holds open costs nothing
+        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+        # Each location has its own stamp, and the other location's keeps what was reported.
+        self.assertEqual(self.stamp("mac"), {"at": self.t0 + self.window + 1})
+        self.assertEqual(self.stamp("server"), {"at": self.t0 + self.window + 1, "sent": ["r-0001", "r-9999"]})
+
+    def test_a_chat_is_named_once_while_it_stays_gone_and_again_if_it_goes_again(self) -> None:
+        for n in range(1, 9):  # enough live rows that the assigner's share guard is not what is tested here
+            self.server_chat("r-%04d" % n)
+        self.elsewhere = {"server": ["r-0001"]}
+        with self.reports() as sent:
+            self.start("m-0001", self.t0)
+            self.start("m-0002", self.t0 + self.window + 1)
+            self.assertEqual(len(sent), 1)  # still named by the adapter:  not reported every window
+            self.elsewhere = {"server": ["r-0002", "r-0001"]}
+            self.start("m-0003", self.t0 + 2 * self.window + 2)
+            self.assertEqual(sent[-1]["native_session_ids"], ["r-0002"])
+            self.assertEqual(self.stamp()["sent"], ["r-0001", "r-0002"])
+            # r-0001 is no longer named (it was unarchived and came back):  it is forgotten, and named again later.
+            self.server_chat("r-0001")
+            self.elsewhere = {"server": ["r-0002"]}
+            self.start("m-0004", self.t0 + 3 * self.window + 3)
+            self.assertEqual((len(sent), self.stamp()["sent"]), (2, ["r-0002"]))
+            self.elsewhere = {"server": ["r-0001", "r-0002"]}
+            self.start("m-0005", self.t0 + 4 * self.window + 4)
+        self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"], ["r-0002"], ["r-0001"]])
+        self.assertEqual(self.row_state("r-0001", "server"), "closed")
+
+    def test_the_other_locations_report_has_its_own_window(self) -> None:
+        self.server_chat("r-0001")
+        self.server_chat("r-0002")
+        with self.reports() as sent:
+            self.start("m-0001", self.t0)
+            self.elsewhere = {"server": ["r-0001"]}
+            self.start("m-0002", self.t0 + self.window - 5)  # inside the window:  the adapter is not even asked
+            self.assertEqual((sent, self.asked), ([], ["server"]))
+            self.start("m-0003", self.t0 + self.window + 1)
+            self.assertEqual(len(sent), 1)
+            self.elsewhere = {"server": ["r-0001", "r-0002"]}
+            self.start("m-0004", self.t0 + self.window + 30)
+            self.assertEqual(len(sent), 1)
+        # A host that is the other location asks about this one in turn.
+        self.asked.clear()
+        self.start("s-0001", self.t0, platform="linux", location_flag="server")
+        self.assertEqual(self.asked, ["mac"])
+
+    def test_a_host_is_never_asked_about_its_own_location(self) -> None:
+        # Its own chats are `gone_sessions`' to name, from its notes.  With no such accessor there is no stamp of
+        # this host's own to hold the question back, so this is the rule itself.
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                              gone_elsewhere=lambda env, there: self.asked.append(there))
+        self.start("m-0001", self.t0)
+        self.start("s-0001", self.t0, platform="linux", location_flag="server")
+        self.assertEqual(self.asked, ["server", "mac"])
+
+    def test_a_refused_report_keeps_nothing_as_sent_and_the_next_names_what_the_assigner_allows(self) -> None:
+        for sid in ("r-0001", "r-0002", "r-0003", "r-0004"):
+            self.server_chat(sid)
+        self.elsewhere = {"server": ["r-0001", "r-0002", "r-0003"]}
+        with self.reports() as sent:
+            self.start("m-0001", self.t0)  # 3 of the server's 4 live rows:  over the share
+            self.assertEqual(sent[0]["native_session_ids"], ["r-0001", "r-0002", "r-0003"])
+            self.assertEqual([self.row_state(sid, "server") for sid in ("r-0001", "r-0002", "r-0003")],
+                             ["active"] * 3)
+            self.assertEqual(self.stamp(), {"at": self.t0, "sent": [], "allowed": 2})
+            self.start("m-0002", self.t0 + 60)  # refused or not, the window holds
+            self.assertEqual(len(sent), 1)
+            self.start("m-0003", self.t0 + self.window + 1)
+        self.assertEqual(sent[-1]["native_session_ids"], ["r-0001", "r-0002"])
+        self.assertEqual([self.row_state(sid, "server") for sid in ("r-0001", "r-0002", "r-0003")],
+                         ["closed", "closed", "active"])
+        self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1, "sent": ["r-0001", "r-0002"]})
+
+    def test_nothing_the_adapter_or_the_assigner_does_fails_a_start(self) -> None:
+        self.server_chat("r-0001")
+        self.server_chat("r-0002")
+        for n, answer in enumerate((None, 7, [7, None, "../x", {"a": 1}], OSError("the store went away"))):
+            with self.subTest(n=n):
+                self.elsewhere = {"server": answer}
+                if isinstance(answer, Exception):
+                    self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                                          gone_elsewhere=mock.Mock(side_effect=answer))
+                with self.reports() as sent:
+                    out = self.start("a-%04d" % n, self.t0 + n * (self.window + 5))
+                self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+                self.assertEqual(sent, [])
+        # A report that fails changes nothing, records nothing as sent, and is tried again after the window.
+        self.spec = PL.SPECS["faux"]
+        self.elsewhere = {"server": ["r-0001"]}
+        calls = Calls(self)
+
+        def broken(argv):
+            if argv[0] == "report-gone":
+                raise RuntimeError("the report blew up")
+            return calls(argv)
+
+        at = self.t0 + 5 * self.window
+        out = self.start("m-0001", at, transport=broken)
+        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+        self.assertEqual((self.row_state("r-0001", "server"), self.stamp()), ("active", {"at": at, "sent": []}))
+        with self.reports() as sent:
+            self.start("m-0002", at + 30)
+            self.assertEqual(sent, [])
+            self.start("m-0003", at + self.window + 1)
+        self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"]])
+
+    def test_the_verb_shows_and_reports_the_other_locations_chats(self) -> None:
+        label = self.server_chat("0123456789abcdef-remote")
+        self.server_chat("r-0002")
+        self.elsewhere = {"server": ["0123456789abcdef-remote", "r-7777"]}
+        out = io.StringIO()
+        with self.reports() as sent:
+            code = PL.gone_main(["--platform", "faux"], self.env(), out, now=self.t0, platform="darwin")
+            self.assertEqual(code, 0, out.getvalue())
+            # This host does not know the letter of a chat that runs elsewhere:  a dash stands for it.
+            self.assertEqual(out.getvalue().splitlines(), [
+                "Faux gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)",
+                "would report Faux - (01234567, server)",
+                "would report Faux - (r-7777, server)",
+                "Faux gone report, server:  2 gone  (dry run:  nothing sent;  --apply reports them now)",
+            ])
+            self.assertEqual(sent, [])
+            self.assertFalse(os.path.exists(PL.gone_stamp_path(self.env(), "CODEX", "faux", "server")))
+            out = io.StringIO()
+            code = PL.gone_main(["--platform", "faux", "--apply"], self.env(), out, now=self.t0, platform="darwin")
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(out.getvalue().splitlines(), [
+            "Faux gone report, mac:  0 gone, 0 closed now",
+            "reported Faux %s (01234567, server)" % label,  # the assigner's answer names the letter it freed
+            "not open Faux - (r-7777, server)",
+            "Faux gone report, server:  2 gone, 1 closed now",
+        ])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(self.row_state("0123456789abcdef-remote", "server"), "closed")
+        # A platform that names only chats elsewhere is a platform the verb takes.
+        only = make_spec(platform="faux", source="faux-hook", display="Faux", gone_elsewhere=lambda env, there: [])
+        with mock.patch.dict(PL.SPECS, {"faux": only}):
+            out = io.StringIO()
+            self.assertEqual(PL.gone_main(["--platform", "faux"], self.env(), out, platform="darwin"), 0)
+            self.assertEqual(out.getvalue().splitlines(), [
+                "Faux gone report, server:  0 gone  (dry run:  nothing sent;  --apply reports them now)"])
+
+
+class RetiredNoteTests(Base):
+    """A note the seat's retired client wrote (no `platform`, earlier letters under `held_labels`) is put in this
+    client's shape the first time it is read, where it lies."""
+
+    def old_note(self, sid: str, **over) -> dict:
+        """The shape the retired Claude client wrote (its `Chat.write` and `_follow_letter` on origin/main)."""
+        note = {
+            "ended": {"at": 1.0, "reason": "other"}, "generation": 2, "held_labels": ["QP", "QQ", "QR"],
+            "inherited": "", "label": "QR", "location": "mac", "placeholder": "QR: New Chat", "prior_label": "QQ",
+            "record_id": "rec-1", "session_id": sid, "state": "open", "title": "Fix Login", "titled": True,
+            "touched_at": 5.0, "updated_at": 7.0,
+        }
+        note.update(over)
+        return note
+
+    def put(self, sid: str, note: dict, seat: str = "CODEX") -> str:
+        folder = os.path.join(self.state, seat, "letters")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, sid + ".json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+        return path
+
+    def on_disk(self, path: str) -> dict:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_the_first_read_upgrades_it_in_place(self) -> None:
+        path = self.put("s-0001", self.old_note("s-0001"))
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=99.0)
+        note = chat.read()
+        self.assertEqual((note["platform"], note["labels"]), ("codex", ["QR", "QQ", "QP"]))  # its own first, newest next
+        self.assertNotIn("held_labels", note)
+        self.assertNotIn("prior_label", note)
+        self.assertEqual(self.on_disk(path), note)
+        self.assertEqual(note["updated_at"], 7.0)  # a read is not a hook event:  the old client's stamp stays
+        self.assertEqual({k: note[k] for k in ("label", "state", "title", "record_id", "generation")},
+                         {"label": "QR", "state": "open", "title": "Fix Login", "record_id": "rec-1", "generation": 2})
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        # A second read changes nothing, and a note of this client is never touched.
+        before = os.stat(path).st_mtime_ns
+        self.assertEqual(chat.read(), note)
+        self.assertEqual(os.stat(path).st_mtime_ns, before)
+        self.assertIsNone(PL.upgraded_note(note, "codex"))
+        self.assertIsNone(PL.upgraded_note({}, "codex"))
+
+    def test_odd_old_notes_upgrade_without_raising(self) -> None:
+        for over, want in (
+            ({"held_labels": None, "prior_label": None}, ["QR"]),
+            ({"held_labels": "QP", "prior_label": 7}, ["QR"]),
+            ({"held_labels": ["qq", "TOOLONG", 5, "QP"]}, ["QR", "QQ", "QP"]),
+            ({"label": "", "state": "failed", "held_labels": [], "prior_label": None}, []),
+        ):
+            note = PL.upgraded_note(self.old_note("s-0001", **over), "codex")
+            self.assertEqual(note["labels"], want, over)
+
+    def test_bare_knows_the_letters_the_old_client_remembered(self) -> None:
+        # The chat still shows a title under a letter it held two letters ago:  the hook takes that letter off, where
+        # a note that had lost its history would stack the new letter in front of it.
+        self.put("s-0001", self.old_note("s-0001", updated_at=time.time()))
+        out = io.StringIO()
+        PL.hook(self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+             "session_title": "QP: Fix Login"})), out, platform="darwin",
+            transport=lambda argv: {"ok": True, "record_id": "rec-1"})
+        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["sessionTitle"], "QR: Fix Login")
+
+    def test_an_old_note_becomes_a_gone_report_candidate(self) -> None:
+        gone: set[str] = set()
+        spec = make_spec(platform="faux", source="faux-hook", display="Faux", gone_sessions=lambda env, ids: gone)
+        now = time.time()
+        path = self.put("s-0001", self.old_note("s-0001", updated_at=now - 3 * 86400))
+        self.assertEqual(PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now), {})  # not asked to adopt it
+        self.assertNotIn("platform", self.on_disk(path))
+        self.assertEqual([row["session_id"] for row in PL.gone_chats(spec, self.env(), "CODEX", "mac", now)], [])
+        self.assertEqual(self.on_disk(path)["platform"], "faux")  # read by the seat's own platform:  adopted
+        gone.add("s-0001")
+        self.assertEqual([(row["session_id"], row["label"]) for row in
+                          PL.gone_chats(spec, self.env(), "CODEX", "mac", now)], [("s-0001", "QR")])
+        # The dry run names such a chat too, and leaves its note exactly as the old client wrote it.
+        third = self.put("s-0003", self.old_note("s-0003", updated_at=now - 86400))
+        gone.add("s-0003")
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": spec}):
+            self.assertEqual(PL.gone_main(["--platform", "faux"], self.env(), out, now=now, platform="darwin"), 0)
+        self.assertIn("would report Faux QR (s-0003, mac)", out.getvalue())
+        self.assertNotIn("platform", self.on_disk(third))
+        # A spec whose seat is read from the environment (a launcher's) adopts nobody's notes.
+        other = self.put("s-0002", self.old_note("s-0002", updated_at=now - 86400))
+        launcher = make_spec(platform="faux", source="faux-hook", display="Faux", gone_sessions=lambda env, ids: gone,
+                             seat=PL.from_env("AGENT_LAUNCH_SEAT"))
+        PL.gone_chats(launcher, self.env(), "CODEX", "mac", now)
+        self.assertNotIn("platform", self.on_disk(other))
 
 
 class DurableWriteTests(Base):

@@ -50,11 +50,14 @@ What the hook does.
 
 Chats that are gone for good.  A platform's app can end a chat with no hook event of its own (a desktop app that
 archives one), so its letter would stay taken until the assigner's idle sweep.  An adapter that can tell names
-those chats through its `gone_sessions`, and a chat's start reports them:  one `report-gone` call to the assigner
-for the platform, at most once per GONE_REPORT_SECONDS for a host (a stamp beside the notes), naming only this
-host's own chats whose hook has been quiet for an hour.  The assigner closes the rows named, and refuses a report
-that would close more than its share of the host's live rows.  Nothing schedules it, and nothing it does can fail
-a chat's start (`report_gone`).  `gone` shows what would be reported, and `gone --apply` reports it now.
+those chats, and a chat's start reports them:  one `report-gone` call to the assigner for the platform and a
+location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  `gone_sessions` answers for this
+host's own chats whose hook has been quiet for an hour, however long ago that was.  `gone_elsewhere` answers for
+chats the platform's app on this host runs at another location, whose notes this host does not hold;  they go in
+a report of their own for that location.  The assigner closes the open rows named, and refuses a report that
+would close more than its share of a location's live rows.  Nothing schedules it, and nothing it does can fail a
+chat's start (`report_gone`, `report_gone_elsewhere`).  `gone` shows what would be reported, and `gone --apply`
+reports it now.
 
 The title reaches the chat the way the platform allows: in the hook's own output (`hook` style, a `sessionTitle`
 field), through the adapter's `title_writer` (a callable that renames the chat natively), or from a plugin that reads
@@ -114,16 +117,16 @@ TOUCH_SECONDS = 1800
 # The stamp that throttles asking again:  a chat whose ask failed (no letter, or a send the registry did not take)
 # asks again no sooner than this after `failed_at` (or `sync_failed_at`).  `simple-chat letter request` ignores it.
 RETRY_SECONDS = 600
-# The gone report (`report_gone`):  a host reports its gone chats for a platform at most this often, names only
-# chats whose hook last ran at least GONE_QUIET_SECONDS ago (one that ran since is plainly not gone) and at most
-# GONE_LIVE_SECONDS ago (one idle for longer is the assigner's own 36 hour sweep's), reads at most
-# GONE_SCAN_NOTES of the newest notes to find them, and names at most GONE_REPORT_IDS in one call (the
-# assigner's own limit, listener_registry.MAX_GONE_IDS).
+# The gone report (`report_gone`, `report_gone_elsewhere`):  a host reports the gone chats of a platform and
+# location at most this often, names only chats of its own whose hook last ran at least GONE_QUIET_SECONDS ago
+# (one that ran since is plainly not gone), reads at most GONE_SCAN_NOTES of the newest notes to find them, names
+# at most GONE_REPORT_IDS in one call (the assigner's own limit, listener_registry.MAX_GONE_IDS), and remembers
+# at most GONE_SENT_IDS chats of another location that it has reported.
 GONE_REPORT_SECONDS = 3600
 GONE_QUIET_SECONDS = 3600
-GONE_LIVE_SECONDS = 36 * 3600
 GONE_SCAN_NOTES = 2000
 GONE_REPORT_IDS = 500
+GONE_SENT_IDS = 2000
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -311,6 +314,10 @@ TitleAdvice = Callable[[TitleRequest], str]
 #: An adapter's `gone_sessions`:  from the environment and the session ids of this host's quiet chats, the ids of
 #: the ones that are gone for good (its app archived them).  Ids only, and any doubt leaves a chat out.
 GoneSessions = Callable[[Mapping[str, str], frozenset[str]], Iterable[str] | None]
+#: An adapter's `gone_elsewhere`:  from the environment and a location other than this host's, the session ids
+#: of chats that run there and are gone for good, as this host's own records of them say (a platform's app on
+#: one host can run chats on another).  Ids only, bounded by the adapter, and any doubt leaves a chat out.
+GoneElsewhere = Callable[[Mapping[str, str], str], Iterable[str] | None]
 
 
 @dataclass(frozen=True)
@@ -345,6 +352,8 @@ class PlatformSpec:
                                hook wants on the chat, the line that has the chat's own model set it, or "" (`advice`)
     gone_sessions              for a platform whose app ends chats with no hook event (an archive):  which of the
                                session ids asked about are gone for good, for the hooks' gone report (`report_gone`)
+    gone_elsewhere             for a platform whose app on this host runs chats at another location:  the session
+                               ids of the ones there that are gone for good (`report_gone_elsewhere`)
     """
 
     platform: str
@@ -369,6 +378,7 @@ class PlatformSpec:
     session_env: tuple[str, ...] = ()
     title_advice: TitleAdvice | None = None
     gone_sessions: GoneSessions | None = None
+    gone_elsewhere: GoneElsewhere | None = None
 
     def __post_init__(self) -> None:
         if not PLATFORM_RE.fullmatch(self.platform):
@@ -935,8 +945,8 @@ def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
 
     The list is JSON, and every entry must be a session id:  a list with anything else in it is refused whole,
     before any call.  An empty list makes no call.  The answer names the session ids whose rows were closed now
-    (`gone`);  a chat whose row was closed already, or that this host never registered, is simply not among
-    them.  A refusal is the assigner's own answer, with its `code` (`gone_share_exceeded`) and `allowed_now`."""
+    (`gone`) and the letter each one held (`labels`);  a chat whose row was closed already, or that was never
+    registered at that location, is simply not among them.  A refusal is the assigner's own answer, with its `code` (`gone_share_exceeded`) and `allowed_now`."""
     try:
         named = json.loads(args.gone)
     except ValueError:
@@ -967,12 +977,13 @@ def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
     )
     if "error" in out:
         return dict(out)
-    closed = [
-        str(row.get("native_session_id") or "")
+    labels = {
+        str(row.get("native_session_id") or ""): str(row.get("label") or "")
         for row in out.get("closed") or []
         if isinstance(row, Mapping)
-    ]
-    return {"ok": True, "gone": [sid for sid in closed if sid], "count": len(closed)}
+    }
+    labels.pop("", None)
+    return {"ok": True, "gone": sorted(labels), "count": len(labels), "labels": labels}
 
 
 def _make_parser() -> Any:
@@ -1144,12 +1155,15 @@ class Chat:
     # ---- the local note --------------------------------------------------------------------
 
     def read(self) -> dict[str, Any]:
-        try:
-            with open(self.path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        """The chat's note, or {}.  A note the seat's retired client wrote is put in this client's shape where it
+        lies, the first time it is read (`upgraded_note`)."""
+        note = _read_json(self.path)
+        fresh = upgraded_note(note, self.spec.platform)
+        if fresh is None:
+            return note
+        # As it was, but for its shape:  `updated_at` stays the old client's.
+        _save_json(self.path, fresh)
+        return fresh
 
     def write(self, note: Mapping[str, Any]) -> bool:
         """Save the note; False when it cannot be saved (a state folder that is not writable, or one whose rename
@@ -2917,18 +2931,19 @@ def request_main(
 
 
 # --------------------------------------------------------------------------------------------
-# Chats that are gone for good:  one report per host and platform, from the hooks
+# Chats that are gone for good:  one report per host, platform and location, from the hooks
 # --------------------------------------------------------------------------------------------
 #
-# Some ends reach no hook:  a platform's app can archive a chat with no end event of its own.  The adapter's
-# `gone_sessions` knows those chats, and the assigner has one call for them, `report-gone`, which closes the rows a
-# host names (and refuses a report that would close more than a share of the host's live rows).  A chat's start is the
-# trigger:  no timer, no scheduler.
+# Some ends reach no hook:  a platform's app can archive a chat with no end event of its own.  The adapter knows
+# those chats (`gone_sessions` for the ones that run on this host, `gone_elsewhere` for the ones its app runs on
+# another host), and the assigner has one call for them, `report-gone`, which closes the rows a caller names at one
+# location (and refuses a report that would close more than a share of that location's live rows).  A chat's start
+# is the trigger:  no timer, no scheduler.
 
 
 def gone_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: str) -> str:
-    """Where a host keeps the time of its last gone report for one platform:  beside the seat's letter notes, under a
-    name no session id can have (a session id never starts with a dot)."""
+    """Where a host keeps the time of its last gone report for one platform and location:  beside the seat's letter
+    notes, under a name no session id can have (a session id never starts with a dot)."""
     folder = os.path.dirname(note_path(env, seat, "stamp"))
     return os.path.join(folder, ".gone-%s-%s" % (platform, where))
 
@@ -2973,14 +2988,50 @@ def _seconds(value: object) -> float:
     return float(value)
 
 
+def upgraded_note(note: Mapping[str, Any], platform: str) -> dict[str, Any] | None:
+    """A note the retired per-seat client wrote, in this client's shape, or None when it needs no change.
+
+    Such a note names no `platform`, and keeps the letters the chat held before under `held_labels` (oldest first,
+    its own last) and `prior_label`, where this client keeps them under `labels` (newest first).  The platform is the
+    reader's:  a seat's retired client wrote for one platform only."""
+    if not note or note.get("platform"):
+        return None
+    earlier = note.get("held_labels")
+    order = [
+        note.get("label"),
+        note.get("prior_label"),
+        *reversed(earlier if isinstance(earlier, list) else []),
+        *(note.get("labels") if isinstance(note.get("labels"), list) else []),
+    ]
+    labels: list[str] = []
+    for label in order:
+        if isinstance(label, str) and LABEL_RE.fullmatch(label) and label not in labels:
+            labels.append(label)
+    out = {k: v for k, v in note.items() if k not in ("held_labels", "prior_label")}
+    out.update(platform=platform, labels=labels[:8])
+    return out
+
+
 def quiet_chats(
-    env: Mapping[str, str], seat: str, platform: str, where: str, now: float
+    env: Mapping[str, str],
+    seat: str,
+    platform: str,
+    where: str,
+    now: float,
+    *,
+    adopt: bool = False,
+    rewrite: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """The chats of this host a gone report may name, by session id, each with its letter and the time its hook last
     ran:  the seat's own letter notes for the platform and location that hold a letter, were not reported before
-    (`gone_at`), and whose hook last ran between GONE_QUIET_SECONDS and GONE_LIVE_SECONDS ago.  A chat whose hook ran
-    more recently is plainly not gone, and one idle for longer is the assigner's own sweep's to close.  Only the
-    newest GONE_SCAN_NOTES note files are read."""
+    (`gone_at`), and whose hook has not run for GONE_QUIET_SECONDS.  A chat whose hook ran more recently is plainly
+    not gone.  There is no upper bound on how long a chat has been quiet:  a chat is often archived days after its
+    last prompt.  The newest GONE_SCAN_NOTES note files are read, and the GONE_REPORT_IDS most recently quiet chats
+    are answered, so the work is bounded however many notes a host has kept.
+
+    `adopt` is for the platform a seat's retired client wrote for:  a note of that client (no `platform`) is put in
+    this client's shape where it lies (`upgraded_note`), so its chat can be named too.  Without `rewrite` it is only
+    read that way and its file is left as it is (a dry run changes nothing)."""
     folder = os.path.dirname(note_path(env, seat, "stamp"))
     files: list[tuple[float, str]] = []
     try:
@@ -2997,41 +3048,118 @@ def quiet_chats(
     except OSError:
         return {}
     files.sort(reverse=True)
-    out: dict[str, dict[str, Any]] = {}
+    found: list[dict[str, Any]] = []
     for _, name in files[:GONE_SCAN_NOTES]:
-        note = _read_json(os.path.join(folder, name))
+        path = os.path.join(folder, name)
+        note = _read_json(path)
         try:
             sid = SI.check(name[: -len(".json")], "the session id")
         except ValueError:
             continue
-        if note.get("session_id") != sid or note.get("platform") != platform:
+        if note.get("session_id") != sid:
             continue
-        if note.get("location") != where or not lettered(note) or note.get("gone_at"):
+        if adopt:
+            fresh = upgraded_note(note, platform)
+            if fresh is not None:
+                if rewrite:
+                    _save_json(path, fresh)
+                note = fresh
+        if note.get("platform") != platform or note.get("location") != where:
+            continue
+        if not lettered(note) or note.get("gone_at"):
             continue
         seen = _seconds(note.get("updated_at"))
         label = note.get("label")
         if not isinstance(label, str) or not LABEL_RE.fullmatch(label):
             continue
-        if GONE_QUIET_SECONDS <= now - seen <= GONE_LIVE_SECONDS:
-            out[sid] = {"session_id": sid, "label": label, "seen": seen}
-    return out
+        if now - seen >= GONE_QUIET_SECONDS:
+            found.append({"session_id": sid, "label": label, "seen": seen})
+    found.sort(key=lambda row: (-row["seen"], row["session_id"]))
+    return {row["session_id"]: row for row in found[:GONE_REPORT_IDS]}
 
 
 def gone_chats(
-    spec: PlatformSpec, env: Mapping[str, str], seat: str, where: str, now: float
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    where: str,
+    now: float,
+    *,
+    rewrite: bool = True,
 ) -> list[dict[str, Any]]:
-    """The chats of this host the adapter says are gone for good (`gone_sessions`), the one longest quiet first, at
-    most GONE_REPORT_IDS of them.  Only an id that was asked about counts, so an adapter can never name a chat that
-    is not one of this host's own quiet ones.  An adapter that raises is the caller's to catch."""
+    """The chats of this host the adapter says are gone for good (`gone_sessions`), the one longest quiet first.
+    Only an id that was asked about counts, so an adapter can never name a chat that is not one of this host's own
+    quiet ones.  An adapter that raises is the caller's to catch."""
     if spec.gone_sessions is None:
         return []
-    quiet = quiet_chats(env, seat, spec.platform, where, now)
+    adopt = isinstance(spec.seat, str) and spec.seat == seat
+    quiet = quiet_chats(env, seat, spec.platform, where, now, adopt=adopt, rewrite=rewrite)
     if not quiet:
         return []
     named = spec.gone_sessions(env, frozenset(quiet))
     gone = [quiet[sid] for sid in set(named or ()) if isinstance(sid, str) and sid in quiet]
     gone.sort(key=lambda row: (row["seen"], row["session_id"]))
-    return gone[:GONE_REPORT_IDS]
+    return gone
+
+
+def gone_chats_elsewhere(
+    spec: PlatformSpec, env: Mapping[str, str], there: str, sent: object = ()
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """(the chats that run at `there`, another location, that the adapter says are gone for good and that this host
+    has not reported yet;  the ids it reported before that the adapter still names).
+
+    This host holds no note of such a chat, so what it reported is kept in the report's stamp (`sent`), and a chat is
+    named once.  One the adapter stops naming (it was unarchived) is forgotten, so it is named again if it goes
+    again.  Only session ids count, sorted, so a report is the same whatever order the adapter answers in."""
+    if spec.gone_elsewhere is None:
+        return [], []
+    named: list[str] = []
+    for item in spec.gone_elsewhere(env, there) or ():
+        try:
+            sid = SI.check(item, "a gone session id")
+        except ValueError:
+            continue
+        if sid not in named:
+            named.append(sid)
+    named.sort()
+    listed = sent if isinstance(sent, (list, tuple)) else ()
+    before = {sid for sid in listed if isinstance(sid, str)}
+    kept = [sid for sid in named if sid in before]
+    fresh = [{"session_id": sid, "label": ""} for sid in named if sid not in before]
+    return fresh, kept
+
+
+def _send_gone(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    there: str,
+    ids: list[str],
+    transport: Transport | None,
+) -> dict[str, Any]:
+    """One `report-gone` call for one platform and location, answered as the registry side answers it.  Whatever
+    goes wrong is an error answer."""
+    argv = [
+        "report-gone",
+        "--platform",
+        spec.platform,
+        "--location",
+        there,
+        "--seat",
+        seat,
+        "--source",
+        spec.source,
+        "--gone=" + json.dumps(ids),
+    ]
+    try:
+        return _registry_side(argv, env, transport)
+    except Exception as exc:  # noqa: BLE001 - a report never blocks a chat
+        return {"error": "the registry call failed (%s)" % type(exc).__name__}
+
+
+def _allowed(value: object) -> int:
+    """How many chats the assigner said it would take, from a stamp or an answer, or 0."""
+    return value if type(value) is int and value > 0 else 0
 
 
 def report_gone(
@@ -3050,8 +3178,8 @@ def report_gone(
     Answers what happened:  `skipped` with the reason nothing was looked for, else `gone` (the chats named) with
     `closed` (the session ids whose rows the assigner closed now) or `error`.  The stamp is written before anything
     else, so a report that fails, or a hook killed inside it, is tried again after the window and never on every
-    start.  The assigner refuses a report that would close more than its share of the host's live rows and says how
-    many it would take (`allowed_now`):  the stamp keeps that number, and the next report names no more than that.
+    start.  The assigner refuses a report that would close more than its share of the location's live rows and says
+    how many it would take (`allowed_now`):  the stamp keeps that number, and the next report names no more than that.
 
     A chat the report named is marked in its note (`gone_at`) once the assigner has answered, whether its row was
     closed now or was closed already, so it is not named again.  The note stays open, with its touch made due:  if
@@ -3061,40 +3189,20 @@ def report_gone(
         return {"skipped": "this platform names no gone chats on this host"}
     path = gone_stamp_path(env, seat, spec.platform, where)
     stamp = _read_json(path)
-    if not force and 0 <= now - _seconds(stamp.get("at")) < GONE_REPORT_SECONDS:
+    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < GONE_REPORT_SECONDS:
         return {"skipped": "not due"}
-    allowed = stamp.get("allowed")
-    limit = allowed if type(allowed) is int and allowed > 0 else 0
+    limit = _allowed(stamp.get("allowed"))
     if not _save_json(path, {"at": now, **({"allowed": limit} if limit else {})}):
         # No stamp, no throttle:  nothing is sent.
         return {"skipped": "the stamp could not be saved"}
-    gone = gone_chats(spec, env, seat, where, now)
-    if limit:
-        gone = gone[:limit]
+    gone = gone_chats(spec, env, seat, where, now)[: limit or GONE_REPORT_IDS]
     if not gone:
         _save_json(path, {"at": now})
         return {"gone": []}
-    argv = [
-        "report-gone",
-        "--platform",
-        spec.platform,
-        "--location",
-        where,
-        "--seat",
-        seat,
-        "--source",
-        spec.source,
-        "--gone=" + json.dumps([row["session_id"] for row in gone]),
-    ]
-    try:
-        answer = _registry_side(argv, env, transport)
-    except Exception as exc:  # noqa: BLE001 - a report never blocks a chat
-        answer = {"error": "the registry call failed (%s)" % type(exc).__name__}
+    answer = _send_gone(spec, env, seat, where, [row["session_id"] for row in gone], transport)
     if "error" in answer:
         if answer.get("code") == "gone_share_exceeded":
-            take = answer.get("allowed_now")
-            take = take if type(take) is int else 0
-            _save_json(path, {"at": now, "allowed": max(1, take)})
+            _save_json(path, {"at": now, "allowed": max(1, _allowed(answer.get("allowed_now")))})
         return {"gone": gone, "error": str(answer.get("error") or "no answer")[:200]}
     _save_json(path, {"at": now})
     closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
@@ -3106,10 +3214,72 @@ def report_gone(
     return {"gone": gone, "closed": closed}
 
 
+def report_gone_elsewhere(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    there: str,
+    *,
+    now: float,
+    transport: Transport | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Tell the assigner which chats that run at `there`, a location other than this host's, are gone for good
+    (`gone_elsewhere`:  a platform's app on this host can run, and archive, chats on another one).  ONE `report-gone`
+    call for the platform and that location, with its own stamp and window, and the same rules as `report_gone`:
+    the stamp first, a refusal's `allowed_now` kept for the next report, and no error ever raised into a chat.
+
+    The assigner closes only rows that are open at `there` under an id the report names, so an id it does not hold
+    open (the chat's own end already closed it, or its hook never registered it) costs nothing.  This host has no
+    note to mark, so the ids a report was answered for are kept in the stamp (`sent`) and not named again while the
+    adapter still names them."""
+    if spec.gone_elsewhere is None or not seat or there not in LOCATIONS:
+        return {"skipped": "this platform names no gone chats at that location"}
+    path = gone_stamp_path(env, seat, spec.platform, there)
+    stamp = _read_json(path)
+    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < GONE_REPORT_SECONDS:
+        return {"skipped": "not due"}
+    limit = _allowed(stamp.get("allowed"))
+    sent = stamp.get("sent")
+
+    def save(sent_now: object, allowed: int = 0) -> bool:
+        listed = sent_now if isinstance(sent_now, list) else []
+        kept = [sid for sid in listed if isinstance(sid, str)]
+        body: dict[str, Any] = {"at": now, "sent": kept[-GONE_SENT_IDS:]}
+        if allowed:
+            body["allowed"] = allowed
+        return _save_json(path, body)
+
+    if not save(sent, limit):
+        return {"skipped": "the stamp could not be saved"}
+    fresh, kept = gone_chats_elsewhere(spec, env, there, sent)
+    fresh = fresh[: limit or GONE_REPORT_IDS]
+    if not fresh:
+        save(kept)
+        return {"gone": []}
+    ids = [row["session_id"] for row in fresh]
+    answer = _send_gone(spec, env, seat, there, ids, transport)
+    if "error" in answer:
+        refused = answer.get("code") == "gone_share_exceeded"
+        save(kept, max(1, _allowed(answer.get("allowed_now"))) if refused else 0)
+        return {"gone": fresh, "error": str(answer.get("error") or "no answer")[:200]}
+    save(kept + ids)
+    closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
+    labels = answer.get("labels")
+    for row in fresh:
+        label = labels.get(row["session_id"]) if isinstance(labels, Mapping) else ""
+        row["label"] = label if isinstance(label, str) and LABEL_RE.fullmatch(label) else ""
+    return {"gone": fresh, "closed": closed}
+
+
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
-    """The gone report a chat's start makes, after the chat's own answer is out.  Nothing here reaches the chat:
-    whatever goes wrong is swallowed, and the stamp holds the next try back for the window."""
-    if chat.spec.gone_sessions is None:
+    """The gone reports a chat's start makes, after the chat's own answer is out:  this host's own chats, then the
+    chats the platform's app runs at each other location.  Nothing here reaches the chat:  whatever goes wrong is
+    swallowed, and each report's stamp holds its next try back for the window."""
+    spec = chat.spec
+    if spec.gone_sessions is None and spec.gone_elsewhere is None:
+        return
+    if chat.location not in LOCATIONS:
         return
     try:
         stdout.flush()
@@ -3117,10 +3287,19 @@ def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
         pass
     try:
         report_gone(
-            chat.spec, chat.env, chat.seat, chat.location, now=chat.now, transport=chat.transport
+            spec, chat.env, chat.seat, chat.location, now=chat.now, transport=chat.transport
         )
     except Exception:  # noqa: BLE001 - a report never blocks a chat, whatever an adapter or the host does
-        return
+        pass
+    for there in LOCATIONS:
+        if there == chat.location:
+            continue
+        try:
+            report_gone_elsewhere(
+                spec, chat.env, chat.seat, there, now=chat.now, transport=chat.transport
+            )
+        except Exception:  # noqa: BLE001 - a report never blocks a chat, whatever an adapter or the host does
+            pass
 
 
 GONE_USAGE = "usage: platform-letter gone [--platform P] [--location L] [--apply]\n"
@@ -3136,9 +3315,10 @@ def gone_main(
     transport: Transport | None = None,
 ) -> int:
     """`gone [--platform P] [--location L] [--apply]`:  what this host's hooks would report gone, for the platform
-    named or for every platform whose adapter names its gone chats (`gone_sessions`), and `--apply` to report it now,
-    whatever the stamp says.  One line per chat names its letter and the first 8 characters of its session id, never
-    a title.  Exit 0, 1 when a report was refused or failed, 2 for bad arguments."""
+    named or for every platform whose adapter names its gone chats (`gone_sessions`, `gone_elsewhere`), and `--apply`
+    to report it now, whatever the stamps say.  One line per chat names its letter (a dash for a chat that runs on
+    another host, whose letter this host does not know), the first 8 characters of its session id and its location,
+    never a title.  Exit 0, 1 when a report was refused or failed, 2 for bad arguments."""
     env = os.environ if env is None else env
     stdout = stdout or sys.stdout
     apply = "--apply" in argv
@@ -3158,7 +3338,7 @@ def gone_main(
         if spec is None:
             stdout.write("gone report:  no adapter for the platform %r\n" % name)
             return 2
-        if spec.gone_sessions is None:
+        if spec.gone_sessions is None and spec.gone_elsewhere is None:
             stdout.write("gone report:  the %s adapter names no gone chats\n" % name)
             return 2
         specs.append(spec)
@@ -3168,8 +3348,9 @@ def gone_main(
                 spec = load_spec(name)
             except Exception:  # noqa: BLE001 - an adapter that cannot load has nothing to report
                 continue
-            if spec is not None and spec.gone_sessions is not None:
-                specs.append(spec)
+            if spec is None or (spec.gone_sessions is None and spec.gone_elsewhere is None):
+                continue
+            specs.append(spec)
     stamp = time.time() if now is None else now
     code = 0
     for spec in specs:
@@ -3186,38 +3367,53 @@ def _gone_for(
     apply: bool,
     transport: Transport | None,
 ) -> int:
-    """`gone` for one platform:  the lines, and the report when `apply`."""
-    head = "%s gone report:  " % spec.display
+    """`gone` for one platform:  this host's own chats, then each other location's, with the lines for each and
+    the report when `apply`.  The worst exit status of them."""
     seat = spec.seat_for({}, env)
+    code = 0
+    for there in (where, *(loc for loc in LOCATIONS if loc != where)):
+        local = there == where
+        if (spec.gone_sessions if local else spec.gone_elsewhere) is None or not seat:
+            continue
+        head = "%s gone report, %s:  " % (spec.display, there)
 
-    def tag(row: Mapping[str, Any]) -> str:
-        return "%s %s (%s, %s)" % (spec.display, row["label"], row["session_id"][:8], where)
+        def tag(row: Mapping[str, Any], there: str = there) -> str:
+            letter = row["label"] or "-"
+            return "%s %s (%s, %s)" % (spec.display, letter, row["session_id"][:8], there)
 
-    try:
-        if apply:
-            done = report_gone(spec, env, seat, where, now=now, transport=transport, force=True)
+        try:
+            if apply and local:
+                done = report_gone(spec, env, seat, there, now=now, transport=transport, force=True)
+            elif apply:
+                done = report_gone_elsewhere(
+                    spec, env, seat, there, now=now, transport=transport, force=True
+                )
+            elif local:
+                done = {"gone": gone_chats(spec, env, seat, there, now, rewrite=False)}
+            else:
+                sent = _read_json(gone_stamp_path(env, seat, spec.platform, there)).get("sent")
+                done = {"gone": gone_chats_elsewhere(spec, env, there, sent)[0]}
+        except Exception as exc:  # noqa: BLE001 - an adapter that cannot say reports nothing
+            stdout.write(head + "could not read this host's chats (%s)\n" % type(exc).__name__)
+            code = max(code, 1)
+            continue
+        gone = done.get("gone") or []
+        if not apply:
+            for row in gone:
+                stdout.write("would report %s\n" % tag(row))
+            stdout.write(
+                head + "%d gone  (dry run:  nothing sent;  --apply reports them now)\n" % len(gone)
+            )
+        elif "error" in done:
+            stdout.write(head + "%d gone, not reported:  %s\n" % (len(gone), done["error"]))
+            code = max(code, 1)
         else:
-            done = {"gone": gone_chats(spec, env, seat, where, now)} if seat else {"gone": []}
-    except Exception as exc:  # noqa: BLE001 - an adapter that cannot say reports nothing
-        stdout.write(head + "could not read this host's chats (%s)\n" % type(exc).__name__)
-        return 1
-    gone = done.get("gone") or []
-    if not apply:
-        for row in gone:
-            stdout.write("would report %s\n" % tag(row))
-        stdout.write(
-            head + "%d gone  (dry run:  nothing sent;  --apply reports them now)\n" % len(gone)
-        )
-        return 0
-    if "error" in done:
-        stdout.write(head + "%d gone, not reported:  %s\n" % (len(gone), done["error"]))
-        return 1
-    closed = set(done.get("closed") or [])
-    for row in gone:
-        word = "reported" if row["session_id"] in closed else "already closed"
-        stdout.write("%s %s\n" % (word, tag(row)))
-    stdout.write(head + "%d gone, %d closed now\n" % (len(gone), len(closed)))
-    return 0
+            closed = set(done.get("closed") or [])
+            for row in gone:
+                word = "reported" if row["session_id"] in closed else "not open"
+                stdout.write("%s %s\n" % (word, tag(row)))
+            stdout.write(head + "%d gone, %d closed now\n" % (len(gone), len(closed)))
+    return code
 
 
 # --------------------------------------------------------------------------------------------

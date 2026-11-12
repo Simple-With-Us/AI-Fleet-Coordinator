@@ -844,6 +844,29 @@ class ArchiveStatesTests(StoreBase):
         with mock.patch.object(PC, "_read", side_effect=read), mock.patch.object(PC, "RETRY_PAUSE", 0):
             self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {"s-0001": PC.ARCHIVED})
 
+    def test_a_record_caught_before_its_session_id_was_written_still_keeps_a_chat_it_mentions(self) -> None:
+        # A whole record names its chat as a `cliSessionId` value.  One caught mid-write may not have got that far,
+        # so any mention of the id in it counts, and the chat is kept.
+        self.record("local_aaaaaaaa-0001", "s-0001")
+        write(self.home, "local_aaaaaaaa-0002", '{"sessionId": "local_aaaaaaaa-0002", "lastAssistantCliSessionId": "s-0001", "isArch')
+        with mock.patch.object(PC, "RETRY_PAUSE", 0):
+            self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {"s-0001": PC.UNREADABLE})
+        # The same words in a whole record of another chat say nothing of this one.
+        write(self.home, "local_aaaaaaaa-0002", {"sessionId": "local_aaaaaaaa-0002", "cliSessionId": "s-0002",
+                                                  "lastAssistantCliSessionId": "s-0001", "isArchived": False})
+        self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {"s-0001": PC.ARCHIVED})
+
+    def test_many_ids_cost_one_pass_over_each_record(self) -> None:
+        for n in range(30):
+            self.record("local_aaaaaaaa-%04d" % n, "s-%04d" % n, archived=n % 2 == 0)
+        reads: list[str] = []
+        real = PC._read
+        with mock.patch.object(PC, "_read", side_effect=lambda path: reads.append(path) or real(path)):
+            states = PC.archive_states(self.home, {"s-%04d" % n for n in range(200)})
+        self.assertEqual(len(reads), 30)
+        self.assertEqual(sum(1 for state in states.values() if state == PC.ARCHIVED), 15)
+        self.assertEqual(len(states), 30)
+
     def test_a_record_that_only_mentions_the_chat_says_nothing_of_it(self) -> None:
         self.record("local_aaaaaaaa-0001", "s-0002", notes="see s-0001")  # another chat's, archived
         self.assertEqual(PC.archive_states(self.home, {"s-0001"}), {})
@@ -979,7 +1002,8 @@ class GoneChatsTests(HookBase):
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(out.getvalue().splitlines(), [
             "would report Claude %s (01234567, mac)" % self.label(sid),
-            "Claude gone report:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
+            "Claude gone report, mac:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
+            "Claude gone report, server:  0 gone  (dry run:  nothing sent;  --apply reports them now)",
         ])
         self.assertEqual(sent, [])
         out = io.StringIO()
@@ -1000,10 +1024,186 @@ class GoneChatsTests(HookBase):
                 )
                 self.assertEqual(
                     (result.returncode, result.stdout),
-                    (0, "Claude gone report:  0 gone  (dry run:  nothing sent;  --apply reports them now)\n"),
+                    (0, "Claude gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)\n"
+                        "Claude gone report, server:  0 gone  (dry run:  nothing sent;  --apply reports them now)\n"),
                     result.stderr,
                 )
                 self.assertEqual(os.listdir(tmp), [])
+
+
+class GoneElsewhereTests(HookBase):
+    """Most Claude chats run on the server through the Mac's desktop app.  Their notes are on the server and the
+    app's records are on the Mac, so the Mac names the archived ones from its records (`claude_gone_elsewhere`) and
+    reports them for the location they run at, `server`, in a report of their own."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.t0 = time.time() - 5 * 3600
+        self.due = self.t0 + PL.GONE_REPORT_SECONDS + 1
+        self.server_home = os.path.join(self.tmp.name, "server-home")
+        os.makedirs(self.server_home)
+
+    def record(self, host: str, cli: str, *, archived: object = True, ssh: object = True, age: float = 7200,
+               **extra) -> str:
+        """One record of the app, last changed `age` seconds ago."""
+        body = {"sessionId": host, "cliSessionId": cli, "isArchived": archived, "title": "Secret Title", **extra}
+        if ssh is not False:
+            body["sshConfig"] = {"sshHost": "the-server"} if ssh is True else ssh
+        path = write(self.home, host, body)
+        os.utime(path, (time.time() - age, time.time() - age))
+        return path
+
+    def server_chat(self, sid: str, now: float | None = None) -> str:
+        """The chat's own hook, on the server, where there is no app store.  Answers its letter."""
+        env = dict(self.claude_env(), HOME=self.server_home,
+                   SIMPLE_TOOLS_STATE_DIR=os.path.join(self.server_home, "state"))
+        PL.hook(PC.SPEC, env, io.StringIO(json.dumps(
+            {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"})), io.StringIO(),
+            now=self.t0 if now is None else now, platform="linux", location_flag="server")
+        return self.row(sid, "server")["label"]
+
+    def row_state(self, sid: str, location: str = "mac") -> str:
+        return self.row(sid, location)["state"]
+
+    def gone(self) -> set[str]:
+        return PC.claude_gone_elsewhere({"HOME": self.home}, "server")
+
+    @contextmanager
+    def reports(self):
+        seen: list[dict] = []
+        real = registry_api._open
+
+        def capture(request, timeout):
+            if request.full_url.endswith("/report-gone"):
+                seen.append(json.loads(request.data.decode("utf-8")))
+            return real(request, timeout)
+
+        with mock.patch.object(registry_api, "_open", capture):
+            yield seen
+
+    def test_the_claude_row_names_chats_that_run_elsewhere(self) -> None:
+        self.assertIs(PC.SPEC.gone_elsewhere, PC.claude_gone_elsewhere)
+        self.assertEqual(PC.REMOTE_LOCATION, "server")
+
+    def test_a_mac_with_an_archived_ssh_chat_and_an_archived_local_chat_sends_two_reports(self) -> None:
+        local, remote = "local_aaaaaaaa-0001", "local_bbbbbbbb-0002"
+        self.begin("m-0001", host=local, now=self.t0)
+        self.begin("m-0002", now=self.t0)
+        for sid in ("r-0001", "r-0002", "r-0003"):
+            self.server_chat(sid)
+        self.record(local, "m-0001", ssh=False)  # archived, and it runs here
+        self.record(remote, "r-0001")  # archived, and the app runs it over ssh
+        self.record("local_cccccccc-0003", "r-0002", archived=False)  # run over ssh, not archived
+        letter = self.row("r-0001", "server")["label"]
+        with self.reports() as sent:
+            out = self.begin("m-0003", now=self.due)
+        self.assertEqual(sent, [
+            {"platform": "claude", "verified_host": "mac", "profile_scope": "default",
+             "native_session_ids": ["m-0001"]},
+            {"platform": "claude", "verified_host": "server", "profile_scope": "default",
+             "native_session_ids": ["r-0001"]},
+        ])
+        self.assertEqual((self.row_state("m-0001"), self.row_state("m-0002")), ("closed", "active"))
+        self.assertEqual([self.row_state(sid, "server") for sid in ("r-0001", "r-0002", "r-0003")],
+                         ["closed", "active", "active"])
+        self.assertIsNone(self.row("r-0001"))  # nothing was made up under this Mac's location
+        self.assertFalse(registry_api.call(self.env(), "resolve", {"platform": "claude", "letter": letter})["found"])
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.label("m-0003"))
+        self.assertNotIn("Secret Title", json.dumps(sent))
+        # The server chat, alive after all, hears of it on its next touch and registers again.
+        env = dict(self.claude_env(), HOME=self.server_home,
+                   SIMPLE_TOOLS_STATE_DIR=os.path.join(self.server_home, "state"))
+        PL.hook(PC.SPEC, env, io.StringIO(json.dumps(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "r-0001", "prompt": "still here"})), io.StringIO(),
+            now=self.due + PL.TOUCH_SECONDS, platform="linux", location_flag="server")
+        self.assertEqual(self.row_state("r-0001", "server"), "active")
+
+    def test_an_unarchived_or_doubtful_ssh_record_is_not_named(self) -> None:
+        self.record("local_aaaaaaaa-0001", "r-0001")  # the one that is named
+        self.record("local_aaaaaaaa-0002", "r-0002", archived=False)
+        self.record("local_aaaaaaaa-0003", "r-0003", ssh=False)  # archived, and it runs on this Mac
+        self.record("local_aaaaaaaa-0004", "r-0004", ssh={})  # no ssh host at all
+        self.record("local_aaaaaaaa-0005", "r-0005", archived="true")  # only a true flag is an archive
+        self.record("local_aaaaaaaa-0006", "../not-an-id")
+        write(self.home, "local_aaaaaaaa-0007", {"isArchived": True, "sshConfig": {"sshHost": "x"}})  # never ran
+        self.record("local_aaaaaaaa-0008", "r-0008")
+        self.record("local_bbbbbbbb-0008", "r-0008", archived=False, ssh=False)  # two records, and one says no
+        self.record("local_aaaaaaaa-0009", "r-0009")
+        os.utime(write(self.home, "local_bbbbbbbb-0009", '{"cliSessionId": "r-0009", "isArchived": tr'),
+                 (time.time() - 7200,) * 2)  # a second record of it, caught mid-write
+        os.utime(write(self.home, "local_aaaaaaaa-0010", '{"cliSessionId": "r-0010", "sshConfig": {}, "isArchived": tr'),
+                 (time.time() - 7200,) * 2)  # unreadable:  it names nothing
+        self.record("local_aaaaaaaa-0011", "r-0011")
+        self.record("local_bbbbbbbb-0011", "r-0011")  # two records, and both say archived
+        with mock.patch.object(PC, "RETRY_PAUSE", 0):
+            self.assertEqual(self.gone(), {"r-0001", "r-0011"})
+            self.assertEqual(PC.claude_gone_elsewhere({"HOME": self.home}, "mac"), set())  # only the ssh location
+        self.assertEqual(PC.claude_gone_elsewhere({"HOME": self.server_home}, "server"), set())  # no app store
+
+    def test_how_far_back_it_looks_is_bounded(self) -> None:
+        self.record("local_aaaaaaaa-0001", "r-0001", age=2 * 3600)
+        self.record("local_aaaaaaaa-0002", "r-0002", age=600)  # changed ten minutes ago:  its chat may be working
+        self.record("local_aaaaaaaa-0003", "r-0003", age=13 * 86400)
+        self.record("local_aaaaaaaa-0004", "r-0004", age=15 * 86400)  # older than the window
+        self.assertEqual(self.gone(), {"r-0001", "r-0003"})
+        self.assertEqual((PC.REMOTE_SCAN_DAYS, PC.REMOTE_SCAN_RECORDS, PC.REMOTE_QUIET_SECONDS), (14, 300, 3600))
+        with mock.patch.object(PC, "REMOTE_SCAN_RECORDS", 2):  # the newest two records:  r-0002 and r-0001
+            self.assertEqual(self.gone(), {"r-0001"})
+        with mock.patch.object(PC, "REMOTE_SCAN_DAYS", 1):
+            self.assertEqual(self.gone(), {"r-0001"})
+        with mock.patch.object(PC, "RECORD_BYTES", 10):  # a record too big to read names nothing
+            self.assertEqual(self.gone(), set())
+
+    def test_only_three_fields_leave_a_record(self) -> None:
+        path = self.record("local_aaaaaaaa-0001", "r-0001", remoteMcpServersConfig={"token": "do-not-leak"})
+        self.assertEqual(PC._load(path, PC._project_remote),
+                         {"cliSessionId": "r-0001", "isArchived": True, "remote": True})
+
+    def test_the_remote_report_is_throttled_by_its_own_stamp(self) -> None:
+        for sid in ("r-0001", "r-0002", "r-0003", "r-0004"):
+            self.server_chat(sid)
+        with self.reports() as sent:
+            self.begin("m-0001", now=self.t0)
+            self.record("local_aaaaaaaa-0001", "r-0001")
+            self.begin("m-0002", now=self.t0 + 60)  # inside the window of the first start's report
+            self.assertEqual(sent, [])
+            self.begin("m-0003", now=self.due)
+            self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"]])
+            self.record("local_aaaaaaaa-0002", "r-0002")
+            self.begin("m-0004", now=self.due + 60)
+            self.assertEqual(len(sent), 1)
+            self.begin("m-0005", now=self.due + PL.GONE_REPORT_SECONDS + 1)
+        # The second report names only the new one:  r-0001 is still archived, and it was reported.
+        self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"], ["r-0002"]])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.state, "CLAUDE", "letters")))[:2],
+                         [".gone-claude-mac", ".gone-claude-server"])
+
+    def test_a_refused_remote_report_closes_nothing_and_is_cut_to_what_the_assigner_allows(self) -> None:
+        for sid in ("r-0001", "r-0002", "r-0003", "r-0004"):
+            self.server_chat(sid)
+        for n in (1, 2, 3):
+            self.record("local_aaaaaaaa-000%d" % n, "r-000%d" % n)
+        with self.reports() as sent:
+            out = self.begin("m-0001", now=self.t0)  # 3 of the server's 4 live rows:  over the share
+            self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.label("m-0001"))
+            self.assertEqual(sent[-1]["native_session_ids"], ["r-0001", "r-0002", "r-0003"])
+            self.assertEqual([self.row_state("r-000%d" % n, "server") for n in (1, 2, 3)], ["active"] * 3)
+            self.begin("m-0002", now=self.due)
+        self.assertEqual(sent[-1]["native_session_ids"], ["r-0001", "r-0002"])
+        self.assertEqual([self.row_state("r-000%d" % n, "server") for n in (1, 2, 3)],
+                         ["closed", "closed", "active"])
+
+    def test_the_verb_shows_both_locations(self) -> None:
+        self.server_chat("0123456789abcdef-0001")
+        self.record("local_aaaaaaaa-0001", "0123456789abcdef-0001")
+        out = io.StringIO()
+        code = PL.gone_main(["--platform", "claude"], self.env(), out, now=self.due, platform="darwin")
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(out.getvalue().splitlines(), [
+            "Claude gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)",
+            "would report Claude - (01234567, server)",
+            "Claude gone report, server:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
+        ])
 
 
 if __name__ == "__main__":

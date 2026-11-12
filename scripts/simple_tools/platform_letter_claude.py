@@ -45,7 +45,9 @@ never fails a chat's start over this file.
 - Archived chats (`claude_gone`, `archive_states`).  The app marks an archived chat in its record (`isArchived`).
   A chat's start has the library report this host's archived chats to the assigner, which frees their letters
   (`platform-letter gone --platform claude` shows them).  Any doubt keeps a chat:  an unreadable or missing
-  record, or a session id held by two records that do not both say archived.
+  record, or a session id held by two records that do not both say archived.  A chat the app runs over ssh has
+  its note on the other host, so the Mac names those from its records alone (`claude_gone_elsewhere`):  archived,
+  run over ssh, with a session id, the record changed within REMOTE_SCAN_DAYS and not in the last hour.
 
 Installing.  `platform-letter install --platform claude [--location server|mac] [--check | --remove]` adds the four
 hooks to `~/.claude/settings.json` with the shared JSON installer, and replaces in place the `simple-chat letter
@@ -111,6 +113,17 @@ AGENT_TITLE_CHARS = 200  # the most of an agent's title handed back to the model
 RENAME_TOOL = "mcp__ccd_session_mgmt__set_session_title"
 READ_TOOL = "mcp__ccd_session_mgmt__get_session"
 
+#: How a record names its chat's session id, wherever in the record that is.
+CLI_ID_VALUE = re.compile(r'"cliSessionId"\s*:\s*"([^"\\]{1,200})"')
+# Chats the app runs on another host (`claude_gone_elsewhere`).  Such a chat's hook runs there and says `--location
+# server`, as every host that is not the Mac must, so that is the location its registration is under.  Only the
+# newest REMOTE_SCAN_RECORDS records changed in the last REMOTE_SCAN_DAYS are looked at (an older chat's letter
+# went with the assigner's idle sweep long ago), and one changed in the last REMOTE_QUIET_SECONDS is left alone:
+# the app rewrites a record as its chat works, so that chat is plainly not gone.
+REMOTE_LOCATION = "server"
+REMOTE_SCAN_DAYS = 14
+REMOTE_SCAN_RECORDS = 300
+REMOTE_QUIET_SECONDS = 3600
 # A chat's state in the app (`archive_states`).  A chat with no record at all is left out of the answer.
 ARCHIVED = "archived"
 UNARCHIVED = "unarchived"
@@ -528,6 +541,18 @@ def claude_title_advice(request: PL.TitleRequest) -> str:
 # --------------------------------------------------------------------------------------------
 
 
+def _ids_named(text: str, wanted: set[str]) -> list[str]:
+    """Which of `wanted` a record's text may be the record of.
+
+    A whole record names its chat as a `cliSessionId` value, so one pass finds every id it could be the record
+    of, however many are asked about (the scan runs inside a hook).  A text that does not end as a JSON object
+    does was caught mid-write and may not have reached that field yet:  there, any id it mentions at all counts,
+    so a half-written record still keeps its chat."""
+    if not text.rstrip().endswith("}"):
+        return [sid for sid in wanted if sid in text]
+    return [sid for sid in set(CLI_ID_VALUE.findall(text)) if sid in wanted]
+
+
 def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | None:
     """For each of these Claude Code session UUIDs that a record of the app holds as its `cliSessionId`:  ARCHIVED
     when the app has archived the chat (`isArchived` is true), UNARCHIVED when it has not, UNREADABLE when a record
@@ -536,7 +561,7 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
 
     Any doubt keeps the chat:  a UUID held by two records is ARCHIVED only when every one of them says so, and one
     unreadable record that mentions the UUID makes it UNREADABLE.  Only `cliSessionId` and `isArchived` leave a
-    record, and a record is parsed only when its text mentions one of the UUIDs asked about."""
+    record, and a record is parsed only when its text names one of the UUIDs asked about (`_ids_named`)."""
     root = store_root(home)
     if not os.path.isdir(root):
         return None
@@ -545,9 +570,6 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
     if not wanted:
         return states
     rank = {ARCHIVED: 0, UNARCHIVED: 1, UNREADABLE: 2}
-    # One pass over each record for all the ids at once:  most records mention none of them, and the scan runs
-    # inside a hook.
-    mentioned = re.compile("|".join(re.escape(sid) for sid in sorted(wanted)))
 
     def note(sid: str, state: str) -> None:
         if rank[state] >= rank.get(states.get(sid, ARCHIVED), 0):
@@ -564,9 +586,9 @@ def archive_states(home: str, session_ids: Iterable[str]) -> dict[str, str] | No
         if text is None:
             continue
         spent += len(text)
-        if not mentioned.search(text):
+        named = _ids_named(text, wanted)
+        if not named:
             continue
-        named = [sid for sid in wanted if sid in text]
         record = _parse(text, _project_archive)
         if record is None:
             record = _load(path, _project_archive)  # caught mid-write:  read it again
@@ -588,6 +610,51 @@ def claude_gone(env: Mapping[str, str], session_ids: Iterable[str]) -> set[str]:
     return {sid for sid, state in states.items() if state == ARCHIVED}
 
 
+def _project_remote(data: object) -> dict[str, Any] | None:
+    """What `claude_gone_elsewhere` reads of a record:  its session id, whether it is archived and whether the app
+    runs it over ssh.  Nothing else of the record."""
+    out = _project_archive(data)
+    if out is not None and isinstance(data, dict):
+        out["remote"] = bool(data.get("sshConfig"))
+    return out
+
+
+def claude_gone_elsewhere(env: Mapping[str, str], there: str) -> set[str]:
+    """The spec's `gone_elsewhere`:  the chats the desktop app on this host runs on another one (over ssh) and has
+    archived.  Their notes are on the other host, which has no app to tell it of an archive, so this host names
+    them from its records alone, for the location such a chat registers under (REMOTE_LOCATION).  Ids only.
+
+    A chat is named when a record changed within REMOTE_SCAN_DAYS (and not within REMOTE_QUIET_SECONDS), among the
+    newest REMOTE_SCAN_RECORDS, is archived, carries `sshConfig` and holds a session id, and every other record
+    that holds that id says archived too (`archive_states`).  An unreadable record names nothing, and one that
+    may hold the id keeps the chat.  A host with no app store names none."""
+    home = _home(env)
+    root = store_root(home)
+    if there != REMOTE_LOCATION or not os.path.isdir(root):
+        return set()
+    now = time.time()
+    candidates: set[str] = set()
+    for modified, size, path in _records(root)[:REMOTE_SCAN_RECORDS]:
+        age = now - modified
+        if age > REMOTE_SCAN_DAYS * 86400:
+            break  # newest first:  every record after this one is older still
+        if age < REMOTE_QUIET_SECONDS or size > RECORD_BYTES:
+            continue
+        text = _read(path)
+        if text is None or '"sshConfig"' not in text or '"isArchived"' not in text:
+            continue
+        record = _parse(text, _project_remote)
+        if record is None:
+            continue
+        sid = _cli_id(record)
+        if sid and record["isArchived"] and record["remote"]:
+            candidates.add(sid)
+    if not candidates:
+        return set()
+    states = archive_states(home, candidates) or {}
+    return {sid for sid in candidates if states.get(sid) == ARCHIVED}
+
+
 SPEC = PL.PlatformSpec(
     platform=PLATFORM,
     seat=SEAT,
@@ -604,6 +671,7 @@ SPEC = PL.PlatformSpec(
     session_env=("CLAUDE_CODE_SESSION_ID",),
     title_advice=claude_title_advice,
     gone_sessions=claude_gone,
+    gone_elsewhere=claude_gone_elsewhere,
 )
 
 INSTALL = PL.JsonHookInstaller(path=os.path.join(".claude", "settings.json"), events=HOOK_TIMEOUTS)
