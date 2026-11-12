@@ -112,7 +112,7 @@
     "description": "The fleet skill pack is installed in ~/.claude/skills",
     "present": true,
     "names": [
-     "agent-sync-tools-guide",
+     "simple-tools-guide",
      "apple-notes",
      "board-ops",
      "closeout",

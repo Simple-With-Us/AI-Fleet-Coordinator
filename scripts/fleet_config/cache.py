@@ -41,6 +41,7 @@ from .types import (
     Collector,
     ConfigKind,
     ExpectedState,
+    NotImplementedRule,
     ObservedState,
     ProofLevel,
     ReasonCode,
@@ -125,7 +126,22 @@ def _expected_from_dict(raw: Any) -> ExpectedState:
         names=tuple(data.get("names") or ()),
         mode=data.get("mode"),
         timeout_seconds=data.get("timeoutSeconds"),
+        guards=_guards_from_cache(data.get("guards")),
     )
+
+
+def _guards_from_cache(raw: Any) -> tuple[str, ...]:
+    """The guard scopes of a cached expectation,  refusing a shape that is not a list of text.
+
+    The cache file is read back as input,  so a string would otherwise become one scope
+    per character and a number would become a scope of its own.  A malformed value makes
+    the whole cache entry unreadable,  which the loader treats as no cache at all.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise ValueError("the cached guards are not a list of text")
+    return tuple(raw)
 
 
 def _observed_from_dict(raw: Any) -> ObservedState:
@@ -207,6 +223,27 @@ def _uncovered_to_dict(item: UncoveredSurface) -> dict[str, Any]:
     return {"seat": item.seat, "surface": item.surface, "reason": item.reason}
 
 
+def _not_implemented_to_dict(item: NotImplementedRule) -> dict[str, Any]:
+    """The stored form of one rule the engine cannot run yet."""
+    return {"ruleId": item.rule_id, "ownerSeat": item.owner_seat, "reason": item.reason}
+
+
+def _not_implemented_from_dict(raw: Any) -> NotImplementedRule:
+    """Read one stored not-implemented rule back."""
+    if not isinstance(raw, dict):
+        raise ValueError("the stored not-implemented rule is not an object")
+    # Every field is checked rather than coerced:  a cache entry with a missing or
+    # wrong-typed field is a damaged cache,  and it is rejected like any other.
+    for key in ("ruleId", "ownerSeat", "reason"):
+        if not isinstance(raw.get(key), str):
+            raise ValueError("the stored not-implemented rule has no text %s" % key)
+    return NotImplementedRule(
+        rule_id=raw["ruleId"],
+        owner_seat=raw["ownerSeat"],
+        reason=raw["reason"],
+    )
+
+
 def _uncovered_from_dict(raw: Any) -> UncoveredSurface:
     """Read one stored uncovered surface back."""
     if not isinstance(raw, dict):
@@ -227,6 +264,9 @@ def _report_to_dict(report: StatusReport) -> dict[str, Any]:
         "notes": list(report.notes),
         "results": [_result_to_dict(result) for result in report.results],
         "uncovered": [_uncovered_to_dict(item) for item in report.uncovered],
+        "notImplemented": [
+            _not_implemented_to_dict(item) for item in report.not_implemented
+        ],
     }
 
 
@@ -243,6 +283,9 @@ def _report_from_dict(raw: Any) -> StatusReport:
         manifest_source=raw.get("manifestSource"),
         notes=tuple(str(note) for note in raw.get("notes") or ()),
         uncovered=tuple(_uncovered_from_dict(item) for item in raw.get("uncovered") or ()),
+        not_implemented=tuple(
+            _not_implemented_from_dict(item) for item in raw.get("notImplemented") or ()
+        ),
     )
 
 

@@ -1,0 +1,1 @@
+{"ok": false, "verb": "server restart", "target": "sshd.service", "commands": [], "result": "refused", "detail": "sshd.service is not in the allowlist."}

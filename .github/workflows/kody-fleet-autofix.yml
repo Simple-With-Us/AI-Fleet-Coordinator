@@ -4,6 +4,9 @@ name: Kody MiniMax M3.1 Flash Fix Proposals
 
 # Generated offline.  Missing SWU_KODY_AUTOFIX_ENABLED means disabled.
 # MODEL_API_KEY is forwarded explicitly; secrets are never inherited.
+# The canonical reusable takes the provider key only from this forward.  It has no
+# Infisical fallback:  a caller that cannot supply MODEL_API_KEY fails closed with a
+# named error instead of resolving a key outside the approved secret path.
 # Budget approval and protected-environment setup are separate owner actions.
 # Daily attempt slots bound this repository only; they are not a dollar cap.
 on:
@@ -33,7 +36,12 @@ jobs:
       pull-requests: write
       checks: read
       actions: read
-    uses: Simple-With-Us/congress-trading-shared/.github/workflows/kody-autofix-reusable.yml@917a49dfb77e4fce307a985510ab814a6f684ef6
+    # The canonical copy of this reusable lives in this repository,  so this caller
+    # runs the same file the fleet's model-default test covers.  Pointing at another
+    # repository's copy is how the two drift apart unnoticed.  The SHA is the commit
+    # that carries the canonical copy;  it stays on this repository's main through
+    # the merge commit,  so the pin does not need to move.
+    uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/kody-autofix-reusable.yml@76e27db8821e2bfdd87aebb92daf3dce6f401d30
     with:
       repository_id: '1315501725'
       profile: 'python'

@@ -109,7 +109,7 @@ enum FleetConfigCLIError: Error, Equatable, LocalizedError {
         case .engineNotFound(let path):
             return ApplyCopy.join(
                 "The fleet-config engine was not found at \(path).",
-                "Set the fleetConfigRepoRoot default or the MUSTER_REPO_ROOT variable to the repository root."
+                "In Settings, open Folders and choose the fleet checkout."
             )
         case .launchFailed(let detail):
             return "The fleet-config engine could not be started: \(detail)"
@@ -128,6 +128,45 @@ enum FleetConfigCLIError: Error, Equatable, LocalizedError {
     }
 }
 
+// MARK: - App settings
+
+/// The app-wide settings the Settings scene writes.\u{00A0} Each value persists under the
+/// exact key its reader uses; where a reader was environment-only, the environment
+/// still wins and the saved value is the fallback it reads next.
+enum MusterSettings {
+    static let repoRootDefaultsKey = FleetConfigLocation.defaultsKey
+    static let scriptsDirectoryDefaultsKey = "musterScriptsDir"
+    static let scriptsDirectoryEnvironmentKey = "MUSTER_SCRIPTS_DIR"
+    /// The setting and environment variable that once chose the seat the Seats panel read
+    /// Zulip as.  Neither is read:  the panel reads only as the Operator (AFC-654).  The
+    /// names stay so the retired saved value can be removed.
+    static let retiredZulipSeatDefaultsKey = "musterZulipSeat"
+    static let retiredZulipSeatEnvironmentKey = "MUSTER_ZULIP_SEAT"
+    static let themeDefaultsKey = "musterTheme"
+    /// Whether the menu bar item uses its short text.
+    static let shortMenuBarTextDefaultsKey = "musterShortMenuBarText"
+    /// The place the window was:  the sidebar destination saved by `FleetOverviewView`.
+    static let sidebarSelectionDefaultsKey = "musterSidebarSelection"
+    /// Whether Muster starts the Mac's services again when they stop.  On unless the owner
+    /// turned it off:  `ServiceReconciler` reads this on every pass.
+    static let keepServicesRunningDefaultsKey = "musterKeepServicesRunning"
+
+    /// True when Muster may start the Mac's services again when they stop.  A setting that
+    /// was never saved is on.
+    static func keepsServicesRunning(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: keepServicesRunningDefaultsKey) as? Bool ?? true
+    }
+
+    // The scripts folder has one resolver, `FleetViewService.resolveScripts`, which also checks
+    // each candidate for the scripts.
+
+    /// Remove the retired reading-seat setting, so no stale seat name lingers in the app's
+    /// defaults.  Nothing reads it either way.
+    static func removeRetiredZulipSeat(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: retiredZulipSeatDefaultsKey)
+    }
+}
+
 // MARK: - Location
 
 /// Where the engine lives.  The repository root is a setting:  the `fleetConfigRepoRoot` user
@@ -143,23 +182,36 @@ struct FleetConfigLocation: Equatable {
         scriptsDirectory.appendingPathComponent("fleet_config/__main__.py")
     }
 
+    /// The repository root and where it came from.  `resolve` is this without the source.
+    struct Resolution: Equatable {
+        var location: FleetConfigLocation
+        var source: SettingSource
+    }
+
+    static func resolveWithSource(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> Resolution {
+        func expanded(_ raw: String) -> URL {
+            URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        if let saved = defaults.string(forKey: defaultsKey), !saved.isEmpty {
+            return Resolution(location: FleetConfigLocation(repoRoot: expanded(saved)), source: .chosen)
+        }
+        if let fromEnvironment = environment[environmentKey], !fromEnvironment.isEmpty {
+            return Resolution(location: FleetConfigLocation(repoRoot: expanded(fromEnvironment)), source: .environment)
+        }
+        return Resolution(location: FleetConfigLocation(
+            repoRoot: home.appendingPathComponent("Code/AI-Fleet-Coordinator", isDirectory: true)), source: .standard)
+    }
+
     static func resolve(
         defaults: UserDefaults = .standard,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> FleetConfigLocation {
-        func expanded(_ raw: String) -> URL {
-            URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
-        }
-        if let saved = defaults.string(forKey: defaultsKey), !saved.isEmpty {
-            return FleetConfigLocation(repoRoot: expanded(saved))
-        }
-        if let fromEnvironment = environment[environmentKey], !fromEnvironment.isEmpty {
-            return FleetConfigLocation(repoRoot: expanded(fromEnvironment))
-        }
-        return FleetConfigLocation(
-            repoRoot: home.appendingPathComponent("Code/AI-Fleet-Coordinator", isDirectory: true)
-        )
+        resolveWithSource(defaults: defaults, environment: environment, home: home).location
     }
 
     func validate(fileManager: FileManager = .default) throws {
@@ -167,6 +219,16 @@ struct FleetConfigLocation: Equatable {
             throw FleetConfigCLIError.engineNotFound(engineEntryPoint.path)
         }
     }
+}
+
+/// Where a Settings value came from, so the window can say it in plain words.
+enum SettingSource: Equatable, Sendable {
+    /// Saved in Settings.
+    case chosen
+    /// An environment variable set when Muster was opened.
+    case environment
+    /// The usual place, because nothing else is set.
+    case standard
 }
 
 // MARK: - Runner

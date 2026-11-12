@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""A fake `board` CLI.  Scenario:  {"board": {"list": {"in_progress": [...], "needs-owner": [...]}, "show": {id: {...}}}}.
-It logs every call (and the LINEAR_BOARD_WRITES it saw) to $FF_LOG and exits 9 for any verb but list and show."""
+"""A fake `simple-board` CLI.  Scenario:  {"board": {"list": {"in_progress": [...], "needs-owner": [...]}, "show": {id: {...}}}}.
+It logs every call (and the LINEAR_BOARD_WRITES it saw) to $FF_LOG under the name it was installed as, and exits 9
+for any verb but list and show."""
 import json
 import os
 import sys
 
 scenario = json.load(open(os.environ["FF_SCENARIO"]))["board"]
 argv = sys.argv[1:]
+name = os.path.basename(sys.argv[0])
 log = os.environ.get("FF_LOG")
 if log:
     with open(log, "a") as fh:
-        fh.write(json.dumps(["board", os.environ.get("LINEAR_BOARD_WRITES", "unset")] + argv) + "\n")
+        fh.write(json.dumps([name, os.environ.get("LINEAR_BOARD_WRITES", "unset")] + argv) + "\n")
 verb = argv[0] if argv else ""
 if verb == "list":
     key = argv[argv.index("--status") + 1] if "--status" in argv else argv[argv.index("--label") + 1]

@@ -53,7 +53,15 @@ export function decide(prev, event, now, opts = {}) {
   const state = prev || initialState();
   const minOpenMs = opts.minOpenMs ?? DEFAULT_MIN_OPEN_MS;
   const firing = event.firing !== false;
-  const severity = normalizeSeverity(event.severity, state.severity);
+  // A fresh incident whose vendor names no severity opens SEVERE, not at the
+  // closed state's INFO:  Better Stack never sends one and Datadog often does
+  // not, so a site that went down read INFO.  Over-severing a new alert is
+  // recoverable and under-severing one is not (the Sentry rule, everywhere).
+  // An open incident keeps its own severity when an update names none.
+  const severity = normalizeSeverity(
+    event.severity,
+    firing && state.phase === "ok" ? "SEVERE" : state.severity,
+  );
   const prodDown = event.prodDown === true;
   const threshold = prodDown ? Math.min(minOpenMs, PROD_DOWN_MIN_OPEN_MS) : minOpenMs;
   const text = event.text ?? state.text;

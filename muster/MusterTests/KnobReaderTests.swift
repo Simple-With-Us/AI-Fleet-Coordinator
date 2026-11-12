@@ -103,13 +103,18 @@ final class KnobReaderTests: XCTestCase {
     ///
     /// This needs a copy that is there,  because a copy that is missing says the
     /// value is unknown rather than that it is the default.
+    ///
+    /// The engine answers the same way.  Its own reader drops every knob that is
+    /// unset from the copy it writes,  so a knob that is missing from a copy the
+    /// engine wrote was unset at the last good fetch,  and the engine's answer for
+    /// it is the base default  (`scripts/fleet_knobs/knobs.py`,  `_from_sources`).
     func test_a_knob_with_no_value_in_the_copy_holds_its_default() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_IDLE_HOURS": "3"])
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
-        XCTAssertEqual(knob?.current, .defaultValue)
+        XCTAssertEqual(knob?.current, .defaultValue("off"))
     }
 
     /// A knob with a value in the copy shows it.
@@ -236,7 +241,11 @@ final class KnobReaderTests: XCTestCase {
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertFalse(registry.copyIsStale)
         XCTAssertEqual(registry.copyAge, "30s")
-        XCTAssertEqual(registry.copyHeadline, "Local copy 30s old.")
+        // The headline names whose copy it is and the clock time it was saved.
+        XCTAssertTrue(registry.copyHeadline.hasPrefix("Values are from this Mac's copy, saved at "))
+        XCTAssertTrue(registry.copyHeadline.hasSuffix("(30s ago)."), registry.copyHeadline)
+        XCTAssertTrue(registry.copyIsReadable)
+        XCTAssertNotNil(registry.copySavedAt)
     }
 
     /// A copy older than the engine's refresh is stale,  and the header says so.
@@ -250,16 +259,21 @@ final class KnobReaderTests: XCTestCase {
         )
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertTrue(registry.copyIsStale)
-        XCTAssertTrue(registry.copyHeadline.hasPrefix("Local copy "))
+        XCTAssertTrue(registry.copyHeadline.hasPrefix("Values are from this Mac's copy, saved at "))
+        XCTAssertTrue(registry.freshnessLines().contains(KnobFreshnessLine(text: "It may not be current.", isWarning: true)))
     }
 
     /// With no copy,  the header says there is no copy,  and says nothing silly.
+    ///
+    /// A copy that is not there is not "not current":  the header says it is missing and
+    /// what writes it,  and never adds that a missing copy may not be current.
     func test_the_headline_with_no_copy_reads_as_a_sentence() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
-        XCTAssertEqual(registry.copyHeadline, "No local copy of the knobs.")
-        XCTAssertFalse(registry.copyHeadline.contains("old."))
+        XCTAssertEqual(registry.copyHeadline, KnobReader.noCopyHeadline)
+        XCTAssertFalse(registry.copyIsStale)
+        XCTAssertFalse(registry.freshnessLines().map(\.text).contains("It may not be current."))
     }
 
     /// The staleness window is the engine's,  not a guess.
@@ -444,9 +458,15 @@ final class KnobReaderTests: XCTestCase {
                 "\(knob.name) has the secret column \(knob.secretColumn)"
             )
         }
-        // The block names one secret,  and it is the signing key.
+        // The block names the secrets:  the facts signing key, the facts publisher's relay bearer,
+        // the wake router's one bearer and its registry signing key.
         let secrets = registry.knobs.filter { $0.isSecret }
-        XCTAssertEqual(secrets.map { $0.name }, ["FLEET_FACTS_SIGNING_KEY"])
+        XCTAssertEqual(secrets.map { $0.name }, [
+            "FLEET_FACTS_SIGNING_KEY",
+            "FLEET_FACTS_RELAY_TOKEN",
+            "WAKE_ROUTER_KEY",
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        ])
     }
 
     /// A knob holding its default says which value that is.
@@ -460,6 +480,23 @@ final class KnobReaderTests: XCTestCase {
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let row = registry.rows.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(row?.now, "default (off)")
+    }
+
+    /// The value the model holds says which value it is,  and the panel agrees.
+    ///
+    /// The model and the panel are one rendering,  so a knob that holds its default
+    /// cannot read as "default" in one place and "default (off)" in the other.
+    func test_the_value_a_knob_holds_says_which_value_it_is() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_IDLE_HOURS": "3"])
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(knob?.current.displayText, "default (off)")
+        XCTAssertEqual(knob?.nowText, knob?.current.displayText)
+        // A knob with a value in the copy says that value,  and nothing else.
+        let valued = registry.knobs.first { $0.name == "FLEET_IDLE_HOURS" }
+        XCTAssertEqual(valued?.current.displayText, "3")
     }
 
     /// A secret knob's default is not shown,  because the secret is what is unknown.

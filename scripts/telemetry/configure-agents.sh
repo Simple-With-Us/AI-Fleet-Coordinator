@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 # scripts/telemetry/configure-agents.sh — mint producer configs for fleet-telemetry-relay.
 #
-# SHIPPED ONLY.  Never run this in CI, launchd, or any automation, and never run
+# SHIPPED ONLY.  Never run this in CI, launchd, or any automation, and never run
 # it against live $HOME dotfiles:  it writes producer config SNIPPETS (plus a
-# README.txt with the manual install steps) into OUT_DIR only.  Jay copies the
-# snippets into place by hand.  This script has no code path that writes under
+# README.txt with the manual install steps) into OUT_DIR only.  Jay copies the
+# snippets into place by hand.  This script has no code path that writes under
 # $HOME; a test pins that.
 #
 # Credentials come from Infisical by name (project "AI Fleet Coordinator", prod
 # only) and are never printed:  stdout carries key names and set/empty flags
-# only, snippet files are 0600.  Needs the Infisical CLI logged in (or
-# INFISICAL_API_URL + machine identity in the environment) and python3.
+# only, snippet files are 0600.  Reads require the dedicated
+# INFISICAL_TELEMETRY_CONFIG_READ_TOKEN scoped to the project root and python3.
+# The expected project is supplied independently as INFISICAL_TELEMETRY_CONFIG_PROJECT_ID.
 #
 # Usage:
-#   INFISICAL_PROJECT_ID=<id, see INFISICAL.md> OUT_DIR=./agent-configs \
+#   OUT_DIR=./agent-configs \
 #     bash scripts/telemetry/configure-agents.sh [--relay-url https://<relay-host>]
 set -euo pipefail
 
-INFISICAL_PROJECT_ID="${INFISICAL_PROJECT_ID:?set INFISICAL_PROJECT_ID (the AI Fleet Coordinator project id, see INFISICAL.md)}"
 OUT_DIR="${OUT_DIR:-./telemetry-relay-agent-configs}"
 RELAY_URL="${RELAY_URL:-}"
 
@@ -29,10 +29,30 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-command -v infisical >/dev/null 2>&1 || { echo "missing infisical CLI on PATH" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "missing python3 on PATH" >&2; exit 1; }
 
-EXPORT_JSON="$(infisical export --env=prod --projectId="$INFISICAL_PROJECT_ID" --format=json)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+PYTHONPATH="$SCRIPT_DIR:$SCRIPTS_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+EXPORT_JSON="$(python3 - <<'PY'
+import json
+import os
+import sys
+
+from configure_agents import fetch_export
+
+try:
+    print(json.dumps(fetch_export(os.environ), separators=(",", ":")))
+except Exception as exc:
+    message = str(exc)
+    if message.startswith(("service-token-required", "telemetry-project-id-required")):
+        print(message, file=sys.stderr)
+    else:
+        print("telemetry Infisical scoped read failed", file=sys.stderr)
+    raise SystemExit(1)
+PY
+)"
 export EXPORT_JSON RELAY_URL
 
 # NAMES the script reads (values stay in EXPORT_JSON, never echoed).

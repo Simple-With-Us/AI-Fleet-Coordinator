@@ -19,6 +19,14 @@ struct SeatManifest: Decodable {
     let schemaVersion: Int
     let seats: [String: SeatManifestEntry]
 
+    /// The fleet-wide compliance rules,  when the manifest declares them.
+    ///
+    /// The key is additive and optional (AFC-400):  a manifest from before the
+    /// compliance family has none,  and this app reads that manifest unchanged.  The
+    /// rules are decoded here so the model knows the family exists,  and the grid
+    /// column for them lands in a later phase.
+    let complianceRules: [ComplianceRule]?
+
     /// The manifest,  if it is a version this app reads.
     static func read(at url: URL) throws -> SeatManifest {
         let data = try Data(contentsOf: url)
@@ -50,6 +58,104 @@ struct SeatManifestEntry: Decodable {
     let platforms: [String]
     let rules: [ManifestRule]
     let notApplicable: [ManifestCover]
+    /// Where the seat runs, from the manifest's optional `runsOn` list (AFC-616).
+    ///
+    /// Empty means the manifest does not say, so the place is not known.  The key is
+    /// read leniently:  a word this app does not know is skipped, and a value that is
+    /// not a list reads as not said, so a newer manifest never stops the grid.
+    let runsOn: Set<SeatRunPlace>
+
+    private enum CodingKeys: String, CodingKey {
+        case platforms, rules, notApplicable, runsOn
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        platforms = try container.decode([String].self, forKey: .platforms)
+        rules = try container.decode([ManifestRule].self, forKey: .rules)
+        notApplicable = try container.decode([ManifestCover].self, forKey: .notApplicable)
+        let words = (try? container.decodeIfPresent([LenientWord].self, forKey: .runsOn)) ?? []
+        runsOn = Set(words.compactMap { $0.word.flatMap(SeatRunPlace.init(rawValue:)) })
+    }
+
+    /// One item of a list, which reads as nil rather than failing when it is not a string.
+    private struct LenientWord: Decodable {
+        let word: String?
+
+        init(from decoder: Decoder) throws {
+            word = try? decoder.singleValueContainer().decode(String.self)
+        }
+    }
+}
+
+/// One place a seat runs, as the manifest's `runsOn` names it.
+///
+/// This is where the seat's sessions run.  It is not `SeatPlace`, which is the machine whose
+/// eavesdropper holds the seat's Zulip queue.
+enum SeatRunPlace: String, CaseIterable, Comparable, Sendable {
+    case mac
+    case server
+    case vm
+    case cloud
+
+    /// The order the places are named in:  the Mac, the server, a VM, the cloud.
+    static func < (lhs: SeatRunPlace, rhs: SeatRunPlace) -> Bool {
+        (allCases.firstIndex(of: lhs) ?? 0) < (allCases.firstIndex(of: rhs) ?? 0)
+    }
+
+    /// The word before the place, in Title Case.
+    var titlePreposition: String {
+        self == .cloud ? "In" : "On"
+    }
+
+    /// The place without its preposition, in Title Case.
+    var titleNoun: String {
+        switch self {
+        case .mac: return FleetHost.mac.heading
+        case .server: return FleetHost.server.heading
+        case .vm: return "A VM"
+        case .cloud: return "The Cloud"
+        }
+    }
+
+    /// The place without its preposition, inside a sentence.
+    var proseNoun: String {
+        switch self {
+        case .mac: return FleetHost.mac.name
+        case .server: return FleetHost.server.name
+        case .vm: return "a VM"
+        case .cloud: return "the cloud"
+        }
+    }
+
+    /// Several places, on a chip:  "On The Mac And The Server", "On A VM And In The Cloud".
+    ///
+    /// The places are named in their own order, and a preposition is said again only when
+    /// it changes.  No places give an empty string.
+    static func title(_ places: Set<SeatRunPlace>) -> String {
+        joined(places, preposition: \.titlePreposition, noun: \.titleNoun, and: " And ")
+    }
+
+    /// Several places, inside a sentence:  "on the Mac and the server", "in the cloud".
+    static func prose(_ places: Set<SeatRunPlace>) -> String {
+        joined(places, preposition: { $0.titlePreposition.lowercased() }, noun: \.proseNoun, and: " and ")
+    }
+
+    private static func joined(
+        _ places: Set<SeatRunPlace>,
+        preposition: (SeatRunPlace) -> String,
+        noun: (SeatRunPlace) -> String,
+        and: String
+    ) -> String {
+        var parts: [String] = []
+        var said: String?
+        for place in places.sorted() {
+            let word = preposition(place)
+            parts.append(word == said ? noun(place) : "\(word) \(noun(place))")
+            said = word
+        }
+        return parts.joined(separator: and)
+    }
 }
 
 /// One rule of a seat, as the manifest declares it.
@@ -84,6 +190,25 @@ struct ManifestCover: Decodable {
     let platforms: [String]
 }
 
+/// One fleet-wide rule, as the manifest declares it.
+///
+/// A compliance rule is about the fleet rather than about one seat's config surface, so
+/// it names the owner seat that answers for it, the hosts it is about, and whether the
+/// engine can run it yet.
+struct ComplianceRule: Decodable {
+    let id: String
+    /// The seat that answers for this rule's drift.
+    let ownerSeat: String?
+    /// The hosts the rule is about.
+    let scope: [String]?
+    /// Whether the engine has a check for this rule's check type.
+    let implemented: Bool?
+    /// Why the rule cannot run yet, when it cannot.
+    let implementationReason: String?
+    /// What the rule checks, and where.
+    let check: ManifestRule.ManifestCheck?
+}
+
 extension SeatManifest {
     /// The reason this seat and kind are covered by an explicit not-applicable entry.
     ///
@@ -100,10 +225,29 @@ extension SeatManifest {
         return nil
     }
 
+    /// Where the manifest says a seat runs, empty when it does not say or does not name
+    /// the seat.
+    func runsOn(seat: String) -> Set<SeatRunPlace> {
+        seats[seat]?.runsOn ?? []
+    }
+
     /// The rules the manifest declares for one seat and kind.
     func rules(seat: String, kind: ConfigKind) -> [ManifestRule] {
         guard let entry = seats[seat] else { return [] }
         return entry.rules.filter { $0.kind == kind.rawValue }
+    }
+
+    /// The fleet-wide rules the manifest declares,  in manifest order.
+    var allComplianceRules: [ComplianceRule] {
+        complianceRules ?? []
+    }
+
+    /// The fleet-wide rules the engine cannot run yet.
+    ///
+    /// These are the gaps the registry is honest about, and the panel will show them
+    /// rather than leave the fleet's own missing checks invisible.
+    var complianceRulesNotImplemented: [ComplianceRule] {
+        allComplianceRules.filter { $0.implemented == false }
     }
 
     /// The artifact the manifest says a seat and kind live in.
@@ -135,7 +279,7 @@ struct FleetRegistry: Decodable {
     /// the same call the engine's own loader makes.
     var liveTags: [String] {
         seats
-            .filter { ($0.retired ?? false) == false && $0.aliasOf == nil }
+            .filter { ($0.retired ?? false) == false && $0.aliasOf == nil && !NotASeat.contains($0.tag) }
             .map { $0.tag }
     }
 }

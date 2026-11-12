@@ -15,44 +15,75 @@
 
 const API = "https://simplewithus.zulipchat.com/api/v1";
 
-/** Basic-auth fetch against the Zulip API.  Returns null on any failure. */
+// Measured: a whole Datadog delivery, up to three Zulip calls, has a p99 of 1.5 s
+// and PagerDuty's documented webhook timeout is 5 s.  A timed-out POST holds its
+// topic until an operator reconciles it, so this stays well above a normal call.
+const ZULIP_TIMEOUT_MS = 5000;
+
+/**
+ * Basic-auth fetch against the Zulip API.  A non-2xx reply throws with
+ * `error.outcome` set, and a network failure or timeout throws without one, which
+ * callers read as unknown.  A 2xx reply that is not a usable success returns null.
+ */
 async function zulip(path, { email, apiKey, method = "GET", form } = {}) {
   const auth = btoa(`${email}:${apiKey}`);
-  const res = await fetch(`${API}${path}`, {
-    method,
-    signal: AbortSignal.timeout(10000),
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: form ? new URLSearchParams(form).toString() : undefined,
-  });
-  if (!res.ok) {
-    const error = new Error("Zulip rejected request");
-    error.outcome =
-      res.status >= 400 && res.status < 500 ? "refused" : "unknown";
-    // The status code and the retry hint are safe to keep: they say what the
-    // upstream answered, not what it said.  The caller needs them to decide
-    // whether a refusal may be retried and how long to wait.
-    error.status = res.status;
-    const retryAfter = Number(res.headers?.get?.("retry-after"));
-    if (Number.isInteger(retryAfter)) error.retryAfter = retryAfter;
-    throw error;
-  }
+  // A pending timer keeps a Durable Object active and billed, so the timer is
+  // cleared as soon as the call ends.  AbortSignal.timeout gives no handle to
+  // clear, and it held the object for the full timeout after every call.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ZULIP_TIMEOUT_MS);
   try {
-    const data = await res.json();
-    if (
-      !data ||
-      typeof data !== "object" ||
-      Array.isArray(data) ||
-      data.result !== "success"
-    )
+    const res = await fetch(`${API}${path}`, {
+      method,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: form ? new URLSearchParams(form).toString() : undefined,
+    });
+    if (!res.ok) {
+      const error = new Error("Zulip rejected request");
+      // A 429 is definitive like any refusal, since nothing landed, but it says
+      // to wait rather than that the request was wrong.
+      error.outcome =
+        res.status === 429
+          ? "rate_limited"
+          : res.status >= 400 && res.status < 500
+            ? "refused"
+            : "unknown";
+      // The status code and the retry hint are safe to keep: they say what the
+      // upstream answered, not what it said.  The caller needs them to decide
+      // whether a refusal may be retried and how long to wait.
+      error.status = res.status;
+      const retryAfter = Number(res.headers?.get?.("retry-after"));
+      if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+        error.retryAfter = Math.ceil(retryAfter);
+      }
+      // The body is never read on this path, and an open connection also keeps
+      // the object active.
+      try {
+        await res.body?.cancel?.();
+      } catch {}
+      throw error;
+    }
+    try {
+      const data = await res.json();
+      if (
+        !data ||
+        typeof data !== "object" ||
+        Array.isArray(data) ||
+        data.result !== "success"
+      )
+        return null;
+      if (method === "POST" && (!Number.isSafeInteger(data.id) || data.id <= 0))
+        return null;
+      return data;
+    } catch {
       return null;
-    if (method === "POST" && (!Number.isSafeInteger(data.id) || data.id <= 0))
-      return null;
-    return data;
-  } catch {
-    return null;
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -69,9 +100,11 @@ export async function postEvent({
   service,
   what,
   link,
+  mentions,
 }) {
   const parts = [severity, service, what];
   if (link) parts.push(link);
+  const line = parts.filter(Boolean).join("  •  ");
   const data = await zulip("/messages", {
     email,
     apiKey,
@@ -81,8 +114,23 @@ export async function postEvent({
       to: channel,
       topic,
       // Two spaces between sentences in every Zulip post (owner ruling 2026-10-08).
-      content: parts.filter(Boolean).join("  \u2022  "),
+      // Mentions go on their own line, so the event line keeps its one-line shape.
+      content: mentions ? `${line}\n${mentions}` : line,
     },
+  });
+  return data && data.id ? data.id : null;
+}
+
+/**
+ * Post one vendor alert as it arrived, already rendered by renderRaw().
+ * @returns {Promise<number|null>} the new message id
+ */
+export async function postRaw({ email, apiKey, channel, topic, content }) {
+  const data = await zulip("/messages", {
+    email,
+    apiKey,
+    method: "POST",
+    form: { type: "stream", to: channel, topic, content },
   });
   return data && data.id ? data.id : null;
 }
@@ -127,9 +175,98 @@ export async function writeStatus({
   return created && created.id ? created.id : null;
 }
 
+/**
+ * The fields of a Zulip message the reconciliation contract reads.
+ *
+ * The worker validates the raw response with these hand-written checks instead
+ * of a Zod schema because this Worker ships with no runtime dependencies.  It
+ * is deliberately narrower than the response: only the fields the caller
+ * consumes are required, so an unrelated addition to the Zulip API cannot
+ * refuse a valid message, while a field the contract depends on can never be
+ * missing or wrongly typed.
+ */
+const READABLE_MESSAGE_FIELDS = [
+  ["id", "number"],
+  ["type", "string"],
+  ["subject", "string"],
+  ["sender_email", "string"],
+  ["content", "string"],
+];
+
+const isReadableMessage = (message) => {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return false;
+  for (const [field, kind] of READABLE_MESSAGE_FIELDS) {
+    const value = message[field];
+    if (value === undefined || value === null) return false;
+    if (kind === "string") {
+      if (typeof value !== "string" || value === "") return false;
+    } else if (!Number.isSafeInteger(value) || value <= 0) {
+      return false;
+    }
+  }
+  // The channel arrives either as the stream name or as a recipient object,
+  // and either form is read, so both are accepted as long as one is present.
+  const recipient = message.display_recipient;
+  const hasChannelName =
+    typeof recipient === "string"
+      ? recipient !== ""
+      : !!(
+          recipient &&
+          typeof recipient === "object" &&
+          !Array.isArray(recipient) &&
+          typeof recipient.name === "string" &&
+          recipient.name !== ""
+        );
+  return hasChannelName;
+};
+
+/**
+ * Fetch one message by id.
+ *
+ * A message id an operator supplies has to be proved before anything is adopted or
+ * edited:  an id on its own names any message in the realm, so the caller needs to see
+ * the channel, the topic and the sender to know it is the standing message it claims.
+ *
+ * A response that does not carry every field the contract reads is not proof of
+ * anything, so it is refused here rather than handed on as a partial message:
+ * a caller that read a missing field as empty would accept a message on weaker
+ * evidence than it thinks it has.
+ *
+ * A message Zulip refuses to return (an id that does not exist, one this bot
+ * cannot see) or a read that never answers is also a message that cannot be
+ * read, so it comes back as null rather than as an exception.  Thrown, it
+ * escaped the reconcile route and surfaced as the durable writer's generic
+ * "writer unavailable", which sent the operator to the wrong subsystem.
+ *
+ * @returns {Promise<object|null>} the message, or null when it cannot be read
+ */
+export async function fetchMessage({ email, apiKey, messageId }) {
+  try {
+    const data = await zulip(`/messages/${messageId}`, { email, apiKey });
+    return isReadableMessage(data?.msg) ? data.msg : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The first line of every rendered standing block.
+ *
+ * `renderStatus` opens with it, so a message that starts with it was produced
+ * by this worker as a standing block.  The one-line alert messages of the same
+ * source are posted to the same channel and topic by the same bot and carry no
+ * such header, so this is what tells a standing block apart from an alert line
+ * when an operator supplies a message id to reconcile.
+ */
+export const STANDING_BLOCK_HEADER = "**Status: ";
+
 /** Render the standing status block for a topic's current states. */
 export function renderStatus({ topic, states, updatedAt, source }) {
+  // A recovered signal is counted in the header but not drawn:  its row would
+  // carry no text (a resolve clears it), and the block is read for what is
+  // open, so a quiet monitor needs no line of its own.
   const rows = states
+    .filter((s) => s.phase !== "ok")
     .map((s) => {
       const mark =
         s.phase === "alerting"
@@ -145,20 +282,23 @@ export function renderStatus({ topic, states, updatedAt, source }) {
   const firing = states.filter((s) => s.phase === "alerting").length;
   const header = firing
     ? `**${firing} firing** of ${states.length}`
-    : `**All clear** (${states.length} monitored)`;
+    : states.length
+      ? `**All clear** (${states.length} monitored)`
+      : "**All clear**";
 
   // Each source owns one standing message per topic, so the block says which
   // vendor it belongs to.
+  // The sentence gap is U+00A0 plus a space, which Zulip keeps (owner, Oct 23, 2026).
   const footer = source
-    ? `_Updated ${updatedAt}.  Source: ${source}.  This message is edited in place; new events post below it._`
-    : `_Updated ${updatedAt}.  This message is edited in place; new events post below it._`;
+    ? `_Last changed ${updatedAt}.  Source: ${source}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`
+    : `_Last changed ${updatedAt}.  This message is edited in place, and each change is logged in #**Alerts-Log**, same topic._`;
 
   return [
-    `**Status: ${topic}**`,
+    `${STANDING_BLOCK_HEADER}${topic}**`,
     "",
     header,
     "",
-    ...(rows.length ? rows : ["_no signals yet_"]),
+    ...rows,
     "",
     footer,
   ].join("\n");

@@ -224,7 +224,7 @@ class PinDecisionTests(unittest.TestCase):
                 #  the script reads the knob through the fleet_knobs package next to it and the
                 #  python3 that runs it:  both live here, so `python3 -m fleet_knobs get` is the stub
                 package = (
-                    Path(tmp) / "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet_knobs"
+                    Path(tmp) / "apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet_knobs"
                     if env.get("STUB_MANAGED_KNOBS")
                     else Path(tmp) / "fleet_knobs"
                 )
@@ -294,7 +294,7 @@ class PinDecisionTests(unittest.TestCase):
             child.update(env)
             if env.get("STUB_MANAGED_KNOBS"):
                 child["HOME"] = tmp
-                child.pop("AGENT_SYNC_RUNTIME", None)
+                child.pop("SIMPLE_TOOLS_RUNTIME", None)
             try:
                 p = subprocess.run(
                     ["bash", str(script)],
@@ -605,13 +605,13 @@ class PinDecisionTests(unittest.TestCase):
         self.assertTrue(self.lock_left)
 
     def test_every_pin_skipped_reason_fits_the_consumers_cap_with_its_tail(self):
-        """agent_sync.notes keeps 200 characters of the reason, and the tail says the note was saved.
+        """simple_tools.notes keeps 200 characters of the reason, and the tail says the note was saved.
 
         A reason that runs over loses exactly that tail, so a caller could not tell a saved, unpinned note from a
         failed write.  Every `pin skipped:` line of the real script is rendered with the longest outcome, a
         three-digit lock wait and a 100-character lock path (a long HOME), then read back through the consumer."""
         sys.path.insert(0, str(SCRIPT.parent))
-        from agent_sync import notes as N
+        from simple_tools import notes as N
 
         text = SCRIPT.read_text()
         start = text.index('case "$_pin_rc" in\n  1)')

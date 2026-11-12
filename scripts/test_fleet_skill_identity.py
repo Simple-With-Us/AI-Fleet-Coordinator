@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -59,6 +60,15 @@ def _session() -> str:
 def _notes() -> str:
     with open(NOTES, encoding="utf-8") as f:
         return f.read()
+
+
+def _protocol_doc_path() -> Path:
+    """The protocol document is being renamed:  the mirror holds it under exactly one of the two names.
+    Remove the old name when the rename is complete."""
+    for name in ("FLEET-PROTOCOL.md",):
+        if Path(ROOT, name).is_file():
+            return Path(ROOT, name)
+    return Path(ROOT, "FLEET-PROTOCOL.md")
 
 
 def _coord() -> str:
@@ -146,7 +156,21 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("Platform Defaults", out_sess)
         self.assertIn("`[<YOUR_TAG>·session8]` tag", out_sess)
         self.assertIn("<seat>/<slug>", out_sess)
+        self.assertNotRegex(
+            out_sess,
+            r"e\.g\.\u00a0",
+            "non-terminal abbreviation e.g. must not take a sentence gap",
+        )
+        self.assertNotIn("agents.jays.services", out_sess)
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
+
+        out_pickup = specialize_universal(
+            Path(ROOT, "docs", "fleet-skills", "pickup-seat", "SKILL.md").read_text(
+                encoding="utf-8"
+            ),
+            skill_name="pickup-seat",
+        )
+        self.assertIn("You are **<YOUR_AGENT_TAG>**.\u00a0 Keep", out_pickup)
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")
         self.assertIn("[TEAM_KEY, Agent]", out_not)
@@ -192,13 +216,11 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn(f"{BRANCH_PREFIX}/{BRANCH_EXAMPLE_SLUG}", grok_bot)
         self.assertNotIn("claude/afc-123-zulip-cutover", grok_bot)
 
-    def test_kimi_retired_banner(self) -> None:
+    def test_kimi_active_banner(self) -> None:
         out = specialize_from_monet(_session(), SEATS["kimi"], skill_name="session-start")
-        self.assertIn("[KIMI]", out)
-        self.assertIn("Retired seat", out)
-        self.assertNotIn("Start every Kimi", out)
-        self.assertNotIn("triple-claim before editing", out)
-        self.assertFalse(SEATS["kimi"].write_home)
+        self.assertIn("[KIMI·session8]", out)
+        self.assertIn("Moonshot AI Kimi Code CLI", out)
+        self.assertTrue(SEATS["kimi"].write_home)
 
     def test_renoir_stays_uninstalled(self) -> None:
         self.assertFalse(SEATS["renoir"].write_home)
@@ -297,6 +319,31 @@ class SpecializeTests(unittest.TestCase):
         out = fold_yaml_description(src)
         self.assertIn("description: Guides Cloudflare One Zero Trust work.", out)
         self.assertNotIn("description: >-", out)
+
+    def test_seat_banner_stays_after_the_front_matter_when_the_skill_has_no_h1(self) -> None:
+        """A skill that starts at `## ` has no top-level heading to insert after.
+
+        The seat banner was prepended ahead of the YAML front matter in that
+        case, so no front-matter parser could read the name or the description
+        of any seat copy that carried one.  The banner belongs after the
+        closing delimiter.
+        """
+        seat = SEATS["clutch"]
+        src = (
+            "---\n"
+            "name: secret-safety\n"
+            "description: >-\n"
+            "  Hardcoded, mandatory safeguards for handling secrets.\n"
+            "---\n\n"
+            "## Why this exists\n\n"
+            "Because.\n"
+        )
+        out = specialize_from_monet(src, seat, skill_name="secret-safety")
+        self.assertTrue(out.startswith("---\nname: secret-safety\n"))
+        self.assertIn("Runtime (Clutch)", out)
+        closing = out.index("\n---\n", 4) + len("\n---\n")
+        self.assertLess(closing, out.index("Runtime (Clutch)"))
+        self.assertLess(out.index("Runtime (Clutch)"), out.index("## Why this exists"))
 
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
@@ -490,9 +537,8 @@ class PerSeatVoiceTests(unittest.TestCase):
 
     def test_kimi_is_kimi_voiced(self) -> None:
         out = specialize_from_monet(_session(), SEATS["kimi"], skill_name="session-start")
-        self.assertIn("[KIMI]", out)
-        self.assertIn("Retired", out)
-        self.assertNotIn("Start every Kimi", out)
+        self.assertIn("[KIMI·session8]", out)
+        self.assertNotIn("Retired", out)
         self.assertNotIn("You are **MONET**", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
 
@@ -539,7 +585,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("GB-COMPILE", GB_ROLE_TAGS)
         gb = json.loads(
             (
-                Path(__file__).resolve().parent / "agent_sync" / "mcp" / "gb-identities.json"
+                Path(__file__).resolve().parent / "simple_tools" / "mcp" / "gb-identities.json"
             ).read_text()
         )
         self.assertEqual(list(GB_ROLE_TAGS), gb["enabled"], "one list:  the MCP servers' GB table")
@@ -580,26 +626,46 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertEqual(tags["DSH"]["notesName"], "DeepSeek Harness")
         self.assertNotIn("MINIMAX", tags)
         self.assertNotIn("DEEPSEEK", tags)
-        text = Path(os.path.join(ROOT, "AGENT-SYNC.md")).read_text(encoding="utf-8")
+        text = _protocol_doc_path().read_text(encoding="utf-8")
         # The Oct 7 rewrite moved the seat roster into the Active Seats
         # table (MM is a row) and the Availability list (DSH is retired).
         self.assertIn("| MM | `MiniMax` | `minimax/` |", text)
         self.assertNotRegex(text, r"(?m)^\| DSH \|")
         self.assertIn("DSH, DeepSeek Harness (2026-09-19)", text)
-        self.assertIn("`[MM]`", text)
+        # A post header names MiniMax as MM.  The Nov 5 post-header rule
+        # replaced the bare `[MM]` example with `[MM: HH.1.M 📁AFC, OPS]`,
+        # so accept either header form but never the old MINIMAX tag.
+        self.assertRegex(text, r"`\[MM(?:\]|: )")
+        self.assertNotIn("[MINIMAX", text)
         self.assertNotIn("| **MiniMax (`MINIMAX`)** |", text)
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
         coord = _coord()
         self.assertIn("MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`", coord)
-        self.assertIn("Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
+        self.assertIn("Retired: MONET, RENOIR, HARNESS, DSH have no bot", coord)
         self.assertNotIn("MiniMax: `[MINIMAX]`", coord)
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
-    def test_agent_sync_self_id_is_afc_not_fleet(self) -> None:
-        text = Path(os.path.join(ROOT, "AGENT-SYNC.md")).read_text(encoding="utf-8")
+    def test_simple_tools_self_id_is_afc_not_fleet(self) -> None:
+        text = _protocol_doc_path().read_text(encoding="utf-8")
         self.assertIn("| `AFC` |", text)
         self.assertIn("Simple-With-Us/AI-Fleet-Coordinator", text)
-        self.assertIn("[AFC] sync-N", text)
+        # AFC is the repo acronym, never a seat or a signature.  Before the
+        # Nov 5 post-header rule the coordinator signed `[AFC] sync-N`; since
+        # then AFC appears only in the header's repo list after the folder
+        # mark.  Either way the sender is never FLEET.  Apostrophes are
+        # compared straight, so a typographic one in the handbook passes too.
+        plain = text.replace("’", "'")
+        self.assertIn(
+            "`AFC` is AI-Fleet-Coordinator and `OPS` is Fleet-OPS:  repo acronyms used for "
+            "board items, topics and links, never seats, bots or signatures.",
+            plain,
+        )
+        self.assertTrue(
+            "[AFC] sync-N" in plain
+            or "with `AFC` or `OPS` in the header's repo list after `📁`, never as the sender"
+            in plain,
+            "the AFC bullet must say how AFC appears in a post",
+        )
         # The fleet-wide wake rule now lives in "Undirected, Directed, and
         # Fleet-Wide"; `fleet` is a recipient only, never a sender or an acronym.
         self.assertIn("### Undirected, Directed, and Fleet-Wide", text)
@@ -689,17 +755,13 @@ class CoordinatorSelfIdTests(unittest.TestCase):
                 out = specialize_from_monet(src, seat, skill_name=name)
                 for phrase in self.AFC_SIGNATURE_PHRASES:
                     self.assertNotIn(phrase, out, f"{key}/{name}: {phrase}")
-        stop = specialize_from_monet(
-            _load_skill("session-start"), SEATS["kimi"], skill_name="session-start"
-        )
-        self.assertIn("`AFC` is a repo acronym, never a sender or a signature", stop)
 
     def test_by_seat_catalog_matches_specialization(self) -> None:
         kimi_ss = Path(DOCS, "by-seat", "kimi", "session-start", "SKILL.md").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("Start every Kimi", kimi_ss)
-        self.assertIn("Retired seat", kimi_ss)
+        self.assertIn("Start every Kimi", kimi_ss)
+        self.assertNotIn("Retired seat", kimi_ss)
         gb = Path(DOCS, "by-seat", "grok-bot", "session-start", "SKILL.md").read_text(
             encoding="utf-8"
         )
@@ -750,6 +812,8 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         "MM",
         "MC",
         "MA",
+        "KIMI",
+        "ZC",
     }
 
     def test_grok_roster_mention_is_grok_build_not_grok_build_tag(self) -> None:
@@ -785,7 +849,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
     def test_retired_seats_have_no_bot_home_or_install_banner(self) -> None:
         retired = {k: s for k, s in SEATS.items() if s.retired}
-        self.assertEqual(set(retired), {"monet", "renoir", "deepseek", "kimi"})
+        self.assertEqual(set(retired), {"monet", "renoir", "deepseek"})
         for key, seat in retired.items():
             self.assertEqual(seat.zulip_bot, "", key)
             self.assertFalse(seat.write_home, key)
@@ -801,25 +865,18 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
                 self.assertNotIn(fragment, dest + "/", dest)
             self.assertNotIn("/by-seat/", dest)
         tags = {seat.tag for _dest, seat in platform_installs()}
-        self.assertFalse(tags & {"MONET", "RENOIR", "DSH", "KIMI"}, tags)
+        self.assertFalse(tags & {"MONET", "RENOIR", "DSH"}, tags)
         self.assertIn("CLUTCH", tags)
 
     def test_retired_session_start_is_inert(self) -> None:
-        for key in ("monet", "renoir", "deepseek", "kimi"):
+        for key in ("monet", "renoir", "deepseek"):
             seat = SEATS[key]
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             front = out.split("---")[1]
             self.assertIn(f"{seat.tag} is retired", front, key)
             self.assertNotIn("Start every", out, key)
             self.assertNotIn("triple-claim before editing", out.split("---")[1], key)
-            if key == "kimi":
-                # Kimi's copy is only a Stop section.  MONET, RENOIR and DSH keep
-                # their body until the peer-screen lane lands (STOP_ONLY_RETIRED).
-                self.assertIn("## Stop", out, key)
-                self.assertNotIn("## 1. Identity", out, key)
-                self.assertIn("`AFC`", out, key)
-            else:
-                self.assertNotIn("## Stop", out, key)
+            self.assertNotIn("## Stop", out, key)
 
     def test_set_yaml_description_replaces_inline_and_folded_values(self) -> None:
         folded = "---\nname: x\ndescription: >-\n  old one\n  old two\n---\n\n# X\n"
@@ -869,7 +926,8 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertNotIn("no skill home", out)
         self.assertNotIn("Catalog copy", out)
         self.assertIn("clutch/<slug>", out)
-        self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
+        self.assertIn("Zulip bot for seat `CLUTCH`", out)
+        self.assertNotIn("clutch-bot@simplewithus.zulipchat.com", out)
         self.assertIn("`CLUTCH_ZULIP_KEY`", out)
         self.assertIn("[CLUTCH·session8]", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
@@ -888,7 +946,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
                 board,
                 key,
             )
-            self.assertIn('--by "$AGENT_SEAT"', board, key)
+            self.assertIn("--by <YOUR_TAG>", board, key)
             self.assertNotIn(f"--by {seat.tag}", board, key)
         gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
         self.assertNotIn("MONET·session8", gb)
@@ -925,7 +983,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
 
 class AgentSeatPinTests(unittest.TestCase):
-    """The seat-precedence block (AGENT-SYNC § Identity Rules, owner 2026-10-09).
+    """The seat-precedence block (FLEET-PROTOCOL.md § Identity Rules, owner 2026-10-09).
 
     BotFleet runs Claude, Codex and other CLIs as engines for its own bots, and
     those engines load these skills.  A bare `export AGENT_SEAT=<PLATFORM>`
@@ -947,7 +1005,7 @@ class AgentSeatPinTests(unittest.TestCase):
     def _block(text: str) -> str:
         """The rendered seat block, from its `if` line through the whoami line."""
         match = re.search(
-            r'(?ms)^if \[ -n "\$\{AGENT_LAUNCH_SEAT:-\}" \].*?^agent-sync whoami --as "\$SEAT"$',
+            r'(?ms)^if \[ -n "\$\{AGENT_LAUNCH_SEAT:-\}" \].*?^simple-chat whoami --as "\$SEAT"$',
             text,
         )
         return match.group(0) if match else ""
@@ -974,9 +1032,6 @@ class AgentSeatPinTests(unittest.TestCase):
 
     def test_every_render_has_one_block_and_no_bare_assignment(self) -> None:
         for key, out in self._renders():
-            if key == "kimi":  # STOP-only retired copy: the identity section is cut
-                self.assertEqual(self._exports(out), [], key)
-                continue
             self.assertEqual(self._exports(out), [self.EXPORT], key)
             self.assertTrue(self._block(out), key)
             self.assertNotRegex(out, r"(?m)^export AGENT_SEAT=[^\"]", key)
@@ -984,25 +1039,25 @@ class AgentSeatPinTests(unittest.TestCase):
 
     def test_exclusive_seat_block_names_its_own_seat_and_platform(self) -> None:
         for key, seat in SEATS.items():
-            if key in {"kimi", "grok-bot"}:
+            if key == "grok-bot":
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             if seat.retired:
-                self.assertIn(f"{seat.tag} is retired and is no platform's default", out, key)
+                self.assertIn("a retired catalog pack is never a platform default", out, key)
+                self.assertIn("A retired pack takes no work", out, key)
+                self.assertNotIn("branch prefix from your launcher", out, key)
+                self.assertNotIn(f"`{seat.prefix}` for {seat.tag}", out, key)
                 continue
             self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
             self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
             self.assertIn(
-                f"`<branch-prefix>` below is your seat's branch prefix:  `{seat.prefix}`", out, key
+                f"`<branch-prefix>` below is your seat's branch prefix: `{seat.prefix}`", out, key
             )
 
     def test_t15_every_render_carries_the_launcher_clause(self) -> None:
         for key, out in self._renders():
-            if key == "kimi":
-                self.assertNotIn(LAUNCHER_CLAUSE, out)
-                continue
             self.assertIn(LAUNCHER_CLAUSE, out, key)
-            self.assertIn("you have no seat:  do no fleet action", out, key)
+            self.assertIn("you have no seat: do no fleet action", out, key)
             if not SEATS.get(key) or not SEATS[key].retired:
                 self.assertNotIn("[MONET·", out, key)
 
@@ -1011,7 +1066,7 @@ class AgentSeatPinTests(unittest.TestCase):
             if seat.retired:
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
-            self.assertIn('--by "$AGENT_SEAT"', out, key)
+            self.assertIn("--by <YOUR_TAG>", out, key)
             self.assertNotRegex(out, r"--by [A-Z]", key)
             self.assertIn("claim:  <branch-prefix>/<slug>", out, key)
             self.assertNotIn(f"claim:  {seat.prefix}/", out, key)
@@ -1043,7 +1098,7 @@ class AgentSeatPinTests(unittest.TestCase):
 
         def run(block: str, **env: str) -> tuple[int, str, str]:
             script = block.replace(
-                'agent-sync whoami --as "$SEAT"', 'printf "%s|%s" "$SEAT" "$AGENT_SEAT"'
+                'simple-chat whoami --as "$SEAT"', 'printf "%s|%s" "$SEAT" "$AGENT_SEAT"'
             )
             done = subprocess.run(
                 ["bash", "-c", script], env={**base, **env}, capture_output=True, text=True
@@ -1051,8 +1106,6 @@ class AgentSeatPinTests(unittest.TestCase):
             return done.returncode, done.stdout, done.stderr
 
         for key, out in self._renders():
-            if key == "kimi":
-                continue
             block = self._block(out)
             check = subprocess.run(["bash", "-n", "-c", block], capture_output=True, text=True)
             self.assertEqual(check.returncode, 0, f"{key}: {check.stderr}")
@@ -1146,6 +1199,66 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
         self.assertEqual(stale, [], f"stale skills/ copies; re-render with: {self.FIX}")
 
 
+class RetiredCatalogPackRenderTests(unittest.TestCase):
+    """A retired seat's catalog pack is rendered from the canonical pack, like every
+    other seat's.
+
+    The owner ruled on Oct 22 2026 that the rename guard's skip of the retired
+    seats' catalog copies goes away:  the copies are rendered from the canonical
+    pack like every other seat's are, so a stale consumer under one of those
+    folders is caught instead of passing unnoticed.  A retired seat's pack still
+    carries its retirement notice, because that notice comes from the renderer and
+    not from a hand edit.
+
+    So the pin here is a positive one.  A retired pack is a fresh render of the
+    canonical pack for that seat, byte for byte, and it carries the retirement
+    notice the renderer writes.  A pack left behind by hand, and a pack that has
+    drifted from the one home, fail both.
+    """
+
+    def _retired_seats(self) -> list:
+        return [seat for seat in catalog_seats() if seat.retired]
+
+    def test_a_retired_pack_is_a_fresh_render_of_the_canonical_pack(self) -> None:
+        seats = self._retired_seats()
+        self.assertTrue(seats, "the registry names no retired seat")
+        for seat in seats:
+            key = seat.seat_key or seat.tag.lower()
+            seat_root = Path(DOCS, "by-seat", key)
+            self.assertTrue(seat_root.is_dir(), "%s is missing" % seat_root)
+            for name in catalog_skill_names(DOCS):
+                if not skill_allowed_for_seat(name, seat):
+                    continue
+                src = Path(DOCS, name, "SKILL.md")
+                if not src.is_file():
+                    continue
+                got_path = seat_root / name / "SKILL.md"
+                self.assertTrue(got_path.is_file(), "%s is missing" % got_path)
+                want = specialize_from_monet(src.read_text(encoding="utf-8"), seat, skill_name=name)
+                self.assertEqual(
+                    got_path.read_text(encoding="utf-8"),
+                    want,
+                    "%s/%s is not a fresh render of the canonical pack" % (key, name),
+                )
+
+    def test_a_retired_pack_carries_its_retirement_notice(self) -> None:
+        for seat in self._retired_seats():
+            key = seat.seat_key or seat.tag.lower()
+            path = Path(DOCS, "by-seat", key, "session-start", "SKILL.md")
+            self.assertTrue(path.is_file(), "%s is missing" % path)
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(
+                seat.tag,
+                text,
+                "%s/session-start does not name the seat it was rendered for" % key,
+            )
+            self.assertIn(
+                "retired",
+                text.lower(),
+                "%s/session-start carries no retirement notice" % key,
+            )
+
+
 class RepoPlatformCopiesTests(unittest.TestCase):
     """The repo-tracked platform trees must equal a fresh render of the pack.
 
@@ -1221,10 +1334,15 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         for wanted in (
             "`[MM·session8]`",
             "minimax/",
-            "mm-bot@simplewithus.zulipchat.com",
+            "Zulip bot for seat `MM`",
             "MM_ZULIP_KEY",
         ):
             self.assertIn(wanted, text, wanted)
+        self.assertNotIn(
+            "mm-bot@simplewithus.zulipchat.com",
+            text,
+            "the bot address is the MM_ZULIP_EMAIL value in Infisical",
+        )
         for foreign in ("CLAUDE", "CURSOR", "CLAUDE_ZULIP_KEY", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
         self.assertIn("minimax/afc-123-zulip-cutover", text)
@@ -1262,6 +1380,79 @@ def _load_installer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class AlwaysOnRuleFileTests(unittest.TestCase):
+    """The always-on rule files a tool home reads are installed from the repo.
+
+    Without this, the live copy of a repo-tracked rule file drifts silently and a
+    seat reads the stale one (the sentence-gap rule sat a month behind the repo).
+    """
+
+    def setUp(self) -> None:
+        self.installer = _load_installer()
+
+    def test_every_repo_rule_file_is_mapped(self) -> None:
+        repo_rules = sorted(
+            os.path.relpath(os.path.join(root, name), ROOT)
+            for root, _dirs, files in os.walk(os.path.join(ROOT, ".cursor", "rules"))
+            for name in files
+            if name.endswith(".mdc")
+        )
+        self.assertTrue(repo_rules, "no repo cursor rules found to check")
+        mapped = {rel for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rel in rules}
+        for rel in repo_rules:
+            self.assertIn(rel, mapped, f"{rel} is not installed to a tool home")
+
+    def test_the_installed_gap_rule_is_the_current_one(self) -> None:
+        rel = ".cursor/rules/sentence-gap.mdc"
+        mapped = {rule for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rule in rules}
+        self.assertIn(rel, mapped)
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("Current rule (owner ruling 2026-10-23)", body)
+        # The retired per-surface table: two literal ASCII spaces for files,
+        # commits, terminals and untested surfaces.
+        self.assertNotIn("| two literal ASCII spaces |", body)
+        # The entity belongs to the two exception panes and nowhere else.
+        self.assertNotIn("Any other agent chat pane that renders Markdown", body)
+
+    def _install_with_home(self, home: str) -> list[str]:
+        env_home = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            return self.installer._install_always_on_rules()
+        finally:
+            if env_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = env_home
+
+    def test_the_copy_lands_at_the_home_path(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            # The tool home has to exist already:  the install is gated on it.
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                os.makedirs(os.path.join(home, tool_home.replace("~/", "", 1)), exist_ok=True)
+            written = self._install_with_home(home)
+            self.assertTrue(written, "nothing was installed")
+            for rules in self.installer.ALWAYS_ON_RULE_FILES.values():
+                for src_rel, dest_rel in rules.items():
+                    path = os.path.join(home, dest_rel.replace("~/", "", 1))
+                    self.assertTrue(os.path.isfile(path), path)
+                    src = os.path.join(ROOT, src_rel)
+                    with open(path, "rb") as a, open(src, "rb") as b:
+                        self.assertEqual(a.read(), b.read())
+
+    def test_a_tool_home_that_is_not_there_is_not_created(self) -> None:
+        # tool_home_exists() reads the tool home to decide whether the tool is installed
+        # at all, so creating an empty one here would flip the next run's answer and hand
+        # a host a tool it never had.
+        with tempfile.TemporaryDirectory() as home:
+            written = self._install_with_home(home)
+            self.assertEqual(written, [], "a rule was installed into a home that was not there")
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                path = os.path.join(home, tool_home.replace("~/", "", 1))
+                self.assertFalse(os.path.exists(path), f"{tool_home} was created")
 
 
 class InstallerRepoOnlyTests(unittest.TestCase):
@@ -1321,6 +1512,18 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self.assertEqual(self._home_files(), [])
         self.assertIn("Home-dir installs: skipped (--repo-only)", out)
         self.assertNotIn("fx-scanned", out)
+
+    def test_home_only_writes_home_and_skips_repo(self) -> None:
+        out = self._run(["--home-only"])
+        self.assertFalse((self.repo / "skills").exists())
+        self.assertFalse((self.repo / "docs" / "fleet-skills" / "by-seat").exists())
+        self.assertNotIn("Repo-tracked platform copies:", out)
+        self.assertIn("Home-dir installs:", out)
+        self.assertTrue((self.home / ".fx" / "skills" / "session-start" / "SKILL.md").is_file())
+
+    def test_home_only_and_repo_only_are_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            self._run(["--repo-only", "--home-only"])
 
     def test_repo_only_copies_equal_a_fresh_render(self) -> None:
         self._run(["--repo-only"])
@@ -1470,7 +1673,7 @@ class LinearTeamListTests(unittest.TestCase):
         return tuple(ast.literal_eval(match.group(1)))
 
     def _sources(self) -> list[Path]:
-        #  Only files this repo owns.  AGENT-SYNC.md is deliberately absent:  it
+        #  Only files this repo owns.  FLEET-PROTOCOL.md is deliberately absent:  it
         #  is a generated mirror of the Fleet-OPS handbook, check-generated-mirror.py
         #  refuses an edit here, and its copy of the team list is fixed where it is
         #  generated rather than in this tree.
@@ -1505,7 +1708,7 @@ class LinearTeamListTests(unittest.TestCase):
         self.assertGreater(checked, 10, "expected the team list in every rendered copy")
 
 
-class AgentSyncRosterTests(unittest.TestCase):
+class SimpleToolsRosterTests(unittest.TestCase):
     """The availability roster must agree with the seat table and registry.
 
     The Oct 7 rewrite replaced the old "## Agent availability" section and the
@@ -1520,7 +1723,7 @@ class AgentSyncRosterTests(unittest.TestCase):
         return data["seats"]
 
     def _text(self) -> str:
-        return Path(ROOT, "AGENT-SYNC.md").read_text(encoding="utf-8")
+        return _protocol_doc_path().read_text(encoding="utf-8")
 
     def _section(self, start_marker: str, end_marker: str) -> str:
         text = self._text()
@@ -1656,6 +1859,673 @@ class VMSeatLaneTests(unittest.TestCase):
                 _load_skill(name), SEATS["muse-assist"], skill_name=name
             )
             self.assertNotIn("~/apps/lane ", rendered, name)
+
+
+def _tracked_files() -> list[str]:
+    """Every tracked file in the repository, so a guard can see all of them.
+
+    The git call carries a timeout and its own exit codes:  a hung git is 124, a
+    missing git is 127 and a git that refuses is 128, so a caller can tell the
+    three apart instead of seeing one generic failure.  The call is made at
+    import time on purpose:  an exit code raised inside a test method is caught
+    by the test runner and reported as an ordinary error, which is exactly the
+    indistinguishability this is here to remove.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", ROOT, "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(124)
+    except FileNotFoundError:
+        raise SystemExit(127)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(128) from exc
+    return [p for p in done.stdout.split("\0") if p]
+
+
+TRACKED_FILES = _tracked_files()
+
+
+class PrivateInventoryTests(unittest.TestCase):
+    """AFC-504: the published copies name where the private inventory lives.
+
+    They never carry the values.  The patterns below are the shapes the fleet's own
+    internal addressing uses, so a copy that grows one is caught whatever host it
+    names, and this test source never carries an address itself.
+
+    The alias of the origin box is found the same way.  The guard used to hold
+    its value in a pattern, which put the value in the indexed test source; it
+    now holds the shapes a private host travels in, so the source carries none
+    and the guard still catches the value in whatever file it reaches.
+
+    The guard reads every tracked text file, not only the published copies: a guard
+    that cannot see a file gives false assurance.  The files that still carry the
+    inventory on purpose are listed with the reason and the board item that owns the
+    decision to move them, so the list is the fleet's own published inventory of
+    where its private inventory lives, and it shrinks as AFC-505 is worked through.
+    """
+
+    # Tailscale hands every node an address in the CGNAT range 100.64.0.0/10.
+    MESH_IP = re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")
+    # MagicDNS names end in the tailnet domain.
+    MAGICDNS = re.compile(r"\b[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.ts\.net\b")
+    # The private host of the origin box, found by shape and never by value.
+    # An ssh target is written as a user and a host, and a file that keeps a
+    # host in a variable says so in the name of the variable.  These patterns
+    # carry no host of their own, so the guard source never carries the
+    # inventory it looks for.
+    ALIAS_ROOT_AT = re.compile(r"\broot@(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)")
+    ALIAS_NAMED = re.compile(
+        r"""(?i:\b(?:ssh[_ -]?alias|host[_ -]?alias)\b[ \t]*(?:=|:=|:|\bis\b)[ \t]*"""
+        r"""["'](?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)["'])"""
+    )
+    # A variable whose name says it holds a host or an alias.  The name is
+    # upper case because a default lives in a constant, and the value is a
+    # single label because an ssh alias is one.
+    HOST_NAME = re.compile(r"^(?:[A-Z0-9]+_)*(?:SSH_)?(?:HOST|HOSTNAME|ALIAS|SSH_ALIAS)$")
+    HOST_ASSIGNMENT = re.compile(
+        r"""^[ \t]*(?:export[ \t]+|declare[ \t]+-\w+[ \t]+|local[ \t]+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"""
+        r"""[ \t]*=[ \t]*(?P<value>"[^"]*"|'[^']*'|[^\s#]+)"""
+    )
+    HOST_ENV_DEFAULT = re.compile(
+        r"""os\.environ\.get\(\s*["'](?P<name>[A-Za-z_][A-Za-z0-9_]*)["']\s*,\s*"""
+        r"""(?P<value>"[^"]*"|'[^']*')"""
+    )
+    # A single label, which is the shape of an ssh alias.
+    SINGLE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    # The names and the addresses reserved for documentation.  They carry no
+    # inventory, and the house convention in a fixture is one of them.
+    RESERVED_HOST = re.compile(
+        r"^(?:localhost|local|invalid|example|example\.(?:com|net|org|test))$", re.IGNORECASE
+    )
+    DOC_ADDRESS = re.compile(r"^(?:192\.0\.2\.\d{1,3}|198\.51\.100\.\d{1,3}|203\.0\.113\.\d{1,3})$")
+    LOOPBACK = re.compile(r"^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|::1)$")
+    # The ssh command forms a shell line can take.  A prose file only counts a
+    # command that starts its line, because a paragraph that mentions ssh is
+    # not a command.  A code file also counts a command after a shell keyword
+    # or an operator, so `if ssh ...` and `$(ssh ...)` are commands there too.
+    SSH_COMMAND_PROSE = re.compile(r"^[ \t]*(?P<ssh>ssh[ \t]+)(?![=])")
+    SSH_COMMAND_CODE = re.compile(
+        r"(?:^[ \t]*(?:(?:if|then|else|while|until|do|!)[ \t]+)?"
+        r"|(?:&&|\|\||[;&|]|\$\(|`|\{)[ \t]*)"
+        r"(?P<ssh>ssh[ \t]+)(?![=])"
+    )
+    # A prose file is a document, so a command in one has to start its line.
+    PROSE_SUFFIXES = (".md", ".txt", ".rst")
+    PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]*>")
+    # The ssh options that take a value in the next token, so a host search
+    # steps over the option and its value instead of taking one of them.
+    SSH_OPTIONS_WITH_VALUE = {
+        "-b",
+        "-c",
+        "-D",
+        "-E",
+        "-e",
+        "-F",
+        "-I",
+        "-i",
+        "-J",
+        "-L",
+        "-l",
+        "-m",
+        "-o",
+        "-O",
+        "-p",
+        "-Q",
+        "-R",
+        "-S",
+        "-W",
+        "-w",
+    }
+    # A shell assignment, so a target hoisted into a variable is still a target.
+    ASSIGNMENT = re.compile(
+        r"^[ \t]*(?:export[ \t]+|declare[ \t]+-\w+[ \t]+|local[ \t]+)?"
+        r"([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"]*\"|'[^']*'|[^\s#]+)"
+    )
+
+    # The files that still carry a private address on purpose.  Each one names
+    # the reason, so the list reads as an inventory and not as a backlog of
+    # accidents.
+    ADDRESS_ALLOWLIST = {
+        "docs/EFFORT-LOG.md": "history: a record of what was done, never rewritten",
+        "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
+        "docs/operator-listener-hosting.md": "AFC-505: the hosting table names a live address",
+        "docs/RAG-FLEET-INFRA.md": "AFC-505: the service endpoint table names a live address",
+        "docs/reviews/2026-09-14-fleet-rag-bm25-reranker-ab.md": "history: a review record",
+        "docs/rollouts/2026-09-01-dsh-tailscale-shellular-thinking.md": "history: a rollout record",
+        "docs/rollouts/2026-09-02-fleet-rag-memory-platform.md": "history: a rollout record",
+        "scripts/simple_tools/tests/test_wake_alerter.py": "AFC-505: a fixture that names the address it alerts on",
+        "scripts/fleet_config/tests/test_compliance.py": "AFC-400: a fixture for the internal address shape the rule looks for",
+        "scripts/simple_tools/wake_alerter.py": "AFC-505: a live script that reads the address it alerts on",
+        "scripts/fleet-recall-service/.env.example": "AFC-505: the service example names the address it points at",
+        "scripts/fleet-recall-service/README.md": "AFC-505: the service readme names the address it points at",
+        "scripts/fleet-recall-service/compose.example.yaml": "AFC-505: the service example names the address it points at",
+        "scripts/fleet_rag/public_fallback.py": "AFC-505: a live fallback that reaches the service by address",
+        "scripts/fleet_rag/tests/test_public_fallback.py": "AFC-505: a fixture for the fallback above",
+        "scripts/hetzner/fleet-qdrant-health.sh": "AFC-505: a live health script that reaches the box by address",
+        "scripts/hetzner/fleet-qdrant-snapshot.sh": "AFC-505: a live snapshot script that reaches the box by address",
+        "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by address",
+    }
+
+    # The files that still carry a private host on purpose, for the same
+    # reason.  The guard finds each of them by shape, so an entry earns its
+    # place while the file still trips one of those shapes.
+    ALIAS_ALLOWLIST = {
+        "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
+        "docs/protocols/coolify-fleet-cli-sync.md": "AFC-505: the protocol for the sync that reaches the box",
+        "fleet-sentry-monitor/monitor.py": "AFC-505: a live monitor that defaults to the alias",
+        "scripts/fleet-cli-sync.py": "AFC-505: a live sync that names the receiver it ships to",
+        "scripts/fleet_rag/doctor.py": "AFC-505: a live doctor that defaults to the alias",
+        "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by alias and address",
+        "scripts/test_fleet_cli_sync.py": "AFC-505: a fixture that asserts the receiver the sync names",
+    }
+
+    # The files that may carry a literal ssh target on purpose.  A fixture that
+    # names a command has to name it literally to mean anything, and the house
+    # convention is an RFC 5737 documentation address for exactly that.
+    SSH_ALLOWLIST = {
+        "scripts/fleet_lanes/tests/fixtures_guard.py": "a fixture that names the command shape it allows",
+    }
+
+    def _published_skill_files(self) -> list[Path]:
+        roots = [Path(DOCS), Path(ROOT, "skills")]
+        for dest, _seat in repo_platform_copies(ROOT):
+            roots.append(Path(dest))
+        files: list[Path] = []
+        for base in roots:
+            if not base.is_dir():
+                continue
+            for path in sorted(base.rglob("SKILL.md")):
+                files.append(path)
+        return files
+
+    def _tracked_text_files(self) -> list[str]:
+        """Every tracked file that reads as text, so the guard sees the repository.
+
+        The list comes from git rather than from a glob, so a file with no
+        extension is scanned like any other.
+        """
+        this_file = os.path.relpath(os.path.abspath(__file__), ROOT)
+        files: list[str] = []
+        for rel in sorted(TRACKED_FILES):
+            if rel == this_file:
+                # This source carries the patterns themselves.
+                continue
+            try:
+                Path(ROOT, rel).read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            files.append(rel)
+        return files
+
+    def _logical_lines(self, text: str) -> list[tuple[int, str]]:
+        """The text as logical lines, with a backslash continuation joined on.
+
+        A command split over two lines is one command, and a target that sits on
+        the second line is still a target.
+        """
+        out: list[tuple[int, str]] = []
+        lines = text.split("\n")
+        number = 0
+        index = 0
+        while index < len(lines):
+            number += 1
+            line = lines[index]
+            while line.rstrip().endswith("\\") and index + 1 < len(lines):
+                index += 1
+                line = line.rstrip()[:-1] + " " + lines[index].strip()
+            out.append((number, line))
+            index += 1
+        return out
+
+    def _tokens(self, line: str) -> list[str]:
+        """The line's tokens, with a quoted run kept as one token.
+
+        A quoted run stays whole, so an option value with spaces in it does
+        not come apart and turn into a host.
+        """
+        out: list[str] = []
+        current: list[str] = []
+        quote: str | None = None
+        for char in line:
+            if quote is None:
+                if char in "\"'":
+                    quote = char
+                    current.append(char)
+                    continue
+                if char.isspace():
+                    if current:
+                        out.append("".join(current))
+                        current = []
+                    continue
+                current.append(char)
+                continue
+            current.append(char)
+            if char == quote:
+                quote = None
+        if current:
+            out.append("".join(current))
+        return out
+
+    def _ssh_commands(self, rel: str, line: str) -> list[str]:
+        """The ssh commands on a line, each as its text from the word ssh on.
+
+        A prose file only counts a command that starts its line, because a
+        paragraph that mentions ssh is not a command.  A code file also counts
+        a command after a shell keyword or an operator, so `if ssh ...` and
+        `$(ssh ...)` are commands there too.
+        """
+        pattern = (
+            self.SSH_COMMAND_PROSE if rel.endswith(self.PROSE_SUFFIXES) else self.SSH_COMMAND_CODE
+        )
+        return [line[match.start("ssh") :] for match in pattern.finditer(line)]
+
+    def _ssh_host(self, command: str) -> str:
+        """The host an ssh command names, or an empty string when it names none.
+
+        The options and their values come off first, so the first token left is
+        the host and not an option.
+        """
+        tokens = self._tokens(command)
+        if not tokens or tokens[0] != "ssh":
+            return ""
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in self.SSH_OPTIONS_WITH_VALUE:
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return token.strip("\"'")
+        return ""
+
+    def _literal_variables(self, text: str) -> dict[str, str]:
+        """The variables a file gives a literal value, so a target hoisted into
+        one is a target in disguise.
+
+        A variable that carries a variable or a placeholder is resolved at
+        runtime and stays out of this list.
+        """
+        out: dict[str, str] = {}
+        for line in text.split("\n"):
+            match = self.ASSIGNMENT.match(line)
+            if not match:
+                continue
+            name = match.group(1)
+            value = match.group(2).strip("\"'")
+            if "$" in value or self.PLACEHOLDER.search(value):
+                continue
+            out[name] = value
+        return out
+
+    def test_published_skill_copies_carry_no_private_addresses(self) -> None:
+        files = self._published_skill_files()
+        self.assertTrue(files, "no published skill copy was found to scan")
+        hits: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for pattern in (self.MESH_IP, self.MAGICDNS):
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    hits.append(f"{path.relative_to(ROOT)}:{line}")
+        self.assertEqual(
+            hits,
+            [],
+            "a published skill copy must name the private inventory, not carry it:\n"
+            + "\n".join(hits),
+        )
+
+    FORBIDDEN_SKILL_ENDPOINT_LITERALS = (
+        re.compile(r"agents\.jays\.services"),
+        re.compile(r"recall\.jays\.services"),
+        re.compile(r"\bcongress-ci\b|\bsocratic-ci\b|\bhetzner-ci\b"),
+    )
+
+    def test_published_skill_copies_carry_no_internal_host_or_runner_labels(self) -> None:
+        files = self._published_skill_files()
+        hits: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for pattern in self.FORBIDDEN_SKILL_ENDPOINT_LITERALS:
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    hits.append(f"{path.relative_to(ROOT)}:{line}: {match.group(0)}")
+        self.assertEqual(
+            hits,
+            [],
+            "a published skill copy must not carry internal gateway hostnames or CI runner labels:\n"
+            + "\n".join(hits),
+        )
+
+    def _address_hits(self, rel: str, text: str) -> list[str]:
+        """The private addresses a file carries."""
+        hits: list[str] = []
+        for pattern in (self.MESH_IP, self.MAGICDNS):
+            for match in pattern.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                hits.append(f"{rel}:{line}")
+        return hits
+
+    def _reserved_host(self, value: str) -> bool:
+        """Whether a value is a name or an address reserved for documentation."""
+        return bool(
+            self.RESERVED_HOST.match(value)
+            or self.DOC_ADDRESS.match(value)
+            or self.LOOPBACK.match(value)
+        )
+
+    def _host_literals(self, text: str) -> list[tuple[int, str, str]]:
+        """The variables whose name says they hold a host, with the value.
+
+        The value is a literal, because a variable that carries a variable or
+        a placeholder is resolved at runtime and is not inventory.
+        """
+        out: list[tuple[int, str, str]] = []
+        for number, line in enumerate(text.split("\n"), 1):
+            for pattern in (self.HOST_ASSIGNMENT, self.HOST_ENV_DEFAULT):
+                for match in pattern.finditer(line):
+                    name = match.group("name")
+                    if not self.HOST_NAME.match(name):
+                        continue
+                    value = match.group("value").strip("\"'")
+                    if "$" in value or "<" in value:
+                        continue
+                    if not self.SINGLE_LABEL.match(value):
+                        continue
+                    out.append((number, name, value))
+        return out
+
+    def _alias_hits(self, rel: str, text: str) -> list[str]:
+        """The places a file carries a host in the shape of private inventory.
+
+        The shapes are the ones in which a private host reaches a file: an ssh
+        target written as a user and a host, and a variable whose name says it
+        holds a host given a literal value.  Neither shape names a host, so
+        this source carries no inventory of its own, and a copy of the guard
+        in a published pack is as safe as the tree.
+        """
+        hits: list[str] = []
+        for pattern in (self.ALIAS_ROOT_AT, self.ALIAS_NAMED):
+            for match in pattern.finditer(text):
+                if self._reserved_host(match.group("host")):
+                    continue
+                line = text.count("\n", 0, match.start()) + 1
+                hits.append(f"{rel}:{line} (an ssh target written as a host)")
+        for number, name, value in self._host_literals(text):
+            if self._reserved_host(value):
+                continue
+            hits.append(f"{rel}:{number} ({name} holds a literal host)")
+        return hits
+
+    def _ssh_hits(self, rel: str, text: str) -> list[str]:
+        """The ssh commands in a file whose target is a literal.
+
+        A target that arrives in the environment is fine, and so is a target
+        that is hoisted into a variable the file itself gives a literal value:
+        that is a literal in disguise, so it counts.
+        """
+        hits: list[str] = []
+        literals = self._literal_variables(text)
+        for number, line in self._logical_lines(text):
+            if line.strip().startswith("#"):
+                # A comment explains a command, it is not one.
+                continue
+            for command in self._ssh_commands(rel, line):
+                host = self._ssh_host(command)
+                if not host or self.PLACEHOLDER.search(host):
+                    continue
+                variables = re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", host)
+                if not variables:
+                    hits.append(f"{rel}:{number} (an ssh line with a literal target)")
+                    continue
+                hoisted = sorted(v for v in variables if v in literals)
+                if hoisted:
+                    hits.append(
+                        f"{rel}:{number} (an ssh target hoisted into " + ", ".join(hoisted) + ")"
+                    )
+        return hits
+
+    def _zip_members(self) -> list[tuple[str, str, str]]:
+        """Every member of every published pack archive, with its archive, name
+        and text.
+
+        The archives are what a seat installs, so a guard that opens only the
+        files in the tree cannot see what the tree ships.  A stale archive
+        carries the text the tree no longer has, which is exactly the exposure
+        this guard has to catch.
+        """
+        out: list[tuple[str, str, str]] = []
+        for path in sorted(Path(DOCS).glob("*.zip")):
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    if name.endswith("/"):
+                        continue
+                    try:
+                        text = archive.read(name).decode("utf-8")
+                    except (UnicodeDecodeError, KeyError):
+                        continue
+                    out.append((path.name, name, text))
+        return out
+
+    def test_no_published_pack_archive_carries_private_inventory(self) -> None:
+        hits: list[str] = []
+        for archive, member, text in self._zip_members():
+            label = f"{archive}::{member}"
+            for hit in self._address_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+            for hit in self._alias_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+            for hit in self._ssh_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+        self.assertEqual(
+            hits,
+            [],
+            "a published pack archive must not carry private inventory, because "
+            "the archive is what a seat installs:\n" + "\n".join(hits),
+        )
+
+    def test_no_tracked_file_carries_a_private_address(self) -> None:
+        hits: list[str] = []
+        for rel in self._tracked_text_files():
+            if rel in self.ADDRESS_ALLOWLIST:
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            hits.extend(self._address_hits(rel, text))
+        self.assertEqual(
+            hits,
+            [],
+            "a tracked file must not carry a private address; the address is "
+            "operator inventory, and the files that keep it on purpose are listed "
+            "in ADDRESS_ALLOWLIST:\n" + "\n".join(hits),
+        )
+
+    def test_no_tracked_file_carries_the_ssh_alias(self) -> None:
+        hits: list[str] = []
+        for rel in self._tracked_text_files():
+            if rel in self.ALIAS_ALLOWLIST:
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            hits.extend(self._alias_hits(rel, text))
+        self.assertEqual(
+            hits,
+            [],
+            "a tracked file must not carry the ssh alias; the alias is operator "
+            "inventory, and the files that keep it on purpose are listed in "
+            "ALIAS_ALLOWLIST:\n" + "\n".join(hits),
+        )
+
+    def test_no_tracked_file_sshes_a_literal_target(self) -> None:
+        hits: list[str] = []
+        for rel in self._tracked_text_files():
+            if rel in self.ALIAS_ALLOWLIST or rel in self.SSH_ALLOWLIST:
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            hits.extend(self._ssh_hits(rel, text))
+        self.assertEqual(
+            hits,
+            [],
+            "a tracked file must not ssh a literal host target; the target arrives "
+            "in the environment, and the files that keep a literal on purpose are "
+            "listed in ALIAS_ALLOWLIST and SSH_ALLOWLIST:\n" + "\n".join(hits),
+        )
+
+    def test_the_allowlists_name_only_files_that_still_carry_the_inventory(self) -> None:
+        """An allowlist entry earns its place by still carrying the inventory.
+
+        A file that has been cleaned up must come off the list, so the list
+        shrinks as the board items that own each file are worked through
+        instead of becoming a blanket that covers everything.
+        """
+        tracked = set(self._tracked_text_files())
+        stale: list[str] = []
+        for rel, reason in sorted(self.ADDRESS_ALLOWLIST.items()):
+            if not reason.strip():
+                stale.append(f"{rel} (no reason given)")
+                continue
+            if rel not in tracked:
+                stale.append(f"{rel} (not a tracked text file)")
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            if not self._address_hits(rel, text):
+                stale.append(f"{rel} (no longer carries a private address)")
+        for rel, reason in sorted(self.ALIAS_ALLOWLIST.items()):
+            if not reason.strip():
+                stale.append(f"{rel} (no reason given)")
+                continue
+            if rel not in tracked:
+                stale.append(f"{rel} (not a tracked text file)")
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            if not self._alias_hits(rel, text):
+                stale.append(f"{rel} (no longer carries the ssh alias)")
+        for rel, reason in sorted(self.SSH_ALLOWLIST.items()):
+            if not reason.strip():
+                stale.append(f"{rel} (no reason given)")
+                continue
+            if rel not in tracked:
+                stale.append(f"{rel} (not a tracked text file)")
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            if not self._ssh_hits(rel, text):
+                stale.append(f"{rel} (no longer carries a literal ssh target)")
+        self.assertEqual(
+            stale,
+            [],
+            "an allowlist entry must name a file that still carries the private "
+            "inventory; clean the file up and take the entry off the list:\n" + "\n".join(stale),
+        )
+
+
+class GuardedBlockSyntaxTests(unittest.TestCase):
+    """A `:?` guard whose word holds a quote cannot be parsed.
+
+    bash reads the word of a `:?` guard inside the surrounding double quotes,
+    so an apostrophe in it opens a single-quoted string that never closes and
+    the whole block fails to parse.  The guard line reads like ordinary
+    English and the snippet cannot run at all, so the check belongs to the
+    pack:  a seat that copies the block gets a syntax error instead of the
+    lock the prose describes.
+
+    The scan reads the fenced blocks and nothing else.  A guard quoted inline
+    in a sentence is prose, and a `:?` word whose match runs over a line
+    break names text the reader never sees as one command, so the guard scan
+    never runs over the whole document.
+    """
+
+    # A fence is a run of three or more backticks, and the closing fence has to
+    # be the same run, so a four-backtick block can hold a three-backtick one.
+    # The opener and the closer may both sit inside a list item, so up to three
+    # spaces of indentation are allowed in front of them.
+    FENCE = re.compile(
+        r"^[ ]{0,3}(?P<fence>`{3,})(?P<info>[^\n`]*)\n(?P<body>.*?)^[ ]{0,3}(?P=fence)[ \t]*$",
+        re.DOTALL | re.MULTILINE,
+    )
+    GUARD = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}")
+    # The info strings that name a shell.  A block in any other language is
+    # not shell code, so parsing it as shell reports a failure nobody can fix.
+    SHELL_LANGUAGES = frozenset({"bash", "sh", "shell"})
+    # A block that takes longer than this to parse is a runaway, not a guard.
+    BASH_TIMEOUT = 10
+
+    def _texts(self):
+        for root, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+            for name in files:
+                if name.endswith((".md", ".mdc")):
+                    path = os.path.join(root, name)
+                    try:
+                        with open(path, encoding="utf-8") as handle:
+                            yield path, handle.read()
+                    except (OSError, UnicodeDecodeError):
+                        continue
+
+    def _bash_parse(self, body: str) -> tuple[int, str]:
+        """The exit code and the first line of the complaint from `bash -n`.
+
+        A block that never finishes and a host without bash both count as a
+        failure, so a broken guard can never hide behind either one.
+        """
+        try:
+            proc = subprocess.run(
+                ["bash", "-n"],
+                input=body,
+                capture_output=True,
+                text=True,
+                timeout=self.BASH_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, "bash -n did not finish within %d seconds" % self.BASH_TIMEOUT
+        except FileNotFoundError:
+            return 127, "bash is not on the PATH of this host"
+        except OSError as exc:
+            return 127, "bash could not be run: %s" % exc
+        if proc.returncode != 0:
+            return proc.returncode, proc.stderr.strip().split("\n")[0][:90]
+        return 0, ""
+
+    def test_no_guard_word_holds_a_quote(self) -> None:
+        offenders: list[str] = []
+        for path, text in self._texts():
+            rel = os.path.relpath(path, ROOT)
+            for fence in self.FENCE.finditer(text):
+                body = fence.group("body")
+                body_line = text[: fence.start("body")].count("\n") + 1
+                for guard in self.GUARD.finditer(body):
+                    if "'" in guard.group(0) or '"' in guard.group(0):
+                        line = body_line + body[: guard.start()].count("\n")
+                        offenders.append("%s:%d %s" % (rel, line, guard.group(0)))
+        self.assertEqual(
+            offenders,
+            [],
+            "a `:?` guard word holds a quote, so the block cannot parse:\n" + "\n".join(offenders),
+        )
+
+    def test_every_guarded_block_parses(self) -> None:
+        broken: list[str] = []
+        for path, text in self._texts():
+            rel = os.path.relpath(path, ROOT)
+            for fence in self.FENCE.finditer(text):
+                if fence.group("info").strip().lower() not in self.SHELL_LANGUAGES:
+                    continue
+                body = fence.group("body")
+                if ":?" not in body:
+                    continue
+                code, complaint = self._bash_parse(body)
+                if code != 0:
+                    line = text[: fence.start("body")].count("\n") + 1
+                    broken.append("%s:%d exit %d: %s" % (rel, line, code, complaint))
+        self.assertEqual(
+            broken,
+            [],
+            "a block with a `:?` guard does not parse:\n" + "\n".join(broken),
+        )
 
 
 if __name__ == "__main__":

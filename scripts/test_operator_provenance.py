@@ -1,4 +1,4 @@
-"""Tests for agent_sync.operator_provenance (AFC-412 PR3).  Run:  python3 scripts/test_operator_provenance.py"""
+"""Tests for simple_tools.operator_provenance (AFC-412 PR3).  Run:  python3 scripts/test_operator_provenance.py"""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agent_sync import operator_provenance as P
-from agent_sync.operator_registry import SessionRegistry
+from simple_tools import operator_provenance as P
+from simple_tools.operator_registry import SessionRegistry
 
 
 def registry(tmp):

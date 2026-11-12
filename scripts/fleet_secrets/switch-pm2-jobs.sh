@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
 # Move the three pm2 jobs that were reverted to the flat secrets file onto `fleet-secrets` (OPS-818).
-# Run it as the owner (no sudo), AFTER seed-system-keychain.sh has put the machine identity in the
-# System keychain:
+# Run it as the owner (no sudo), after the pm2 environment receives its scoped read-only
+# INFISICAL_TOKEN service token:
 #
 #   bash scripts/fleet_secrets/switch-pm2-jobs.sh            # prove, then switch
 #   bash scripts/fleet_secrets/switch-pm2-jobs.sh --probe    # only prove the pm2 path, change nothing
 #
-# Step 1, proof:  `fleet-secrets doctor` is run INSIDE a pm2 one-shot (pm2 starts it from the launchd
-# System session, like the real jobs), and its log must say `ok: true` and `auth_mode: system-keychain`.
-# The log holds booleans and counts only.  If the proof fails, nothing is changed.
+# Step 1, proof:  `fleet-secrets doctor` is run INSIDE a pm2 one-shot, and its log must say `ok: true`,
+# `auth_mode: token`, and `service_token_present: true`.  The log holds booleans and counts only.
+# If the proof fails, nothing is changed.
 #
-# Step 2, per job (mac-collab-litestream, vision-worker, mac-collab):  back the live file up to
-# <file>.bak-ops818-pm2, install the fleet-secrets version, `pm2 restart <name>`, wait ~20 s, and
-# check `pm2 jlist` for that name only.  If it is not online and steady, the backup is put back and
-# the job restarted.  No environment is ever printed.
+# Step 2, per job (vision-worker):  back the live file up to <file>.bak-ops818-pm2, install the
+# fleet-secrets version, `pm2 restart <name>`, wait ~20 s, and check `pm2 jlist` for that name only.
+# If it is not online and steady, the backup is put back and the job restarted.  No environment is
+# ever printed.
+#
+# The mac-collab jobs (mac-collab, mac-collab-litestream) were retired on 2026-10-19 (owner Jay,
+# AFC-363) and are no longer switched:  they were deleted from pm2 and saved, so there is nothing
+# to restart and nothing to roll back.
 #
 # Sources of the fleet-secrets versions (first that exists):
-#   mac-collab-litestream  ~/apps/mac-collab/start_litestream.sh.new-ops818, then
-#                          scripts/mac-collab/start_litestream.sh in this checkout
 #   vision-worker          ~/vision-worker/run-vision-worker.sh.new-ops818
-#   mac-collab             ~/apps/mac-collab/mac-collab-server.py.new-ops818;  if none exists and the live
-#                          file already calls `fleet-secrets names`, only a restart is done.  The checkout's
-#                          scripts/mac-collab/mac-collab-server.py is NOT installed:  the live server has
-#                          moved on from it.
 # Environment:  SWITCH_WAIT (seconds, default 20), FLEET_SECRETS_BIN, PM2_BIN.
 set -uo pipefail
 
@@ -84,13 +82,14 @@ for _ in $(seq 1 30); do
   grep -q '^ok: ' "$probe_dir/out.log" 2>/dev/null && break
   sleep 2
 done
-probe_ok=false; probe_mode="none"
+probe_ok=false; probe_mode="none"; probe_token=false
 grep -q '^ok: true$' "$probe_dir/out.log" 2>/dev/null && probe_ok=true
 probe_mode="$(sed -n 's/^auth_mode: //p' "$probe_dir/out.log" 2>/dev/null | head -1)"
-say "pm2 probe: ok=$probe_ok auth_mode=${probe_mode:-none}"
-grep -E '^(keychain_|system_keychain_|session_login_valid|fetch_names_ok|names_count|failure_reason)' "$probe_dir/out.log" 2>/dev/null | sed 's/^/  /'
-if [ "$probe_ok" != true ] || [ "$probe_mode" != "system-keychain" ]; then
-  fail "the pm2 System-session probe did not pass;  seed the System keychain first (seed-system-keychain.sh) and nothing was changed" 3
+grep -q '^service_token_present: true$' "$probe_dir/out.log" 2>/dev/null && probe_token=true
+say "pm2 probe: ok=$probe_ok auth_mode=${probe_mode:-none} service_token_present=$probe_token"
+grep -E '^(service_token_present|fetch_names_ok|names_count|failure_reason)' "$probe_dir/out.log" 2>/dev/null | sed 's/^/  /'
+if [ "$probe_ok" != true ] || [ "$probe_mode" != "token" ] || [ "$probe_token" != true ]; then
+  fail "the pm2 scoped-service-token probe did not pass; bind INFISICAL_TOKEN to its environment and nothing was changed" 3
 fi
 "$PM2" delete "$PROBE_NAME" >/dev/null 2>&1 || true
 $probe_only && { say "probe passed;  --probe given, no job was changed"; exit 0; }
@@ -138,20 +137,7 @@ switch_job() {
   fi
 }
 
-lite_src=""
-for c in "$HOME/apps/mac-collab/start_litestream.sh.new-ops818" "$here/../mac-collab/start_litestream.sh"; do
-  [ -f "$c" ] && { lite_src="$c"; break; }
-done
-collab_src=""; collab_note=""
-if [ -f "$HOME/apps/mac-collab/mac-collab-server.py.new-ops818" ]; then
-  collab_src="$HOME/apps/mac-collab/mac-collab-server.py.new-ops818"
-elif grep -q 'fleet-secrets' "$HOME/apps/mac-collab/mac-collab-server.py" 2>/dev/null; then
-  collab_note="the live file already calls fleet-secrets;  restart only so it is proven under the System-session identity"
-fi
-
-switch_job mac-collab-litestream "$HOME/apps/mac-collab/start_litestream.sh" "$lite_src"
 switch_job vision-worker "$HOME/vision-worker/run-vision-worker.sh" "$HOME/vision-worker/run-vision-worker.sh.new-ops818"
-switch_job mac-collab "$HOME/apps/mac-collab/mac-collab-server.py" "$collab_src" "$collab_note"
 
 echo "---"
 bad=0

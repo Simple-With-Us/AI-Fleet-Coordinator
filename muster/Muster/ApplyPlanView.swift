@@ -81,7 +81,7 @@ struct ApplyPlanView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Apply Fix")
                 .font(.title2.weight(.semibold))
-            Text("\(session.ruleID) on \(session.seat)")
+            Text("\(session.ruleID) on \(session.seat), \(FleetHost.mac.inProse)")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -211,7 +211,7 @@ struct ApplyPlanView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(entry.files, id: \.self) { file in
-                Text("~/" + file)
+                Text("~/" + file + " \(FleetHost.mac.inProse)")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(entry.autofix.isAllowed ? Color.primary : Color.secondary)
                     .textSelection(.enabled)
@@ -300,8 +300,17 @@ struct ApplyPlanView: View {
 // MARK: - Activity
 
 /// Applies in flight and recently finished, for when the sheet is closed.  Hidden when empty.
+///
+/// It sits under the panel in the window's detail column and does not scroll with it, so past
+/// a few sessions its rows scroll in a box of their own.  Otherwise each session made it
+/// taller, and at the window's smallest height its last rows went below the window's bottom.
 struct ApplyActivityView: View {
     @ObservedObject private var coordinator = ApplyCoordinator.shared
+
+    /// The most sessions shown before the rows scroll.
+    private static let rowsBeforeScrolling = 3
+    /// The rows' box once they scroll:  three rows and part of a fourth, so it shows there is more.
+    private static let scrollingHeight: CGFloat = 150
 
     private var visible: [ApplySession] {
         coordinator.sessions.filter { session in
@@ -321,22 +330,13 @@ struct ApplyActivityView: View {
                             .buttonStyle(.link)
                     }
                 }
-                ForEach(visible) { session in
-                    HStack(spacing: 10) {
-                        if session.isWriting {
-                            ProgressView().controlSize(.small)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(session.ruleID) on \(session.seat)")
-                                .font(.callout.weight(.medium))
-                            Text(statusLine(session))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Show") { coordinator.present(sessionID: session.id) }
-                            .buttonStyle(.link)
+                if visible.count > Self.rowsBeforeScrolling {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) { rows }
                     }
+                    .frame(height: Self.scrollingHeight)
+                } else {
+                    rows
                 }
             }
             .padding(16)
@@ -344,6 +344,27 @@ struct ApplyActivityView: View {
             .background(.background, in: RoundedRectangle(cornerRadius: 12))
             .overlay {
                 RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, lineWidth: 1)
+            }
+        }
+    }
+
+    /// One row per session:  what it fixes, where it stands, and the button that shows its sheet.
+    private var rows: some View {
+        ForEach(visible) { session in
+            HStack(spacing: 10) {
+                if session.isWriting {
+                    ProgressView().controlSize(.small)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(session.ruleID) on \(session.seat), \(FleetHost.mac.inProse)")
+                        .font(.callout.weight(.medium))
+                    Text(statusLine(session))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Show") { coordinator.present(sessionID: session.id) }
+                    .buttonStyle(.link)
             }
         }
     }

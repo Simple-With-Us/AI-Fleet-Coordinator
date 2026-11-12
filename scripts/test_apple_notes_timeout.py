@@ -179,7 +179,7 @@ class AppleEventTimeoutTests(unittest.TestCase):
         cap.  This test is what keeps the two from drifting apart.
         """
         sys.path.insert(0, str(SCRIPTS))
-        from agent_sync import notes
+        from simple_tools import notes
 
         self.assertGreater(
             notes.SCRIPT_TIMEOUT_S,
@@ -275,6 +275,8 @@ class AppleEventTimeoutTests(unittest.TestCase):
             env["AGENT_SESSION"] = "ses_probe0000000000000000"
             #  the pin lock lives in the probe's own directory,  never in the real ~/Library/Caches
             env["NOTES_PIN_LOCK_DIR"] = str(Path(tmp) / "pin.lock")
+            #  and the probe writes no line into the owner's real action log (AFC-486)
+            env["APPLE_NOTES_ACTION_LOG"] = "off"
             proc = subprocess.run(
                 [str(SCRIPT), *flags, "[AFC, TEST] notes timeout probe"],
                 input="a body\n",

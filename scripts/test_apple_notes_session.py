@@ -286,7 +286,10 @@ class SessionIdTests(unittest.TestCase):
             "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        g = "  "
+        #  The widened gap is a no-break space plus a normal space, the same gap as every
+        #  other surface.  The note body is HTML, so the gap is the numeric reference, like
+        #  the two HTML passes.
+        g = "&#160; "
         self.assertIn(
             f"Merged it.{g}Next is CI.{g}Ask Dr. Smith.{g}The U.S. Army.{g}4 tests failed.{g}Done.",
             p.stdout,
@@ -322,11 +325,21 @@ class SessionIdTests(unittest.TestCase):
             "--session",
             "new-id-0002",
             "[AFC, Claude] t",
-            env={"AGENT_SEAT": "CLAUDE"},
+            #  a synthetic Linear host and workspace, so the fixture names no organisation of the
+            #  fleet (Kody rule:  synthetic hostnames and paths in test fixtures)
+            env={
+                "AGENT_SEAT": "CLAUDE",
+                "NOTES_LINKIFY_LINEAR_HOST": "notes.example.test",
+                "NOTES_LINEAR_WORKSPACE": "example-workspace",
+            },
             body=body,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: the board claim was AFC-123", p.stdout)
+        #  the prose survives as prose, and the Linear id inside it is linked by
+        #  the linkifier (AFC-547) rather than being left bare -- either way it
+        #  is content, not the stamped row
+        self.assertIn("Session: the board claim was", p.stdout)
+        self.assertIn('href="https://notes.example.test/example-workspace/issue/AFC-123"', p.stdout)
         self.assertEqual(
             p.stdout.count("Session:"), 2, p.stdout
         )  #  the prose one and the stamped row
@@ -591,6 +604,227 @@ class TitleSecretScanTests(unittest.TestCase):
                 out = self.run_script(title, "Body of the note.")
                 self.assertEqual(out.returncode, 0, out.stderr[-300:])
                 self.assertIn("Body of the note.", out.stdout)
+
+
+class SentenceGapMarkupTests(unittest.TestCase):
+    """AFC-496:  a sentence that ends INSIDE inline markup keeps the sentence gap.
+
+    Notes.app is an HTML renderer, so the gap has to survive as a numeric character reference
+    followed by a normal space:  two raw ASCII spaces collapse to one.  Owner ruling 2026-10-23:
+    the named `&nbsp;` entity is never emitted, because a numeric reference adds no raw
+    non-ASCII byte to the note HTML.
+
+    The gap is the reference for a NO-BREAK SPACE, `&#160; `, plus a normal space:  the same
+    U+00A0 plus a normal space as every other surface, with no Apple Notes exception.
+
+    Measured through this writer on Oct 29, 2026 (a probe note written and read back raw):  Apple
+    Notes stores the no-break space, as a numeric reference or as the named entity, as an
+    ORDINARY space, so a note holds two ordinary spaces after a sentence end, and Notes.app shows
+    that pair as a wide gap.  The owner's screenshot of the gap sample note shows the no-break
+    line exactly as wide as the en and em space lines.  AFC-552 (Oct 26) read the stored form
+    back, saw ordinary spaces, and assumed the renderer collapses them, which it does not, so it
+    replaced the gap with a narrow no-break space and wrote that exception into every rule file.
+    A one-space gap is the thing that reads as no gap, so the pair of spaces is what the note
+    needs, and it is what the no-break reference becomes.
+
+    The helper converts the gap twice, an inline pass over the Markdown source and a whole-HTML
+    pass over the finished HTML, and a sentence that ends inside `**bold**`, `*italic*` or a
+    `[link](url)` puts the closing tag between the punctuation and the run of spaces.  Neither
+    pass matched that, so the note carried two raw spaces after the bold, italic and link sentence
+    ends and Notes rendered them as one.
+
+    The whole-HTML pass now carries the closing tag through, and the inline pass holds code spans
+    aside, because a code span is content the author wants verbatim and the entity used to land
+    inside the chip.
+
+    These tests drive the real script with APPLE_NOTES_PRINT_HTML=1, which prints the note HTML and
+    exits before Notes is touched, so nothing here writes, updates or pins a note.
+
+    Run:  cd scripts && python3 -m unittest test_apple_notes_session
+    """
+
+    PROBE = (
+        "**Bold sentence end.**  Plain sentence after the bold one.\n\n"
+        "*Italic sentence end.*  Plain sentence after the italic one.\n\n"
+        "[Link sentence end.](https://example.test/probe)  Plain sentence after the link one.\n\n"
+        "Plain sentence end.  Second plain sentence.\n\n"
+        "The literal `code span with a sentence end.  inside it` stays verbatim.\n"
+    )
+    CODE_SPAN = "code span with a sentence end.  inside it"
+    PLAIN_BODY = (
+        "Plain sentence one.  Plain sentence two.  Plain sentence three.\n\n"
+        "A second paragraph here.  And its end.\n"
+    )
+    #  A code, pre, style or script region is content the author wants verbatim, so the gap
+    #  conversion leaves it alone.
+    REGION = re.compile(r"<(pre|code|style|script)\b[\s\S]*?</\1>", re.IGNORECASE)
+
+    def run_script(
+        self,
+        body: str,
+        env_extra: dict[str, str] | None = None,
+        extra_args: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "APPLE_NOTES_PRINT_HTML": "1",
+            "AGENT_SESSION": "abc12345",
+            "AGENT_SEAT": "MM",
+            "LANG": "en_US.UTF-8",
+        }
+        env.update(env_extra or {})
+        return subprocess.run(
+            ["/bin/bash", str(SCRIPT), *extra_args, "[AFC, MM] Gap probe", body],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+            check=False,
+        )
+
+    def body_html(self, out: str) -> str:
+        """The note body without the title and the two stamp rows, which carry the clock."""
+        return out.split("<div><br></div>", 1)[1]
+
+    def test_a_sentence_end_inside_markup_keeps_the_gap(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        for fragment in (
+            "<b>Bold sentence end.</b>&#160; Plain sentence after the bold one.",
+            "<i>Italic sentence end.</i>&#160; Plain sentence after the italic one.",
+            (
+                '<a href="https://example.test/probe">Link sentence end.</a>&#160; '
+                "Plain sentence after the link one."
+            ),
+            "Plain sentence end.&#160; Second plain sentence.",
+        ):
+            self.assertIn(fragment, p.stdout)
+
+    def test_no_raw_double_space_survives_after_a_sentence_end(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        outside = self.REGION.sub("", p.stdout)
+        #  A sentence end inside markup puts the closing tag between the punctuation and the
+        #  run of spaces, so the run is checked with the tag in front of it too.
+        self.assertEqual(re.findall(r"[.!?](</[a-zA-Z][^>]*>)?[ \t]{2,}", outside), [], outside)
+        #  Every sentence end that is followed by a space carries the numeric reference and a space.
+        for m in re.finditer(r"[.!?](</[a-zA-Z][^>]*>)?", outside):
+            after = outside[m.end() :]
+            if after.startswith("&#160; "):
+                continue
+            self.assertFalse(
+                after[:1].isspace(),
+                f"no gap after {m.group(0)!r}: {outside[m.start() - 40 : m.end() + 40]!r}",
+            )
+
+    def test_a_code_span_comes_back_byte_for_byte(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        chips = re.findall(r"<code\b[^>]*>([\s\S]*?)</code>", p.stdout)
+        self.assertEqual(chips, [self.CODE_SPAN])
+
+    def test_a_plain_body_renders_exactly_as_it_did_before(self):
+        p = self.run_script(self.PLAIN_BODY)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertEqual(
+            self.body_html(p.stdout),
+            "<p>Plain sentence one.&#160; Plain sentence two.&#160; Plain sentence three.</p>"
+            "<div><br></div>"
+            "<p>A second paragraph here.&#160; And its end.</p>"
+            "<div><br></div></div><!-- fleet-notes-tool:v1 -->\n",
+        )
+
+    def test_the_named_nbsp_entity_is_never_emitted(self):
+        """The named entity is banned;  the gap is written as a numeric reference.
+
+        Owner ruling 2026-10-23:  the helper writes a numeric reference and never the named
+        `&nbsp;` entity.  The markup probe and the plain body are both checked, so a pass that
+        only fixes one path still fails here.
+        """
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        plain = self.run_script(self.PLAIN_BODY)
+        self.assertEqual(plain.returncode, 0, plain.stderr[-400:])
+        for out in (p.stdout, plain.stdout):
+            outside = self.REGION.sub("", out)
+            self.assertNotIn("&nbsp;", outside, out)
+
+    def test_the_gap_is_the_no_break_space_reference(self):
+        """The gap is U+00A0 plus a normal space, written as the numeric reference.
+
+        Apple Notes keeps no exception to the house gap.  It stores the no-break space as an
+        ordinary space and shows the pair as a wide gap, so a note takes the same gap as
+        every other surface.  Both paths are checked, so a pass that only fixes one still fails.
+        """
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        plain = self.run_script(self.PLAIN_BODY)
+        self.assertEqual(plain.returncode, 0, plain.stderr[-400:])
+        for out in (p.stdout, plain.stdout):
+            outside = self.REGION.sub("", out)
+            self.assertIn("&#160; ", outside, out)
+
+    def test_no_special_case_space_is_emitted(self):
+        """AFC-552 wrote a narrow no-break space into every note;  nothing like it is written now.
+
+        The narrow no-break, en, em and thin spaces all look fine on screen, but the fleet has
+        one gap, U+00A0 plus a normal space, so none of them is the helper's gap, as a character
+        or as a numeric reference.
+        """
+        strays = tuple(chr(c) for c in (0x202F, 0x2002, 0x2003, 0x2009)) + (
+            "&#8239;",
+            "&#8194;",
+            "&#8195;",
+        )
+        for body in (self.PROBE, self.PLAIN_BODY, "One sentence end. Another one.\n"):
+            p = self.run_script(body)
+            self.assertEqual(p.returncode, 0, p.stderr[-400:])
+            for stray in strays:
+                self.assertNotIn(stray, p.stdout, repr(stray))
+
+    def test_a_one_space_sentence_end_widens_to_the_no_break_space(self):
+        """The one-space widening writes the no-break space plus a normal space.
+
+        The helper writes the gap on two paths and they carry it differently:  the note
+        body is HTML, so both the one-space widening and the two HTML passes write the
+        numeric reference, and the plain-text mobile quick view writes the character
+        itself because it is escaped.
+        """
+        #  One space:  the widening path, which writes the reference into the HTML body.
+        p = self.run_script("One sentence end. Another one.\n")
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        widened = self.REGION.sub("", p.stdout)
+        self.assertIn("&#160; ", widened, widened)
+        #  The note HTML carries no raw non-ASCII byte for the gap.
+        self.assertNotIn("\xa0", widened, widened)
+
+        #  Two spaces:  the HTML path, which writes the reference.
+        q = self.run_script("One sentence end.  Another one.\n")
+        self.assertEqual(q.returncode, 0, q.stderr[-400:])
+        converted = self.REGION.sub("", q.stdout)
+        self.assertIn("&#160; ", converted, converted)
+        self.assertNotIn("\xa0", converted, converted)
+
+    def test_the_mobile_quick_view_gap_is_the_character_not_the_reference(self):
+        """The plain-text path carries the no-break space itself, not the reference.
+
+        The widening pass serves two contexts.  The note body is HTML, so it carries the
+        numeric reference, like the two HTML passes and with no raw non-ASCII byte in the
+        note HTML.  The mobile quick view is plain text that is embedded with html.escape,
+        so a reference there would reach the owner as the literal text "&#160;".  It has to
+        carry the character itself.
+        """
+        p = self.run_script(
+            "Body text.",
+            extra_args=("--summary", "One sentence end. Another one."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        outside = self.REGION.sub("", p.stdout)
+        self.assertIn("Mobile Quick View", outside, outside)
+        self.assertIn("\xa0 ", outside, outside)
+        #  An escaped reference would render as the literal text, so it must not be there.
+        self.assertNotIn("&amp;#160;", outside, outside)
 
 
 if __name__ == "__main__":

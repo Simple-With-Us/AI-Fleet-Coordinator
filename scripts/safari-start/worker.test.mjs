@@ -18,6 +18,12 @@ test('only explicit safe assets are served', async () => {
     assert.equal((await worker.fetch(new Request('https://start.jays.services' + path), env)).status, 404);
   }
 });
+test('unknown paths 404 with charset content-type and no-store like sibling paths', async () => {
+  const r = await worker.fetch(new Request('https://start.jays.services/nope'), env);
+  assert.equal(r.status, 404);
+  assert.equal(r.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+});
 test('old local copies keep the suggestion endpoint and preflight', async () => {
   const r = await worker.fetch(new Request('https://start.jays.services/suggest?q='), env);
   assert.deepEqual(await r.json(), { q: '', suggestions: [] });

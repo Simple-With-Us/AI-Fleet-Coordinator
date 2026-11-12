@@ -23,8 +23,8 @@ Where the value comes from,  in the order the fleet reads credentials:
                       hands a secret to a seat at all.
 
 The GitHub CLI's own keychain entry and a generic keychain lookup are deliberately not
-sources here:  the keychain is reserved for the machine identity,  and a path-less
-lookup can reach an item in another account or in the System keychain.
+sources here.  This helper reads only the explicitly selected environment, fleet-secrets
+folder, or owner-provided file.
 
     python3 scripts/fleet_secrets/sync_cli_login.py --name GH_TOKEN --path /cli-logins/OPENCODE
 """
@@ -122,21 +122,23 @@ def sync(name: str, path: str, value: str, env: dict) -> str:
 
     The policy is checked before the value is read and before any request,  so a name or
     a path outside the allowlist never reaches a child process or the network.  The
-    token is resolved once and used for the folder,  the write and the read-back.
+    write grant creates the secret.  A separate read grant verifies the result.
     """
     core.check_name(name)
     core.check_path(path)
     core.check_writable(name, path)
-    token = core.resolve_token(env)
-    core.ensure_folder(path, env, token)
-    result = core.put_secret(name, path, value, env, token=token)
-    stored = core.fetch_all(path, env, token=token).get(name, "")
+    writer_token = core.resolve_token(env, writer=True)
+    reader_token = core.resolve_token(env, writer=False)
+    core.ensure_folder(path, env, writer_token)
+    result = core.put_secret(name, path, value, env, token=writer_token)
+    stored = core.fetch_all(path, env, token=reader_token).get(name, "")
     if not stored:
         raise core.SecretsError(
             f"the write reported {name} but the read back found nothing", EXIT_FAILED
         )
     if _digest(stored) != _digest(value):
         raise core.SecretsError("the read back does not match what was written", EXIT_FAILED)
+    writer_token = reader_token = ""
     return result
 
 

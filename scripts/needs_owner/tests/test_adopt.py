@@ -28,7 +28,7 @@ class AdoptTests(unittest.TestCase):
         self.assertTrue(got["uid"].startswith("needs-owner:CLAUDE:"))
 
         # no re-filing:  the board saw a label check, a comment with the block, and the notice record
-        verbs = [c["argv"][0] for c in self.w.calls("board")]
+        verbs = [c["argv"][0] for c in self.w.calls("simple-board")]
         self.assertNotIn("file", verbs)
         block_comment = [c for c in self.w.comments(ident) if "[needs-owner] block" in c][0]
         self.assertIn("```needs-owner", block_comment)
@@ -39,7 +39,7 @@ class AdoptTests(unittest.TestCase):
         self.assertEqual((after["state"], after["seat"], after["seat_verified"]), ("notified", "CLAUDE", True))
         self.assertEqual((after["options"], after["low_stakes"], after["recommend"]), (["Revive it", "Close it"], [1], 2))
         self.assertEqual(after["uid"], got["uid"])
-        (post,) = [c for c in self.w.calls("agent-sync") if c["argv"][0] == "post"]
+        (post,) = [c for c in self.w.calls("simple-chat") if c["argv"][0] == "post"]
         self.assertIn("1️⃣ Option 1:", post["stdin"])
 
     def test_a_second_adopt_changes_nothing(self) -> None:
@@ -59,7 +59,7 @@ class AdoptTests(unittest.TestCase):
         ident = self.w.seed_issue("Tonight: revive PR 761 or close it?")
         self.assertEqual(self.w.run("adopt", ident, *self.args, "--no-notify").code, 0)
         def board_writes() -> int:
-            return len([c for c in self.w.calls("board") if c["argv"][0] in ("comment", "label", "file", "status")])
+            return len([c for c in self.w.calls("simple-board") if c["argv"][0] in ("comment", "label", "file", "status")])
 
         comments, writes = len(self.w.comments(ident)), board_writes()
         plain = tuple(a for a in self.args if a != "--json")
@@ -68,7 +68,7 @@ class AdoptTests(unittest.TestCase):
         self.assertIn("dry run", r.out)
         self.assertIn("already adopted", r.out)
         self.assertEqual(self.w.zulip()["messages"], [])
-        self.assertEqual([c for c in self.w.calls("agent-sync") if c["argv"][0] in ("post", "reply")], [])
+        self.assertEqual([c for c in self.w.calls("simple-chat") if c["argv"][0] in ("post", "reply")], [])
         self.assertEqual(len(self.w.comments(ident)), comments)
         self.assertEqual(board_writes(), writes)
 
@@ -77,7 +77,7 @@ class AdoptTests(unittest.TestCase):
         self.assertEqual(self.w.run("list", "--json").json(), [])  # no label, not an item
         r = self.w.run("adopt", ident, *self.args)
         self.assertEqual(r.code, 0, r.err)
-        labels = [c["argv"] for c in self.w.calls("board") if c["argv"][0] == "label"]
+        labels = [c["argv"] for c in self.w.calls("simple-board") if c["argv"][0] == "label"]
         self.assertEqual(labels, [["label", "add", ident, "needs-owner", "--by", "CLAUDE"]])
         self.assertEqual(len(self.w.run("list", "--json").json()), 1)
 
@@ -97,7 +97,7 @@ class AdoptTests(unittest.TestCase):
         r = self.w.run("adopt", ident, *self.args)
         self.assertEqual(r.code, 2)
         self.assertIn("CODEX", r.err)
-        self.assertEqual(self.w.calls("agent-sync"), [])
+        self.assertEqual(self.w.calls("simple-chat"), [])
 
     def test_an_adopted_item_is_not_changed(self) -> None:
         ident = self.w.seed_issue("Tonight: logo?")
@@ -120,8 +120,8 @@ class AdoptTests(unittest.TestCase):
             r = self.w.run(*argv)
             self.assertEqual(r.code, 2, (name, r.out, r.err))
         self.assertEqual(self.w.run("adopt", "AFC-999", *self.args).code, 3)
-        self.assertEqual(self.w.calls("agent-sync"), [])
-        self.assertEqual([c for c in self.w.calls("board") if c["argv"][0] in ("comment", "label")], [])
+        self.assertEqual(self.w.calls("simple-chat"), [])
+        self.assertEqual([c for c in self.w.calls("simple-board") if c["argv"][0] in ("comment", "label")], [])
 
     def test_an_adopted_item_filed_by_the_same_question_cannot_be_filed_again(self) -> None:
         ident = self.w.seed_issue("Revive PR 761 or close it?")

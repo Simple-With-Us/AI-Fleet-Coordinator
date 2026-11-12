@@ -19,6 +19,18 @@ Commands:
   status    the live commit, the previous one, and any skipped commit, as JSON.
 
 Never reads credentials.  Python 3.11+, standard library only.
+
+A host that is stuck on an old commit.  The smoke list is read from the commit being tested,
+so a CLI that a release removed cannot fail the smoke and lock a host that runs this
+updater.  A host that runs an updater from before that change can still be stuck, because
+its own list asks for the removed CLI:  recover it by running the target's updater once, so
+the smoke reads the target's own list.
+
+    cd ~/.local/share/fleet-cli/repo && git checkout --detach origin/main
+    python3 -I scripts/fleet-cli-git-update.py update
+
+If the state file still remembers the target as bad, clear it first:  the `bad`, `bad_reason`
+and `checked_at` keys in ~/.local/share/fleet-cli/git-state.json.
 """
 
 from __future__ import annotations
@@ -42,10 +54,18 @@ GIT_TIMEOUT = 120
 SMOKE_TIMEOUT = 20
 # The same commands the release receiver smoke-tested:  each must start and exit as expected.
 SMOKE_CASES = (
-    ("agent_sync_version", "scripts/agent-sync", ["--version"], 0),
-    ("agent_sync_mcp_help", "scripts/agent-sync", ["mcp", "--help"], 0),
-    ("board_help", "scripts/linear-board/board", ["--help"], 0),
-    ("board_missing_credentials", "scripts/linear-board/board", ["whoami"], 4),
+    ("simple_chat_version", "scripts/simple-chat", ["--version"], 0),
+    ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
+    ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
+    ("simple_board_help", "scripts/simple-board", ["--help"], 0),
+    # A usage error exits 2 before any credential is read, with or without the host's seat helper (see the same case in
+    # fleet-cli-release.py).  The earlier `whoami` case expected exit 4 and failed on a host that has the helper and a
+    # bearer for the smoke seat.
+    ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
+    # Same shape as the board cases:  --help prints and exits 0, and a usage error exits 2, with a blank
+    # HOME and no credentials, with or without the host's seat helper.
+    ("simple_git_help", "scripts/simple-git", ["--help"], 0),
+    ("simple_git_usage_error", "scripts/simple-git", ["call"], 2),
     ("recall_help", "scripts/recall", ["--help"], 0),
     ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
     ("fleet_mode_block", "scripts/fleet-mode", [], 0),
@@ -149,22 +169,51 @@ def save_state(path: Path, state: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def smoke_settings(
+    repo: Path,
+) -> tuple[tuple[tuple[str, str, list[str], int], ...], frozenset[str], int]:
+    """The smoke's own settings, taken from the checkout being tested.
+
+    The running updater's settings are not the right ones:  when a release removes a CLI, the
+    installed updater still asks for it, the target checkout no longer ships it, and the smoke
+    fails on a file that is meant to be gone.  That deadlock held a host on an old commit for
+    hours.  The target's own settings
+    are what must work, so read them from the target;  fall back to the running ones when the
+    target has no updater to read.
+    """
+    target = repo / "scripts/fleet-cli-git-update.py"
+    if target.exists():
+        try:
+            spec = importlib.util.spec_from_file_location("_fleet_cli_smoke_cases", target)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            cases = tuple(getattr(module, "SMOKE_CASES", ()))
+            if cases:
+                scripts = frozenset(getattr(module, "BASH_SCRIPTS", BASH_SCRIPTS))
+                timeout = int(getattr(module, "SMOKE_TIMEOUT", SMOKE_TIMEOUT))
+                return cases, scripts, timeout
+        except Exception:  # a broken target falls back to the running settings, which still smoke
+            pass
+    return SMOKE_CASES, BASH_SCRIPTS, SMOKE_TIMEOUT
+
+
 def smoke(repo: Path) -> None:
     """Every fleet command starts from this checkout, with an empty HOME and a minimal environment."""
+    cases, bash_scripts, timeout = smoke_settings(repo)
     with tempfile.TemporaryDirectory(prefix="fleet-cli-smoke-") as home:
         env = {"HOME": home, "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENT_SEAT": "CODEX"}
-        for case, script, args, expected in SMOKE_CASES:
+        for case, script, args, expected in cases:
             target = repo / script
             if not target.exists():
                 raise Failed("smoke_missing_" + case)
             argv = (
                 ["/bin/bash", str(target), *args]
-                if script in BASH_SCRIPTS
+                if script in bash_scripts
                 else [sys.executable, "-I", "-B", str(target), *args]
             )
             try:
                 result = subprocess.run(
-                    argv, env=env, cwd=home, capture_output=True, timeout=SMOKE_TIMEOUT, check=False
+                    argv, env=env, cwd=home, capture_output=True, timeout=timeout, check=False
                 )
             except subprocess.TimeoutExpired:
                 raise Failed("smoke_timeout_" + case) from None

@@ -2,10 +2,10 @@
 # request-mac-seat.sh — cloud agent files a needs-mac GitHub issue for Mac xcodebuild work.
 #
 # Cloud agents cannot run xcodebuild.  File a structured needs-mac issue, post to
-# #agent-sync, and let the Mac launchd poller (mac-seat-claim.sh) pick it up.
+# #Work-In-Progress, and let the Mac launchd poller (mac-seat-claim.sh) pick it up.
 #
 # The post goes to Zulip in a `needs-mac <repo>` topic, sent as the claiming
-# seat's own bot.  The old agent-sync relay POST is retired.
+# seat's own bot.
 #
 # Usage:
 #   ./scripts/request-mac-seat.sh \
@@ -35,11 +35,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLEET_APPS="${REPO_ROOT}/fleet-apps.json"
-OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
-# Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
-# Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_POST_URL / AGENT_SYNC_ENV
-# relay is retired and deliberately not referenced here.
-ZULIP_CHANNEL="${ZULIP_CHANNEL:-agent-sync}"
+OWNER="${GITHUB_OWNER:-Simple-With-Us}"
+# Zulip posting needs no shared secret: the simple-chat CLI reads the seat's own
+# Zulip credential (Infisical Fleet-OPS /zulip).
+ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
 
 REPO=""
 TITLE=""
@@ -80,6 +79,18 @@ normalize_repo() {
   echo "${OWNER}/${raw}"
 }
 
+# A GitHub title is plain text, so a title takes a real U+00A0 plus a space, and the
+# issue body below takes the same form (owner ruling 2026-10-23).  The same form goes
+# to Zulip, which also takes the real U+00A0.  Without perl the text is passed
+# through unchanged.
+title_gap() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g'
+  else
+    cat
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
@@ -111,7 +122,10 @@ esac
 
 FULL_REPO="$(normalize_repo "$REPO")"
 REPO_NAME="${FULL_REPO##*/}"
-ISSUE_TITLE="[needs-mac] ${TITLE}"
+#  A GitHub title and the issue body below both take a real U+00A0 plus a space, never
+#  the entity (owner ruling 2026-10-23).  A Zulip post takes the same form.
+TITLE_GAP="$(printf '%s' "$TITLE" | title_gap)"
+ISSUE_TITLE="[needs-mac] ${TITLE_GAP}"
 
 read -r -d '' ISSUE_BODY <<EOF || true
 Cloud seat **${BY}** needs a Mac local agent for **${REASON}**.
@@ -144,8 +158,8 @@ ${PROMPT}
 
 - Mac poller: \`mac-seat-claim.sh\` (launchd \`com.jay.mac-seat-watch\`).
 - Spawn uses Shellular-host argv: Grok \`grok -p\`, Cursor \`cursor-agent -p\` — not Shellular phone ACP.
-- grok-acp stays on \`127.0.0.1:12419\` only.  Never \`:2419\`.
-- Do **not** close this issue until the Mac seat posts results.  Scripts never claim compile passed.
+- grok-acp stays on \`127.0.0.1:12419\` only.  Never \`:2419\`.
+- Do **not** close this issue until the Mac seat posts results.  Scripts never claim compile passed.
 EOF
 
 echo "== request-mac-seat =="
@@ -169,21 +183,21 @@ run gh issue create \
   --label "needs-mac"
 
 if [ "$NO_ZULIP" -eq 0 ]; then
-  # Post to Zulip with the seat's own bot via the agent-sync CLI.  The CLI resolves
+  # Post to Zulip with the seat's own bot via the simple-chat CLI.  The CLI resolves
   # that seat's own Zulip credential (Infisical /zulip) itself, so there is no
   # shared bearer token to parse, rotate, or leak in this script.  (The old relay
-  # POST is retired; see AGENT-SYNC.md.)
-  TEXT="repo: ${REPO_NAME} | needs-mac ${REASON}: ${TITLE}"
+  # POST is retired; see FLEET-PROTOCOL.md.)
+  TEXT="repo: ${REPO_NAME} | needs-mac ${REASON}: ${TITLE_GAP}"
   [ -n "$BRANCH" ] && TEXT="${TEXT} | branch ${BRANCH}"
   [ -n "$WORKTREE" ] && TEXT="${TEXT} | ${WORKTREE}"
   TEXT="${TEXT} | agent ${AGENT}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY: agent-sync post --as %s --channel %s --topic %q: %s\n' \
+    printf 'DRY: simple-chat post --as %s --channel %s --topic %q: %s\n' \
       "$BY" "$ZULIP_CHANNEL" "needs-mac ${REPO_NAME}" "$TEXT"
-  elif ! command -v agent-sync >/dev/null 2>&1; then
-    echo "request-mac-seat: agent-sync not on PATH; skipping Zulip post (issue still filed)" >&2
+  elif ! command -v simple-chat >/dev/null 2>&1; then
+    echo "request-mac-seat: simple-chat not on PATH; skipping Zulip post (issue still filed)" >&2
   else
-    agent-sync post --as "$BY" --channel "$ZULIP_CHANNEL" \
+    simple-chat post --as "$BY" --channel "$ZULIP_CHANNEL" \
       --topic "needs-mac ${REPO_NAME}" "$TEXT" >/dev/null \
       || echo "request-mac-seat: Zulip post failed (issue still filed)" >&2
   fi

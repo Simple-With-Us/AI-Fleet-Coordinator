@@ -1,0 +1,5 @@
+{"time": "2026-10-28T14:00:00Z", "host": "mac", "verb": "mac restart", "target": "com.jay.fleet-tools-doctor", "result": "done"}
+not json at all
+{"time": "2026-10-28T14:10:00Z", "host": "server", "verb": "server restart", "target": "fleet-server-status.timer", "result": "refused", "via": "muster"}
+
+{"time": "2026-10-28T14:20:00Z", "host": "server", "verb": "server update", "target": "fleet-cli", "result": "failed"}
