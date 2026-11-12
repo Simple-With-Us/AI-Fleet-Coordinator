@@ -102,6 +102,13 @@ What it promises:
     any target but `server`, need no allowlist entry, and answer `unavailable` with an
     `errorCode` word and exit status 1 when the store cannot be read.  The `--from-muster`
     route does not offer them.
+  * `server router-health server --plan` reads the one wake router's `GET /health` on loopback
+    8794 (ignoring proxies and refusing redirects) and reduces each seat to installed or not,
+    delivery on or off, registry configured or not, counts and fixed reason words only (never a
+    URL, key or free text).  Like `eavesdropper-status` it takes no lock, writes no audit row for a
+    plan, refuses `--yes` and any target but `server`, needs no allowlist entry, and answers
+    `unavailable` with an `errorCode` word and exit status 1 when the router cannot be reached or
+    answers unexpectedly.  The `--from-muster` route does not offer it.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
