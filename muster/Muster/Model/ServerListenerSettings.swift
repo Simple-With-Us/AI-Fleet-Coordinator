@@ -679,6 +679,11 @@ enum ServerSettingsCopy {
     static let noRoutine = "The seat has no routine table, so it Captures Only.\(gap)Muster does not give a seat a routine."
     static let notOnThisCopy = "The server's allowlist lists this, and this checkout's copy does not, so Muster does not offer it.\(gap)Update the checkout to offer it."
 
+    /// Owner's rule (Nov 11, 2026):  a tunable knob (a timing, a cap, a feature switch) has its home in
+    /// Infisical.  Only a seat's routing structure has no Infisical home, so only that is written through
+    /// the server's settings editor.
+    static let knobHome = "A knob, and a knob's home is Infisical.\(gap)Muster shows the value the server holds and does not write it into the server's listener file.\(gap)It becomes editable in Controls once it is a registered knob."
+
     static let applyOff = "The server's allowlist has applyEnabled off, which is the owner's switch.\(gap)Show Plan still works, and every apply is refused until the owner turns it on."
     static let applyOn = "Each change goes Show Plan, then Touch ID, then the server plans again and applies only the plan you approved."
 
@@ -693,12 +698,23 @@ enum ServerSettingsCopy {
         }
     }
 
+    /// A key name as a Title Case label:  `wakes_per_day` reads "Wakes Per Day", and a short word that is
+    /// an abbreviation (`usd`, `url`, `api`) is all capitals.
     static func rowTitle(_ name: String) -> String {
-        name.replacingOccurrences(of: "_", with: " ").prefix(1).uppercased() + String(name.replacingOccurrences(of: "_", with: " ").dropFirst())
+        name.split(separator: "_").map { word -> String in
+            ["usd", "url", "api", "id"].contains(word.lowercased())
+                ? word.uppercased()
+                : word.prefix(1).uppercased() + word.dropFirst()
+        }.joined(separator: " ")
     }
 }
 
 enum ServerSettingsBuilder {
+    /// A seat's routing structure:  whether the seat is on, how it is woken, and its routine table.  These
+    /// have no Infisical home.  Every other allowlisted setting (a seat's budget and live caps, and every
+    /// key of the daemon and feature tables) is a knob and is shown read only (`ServerSettingsCopy.knobHome`).
+    static let seatStructureKeys: Set<String> = ["enabled", "wake", "routine"]
+
     /// The rows for a get's settings, against this checkout's allowlist copy.
     static func groups(settings: [String: ServerSettingValue], allowlist: ServerSettingsAllowlist) -> [ServerSettingsGroup] {
         var seats = Set<String>()
@@ -720,7 +736,8 @@ enum ServerSettingsBuilder {
             for name in allowlist.seat.keys.sorted() {
                 guard let spec = allowlist.seat[name] else { continue }
                 rows += self.rows(key: "\(prefix).\(name)", name: name, spec: spec,
-                                  current: settings["\(prefix).\(name)"], hasRoutine: hasRoutine)
+                                  current: settings["\(prefix).\(name)"], hasRoutine: hasRoutine,
+                                  isStructure: seatStructureKeys.contains(name))
             }
             rows += (unknownByGroup[prefix] ?? []).sorted().map { readOnly($0, current: settings[$0], reason: ServerSettingsCopy.notOnThisCopy) }
             rows += ServerSettingsAllowlist.neverOfferedSeatKeys.map {
@@ -733,7 +750,8 @@ enum ServerSettingsBuilder {
             var rows: [ServerSettingRow] = []
             for name in (allowlist.tables[table] ?? [:]).keys.sorted() {
                 guard let spec = allowlist.tables[table]?[name] else { continue }
-                rows += self.rows(key: "\(table).\(name)", name: name, spec: spec, current: settings["\(table).\(name)"], hasRoutine: false)
+                rows += self.rows(key: "\(table).\(name)", name: name, spec: spec, current: settings["\(table).\(name)"],
+                                  hasRoutine: false, isStructure: false)
             }
             rows += (unknownByGroup[table] ?? []).sorted().map { readOnly($0, current: settings[$0], reason: ServerSettingsCopy.notOnThisCopy) }
             if table == "daemon" {
@@ -763,10 +781,15 @@ enum ServerSettingsBuilder {
         }
     }
 
-    private static func rows(key: String, name: String, spec: ServerSettingSpec, current: ServerSettingValue?, hasRoutine: Bool) -> [ServerSettingRow] {
+    private static func rows(key: String, name: String, spec: ServerSettingSpec, current: ServerSettingValue?,
+                             hasRoutine: Bool, isStructure: Bool) -> [ServerSettingRow] {
         guard case .table(let keys) = spec else {
-            let control = control(spec)
-            let reason: String? = control == nil ? ServerSettingsCopy.pairs : nil
+            var control = control(spec)
+            var reason: String? = control == nil ? ServerSettingsCopy.pairs : nil
+            if reason == nil, !isStructure {
+                reason = ServerSettingsCopy.knobHome
+                control = nil
+            }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil, title: ServerSettingsCopy.rowTitle(name),
                                      current: current, control: control, readOnlyReason: reason)]
         }
@@ -785,10 +808,12 @@ enum ServerSettingsBuilder {
                 reason = ServerSettingsCopy.noRoutine
             } else if control == nil {
                 reason = ServerSettingsCopy.pairs
+            } else if !isStructure {
+                reason = ServerSettingsCopy.knobHome
             }
             if reason != nil { control = nil }
             return ServerSettingRow(id: "\(key).\(sub)", settingKey: key, subKey: sub,
-                                    title: "\(ServerSettingsCopy.rowTitle(name)):  \(sub.replacingOccurrences(of: "_", with: " "))",
+                                    title: "\(ServerSettingsCopy.rowTitle(name)):  \(ServerSettingsCopy.rowTitle(sub))",
                                     current: entries[sub], control: control, readOnlyReason: reason,
                                     table: current?.tableEntries)
         }

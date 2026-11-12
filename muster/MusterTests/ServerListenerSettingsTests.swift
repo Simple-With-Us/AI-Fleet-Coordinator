@@ -57,6 +57,8 @@ private let getAnswer = """
    "linear_comments.enabled": true,
    "seat.CLAUDE.budget": {"wakes_per_day": 40, "wakes_per_hour": 6, "usd_per_day": 5.0},
    "seat.CLAUDE.enabled": true,
+   "seat.CLAUDE.routine": {"url_env": "CLAUDE_ROUTINE_URL", "method": "POST", "timeout_seconds": 15},
+   "seat.JET.enabled": true,
    "seat.CLAUDE.mystery": 3
   }}}
 """
@@ -117,7 +119,7 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertEqual(try row("seat.CLAUDE.budget.usd_per_day").readOnlyReason, ServerSettingsCopy.notEnforced)
         XCTAssertEqual(try row("daemon.presence_topics").readOnlyReason, ServerSettingsCopy.pairs)
         // A seat with no routine table is never given one.
-        XCTAssertEqual(try row("seat.CLAUDE.routine.timeout_seconds").readOnlyReason, ServerSettingsCopy.noRoutine)
+        XCTAssertEqual(try row("seat.JET.routine.timeout_seconds").readOnlyReason, ServerSettingsCopy.noRoutine)
         XCTAssertEqual(try row("seat.CLAUDE.routine.url_env").readOnlyReason, ServerSettingsCopy.variableName)
         // Every read-only row says why.
         for row in try rows() where !row.isEditable {
@@ -141,8 +143,39 @@ final class ServerListenerSettingsTests: XCTestCase {
             mode: .plan))
     }
 
+    /// Owner's rule (Nov 11, 2026):  a knob's home is Infisical, so Muster never writes one into the
+    /// server's listener file.  Only a seat's routing structure is editable here.
+    func test_a_knob_is_shown_and_never_written_through_the_settings_editor() throws {
+        for id in ["daemon.coalesce_seconds", "daemon.held_back_catch_up", "linear_comments.enabled",
+                   "seat.CLAUDE.budget.wakes_per_day", "seat.CLAUDE.budget.wakes_per_hour"] {
+            let knob = try row(id)
+            XCTAssertFalse(knob.isEditable, id)
+            XCTAssertEqual(knob.readOnlyReason, ServerSettingsCopy.knobHome, id)
+            XCTAssertNotNil(knob.current, id)  // still shown
+        }
+        XCTAssertTrue(ServerSettingsCopy.knobHome.contains("Infisical"))
+        // A more exact reason still wins, and the routing structure stays editable.
+        XCTAssertEqual(try row("seat.CLAUDE.budget.usd_per_day").readOnlyReason, ServerSettingsCopy.notEnforced)
+        XCTAssertTrue(try row("seat.CLAUDE.enabled").isEditable)
+        XCTAssertTrue(try row("seat.CLAUDE.wake").isEditable)
+        XCTAssertTrue(try row("seat.CLAUDE.routine.timeout_seconds").isEditable)
+        for edits in [["daemon.held_back_catch_up": "On"], ["seat.CLAUDE.budget.wakes_per_day": "50"]] {
+            guard case .failure(.readOnly) = ServerSettingsBuilder.request(edits: edits, rows: try rows()) else {
+                return XCTFail("a knob edit was planned:  \(edits)")
+            }
+        }
+        XCTAssertEqual(ServerSettingsBuilder.seatStructureKeys, ["enabled", "wake", "routine"])
+    }
+
+    func test_row_labels_are_title_case() throws {
+        XCTAssertEqual(try row("seat.CLAUDE.budget.wakes_per_day").title, "Budget:  Wakes Per Day")
+        XCTAssertEqual(try row("seat.CLAUDE.budget.usd_per_day").title, "Budget:  USD Per Day")
+        XCTAssertEqual(try row("daemon.coalesce_seconds").title, "Coalesce Seconds")
+        XCTAssertEqual(ServerSettingsCopy.rowTitle("url_env"), "URL Env")
+    }
+
     func test_a_value_out_of_range_plans_nothing() throws {
-        let result = ServerSettingsBuilder.request(edits: ["seat.CLAUDE.budget.wakes_per_day": "-1"], rows: try rows())
+        let result = ServerSettingsBuilder.request(edits: ["seat.CLAUDE.routine.timeout_seconds": "999"], rows: try rows())
         guard case .failure(.notAValue) = result else { return XCTFail("\(result)") }
     }
 
@@ -150,13 +183,13 @@ final class ServerListenerSettingsTests: XCTestCase {
 
     func test_a_server_seat_edit_produces_the_editors_plan_command() throws {
         let request = try ServerSettingsBuilder.request(
-            edits: ["seat.CLAUDE.budget.wakes_per_day": "50", "daemon.held_back_catch_up": "On"],
+            edits: ["seat.CLAUDE.routine.timeout_seconds": "20", "seat.CLAUDE.enabled": "Off"],
             rows: try rows()
         ).get()
-        // The budget goes whole, every sub-key the server holds kept, so nothing is dropped.
-        XCTAssertEqual(request.set["seat.CLAUDE.budget"],
-                       .table(["wakes_per_day": .int(50), "wakes_per_hour": .int(6), "usd_per_day": .number(5.0)]))
-        XCTAssertEqual(request.set["daemon.held_back_catch_up"], .bool(true))
+        // The routine goes whole, every sub-key the server holds kept, so nothing is dropped.
+        XCTAssertEqual(request.set["seat.CLAUDE.routine"],
+                       .table(["url_env": .text("CLAUDE_ROUTINE_URL"), "method": .text("POST"), "timeout_seconds": .int(20)]))
+        XCTAssertEqual(request.set["seat.CLAUDE.enabled"], .bool(false))
         XCTAssertNil(request.expectPlanSHA256)
 
         let invocation = try builder().invocation(for: .serverListenerSettings(request), mode: .plan)
@@ -164,13 +197,13 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertEqual(Array(invocation.arguments.suffix(7)),
                        ["fleet-ops-ctl", "--", "server", "eavesdropper-settings", "server", "--plan", "--json"])
         // The change goes on standard input, never into a word of the command.
-        XCTAssertFalse(invocation.arguments.contains { $0.contains("wakes_per_day") })
+        XCTAssertFalse(invocation.arguments.contains { $0.contains("timeout_seconds") })
         let stdin = String(decoding: try XCTUnwrap(invocation.standardInput), as: UTF8.self)
-        XCTAssertEqual(stdin, #"{"set":{"daemon.held_back_catch_up":true,"seat.CLAUDE.budget":{"usd_per_day":5.0,"wakes_per_day":50,"wakes_per_hour":6}}}"#)
+        XCTAssertEqual(stdin, #"{"set":{"seat.CLAUDE.enabled":false,"seat.CLAUDE.routine":{"method":"POST","timeout_seconds":20,"url_env":"CLAUDE_ROUTINE_URL"}}}"#)
     }
 
     func test_an_unchanged_edit_plans_nothing() throws {
-        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["daemon.coalesce_seconds": "30"], rows: try rows()),
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.CLAUDE.enabled": "On"], rows: try rows()),
                        .failure(.nothingChanged))
     }
 
