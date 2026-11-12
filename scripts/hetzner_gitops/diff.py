@@ -89,7 +89,9 @@ def diff_file(spec: FileSpec, layout: LiveLayout, out: list[DriftItem]) -> None:
         return
     if live.is_dir():
         out.append(
-            DriftItem(DriftKind.LIVE_IS_DIRECTORY, spec.id, f"live path is a directory: {spec.installed}")
+            DriftItem(
+                DriftKind.LIVE_IS_DIRECTORY, spec.id, f"live path is a directory: {spec.installed}"
+            )
         )
         return
     if source.read_bytes() != live.read_bytes():
@@ -109,7 +111,9 @@ def diff_forbid(spec: ForbidSpec, layout: LiveLayout, out: list[DriftItem]) -> N
         try:
             match.resolve().relative_to(root.resolve())
         except ValueError:
-            out.append(DriftItem(DriftKind.PATH_ESCAPE, spec.id, "forbid match escapes the live root"))
+            out.append(
+                DriftItem(DriftKind.PATH_ESCAPE, spec.id, "forbid match escapes the live root")
+            )
             continue
         rel = match.resolve().relative_to(root.resolve()).as_posix()
         out.append(

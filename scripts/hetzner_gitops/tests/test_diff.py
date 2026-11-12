@@ -43,9 +43,8 @@ def _plant(manifest_files, repo: Path, live: Path) -> None:
 
 class ResolveTests(unittest.TestCase):
     def test_parent_segment_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(Exception):
-                resolve_under(Path(tmp), "../outside")
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(Exception):
+            resolve_under(Path(tmp), "../outside")
 
 
 class ManifestTests(unittest.TestCase):
@@ -102,7 +101,9 @@ class DiffFileTests(unittest.TestCase):
             live = root / "live"
             live.mkdir()
             (repo / "units").mkdir(parents=True)
-            (repo / "units" / "demo.service").write_text("[Unit]\nDescription=demo\n", encoding="utf-8")
+            (repo / "units" / "demo.service").write_text(
+                "[Unit]\nDescription=demo\n", encoding="utf-8"
+            )
             spec = FileSpec(
                 "demo.service",
                 FileKind.UNIT,
@@ -147,7 +148,13 @@ class DiffFileTests(unittest.TestCase):
             live = root / "live"
             (repo / "units").mkdir(parents=True)
             (repo / "units" / "demo.service").write_text("x\n", encoding="utf-8")
-            spec = FileSpec("demo.service", FileKind.UNIT, "units/demo.service", "etc/systemd/system/demo.service", "")
+            spec = FileSpec(
+                "demo.service",
+                FileKind.UNIT,
+                "units/demo.service",
+                "etc/systemd/system/demo.service",
+                "",
+            )
             (live / spec.installed).mkdir(parents=True)
             drifts: list = []
             diff_file(spec, _layout(repo, live), drifts)
@@ -172,7 +179,9 @@ class RepoTreeTests(unittest.TestCase):
             bak.parent.mkdir(parents=True, exist_ok=True)
             bak.write_text("# duplicate\n", encoding="utf-8")
             forbidden = diff_manifest(manifest, _layout(REPO_ROOT, live))
-            self.assertTrue(any(item.kind == DriftKind.FORBIDDEN_PRESENT for item in forbidden.drifts))
+            self.assertTrue(
+                any(item.kind == DriftKind.FORBIDDEN_PRESENT for item in forbidden.drifts)
+            )
             self.assertTrue(all(item.target not in EXCLUDED_IDS for item in forbidden.drifts))
 
 

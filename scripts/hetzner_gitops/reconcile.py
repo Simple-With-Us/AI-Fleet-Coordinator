@@ -77,7 +77,9 @@ def _payload(manifest: HetznerManifest, manifest_path: Path, mode: str) -> dict:
 def run_check(args: argparse.Namespace) -> int:
     manifest_path = Path(args.manifest).expanduser().resolve()
     manifest = load_manifest(manifest_path)
-    repo_root = Path(args.repo_root).resolve() if args.repo_root else repo_root_from_manifest(manifest_path)
+    repo_root = (
+        Path(args.repo_root).resolve() if args.repo_root else repo_root_from_manifest(manifest_path)
+    )
     live_root = Path(args.live_root).expanduser() if args.live_root else Path("/")
     layout = LiveLayout(live_root=live_root, repo_root=repo_root)
     result = diff_manifest(manifest, layout)
@@ -87,7 +89,9 @@ def run_check(args: argparse.Namespace) -> int:
     elif result.ok:
         print(f"hetzner-gitops: ok (no drift); gaps={len(manifest.gaps)} (not drift)")
     else:
-        print(f"hetzner-gitops: drift ({len(result.drifts)} item(s)); gaps={len(manifest.gaps)} (not drift)")
+        print(
+            f"hetzner-gitops: drift ({len(result.drifts)} item(s)); gaps={len(manifest.gaps)} (not drift)"
+        )
         for item in result.drifts:
             print(f"  {item.kind.value}\t{item.target}\t{item.detail}")
     return EXIT_OK if result.ok else EXIT_DRIFT
@@ -102,7 +106,9 @@ def run_apply(args: argparse.Namespace) -> int:
         return EXIT_REFUSED
     manifest_path = Path(args.manifest).expanduser().resolve()
     manifest = load_manifest(manifest_path)
-    repo_root = Path(args.repo_root).resolve() if args.repo_root else repo_root_from_manifest(manifest_path)
+    repo_root = (
+        Path(args.repo_root).resolve() if args.repo_root else repo_root_from_manifest(manifest_path)
+    )
     live_root = Path(args.live_root).expanduser().resolve()
     layout = LiveLayout(live_root=live_root, repo_root=repo_root)
     try:
@@ -111,7 +117,9 @@ def run_apply(args: argparse.Namespace) -> int:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     if args.json:
-        print(json.dumps({**_payload(manifest, manifest_path, "apply"), "actions": actions}, indent=2))
+        print(
+            json.dumps({**_payload(manifest, manifest_path, "apply"), "actions": actions}, indent=2)
+        )
     else:
         for line in actions:
             print(line)
