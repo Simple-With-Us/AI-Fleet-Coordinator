@@ -24,6 +24,8 @@ SNIPPET_ENV = "FLEET_RECALL_SNIPPET_CHARS"
 
 DEFAULT_FIELDS = (
     "score",
+    "rerank_score",
+    "fused_score",
     "title",
     "doc_id",
     "url",
@@ -31,6 +33,8 @@ DEFAULT_FIELDS = (
     "app",
     "category",
     "seat",
+    "retracted",
+    "retraction_reason",
     "text",
 )
 
@@ -52,6 +56,8 @@ PRESENTATION_HIT_FIELDS = frozenset(
         "group_hits",
         "rerank_score",
         "fused_score",
+        "retracted",
+        "retraction_reason",
         "text_truncated",
     }
 )
