@@ -77,9 +77,7 @@ def resolve_fleet_ops_project_id() -> str:
         )
         sys.exit(1)
     try:
-        return fleet_secrets_core.infisical_project_id(
-            os.environ, pathlib.Path.home(), "fleet-ops"
-        )
+        return fleet_secrets_core.infisical_project_id(os.environ, pathlib.Path.home(), "fleet-ops")
     except fleet_secrets_core.SecretsError as error:
         print(f"GATE: {error.message}  Aborting (fail safe).")
         sys.exit(1)

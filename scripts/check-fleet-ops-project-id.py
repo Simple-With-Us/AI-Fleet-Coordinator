@@ -12,6 +12,7 @@ Usage (from an AI-Fleet-Coordinator checkout; exit 0 clean, 1 findings):
     python3 scripts/check-fleet-ops-project-id.py
     python3 scripts/check-fleet-ops-project-id.py PATH [PATH...]
 """
+
 from __future__ import annotations
 
 import argparse

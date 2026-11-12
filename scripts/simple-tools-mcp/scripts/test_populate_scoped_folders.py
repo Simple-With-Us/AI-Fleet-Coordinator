@@ -23,9 +23,7 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from fleet_secrets import core as fleet_secrets_core
 
-os.environ.setdefault(
-    "INFISICAL_FLEET_OPS_PROJECT_ID", "00000000-0000-4000-8000-000000000099"
-)
+os.environ.setdefault("INFISICAL_FLEET_OPS_PROJECT_ID", "00000000-0000-4000-8000-000000000099")
 
 spec = importlib.util.spec_from_file_location(
     "psf", str(pathlib.Path(__file__).with_name("populate-scoped-folders.py"))
