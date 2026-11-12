@@ -15,6 +15,8 @@ carries the meta must_not).
 from __future__ import annotations
 
 import datetime
+import errno
+import fcntl
 import json
 import os
 import pathlib
@@ -702,29 +704,59 @@ def _install_row(root: pathlib.Path, rel: str, check: str) -> dict:
     )
 
 
+def _read_lock_pid(lock_path: pathlib.Path) -> int | None:
+    try:
+        text = lock_path.read_text(encoding="utf-8", errors="replace").strip().split()
+        return int(text[0]) if text else None
+    except (OSError, ValueError):
+        return None
+
+
 def _ingest_lock_row(lock_path: pathlib.Path) -> dict:
+    """Mirror ingest.IngestLock: flock decides whether a run is active; the file may linger."""
     if not lock_path.is_file():
         return _row("OK", "ingest:lock", "no lock file")
     try:
-        text = lock_path.read_text(encoding="utf-8", errors="replace").strip().split()
-        pid = int(text[0]) if text else 0
-    except (OSError, ValueError):
+        fd = os.open(str(lock_path), os.O_RDWR)
+    except OSError as exc:
         return _row(
             "FAIL",
             "ingest:lock",
-            "unreadable lock file",
-            hint=f"remove stale {lock_path.name} if no ingest is running",
+            f"cannot open ({type(exc).__name__})",
+            hint=f"fix permissions on {lock_path.name}",
         )
-    if _pid_alive(pid):
+    held = False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                held = True
+            else:
+                return _row(
+                    "FAIL",
+                    "ingest:lock",
+                    f"flock probe failed ({type(exc).__name__})",
+                    hint="check ingest.lock permissions",
+                )
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+    if not held:
+        return _row("OK", "ingest:lock", "unheld (lock file may remain after a run)")
+    pid = _read_lock_pid(lock_path)
+    if pid is not None and not _pid_alive(pid):
         return _row(
-            "WARN", "ingest:lock", f"held by live pid {pid}", hint="wait for ingest to finish"
+            "FAIL",
+            "ingest:lock",
+            f"stale flock (pid {pid} not running)",
+            hint=f"rm {lock_path.name} after confirming no ingest is active",
         )
-    return _row(
-        "FAIL",
-        "ingest:lock",
-        f"stale lock (pid {pid} not running)",
-        hint=f"rm {lock_path.name} after confirming no ingest is active",
-    )
+    detail = "held by another ingest"
+    if pid is not None:
+        detail += f" (pid {pid})"
+    return _row("WARN", "ingest:lock", detail, hint="wait for ingest to finish")
 
 
 def setup_report(

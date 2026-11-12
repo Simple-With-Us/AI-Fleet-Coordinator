@@ -5,6 +5,8 @@ cd scripts && python3 -m unittest fleet_rag.tests.test_doctor -v
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import importlib.machinery
 import importlib.util
 import io
@@ -1197,7 +1199,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
         self.assertEqual(by_check(rep)["infisical:token-file"]["status"], "FAIL")
         self.assertIn("mode 600", by_check(rep)["infisical:token-file"]["detail"])
 
-    def test_stale_ingest_lock_fails(self):
+    def test_ingest_lock_unheld_leftover_file_ok(self):
         home = setup_home(self.root)
         lock = home / "apps" / "fleet-rag" / "state" / "ingest.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
@@ -1209,8 +1211,31 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
             load_config=lambda **_: dict(self.cfg),
             qdrant_factory=lambda: recall_api.FakeQdrant(self.cfg),
         )
-        self.assertEqual(by_check(rep)["ingest:lock"]["status"], "FAIL")
-        self.assertIn("stale", by_check(rep)["ingest:lock"]["detail"])
+        self.assertEqual(by_check(rep)["ingest:lock"]["status"], "OK")
+        self.assertIn("unheld", by_check(rep)["ingest:lock"]["detail"])
+
+    def test_stale_ingest_lock_flock_fails(self):
+        home = setup_home(self.root)
+        lock = home / "apps" / "fleet-rag" / "state" / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(fd, 0)
+            os.write(fd, b"999999 stale\n")
+            env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
+            rep = doctor.setup_report(
+                home=home,
+                env=env,
+                load_config=lambda **_: dict(self.cfg),
+                qdrant_factory=lambda: recall_api.FakeQdrant(self.cfg),
+            )
+            row = by_check(rep)["ingest:lock"]
+            self.assertEqual(row["status"], "FAIL")
+            self.assertIn("stale flock", row["detail"])
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def test_mirror_freshness_when_configured(self):
         home = setup_home(self.root)
