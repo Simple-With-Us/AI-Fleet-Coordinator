@@ -11,67 +11,67 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
-SUMMARY:Fleet: 70 merged · 0 opened · 0 closed
-DESCRIPTION:70 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#1564] Operator Thread Registry\n- [AI-Fleet-C
- oordinator#1728] CI: preserve in-progress main runs\; deploy the exact CI-
- proven head (AFC-653)\n- [AI-Fleet-Coordinator#1730] 689: preserve body @-
- mentions in the Zulip composer\n- [AI-Fleet-Coordinator#1731] (claude) Sen
- d fenced ST-MCP reads to — as text (AFC-637)\n- [AI-Fleet-Coordinator#17
- 32] 690: stop committing fleet digest artifacts to protected main\n- [AI-F
- leet-Coordinator#1739] 691: definite hold-label refusals and a settled aut
- o-merge read\n- [AI-Fleet-Coordinator#1742] Review exact Usage-Monitor col
- lector bytes for generic assignment attestation\n- [AI-Fleet-Coordinator#1
- 743] (claude) Wake Router: The Shared Router And 's Delivery (OPS-1048)\n-
-  [AI-Fleet-Coordinator#1750] OPS-1016: recall remote writes assert the bea
- rer's authenticated identity\n- [AI-Fleet-Coordinator#1757] zc-wake-bridge
- : typed failure classification on delivery receipts (no raw output\, no re
- try)\n- [AI-Fleet-Coordinator#1758] Rename the shared registry env file to
-  operator-registry-env\n- [AI-Fleet-Coordinator#1762] Registry: Each Chat 
- Records The Linear Issues It Works On\n- [AI-Fleet-Coordinator#1765] (code
- x) release: fix Kody's three findings from PR 1751\n- [AI-Fleet-Coordinato
- r#1767] Hardening: mirror durability\, subprocess timeouts\, Linear budget
-  deadline\, argv flag-injection (AFC-697)\n- [AI-Fleet-Coordinator#1768] (
- codex\, claude\, cursor) Worker: A Read Key For \, — And \, So The Hoste
- d Eavesdropper Tools Can Read Their Records\n- [AI-Fleet-Coordinator#1769]
-  (muse-assist) Listener: Delete The — Inbox Bridge\, Keep The Decider De
- claration\n- [AI-Fleet-Coordinator#1770] RAG nightly: read the Linear seat
-  pairs from AI Fleet Coordinator /linear (AFC-687)\n- [AI-Fleet-Coordinato
- r#1771] An Untagged Reply Wakes The Chat It Answers: The Listener's Libera
- l Wake Rule\n- [AI-Fleet-Coordinator#1772] Add the fleet-id-links skill an
- d link every app by acronym and repo name\n- [AI-Fleet-Coordinator#1773] U
- pdate GitHub Artifact Actions (major)\n- [AI-Fleet-Coordinator#1774] 684/O
- PS-1059: bootstrap proof on current main (replaces #1752)\n- [AI-Fleet-Coo
- rdinator#1776] RAG mirror: rsync — mkpath so the nested incoming trees e
- xist (AFC-687)\n- [AI-Fleet-Coordinator#1777] Listener: One Listener\, On 
- The Server (The Nov 10 Cutover In The Repo)\n- [AI-Fleet-Coordinator#1778]
-  Wake Router: Platform Dispatch\, A Correlated Envelope And Settings From 
- Infisical (OPS-1048)\n- [AI-Fleet-Coordinator#1779] secretscan: register r
- eviewed generic fixture for linear-board test_board\n- [AI-Fleet-Coordinat
- or#1780] git-relay: optional intent_id envelope metadata for comment_pr\n-
-  [AI-Fleet-Coordinator#1783] Wake Router: A Registry Row Must Name Its Sea
- t (OPS-1048)\n- [AI-Fleet-Coordinator#1784] wf publication route: refuse l
- oaded credentials before fixture attestation\n- [AI-Fleet-Coordinator#1785
- ] simple-tools-mcp: take the Frankfurt placement pin out (revert of #1734)
- \n- [AI-Fleet-Coordinator#1786] Relay: verify large update-branch base cha
- nges with a complete two-tree diff\n- [AI-Fleet-Coordinator#1787] Listener
- : ZC Wakes Through Its Bridge (OPS-1048)\n- [AI-Fleet-Coordinator#1788] Mu
- ster: The Mac Listener Is Retired\, The Server Listener Holds Every Seat\n
- - [AI-Fleet-Coordinator#1790] Wake Deliver: Each Platform Reads Session Id
- s With Its Own Pattern (OPS-1048)\n- [AI-Fleet-Coordinator#1792] RAG night
- ly: the unit owns code-main-sync\; the job reads its result (AFC-687)\n- [
- AI-Fleet-Coordinator#1793] chore: record com.socratictrade.ios 0.1.0 in th
- e fleet iOS manifest\n- [AI-Fleet-Coordinator#1794] kody-first-review: gra
- nt pull-requests:write so PR trigger comments stop 403ing (AFC-681)\n- [AI
- -Fleet-Coordinator#1796] (grok) Listener Sample: No Wake-Count Caps On JET
-  Or The — Bots (Owner Nov 10)\n- [AI-Fleet-Coordinator#1797] Grant seven
-  implemented relay verbs in the fleet profile (AFC-629)\n- [AI-Fleet-Coord
- inator#1798] Add Seat Self-Test That Proves A Seat's Own Identity And Git 
- Route\n- [AI-Fleet-Coordinator#1800] Wake Docs: One Listener\, Eavesdroppe
- r Name\, Current Paths (AFC-596)\n  … +30 more
+SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
+DESCRIPTION:117 PRs merged · 0 issues opened · 0 issues closed\n\nMerged 
+ PRs:\n- [AI-Fleet-Coordinator#1564] Operator Thread Registry\n- [AI-Fleet-
+ Coordinator#1728] CI: preserve in-progress main runs\; deploy the exact CI
+ -proven head (AFC-653)\n- [AI-Fleet-Coordinator#1730] 689: preserve body @
+ -mentions in the Zulip composer\n- [AI-Fleet-Coordinator#1731] (claude) Se
+ nd fenced ST-MCP reads to — as text (AFC-637)\n- [AI-Fleet-Coordinator#1
+ 732] 690: stop committing fleet digest artifacts to protected main\n- [AI-
+ Fleet-Coordinator#1739] 691: definite hold-label refusals and a settled au
+ to-merge read\n- [AI-Fleet-Coordinator#1742] Review exact Usage-Monitor co
+ llector bytes for generic assignment attestation\n- [AI-Fleet-Coordinator#
+ 1743] (claude) Wake Router: The Shared Router And 's Delivery (OPS-1048)\n
+ - [AI-Fleet-Coordinator#1750] OPS-1016: recall remote writes assert the be
+ arer's authenticated identity\n- [AI-Fleet-Coordinator#1757] zc-wake-bridg
+ e: typed failure classification on delivery receipts (no raw output\, no r
+ etry)\n- [AI-Fleet-Coordinator#1758] Rename the shared registry env file t
+ o operator-registry-env\n- [AI-Fleet-Coordinator#1762] Registry: Each Chat
+  Records The Linear Issues It Works On\n- [AI-Fleet-Coordinator#1765] (cod
+ ex) release: fix Kody's three findings from PR 1751\n- [AI-Fleet-Coordinat
+ or#1767] Hardening: mirror durability\, subprocess timeouts\, Linear budge
+ t deadline\, argv flag-injection (AFC-697)\n- [AI-Fleet-Coordinator#1768] 
+ (codex\, claude\, cursor) Worker: A Read Key For \, — And \, So The Host
+ ed Eavesdropper Tools Can Read Their Records\n- [AI-Fleet-Coordinator#1769
+ ] (muse-assist) Listener: Delete The — Inbox Bridge\, Keep The Decider D
+ eclaration\n- [AI-Fleet-Coordinator#1770] RAG nightly: read the Linear sea
+ t pairs from AI Fleet Coordinator /linear (AFC-687)\n- [AI-Fleet-Coordinat
+ or#1771] An Untagged Reply Wakes The Chat It Answers: The Listener's Liber
+ al Wake Rule\n- [AI-Fleet-Coordinator#1772] Add the fleet-id-links skill a
+ nd link every app by acronym and repo name\n- [AI-Fleet-Coordinator#1773] 
+ Update GitHub Artifact Actions (major)\n- [AI-Fleet-Coordinator#1774] 684/
+ OPS-1059: bootstrap proof on current main (replaces #1752)\n- [AI-Fleet-Co
+ ordinator#1776] RAG mirror: rsync — mkpath so the nested incoming trees 
+ exist (AFC-687)\n- [AI-Fleet-Coordinator#1777] Listener: One Listener\, On
+  The Server (The Nov 10 Cutover In The Repo)\n- [AI-Fleet-Coordinator#1778
+ ] Wake Router: Platform Dispatch\, A Correlated Envelope And Settings From
+  Infisical (OPS-1048)\n- [AI-Fleet-Coordinator#1779] secretscan: register 
+ reviewed generic fixture for linear-board test_board\n- [AI-Fleet-Coordina
+ tor#1780] git-relay: optional intent_id envelope metadata for comment_pr\n
+ - [AI-Fleet-Coordinator#1783] Wake Router: A Registry Row Must Name Its Se
+ at (OPS-1048)\n- [AI-Fleet-Coordinator#1784] wf publication route: refuse 
+ loaded credentials before fixture attestation\n- [AI-Fleet-Coordinator#178
+ 5] simple-tools-mcp: take the Frankfurt placement pin out (revert of #1734
+ )\n- [AI-Fleet-Coordinator#1786] Relay: verify large update-branch base ch
+ anges with a complete two-tree diff\n- [AI-Fleet-Coordinator#1787] Listene
+ r: ZC Wakes Through Its Bridge (OPS-1048)\n- [AI-Fleet-Coordinator#1788] M
+ uster: The Mac Listener Is Retired\, The Server Listener Holds Every Seat\
+ n- [AI-Fleet-Coordinator#1790] Wake Deliver: Each Platform Reads Session I
+ ds With Its Own Pattern (OPS-1048)\n- [AI-Fleet-Coordinator#1792] RAG nigh
+ tly: the unit owns code-main-sync\; the job reads its result (AFC-687)\n- 
+ [AI-Fleet-Coordinator#1793] chore: record com.socratictrade.ios 0.1.0 in t
+ he fleet iOS manifest\n- [AI-Fleet-Coordinator#1794] kody-first-review: gr
+ ant pull-requests:write so PR trigger comments stop 403ing (AFC-681)\n- [A
+ I-Fleet-Coordinator#1796] (grok) Listener Sample: No Wake-Count Caps On JE
+ T Or The — Bots (Owner Nov 10)\n- [AI-Fleet-Coordinator#1797] Grant seve
+ n implemented relay verbs in the fleet profile (AFC-629)\n- [AI-Fleet-Coor
+ dinator#1798] Add Seat Self-Test That Proves A Seat's Own Identity And Git
+  Route\n- [AI-Fleet-Coordinator#1800] Wake Docs: One Listener\, Eavesdropp
+ er Name\, Current Paths (AFC-596)\n  … +77 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-11
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -79,7 +79,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 116 merged · 0 opened · 0 closed
@@ -143,7 +143,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -205,7 +205,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 96 merged · 0 opened · 0 closed
@@ -275,7 +275,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 123 merged · 0 opened · 0 closed
@@ -342,7 +342,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 87 merged · 0 opened · 0 closed
@@ -401,7 +401,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -461,7 +461,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 65 merged · 0 opened · 0 closed
@@ -520,7 +520,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 147 merged · 0 opened · 0 closed
@@ -583,7 +583,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 102 merged · 0 opened · 0 closed
@@ -643,7 +643,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261101
 DTEND;VALUE=DATE:20261102
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -703,7 +703,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-31@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261031
 DTEND;VALUE=DATE:20261101
 SUMMARY:Fleet: 47 merged · 0 opened · 0 closed
@@ -761,7 +761,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-30@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261030
 DTEND;VALUE=DATE:20261031
 SUMMARY:Fleet: 103 merged · 0 opened · 0 closed
@@ -825,7 +825,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-29@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261029
 DTEND;VALUE=DATE:20261030
 SUMMARY:Fleet: 165 merged · 0 opened · 0 closed
@@ -892,7 +892,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-28@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261028
 DTEND;VALUE=DATE:20261029
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -956,7 +956,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-27@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261027
 DTEND;VALUE=DATE:20261028
 SUMMARY:Fleet: 91 merged · 0 opened · 0 closed
@@ -1023,7 +1023,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-26@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261026
 DTEND;VALUE=DATE:20261027
 SUMMARY:Fleet: 92 merged · 0 opened · 0 closed
@@ -1086,7 +1086,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-25@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261025
 DTEND;VALUE=DATE:20261026
 SUMMARY:Fleet: 66 merged · 0 opened · 0 closed
@@ -1149,7 +1149,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-24@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261024
 DTEND;VALUE=DATE:20261025
 SUMMARY:Fleet: 101 merged · 0 opened · 0 closed
@@ -1219,7 +1219,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-23@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261023
 DTEND;VALUE=DATE:20261024
 SUMMARY:Fleet: 80 merged · 0 opened · 0 closed
@@ -1283,7 +1283,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-22@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261022
 DTEND;VALUE=DATE:20261023
 SUMMARY:Fleet: 65 merged · 0 opened · 0 closed
@@ -1347,64 +1347,61 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-21@AI-Fleet-Coordinator
-DTSTAMP:20261112T003201Z
+DTSTAMP:20261112T030231Z
 DTSTART;VALUE=DATE:20261021
 DTEND;VALUE=DATE:20261022
-SUMMARY:Fleet: 190 merged · 0 opened · 0 closed
-DESCRIPTION:190 PRs merged · 0 issues opened · 0 issues closed\n\nMerged 
+SUMMARY:Fleet: 172 merged · 0 opened · 0 closed
+DESCRIPTION:172 PRs merged · 0 issues opened · 0 issues closed\n\nMerged 
  PRs:\n- [AI-Fleet-Coordinator#790] Mirror the handbook (Fleet-OPS 8cfcbedf
- fe6c)\n- [AI-Fleet-Coordinator#793] Muster: the seat by config grid\, and 
- what every cell refers to\n- [AI-Fleet-Coordinator#797] Wire the session l
- etter registry into the wake prompt (AFC-412)\n- [AI-Fleet-Coordinator#798
- ] Fix The Four Sentence-Gap Program Findings #746 Left Open\n- [AI-Fleet-C
- oordinator#800] RAG Ingest: Tests And Docs For The Nightly Lock Wait\n- [A
- I-Fleet-Coordinator#801] Sync MAC-LOCAL-PROCESSES.md with the restored cle
- anup agents\n- [AI-Fleet-Coordinator#802] Drop the retired-seat attributio
- n from the sentence-gap pack\n- [AI-Fleet-Coordinator#803] Notes: take the
-  helper's process group down with the cap\n- [AI-Fleet-Coordinator#804] Ap
- ple Notes: Pin Retry With A Stripped-Prefix Title\n- [AI-Fleet-Coordinator
- #805] (minimax) Converge the fleet autofix model id on — M3.1-Flash\n- [
- AI-Fleet-Coordinator#806] One detail surface for a cell\, and it is closab
- le and resizable\n- [AI-Fleet-Coordinator#807] Copilot is a supported plat
- form again: clear stale retired wording\n- [AI-Fleet-Coordinator#808] Hard
- en the fleet CLI updater state file and the tools doctor client config che
- cks\n- [AI-Fleet-Coordinator#809] Add the CLI login sync: a seat's CLI log
- in to the hosts that seat runs on\n- [AI-Fleet-Coordinator#810] Stop the D
- rive backup from failing daily\, and give it retention (AFC-450)\n- [AI-Fl
- eet-Coordinator#811] Make the registry usable end to end: a handle it cann
- ot create the file with\, and a register entry point (AFC-412)\n- [AI-Flee
- t-Coordinator#812] Correct the housekeeper and mac-cleanup skills against 
- the live host (AFC-452)\n- [AI-Fleet-Coordinator#813] Give The Ingest Lock
-  Its Queue Claim\, Its Shared Predicate And Its CLI Flag\n- [AI-Fleet-Coor
- dinator#814] Stop the Notes helper bringing Notes to the front when a pin 
- fails\n- [AI-Fleet-Coordinator#815] Copilot README and installer note: sco
- pe the missing-directory outcome\, date the hook evidence\n- [AI-Fleet-Coo
- rdinator#816] autofix: advance kody reusable pin to the M3.1-Flash helper 
- (917a49df)\n- [AI-Fleet-Coordinator#817] (minimax) docs: name — M3.1-Fla
- sh for the kody lane in PR-AUTOFIX.md\n- [AI-Fleet-Coordinator#818] Fix th
- e Kody findings left open on the Notes pin change\n- [AI-Fleet-Coordinator
- #819] Let a letter name its session\, which is the direction an address ne
- eds (AFC-412)\n- [AI-Fleet-Coordinator#820] Name each way the pin lock fai
- ls and keep its directory private\n- [AI-Fleet-Coordinator#821] autofix: s
- cheduled dispatcher (trial) — oldest untried PR\, one run at a time\n- [
- AI-Fleet-Coordinator#822] auto-merge: gate arming on running Kodus reviews
-  and active autofix runs\n- [AI-Fleet-Coordinator#823] Take a stale housek
- eeper lock over atomically (AFC-458)\n- [AI-Fleet-Coordinator#824] pr-swee
- p: re-escape non-ASCII before checking a copied CLI line\n- [AI-Fleet-Coor
- dinator#825] Update dependency agents to v0.27.0\n- [AI-Fleet-Coordinator#
- 826] autofix: the tag must open the comment to count as a request\n- [AI-F
- leet-Coordinator#828] Fix the review findings that landed on the autofix d
- ispatcher after #821 merged\n- [AI-Fleet-Coordinator#830] autofix: use git
- hub.token in the reusable\, not secrets.GITHUB_TOKEN\n- [AI-Fleet-Coordina
- tor#831] Muster: a Controls tab that shows every knob the fleet has\n- [AI
- -Fleet-Coordinator#832] docs: caller template grants issues:write + action
- s:read\n- [AI-Fleet-Coordinator#833] tools doctor: per-host install and cu
- rrency for every tool (AFC-461\, part 1)\n- [AI-Fleet-Coordinator#834] doc
- s: record the ~/.zshenv GH_TOKEN refresh in the Mac local list\n- [AI-Flee
- t-Coordinator#835] tools doctor: probe contention and Kody review fixes (A
- FC-461)\n- [BotFleet#1240] feat(cua): Option A Sprint 3 ScreenCaptureKit C
- UA and Metal vision driver\n- [BotFleet#1263] Fix: Companion APNs Vault Re
- ad Ceiling Sat Below The Vault's Own Latency\n  … +150 more
+ fe6c)\n- [AI-Fleet-Coordinator#798] Fix The Four Sentence-Gap Program Find
+ ings #746 Left Open\n- [AI-Fleet-Coordinator#804] Apple Notes: Pin Retry W
+ ith A Stripped-Prefix Title\n- [AI-Fleet-Coordinator#813] Give The Ingest 
+ Lock Its Queue Claim\, Its Shared Predicate And Its CLI Flag\n- [AI-Fleet-
+ Coordinator#818] Fix the Kody findings left open on the Notes pin change\n
+ - [AI-Fleet-Coordinator#819] Let a letter name its session\, which is the 
+ direction an address needs (AFC-412)\n- [AI-Fleet-Coordinator#820] Name ea
+ ch way the pin lock fails and keep its directory private\n- [AI-Fleet-Coor
+ dinator#821] autofix: scheduled dispatcher (trial) — oldest untried PR\,
+  one run at a time\n- [AI-Fleet-Coordinator#822] auto-merge: gate arming o
+ n running Kodus reviews and active autofix runs\n- [AI-Fleet-Coordinator#8
+ 23] Take a stale housekeeper lock over atomically (AFC-458)\n- [AI-Fleet-C
+ oordinator#824] pr-sweep: re-escape non-ASCII before checking a copied CLI
+  line\n- [AI-Fleet-Coordinator#825] Update dependency agents to v0.27.0\n-
+  [AI-Fleet-Coordinator#826] autofix: the tag must open the comment to coun
+ t as a request\n- [AI-Fleet-Coordinator#828] Fix the review findings that 
+ landed on the autofix dispatcher after #821 merged\n- [AI-Fleet-Coordinato
+ r#830] autofix: use github.token in the reusable\, not secrets.GITHUB_TOKE
+ N\n- [AI-Fleet-Coordinator#831] Muster: a Controls tab that shows every kn
+ ob the fleet has\n- [AI-Fleet-Coordinator#832] docs: caller template grant
+ s issues:write + actions:read\n- [AI-Fleet-Coordinator#833] tools doctor: 
+ per-host install and currency for every tool (AFC-461\, part 1)\n- [AI-Fle
+ et-Coordinator#834] docs: record the ~/.zshenv GH_TOKEN refresh in the Mac
+  local list\n- [AI-Fleet-Coordinator#835] tools doctor: probe contention a
+ nd Kody review fixes (AFC-461)\n- [BotFleet#1240] feat(cua): Option A Spri
+ nt 3 ScreenCaptureKit CUA and Metal vision driver\n- [BotFleet#1263] Fix: 
+ Companion APNs Vault Read Ceiling Sat Below The Vault's Own Latency\n- [Bo
+ tFleet#1269] chore(deps): update dependency macos to v26\n- [BotFleet#1272
+ ] fix(acp): fall back to a fresh session when the saved session is poisone
+ d (BF-2447)\n- [BotFleet#1273] Fetch SEAT_MCP_TOKEN from fleet-secrets in 
+ start-mcp-sse.sh\n- [BotFleet#1274] fix(routines): do not persist cancelle
+ d runs for snoozed/off bots (BF-2462)\n- [BotFleet#1276] refactor(credenti
+ als): derive credential card targets from one spec table\n- [BotFleet#1277
+ ] (sentry) 2476: never report a skipped routine run as — ok\n- [BotFleet
+ #1289] autofix: carry the org model switch (pin + Meta secret)\n- [BotFlee
+ t#1290] 2439: rolling summary of dropped history\, model-written behind th
+ e Compressing Context row\n- [BotFleet#1291] 2439: Max Output Tokens for t
+ he xAI and OpenAI-compatible HTTP drivers\n- [BotFleet#1292] (muse-assist)
+  2439: engine matrix — startup model\, Kimi/Droid/OpenCode pricing\, box
+  computer-use audit\n- [BotFleet#1293] chore(deps): update dependency luci
+ de-react to v1.58.0\n- [BotFleet#1294] 2502: Port inventory maps every ser
+ ver subsystem to its Swift owner\n- [BotFleet#1295] fix(deps): update non-
+ major dependencies\n- [BotFleet#1296] 2500: Drop Windows and Linux desktop
+  builds and CI\n- [BotFleet#1297] Control app: add the wheelhouse and keep
+  the MCP server in step with the server\n- [BotFleet#1298] autofix: advanc
+ e kody reusable pin to the M3.1-Flash helper (917a49df)\n- [BotFleet#1299]
+  Control app: make the stop path work and say what is blocking it\n- [BotF
+ leet#1300] Control app: make the Local VM status probe cheap\, and read a 
+ slow server as busy\n  … +132 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-10-21
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED

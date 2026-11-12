@@ -1,13 +1,11 @@
 # Fleet calendars + daily digest
 
-Generated artifacts (do not hand-edit ICS; change the scripts/workflows).  They are **not**
-tracked on `main`; the workflow publishes fresh trees to `published/fleet-activity` and
-deploys HTML to GitHub Pages.
+Generated artifacts (do not hand-edit ICS; change the scripts/workflows):
 
 | File | What it is |
 |------|------------|
-| `agent-activity.ics` | Timed VEVENTs per **commit** across verified public repos |
-| `daily-digest.ics` | **All-day** VEVENT per day: merged PRs and issues opened/closed in public repos |
+| [`agent-activity.ics`](./agent-activity.ics) | Timed VEVENTs per **commit** across verified public repos |
+| [`daily-digest.ics`](./daily-digest.ics) | **All-day** VEVENT per day: merged PRs and issues opened/closed in public repos |
 
 ## Hosted site (GitHub Pages)
 
