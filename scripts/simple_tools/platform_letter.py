@@ -6,6 +6,10 @@ every interactive chat on every platform (owner request, Oct 29, 2026;  one clie
     platform-letter show --platform P       this chat's letter from its local note; no network
     platform-letter install --platform P    add the platform's hooks (--check, --remove)
     platform-letter request [--session-id S]   ask the assigner for this chat's letter now (`request_main`)
+    platform-letter gone [--platform P] [--apply]   the chats of this host that are gone for good (archived in
+                                            a platform's app):  what the hooks would report, or report it now
+    platform-letter parent --platform P --session-id S   the chat that started a chat, from this host's own
+                                            records:  what another host's hook asks this one (read only)
 
 `simple-chat letter <verb>` is the same command with the same verbs.  An adapter is one file,
 `simple_tools/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: where the platform's session id, parent
@@ -44,12 +48,32 @@ What the hook does.
 - A rename event does the rename part alone, for platforms that tell the hook when a title changed.
 - A turn event (the end of a turn) reports what the turn touched, and asks again for a missing letter as a prompt does.
 - An end event closes the registration when the chat is over for good (the spec's `close_reasons`, `None` for every
-  end), which frees its letter.  Reclaiming letters is otherwise the assigner's own sweep:  no client sweeps.
+  end), which frees its letter.  Reclaiming idle letters is otherwise the assigner's own sweep:  no client sweeps.
+
+Chats that are gone for good.  A platform's app can end a chat with no hook event of its own (a desktop app that
+archives one), so its letter would stay taken until the assigner's idle sweep.  An adapter that can tell names
+those chats, and a chat's start reports them:  one `report-gone` call to the assigner for the platform and a
+location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  `gone_sessions` answers for this
+host's own chats whose hook has been quiet for an hour, however long ago that was.  `gone_elsewhere` answers for
+chats the platform's app on this host runs at another location, whose notes this host does not hold;  they go in
+a report of their own for that location.  The assigner closes the open rows named, and refuses a report that
+would close more than its share of a location's live rows.  Nothing schedules it, and nothing it does can fail a
+chat's start (`report_gone`, `report_gone_elsewhere`).  `gone` shows what would be reported, and `gone --apply`
+reports it now.
+
+A parent on another host.  A platform's app can keep its record of which chat started which on one host (the
+Mac) while the chat's hook runs on another.  SESSION_LETTER_MAC_SSH (the hook's `--mac-ssh` flag, which `install
+--mac-ssh DEST` writes) names the ssh destination of the Mac for an adapter that can ask it (`mac_ssh`), and
+`parent` is the read-only verb such an adapter runs there:  it prints the parent's session id, or nothing.  A
+chat's parent is asked for once:  the note keeps one that was found, and a lookup that found none is not
+repeated for RETRY_SECONDS (`parent_of`).
 
 The title reaches the chat the way the platform allows: in the hook's own output (`hook` style, a `sessionTitle`
 field), through the adapter's `title_writer` (a callable that renames the chat natively), or from a plugin that reads
 the `json` output.  A writer that fails leaves the title pending and is tried again on the next prompt.  A platform
-with neither route is told its letter and asked to keep it in a name the owner gives.
+with neither route is told its letter and asked to keep it in a name the owner gives.  A platform that takes the
+hook's title for some chats only says so through its adapter's `title_advice`:  the line it answers goes to the
+chat's own model with the start or prompt context, once per RETRY_SECONDS while it stays the same (`advice`).
 
 The hook never blocks a chat: every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part: a launcher-run session never does (`identity.launched`, unless the spec names that launcher), nor a
@@ -75,7 +99,7 @@ import sys
 import tempfile
 import time
 import unicodedata
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, TextIO
@@ -97,11 +121,26 @@ LABEL_RE = re.compile(r"[A-Z]{1,2}")
 ENV_OFF = "SESSION_LETTER"
 ENV_LOCATION = "SESSION_LETTER_LOCATION"
 ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
+#: The ssh destination of the Mac, for a hook on another host whose adapter must ask the Mac something only it
+#: holds (`mac_ssh`).  The hook's `--mac-ssh DEST` flag sets it, since a hook file has no env block.
+ENV_MAC_SSH = "SESSION_LETTER_MAC_SSH"
+#: What an ssh destination may look like:  a host or user@host, and nothing ssh could read as an option.
+MAC_SSH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
 
 TOUCH_SECONDS = 1800
 # The stamp that throttles asking again:  a chat whose ask failed (no letter, or a send the registry did not take)
 # asks again no sooner than this after `failed_at` (or `sync_failed_at`).  `simple-chat letter request` ignores it.
 RETRY_SECONDS = 600
+# The gone report (`report_gone`, `report_gone_elsewhere`):  a host reports the gone chats of a platform and
+# location at most this often, names only chats of its own whose hook last ran at least GONE_QUIET_SECONDS ago
+# (one that ran since is plainly not gone), reads at most GONE_SCAN_NOTES of the newest notes to find them, names
+# at most GONE_REPORT_IDS in one call (the assigner's own limit, listener_registry.MAX_GONE_IDS), and remembers
+# at most GONE_SENT_IDS chats of another location that it has reported.
+GONE_REPORT_SECONDS = 3600
+GONE_QUIET_SECONDS = 3600
+GONE_SCAN_NOTES = 2000
+GONE_REPORT_IDS = 500
+GONE_SENT_IDS = 2000
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -283,6 +322,16 @@ class TitleRequest:
 
 
 TitleWriter = Callable[[TitleRequest], bool]
+#: An adapter's `title_advice`:  from the title the hook wants on the chat (a TitleRequest, `reason` start or
+#: prompt), the line to give the chat's own model when the platform will not take that title from the hook, or "".
+TitleAdvice = Callable[[TitleRequest], str]
+#: An adapter's `gone_sessions`:  from the environment and the session ids of this host's quiet chats, the ids of
+#: the ones that are gone for good (its app archived them).  Ids only, and any doubt leaves a chat out.
+GoneSessions = Callable[[Mapping[str, str], frozenset[str]], Iterable[str] | None]
+#: An adapter's `gone_elsewhere`:  from the environment and a location other than this host's, the session ids
+#: of chats that run there and are gone for good, as this host's own records of them say (a platform's app on
+#: one host can run chats on another).  Ids only, bounded by the adapter, and any doubt leaves a chat out.
+GoneElsewhere = Callable[[Mapping[str, str], str], Iterable[str] | None]
 
 
 @dataclass(frozen=True)
@@ -313,6 +362,12 @@ class PlatformSpec:
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
                                the library look up a chat the hook did not fire for.  A sub-thread registers after its
                                parent, so a spec that has it registers a parent that holds no live registration first
+    title_advice               for a platform that takes the hook's title for some chats only:  from the title the
+                               hook wants on the chat, the line that has the chat's own model set it, or "" (`advice`)
+    gone_sessions              for a platform whose app ends chats with no hook event (an archive):  which of the
+                               session ids asked about are gone for good, for the hooks' gone report (`report_gone`)
+    gone_elsewhere             for a platform whose app on this host runs chats at another location:  the session
+                               ids of the ones there that are gone for good (`report_gone_elsewhere`)
     """
 
     platform: str
@@ -335,6 +390,9 @@ class PlatformSpec:
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
     session_env: tuple[str, ...] = ()
+    title_advice: TitleAdvice | None = None
+    gone_sessions: GoneSessions | None = None
+    gone_elsewhere: GoneElsewhere | None = None
 
     def __post_init__(self) -> None:
         if not PLATFORM_RE.fullmatch(self.platform):
@@ -426,6 +484,15 @@ def location(env: Mapping[str, str], platform: str = sys.platform, flag: str = "
     if forced:
         return forced if forced in LOCATIONS else None
     return "mac" if platform == "darwin" else None
+
+
+def mac_ssh(env: Mapping[str, str]) -> str:
+    """The ssh destination of the Mac this host was told (SESSION_LETTER_MAC_SSH, or the hook's `--mac-ssh`), or
+    "" when it names none or names something that is not a destination.  For an adapter whose platform keeps what
+    it needs on the Mac while the chat's hook runs on another host:  the destination is configuration, never a
+    constant, and nothing in this library connects anywhere by itself."""
+    dest = _text(env.get(ENV_MAC_SSH))
+    return dest if MAC_SSH_RE.fullmatch(dest) else ""
 
 
 def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
@@ -895,6 +962,53 @@ def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _report_gone_api(env: Mapping[str, str], args: Any) -> dict[str, Any]:
+    """The `report-gone` op:  one call that names the chats of one platform and host that are gone for good, and
+    has the assigner close their rows.
+
+    The list is JSON, and every entry must be a session id:  a list with anything else in it is refused whole,
+    before any call.  An empty list makes no call.  The answer names the session ids whose rows were closed now
+    (`gone`) and the letter each one held (`labels`);  a chat whose row was closed already, or that was never
+    registered at that location, is simply not among them.  A refusal is the assigner's own answer, with its `code` (`gone_share_exceeded`) and `allowed_now`."""
+    try:
+        named = json.loads(args.gone)
+    except ValueError:
+        named = None
+    if not isinstance(named, list):
+        return {"error": "the gone list must be a JSON list of session ids"}
+    ids: list[str] = []
+    for item in named:
+        try:
+            sid = SI.check(item, "a gone session id")
+        except ValueError:
+            return {"error": "the gone list must be a JSON list of session ids"}
+        if sid not in ids:
+            ids.append(sid)
+    if len(ids) > GONE_REPORT_IDS:
+        return {"error": "one report names at most %d chats" % GONE_REPORT_IDS}
+    if not ids:
+        return {"ok": True, "gone": [], "count": 0}
+    out = _call_api(
+        env,
+        "report-gone",
+        {
+            "platform": args.platform,
+            "location": args.location,
+            "scope": SCOPE,
+            "native_session_ids": ids,
+        },
+    )
+    if "error" in out:
+        return dict(out)
+    labels = {
+        str(row.get("native_session_id") or ""): str(row.get("label") or "")
+        for row in out.get("closed") or []
+        if isinstance(row, Mapping)
+    }
+    labels.pop("", None)
+    return {"ok": True, "gone": sorted(labels), "count": len(labels), "labels": labels}
+
+
 def _make_parser() -> Any:
     import argparse
 
@@ -910,13 +1024,16 @@ def _make_parser() -> Any:
 
     parser = Parser(prog=ENTRY + " registry", add_help=False, allow_abbrev=False)
     parser.refused = Refused  # type: ignore[attr-defined]
-    parser.add_argument("op", choices=("register", "title", "touch", "close", "show", "issues"))
+    parser.add_argument(
+        "op", choices=("register", "title", "touch", "close", "show", "issues", "report-gone")
+    )
     parser.add_argument("--platform", required=True)
     parser.add_argument("--location", required=True, choices=REGISTRY_LOCATIONS)
-    parser.add_argument("--session-id", required=True)
+    parser.add_argument("--session-id", default="")  # every op but report-gone is about one chat
     parser.add_argument("--seat", default="")
     parser.add_argument("--title", default="")
     parser.add_argument("--issues", default="[]")  # the `issues` op's list, as JSON (AFC-694)
+    parser.add_argument("--gone", default="[]")  # the `report-gone` op's session ids, as JSON
     parser.add_argument("--source", default="")
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--letter-space", default="double", choices=("single", "double"))
@@ -930,7 +1047,8 @@ def registry_main(
     argv: list[str], *, env: Mapping[str, str], stdout: TextIO, now: float | None = None
 ) -> int:
     """`registry OP --platform P --location L --session-id S [--seat SEAT] [--title T] [--source SRC]
-    [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK]`, one JSON line out.
+    [--parent-session-id PID] [--letter-space single|double] [--letter-pick PICK]`, one JSON line out.  The
+    `report-gone` op names no one chat:  it takes `--gone` (a JSON list of session ids) and no `--session-id`.
 
     One call to the one assigner, the registry API (`registry_api`), and nothing else:  no local file is opened and
     none is created.  The exit status is 0 for an answer, 2 for bad arguments, 4 for a refused request and 5 for an
@@ -951,12 +1069,17 @@ def registry_main(
         return _emit(stdout, {"error": "a registration needs a seat"}, 2)
     args.seat = args.seat or "OPERATOR"
     args.source = args.source.strip() or "platform-letter:" + args.platform
+    if args.op != "report-gone" and not args.session_id:
+        return _emit(stdout, {"error": "bad arguments"}, 2)
     try:
-        sid = SI.check(args.session_id, "the session id")
-        if args.op == "register":
-            out = _register_api(OR, env, args, sid)
+        if args.op == "report-gone":
+            out = _report_gone_api(env, args)
         else:
-            out = _on_record_api(OR, env, args, sid)
+            sid = SI.check(args.session_id, "the session id")
+            if args.op == "register":
+                out = _register_api(OR, env, args, sid)
+            else:
+                out = _on_record_api(OR, env, args, sid)
     except ValueError as exc:
         return _emit(stdout, {"error": "%s: %s" % (type(exc).__name__, str(exc)[:200])}, 4)
     except (KeyError, TypeError):
@@ -1018,6 +1141,16 @@ def _answer(value: dict[str, Any] | None) -> dict[str, Any]:
 Transport = Callable[[list[str]], Mapping[str, Any]]
 
 
+def _sync_folder(folder: str) -> None:
+    """Flush a folder to disk after a file was renamed into it, so the rename itself survives a crash:  the file's
+    own fsync covers its bytes, not the folder entry that names it."""
+    dir_fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 class Chat:
     """One chat, as the hook sees it: its spec, location and session id, its note, and the way to its registry.
 
@@ -1045,16 +1178,20 @@ class Chat:
     # ---- the local note --------------------------------------------------------------------
 
     def read(self) -> dict[str, Any]:
-        try:
-            with open(self.path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        """The chat's note, or {}.  A note the seat's retired client wrote is put in this client's shape where it
+        lies, the first time it is read (`upgraded_note`)."""
+        note = _read_json(self.path)
+        fresh = upgraded_note(note, self.spec.platform)
+        if fresh is None:
+            return note
+        # As it was, but for its shape:  `updated_at` stays the old client's.
+        _save_json(self.path, fresh)
+        return fresh
 
     def write(self, note: Mapping[str, Any]) -> bool:
-        """Save the note; False when it cannot be saved (a state folder that is not writable).  The hook goes on
-        without it, so the letter is still shown, and the next event only resumes the registration."""
+        """Save the note; False when it cannot be saved (a state folder that is not writable, or one whose rename
+        could not be made durable).  The hook goes on without it, so the letter is still shown, and the next event
+        only resumes the registration."""
         tmp = ""
         try:
             folder = os.path.dirname(self.path)
@@ -1076,6 +1213,8 @@ class Chat:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)
+            tmp = ""  # renamed into place:  nothing is left to clean up
+            _sync_folder(folder)
         except (OSError, TypeError, ValueError):
             if tmp:
                 try:
@@ -1128,12 +1267,19 @@ class Chat:
     def _registry(self, op: str, title: str, parent: str, issues: str = "") -> dict[str, Any]:
         if not self.location:
             return {"error": NO_LOCATION}
-        argv = self.argv(op, title, parent, issues)
-        if self.transport is not None:
-            return _answer(dict(self.transport(argv)))
-        out = io.StringIO()
-        registry_main(argv, env=self.env, stdout=out)
-        return _answer(_last_json(out.getvalue()))
+        return _registry_side(self.argv(op, title, parent, issues), self.env, self.transport)
+
+
+def _registry_side(
+    argv: list[str], env: Mapping[str, str], transport: Transport | None
+) -> dict[str, Any]:
+    """The registry side's answer to one command line:  through the test's transport when there is one, else in
+    process, where it makes its one API call."""
+    if transport is not None:
+        return _answer(dict(transport(argv)))
+    out = io.StringIO()
+    registry_main(argv, env=env, stdout=out)
+    return _answer(_last_json(out.getvalue()))
 
 
 class Out:
@@ -1280,6 +1426,7 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
     out.pop("error", None)
     out.pop("failed_at", None)
     out.pop("sync_failed_at", None)  # the registry just answered
+    out.pop("gone_at", None)  # a chat reported gone that registers again is not gone
     return out
 
 
@@ -1302,6 +1449,59 @@ def no_letter(spec: PlatformSpec, note: Mapping[str, Any]) -> str:
         "No Operator letter yet (%s), so %s.  A later hook run asks again, at most every ten minutes, and "
         "`simple-chat letter request` asks now." % (note.get("error") or "no answer", mark)
     )
+
+
+def _join(*parts: str) -> str:
+    """Context lines as one context, a sentence gap between them."""
+    return "  ".join(part for part in parts if part)
+
+
+def advice(
+    chat: Chat, note: dict[str, Any], current: str, data: Mapping[str, Any], reason: str
+) -> str:
+    """The line the adapter gives the chat's own model about a title the platform will not take from this hook (the
+    spec's `title_advice`), or "".
+
+    The adapter is asked on a start and on a prompt, about the title the hook wants on the chat now, because only it
+    can tell which chats its platform keeps a title of its own for.  The same line is not given again for
+    RETRY_SECONDS (the note's `title_fix_for` and `title_fix_at`), so a start and its first prompt ask once, and a
+    chat that never does as it is told is not asked on every prompt;  a line that differs (the letter changed, the
+    chat was renamed) goes at once.  An adapter that raises has no advice:  a hook never blocks a chat."""
+    advise = chat.spec.title_advice
+    if advise is None or note.get("state") not in ("open", "failed"):
+        return ""
+    label = str(note.get("label") or "") if lettered(note) else ""
+    mark = label or UNLETTERED
+    want = str(note.get("want") or "")
+    title = want if want.startswith(mark + ": ") else compose(mark, str(note.get("title") or ""))
+    request = TitleRequest(
+        platform=chat.spec.platform,
+        session_id=chat.session_id,
+        label=label,
+        title=title,
+        words=bare(title, (label,)),
+        current=current,
+        reason=reason,
+        data=data,
+        env=chat.env,
+        shown=str(note.get("shown") or ""),
+        held=held(note),
+    )
+    try:
+        text = advise(request)
+    except Exception:  # noqa: BLE001 - an adapter's advice never blocks a chat
+        return ""
+    text = text.strip() if isinstance(text, str) else ""
+    if not text:
+        return ""
+    try:
+        asked_at = float(note.get("title_fix_at") or 0)
+    except (TypeError, ValueError):
+        asked_at = 0.0
+    if note.get("title_fix_for") == text and chat.now - asked_at < RETRY_SECONDS:
+        return ""
+    note.update(title_fix_for=text, title_fix_at=chat.now)
+    return text
 
 
 def unlettered(
@@ -1328,9 +1528,16 @@ def unlettered(
             chat, note, current, data
         )  # a writer that failed is asked again on its own clock
         return None
-    if note.get("shown") == title and current in ("", title):
-        return None  # already on the chat:  a steady "??" chat costs no rename on every prompt
-    return present(chat, note, title, current, data, reason, settable=settable)
+    if note.get("shown") == title and current in ("", title, note.get("seen")):
+        # Already on the chat, or already tried over the name the platform still shows (one it keeps over the
+        # hook's title):  a steady "??" chat costs no rename on every prompt.
+        return None
+    shown = present(chat, note, title, current, data, reason, settable=settable)
+    if current and current != title and note.get("shown") == title:
+        # One try for each name the platform shows, never one for every prompt, as `_renamed` keeps it for a chat
+        # that holds a letter.
+        note["seen"] = current
+    return shown
 
 
 def ask_again(
@@ -1939,7 +2146,7 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
         on_rename(chat, data, Out(io.StringIO(), chat.spec, ""))
         note = chat.read()
     elif not lettered(note) and note.get("state") not in ("mismatch", "closed"):
-        parent = _text(chat.spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        parent = parent_of(chat, note, data)
         note = ask_again(chat, note, str(note.get("title") or ""), parent)
         if lettered(note) and note.get("announce"):
             current = tidy(chat.spec.current_title(data, chat.env))
@@ -2104,6 +2311,28 @@ def _push(chat: Chat, note: dict[str, Any], op: str, words: str = "") -> dict[st
     return answer
 
 
+def parent_of(chat: Chat, note: dict[str, Any], data: Mapping[str, Any]) -> str:
+    """The session id of the chat that started this one, or "".
+
+    A parent the note knows is not asked for again:  a chat's parent never changes.  A lookup that found none is
+    not repeated for RETRY_SECONDS (the note's `parent_asked_at`), because an adapter's lookup can cost a call to
+    another host, and a chat with no letter would otherwise make it on every prompt.  An adapter that raises has
+    found no parent."""
+    known = str(note.get("parent") or "")
+    asked = note.get("parent_asked_at")
+    if known or (asked is not None and 0 <= chat.now - _seconds(asked) < RETRY_SECONDS):
+        return known
+    note["parent_asked_at"] = chat.now
+    try:
+        found = _text(chat.spec.parent_id(data, chat.env))
+    except Exception:  # noqa: BLE001 - a parent is a hint the chat was never owed
+        return ""
+    if found:
+        # Kept at once:  the registration that uses it may wait for its own window.
+        note["parent"] = found
+    return found
+
+
 def _settled(note: Mapping[str, Any]) -> bool:
     """The note needs no registration made for it: the chat holds a letter, or another seat holds the chat."""
     return note.get("state") == "mismatch" or (
@@ -2187,7 +2416,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     loose = named
     if not loose and source in ("resume", "fork"):
         loose = clean_title(spec.stored_title(data, chat.env))
-    parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+    parent = parent_of(chat, note, data)
     answer = _enroll(chat, loose, parent)
     start = dict(note, inherited=inherited, title=loose or note.get("title", ""), parent=parent)
     if inherited:
@@ -2203,8 +2432,9 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
         shown = unlettered(
             chat, note, loose, current, data, "start", settable=source in spec.title_sources
         )
+        fix = advice(chat, note, current, data, "start")
         chat.write(note)
-        out.emit("start", context=no_letter(spec, note), title=shown)
+        out.emit("start", context=_join(no_letter(spec, note), fix), title=shown)
         return 0
     label = note["label"]
     text = loose
@@ -2224,9 +2454,13 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     shown = present(
         chat, note, title, current, data, "start", settable=source in spec.title_sources
     )
+    fix = advice(chat, note, current, data, "start")
     chat.write(note)
     out.emit(
-        "start", context=_reissued(spec, answer) + reminder(spec, note), title=shown, label=label
+        "start",
+        context=_join(_reissued(spec, answer) + reminder(spec, note), fix),
+        title=shown,
+        label=label,
     )
     return 0
 
@@ -2268,15 +2502,18 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if not lettered(note):  # a note that says open with no letter is not one to trust
         # No letter yet:  ask again when the stamp says it is due, else (or when the answer is still no) keep the
         # chat titled "??: <words>", the words being a name someone gave it, its start's title or its first prompt.
-        parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        parent = parent_of(chat, note, data)
         note = ask_again(chat, note, _first_title(note, current, data.get("prompt")), parent)
         if not lettered(note):
             shown = unlettered(
                 chat, note, _first_title(note, current, data.get("prompt")), current, data, "prompt"
             )
+            fix = advice(chat, note, current, data, "prompt")
             chat.write(note)
-            if shown and shown != current:
-                out.emit("prompt", title=shown)
+            if shown == current:
+                shown = None
+            if shown or fix:
+                out.emit("prompt", context=fix, title=shown)
             return 0
     # The model has not been told this letter yet:  a letter given while this chat was a sub-thread's parent, or one
     # that came after the chat had none, is news.
@@ -2350,11 +2587,12 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             chat.now,
             lambda text: chat.registry("issues", issues=text),
         )
+    fix = advice(chat, note, current, data, "prompt")
     chat.write(note)
-    if announce or (shown and shown != current):
+    if announce or (shown and shown != current) or fix:
         out.emit(
             "prompt",
-            context=moved + reminder(spec, note) if announce else "",
+            context=_join(moved + reminder(spec, note) if announce else "", fix),
             title=shown,
             label=str(note.get("label") or ""),
         )
@@ -2371,7 +2609,7 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         if not words or current in (note.get("shown"), note.get("seen")):
             return 0
         note["seen"] = current
-        parent = _text(chat.spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        parent = parent_of(chat, note, data)
         note = ask_again(chat, note, words, parent)
         if lettered(note):
             note["titled"] = True
@@ -2520,7 +2758,10 @@ def _run_hook(
     )
     home = str(env.get("HOME") or os.path.expanduser("~"))
     if event == "start":
-        return on_start(chat, data, out, home)
+        code = on_start(chat, data, out, home)
+        if _text(data.get("source")) != "compact":
+            _report_gone_after_start(chat, stdout)
+        return code
     if event == "prompt":
         return on_prompt(chat, data, out)
     if event == "rename":
@@ -2531,7 +2772,18 @@ def _run_hook(
 
 
 def show(spec: PlatformSpec, argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    sid = argv[1] if len(argv) > 1 and argv[0] == "--session-id" else spec.session_id({}, env)
+    """Print a chat's note:  the chat named with --session-id, else the one this shell runs in, by the spec's own
+    reader and then its session id variables (`session_env`, AGENT_SESSION), as `request` finds it."""
+    sid = argv[1] if len(argv) > 1 and argv[0] == "--session-id" else ""
+    if not sid:
+        try:
+            # The spec's own reader, for one that reads the environment.
+            own = spec.session_id({}, env)
+        except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
+            own = ""
+        names = (*spec.session_env, "AGENT_SESSION")
+        found = [own, *(_text(env.get(name)) for name in names)]
+        sid = next((value for value in found if value), "")
     try:
         sid = SI.check(sid, "the session id")
     except ValueError as exc:
@@ -2735,13 +2987,556 @@ def request_main(
 
 
 # --------------------------------------------------------------------------------------------
+# A chat's parent, for a hook on another host:  `parent`, a read-only verb
+# --------------------------------------------------------------------------------------------
+
+#: The payload key that carries the platform's own id for a chat (`parent --app-id`), for an adapter whose
+#: records are keyed by it.  A hook's own payload never has it.
+PARENT_APP_ID = "letter_app_id"
+#: The payload key that marks the `parent` verb's own question, so an adapter that would ask another host for a
+#: parent answers this one from its own records and never passes the question on.
+PARENT_VERB = "letter_parent_verb"
+#: What such an id may look like on a command line:  the characters of a session id, and no more of them.
+APP_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+
+def parent_main(
+    argv: list[str], env: Mapping[str, str] | None = None, stdout: TextIO | None = None
+) -> int:
+    """`parent --platform P --session-id S [--app-id A] [--source SRC]`:  the session id of the chat that started
+    chat S, on a line of its own, or nothing when this host knows none.  Exit 0 either way, 2 for bad arguments.
+
+    It only reads:  the adapter's `parent_id` is asked about a start payload made from the arguments (`--app-id`,
+    the platform's own id for the chat, rides in it as PARENT_APP_ID;  `--source` is the start's source), and no
+    registry is called and no note is read or written.  It is what a hook on another host runs here over ssh when
+    the platform keeps its record of who started whom on this host.  Every argument is checked before the
+    adapter sees it, and only a session id is ever printed."""
+    env = os.environ if env is None else env
+    stdout = stdout or sys.stdout
+    try:
+        flags = _flags(argv, ("--platform", "--session-id", "--app-id", "--source"))
+        sid = SI.check(flags.get("session-id", ""), "the session id")
+    except ValueError:
+        return 2
+    name = flags.get("platform", "")
+    app_id, source = flags.get("app-id", ""), flags.get("source", "")
+    spec = load_spec(name) if valid_platform(name) else None
+    if spec is None or (app_id and not APP_ID_RE.fullmatch(app_id)):
+        return 2
+    if source and source not in ("startup", "resume", "clear", "fork"):
+        return 2
+    payload: dict[str, Any] = {
+        "hook_event_name": "SessionStart",
+        "session_id": sid,
+        "source": source or "startup",
+        PARENT_VERB: True,
+    }
+    if app_id:
+        payload[PARENT_APP_ID] = app_id
+    try:
+        parent = SI.check(spec.parent_id(payload, env), "the parent session id")
+    except Exception:  # noqa: BLE001 - no parent known is no line, never an error
+        return 0
+    if parent != sid:
+        stdout.write(parent + "\n")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# Chats that are gone for good:  one report per host, platform and location, from the hooks
+# --------------------------------------------------------------------------------------------
+#
+# Some ends reach no hook:  a platform's app can archive a chat with no end event of its own.  The adapter knows
+# those chats (`gone_sessions` for the ones that run on this host, `gone_elsewhere` for the ones its app runs on
+# another host), and the assigner has one call for them, `report-gone`, which closes the rows a caller names at one
+# location (and refuses a report that would close more than a share of that location's live rows).  A chat's start
+# is the trigger:  no timer, no scheduler.
+
+
+def gone_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: str) -> str:
+    """Where a host keeps the time of its last gone report for one platform and location:  beside the seat's letter
+    notes, under a name no session id can have (a session id never starts with a dot)."""
+    folder = os.path.dirname(note_path(env, seat, "stamp"))
+    return os.path.join(folder, ".gone-%s-%s" % (platform, where))
+
+
+def _read_json(path: str) -> dict[str, Any]:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_json(path: str, data: Mapping[str, Any]) -> bool:
+    """Save a small private file whole (an unpredictable temporary name, then a rename);  False when it cannot be."""
+    tmp = ""
+    try:
+        folder = os.path.dirname(path)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".letter-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(dict(data), fh, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        tmp = ""
+        _sync_folder(folder)
+    except (OSError, TypeError, ValueError):
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return False
+    return True
+
+
+def _seconds(value: object) -> float:
+    """A time from a note or a stamp, or 0 when it is not a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def upgraded_note(note: Mapping[str, Any], platform: str) -> dict[str, Any] | None:
+    """A note the retired per-seat client wrote, in this client's shape, or None when it needs no change.
+
+    Such a note names no `platform`, and keeps the letters the chat held before under `held_labels` (oldest first,
+    its own last) and `prior_label`, where this client keeps them under `labels` (newest first).  The platform is the
+    reader's:  a seat's retired client wrote for one platform only."""
+    if not note or note.get("platform"):
+        return None
+    earlier = note.get("held_labels")
+    order = [
+        note.get("label"),
+        note.get("prior_label"),
+        *reversed(earlier if isinstance(earlier, list) else []),
+        *(note.get("labels") if isinstance(note.get("labels"), list) else []),
+    ]
+    labels: list[str] = []
+    for label in order:
+        if isinstance(label, str) and LABEL_RE.fullmatch(label) and label not in labels:
+            labels.append(label)
+    out = {k: v for k, v in note.items() if k not in ("held_labels", "prior_label")}
+    out.update(platform=platform, labels=labels[:8])
+    return out
+
+
+def quiet_chats(
+    env: Mapping[str, str],
+    seat: str,
+    platform: str,
+    where: str,
+    now: float,
+    *,
+    adopt: bool = False,
+    rewrite: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """The chats of this host a gone report may name, by session id, each with its letter and the time its hook last
+    ran:  the seat's own letter notes for the platform and location that hold a letter, were not reported before
+    (`gone_at`), and whose hook has not run for GONE_QUIET_SECONDS.  A chat whose hook ran more recently is plainly
+    not gone.  There is no upper bound on how long a chat has been quiet:  a chat is often archived days after its
+    last prompt.  The newest GONE_SCAN_NOTES note files are read, and the GONE_REPORT_IDS most recently quiet chats
+    are answered, so the work is bounded however many notes a host has kept.
+
+    `adopt` is for the platform a seat's retired client wrote for:  a note of that client (no `platform`) is put in
+    this client's shape where it lies (`upgraded_note`), so its chat can be named too.  Without `rewrite` it is only
+    read that way and its file is left as it is (a dry run changes nothing)."""
+    folder = os.path.dirname(note_path(env, seat, "stamp"))
+    files: list[tuple[float, str]] = []
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name.endswith(".json") or name.startswith("."):
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        files.append((entry.stat().st_mtime, name))
+                except OSError:
+                    continue
+    except OSError:
+        return {}
+    files.sort(reverse=True)
+    found: list[dict[str, Any]] = []
+    for _, name in files[:GONE_SCAN_NOTES]:
+        path = os.path.join(folder, name)
+        note = _read_json(path)
+        try:
+            sid = SI.check(name[: -len(".json")], "the session id")
+        except ValueError:
+            continue
+        if note.get("session_id") != sid:
+            continue
+        if adopt:
+            fresh = upgraded_note(note, platform)
+            if fresh is not None:
+                if rewrite:
+                    _save_json(path, fresh)
+                note = fresh
+        if note.get("platform") != platform or note.get("location") != where:
+            continue
+        if not lettered(note) or note.get("gone_at"):
+            continue
+        seen = _seconds(note.get("updated_at"))
+        label = note.get("label")
+        if not isinstance(label, str) or not LABEL_RE.fullmatch(label):
+            continue
+        if now - seen >= GONE_QUIET_SECONDS:
+            found.append({"session_id": sid, "label": label, "seen": seen})
+    found.sort(key=lambda row: (-row["seen"], row["session_id"]))
+    return {row["session_id"]: row for row in found[:GONE_REPORT_IDS]}
+
+
+def gone_chats(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    where: str,
+    now: float,
+    *,
+    rewrite: bool = True,
+) -> list[dict[str, Any]]:
+    """The chats of this host the adapter says are gone for good (`gone_sessions`), the one longest quiet first.
+    Only an id that was asked about counts, so an adapter can never name a chat that is not one of this host's own
+    quiet ones.  An adapter that raises is the caller's to catch."""
+    if spec.gone_sessions is None:
+        return []
+    adopt = isinstance(spec.seat, str) and spec.seat == seat
+    quiet = quiet_chats(env, seat, spec.platform, where, now, adopt=adopt, rewrite=rewrite)
+    if not quiet:
+        return []
+    named = spec.gone_sessions(env, frozenset(quiet))
+    gone = [quiet[sid] for sid in set(named or ()) if isinstance(sid, str) and sid in quiet]
+    gone.sort(key=lambda row: (row["seen"], row["session_id"]))
+    return gone
+
+
+def gone_chats_elsewhere(
+    spec: PlatformSpec, env: Mapping[str, str], there: str, sent: object = ()
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """(the chats that run at `there`, another location, that the adapter says are gone for good and that this host
+    has not reported yet;  the ids it reported before that the adapter still names).
+
+    This host holds no note of such a chat, so what it reported is kept in the report's stamp (`sent`), and a chat is
+    named once.  One the adapter stops naming (it was unarchived) is forgotten, so it is named again if it goes
+    again.  Only session ids count, sorted, so a report is the same whatever order the adapter answers in."""
+    if spec.gone_elsewhere is None:
+        return [], []
+    named: list[str] = []
+    for item in spec.gone_elsewhere(env, there) or ():
+        try:
+            sid = SI.check(item, "a gone session id")
+        except ValueError:
+            continue
+        if sid not in named:
+            named.append(sid)
+    named.sort()
+    listed = sent if isinstance(sent, (list, tuple)) else ()
+    before = {sid for sid in listed if isinstance(sid, str)}
+    kept = [sid for sid in named if sid in before]
+    fresh = [{"session_id": sid, "label": ""} for sid in named if sid not in before]
+    return fresh, kept
+
+
+def _send_gone(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    there: str,
+    ids: list[str],
+    transport: Transport | None,
+) -> dict[str, Any]:
+    """One `report-gone` call for one platform and location, answered as the registry side answers it.  Whatever
+    goes wrong is an error answer."""
+    argv = [
+        "report-gone",
+        "--platform",
+        spec.platform,
+        "--location",
+        there,
+        "--seat",
+        seat,
+        "--source",
+        spec.source,
+        "--gone=" + json.dumps(ids),
+    ]
+    try:
+        return _registry_side(argv, env, transport)
+    except Exception as exc:  # noqa: BLE001 - a report never blocks a chat
+        return {"error": "the registry call failed (%s)" % type(exc).__name__}
+
+
+def _allowed(value: object) -> int:
+    """How many chats the assigner said it would take, from a stamp or an answer, or 0."""
+    return value if type(value) is int and value > 0 else 0
+
+
+def report_gone(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    where: str,
+    *,
+    now: float,
+    transport: Transport | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Tell the assigner which of this host's chats are gone for good, in ONE `report-gone` call for the platform, at
+    most once per GONE_REPORT_SECONDS (the stamp beside the notes;  `force` sends whatever the stamp says).
+
+    Answers what happened:  `skipped` with the reason nothing was looked for, else `gone` (the chats named) with
+    `closed` (the session ids whose rows the assigner closed now) or `error`.  The stamp is written before anything
+    else, so a report that fails, or a hook killed inside it, is tried again after the window and never on every
+    start.  The assigner refuses a report that would close more than its share of the location's live rows and says
+    how many it would take (`allowed_now`):  the stamp keeps that number, and the next report names no more than that.
+
+    A chat the report named is marked in its note (`gone_at`) once the assigner has answered, whether its row was
+    closed now or was closed already, so it is not named again.  The note stays open, with its touch made due:  if
+    the chat is alive after all, its next prompt asks the assigner, hears its letter is gone and registers again
+    (`on_prompt`), which takes the mark off (`_apply`).  A refused or failed report changes no note."""
+    if spec.gone_sessions is None or not seat or where not in LOCATIONS:
+        return {"skipped": "this platform names no gone chats on this host"}
+    path = gone_stamp_path(env, seat, spec.platform, where)
+    stamp = _read_json(path)
+    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < GONE_REPORT_SECONDS:
+        return {"skipped": "not due"}
+    limit = _allowed(stamp.get("allowed"))
+    if not _save_json(path, {"at": now, **({"allowed": limit} if limit else {})}):
+        # No stamp, no throttle:  nothing is sent.
+        return {"skipped": "the stamp could not be saved"}
+    gone = gone_chats(spec, env, seat, where, now)[: limit or GONE_REPORT_IDS]
+    if not gone:
+        _save_json(path, {"at": now})
+        return {"gone": []}
+    answer = _send_gone(spec, env, seat, where, [row["session_id"] for row in gone], transport)
+    if "error" in answer:
+        if answer.get("code") == "gone_share_exceeded":
+            _save_json(path, {"at": now, "allowed": max(1, _allowed(answer.get("allowed_now")))})
+        return {"gone": gone, "error": str(answer.get("error") or "no answer")[:200]}
+    _save_json(path, {"at": now})
+    closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
+    for row in gone:
+        chat = Chat(spec, env, where, row["session_id"], now=now, transport=transport, seat=seat)
+        note = chat.read()
+        if lettered(note) and _seconds(note.get("updated_at")) == row["seen"]:
+            chat.write(dict(note, gone_at=now, touched_at=0))
+    return {"gone": gone, "closed": closed}
+
+
+def report_gone_elsewhere(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    there: str,
+    *,
+    now: float,
+    transport: Transport | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Tell the assigner which chats that run at `there`, a location other than this host's, are gone for good
+    (`gone_elsewhere`:  a platform's app on this host can run, and archive, chats on another one).  ONE `report-gone`
+    call for the platform and that location, with its own stamp and window, and the same rules as `report_gone`:
+    the stamp first, a refusal's `allowed_now` kept for the next report, and no error ever raised into a chat.
+
+    The assigner closes only rows that are open at `there` under an id the report names, so an id it does not hold
+    open (the chat's own end already closed it, or its hook never registered it) costs nothing.  This host has no
+    note to mark, so the ids a report was answered for are kept in the stamp (`sent`) and not named again while the
+    adapter still names them."""
+    if spec.gone_elsewhere is None or not seat or there not in LOCATIONS:
+        return {"skipped": "this platform names no gone chats at that location"}
+    path = gone_stamp_path(env, seat, spec.platform, there)
+    stamp = _read_json(path)
+    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < GONE_REPORT_SECONDS:
+        return {"skipped": "not due"}
+    limit = _allowed(stamp.get("allowed"))
+    sent = stamp.get("sent")
+
+    def save(sent_now: object, allowed: int = 0) -> bool:
+        listed = sent_now if isinstance(sent_now, list) else []
+        kept = [sid for sid in listed if isinstance(sid, str)]
+        body: dict[str, Any] = {"at": now, "sent": kept[-GONE_SENT_IDS:]}
+        if allowed:
+            body["allowed"] = allowed
+        return _save_json(path, body)
+
+    if not save(sent, limit):
+        return {"skipped": "the stamp could not be saved"}
+    fresh, kept = gone_chats_elsewhere(spec, env, there, sent)
+    fresh = fresh[: limit or GONE_REPORT_IDS]
+    if not fresh:
+        save(kept)
+        return {"gone": []}
+    ids = [row["session_id"] for row in fresh]
+    answer = _send_gone(spec, env, seat, there, ids, transport)
+    if "error" in answer:
+        refused = answer.get("code") == "gone_share_exceeded"
+        save(kept, max(1, _allowed(answer.get("allowed_now"))) if refused else 0)
+        return {"gone": fresh, "error": str(answer.get("error") or "no answer")[:200]}
+    save(kept + ids)
+    closed = [sid for sid in answer.get("gone") or [] if isinstance(sid, str)]
+    labels = answer.get("labels")
+    for row in fresh:
+        label = labels.get(row["session_id"]) if isinstance(labels, Mapping) else ""
+        row["label"] = label if isinstance(label, str) and LABEL_RE.fullmatch(label) else ""
+    return {"gone": fresh, "closed": closed}
+
+
+def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
+    """The gone reports a chat's start makes, after the chat's own answer is out:  this host's own chats, then the
+    chats the platform's app runs at each other location.  Nothing here reaches the chat:  whatever goes wrong is
+    swallowed, and each report's stamp holds its next try back for the window."""
+    spec = chat.spec
+    if spec.gone_sessions is None and spec.gone_elsewhere is None:
+        return
+    if chat.location not in LOCATIONS:
+        return
+    try:
+        stdout.flush()
+    except (OSError, ValueError):
+        pass
+    try:
+        report_gone(
+            spec, chat.env, chat.seat, chat.location, now=chat.now, transport=chat.transport
+        )
+    except Exception:  # noqa: BLE001 - a report never blocks a chat, whatever an adapter or the host does
+        pass
+    for there in LOCATIONS:
+        if there == chat.location:
+            continue
+        try:
+            report_gone_elsewhere(
+                spec, chat.env, chat.seat, there, now=chat.now, transport=chat.transport
+            )
+        except Exception:  # noqa: BLE001 - a report never blocks a chat, whatever an adapter or the host does
+            pass
+
+
+GONE_USAGE = "usage: platform-letter gone [--platform P] [--location L] [--apply]\n"
+
+
+def gone_main(
+    argv: list[str],
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+    *,
+    now: float | None = None,
+    platform: str = sys.platform,
+    transport: Transport | None = None,
+) -> int:
+    """`gone [--platform P] [--location L] [--apply]`:  what this host's hooks would report gone, for the platform
+    named or for every platform whose adapter names its gone chats (`gone_sessions`, `gone_elsewhere`), and `--apply`
+    to report it now, whatever the stamps say.  One line per chat names its letter (a dash for a chat that runs on
+    another host, whose letter this host does not know), the first 8 characters of its session id and its location,
+    never a title.  Exit 0, 1 when a report was refused or failed, 2 for bad arguments."""
+    env = os.environ if env is None else env
+    stdout = stdout or sys.stdout
+    apply = "--apply" in argv
+    try:
+        flags = _flags([word for word in argv if word != "--apply"], ("--platform", "--location"))
+    except ValueError:
+        stdout.write(GONE_USAGE)
+        return 2
+    where = location(env, platform, flags.get("location", ""))
+    if where is None:
+        stdout.write("gone report:  %s\n" % NO_LOCATION)
+        return 2
+    specs: list[PlatformSpec] = []
+    if "platform" in flags:
+        name = flags["platform"]
+        spec = load_spec(name) if valid_platform(name) else None
+        if spec is None:
+            stdout.write("gone report:  no adapter for the platform %r\n" % name)
+            return 2
+        if spec.gone_sessions is None and spec.gone_elsewhere is None:
+            stdout.write("gone report:  the %s adapter names no gone chats\n" % name)
+            return 2
+        specs.append(spec)
+    else:
+        for name in adapter_platforms():
+            try:
+                spec = load_spec(name)
+            except Exception:  # noqa: BLE001 - an adapter that cannot load has nothing to report
+                continue
+            if spec is None or (spec.gone_sessions is None and spec.gone_elsewhere is None):
+                continue
+            specs.append(spec)
+    stamp = time.time() if now is None else now
+    code = 0
+    for spec in specs:
+        code = max(code, _gone_for(spec, env, where, stdout, stamp, apply, transport))
+    return code
+
+
+def _gone_for(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    where: str,
+    stdout: TextIO,
+    now: float,
+    apply: bool,
+    transport: Transport | None,
+) -> int:
+    """`gone` for one platform:  this host's own chats, then each other location's, with the lines for each and
+    the report when `apply`.  The worst exit status of them."""
+    seat = spec.seat_for({}, env)
+    code = 0
+    for there in (where, *(loc for loc in LOCATIONS if loc != where)):
+        local = there == where
+        if (spec.gone_sessions if local else spec.gone_elsewhere) is None or not seat:
+            continue
+        head = "%s gone report, %s:  " % (spec.display, there)
+
+        def tag(row: Mapping[str, Any], there: str = there) -> str:
+            letter = row["label"] or "-"
+            return "%s %s (%s, %s)" % (spec.display, letter, row["session_id"][:8], there)
+
+        try:
+            if apply and local:
+                done = report_gone(spec, env, seat, there, now=now, transport=transport, force=True)
+            elif apply:
+                done = report_gone_elsewhere(
+                    spec, env, seat, there, now=now, transport=transport, force=True
+                )
+            elif local:
+                done = {"gone": gone_chats(spec, env, seat, there, now, rewrite=False)}
+            else:
+                sent = _read_json(gone_stamp_path(env, seat, spec.platform, there)).get("sent")
+                done = {"gone": gone_chats_elsewhere(spec, env, there, sent)[0]}
+        except Exception as exc:  # noqa: BLE001 - an adapter that cannot say reports nothing
+            stdout.write(head + "could not read this host's chats (%s)\n" % type(exc).__name__)
+            code = max(code, 1)
+            continue
+        gone = done.get("gone") or []
+        if not apply:
+            for row in gone:
+                stdout.write("would report %s\n" % tag(row))
+            stdout.write(
+                head + "%d gone  (dry run:  nothing sent;  --apply reports them now)\n" % len(gone)
+            )
+        elif "error" in done:
+            stdout.write(head + "%d gone, not reported:  %s\n" % (len(gone), done["error"]))
+            code = max(code, 1)
+        else:
+            closed = set(done.get("closed") or [])
+            for row in gone:
+                word = "reported" if row["session_id"] in closed else "not open"
+                stdout.write("%s %s\n" % (word, tag(row)))
+            stdout.write(head + "%d gone, %d closed now\n" % (len(gone), len(closed)))
+    return code
+
+
+# --------------------------------------------------------------------------------------------
 # Installing hooks into a JSON hook file (once per host)
 # --------------------------------------------------------------------------------------------
 
 
-def command_for(home: str, platform: str, where: str = "") -> str:
+def command_for(home: str, platform: str, where: str = "", mac: str = "") -> str:
     """The hook command an adapter's hook file carries: this host's own `platform-letter` by absolute path, with the
-    location as a flag (a hook file has no env block to put it in)."""
+    location, and the Mac's ssh destination when the host was given one, as flags (a hook file has no env block to
+    put them in)."""
     parts = [
         shlex.quote(os.path.join(home, ".local", "bin", ENTRY)),
         "hook",
@@ -2750,6 +3545,8 @@ def command_for(home: str, platform: str, where: str = "") -> str:
     ]
     if where:
         parts += ["--location", where]
+    if mac and MAC_SSH_RE.fullmatch(mac):
+        parts += ["--mac-ssh", mac]
     return " ".join(parts)
 
 
@@ -2948,6 +3745,7 @@ class InstallOptions:
     location: str = ""
     check: bool = False
     remove: bool = False
+    mac_ssh: str = ""
 
 
 def _write_private(path: str, data: bytes, mode: int, *, exclusive: bool = False) -> None:
@@ -3039,7 +3837,8 @@ def install_json_hooks(
     ]
     inherited = next((w for w in already if w), [])
     where = opts.location or _flag(inherited, "--location")
-    command = command_for(home, platform, where)
+    mac = opts.mac_ssh or _flag(inherited, "--mac-ssh")
+    command = command_for(home, platform, where, mac)
     have = {
         ev: any(installed_command(e, platform) for e in events.get(ev) or [])
         for ev in installer.events
@@ -3082,6 +3881,7 @@ def install_json_hooks(
                 os.fsync(fh.fileno())
             os.chmod(tmp, file_mode)
             os.replace(tmp, path)
+            _sync_folder(os.path.dirname(path))
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -3099,19 +3899,23 @@ def install_json_hooks(
 
 
 def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`install --platform P [--location server|mac] [--check | --remove]`: find the platform's
-    adapter and run its installer.  An adapter with its own `install(options, env, stdout)` (a plugin directory, a
+    """`install --platform P [--location server|mac] [--mac-ssh DEST] [--check | --remove]`: find the platform's
+    adapter and run its installer.  `--mac-ssh` names the ssh destination of the Mac for a host that is not the Mac
+    (SESSION_LETTER_MAC_SSH):  the hook command carries it, and an install without the flag keeps the one it finds.  An adapter with its own `install(options, env, stdout)` (a plugin directory, a
     bundle) is called as it is; one with an `INSTALL` (a JsonHookInstaller) gets `install_json_hooks`."""
     import argparse
 
     parser = argparse.ArgumentParser(prog=ENTRY + " install")
     parser.add_argument("--platform", required=True)
     parser.add_argument("--location", choices=LOCATIONS)
+    parser.add_argument("--mac-ssh", default="")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--remove", action="store_true")
     args = parser.parse_args(argv)
-    opts = InstallOptions(args.platform, args.location or "", args.check, args.remove)
+    if args.mac_ssh and not MAC_SSH_RE.fullmatch(args.mac_ssh):
+        return _emit(stdout, {"error": "--mac-ssh must name an ssh destination"}, 2)
+    opts = InstallOptions(args.platform, args.location or "", args.check, args.remove, args.mac_ssh)
     spec = load_spec(args.platform)
     adapter = load_adapter(args.platform)
     if spec is None:
@@ -3132,9 +3936,11 @@ def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int
 USAGE = (
     "usage: platform-letter {hook --platform P [--location L]\n"
     "                        | registry OP --platform P ...\n"
-    "                        | show --platform P [--session-id S]\n"
-    "                        | install --platform P [--location L] [--check | --remove]\n"
-    "                        | request [--session-id S]}\n"
+    "                        | show [--platform P] [--session-id S]\n"
+    "                        | install --platform P [--location L] [--mac-ssh DEST] [--check | --remove]\n"
+    "                        | request [--session-id S]\n"
+    "                        | gone [--platform P] [--location L] [--apply]\n"
+    "                        | parent --platform P --session-id S [--app-id A] [--source SRC]}\n"
 )
 
 
@@ -3176,7 +3982,14 @@ def main(
         try:
             # A command line this hook cannot read (a retired flag) is a hook that does nothing and exits 0:  the hook
             # never blocks a chat.  Re-running `install` writes the current command.
-            flags = _flags(argv[1:], ("--platform", "--location"))
+            flags = _flags(argv[1:], ("--platform", "--location", "--mac-ssh"))
+            if MAC_SSH_RE.fullmatch(flags.get("mac-ssh", "")):
+                # The flag is the setting, for a hook file with no env block.  The process environment is kept
+                # as the mapping it is (the registry API reads its own settings from that very object).
+                if env is os.environ:
+                    os.environ[ENV_MAC_SSH] = flags["mac-ssh"]
+                else:
+                    env = {**env, ENV_MAC_SSH: flags["mac-ssh"]}
             spec = load_spec(flags.get("platform", ""))
             if spec is None:
                 stderr.write("platform-letter hook: no adapter for the platform\n")
@@ -3216,6 +4029,13 @@ def main(
         except ValueError:
             stderr.write(USAGE)
             return 2
+        if "platform" not in flags:
+            # No platform named:  the chat this shell runs in (or the one named), found by its note, as `request`
+            # finds it.
+            found = find_chat(env, flags.get("session-id", ""))
+            if isinstance(found, str):
+                return _emit(stdout, {"error": found}, 1)
+            return show(found[0], ["--session-id", found[1]], env, stdout)
         spec = load_spec(flags.get("platform", ""))
         if spec is None:
             return _emit(stdout, {"error": "no adapter for the platform"}, 2)
@@ -3229,6 +4049,10 @@ def main(
         return install_main(argv[1:], env, stdout)
     if argv[0] == "request":
         return request_main(argv[1:], env, stdout, transport=transport)
+    if argv[0] == "parent":
+        return parent_main(argv[1:], env, stdout)
+    if argv[0] in ("gone", "sweep-archived"):  # the second is the verb's name before this client
+        return gone_main(argv[1:], env, stdout, transport=transport)
     stderr.write(USAGE)
     return 2
 

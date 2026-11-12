@@ -12,12 +12,14 @@ import json
 import os
 import shlex
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import types
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -2160,6 +2162,116 @@ class HookTests(Base):
                                      "session_title": "??: Fix Login"}, transport=down))
         self.assertEqual(len(down.calls), 1)  # the stamp holds every prompt inside the wait
 
+    def test_a_no_letter_chat_whose_platform_keeps_its_own_title_is_retitled_once_per_name(self) -> None:
+        # A platform that will not take the hook's title goes on showing its own:  the mark is sent once for each
+        # name it shows, never on every prompt.
+        down = Calls(self, fail=TimeoutError("down"))
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup",
+                         "session_title": "Review PR"}, transport=down)
+        self.assertEqual(out["sessionTitle"], "??: Review PR")
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go on"}
+        for _ in range(3):
+            self.assertIsNone(self.hook(dict(prompt, session_title="Review PR"), transport=down))
+        out = self.hook(dict(prompt, session_title="Another Name"), transport=down)
+        self.assertEqual(out["sessionTitle"], "??: Another Name")
+        self.assertIsNone(self.hook(dict(prompt, session_title="Another Name"), transport=down))
+        self.assertEqual(len(down.calls), 1)
+
+    # ---- A title the platform will not take from the hook:  the adapter's `title_advice` ----
+
+    def test_title_advice_goes_to_the_model_with_the_start_and_is_not_repeated_on_every_prompt(self) -> None:
+        asked: list[PL.TitleRequest] = []
+        line = ["Set this chat's title yourself."]
+
+        def advise(request: PL.TitleRequest) -> str:
+            asked.append(request)
+            return line[0]
+
+        spec = make_spec(title_advice=advise)
+        t0 = time.time()
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"},
+                        spec=spec, now=t0)
+        label = self.label("s-0001")
+        # The reminder is still there, and the advice follows it after a sentence gap.
+        self.assertIn('"@**Codex** %s"' % label, out["additionalContext"])
+        self.assertTrue(out["additionalContext"].endswith("renamed.  " + line[0]), out["additionalContext"])
+        request = asked[0]
+        self.assertEqual((request.label, request.title, request.reason, request.session_id),
+                         (label, "%s: New Chat" % label, "start", "s-0001"))
+        self.assertIn(label, request.held)
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "fix login",
+                  "session_title": "%s: New Chat" % label}
+        first = self.hook(prompt, spec=spec, now=t0 + 1)
+        self.assertEqual(first["sessionTitle"], "%s: Fix Login" % label)
+        self.assertNotIn("additionalContext", first)  # asked at the start:  not again on its first prompt
+        self.assertEqual((asked[-1].title, asked[-1].reason), ("%s: Fix Login" % label, "prompt"))
+        steady = dict(prompt, session_title="%s: Fix Login" % label)
+        self.assertIsNone(self.hook(steady, spec=spec, now=t0 + 2))
+        later = self.hook(steady, spec=spec, now=t0 + PL.RETRY_SECONDS + 1)
+        self.assertEqual(later, {"hookEventName": "UserPromptSubmit", "additionalContext": line[0]})
+        self.assertIsNone(self.hook(steady, spec=spec, now=t0 + PL.RETRY_SECONDS + 2))
+        # A line that differs is news, and goes at once.
+        line[0] = "Set it to something else."
+        self.assertEqual(self.hook(steady, spec=spec, now=t0 + PL.RETRY_SECONDS + 3)["additionalContext"], line[0])
+        # Nothing to say:  nothing is said, and the note keeps what was asked last.
+        line[0] = ""
+        self.assertIsNone(self.hook(steady, spec=spec, now=t0 + 3 * PL.RETRY_SECONDS))
+        self.assertEqual(self.note("s-0001")["title_fix_for"], "Set it to something else.")
+
+    def test_title_advice_for_a_chat_with_no_letter_is_held_back_the_same_way(self) -> None:
+        asked: list[PL.TitleRequest] = []
+
+        def advise(request: PL.TitleRequest) -> str:
+            asked.append(request)
+            return "Name this chat %s." % request.title
+
+        spec = make_spec(title_advice=advise)
+        down = Calls(self, fail=TimeoutError("down"))
+        t0 = time.time()
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup",
+                         "session_title": "Review PR"}, spec=spec, transport=down, now=t0)
+        self.assertEqual(out["sessionTitle"], "??: Review PR")
+        self.assertIn("No Operator letter yet", out["additionalContext"])
+        self.assertTrue(out["additionalContext"].endswith("asks now.  Name this chat ??: Review PR."))
+        self.assertEqual((asked[0].label, asked[0].title, asked[0].held), ("", "??: Review PR", ()))
+        # The platform keeps its own title:  neither the title nor the same advice goes again on every prompt.
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go on",
+                  "session_title": "Review PR"}
+        for n in range(1, 4):
+            self.assertIsNone(self.hook(prompt, spec=spec, transport=down, now=t0 + n))
+        # Once the wait is over the chat asks for a letter again, and is told again, once.
+        later = self.hook(prompt, spec=spec, transport=down, now=t0 + PL.RETRY_SECONDS + 1)
+        self.assertEqual(later, {"hookEventName": "UserPromptSubmit",
+                                 "additionalContext": "Name this chat ??: Review PR."})
+        self.assertIsNone(self.hook(prompt, spec=spec, transport=down, now=t0 + PL.RETRY_SECONDS + 2))
+
+    def test_an_adapter_whose_title_advice_fails_says_nothing_and_blocks_nothing(self) -> None:
+        def broken(request: PL.TitleRequest) -> str:
+            raise RuntimeError("the platform's store is gone")
+
+        for n, advise in enumerate((broken, lambda request: None, lambda request: 7, lambda request: "  ")):
+            sid = "s-%04d" % (n + 1)
+            with self.subTest(sid=sid):
+                out = self.hook({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"},
+                                spec=make_spec(title_advice=advise))
+                self.assertTrue(out["additionalContext"].endswith("renamed."), out["additionalContext"])
+                self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+                self.assertNotIn("title_fix_for", self.note(sid))
+
+    def test_a_chat_another_seat_holds_is_asked_nothing(self) -> None:
+        asked: list[PL.TitleRequest] = []
+        spec = make_spec(title_advice=lambda request: asked.append(request) or "Set the title.")
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, spec=spec,
+                        transport=lambda argv: {"outcome": "seat_mismatch"})
+        self.assertNotIn("Set the title.", out["additionalContext"])
+        self.assertIsNone(self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go"},
+                                    spec=spec))
+        # A chat that learns it on a prompt (its hooks were installed after it started) is asked nothing either.
+        self.hook({"hook_event_name": "UserPromptSubmit", "session_id": "s-0002", "prompt": "go"}, spec=spec,
+                  transport=lambda argv: {"outcome": "seat_mismatch"})
+        self.assertEqual(self.note("s-0002")["state"], "mismatch")
+        self.assertEqual(asked, [])
+
     def test_a_refused_chat_gets_its_letter_once_one_is_free(self) -> None:
         with self.no_letters():
             self.start("s-0001")
@@ -2244,6 +2356,1025 @@ class HookTests(Base):
         self.assertEqual(code, 1)
         self.assertIn("no chat with the session id s-0999", line)
         self.assertEqual(self.request("--bogus")[0], 2)
+
+
+class GoneReportTests(Base):
+    """Chats that are gone for good (a platform's app archived them) release their letters:  a chat's start reports
+    them to the assigner in one `report-gone` call per host and platform, at most once a window, and nothing it does
+    can fail the start.  The platform here is a made-up row of the table whose adapter names its gone chats, so nothing
+    in the report is one seat's."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.gone: set[str] = set()
+        self.asked: list[frozenset[str]] = []
+
+        def gone_sessions(env, session_ids):
+            self.asked.append(frozenset(session_ids))
+            return self.gone
+
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux", gone_sessions=gone_sessions)
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.t0 = time.time() - 5 * 3600  # every time below is in the past, as a note's stamps are
+        self.window = PL.GONE_REPORT_SECONDS
+
+    def start(self, sid: str, at: float, *, spec=None, transport=None, source: str = "startup", **flags) -> dict:
+        out, err = io.StringIO(), io.StringIO()
+        flags.setdefault("platform", "darwin")
+        code = PL.hook(spec or self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "SessionStart", "session_id": sid, "source": source})), out, now=at,
+            transport=transport, stderr=err, **flags)
+        self.assertEqual((code, err.getvalue()), (0, ""))  # nothing the report does is even an error line
+        return json.loads(out.getvalue())["hookSpecificOutput"] if out.getvalue().strip() else {}
+
+    def prompt(self, sid: str, at: float, text: str = "go on") -> dict:
+        out = io.StringIO()
+        PL.hook(self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": text})), out, now=at,
+            platform="darwin")
+        return json.loads(out.getvalue())["hookSpecificOutput"] if out.getvalue().strip() else {}
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def row_state(self, sid: str, location: str = "mac") -> str:
+        return self.lookup(sid, location, platform="faux")["state"]
+
+    def stamp(self) -> dict:
+        with open(PL.gone_stamp_path(self.env(), "CODEX", "faux", "mac")) as fh:
+            return json.load(fh)
+
+    @contextmanager
+    def reports(self):
+        """The body of every report-gone request the client makes while this is open."""
+        seen: list[dict] = []
+        real = registry_api._open
+
+        def capture(request, timeout):
+            if request.full_url.endswith("/report-gone"):
+                seen.append(json.loads(request.data.decode("utf-8")))
+            return real(request, timeout)
+
+        with mock.patch.object(registry_api, "_open", capture):
+            yield seen
+
+    def test_a_start_reports_this_hosts_gone_chats_in_one_call(self) -> None:
+        with self.reports() as sent:
+            for sid in ("s-0001", "s-0002", "s-0003"):
+                self.start(sid, self.t0)
+            self.assertEqual((sent, self.asked), ([], []))  # no chat here has been quiet:  nobody is asked
+            self.gone = {"s-0001", "s-0002"}
+            out = self.start("s-0004", self.t0 + self.window + 1)
+        # One call, in the assigner's own request shape:  the platform, this host, the scope and the ids.  No title.
+        self.assertEqual(sent, [{"platform": "faux", "verified_host": "mac", "profile_scope": "default",
+                                 "native_session_ids": ["s-0001", "s-0002"]}])
+        self.assertEqual(self.asked, [frozenset({"s-0001", "s-0002", "s-0003"})])
+        self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003", "s-0004")],
+                         ["closed", "closed", "active", "active"])
+        # The chat that started is answered as ever.
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.note("s-0004")["label"])
+        # A chat the report named is marked, so it is not named again, and its next touch is due.
+        for sid in ("s-0001", "s-0002"):
+            note = self.note(sid)
+            self.assertEqual((note["state"], note["gone_at"], note["touched_at"]),
+                             ("open", self.t0 + self.window + 1, 0))
+        self.assertNotIn("gone_at", self.note("s-0003"))
+        self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1})
+        with self.reports() as sent:
+            self.start("s-0005", self.t0 + 2 * self.window + 5)
+        self.assertEqual(sent, [])  # the adapter still calls them gone, and they are not reported every window
+        self.assertEqual(self.asked[-1], frozenset({"s-0003", "s-0004"}))
+
+    def test_a_second_start_inside_the_window_sends_nothing(self) -> None:
+        self.start("s-0001", self.t0)
+        self.start("s-0002", self.t0)
+        self.gone = {"s-0001", "s-0002"}
+        with self.reports() as sent:
+            self.start("s-0003", self.t0 + self.window - 5)  # the stamp of the first start still holds
+            self.assertEqual((sent, self.asked), ([], []))
+            self.start("s-0004", self.t0 + self.window + 1)  # due:  s-0001 and s-0002 have been quiet an hour
+            self.assertEqual(len(sent), 1)
+            self.gone = {"s-0003"}
+            self.start("s-0005", self.t0 + 2 * self.window)  # inside the window of that report
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(len(self.asked), 1)  # the adapter is not even asked
+            self.start("s-0006", self.t0 + 2 * self.window + 2)
+            self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"], ["s-0003"]])
+
+    def test_nothing_gone_makes_no_call_and_still_stamps_the_window(self) -> None:
+        self.start("s-0001", self.t0)
+        with self.reports() as sent:
+            self.start("s-0002", self.t0 + self.window + 1)
+            self.start("s-0003", self.t0 + self.window + 2)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.asked, [frozenset({"s-0001"})])
+        self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1})
+
+    def test_only_this_hosts_own_quiet_lettered_chats_of_the_platform_are_candidates(self) -> None:
+        self.start("s-0001", self.t0)
+        self.start("c-0001", self.t0, spec=make_spec())  # another platform's chat, in the same seat's notes
+        self.start("s-0002", self.t0, platform="linux", location_flag="server")  # registered at another location
+        self.start("s-0003", self.t0, transport=Calls(self, fail=TimeoutError("down")))  # holds no letter
+        ending = make_spec(platform="faux", source="faux-hook", display="Faux")  # every end closes
+        self.start("s-0004", self.t0, spec=ending)
+        PL.hook(ending, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "SessionEnd", "session_id": "s-0004", "reason": "logout"})), io.StringIO(),
+            now=self.t0 + 1, platform="darwin")
+        self.assertEqual(self.note("s-0004")["state"], "closed")
+        self.start("s-0005", self.t0)
+        self.prompt("s-0005", self.t0 + self.window - 600)  # its hook ran ten minutes before the hour was up
+        # The adapter names everything it is asked about, and more:  only what was asked counts.
+        self.gone = {"s-0001", "s-0002", "s-0003", "s-0004", "s-0005", "c-0001", "s-9999"}
+        with self.reports() as sent:
+            self.start("s-0009", self.t0 + self.window + 1)
+        self.assertEqual(self.asked[-1], frozenset({"s-0001"}))
+        self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001"]])
+        self.assertEqual(self.row_state("s-0005"), "active")
+        self.assertEqual(self.row_state("s-0002", "server"), "active")
+        self.assertEqual(self.lookup("c-0001", "mac")["state"], "active")
+
+    def test_a_chat_archived_days_after_its_last_hook_event_is_still_reported(self) -> None:
+        # A chat is usually archived well after its last prompt, and the host may see no start for days after that.
+        self.start("s-0001", self.t0 - 30 * 86400)
+        self.start("s-0002", self.t0 - 3 * 86400)
+        self.start("s-0003", self.t0)
+        self.gone = {"s-0001", "s-0002"}
+        with self.reports() as sent:
+            self.start("s-0004", self.t0 + self.window + 1)
+        self.assertEqual(self.asked[-1], frozenset({"s-0001", "s-0002", "s-0003"}))
+        self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"]])  # longest quiet first
+        self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003")],
+                         ["closed", "closed", "active"])
+
+    def test_the_scan_is_bounded_by_count_and_never_by_how_long_a_chat_has_been_quiet(self) -> None:
+        for n in range(1, 6):
+            self.start("s-%04d" % n, self.t0 - n * 86400)
+        self.start("s-0006", self.t0)
+        now = self.t0 + self.window + 1
+        every = PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now)
+        self.assertEqual(sorted(every), ["s-%04d" % n for n in range(1, 7)])
+        with mock.patch.object(PL, "GONE_REPORT_IDS", 2):  # the most recently quiet chats are the ones kept
+            self.assertEqual(sorted(PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now)), ["s-0001", "s-0006"])
+        with mock.patch.object(PL, "GONE_SCAN_NOTES", 1):  # and only the newest note files are read at all
+            self.assertEqual(len(PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now)), 1)
+        # A chat that was reported is not a candidate again, so a long-kept note costs nothing after its report.
+        self.gone = {"s-0005"}
+        self.start("s-0007", now)
+        self.assertNotIn("s-0005", PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now + 10))
+
+    def test_a_refused_report_changes_no_note_and_the_next_one_names_what_the_assigner_allows(self) -> None:
+        for sid in ("s-0001", "s-0002", "s-0003", "s-0004"):
+            self.start(sid, self.t0)
+        self.gone = {"s-0001", "s-0002", "s-0003"}
+        before = {sid: self.note(sid) for sid in self.gone}
+        with self.reports() as sent:
+            out = self.start("s-0005", self.t0 + self.window + 1)  # 3 of the host's 5 live rows:  over the share
+        self.assertEqual(sent[0]["native_session_ids"], ["s-0001", "s-0002", "s-0003"])
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.note("s-0005")["label"])
+        for sid in sorted(self.gone):
+            self.assertEqual(self.row_state(sid), "active", sid)
+            self.assertEqual(self.note(sid), before[sid], sid)
+        self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1, "allowed": 2})
+        with self.reports() as sent:
+            self.start("s-0006", self.t0 + self.window + 60)  # refused or not, the window holds
+            self.assertEqual(sent, [])
+            self.start("s-0007", self.t0 + 2 * self.window + 2)
+        self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001", "s-0002"]])
+        self.assertEqual([self.row_state(sid) for sid in ("s-0001", "s-0002", "s-0003")],
+                         ["closed", "closed", "active"])
+        self.assertEqual(self.stamp(), {"at": self.t0 + 2 * self.window + 2})
+        with self.reports() as sent:
+            self.start("s-0008", self.t0 + 3 * self.window + 3)
+        self.assertEqual([body["native_session_ids"] for body in sent], [["s-0003"]])
+        self.assertEqual(self.row_state("s-0003"), "closed")
+
+    def test_a_start_still_succeeds_when_the_report_fails(self) -> None:
+        self.start("s-0001", self.t0)
+        self.gone = {"s-0001"}
+        calls = Calls(self)
+
+        def broken(argv):
+            if argv[0] == "report-gone":
+                raise RuntimeError("the report blew up")
+            return calls(argv)
+
+        out = self.start("s-0002", self.t0 + self.window + 1, transport=broken)
+        self.assertEqual(out["sessionTitle"], "%s: New Chat" % self.note("s-0002")["label"])
+        self.assertIn('"@**Faux** %s"' % self.note("s-0002")["label"], out["additionalContext"])
+        self.assertEqual(self.row_state("s-0001"), "active")
+        self.assertNotIn("gone_at", self.note("s-0001"))
+        # It is tried again after the window, never on every start.
+        with self.reports() as sent:
+            self.start("s-0003", self.t0 + self.window + 30)
+            self.assertEqual(sent, [])
+            self.start("s-0004", self.t0 + 2 * self.window + 2)
+        self.assertEqual([body["native_session_ids"] for body in sent], [["s-0001"]])
+
+    def test_nothing_an_adapter_or_the_assigner_does_fails_a_start(self) -> None:
+        def raises(env, session_ids):
+            raise OSError("the app's store went away")
+
+        answers = (raises, lambda env, ids: None, lambda env, ids: 7, lambda env, ids: [7, None, {"a": 1}])
+        for n, accessor in enumerate(answers):
+            with self.subTest(n=n):
+                spec = make_spec(platform="faux", source="faux-hook", display="Faux", gone_sessions=accessor)
+                self.start("a-%04d" % n, self.t0 + n * (self.window + 10), spec=spec)
+                with self.reports() as sent:
+                    out = self.start("b-%04d" % n, self.t0 + n * (self.window + 10) + self.window + 5, spec=spec)
+                self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+                self.assertEqual(sent, [])
+        # The assigner is unreachable:  the chat is a "??" chat, and the report is one more failed call.
+        self.gone = {"a-0000"}
+        down = Calls(self, fail=TimeoutError("down"))
+        out = self.start("s-0009", self.t0 + 4 * self.window, transport=down)
+        self.assertEqual(out["sessionTitle"], "??: New Chat")
+        self.assertEqual([call[0] for call in down.calls], ["register", "report-gone"])
+        # A state folder that cannot hold the stamp sends nothing at all:  with no stamp there is no throttle.
+        with mock.patch.object(PL, "_save_json", return_value=False), self.reports() as sent:
+            self.start("s-0010", self.t0 + 4 * self.window + 2 * self.window)
+        self.assertEqual(sent, [])
+
+    def test_a_compact_start_and_a_platform_with_no_accessor_report_nothing(self) -> None:
+        self.start("s-0001", self.t0)
+        self.gone = {"s-0001"}
+        with self.reports() as sent:
+            self.start("s-0001", self.t0 + self.window + 1, source="compact")
+            self.start("c-0001", self.t0 + self.window + 2, spec=make_spec())
+        self.assertEqual((sent, self.asked), ([], []))
+        self.assertFalse(os.path.exists(PL.gone_stamp_path(self.env(), "CODEX", "codex", "mac")))
+        self.assertIsNone(make_spec().gone_sessions)  # no platform reports gone chats unless its adapter says how
+
+    def test_a_chat_reported_gone_that_prompts_again_registers_again(self) -> None:
+        self.start("s-0001", self.t0)
+        self.start("s-0002", self.t0)
+        self.gone = {"s-0001"}
+        self.start("s-0003", self.t0 + self.window + 1)
+        self.assertEqual(self.row_state("s-0001"), "closed")
+        out = self.prompt("s-0001", self.t0 + self.window + 20, "fix login")  # alive after all
+        note = self.note("s-0001")
+        self.assertEqual((self.row_state("s-0001"), note["state"]), ("active", "open"))
+        self.assertNotIn("gone_at", note)
+        self.assertEqual(out["sessionTitle"], "%s: Fix Login" % note["label"])
+        self.assertIn('"@**Faux** %s"' % note["label"], out["additionalContext"])  # told how it is addressed now
+
+    # ---- `platform-letter gone`:  what would be reported, and `--apply` to report it now ----
+
+    def verb(self, *argv: str, at: float | None = None, platform: str = "darwin") -> tuple[int, str]:
+        out = io.StringIO()
+        code = PL.gone_main(list(argv), self.env(), out, now=at, platform=platform)
+        return code, out.getvalue()
+
+    def test_the_dry_run_names_each_chat_by_letter_and_eight_characters_and_sends_nothing(self) -> None:
+        long_id = "0123456789abcdef-long-session-id"
+        self.start(long_id, self.t0)
+        self.start("s-0002", self.t0)
+        self.prompt(long_id, self.t0 + 1, "a secret title for this chat")
+        label = self.note(long_id)["label"]
+        self.gone = {long_id}
+        stamp = self.stamp()
+        with self.reports() as sent:
+            code, out = self.verb("--platform", "faux", at=self.t0 + self.window + 5)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines(), [
+            "would report Faux %s (01234567, mac)" % label,
+            "Faux gone report, mac:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
+        ])
+        self.assertNotIn("Secret", out)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.stamp(), stamp)  # a look is not a report:  the hooks' window is as it was
+        self.assertEqual(self.row_state(long_id), "active")
+
+    def test_apply_reports_now_whatever_the_stamp_says(self) -> None:
+        self.start("s-0001", self.t0)
+        self.start("s-0002", self.t0)
+        self.start("s-0003", self.t0 + self.window + 1)  # the hooks' report for this window is spent
+        self.gone = {"s-0001"}
+        label = self.note("s-0001")["label"]
+        with self.reports() as sent:
+            code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 30)
+            self.assertEqual(code, 0, out)
+            self.assertEqual(out.splitlines(), ["reported Faux %s (s-0001, mac)" % label,
+                                                "Faux gone report, mac:  1 gone, 1 closed now"])
+            self.assertEqual(self.row_state("s-0001"), "closed")
+            code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 40)
+            self.assertEqual((code, out), (0, "Faux gone report, mac:  0 gone, 0 closed now\n"))  # idempotent
+        self.assertEqual(len(sent), 1)
+
+    def test_a_chat_the_assigner_closed_already_is_not_named_twice(self) -> None:
+        self.start("s-0001", self.t0)
+        self.start("s-0002", self.t0)
+        code, answer = self.registry("close", "--platform", "faux", "--location", "mac", "--session-id", "s-0001")
+        self.assertEqual(code, 0, answer)
+        self.gone = {"s-0001"}
+        code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 5)
+        self.assertEqual(code, 0, out)
+        self.assertIn("not open Faux %s (s-0001, mac)" % self.note("s-0001")["label"], out)
+        self.assertIn("1 gone, 0 closed now", out)
+        self.assertEqual(self.verb("--platform", "faux", at=self.t0 + self.window + 9)[1].splitlines()[0],
+                         "Faux gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)")
+
+    def test_a_refused_or_failed_apply_says_so(self) -> None:
+        for sid in ("s-0001", "s-0002", "s-0003"):
+            self.start(sid, self.t0)
+        self.gone = {"s-0001", "s-0002", "s-0003"}
+        code, out = self.verb("--platform", "faux", "--apply", at=self.t0 + self.window + 5)
+        self.assertEqual(code, 1, out)
+        self.assertIn("Faux gone report, mac:  3 gone, not reported:  the report would close 3 of 3 live rows", out)
+        self.assertEqual(self.row_state("s-0001"), "active")
+        broken = make_spec(platform="faux", source="faux-hook", display="Faux",
+                           gone_sessions=mock.Mock(side_effect=OSError("gone")))
+        with mock.patch.dict(PL.SPECS, {"faux": broken}):
+            for argv in (["--platform", "faux"], ["--platform", "faux", "--apply"]):
+                code, out = self.verb(*argv, at=self.t0 + 2 * self.window + 9)
+                self.assertEqual((code, out), (1, "Faux gone report, mac:  could not read this host's chats (OSError)\n"))
+
+    def test_the_verb_checks_its_arguments(self) -> None:
+        code, out = self.verb("--platform", "codex")
+        self.assertEqual((code, out), (2, "gone report:  the codex adapter names no gone chats\n"))
+        code, out = self.verb("--platform", "nosuch")
+        self.assertEqual((code, out), (2, "gone report:  no adapter for the platform 'nosuch'\n"))
+        for bad in (["--bogus"], ["--platform"], ["--apply", "extra"], ["--platform", "../x"]):
+            self.assertEqual(self.verb(*bad)[0], 2, bad)
+        # A host that is not the Mac must say where it is, as its hooks do.
+        code, out = self.verb("--platform", "faux", platform="linux")
+        self.assertEqual(code, 2)
+        self.assertIn("fleet location is not stated", out)
+        code, out = self.verb("--platform", "faux", "--location", "server", platform="linux")
+        self.assertEqual((code, out.splitlines()[-1].split("  (")[0]), (0, "Faux gone report, server:  0 gone"))
+
+    def test_without_a_platform_every_platform_that_names_its_gone_chats_is_shown(self) -> None:
+        self.start("s-0001", self.t0)
+        self.start("s-0002", self.t0)
+        self.gone = {"s-0001"}
+        label = self.note("s-0001")["label"]
+        out = io.StringIO()
+        # Through the entry point, under both names:  `sweep-archived` is what the verb was called before.
+        for name in ("gone", "sweep-archived"):
+            out = io.StringIO()
+            self.assertEqual(PL.main([name, "--location", "mac"], env=self.env(), stdout=out, stderr=out), 0)
+            self.assertIn("would report Faux %s (s-0001, mac)" % label, out.getvalue())
+        shown = {line.split(" gone report, ")[0] for line in out.getvalue().splitlines() if " gone report, " in line}
+        self.assertIn("Faux", shown)
+        self.assertNotIn("Codex", shown)
+        for name in PL.adapter_platforms():
+            spec = PL.load_spec(name)
+            if spec is not None:
+                names = spec.gone_sessions is not None or spec.gone_elsewhere is not None
+                self.assertEqual(spec.display in shown, names, name)
+        self.assertIn("gone [--platform P] [--location L] [--apply]", PL.USAGE)
+
+    # ---- the registry side's `report-gone` op ----
+
+    def test_the_registry_side_reports_gone_chats_in_one_api_call(self) -> None:
+        for sid in ("s-0001", "s-0002", "s-0003", "s-0004"):
+            self.start(sid, self.t0)
+        argv = ["report-gone", "--platform", "faux", "--location", "mac"]
+        with self.reports() as sent:
+            code, answer = self.registry(*argv, "--gone=" + json.dumps(["s-0001", "s-0001", "s-7777"]))
+        self.assertEqual((code, answer), (0, {"ok": True, "gone": ["s-0001"], "count": 1,
+                                              "labels": {"s-0001": self.note("s-0001")["label"]}}))
+        self.assertEqual(sent, [{"platform": "faux", "verified_host": "mac", "profile_scope": "default",
+                                 "native_session_ids": ["s-0001", "s-7777"]}])
+        self.assertEqual(self.row_state("s-0001"), "closed")
+        with self.reports() as sent:
+            # An empty list makes no call, and a list that is not session ids is refused whole, before any call.
+            self.assertEqual(self.registry(*argv), (0, {"ok": True, "gone": [], "count": 0}))
+            for bad in ("{}", "not json", '["s-0002", 7]', '["s-0002", "../x"]', '"s-0002"',
+                        json.dumps(["s-%04d" % n for n in range(PL.GONE_REPORT_IDS + 1)])):
+                code, answer = self.registry(*argv, "--gone=" + bad)
+                self.assertEqual(code, 5, bad[:40])
+                self.assertIn("error", answer)
+        self.assertEqual(sent, [])
+        self.assertEqual(self.row_state("s-0002"), "active")
+        # The assigner's own refusal comes back as it is, with what it would take now.
+        code, answer = self.registry(*argv, "--gone=" + json.dumps(["s-0002", "s-0003", "s-0004"]))
+        self.assertEqual((code, answer["code"]), (5, "gone_share_exceeded"))
+        self.assertIsInstance(answer["allowed_now"], int)
+        # Every other op is about one chat, and still needs its session id.
+        for op in ("register", "title", "touch", "close", "show", "issues"):
+            code, answer = self.registry(op, "--platform", "faux", "--location", "mac", "--seat", "CODEX")
+            self.assertEqual((code, answer), (2, {"error": "bad arguments"}), op)
+
+
+class GoneElsewhereTests(Base):
+    """A platform's app on one host can run, and archive, chats on another, whose notes this host does not hold.
+    The adapter names those from its own records (`gone_elsewhere`), and they go in a report of their own for the
+    location they run at, with its own stamp, through the same `report-gone` call."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.gone: set[str] = set()
+        self.elsewhere: dict[str, list] = {}
+        self.asked: list[str] = []
+
+        def gone_elsewhere(env, there):
+            self.asked.append(there)
+            return self.elsewhere.get(there)
+
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                              gone_sessions=lambda env, ids: self.gone, gone_elsewhere=gone_elsewhere)
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.t0 = time.time() - 5 * 3600
+        self.window = PL.GONE_REPORT_SECONDS
+
+    def start(self, sid: str, at: float, *, transport=None, **flags) -> dict:
+        out, err = io.StringIO(), io.StringIO()
+        flags.setdefault("platform", "darwin")
+        code = PL.hook(self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"})), out, now=at,
+            transport=transport, stderr=err, **flags)
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        return json.loads(out.getvalue())["hookSpecificOutput"] if out.getvalue().strip() else {}
+
+    def server_chat(self, sid: str) -> str:
+        """A chat registered at the server, by its own hook there:  this host holds no note of it."""
+        code, answer = self.registry("register", "--platform", "faux", "--location", "server", "--session-id", sid,
+                                     "--seat", "CODEX", "--source", "faux-hook")
+        self.assertEqual(code, 0, answer)
+        return answer["label"]
+
+    def row_state(self, sid: str, location: str) -> str:
+        return self.lookup(sid, location, platform="faux")["state"]
+
+    def stamp(self, there: str = "server") -> dict:
+        with open(PL.gone_stamp_path(self.env(), "CODEX", "faux", there)) as fh:
+            return json.load(fh)
+
+    @contextmanager
+    def reports(self):
+        seen: list[dict] = []
+        real = registry_api._open
+
+        def capture(request, timeout):
+            if request.full_url.endswith("/report-gone"):
+                seen.append(json.loads(request.data.decode("utf-8")))
+            return real(request, timeout)
+
+        with mock.patch.object(registry_api, "_open", capture):
+            yield seen
+
+    def test_a_mac_start_sends_one_report_for_its_own_chats_and_one_for_the_other_location(self) -> None:
+        for sid in ("m-0001", "m-0002"):
+            self.start(sid, self.t0)
+        for sid in ("r-0001", "r-0002", "r-0003"):
+            self.server_chat(sid)
+        self.gone = {"m-0001"}
+        self.elsewhere = {"server": ["r-0001", "r-9999"]}  # the second is not registered anywhere
+        with self.reports() as sent:
+            out = self.start("m-0003", self.t0 + self.window + 1)
+        self.assertEqual(sent, [
+            {"platform": "faux", "verified_host": "mac", "profile_scope": "default",
+             "native_session_ids": ["m-0001"]},
+            {"platform": "faux", "verified_host": "server", "profile_scope": "default",
+             "native_session_ids": ["r-0001", "r-9999"]},
+        ])
+        self.assertEqual(set(self.asked), {"server"})  # only the location that is not this host's
+        self.assertEqual((self.row_state("m-0001", "mac"), self.row_state("m-0002", "mac")), ("closed", "active"))
+        self.assertEqual([self.row_state(sid, "server") for sid in ("r-0001", "r-0002", "r-0003")],
+                         ["closed", "active", "active"])
+        self.assertIsNone(self.lookup("r-9999", "server", platform="faux"))  # an id nobody holds open costs nothing
+        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+        # Each location has its own stamp, and the other location's keeps what was reported.
+        self.assertEqual(self.stamp("mac"), {"at": self.t0 + self.window + 1})
+        self.assertEqual(self.stamp("server"), {"at": self.t0 + self.window + 1, "sent": ["r-0001", "r-9999"]})
+
+    def test_a_chat_is_named_once_while_it_stays_gone_and_again_if_it_goes_again(self) -> None:
+        for n in range(1, 9):  # enough live rows that the assigner's share guard is not what is tested here
+            self.server_chat("r-%04d" % n)
+        self.elsewhere = {"server": ["r-0001"]}
+        with self.reports() as sent:
+            self.start("m-0001", self.t0)
+            self.start("m-0002", self.t0 + self.window + 1)
+            self.assertEqual(len(sent), 1)  # still named by the adapter:  not reported every window
+            self.elsewhere = {"server": ["r-0002", "r-0001"]}
+            self.start("m-0003", self.t0 + 2 * self.window + 2)
+            self.assertEqual(sent[-1]["native_session_ids"], ["r-0002"])
+            self.assertEqual(self.stamp()["sent"], ["r-0001", "r-0002"])
+            # r-0001 is no longer named (it was unarchived and came back):  it is forgotten, and named again later.
+            self.server_chat("r-0001")
+            self.elsewhere = {"server": ["r-0002"]}
+            self.start("m-0004", self.t0 + 3 * self.window + 3)
+            self.assertEqual((len(sent), self.stamp()["sent"]), (2, ["r-0002"]))
+            self.elsewhere = {"server": ["r-0001", "r-0002"]}
+            self.start("m-0005", self.t0 + 4 * self.window + 4)
+        self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"], ["r-0002"], ["r-0001"]])
+        self.assertEqual(self.row_state("r-0001", "server"), "closed")
+
+    def test_the_other_locations_report_has_its_own_window(self) -> None:
+        self.server_chat("r-0001")
+        self.server_chat("r-0002")
+        with self.reports() as sent:
+            self.start("m-0001", self.t0)
+            self.elsewhere = {"server": ["r-0001"]}
+            self.start("m-0002", self.t0 + self.window - 5)  # inside the window:  the adapter is not even asked
+            self.assertEqual((sent, self.asked), ([], ["server"]))
+            self.start("m-0003", self.t0 + self.window + 1)
+            self.assertEqual(len(sent), 1)
+            self.elsewhere = {"server": ["r-0001", "r-0002"]}
+            self.start("m-0004", self.t0 + self.window + 30)
+            self.assertEqual(len(sent), 1)
+        # A host that is the other location asks about this one in turn.
+        self.asked.clear()
+        self.start("s-0001", self.t0, platform="linux", location_flag="server")
+        self.assertEqual(self.asked, ["mac"])
+
+    def test_a_host_is_never_asked_about_its_own_location(self) -> None:
+        # Its own chats are `gone_sessions`' to name, from its notes.  With no such accessor there is no stamp of
+        # this host's own to hold the question back, so this is the rule itself.
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                              gone_elsewhere=lambda env, there: self.asked.append(there))
+        self.start("m-0001", self.t0)
+        self.start("s-0001", self.t0, platform="linux", location_flag="server")
+        self.assertEqual(self.asked, ["server", "mac"])
+
+    def test_a_refused_report_keeps_nothing_as_sent_and_the_next_names_what_the_assigner_allows(self) -> None:
+        for sid in ("r-0001", "r-0002", "r-0003", "r-0004"):
+            self.server_chat(sid)
+        self.elsewhere = {"server": ["r-0001", "r-0002", "r-0003"]}
+        with self.reports() as sent:
+            self.start("m-0001", self.t0)  # 3 of the server's 4 live rows:  over the share
+            self.assertEqual(sent[0]["native_session_ids"], ["r-0001", "r-0002", "r-0003"])
+            self.assertEqual([self.row_state(sid, "server") for sid in ("r-0001", "r-0002", "r-0003")],
+                             ["active"] * 3)
+            self.assertEqual(self.stamp(), {"at": self.t0, "sent": [], "allowed": 2})
+            self.start("m-0002", self.t0 + 60)  # refused or not, the window holds
+            self.assertEqual(len(sent), 1)
+            self.start("m-0003", self.t0 + self.window + 1)
+        self.assertEqual(sent[-1]["native_session_ids"], ["r-0001", "r-0002"])
+        self.assertEqual([self.row_state(sid, "server") for sid in ("r-0001", "r-0002", "r-0003")],
+                         ["closed", "closed", "active"])
+        self.assertEqual(self.stamp(), {"at": self.t0 + self.window + 1, "sent": ["r-0001", "r-0002"]})
+
+    def test_nothing_the_adapter_or_the_assigner_does_fails_a_start(self) -> None:
+        self.server_chat("r-0001")
+        self.server_chat("r-0002")
+        for n, answer in enumerate((None, 7, [7, None, "../x", {"a": 1}], OSError("the store went away"))):
+            with self.subTest(n=n):
+                self.elsewhere = {"server": answer}
+                if isinstance(answer, Exception):
+                    self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                                          gone_elsewhere=mock.Mock(side_effect=answer))
+                with self.reports() as sent:
+                    out = self.start("a-%04d" % n, self.t0 + n * (self.window + 5))
+                self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+                self.assertEqual(sent, [])
+        # A report that fails changes nothing, records nothing as sent, and is tried again after the window.
+        self.spec = PL.SPECS["faux"]
+        self.elsewhere = {"server": ["r-0001"]}
+        calls = Calls(self)
+
+        def broken(argv):
+            if argv[0] == "report-gone":
+                raise RuntimeError("the report blew up")
+            return calls(argv)
+
+        at = self.t0 + 5 * self.window
+        out = self.start("m-0001", at, transport=broken)
+        self.assertRegex(out["sessionTitle"], r"^[A-Z]{2}: New Chat$")
+        self.assertEqual((self.row_state("r-0001", "server"), self.stamp()), ("active", {"at": at, "sent": []}))
+        with self.reports() as sent:
+            self.start("m-0002", at + 30)
+            self.assertEqual(sent, [])
+            self.start("m-0003", at + self.window + 1)
+        self.assertEqual([body["native_session_ids"] for body in sent], [["r-0001"]])
+
+    def test_the_verb_shows_and_reports_the_other_locations_chats(self) -> None:
+        label = self.server_chat("0123456789abcdef-remote")
+        self.server_chat("r-0002")
+        self.elsewhere = {"server": ["0123456789abcdef-remote", "r-7777"]}
+        out = io.StringIO()
+        with self.reports() as sent:
+            code = PL.gone_main(["--platform", "faux"], self.env(), out, now=self.t0, platform="darwin")
+            self.assertEqual(code, 0, out.getvalue())
+            # This host does not know the letter of a chat that runs elsewhere:  a dash stands for it.
+            self.assertEqual(out.getvalue().splitlines(), [
+                "Faux gone report, mac:  0 gone  (dry run:  nothing sent;  --apply reports them now)",
+                "would report Faux - (01234567, server)",
+                "would report Faux - (r-7777, server)",
+                "Faux gone report, server:  2 gone  (dry run:  nothing sent;  --apply reports them now)",
+            ])
+            self.assertEqual(sent, [])
+            self.assertFalse(os.path.exists(PL.gone_stamp_path(self.env(), "CODEX", "faux", "server")))
+            out = io.StringIO()
+            code = PL.gone_main(["--platform", "faux", "--apply"], self.env(), out, now=self.t0, platform="darwin")
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(out.getvalue().splitlines(), [
+            "Faux gone report, mac:  0 gone, 0 closed now",
+            "reported Faux %s (01234567, server)" % label,  # the assigner's answer names the letter it freed
+            "not open Faux - (r-7777, server)",
+            "Faux gone report, server:  2 gone, 1 closed now",
+        ])
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(self.row_state("0123456789abcdef-remote", "server"), "closed")
+        # A platform that names only chats elsewhere is a platform the verb takes.
+        only = make_spec(platform="faux", source="faux-hook", display="Faux", gone_elsewhere=lambda env, there: [])
+        with mock.patch.dict(PL.SPECS, {"faux": only}):
+            out = io.StringIO()
+            self.assertEqual(PL.gone_main(["--platform", "faux"], self.env(), out, platform="darwin"), 0)
+            self.assertEqual(out.getvalue().splitlines(), [
+                "Faux gone report, server:  0 gone  (dry run:  nothing sent;  --apply reports them now)"])
+
+
+class RetiredNoteTests(Base):
+    """A note the seat's retired client wrote (no `platform`, earlier letters under `held_labels`) is put in this
+    client's shape the first time it is read, where it lies."""
+
+    def old_note(self, sid: str, **over) -> dict:
+        """The shape the retired Claude client wrote (its `Chat.write` and `_follow_letter` on origin/main)."""
+        note = {
+            "ended": {"at": 1.0, "reason": "other"}, "generation": 2, "held_labels": ["QP", "QQ", "QR"],
+            "inherited": "", "label": "QR", "location": "mac", "placeholder": "QR: New Chat", "prior_label": "QQ",
+            "record_id": "rec-1", "session_id": sid, "state": "open", "title": "Fix Login", "titled": True,
+            "touched_at": 5.0, "updated_at": 7.0,
+        }
+        note.update(over)
+        return note
+
+    def put(self, sid: str, note: dict, seat: str = "CODEX") -> str:
+        folder = os.path.join(self.state, seat, "letters")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, sid + ".json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(note, fh)
+        return path
+
+    def on_disk(self, path: str) -> dict:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_the_first_read_upgrades_it_in_place(self) -> None:
+        path = self.put("s-0001", self.old_note("s-0001"))
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=99.0)
+        note = chat.read()
+        self.assertEqual((note["platform"], note["labels"]), ("codex", ["QR", "QQ", "QP"]))  # its own first, newest next
+        self.assertNotIn("held_labels", note)
+        self.assertNotIn("prior_label", note)
+        self.assertEqual(self.on_disk(path), note)
+        self.assertEqual(note["updated_at"], 7.0)  # a read is not a hook event:  the old client's stamp stays
+        self.assertEqual({k: note[k] for k in ("label", "state", "title", "record_id", "generation")},
+                         {"label": "QR", "state": "open", "title": "Fix Login", "record_id": "rec-1", "generation": 2})
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        # A second read changes nothing, and a note of this client is never touched.
+        before = os.stat(path).st_mtime_ns
+        self.assertEqual(chat.read(), note)
+        self.assertEqual(os.stat(path).st_mtime_ns, before)
+        self.assertIsNone(PL.upgraded_note(note, "codex"))
+        self.assertIsNone(PL.upgraded_note({}, "codex"))
+
+    def test_odd_old_notes_upgrade_without_raising(self) -> None:
+        for over, want in (
+            ({"held_labels": None, "prior_label": None}, ["QR"]),
+            ({"held_labels": "QP", "prior_label": 7}, ["QR"]),
+            ({"held_labels": ["qq", "TOOLONG", 5, "QP"]}, ["QR", "QQ", "QP"]),
+            ({"label": "", "state": "failed", "held_labels": [], "prior_label": None}, []),
+        ):
+            note = PL.upgraded_note(self.old_note("s-0001", **over), "codex")
+            self.assertEqual(note["labels"], want, over)
+
+    def test_bare_knows_the_letters_the_old_client_remembered(self) -> None:
+        # The chat still shows a title under a letter it held two letters ago:  the hook takes that letter off, where
+        # a note that had lost its history would stack the new letter in front of it.
+        self.put("s-0001", self.old_note("s-0001", updated_at=time.time()))
+        out = io.StringIO()
+        PL.hook(self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "UserPromptSubmit", "session_id": "s-0001", "prompt": "go",
+             "session_title": "QP: Fix Login"})), out, platform="darwin",
+            transport=lambda argv: {"ok": True, "record_id": "rec-1"})
+        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["sessionTitle"], "QR: Fix Login")
+
+    def test_an_old_note_becomes_a_gone_report_candidate(self) -> None:
+        gone: set[str] = set()
+        spec = make_spec(platform="faux", source="faux-hook", display="Faux", gone_sessions=lambda env, ids: gone)
+        now = time.time()
+        path = self.put("s-0001", self.old_note("s-0001", updated_at=now - 3 * 86400))
+        self.assertEqual(PL.quiet_chats(self.env(), "CODEX", "faux", "mac", now), {})  # not asked to adopt it
+        self.assertNotIn("platform", self.on_disk(path))
+        self.assertEqual([row["session_id"] for row in PL.gone_chats(spec, self.env(), "CODEX", "mac", now)], [])
+        self.assertEqual(self.on_disk(path)["platform"], "faux")  # read by the seat's own platform:  adopted
+        gone.add("s-0001")
+        self.assertEqual([(row["session_id"], row["label"]) for row in
+                          PL.gone_chats(spec, self.env(), "CODEX", "mac", now)], [("s-0001", "QR")])
+        # The dry run names such a chat too, and leaves its note exactly as the old client wrote it.
+        third = self.put("s-0003", self.old_note("s-0003", updated_at=now - 86400))
+        gone.add("s-0003")
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": spec}):
+            self.assertEqual(PL.gone_main(["--platform", "faux"], self.env(), out, now=now, platform="darwin"), 0)
+        self.assertIn("would report Faux QR (s-0003, mac)", out.getvalue())
+        self.assertNotIn("platform", self.on_disk(third))
+        # A spec whose seat is read from the environment (a launcher's) adopts nobody's notes.
+        other = self.put("s-0002", self.old_note("s-0002", updated_at=now - 86400))
+        launcher = make_spec(platform="faux", source="faux-hook", display="Faux", gone_sessions=lambda env, ids: gone,
+                             seat=PL.from_env("AGENT_LAUNCH_SEAT"))
+        PL.gone_chats(launcher, self.env(), "CODEX", "mac", now)
+        self.assertNotIn("platform", self.on_disk(other))
+
+
+class ParentTests(Base):
+    """A chat's parent is asked for once:  an adapter's lookup can cost a call to another host.  And `parent` is the
+    read-only verb such a lookup runs on the host that holds the records."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.parents: dict[str, str] = {}
+        self.lookups: list[dict] = []
+
+        def parent_id(payload, env):
+            self.lookups.append({"payload": dict(payload), "mac": env.get(PL.ENV_MAC_SSH, "")})
+            return self.parents.get(payload.get("session_id"), "")
+
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux", parent_id=parent_id)
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def run_hook(self, payload: dict, at: float, transport=None) -> None:
+        self.assertEqual(PL.hook(self.spec, self.env(), io.StringIO(json.dumps(payload)), io.StringIO(), now=at,
+                                 platform="darwin", transport=transport), 0)
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def test_a_lookup_that_found_no_parent_is_not_repeated_inside_the_window(self) -> None:
+        down = Calls(self, fail=TimeoutError("down"))
+        start = {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "go"}
+        t0 = time.time()
+        self.run_hook(start, t0, transport=down)
+        self.assertEqual(len(self.lookups), 1)
+        self.assertEqual((self.note("c-0001")["parent"], self.note("c-0001")["parent_asked_at"]), ("", t0))
+        # A chat with no letter asks for one on its prompts:  each of them would look the parent up again.
+        for n in range(1, 4):
+            self.run_hook(prompt, t0 + n, transport=down)
+        self.run_hook(dict(start, source="resume"), t0 + 5, transport=down)
+        self.assertEqual(len(self.lookups), 1)
+        # After the window it is asked again, and a parent that is found then is used and kept.
+        self.parents["c-0001"] = "p-0001"
+        self.run_hook(prompt, t0 + PL.RETRY_SECONDS + 10)
+        self.assertEqual(len(self.lookups), 2)
+        self.assertEqual(self.note("c-0001")["parent"], "p-0001")
+        # A parent the note knows is never asked for again.
+        self.run_hook(dict(start, source="resume"), t0 + 10 * PL.RETRY_SECONDS)
+        self.run_hook(prompt, t0 + 20 * PL.RETRY_SECONDS)
+        self.assertEqual(len(self.lookups), 2)
+        self.assertEqual(self.note("c-0001")["parent"], "p-0001")
+
+    def test_a_parent_found_at_the_start_places_the_chat_after_it(self) -> None:
+        t0 = time.time()
+        self.run_hook({"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"}, t0)
+        self.parents["c-0001"] = "p-0001"
+        calls = Calls(self)
+        self.run_hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}, t0,
+                      transport=calls)
+        self.assertIn("--parent-session-id=p-0001", calls.calls[0])
+        parent, child = self.note("p-0001")["label"], self.note("c-0001")["label"]
+        self.assertEqual((child[0], child != parent), (parent[0], True))
+
+    def test_an_adapter_whose_lookup_raises_has_found_no_parent(self) -> None:
+        spec = make_spec(parent_id=mock.Mock(side_effect=OSError("the other host is asleep")))
+        chat = PL.Chat(spec, self.env(), "mac", "c-0001", now=50.0)
+        note: dict = {}
+        self.assertEqual(PL.parent_of(chat, note, {"session_id": "c-0001"}), "")
+        self.assertEqual(note, {"parent_asked_at": 50.0})
+        # A parent that is found is kept in the note at once, whether or not a registration follows now.
+        found = make_spec(parent_id=lambda payload, env: "p-0001")
+        note = {"parent_asked_at": 50.0 - PL.RETRY_SECONDS}
+        self.assertEqual(PL.parent_of(PL.Chat(found, self.env(), "mac", "c-0001", now=50.0), note, {}), "p-0001")
+        self.assertEqual(note, {"parent_asked_at": 50.0, "parent": "p-0001"})
+
+    # ---- `platform-letter parent`:  what another host's hook asks this one ----
+
+    def verb(self, *argv: str) -> tuple[int, str]:
+        out = io.StringIO()
+        return PL.parent_main(list(argv), self.env(), out), out.getvalue()
+
+    def test_the_verb_prints_the_parents_session_id_and_nothing_else(self) -> None:
+        self.parents["c-0001"] = "p-0001"
+        self.assertEqual(self.verb("--platform", "faux", "--session-id", "c-0001", "--app-id", "local_abc-1",
+                                   "--source", "clear"), (0, "p-0001\n"))
+        # The adapter is asked about a start payload made from the arguments, marked as this verb's question.
+        self.assertEqual(self.lookups[-1]["payload"], {
+            "hook_event_name": "SessionStart", "session_id": "c-0001", "source": "clear",
+            PL.PARENT_VERB: True, PL.PARENT_APP_ID: "local_abc-1"})
+        self.assertEqual(self.verb("--platform", "faux", "--session-id", "x-0001"), (0, ""))  # no parent:  no line
+        self.assertEqual(self.lookups[-1]["payload"], {
+            "hook_event_name": "SessionStart", "session_id": "x-0001", "source": "startup", PL.PARENT_VERB: True})
+        # Through the entry point, and it reads only:  no note, no stamp, no registry call.
+        before = list(self.fake.requests)
+        out = io.StringIO()
+        self.assertEqual(PL.main(["parent", "--platform", "faux", "--session-id", "c-0001"], env=self.env(),
+                                 stdout=out, stderr=out), 0)
+        self.assertEqual(out.getvalue(), "p-0001\n")
+        self.assertEqual(self.fake.requests, before)
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_the_verb_prints_only_what_is_a_session_id_and_not_the_chat_itself(self) -> None:
+        for answer in ("c-0001", "not a session id", "../../etc", "", "x\ny-0001", 7, None):
+            self.parents["c-0001"] = answer
+            self.assertEqual(self.verb("--platform", "faux", "--session-id", "c-0001"), (0, ""), answer)
+        spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                         parent_id=mock.Mock(side_effect=RuntimeError("the store changed")))
+        with mock.patch.dict(PL.SPECS, {"faux": spec}):
+            self.assertEqual(self.verb("--platform", "faux", "--session-id", "c-0001"), (0, ""))
+
+    def test_the_verb_refuses_arguments_it_cannot_check(self) -> None:
+        for bad in (
+            [],
+            ["--platform", "faux"],
+            ["--platform", "nosuch", "--session-id", "c-0001"],
+            ["--platform", "../x", "--session-id", "c-0001"],
+            ["--platform", "faux", "--session-id", "../x"],
+            ["--platform", "faux", "--session-id", "c-0001; rm -rf /"],
+            ["--platform", "faux", "--session-id", "c-0001", "--app-id", "$(id)"],
+            ["--platform", "faux", "--session-id", "c-0001", "--app-id", "a b"],
+            ["--platform", "faux", "--session-id", "c-0001", "--app-id", "x" * 200],
+            ["--platform", "faux", "--session-id", "c-0001", "--source", "compact"],
+            ["--platform", "faux", "--session-id", "c-0001", "--bogus", "1"],
+        ):
+            self.assertEqual(self.verb(*bad), (2, ""), bad)
+        self.assertEqual(self.lookups, [])
+
+    # ---- SESSION_LETTER_MAC_SSH:  where the Mac is, for a hook on another host ----
+
+    def test_the_mac_destination_is_a_setting_that_is_checked(self) -> None:
+        self.assertEqual(PL.mac_ssh({PL.ENV_MAC_SSH: "jay@mac.example"}), "jay@mac.example")
+        self.assertEqual(PL.mac_ssh({PL.ENV_MAC_SSH: " mac-mini "}), "mac-mini")
+        for bad in ("", "-oProxyCommand=evil", "mac mini", "mac;id", "$(id)", "a/b", "x" * 300):
+            self.assertEqual(PL.mac_ssh({PL.ENV_MAC_SSH: bad}), "", bad)
+        self.assertEqual(PL.mac_ssh({}), "")
+        self.assertEqual(PL.ENV_MAC_SSH, "SESSION_LETTER_MAC_SSH")  # no platform's name is in the setting
+
+    def test_the_hooks_flag_is_the_setting(self) -> None:
+        payload = json.dumps({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"})
+        out = io.StringIO()
+        code = PL.main(["hook", "--platform", "faux", "--location", "server", "--mac-ssh", "jay@mac"],
+                       env=self.env(), stdin=io.StringIO(payload), stdout=out, stderr=out)
+        self.assertEqual((code, self.lookups[-1]["mac"]), (0, "jay@mac"))
+        # In the process environment it is set in place:  the registry API reads its settings from that same object.
+        with mock.patch.dict(os.environ, self.env(), clear=False):
+            os.environ.pop(PL.ENV_MAC_SSH, None)
+            code = PL.main(["hook", "--platform", "faux", "--location", "server", "--mac-ssh=other@mac"],
+                           stdin=io.StringIO(payload.replace("c-0001", "c-0002")), stdout=io.StringIO(),
+                           stderr=io.StringIO())
+            self.assertEqual((code, os.environ.get(PL.ENV_MAC_SSH)), (0, "other@mac"))
+            self.assertEqual(self.note("c-0002")["state"], "open")  # the registry call was made, through that env
+        # A flag that names no destination is not the setting, and the hook still runs.
+        code = PL.main(["hook", "--platform", "faux", "--location", "server", "--mac-ssh", "-oProxyCommand=x"],
+                       env=self.env(), stdin=io.StringIO(payload.replace("c-0001", "c-0003")), stdout=io.StringIO(),
+                       stderr=io.StringIO())
+        self.assertEqual((code, self.lookups[-1]["mac"]), (0, ""))
+
+    def test_install_writes_the_destination_on_the_hook_command_and_keeps_it(self) -> None:
+        installer = PL.JsonHookInstaller(path=os.path.join(".faux", "hooks.json"), events=PL.HOOK_TIMEOUTS)
+
+        def install(*argv: str) -> tuple[int, dict]:
+            out = io.StringIO()
+            with mock.patch.object(PL, "load_adapter", return_value=SimpleNamespace(INSTALL=installer, SPEC=self.spec)):
+                code = PL.install_main(["--platform", "faux", *argv], self.env(), out)
+            return code, json.loads(out.getvalue())
+
+        def commands() -> set[str]:
+            with open(os.path.join(self.home, ".faux", "hooks.json"), encoding="utf-8") as fh:
+                hooks = json.load(fh)["hooks"]
+            return {h["command"] for groups in hooks.values() for group in groups for h in group["hooks"]}
+
+        entry = shlex.quote(os.path.join(self.home, ".local", "bin", "platform-letter"))
+        code, answer = install("--location", "server", "--mac-ssh", "jay@mac.example")
+        self.assertEqual(code, 0, answer)
+        want = entry + " hook --platform faux --location server --mac-ssh jay@mac.example"
+        self.assertEqual((commands(), answer["command"]), ({want}, want))
+        # An install that does not name it keeps the one the host has, as it keeps the location.
+        code, answer = install()
+        self.assertEqual((code, answer["changed"], commands()), (0, [], {want}))
+        code, answer = install("--mac-ssh", "mini")
+        self.assertEqual(commands(), {entry + " hook --platform faux --location server --mac-ssh mini"})
+        # Something ssh could read as an option is refused, and nothing is written.
+        for bad in ("-oProxyCommand=evil", "a b", "x;y"):
+            code, answer = install("--mac-ssh=" + bad)
+            self.assertEqual((code, answer), (2, {"error": "--mac-ssh must name an ssh destination"}), bad)
+        self.assertEqual(commands(), {entry + " hook --platform faux --location server --mac-ssh mini"})
+        self.assertEqual(PL.command_for("/h", "faux", "server", "-bad"), "/h/.local/bin/platform-letter hook "
+                         "--platform faux --location server")
+
+
+class ShowTests(Base):
+    """`simple-chat letter show` with no flags prints the note of the chat this shell runs in, found the way
+    `request` finds it:  by the spec's own reader, then its session id variables."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                              session_env=("FAUX_SESSION_ID",))
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+        PL.hook(self.spec, self.env(), io.StringIO(json.dumps(
+            {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"})), io.StringIO(),
+            platform="darwin")
+
+    def show(self, *argv: str, **env: str) -> tuple[int, dict]:
+        out = io.StringIO()
+        code = PL.main(["show", *argv], env=self.env(**env), stdout=out, stderr=out)
+        return code, json.loads(out.getvalue())
+
+    def test_no_flags_finds_this_shells_chat(self) -> None:
+        code, note = self.show(FAUX_SESSION_ID="s-0001")
+        self.assertEqual((code, note["session_id"], note["platform"], note["state"]), (0, "s-0001", "faux", "open"))
+        self.assertRegex(note["label"], PAIR)
+        self.assertEqual(self.show(AGENT_SESSION="s-0001")[1], note)  # the fleet's own name for it works too
+        self.assertEqual(self.show("--session-id", "s-0001")[1], note)  # and a chat named by its id, on any platform
+        self.assertEqual(self.fake.requests[1:], [])  # no network:  the note alone
+
+    def test_a_platform_named_without_a_session_id_uses_the_same_variables(self) -> None:
+        code, note = self.show("--platform", "faux", FAUX_SESSION_ID="s-0001")
+        self.assertEqual((code, note["session_id"]), (0, "s-0001"))
+        self.assertEqual(self.show("--platform", "faux", AGENT_SESSION="s-0001")[0], 0)
+        self.assertEqual(self.show("--platform", "faux", "--session-id", "s-0001")[1], note)
+
+    def test_no_chat_here_says_so(self) -> None:
+        code, answer = self.show()
+        self.assertEqual(code, 1)
+        self.assertIn("no chat with a letter note runs in this shell", answer["error"])
+        code, answer = self.show(FAUX_SESSION_ID="s-0404")  # a stray variable names no note
+        self.assertEqual(code, 1)
+        code, answer = self.show("--session-id", "s-0404")
+        self.assertEqual((code, "no chat with the session id s-0404" in answer["error"]), (1, True))
+        self.assertEqual(self.show("--platform", "faux")[0], 2)  # a platform named, and no session id anywhere
+        self.assertEqual(self.show("--platform", "faux", "--session-id", "s-0404"),
+                         (1, {"session_id": "s-0404", "letter": None}))
+        self.assertEqual(self.show("--platform", "nosuch", "--session-id", "s-0001")[0], 2)
+
+
+class DurableWriteTests(Base):
+    """A file renamed into place survives a crash only when its folder is flushed too:  the note, the gone stamp and
+    a platform's hook file are each fsynced, renamed, and then their folder is fsynced."""
+
+    @contextmanager
+    def writes(self):
+        """What happens to files while this is open, in order:  ("file", None) and ("folder", its (device, inode))
+        for an fsync, ("replace", the destination) for a rename."""
+        seen: list[tuple[str, object]] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            info = os.fstat(fd)
+            is_folder = stat.S_ISDIR(info.st_mode)
+            seen.append(("folder", (info.st_dev, info.st_ino)) if is_folder else ("file", None))
+            return real_fsync(fd)
+
+        def replace(src, dst):
+            seen.append(("replace", dst))
+            return real_replace(src, dst)
+
+        with mock.patch.object(PL.os, "fsync", fsync), mock.patch.object(PL.os, "replace", replace):
+            yield seen
+
+    def folder_id(self, path: str) -> tuple[int, int]:
+        info = os.stat(os.path.dirname(path))
+        return info.st_dev, info.st_ino
+
+    def test_a_note_is_fsynced_renamed_and_then_its_folder_is_fsynced(self) -> None:
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=1.0)
+        with self.writes() as seen:
+            self.assertTrue(chat.write({"state": "open", "label": "AA"}))
+        self.assertEqual(seen, [("file", None), ("replace", chat.path), ("folder", self.folder_id(chat.path))])
+        self.assertEqual(chat.read()["label"], "AA")
+
+    def test_a_note_whose_folder_cannot_be_flushed_is_not_called_saved(self) -> None:
+        chat = PL.Chat(self.spec, self.env(), "mac", "s-0001", now=1.0)
+        with mock.patch.object(PL, "_sync_folder", side_effect=OSError("no fsync here")):
+            self.assertFalse(chat.write({"state": "open", "label": "AA"}))  # and nothing is raised into the hook
+        self.assertEqual(os.listdir(os.path.dirname(chat.path)), ["s-0001.json"])  # no temporary file is left
+
+    def test_the_gone_stamp_is_written_the_same_way(self) -> None:
+        path = PL.gone_stamp_path(self.env(), "CODEX", "codex", "mac")
+        with self.writes() as seen:
+            self.assertTrue(PL._save_json(path, {"at": 1.0}))
+        self.assertEqual(seen, [("file", None), ("replace", path), ("folder", self.folder_id(path))])
+
+    def test_a_hook_file_is_fsynced_renamed_and_then_its_folder_is_fsynced(self) -> None:
+        path = os.path.join(self.home, ".claude", "settings.json")
+        out = io.StringIO()
+        with self.writes() as seen:
+            self.assertEqual(PL.install_main(["--platform", "claude"], self.env(), out), 0)
+        self.assertEqual(seen[-3:], [("file", None), ("replace", path), ("folder", self.folder_id(path))])
+        # The same holds when the file is there already (it is backed up first, then replaced).
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"hooks": {}}, fh)
+        with self.writes() as seen:
+            self.assertEqual(PL.install_main(["--platform", "claude"], self.env(), out), 0)
+        self.assertEqual(seen[-2:], [("replace", path), ("folder", self.folder_id(path))])
+        # A folder that cannot be flushed is an install that failed, not one reported as done.
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"hooks": {}}, fh)
+        with mock.patch.object(PL, "_sync_folder", side_effect=OSError("no fsync here")), self.assertRaises(OSError):
+            PL.install_main(["--platform", "claude"], self.env(), out)
 
 
 class InstallTests(Base):
