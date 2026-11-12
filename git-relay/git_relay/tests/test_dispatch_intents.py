@@ -26,7 +26,6 @@ class DispatchIntents(unittest.TestCase):
 
     def test_paired_intent_and_sha_shape(self):
         for updates in [
-            {"expected_head_sha": None},
             {"intent_id": None},
             {"intent_id": "short"},
             {"expected_head_sha": "HEAD"},
@@ -36,6 +35,29 @@ class DispatchIntents(unittest.TestCase):
         self.assertEqual(
             _validate_args("workflow_dispatch", self.args())["expected_head_sha"], "a" * 40
         )
+        intent_only = _validate_args(
+            "workflow_dispatch", self.args(expected_head_sha=None)
+        )
+        self.assertEqual(intent_only["intent_id"], "qualification-source-one")
+        self.assertNotIn("expected_head_sha", intent_only)
+
+    def test_intent_only_skips_expected_head_sha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(APP_SEATS_JSON),
+                StubClient(),
+                AuditLog(str(Path(tmp) / "audit.jsonl")),
+                app_minter=FakeMinter(),
+            )
+            relay._dispatch = Mock(return_value={"dispatched": True, "accepted": True})
+            args = self.args(expected_head_sha=None)
+            status, first = relay.handle(SEAT_TOKEN, "workflow_dispatch", args)
+            self.assertEqual(status, 200)
+            self.assertFalse(first["replayed"])
+            status, replay = relay.handle(SEAT_TOKEN, "workflow_dispatch", args)
+            self.assertEqual(status, 200)
+            self.assertTrue(replay["replayed"])
+            self.assertEqual(relay._dispatch.call_count, 1)
 
     def test_same_intent_retries_cached_new_intent_sends_changed_payload_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

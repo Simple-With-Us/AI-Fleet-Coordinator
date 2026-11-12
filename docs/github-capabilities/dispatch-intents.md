@@ -2,7 +2,9 @@
 
 A successful legacy dispatch with the same caller, repo, workflow, ref and inputs is replayed from the existing outcome store for 24 hours. A moving branch does not create a new request. Historically that cached acceptance looked like a new dispatch. Do not clear outcomes or vary irrelevant arguments to force a run.
 
-For an intentional new dispatch, supply both `intent_id` (8-100 ASCII letters, numbers, dot, colon, underscore or hyphen, first character alphanumeric) and `expected_head_sha` (40 lowercase hex). The intent is a meaningful caller-owned operation identifier. Keep the same identifier and payload when retrying that one operation. A genuinely new approved operation gets a new identifier. Reuse with a different payload is refused; pending and unknown outcomes remain held. No new permission, token, policy, identity or dedupe reset is introduced.
+For an intentional new dispatch, supply `intent_id` (8-100 ASCII letters, numbers, dot, colon, underscore or hyphen, first character alphanumeric). The intent is a meaningful caller-owned operation identifier. Keep the same identifier and payload when retrying that one operation. A genuinely new approved operation gets a new identifier. Reuse with a different payload is refused; pending and unknown outcomes remain held. No new permission, token, policy, identity or dedupe reset is introduced.
+
+Add `expected_head_sha` (40 lowercase hex) with the same `intent_id` when the dispatch must be pinned to a branch head before send. `expected_head_sha` without `intent_id` is refused; `intent_id` alone is valid and skips the pre-dispatch source read.
 
 Intent calls use a branch name. The relay reads the branch head before the POST and refuses a mismatch. GitHub's dispatch contract accepts a branch/tag ref, not an atomic expected-SHA condition. `source_fence_atomic:false` makes that limitation explicit: a branch can change between GET and POST. Completion requires reading the actual run and checking its head SHA, not trusting acceptance or preflight. A qualification workflow must keep its own no-deployment guards.
 

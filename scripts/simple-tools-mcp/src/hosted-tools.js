@@ -1651,7 +1651,9 @@ export class HostedTools {
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
-    if ((parsed.intent_id === undefined) !== (parsed.expected_head_sha === undefined)) throw new ToolError("invalid_argument", "intent_id and expected_head_sha must be supplied together");
+    if (parsed.expected_head_sha !== undefined && parsed.intent_id === undefined) {
+      throw new ToolError("invalid_argument", "expected_head_sha requires intent_id");
+    }
     return this.grCall("workflow_dispatch", parsed);
   }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
