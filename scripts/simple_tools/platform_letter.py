@@ -126,7 +126,9 @@ STDIN_LIMIT = 1 << 20
 # or never saw the chat), and what the hook reads as "register again".
 NO_REGISTRATION = "this chat has no registration"
 # Why a chat on a host that did not state its fleet location gets no letter (it is a "??" chat until it does).
-NO_LOCATION = "this host's fleet location is not stated (--location or %s)" % "SESSION_LETTER_LOCATION"
+NO_LOCATION = (
+    "this host's fleet location is not stated (--location or %s)" % "SESSION_LETTER_LOCATION"
+)
 
 #: The events the library knows, whatever a platform calls them.  `turn` is the end of one turn (Claude Code's and
 #: ZCode's Stop):  it reports what the turn touched (AFC-702) and never closes anything.  A spec maps its own event to
@@ -1298,14 +1300,18 @@ def unlettered(
     note["placeholder"] = compose(UNLETTERED, "")
     title = compose(UNLETTERED, words)
     if note.get("want") == title and note.get("pending"):
-        _retry_pending(chat, note, current, data)  # a writer that failed is asked again on its own clock
+        _retry_pending(
+            chat, note, current, data
+        )  # a writer that failed is asked again on its own clock
         return None
     if note.get("shown") == title and current in ("", title):
         return None  # already on the chat:  a steady "??" chat costs no rename on every prompt
     return present(chat, note, title, current, data, reason, settable=settable)
 
 
-def ask_again(chat: Chat, note: dict[str, Any], words: str, parent: str, *, force: bool = False) -> dict[str, Any]:
+def ask_again(
+    chat: Chat, note: dict[str, Any], words: str, parent: str, *, force: bool = False
+) -> dict[str, Any]:
     """Ask the assigner for a letter for a chat that holds none, unless it asked less than RETRY_SECONDS ago (its
     `failed_at` stamp) and `force` is off.  Answers the note as it is now:  open when a letter came, else failed (with
     a fresh stamp) or as it was (not due).  An open answer is news to the model (`announce`), and the words go under
@@ -2501,9 +2507,7 @@ def adapter_platforms() -> list[str]:
     return sorted(name for name in names if valid_platform(name))
 
 
-def find_chat(
-    env: Mapping[str, str], sid: str = ""
-) -> tuple[PlatformSpec, str, str] | str:
+def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str, str] | str:
     """(spec, session id, seat) of the chat a `request` is about, or why there is none.
 
     With a session id, the chat whose letter note has that name, under any seat.  Without one, the chat this shell
@@ -2592,9 +2596,13 @@ def request_main(
     )
     note = chat.read()
     if note.get("location") in LOCATIONS:
-        chat.location = str(note["location"])  # the location the chat's own hook registered it under
+        chat.location = str(
+            note["location"]
+        )  # the location the chat's own hook registered it under
     if note.get("state") == "mismatch":
-        stdout.write("no letter: %s chat %s is registered under another seat\n" % (spec.display, sid))
+        stdout.write(
+            "no letter: %s chat %s is registered under another seat\n" % (spec.display, sid)
+        )
         return 1
     if lettered(note):
         note.pop("sync_failed_at", None)  # an explicit ask is never held back by the stamp
