@@ -5670,7 +5670,9 @@ class RouterHealthTests(Base):
         if doc is None and reason is None:
             doc = self.health_document()
         context.router_health = lambda: (doc, reason)
-        return self.run_main(argv or ["server", "router-health", "server", "--plan", "--json"], context)
+        return self.run_main(
+            argv or ["server", "router-health", "server", "--plan", "--json"], context
+        )
 
     def test_the_router_health_answer_has_the_documented_shape(self):
         code, answer = self.plan_health()
