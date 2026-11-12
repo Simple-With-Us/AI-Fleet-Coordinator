@@ -161,27 +161,29 @@ class SourceTests(Fixture):
             self.skipTest("Receiver integration runs from the owned source lane")
         text = actual.read_text()
         old_set = """REPO_ONLY = frozenset(
-    "scripts/simple_tools/" + name + ".py"
-    for name in (
-        "clarify",
-        "operator_github_client",
-        "operator_github_policy",
-        "operator_github_secrets",
-        "operator_send",
-    )
+    {
+        *("scripts/simple_tools/" + name + ".py" for name in (
+            "clarify",
+            "operator_github_client",
+            "operator_github_policy",
+            "operator_github_secrets",
+            "operator_send",
+        )),
+        "scripts/simple_tools/mcp/fixtures.jsonl",
+    }
 )"""
         new_set = """REPO_ONLY = frozenset(
-    (
-        *("scripts/simple_tools/" + name + ".py"
-          for name in (
-              "clarify",
-              "operator_github_client",
-              "operator_github_policy",
-              "operator_github_secrets",
-              "operator_send",
-          )),
+    {
+        *("scripts/simple_tools/" + name + ".py" for name in (
+            "clarify",
+            "operator_github_client",
+            "operator_github_policy",
+            "operator_github_secrets",
+            "operator_send",
+        )),
+        "scripts/simple_tools/mcp/fixtures.jsonl",
         "fleet-apps.json",
-    )
+    }
 )"""
         if old_set not in text:
             self.fail("REPO_ONLY block missing from receiver")
