@@ -154,6 +154,44 @@ class WfForwarding(unittest.TestCase):
         self.assertIn("wf_issue_list", TOOL_NAMES)
         self.assertIn("wf_issue_get", TOOL_NAMES)
 
+    def test_wf_checks_latest_per_name_and_receipt_rows_pass_through(self):
+        seen = {}
+        payload = {
+            "checks": [
+                {
+                    "id": 9,
+                    "name": "Kody Code Review",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "started_at": "2026-11-02T23:58:00Z",
+                    "completed_at": "2026-11-03T00:00:00Z",
+                    "head_sha": "a" * 40,
+                    "app_id": 413034,
+                    "app_slug": "kody-ai",
+                    "title": "Code Review Complete",
+                    "title_truncated": False,
+                    "summary": "Review finished successfully é\x00",
+                    "summary_truncated": True,
+                    "output_withheld": False,
+                }
+            ],
+            "complete": True,
+            "latest_per_name": True,
+        }
+
+        def opener(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["body"] = json.loads(req.data.decode())
+            return FakeResponse(json.dumps(payload).encode())
+
+        args = {"repo": "o/r", "ref": "a" * 40, "per_page": 50, "latest_per_name": True}
+        reply = self._call(self._server(opener), "wf_checks", args)
+        self.assertEqual(seen["url"], "http://127.0.0.1:8471/v1/wf_checks")
+        self.assertEqual(seen["body"], args)
+        self.assertIs(seen["body"]["latest_per_name"], True)
+        self.assertEqual(json.loads(reply["result"]["content"][0]["text"]), payload)
+        self.assertIn("wf_checks", TOOL_NAMES)
+
     def test_a_wf_read_http_error_is_a_refusal_not_an_unknown_write(self):
         def opener(req, timeout=None):
             raise urllib.error.HTTPError(
