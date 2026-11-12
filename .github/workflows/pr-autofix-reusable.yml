@@ -520,13 +520,21 @@ jobs:
           CLAUDE_CODE_VERSION: ${{ inputs.claude_code_version }}
         run: npm install -g "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
 
+      - name: Configure Autofix Model Route
+        id: model_route
+        if: steps.guard.outputs.should_fix == 'true'
+        uses: ./.github/actions/autofix-model-route
+        with:
+          var_base: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
+          var_model: ${{ vars.SWU_AUTOFIX_MODEL || steps.trusted.outputs.model }}
+          default_model: ${{ steps.trusted.outputs.model }}
+
       - name: Run The Fix
         id: fix
         if: steps.guard.outputs.should_fix == 'true'
         env:
-          ANTHROPIC_API_KEY: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_MODEL: ${{ steps.trusted.outputs.model }}
-          ANTHROPIC_SMALL_FAST_MODEL: ${{ steps.trusted.outputs.model }}
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.model_route.outputs.route == 'meta' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ steps.model_route.outputs.anthropic_api_key_mode == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
           MAX_TURNS: ${{ steps.trusted.outputs.max_turns }}
         run: |
           set -euo pipefail
@@ -540,6 +548,15 @@ jobs:
             < "$RUNNER_TEMP/autofix/prompt.md" | tee "$stream"
           echo "::endgroup::"
           jq -s '.' "$stream" > "$out"
+
+      - name: Report Autofix Model Failure
+        if: ${{ always() && steps.guard.outputs.should_fix == 'true' && steps.fix.conclusion == 'failure' }}
+        uses: ./.github/actions/autofix-report-failure
+        with:
+          claude_step_outcome: ${{ steps.fix.outcome }}
+          route: ${{ steps.model_route.outputs.route }}
+          effective_model: ${{ steps.model_route.outputs.effective_model }}
+          base_url: ${{ steps.model_route.outputs.route == 'meta' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
 
       - name: Summarize Autofix Diagnostics
         if: ${{ always() && steps.guard.outputs.should_fix == 'true' }}

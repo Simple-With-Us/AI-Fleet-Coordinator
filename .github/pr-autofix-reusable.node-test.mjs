@@ -199,7 +199,7 @@ test('org variable retargets model and endpoint fleet-wide, pins stay the fallba
     // Closed presets only:  an exact match on the Meta base URL selects host and key
     // together,  anything else keeps the MiniMax pair,  and a missing Meta secret fails
     // closed on a sentinel instead of forwarding the MiniMax credential.
-    assert.match(text, /vars\.SWU_AUTOFIX_MODEL_BASE_URL == 'https:\/\/api\.meta\.ai' && 'https:\/\/api\.meta\.ai'/, name);
+    assert.match(text, /var_base: \$\{\{ vars\.SWU_AUTOFIX_MODEL_BASE_URL \}\}/, name);
     assert.match(text, /\(secrets\.META_MODEL_API_TOKEN \|\| 'MISSING-META-MODEL-API-TOKEN'\)/, name);
     assert.doesNotMatch(text, /contains\(vars\.SWU_AUTOFIX_MODEL_BASE_URL/, name);
   }
@@ -233,15 +233,23 @@ test('model switch is guarded:  endpoint and model move as one valid pair (Kody 
   // instead of failing (Kody 2026-10-21).
   const prGuard = workflow.slice(workflow.indexOf('name: Validate Model Switch'));
   assert.match(prGuard.slice(0, 200), /if: steps\.pr\.outputs\.proceed == 'true'/);
-  // anthropic_api_key feeds claude-code-action directly (its inline-comment classifier
-  // ignores ANTHROPIC_BASE_URL),  so in the action-based reusables it must follow the
-  // same closed host preset as ANTHROPIC_AUTH_TOKEN instead of always sending the
-  // MiniMax key (Kody review on congress-trading-shared#394).
+  // Meta Model API rejects x-api-key;  claude-code-action must leave anthropic_api_key
+  // empty on the Meta route and authenticate with ANTHROPIC_AUTH_TOKEN only (AFC-764).
   for (const [name, text] of [['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert.match(text, /Configure Autofix Model Route/, name);
+    assert.match(text, /autofix-model-route/, name);
+    assert.match(text, /Report Autofix Model Failure/, name);
     assert.match(
       text,
-      /anthropic_api_key: \$\{\{ vars\.SWU_AUTOFIX_MODEL_BASE_URL == 'https:\/\/api\.meta\.ai' && \(secrets\.META_MODEL_API_TOKEN \|\| 'MISSING-[A-Z-]+'\) \|\| secrets\.MINIMAX_API_KEY \}\}/,
+      /anthropic_api_key: \$\{\{ steps\.model_route\.outputs\.anthropic_api_key_mode == 'minimax' && secrets\.MINIMAX_API_KEY \|\| '' \}\}/,
+      name,
+    );
+    assert.match(
+      text,
+      /ANTHROPIC_AUTH_TOKEN: \$\{\{ steps\.model_route\.outputs\.route == 'meta'/,
       name,
     );
   }
+  assert.match(workflow, /Configure Autofix Model Route/);
+  assert.match(workflow, /ANTHROPIC_API_KEY: \$\{\{ steps\.model_route\.outputs\.anthropic_api_key_mode == 'minimax'/);
 });

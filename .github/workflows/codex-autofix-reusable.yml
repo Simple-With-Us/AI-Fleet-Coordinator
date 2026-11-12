@@ -348,6 +348,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure Autofix Model Route
+        id: model_route
+        if: ${{ steps.request_gate.outputs.skip != 'true' }}
+        uses: ./.github/actions/autofix-model-route
+        with:
+          var_base: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
+          var_model: ${{ vars.SWU_AUTOFIX_MODEL }}
+          default_model: ${{ inputs.model }}
+
       - name: Run Claude Autofix
         id: claude
         if: ${{ steps.request_gate.outputs.skip != 'true' }}
@@ -359,14 +368,9 @@ jobs:
         # id comes from the `model` input (MiniMax-M3.1-Flash, the id the
         # fleet's Harness route already uses over api anthropic-messages).
         env:
-          # Owner switch 2026-10-21:  org/repo Actions variables retarget every caller at
-          # once;  unset,  the MiniMax pins below are exactly what ran before.
-          ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
-          ANTHROPIC_AUTH_TOKEN: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
-          ANTHROPIC_SMALL_FAST_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.model_route.outputs.route == 'meta' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
         with:
-          anthropic_api_key: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+          anthropic_api_key: ${{ steps.model_route.outputs.anthropic_api_key_mode == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
           prompt: ${{ inputs.prompt }}
@@ -379,6 +383,15 @@ jobs:
           # fall back to posting every buffered comment unfiltered. Disable the
           # feature rather than rely on a classifier that can't authenticate.
           classify_inline_comments: "false"
+
+      - name: Report Autofix Model Failure
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' && steps.claude.conclusion == 'failure' }}
+        uses: ./.github/actions/autofix-report-failure
+        with:
+          claude_step_outcome: ${{ steps.claude.outcome }}
+          route: ${{ steps.model_route.outputs.route }}
+          effective_model: ${{ steps.model_route.outputs.effective_model }}
+          base_url: ${{ steps.model_route.outputs.route == 'meta' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
 
       - name: Summarize Autofix Diagnostics
         if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}
