@@ -1047,14 +1047,6 @@ def build_parser(
         "The default when no --to is given;  with --to it adds the owner to the group",
     )
     p.add_argument(
-        "--clarifying-question",
-        dest="clarifying_question",
-        action="store_true",
-        help="Operator only:  true when this DM is the one clarifying question it may open about a message "
-        "whose addressee could not be resolved to a single seat (owner decision, Oct 22 2026).  Every other "
-        "seat is refused when it opens a new DM;  a reply inside a DM Operator opened needs no flag.",
-    )
-    p.add_argument(
         "--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192TO] tag"
     )
     p.add_argument(
@@ -2119,12 +2111,6 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     # outage into a retryable failure for a send the rule does not govern.
     if not DMP.rule_enabled(env):
         return
-    clarifying = bool(getattr(args, "clarifying_question", None))
-    if DMP.clarifying_exempt(agent.seat, clarifying=clarifying):
-        # Operator's own clarifying question is the one message the rule permits without knowing
-        # who the Operator is, so the id is never resolved and the conversation is never read:  a
-        # host whose listener config is damaged can still send it (Kody review on AFC-473).
-        return
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
     recipients = [
         {"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users
@@ -2174,7 +2160,6 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
                 operator_user_id=DMP.operator_user_id(env, lambda: pinned_operator_id(agent)),
                 self_id=_int_or_none(agent.me().get("user_id")),
             ),
-            clarifying=clarifying,
             owner_user_id=_owner_id_pinned(agent) or None,
         )
     except DMP.DmRefused as refused:
@@ -3453,8 +3438,6 @@ def _remote_write_args(
         targs["user_ids"] = [int(i) for i in ids]
     if emails:
         targs["emails"] = emails
-    if getattr(args, "clarifying_question", False):
-        targs["clarifying_question"] = True
     return "zulip_dm_send", targs
 
 

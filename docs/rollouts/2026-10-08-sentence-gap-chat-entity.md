@@ -5,6 +5,8 @@ Type: Fleet change  (board `86aa2176`)
 
 > **Superseded 2026-10-23 — the per-surface table below is the Oct 8 record, not the rule.**  The owner's ruling of 2026-10-23 replaced the split with one mechanism: a real U+00A0 plus a normal space between sentences on every surface, GitHub and Zulip included, and two plain ASCII spaces are never the rule.  There is one exception: a chat reply in the Claude Code Code tab or the MiniMax Code chat pane takes the `&nbsp;` entity plus a normal space, because those two panes normalize a raw U+00A0 away and collapse two plain ASCII spaces into one.  The owner confirmed it in Zulip `#Policy`, message 633873394, "NBSP (U+00A0) + ASCII space between sentences (w/exceptions)", posted Thu, Oct 22 and edited Sat, Oct 24 at 1:26 PM.  So the rows below that give the entity to every Markdown agent pane, and that give two ASCII spaces to terminals, cloud chat, commits and docs, are all superseded.  The live table is `docs/fleet-skills/sentence-gap/SKILL.md`: take the mechanism from there.
 
+> **Widened 2026-11-11.**  The one exception now names three panes: the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane.  A chat reply there takes the `&nbsp;` entity plus a normal space, because those panes normalize a raw U+00A0 away.  The owner added the Z Code pane after a byte-level check on 2026-11-10 showed it decodes the entity.  Every other surface is unchanged: a real U+00A0 plus a normal space.
+
 
 ## Why
 

@@ -371,7 +371,7 @@ class CutTests(unittest.TestCase):
             measured,
             profiles,
             {
-                "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                "repo": "fixture-owner/Fixture-Repo",
                 "start": "2026-11-05T00:00:00Z",
                 "end": "2026-11-12T00:00:00Z",
                 "method": "jobs",
@@ -584,6 +584,169 @@ class WorkflowFileTests(unittest.TestCase):
         self.assertIn("scripts/actions-spend/report.py", text)
         loaded = json.dumps(text)
         self.assertNotIn("ghp_", loaded)
+
+
+class _Response:
+    def __init__(self, body):
+        self._body = body
+        self.headers = {}
+
+    def read(self, limit=-1):
+        return self._body if limit < 0 else self._body[:limit]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class ReviewFollowUpTests(unittest.TestCase):
+    """Kody findings on #2093."""
+
+    def test_redirect_off_api_host_is_refused(self):
+        handler = github_api._SameHostRedirects()
+        request = github_api.urllib.request.Request(
+            "https://api.github.com/repos/a/b", headers={"Authorization": "Bearer x"}
+        )
+        with self.assertRaises(github_api.urllib.error.HTTPError):
+            handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/x")
+        same = handler.redirect_request(
+            request, None, 301, "Moved", {}, "https://api.github.com/repositories/1"
+        )
+        self.assertEqual(same.full_url, "https://api.github.com/repositories/1")
+
+    def test_oversized_response_is_rejected(self):
+        body = b"[" + b" " * (github_api.MAX_RESPONSE_BYTES + 1) + b"]"
+        with self.assertRaises(ValueError):
+            github_api._read_json(_Response(body))
+
+    def _client_with(self, opener):
+        original = github_api._OPENER
+        github_api._OPENER = opener
+        self.addCleanup(setattr, github_api, "_OPENER", original)
+        return github_api.Client("t", sleep=lambda _s: None)
+
+    def test_transport_errors_become_api_errors(self):
+        class Opener:
+            def open(self, request, timeout=None):
+                raise ConnectionResetError("reset")
+
+        with self.assertRaises(github_api.ApiError) as ctx:
+            self._client_with(Opener()).get("rate_limit")
+        self.assertEqual(ctx.exception.status, 0)
+
+    def test_unparseable_body_becomes_api_error(self):
+        class Opener:
+            def open(self, request, timeout=None):
+                return _Response(b"<html>not json</html>")
+
+        with self.assertRaises(github_api.ApiError):
+            self._client_with(Opener()).get("rate_limit")
+
+    def test_malformed_cache_lines_are_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cache.jsonl"
+            path.write_text(
+                '{"id": 1, "result": {"ok": 1}}\n{torn\n{"result": 2}\n[]\n', encoding="utf-8"
+            )
+            self.assertEqual(report._load_cache(path), {1: {"ok": 1}})
+
+    def test_cache_save_prunes_ids_outside_the_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cache.jsonl"
+            report._save_cache(path, {1: {"a": 1}, 2: {"b": 2}}, keep={2})
+            self.assertEqual(report._load_cache(path), {2: {"b": 2}})
+
+    def test_symlinked_out_dir_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "elsewhere"
+            target.mkdir()
+            link = Path(tmp) / "out"
+            link.symlink_to(target)
+            with self.assertRaises(SystemExit):
+                report.write_outputs({}, link, "t")
+
+    def test_non_positive_slice_hours_are_rejected(self):
+        start = datetime(2026, 11, 1, tzinfo=UTC)
+        with self.assertRaises(ValueError):
+            list(spend.iter_slices(start, start + timedelta(hours=1), 0))
+        with self.assertRaises(SystemExit):
+            report.parse_args(["--repo", "a/b", "--out-dir", "x", "--slice-hours", "0"])
+
+    def test_malformed_timing_falls_back_to_jobs(self):
+        good = {"UBUNTU": {"total_ms": 120000, "job_runs": [{"job_id": 1, "duration_ms": 120000}]}}
+        self.assertIsNotNone(spend.minutes_from_timing({"billable": good}))
+        for bad in (
+            {**good, "MACOS": "oops"},
+            {"UBUNTU": {"job_runs": [{"job_id": 1, "duration_ms": "12"}]}},
+            {"UBUNTU": {"job_runs": [{"job_id": 1, "duration_ms": -5}]}},
+            {"UBUNTU": {"job_runs": "nope"}},
+            {"UBUNTU": {"total_ms": "120000"}},
+        ):
+            self.assertIsNone(spend.minutes_from_timing({"billable": bad}), bad)
+
+    def test_numeric_cancel_in_progress_counts(self):
+        self.assertEqual(spend._cancel_mode({"concurrency": {"cancel-in-progress": 1}}, ""), "true")
+        self.assertEqual(
+            spend._cancel_mode({"concurrency": {"cancel-in-progress": True}}, ""), "true"
+        )
+
+    def test_remote_or_pinned_callee_is_not_resolved_locally(self):
+        docs = {"reusable.yml": {"jobs": {}}}
+        self.assertIs(
+            spend._local_callee("./.github/workflows/reusable.yml", docs), docs["reusable.yml"]
+        )
+        self.assertIsNone(
+            spend._local_callee("other/repo/.github/workflows/reusable.yml@main", docs)
+        )
+        self.assertIsNone(
+            spend._local_callee("owner/repo/.github/workflows/reusable.yml@0123abc", docs)
+        )
+
+    def test_empty_sha_rows_do_not_count_as_duplicates(self):
+        rows = [
+            {"event": "push", "sha": "", "weighted": 10},
+            {"event": "pull_request", "sha": "", "weighted": 10},
+            {"event": "push", "sha": "abc", "weighted": 4},
+            {"event": "pull_request", "sha": "abc", "weighted": 6},
+        ]
+        self.assertEqual(spend._duplicate_savings(rows), 4)
+
+    def test_timing_mode_keeps_both_macos_proposals(self):
+        profile = {
+            "jobs": [
+                {"names": ("lint",), "operating_systems": ("macos",), "mac_signal": False},
+                {"names": ("xcode",), "operating_systems": ("macos",), "mac_signal": True},
+            ]
+        }
+        portable, _pn, required, _rn = spend._portable_macos_minutes(profile, {}, 100)
+        self.assertEqual((portable, required), (50, 50))
+
+    def test_one_failing_run_does_not_abort_the_batch(self):
+        runs = [
+            {"id": index, "status": "completed", "conclusion": "success", "path": "w.yml"}
+            for index in range(1, 13)
+        ]
+        original = report._measure_one
+
+        def fake(client, repo, run, use_timing):
+            if run["id"] == 10:
+                raise KeyError("boom")
+            return {"minutes": spend.empty_minutes(), "jobs": [], "source": "jobs"}
+
+        report._measure_one = fake
+        self.addCleanup(setattr, report, "_measure_one", original)
+
+        class Client:
+            stop = False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            measured, _method, partial = report.measure(
+                Client(), "a/b", runs, Path(tmp) / "c.jsonl", 2
+            )
+        self.assertEqual(len(measured), 11)
+        self.assertTrue(partial)
 
 
 if __name__ == "__main__":
