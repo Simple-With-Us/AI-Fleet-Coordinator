@@ -16,7 +16,7 @@ Owner direction (quoted):  "I don't want notes going from Zulip to Apple notes."
 | status | `simple-notes status ID` | `notes_status` | Where a queued request stands. |
 | log | `simple-notes log` | `notes_log` | The action log of `apple-notes-coding.sh`. |
 
-The verbs, their options and the tool arguments are one contract:  `scripts/agent_sync/mcp/notes-tools.json`.  `scripts/agent_sync/tests/test_notes_parity.py` fails when `simple-notes`, the stdio server or the hosted Worker drifts from it.
+The verbs, their options and the tool arguments are one contract:  `scripts/simple_tools/mcp/notes-tools.json`.  `scripts/simple_tools/tests/test_notes_parity.py` fails when `simple-notes`, the stdio server or the hosted Worker drifts from it.
 
 The output is the same everywhere:  a write answers `status: done` with the `note_id`, a read answers the note, and only a request still waiting when the caller's wait ran out answers `queued` or `running` with its `request_id`.
 
@@ -39,7 +39,7 @@ The script is the one place formatting is enforced (the title row, the date row,
 
 ## The Wire Protocol
 
-Contract `agent-sync-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.  When the knob reads empty, the Python side asks `fleet-secrets get OPERATOR_API_URL --path / --project ai-fleet-coordinator` for the same key, the way it reads its principal's key.  This is for the server:  its agent shells carry no Infisical automation pair, so fleet_knobs there has only its last-known-good copy, which lapses after 48 hours, while `fleet-secrets` logs in for itself.
+Contract `simple-tools-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.  When the knob reads empty, the Python side asks `fleet-secrets get OPERATOR_API_URL --path / --project ai-fleet-coordinator` for the same key, the way it reads its principal's key.  This is for the server:  its agent shells carry no Infisical automation pair, so fleet_knobs there has only its last-known-good copy, which lapses after 48 hours, while `fleet-secrets` logs in for itself.
 
 **Principals.**  Every request is signed by one of three principals, each with its own key in Infisical (project AI Fleet Coordinator, `prod`, folder `/operator`, at least 32 characters):
 
@@ -53,9 +53,9 @@ Each principal works on its own, on purpose:  the Operator serves the principals
 
 The three keys separate what each caller may do over the network:  a leaked Worker key cannot claim a request, and a leaked runner key cannot enqueue one.  They are not a boundary between processes on one host.  Today the server's and the Mac's Infisical identities can each read all of `/operator`, so any process on either host that can run `fleet-secrets` can take any of the three keys.
 
-**Signing.**  Three headers:  `X-Agent-Sync-Principal`, `X-Agent-Sync-Timestamp` (unix seconds) and `X-Agent-Sync-Signature`, the lowercase hex HMAC-SHA256, keyed with the principal's key, of
+**Signing.**  Three headers:  `X-Simple-Tools-Principal`, `X-Simple-Tools-Timestamp` (unix seconds) and `X-Simple-Tools-Signature`, the lowercase hex HMAC-SHA256, keyed with the principal's key, of
 
-    agent-sync-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\n<principal>\n<sha256 hex of the body bytes>
+    simple-tools-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\n<principal>\n<sha256 hex of the body bytes>
 
 good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON, at most 4 MiB.  An unknown principal, a principal with no key, an unknown path:  404.  A bad or stale signature:  401.  A principal on a path it may not use, or a seat it may not act for:  403.
 

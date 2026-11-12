@@ -78,7 +78,7 @@ Owner ask (2026-10-28):  advance Muster, expand what it shows, and let it contro
 
 - Refuses an unknown key, any `secret=True` key, and any value that the knob's `Spec` rejects (kind, choices, range, pattern).
 - Writes through the Infisical CLI with a write-capable service token:  `infisical secrets set KEY=VALUE --env prod --path <knob folder> --projectId <id>`, with the token passed as `INFISICAL_TOKEN` in the child's environment only.  The token is read from the Mac keychain item `fleet-knobs-write` (service `fleet-knobs-write`, account `INFISICAL_TOKEN`) or from `FLEET_KNOBS_WRITE_TOKEN`.  It is never printed or written.  If neither is present, the write is refused with `"no write token"`.
-- After a write it refreshes the last-known-good copy, so Muster shows the new value at once, and appends an audit row to `~/.agent-sync/listener/knobs.jsonl` (key, old and new value for non-secret knobs, time, seat).
+- After a write it refreshes the last-known-good copy, so Muster shows the new value at once, and appends an audit row to `~/.simple-tools/listener/knobs.jsonl` (key, old and new value for non-secret knobs, time, seat).
 
 ### D.  Muster (SwiftUI)
 

@@ -30,7 +30,7 @@ A consumer that reads one folder of Infisical on its own (an app on its own proj
 
 The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
 
-The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it needs a working login on this host:  without `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET` it cannot authenticate, so stop and report that instead of substituting another source.  It is never the path for new work; the shared Automation identity is not for a consumer that reads one folder.
+The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it authenticates only with the caller's own scoped service token bound as `INFISICAL_TOKEN` (or `INFISICAL_AI_FLEET_COORDINATOR_TOKEN` for that project).  A missing token fails closed and names that variable.  It does not log in with a machine identity.  It is never the path for a consumer that reads one folder; that consumer uses its own scoped service token.
 
 On the Mac:
 
@@ -46,7 +46,7 @@ When the owner hands you a new secret, it arrives as the path to a `chmod 600` f
 
 ## GitHub App tokens (git-relay)
 
-`git-relay` is the only path in the fleet that mints per-bot GitHub App tokens.  A seat never handles an App id, a private key, or the one-hour token expiry: the relay mints and refreshes the seat's own GitHub App token itself, so no credential material is ever pasted into a prompt, a file, or a command line.  PR-write authoring (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`) runs under the owner's scoped PR-only token, so a PR is authored as the owner and the review bots work normally, while `merge_pr`, `workflow_dispatch` and `resolve_thread` run under the seat's own App token.  Per-seat policy (allowed actions, allowed repos, mint ceilings, an hourly call cap) is an allowlist layer that can only narrow the underlying credential, never exceed it, and every call — allowed or denied — lands in an audit log.
+`git-relay` is the only path in the fleet that mints per-bot GitHub App tokens.  A seat never handles an App id, a private key, or the one-hour token expiry: the relay mints and refreshes the seat's own GitHub App token itself, so no credential material is ever pasted into a prompt, a file, or a command line.  PR-write authoring (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`) runs under the owner's scoped PR-only token, so a PR is authored as the owner and the review bots work normally, while `merge_pr`, `workflow_dispatch` and `resolve_thread` run under the seat's own App token.  Per-seat policy (allowed actions, allowed repos, mint ceilings, an hourly call cap) is an allowlist layer that can only narrow the underlying credential, never exceed it, and every denial, failure and write lands in an audit log (a successful read does not).
 
 The relay tools are **live** (verified Nov 4 2026): a seat connected through Fleet MCP calls `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_resolve_thread`, `gr_merge_pr` and the `gr_wf_*` workflow verbs, and the relay mints and refreshes that seat's own GitHub App token without any credential material reaching the seat.
 
@@ -70,7 +70,7 @@ fleet-secrets run -- env
 # Read / open-file / cat / less / bat on any secrets file
 ```
 
-Allowed:  the shared `fleet-secrets` reader, and it needs a working login on this host — without one it cannot authenticate, so stop and report that instead of substituting another source.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
+Allowed:  the shared `fleet-secrets` reader, which authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
 
 ```bash
 fleet-secrets names

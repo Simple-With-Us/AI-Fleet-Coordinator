@@ -38,6 +38,14 @@ struct ServerStatusPanel: View {
                 stateLine(menu.serverCard)
                 if let reading = watch.status {
                     pathLine(reading)
+                    // The age of the Mac's copy,  in words that say it is a copy.  It is worked
+                    // out at `PlaceWatch`'s own moment,  which moves every minute and on wake,
+                    // so it can never disagree with the state line above.
+                    ReportAgeText(origin: .serverCopiedByDoctor,
+                                  freshness: ReportFreshness(
+                                      generatedAt: reading.generatedAt, copiedAt: reading.copiedAt,
+                                      maxAge: TimeInterval(ServerStatusContract.maxAgeSeconds), now: watch.now))
+                    nextStep(menu.server.reach)
                     // The body follows the menu's reach,  the same value the state line
                     // says,  so the two never give different verdicts for one reading.
                     let mode = ServerPanelMode.make(reach: menu.server.reach, reading: reading)
@@ -110,6 +118,65 @@ struct ServerStatusPanel: View {
         }
     }
 
+    /// What to do when the report is not current:  the next step in words,  the job that copies
+    /// the report and when it next runs,  and the two actions the menu offers for the same
+    /// state.  Fetch plans a restart of the doctor on this Mac,  which asks the server for its
+    /// report;  Ask The Server Now changes nothing and only tries the connection.
+    @ViewBuilder
+    private func nextStep(_ reach: ServerReach) -> some View {
+        if let sentence = ServerNextStep.sentence(reach) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(sentence)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                if reach.offersFetch {
+                    Text(DoctorSchedule.serverCopyLine(lastRunAt: watch.tools?.generatedAt, now: watch.now))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 8) {
+                    if reach.offersFetch {
+                        Button("Fetch From The Server Again\u{2026}") {
+                            router.plan(.macAgent(verb: .restart, label: OpsNames.fetchAgentLabel))
+                        }
+                        .disabled(router.isBusy)
+                        .help("Plans a restart of the Fleet Tools Doctor on this Mac, which asks the server for its report.\u{00A0} The plan shows first, and nothing runs without your approval.")
+                    }
+                    if Self.offersAsk(reach) {
+                        if watch.isAsking {
+                            ProgressView().controlSize(.small)
+                            Text("Asking the server\u{2026}")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Button("Ask The Server Now") { watch.askServer() }
+                                .help("Tries the read-only route to the server.\u{00A0} It changes nothing.")
+                        }
+                    }
+                }
+                if let asked = watch.asked {
+                    Text(asked.answered
+                        ? "The server answered at \(FleetTime.clock(asked.at))."
+                        : "The server did not answer at \(FleetTime.clock(asked.at)).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.secondary.opacity(0.08))
+        }
+    }
+
+    /// Ask The Server Now helps only where the question is whether the server answers.
+    private static func offersAsk(_ reach: ServerReach) -> Bool {
+        switch reach {
+        case .fetchStopped, .unreachable: return true
+        default: return false
+        }
+    }
+
     /// Where the Mac keeps its copy of the report.
     private func pathLine(_ reading: ServerStatusReading) -> some View {
         Text(reading.path)
@@ -125,7 +192,8 @@ struct ServerStatusPanel: View {
     /// names when the menu offers them too.  Each one plans first and asks Touch ID before
     /// it runs on the server.
     private func lastKnownSection(_ reading: ServerStatusReading, offersRepairs: Bool) -> some View {
-        let from = reading.generatedAt.map { "from the report at \(FleetTime.clock($0))" } ?? ""
+        // With a day word,  so a report from last night never reads as this morning's.
+        let from = reading.generatedAt.map { "As of \(FreshnessWords.stamp($0, now: watch.now)), not current" } ?? ""
         let rows = ServerLastKnown.rows(reading.services, offersRepairs: offersRepairs)
         return VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Last Known, Not Current", nil, from)
@@ -542,7 +610,10 @@ struct ServerStatusPanel: View {
             // server refuses every other row,  so a button there would only lead to a
             // refused plan.
             if allowlist?.coolifyRedeploy == true, offersRedeploy {
+                let scope = RedeployScope.make(reading: reading, resource: resource)
                 Button("Redeploy") {
+                    // The plan says the whole application restarts,  not only this row.
+                    RedeployScopeNotes.shared.note(scope, uuid: resource.uuid)
                     controller.plan(.coolifyRedeploy(
                         uuid: resource.uuid,
                         name: reading.redeployName(of: resource)
@@ -550,7 +621,7 @@ struct ServerStatusPanel: View {
                 }
                 .controlSize(.small)
                 .disabled(controller.refusesNewPlan)
-                .help(reading.redeployHelp(of: resource))
+                .help("Plan a redeploy of this application on the server.\(ServerStatusCopy.sentenceGap)\(scope.sentence)")
             }
             FleetToolsStateBadge(state: resource.state, width: 92)
         }
@@ -625,6 +696,12 @@ struct ServerStatusPanel: View {
                 reading.configState,
                 "\(reading.driftedFiles.count) of \(reading.files.count) \(reading.files.count == 1 ? "file" : "files") changed"
             )
+            // What "changed" is measured against,  so it never reads as drift from what the
+            // checkout should hold.
+            Text(ServerConfigCopy.comparisonNote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if reading.filesTruncated {
                 sectionNote(partialListText(reading.filesSummary))
             } else {

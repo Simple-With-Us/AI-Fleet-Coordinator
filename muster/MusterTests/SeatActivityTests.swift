@@ -49,7 +49,7 @@ final class SeatActivityTests: XCTestCase {
     }
     """
 
-    /// The seat partition,  in the shape of `docs/protocols/agent-sync-partition.toml`.
+    /// The seat partition,  in the shape of `docs/protocols/simple-tools-partition.toml`.
     private let partitionTOML = """
     version = 1
 
@@ -63,16 +63,16 @@ final class SeatActivityTests: XCTestCase {
     BF-BUILDER = "none"
     """
 
-    /// The user list,  as `users --json` prints it.
+    /// The user list,  as `muster-service users` prints it.
     private let usersJSON = """
     {"user_id": 9001, "full_name": "Claude", "email": "claude-bot@example.test", "is_bot": true, "is_active": true, "role": 400, "seat": "CLAUDE"}
     {"user_id": 9002, "full_name": "OpenCode", "email": "opencode-bot@example.test", "is_bot": true, "is_active": true, "role": 400, "seat": "OPENCODE"}
     {"user_id": 9004, "full_name": "Muse Assist", "email": "ma-bot@example.test", "is_bot": true, "is_active": true, "role": 400, "seat": "MA"}
     """
 
-    /// One message,  as `search --json` prints it.
+    /// One message,  as `muster-service last-post` prints it.
     private let messageJSON = """
-    {"id": 1001, "sender_id": 9001, "client": "agent-sync", "channel": "Work-In-Progress", "topic": "fleet tools doctor", "dm": false, "sender_email": "claude-bot@example.test", "sender_full_name": "Claude", "is_bot": true, "seat": "CLAUDE", "seat_app": "claude-code", "timestamp": 1792821027, "content": "[CLAUDE] fleet-tools-doctor on worker-01.example.test:  5 failing checks.", "flags": [], "sibling": false, "mentioned": false, "reactions": []}
+    {"id": 1001, "sender_id": 9001, "channel": "Work-In-Progress", "topic": "fleet tools doctor", "dm": false, "sender_email": "claude-bot@example.test", "sender_full_name": "Claude", "timestamp": 1792821027, "content": "[CLAUDE] fleet-tools-doctor on worker-01.example.test:  5 failing checks."}
     """
 
     /// The listener fixture with one more field on the CLAUDE seat.
@@ -118,7 +118,7 @@ final class SeatActivityTests: XCTestCase {
             switch invocation.verb {
             case "users":
                 return ChatCLIResult(exitCode: 0, stdout: self.usersJSON, stderr: "")
-            case "search":
+            case "last-post":
                 return ChatCLIResult(exitCode: 0, stdout: search ?? self.messageJSON, stderr: "")
             default:
                 return ChatCLIResult(exitCode: 2, stdout: "", stderr: "refused")
@@ -147,7 +147,7 @@ final class SeatActivityTests: XCTestCase {
     ) throws -> ListenerStateLocation {
         let root = try scratchDirectory(fileManager: fileManager)
         var location = ListenerStateLocation(home: root)
-        location.root = root.appendingPathComponent(".agent-sync", isDirectory: true)
+        location.root = root.appendingPathComponent(".simple-tools", isDirectory: true)
         try fileManager.createDirectory(at: location.root, withIntermediateDirectories: true)
         if let state {
             let listener = location.root.appendingPathComponent("listener", isDirectory: true)
@@ -167,7 +167,7 @@ final class SeatActivityTests: XCTestCase {
     /// A partition file in a temporary directory,  or a path to nothing.
     private func partitionFile(_ text: String?) throws -> URL {
         let root = try scratchDirectory()
-        let url = root.appendingPathComponent("agent-sync-partition.toml")
+        let url = root.appendingPathComponent("simple-tools-partition.toml")
         if let text {
             try text.write(to: url, atomically: true, encoding: .utf8)
         }
@@ -264,13 +264,14 @@ final class SeatActivityTests: XCTestCase {
         let row = try XCTUnwrap(model.rows.first)
         XCTAssertFalse(row.lastPost.isKnown)
         XCTAssertEqual(model.problems.count, 1)
-        XCTAssertTrue(model.problems[0].contains("could not be read"))
+        XCTAssertTrue(model.problems[0].contains("Operator read is unavailable"), model.problems[0])
+        XCTAssertTrue(model.problems[0].contains("No agent seat is read instead"), model.problems[0])
     }
 
     /// A user list that fails leaves every seat's Zulip column unknown.
     func test_a_failed_user_list_leaves_every_seat_unknown() async throws {
         let runner = FakeChatRunner { _ in
-            ChatCLIResult(exitCode: 3, stdout: "", stderr: "no credential")
+            ChatCLIResult(exitCode: 3, stdout: "", stderr: "muster-service: refused (credential-unreadable)\n")
         }
         let model = try await read(
             roster: ["CLAUDE", "OPENCODE"],
@@ -282,6 +283,53 @@ final class SeatActivityTests: XCTestCase {
             XCTAssertFalse(row.lastPost.isKnown)
         }
         XCTAssertEqual(model.problems.count, 1)
+        XCTAssertTrue(model.problems[0].contains("/zulip_operator"), model.problems[0])
+    }
+
+    // MARK: The Operator read (AFC-654)
+
+    /// Missing pins say plainly that the Operator read is unavailable and why,  and no
+    /// other identity is tried:  the one call made was the Operator service's.
+    func test_missing_operator_pins_say_so_and_read_no_seat_instead() async throws {
+        let runner = FakeChatRunner { _ in
+            ChatCLIResult(exitCode: 3, stdout: "", stderr: "muster-service: refused (pins-missing)\n")
+        }
+        let model = try await read(roster: ["CLAUDE", "OPENCODE"], runner: runner, listener: listenerJSON)
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(runner.calls.first?.processArguments.first, "muster-service")
+        let problem = try XCTUnwrap(model.problems.first)
+        XCTAssertTrue(problem.contains("Operator read is unavailable"), problem)
+        XCTAssertTrue(problem.contains("has not pinned the Operator"), problem)
+        XCTAssertTrue(problem.contains("operator_email"), problem)
+        XCTAssertTrue(problem.contains("No agent seat is read instead"), problem)
+        XCTAssertEqual(model.readingSeat, "Operator")
+    }
+
+    /// Every refusal code the service prints has its own plain reason,  and anything else is
+    /// not taken for one.
+    func test_operator_refusal_codes_are_read_from_the_fixed_line_only() {
+        XCTAssertEqual(OperatorReadRefusal.code(in: "muster-service: refused (pins-missing)\n"), "pins-missing")
+        XCTAssertNil(OperatorReadRefusal.code(in: "usage: simple-chat [-h] ...\ninvalid choice: 'muster-service'"))
+        XCTAssertNil(OperatorReadRefusal.code(in: "muster-service: refused (Bad Code!)"))
+        for code in ["pins-missing", "pins-unreadable", "credential-unreadable", "realm-mismatch",
+                     "identity-mismatch", "credential-rejected", "zulip-unreachable", "zulip-error",
+                     "launched-or-remote", "bad-request"] {
+            XCTAssertNotEqual(OperatorReadRefusal.reason(for: code), OperatorReadRefusal.reason(for: "failed"), code)
+        }
+        let old = OperatorReadRefusal.describe(ChatCLIResult(exitCode: 2, stdout: "", stderr: "invalid choice"))
+        XCTAssertTrue(old.contains("may predate it"), old)
+    }
+
+    /// The child is always the Operator service:  no `--as`,  no seat,  no ordinary verb.
+    func test_every_call_runs_the_operator_service_and_names_no_seat() throws {
+        let users = ChatInvocation.users()
+        XCTAssertEqual(users.processArguments, ["muster-service", "users", "--limit", "500"])
+        let post = try ChatInvocation.lastPost(sender: "claude-bot@example.test")
+        XCTAssertEqual(post.processArguments, ["muster-service", "last-post", "--sender", "claude-bot@example.test"])
+        for invocation in [users, post] {
+            XCTAssertFalse(invocation.processArguments.contains { $0.hasPrefix("--as") })
+            XCTAssertFalse(invocation.processArguments.contains("CLAUDE"))
+        }
     }
 
     /// An eavesdropper state file that cannot be read leaves the eavesdropper columns unknown.
@@ -522,7 +570,8 @@ final class SeatActivityTests: XCTestCase {
         )
         let shown = SeatActivityText.display(model.headline)
         XCTAssertTrue(shown.contains("1 of 1 seat held by the Mac is connected, and 1 is working on the Mac."), shown)
-        XCTAssertTrue(shown.contains("3 seats are held by the server, which Muster cannot read yet."), shown)
+        XCTAssertTrue(shown.contains("3 seats are held by the server."), shown)
+        XCTAssertFalse(shown.contains("cannot read"), shown)
         XCTAssertTrue(shown.contains(".\u{00A0} "), shown)
         XCTAssertFalse(shown.contains("  "))
     }
@@ -862,7 +911,7 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(model.requestsMade, 3)
         XCTAssertLessThanOrEqual(model.requestsMade, model.requestCeiling)
         XCTAssertEqual(runner.calls.filter { $0.verb == "users" }.count, 1)
-        XCTAssertEqual(runner.calls.filter { $0.verb == "search" }.count, 2)
+        XCTAssertEqual(runner.calls.filter { $0.verb == "last-post" }.count, 2)
         XCTAssertEqual(runner.calls.filter { $0.verb == "presence" }.count, 0)
     }
 
@@ -890,31 +939,34 @@ final class SeatActivityTests: XCTestCase {
 
     // MARK: The read-only guard
 
-    /// The runner refuses a verb that writes,  before any process exists.
+    /// The runner refuses a verb that writes,  and every ordinary `simple-chat` verb,
+    /// before any process exists.
     func test_the_runner_refuses_a_verb_that_writes() async {
         let cli = ChatCLI(
             location: { ChatLocation(command: URL(fileURLWithPath: "/nowhere/simple-chat")) },
-            seat: "CLAUDE",
             home: URL(fileURLWithPath: "/nowhere")
         )
-        do {
-            _ = try await cli.run(ChatInvocation(["post", "--help"]))
-            XCTFail("a verb that writes must be refused")
-        } catch let error as ChatCLIError {
-            XCTAssertEqual(error, .writeVerbRefused("post"))
-        } catch {
-            XCTFail("the refusal must be a ChatCLIError,  got \(error)")
+        for verb in ["post", "search", "dm", "react"] {
+            do {
+                _ = try await cli.run(ChatInvocation([verb, "--help"]))
+                XCTFail("\(verb) must be refused")
+            } catch let error as ChatCLIError {
+                XCTAssertEqual(error, .writeVerbRefused(verb))
+            } catch {
+                XCTFail("the refusal must be a ChatCLIError,  got \(error)")
+            }
         }
     }
 
-    /// The only verbs the panel may run are the read-only ones,  and presence is not one.
+    /// The only subcommands the panel may run are the Operator service's two reads.
     func test_the_only_verbs_the_panel_may_run_are_read_only() {
-        XCTAssertEqual(ChatInvocation.readOnlyVerbs, Set(["users", "search"]))
+        XCTAssertEqual(ChatInvocation.readOnlyVerbs, Set(["users", "last-post"]))
+        XCTAssertEqual(ChatInvocation.serviceMode, "muster-service")
     }
 
     /// A CLI that is not on this Mac says so in a sentence that makes sense (COPY-53).
     func test_a_missing_cli_says_where_muster_looked() async {
-        let cli = ChatCLI(location: { nil }, seat: "CLAUDE", home: URL(fileURLWithPath: "/nowhere"))
+        let cli = ChatCLI(location: { nil }, home: URL(fileURLWithPath: "/nowhere"))
         do {
             _ = try await cli.run(ChatInvocation.users())
             XCTFail("a missing command must be reported")
@@ -1060,11 +1112,10 @@ final class SeatActivityTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: script) }
         let cli = ChatCLI(
             location: { ChatLocation(command: script) },
-            seat: "CLAUDE",
             home: FileManager.default.temporaryDirectory
         )
         do {
-            _ = try await cli.run(ChatInvocation(["users", "--json"], timeout: 1))
+            _ = try await cli.run(ChatInvocation(["users"], timeout: 1))
             XCTFail("a child stopped by the timer must report the timeout")
         } catch let error as ChatCLIError {
             XCTAssertEqual(error, .timedOut(1))
@@ -1080,10 +1131,9 @@ final class SeatActivityTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: script) }
         let cli = ChatCLI(
             location: { ChatLocation(command: script) },
-            seat: "CLAUDE",
             home: FileManager.default.temporaryDirectory
         )
-        let result = try await cli.run(ChatInvocation(["users", "--json"], timeout: 5))
+        let result = try await cli.run(ChatInvocation(["users"], timeout: 5))
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertFalse(result.timedOut)
         XCTAssertTrue(result.stdout.contains("\"ok\""))
@@ -1136,7 +1186,8 @@ final class SeatActivityTests: XCTestCase {
 
     /// The user list asks for deactivated accounts,  and an active account wins.
     func test_the_user_list_includes_deactivated_accounts_and_prefers_the_active_one() {
-        XCTAssertTrue(ChatInvocation.users().arguments.contains("--inactive"))
+        // The service always includes deactivated accounts:  there is no flag to forget.
+        XCTAssertEqual(ChatInvocation.users().arguments, ["users", "--limit", "500"])
         let users = """
         {"user_id": 9001, "full_name": "Claude", "email": "claude-bot@example.test", "is_bot": true, "is_active": true, "seat": "CLAUDE"}
         {"user_id": 9003, "full_name": "Claude (old)", "email": "claude-old-bot@example.test", "is_bot": true, "is_active": false, "seat": "CLAUDE"}
@@ -1145,24 +1196,27 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertEqual(bots?["CLAUDE"]?.userID, 9001)
     }
 
-    /// A reading seat that looks like a flag is refused before a process exists.
-    func test_a_reading_seat_that_looks_like_a_flag_is_refused() async throws {
+    /// A sender that looks like a flag is refused before a process exists.
+    func test_a_sender_that_looks_like_a_flag_is_refused() {
+        XCTAssertThrowsError(try ChatInvocation.lastPost(sender: "--zuliprc=/tmp/other")) { error in
+            XCTAssertEqual(error as? ChatCLIError, .invalidArgument("--zuliprc=/tmp/other"))
+        }
+    }
+
+    /// The child process gets exactly the service mode and the subcommand:  a fake CLI that
+    /// prints its own arguments shows no `--as` and no seat.
+    func test_the_child_is_given_the_service_mode_and_no_seat() async throws {
         let script = FileManager.default.temporaryDirectory
-            .appendingPathComponent("muster-fake-chat-\(UUID().uuidString)")
-        try "#!/bin/sh\necho '{}'\n".write(to: script, atomically: true, encoding: .utf8)
+            .appendingPathComponent("muster-args-chat-\(UUID().uuidString)")
+        try "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done\n".write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
         addTeardownBlock { try? FileManager.default.removeItem(at: script) }
         let cli = ChatCLI(
             location: { ChatLocation(command: script) },
-            seat: "--zuliprc=/tmp/other",
             home: FileManager.default.temporaryDirectory
         )
-        do {
-            _ = try await cli.run(ChatInvocation.users())
-            XCTFail("a seat that looks like a flag must be refused")
-        } catch let error as ChatCLIError {
-            XCTAssertEqual(error, .invalidArgument("--zuliprc=/tmp/other"))
-        }
+        let result = try await cli.run(ChatInvocation.users(limit: 7))
+        XCTAssertEqual(result.stdout.split(separator: "\n").map(String.init), ["muster-service", "users", "--limit", "7"])
     }
 
     /// A child that ignores SIGTERM is killed,  and the call reports the timeout.
@@ -1175,12 +1229,11 @@ final class SeatActivityTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: script) }
         let cli = ChatCLI(
             location: { ChatLocation(command: script) },
-            seat: "CLAUDE",
             home: FileManager.default.temporaryDirectory
         )
         let started = Date()
         do {
-            _ = try await cli.run(ChatInvocation(["users", "--json"], timeout: 1))
+            _ = try await cli.run(ChatInvocation(["users"], timeout: 1))
             XCTFail("a stuck child must time out")
         } catch let error as ChatCLIError {
             XCTAssertEqual(error, .timedOut(1))

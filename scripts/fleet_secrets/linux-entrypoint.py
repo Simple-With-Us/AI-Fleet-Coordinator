@@ -50,7 +50,10 @@ def authenticated_env():
             except core.SecretsError:
                 raise EntryError(f"invalid scoped reader binding: {name}") from None
     if not any((env.get(name) or "").strip() for name in token_names) and not sys.stdin.isatty():
-        raise EntryError("a scoped service token is required for noninteractive commands")
+        accepted = ", ".join(token_names)
+        raise EntryError(
+            "a scoped service token is required for noninteractive commands: set " + accepted
+        )
     return env
 
 
@@ -58,7 +61,7 @@ def cli_path(env):
     """The plain CLI to delegate to: an explicit CLI path, then the install home, then the default.
 
     `FLEET_SECRETS_BIN` is not read here:  fleet-wide it names the *fleet-secrets command*
-    (`scripts/agent_sync/zulip.py`), which on the server is this entry point itself.
+    (`scripts/simple_tools/zulip.py`), which on the server is this entry point itself.
     """
     explicit = (env.get("FLEET_SECRETS_CLI") or "").strip()
     if explicit:

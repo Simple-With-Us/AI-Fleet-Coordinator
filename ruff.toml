@@ -9,7 +9,7 @@ extend-exclude = [
     "scripts/fleet_rag/tests",
     "scripts/fleet_facts/tests",
     "scripts/fleet_lanes/tests",
-    "scripts/agent_sync/tests",
+    "scripts/simple_tools/tests",
     "scripts/fleet-work-backup",
     "scripts/needs_owner/tests",
     "scripts/open_loops/tests",

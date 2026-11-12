@@ -31,7 +31,7 @@ class EntryTests(unittest.TestCase):
     def test_it_runs_before_the_tool_and_after_the_hook_fast_paths(self):
         text, _ = snippet("simple-chat")
         call = text.index('_seat_defaults("simple-chat")')
-        for hook in ('"attach", "detach"', '== "letter"', '"handbook-service"'):
+        for hook in ('"attach", "detach"', '== "letter"', '"handbook-service"', '"muster-service"'):
             self.assertLess(text.index(hook), call, hook)
         self.assertLess(call, text.index("sys.exit(main(sys.argv[1:]"))
         board, _ = snippet("simple-board")

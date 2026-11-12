@@ -97,7 +97,12 @@ SENTINEL_SOURCE_NAME = "fleet-config-l1-sentinel-source"
 
 # The hook names the fleet installs.  A config entry naming one of them is the hook
 # under test.
-GUARD_HOOK_NAMES = ("lane-guard-hook", "fleet-guard-hook", "minimax-guard-hook")
+GUARD_HOOK_NAMES = (
+    "lane-guard-hook",
+    "fleet-guard-hook",
+    "minimax-guard-hook",
+    "claude-file-guard-hook",
+)
 
 # The guard's own sentence,  as the canary sees it:  the destination the canary asks
 # about is in a temp directory,  so that is the location the guard names.  A permission
@@ -154,6 +159,9 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 # claude-shaped runtimes deliver ``Write`` and ``Edit`` (which carry ``file_path``).
 # The platforms whose payload shape carries no file tool are empty,  because the probe
 # cannot express a file write for them.
+# Claude Code has a file guard of its own (``claude-file-guard-hook``,  a second hook group
+# whose matcher sends Read, Write, Edit, MultiEdit and NotebookEdit),  which also refuses a
+# READ of the secrets folder,  so its probe sends a ``Read`` too.  Read is first and Edit last.
 
 # The forbidden tree the file probe aims at,  relative to the home being checked.  It
 # is the fleet's secrets folder:  a file guard refuses a write whose path has a
@@ -166,7 +174,7 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 # to a file guard, so an allow of a temp path proves nothing about file guarding.)
 FILE_PROBE_FORBIDDEN_DIR = ".secrets"
 NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
-    "claude": (("Write", "file_path"), ("Edit", "file_path")),
+    "claude": (("Read", "file_path"), ("Write", "file_path"), ("Edit", "file_path")),
     "codex": (("Write", "file_path"), ("Edit", "file_path")),
     "grok": (("Write", "file_path"), ("Edit", "file_path")),
     "kimi": (("Write", "file_path"), ("Edit", "file_path")),
@@ -748,13 +756,27 @@ def schema_commands(
     return _commands_from_event_map(document, schema, platform, path)
 
 
-def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
+def _pick_guard_command(commands: list[str], names: tuple[str, ...] = ()) -> str | None:
+    """The command the probe proves:  the first naming one of the rule's own hook ids, else the
+    first naming any fleet guard hook.  A settings file can hold two fleet hooks (Claude Code's
+    shell group and its file-guard group), and a rule proves the one it names."""
+    for wanted in (tuple(n for n in names if n), GUARD_HOOK_NAMES):
+        for command in commands:
+            if any(name in command for name in wanted):
+                return command
+    return None
+
+
+def resolve_hook_command(
+    platform: str, ctx: CheckContext, names: tuple[str, ...] = ()
+) -> str | None:
     """The installed hook command for a platform, read from its own config file.
 
     The command is the one the platform would run, verbatim, so the probe tests the
     installed hook and never a copy from the repo.  None when the platform has no
     config file to read, when the file cannot be parsed, or when it names no guard
-    hook.
+    hook.  ``names`` are the hook ids the rule expects;  a command naming one of them
+    wins over another fleet hook in the same file.
 
     The file is read as untrusted input:  it is bounded before it is parsed (byte
     limit),  and the part the platform's own schema names is checked for its shape and
@@ -791,10 +813,7 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
             % (platform, path),
             ReasonCode.UNSUPPORTED,
         )
-    for command in schema_commands(document, schema, platform, path):
-        if any(name in command for name in GUARD_HOOK_NAMES):
-            return command
-    return None
+    return _pick_guard_command(schema_commands(document, schema, platform, path), names)
 
 
 def resolve_target_command(
@@ -1360,8 +1379,12 @@ def run_l1_probe(
     guards: tuple[str, ...] | None = None,
     config_target: str | None = None,
     event: str | None = None,
+    names: tuple[str, ...] = (),
 ) -> L1Outcome:
     """Prove at L1 that a platform's installed hook denies a write into a sentinel lane.
+
+    ``names`` are the hook ids the rule expects:  when the platform's config holds more
+    than one fleet hook, the one the rule names is the one proved.
 
     ``guards`` is the scope the caller asks to have proven:  ``shell`` sends the shell
     sentinel, ``file`` sends the file-tool sentinels, and both is the default.  A
@@ -1408,7 +1431,7 @@ def run_l1_probe(
     if hook_command:
         command = hook_command
     else:
-        command = resolve_hook_command(platform, ctx)
+        command = resolve_hook_command(platform, ctx, names)
         if not command and config_target:
             command = resolve_target_command(platform, config_target, ctx, event)
         if not command:
@@ -1522,9 +1545,16 @@ def run_l1_probe(
                     passed=False,
                     state=CheckState.DRIFT,
                     reason=(
-                        "the hook let the %s tool's write into a forbidden tree (the %s "
+                        "the hook let the %s tool's %s a forbidden tree (the %s "
                         "folder under the home) through, so it does not guard file "
-                        "writes.%s" % (file_tool, FILE_PROBE_FORBIDDEN_DIR, note)
+                        "writes%s.%s"
+                        % (
+                            file_tool,
+                            "read of" if file_tool == "Read" else "write into",
+                            FILE_PROBE_FORBIDDEN_DIR,
+                            " or reads" if file_tool == "Read" else "",
+                            note,
+                        )
                     ),
                     reason_code=ReasonCode.PROOF_FAILED,
                     detail=outcome.detail,
@@ -1840,6 +1870,7 @@ def prove_rule(
         event=(
             rule.check.detail or None if rule.check.type is CheckType.HOOK_REGISTERED else None
         ),
+        names=tuple(rule.expected.names),
     )
     return _with_achieved(outcome)
 

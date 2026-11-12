@@ -6,7 +6,7 @@ Owner asked when to run an Xcode-installed Debug build instead of TestFlight, an
 
 ## What landed
 
-- `AGENT-SYNC.md` § iOS agent build loop — four-path rule (simulator default, device logs-only, device Debug install, Xcode Run last resort).
+- `FLEET-PROTOCOL.md` § iOS agent build loop — four-path rule (simulator default, device logs-only, device Debug install, Xcode Run last resort).
 - On-demand helper `~/apps/ios-fleet/ios-debug.sh` (tracked `scripts/ios-debug.sh`): simulator `simctl launch --console` + `log stream`; device `devicectl` launch/screenshot + `log collect`.
 - `TEMPLATE-AGENTS.md`, `docs/ONBOARDING-NEW-AGENT.md`, `docs/fleet-skills/ios-ship/SKILL.md`, live `~/.grok/skills/ios-ship/SKILL.md`, `docs/MAC-LOCAL-PROCESSES.md` + live list.
 - `~/apps/ios-fleet/README.md` usage.

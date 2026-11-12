@@ -673,6 +673,31 @@ class RealGuardTests(FakeHookCase):
                 self.assertIs(outcome.achieved, ProofLevel.L1)
         self.assertFalse(os.path.lexists(os.path.join(self.home, ".secrets")))
 
+    def test_the_real_claude_file_guard_reaches_pass_for_the_file_scope(self):
+        """Claude Code's own file guard denies the forbidden Read, Write and Edit."""
+        scripts = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ctx = CheckContext(
+            home=self.home,
+            now=datetime(2026, 11, 6, 12, 0, 0, tzinfo=timezone.utc),
+            timeout=30,
+            env={"PYTHONPATH": scripts},
+        )
+        command = "%s -m fleet_lanes.claude_file_guard_hook" % shlex.quote(sys.executable)
+        outcome = proof.run_l1_probe("claude", ctx, hook_command=command, guards=("file",))
+        self.assertIs(outcome.state, CheckState.PASS, outcome.reason)
+        self.assertIs(outcome.achieved, ProofLevel.L1)
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".secrets")))
+
+    def test_the_claude_file_probe_sends_a_read_first(self):
+        self.assertEqual(proof.NATIVE_FILE_TOOLS["claude"][0], ("Read", "file_path"))
+        outcome = proof.run_l1_probe(
+            "claude", self.ctx, hook_command=self.real, guards=("file",)
+        )
+        # The shell guard lets the Read of the secrets folder through, so it fails on Read.
+        self.assertIs(outcome.state, CheckState.DRIFT, outcome.reason)
+        self.assertIn("Read", outcome.reason)
+        self.assertIn("does not guard file writes or reads", outcome.reason)
+
     def test_a_hook_carrying_no_file_tool_keeps_its_not_applicable_reading(self):
         for platform in ("cursor", "antigravity"):
             with self.subTest(platform=platform):
@@ -899,6 +924,41 @@ class HookResolutionTests(FakeHookCase):
             "/opt/lane-tools/lane-guard-hook --format claude",
         )
         self.assertTrue(os.path.isfile(path))
+
+    def test_resolve_prefers_the_hook_the_rule_names(self):
+        """Claude's settings hold the shell group and the file-guard group:  each rule proves its own."""
+        group = lambda matcher, command: {  # noqa: E731
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": command}],
+        }
+        self.write_config(
+            ".claude/settings.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        group("Bash", "/opt/lane-tools/lane-guard-hook --format claude"),
+                        group("Read|Write|Edit", "/opt/lane-tools/claude-file-guard-hook"),
+                    ]
+                }
+            },
+        )
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx),
+            "/opt/lane-tools/lane-guard-hook --format claude",
+        )
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx, ("lane-guard-hook",)),
+            "/opt/lane-tools/lane-guard-hook --format claude",
+        )
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx, ("claude-file-guard-hook",)),
+            "/opt/lane-tools/claude-file-guard-hook",
+        )
+        # A name the file does not hold falls back to the first fleet hook.
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx, ("no-such-hook",)),
+            "/opt/lane-tools/lane-guard-hook --format claude",
+        )
 
     def test_resolve_returns_none_when_no_guard_hook_is_named(self):
         self.write_config(".claude/settings.json", {"hooks": {"PreToolUse": []}})

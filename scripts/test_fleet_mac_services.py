@@ -8,6 +8,7 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location("fms", os.path.join(HERE, "fleet-mac-services.py"))
@@ -313,6 +314,84 @@ class Document(unittest.TestCase):
         self.assertTrue(all(not a["plistInRepo"] for a in doc["agents"]))
         self.assertEqual(len(doc["agents"]), 4)
 
+    def write_control(self, agents):
+        path = os.path.join(self.tmp.name, "notes.json")
+        with open(path, "w") as handle:
+            json.dump({"schemaVersion": 1, "mac": {"agents": agents}}, handle)
+        return path
+
+    def test_role_and_stop_consequence_are_carried_from_the_allowlist(self):
+        control = self.write_control(
+            [
+                {
+                    "label": "com.jay.fleet-tools-doctor",
+                    "actions": ["start", "stop", "restart"],
+                    "role": "reporting",
+                    "stopConsequence": "Stopping this stops the Mac fetching the server's report.",
+                },
+                {
+                    "label": "com.jay.extra-agent",
+                    "actions": ["restart"],
+                    "role": "updater",
+                },
+                {
+                    "label": "com.jay.notes-only",
+                    "actions": ["stop"],
+                    "stopConsequence": "Owner notes wait until it starts again.",
+                },
+            ]
+        )
+        doc = self.build(FakeRunner({"com.jay.fleet-tools-doctor": RUNNING}), control)
+        by_label = {a["label"]: a for a in doc["agents"]}
+        doctor = by_label["com.jay.fleet-tools-doctor"]
+        self.assertEqual(doctor["role"], "reporting")
+        self.assertEqual(
+            doctor["stopConsequence"], "Stopping this stops the Mac fetching the server's report."
+        )
+        self.assertEqual(by_label["com.jay.extra-agent"]["role"], "updater")
+        self.assertNotIn("stopConsequence", by_label["com.jay.extra-agent"])
+        notes_only = by_label["com.jay.notes-only"]
+        self.assertNotIn("role", notes_only)
+        self.assertEqual(notes_only["stopConsequence"], "Owner notes wait until it starts again.")
+        # An agent the allowlist gives no notes for carries neither key.
+        self.assertNotIn("role", by_label["com.jay.mac-cleanup"])
+        self.assertNotIn("stopConsequence", by_label["com.jay.mac-cleanup"])
+
+    def test_a_note_of_the_wrong_shape_is_left_out(self):
+        control = self.write_control(
+            [
+                {"label": "com.jay.a", "actions": ["stop"], "role": "boss", "stopConsequence": ""},
+                {
+                    "label": "com.jay.b",
+                    "actions": ["stop"],
+                    "role": 3,
+                    "stopConsequence": "x" * 201,
+                },
+                {
+                    "label": "com.jay.c",
+                    "actions": ["stop"],
+                    "role": None,
+                    "stopConsequence": "two\nlines",
+                },
+                {"label": "com.jay.d", "actions": ["stop"], "stopConsequence": "Café closes"},
+                {"label": "com.jay.e", "actions": ["stop"], "stopConsequence": ["a list"]},
+                {"label": "com.jay.f", "actions": ["stop"], "stopConsequence": "y" * 200},
+            ]
+        )
+        doc = self.build(FakeRunner({}), control)
+        by_label = {a["label"]: a for a in doc["agents"]}
+        for label in ("com.jay.a", "com.jay.b", "com.jay.c", "com.jay.d", "com.jay.e"):
+            self.assertNotIn("role", by_label[label], label)
+            self.assertNotIn("stopConsequence", by_label[label], label)
+        self.assertEqual(by_label["com.jay.f"]["stopConsequence"], "y" * 200)
+
+    def test_the_real_allowlist_notes_are_well_formed(self):
+        notes = fms.agent_notes(fms.DEFAULT_CONTROL)
+        for label, note in notes.items():
+            self.assertTrue(set(note) <= {"role", "stopConsequence"}, label)
+            if "role" in note:
+                self.assertIn(note["role"], fms.AGENT_ROLES, label)
+
 
 class Writing(unittest.TestCase):
     def test_write_is_atomic_and_private(self):
@@ -332,6 +411,36 @@ class Writing(unittest.TestCase):
             os.symlink(real, link)
             with self.assertRaises(OSError):
                 fms.write_atomic(os.path.join(link, "mac-services.json"), {})
+            self.assertEqual(os.listdir(real), [])
+
+    def test_a_folder_swapped_for_a_symlink_after_the_check_is_refused(self):
+        # Kody, PR 1477:  the folder is opened with O_NOFOLLOW and used through that descriptor,
+        # so passing the early check is not enough to write through a link.
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.join(d, "real")
+            os.makedirs(real)
+            link = os.path.join(d, "link")
+            os.symlink(real, link)
+            with mock.patch.object(fms.os.path, "islink", return_value=False):
+                with self.assertRaises(OSError):
+                    fms.write_atomic(os.path.join(link, "mac-services.json"), {"schemaVersion": 1})
+            self.assertEqual(os.listdir(real), [])
+
+    def test_the_folder_is_fsynced_after_the_rename(self):
+        # BACKEND-36:  the rename only survives a power cut once the folder itself is synced.
+        synced = []
+        real_fsync = os.fsync
+
+        def record(fd):
+            synced.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "state", "mac-services.json")
+            with mock.patch.object(fms.os, "fsync", side_effect=record):
+                fms.write_atomic(path, {"tool": "fleet-mac-services"})
+            self.assertIn(os.stat(os.path.dirname(path)).st_ino, synced)
+            self.assertIn(os.stat(path).st_ino, synced)
 
     def test_dry_run_prints_and_writes_nothing(self):
         with tempfile.TemporaryDirectory() as root:
@@ -416,7 +525,7 @@ class RepoTemplates(unittest.TestCase):
                 data = plistlib.load(handle)
             args = data["ProgramArguments"]
             self.assertEqual(args[:2], ["/usr/bin/python3", "-I"])
-            self.assertTrue(args[2].endswith("/agent-sync-runtime/scripts/" + script), args[2])
+            self.assertTrue(args[2].endswith("/simple-tools-runtime/scripts/" + script), args[2])
             self.assertTrue(os.path.isfile(os.path.join(HERE, script)))
             self.assertEqual(data["StartInterval"], interval)
             self.assertTrue(data["RunAtLoad"])

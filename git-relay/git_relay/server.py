@@ -10,6 +10,8 @@ Endpoints (all JSON in, JSON out):
     POST /v1/merge_pr          {repo, number, method?}              (seat's App)
     POST /v1/workflow_dispatch {repo, workflow, ref, inputs?}       (seat's App)
     POST /v1/resolve_thread    {repo, thread_id}                    (seat's App)
+    POST /v1/create_repo       {repo, visibility?, description?,    (seat's App,
+                                license_template?}                    namespace token)
 
 Run it as `git-relay serve` (or `python3 -m git_relay.server`).
 
@@ -33,11 +35,17 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import git_read
-from .app_tokens import AppTokenError
-from .audit import AuditLog, UnauthorizedAuditor
+from .app_tokens import AppTokenError, missing_app_credential
+from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
 from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
-from .policy import DEFAULT_RATE_PER_HOUR, DEFAULT_WRITE_RATE_PER_HOUR, PolicyError, SeatPolicy
+from .policy import (
+    DEFAULT_RATE_PER_HOUR,
+    DEFAULT_WRITE_RATE_PER_HOUR,
+    PolicyError,
+    SeatPolicy,
+    auth_failure_response,
+)
 from .policy_input import seats_json_from_env
 from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
@@ -131,6 +139,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
     if action == git_read.ACTION:
         raise ValueError("git_read has no JSON call;  it is served on the /git/ route")
+    if action == "create_repo":
+        return _validate_create_repo(args)
     specs: dict = {"repo": ("text", True)}
     if action == "open_pr":
         specs.update(
@@ -156,7 +166,15 @@ def _validate_args(action: str, args: dict) -> dict:
             {"number": ("number", True), "comment_id": ("number", True), "body": ("clean", True)}
         )
     elif action == "comment_pr":
-        specs.update({"number": ("number", True), "body": ("clean", True)})
+        # intent_id is envelope metadata only:  it binds the idempotency key
+        # to an explicit operation intent (the same contract pattern as
+        # workflow_dispatch's), so a deliberate re-trigger of an identical
+        # comment is a NEW operation while an identical no-intent resend
+        # stays idempotent-replayed.  It never reaches dispatch or the
+        # upstream comment.
+        specs.update(
+            {"number": ("number", True), "body": ("clean", True), "intent_id": ("text", False)}
+        )
     elif action == "mint_token":
         specs["permissions"] = ("permissions", True)
     elif action == "merge_pr":
@@ -234,6 +252,38 @@ def _validate_args(action: str, args: dict) -> dict:
     return canonical
 
 
+def _validate_create_repo(args: dict) -> dict:
+    """Shape for create_repo.  Owner allowlist, name, and private-by-default visibility."""
+    extra = sorted(set(args) - {"repo", "visibility", "description", "license_template"})
+    if extra:
+        raise ValueError(f"create_repo: unexpected fields ({len(extra)})")
+    repo = _text(args.get("repo"), "repo")
+    if repo.count("/") != 1:
+        raise ValueError("invalid repository")
+    owner, name = repo.split("/", 1)
+    account = SeatPolicy.create_repo_account(owner)
+    if account is None:
+        raise ValueError("repository owner is not allowed")
+    if not SeatPolicy.valid_create_repo_name(name):
+        raise ValueError("invalid repository")
+    canonical = {"repo": f"{account[0]}/{name}", "visibility": "private"}
+    if "visibility" in args:
+        visibility = args.get("visibility")
+        if visibility not in ("private", "public"):
+            raise ValueError("visibility must be private or public")
+        canonical["visibility"] = visibility
+    if args.get("description") is not None:
+        description = _clean_text(args.get("description"), "description")
+        if len(description) > 350:
+            raise ValueError("description exceeds the 350 character bound")
+        canonical["description"] = description
+    if args.get("license_template") is not None:
+        if args.get("license_template") != "apache-2.0":
+            raise ValueError("license_template must be apache-2.0")
+        canonical["license_template"] = "apache-2.0"
+    return canonical
+
+
 class PolicyDenied(Exception):
     """The seat authenticated but its policy refused the call."""
 
@@ -285,6 +335,7 @@ class Relay:
         self.client = client
         self.audit = audit
         self._unauth_auditor = UnauthorizedAuditor()
+        self._bootstrap_auditor = BootstrapDenialAuditor()
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
         self.typed_gateway = None
@@ -294,7 +345,13 @@ class Relay:
             self.typed_gateway = TypedGateway(policy, client, app_minter, audit, self.outcomes)
 
     def handle(
-        self, token: str, action: str, args: dict, proof: dict | None = None
+        self,
+        token: str,
+        action: str,
+        args: dict,
+        proof: dict | None = None,
+        *,
+        operator_bootstrap: bool = False,
     ) -> tuple[int, dict]:
         # A separate audited gateway charges policy once and keeps disarm
         # receipts fresh.  Default-off; no generic write-replay path is used.
@@ -303,12 +360,65 @@ class Relay:
 
             if action in ACTIONS:
                 return self.typed_gateway.handle(token, action, args, proof=proof)
-        seat = self.policy.authenticate(token, proof)
+        seat, auth_reason = self.policy.authenticate_with_reason(token, proof)
         if seat is None:
+            if auth_reason == "seat_not_in_policy":
+                # First-seat bootstrap:  the bearer parses and names an
+                # identity no shared seat claims.  Ask the verifier under the
+                # bootstrap bounds and record the denial against the
+                # verifier-CONFIRMED identity (never the bearer's claim), so
+                # an install-seat bootstrap receipt can bind this exact run.
+                # The request is refused either way:  the row names who was
+                # refused, it does not grant anything, and a verified
+                # identity is not attacker-chosen attribution.
+                # Only requests arriving on the operator listener may spend
+                # the shared verifier and auditor budgets:  the public
+                # listener (operator_bootstrap=False) writes the generic
+                # bounded unauth row for the same bearer, so an
+                # unauthenticated spray from the edge can never reach the
+                # verifier or starve first-seat enrollment.  On the operator
+                # listener, only actions whose denial row can bind a bootstrap
+                # receipt spend those budgets;  anything else falls through to
+                # the generic bounded unauth row below.
+                identity = (
+                    self.policy.bootstrap_resolve(token)
+                    if operator_bootstrap and action in ("wf_repo_get", "wf_file_patch")
+                    else None
+                )
+                if identity is not None:
+                    repo = str(args.get("repo") or "") if isinstance(args, dict) else ""
+                    path = (
+                        args.get("path")
+                        if action == "wf_file_patch" and isinstance(args, dict)
+                        else None
+                    )
+                    try:
+                        recorded = self._bootstrap_auditor.record(
+                            self.audit, action, repo, identity, path
+                        )
+                    except OSError:
+                        # An unwritable audit log is not admission evidence:
+                        # refuse without the marker rather than let a proof
+                        # go PROVEN on a run no receipt could bind.
+                        recorded = False
+                    status, obj = auth_failure_response(auth_reason)
+                    if recorded:
+                        # Operator-admission marker:  the bootstrap proof
+                        # requires it, so a public-listener run (generic
+                        # bounded refusal, no verifier-backed identity row)
+                        # cannot produce a proven-but-uninstallable receipt.
+                        # Over-budget or unrecorded denials carry no marker:
+                        # without the audit row the receipt would not
+                        # install.  It names the listener's capability only;
+                        # no credential material.
+                        return status, dict(obj, bootstrap_admission="operator")
+                    return status, obj
             # One bounded, rate-limited row (seat unknown, no token material)
             # so a credential spray is visible without filling the log.
-            self._unauth_auditor.record(self.audit, action)
-            return 401, {"error": "unauthenticated"}
+            # The cause is a closed word (seat_not_in_policy, bearer_rejected,
+            # verifier_unavailable, unauthenticated), never the credential.
+            self._unauth_auditor.record(self.audit, action, auth_reason)
+            return auth_failure_response(auth_reason)
         # The action string comes from the URL path:  a credential-shaped one
         # must never be persisted in the audit row or echoed in an error.
         if find_secret(action):
@@ -363,6 +473,12 @@ class Relay:
                 denial = self.policy.authorize(seat, action, canonical["repo"])
                 if denial:
                     raise PolicyDenied(denial)
+                if (
+                    action == "create_repo"
+                    and canonical.get("visibility") == "public"
+                    and not self.policy.public_repo_allowed(seat)
+                ):
+                    raise PolicyDenied("action 'create_repo_public' not allowed for this seat")
             except PolicyDenied as exc:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
@@ -418,11 +534,13 @@ class Relay:
                         "retryable": False,
                     }
             try:
-                result = self._dispatch(seat, action, canonical, canonical["repo"])
+                result = self._dispatch(
+                    seat, action, canonical, canonical["repo"], caller_token=token
+                )
             except PolicyDenied as exc:
                 self._release(key, "refused")
                 outcome = "denied"
-                detail = {"reason": str(exc)}
+                detail = _denied_audit_detail(action, canonical, exc)
                 return 403, {"error": str(exc)}
             except (PreReadUnavailable, DispatchPreReadUnavailable):
                 self._release(key, "refused")
@@ -438,22 +556,46 @@ class Relay:
                 detail = {"reason": str(exc)}
                 return 503, {"error": str(exc)}
             except AppTokenError as exc:
-                # The mint failed before any GitHub write was attempted:  definite
-                # refusal, the key is released, the seat can retry as-is.  The
-                # message names the missing variable but never carries a value
-                # (AppTokenError's contract).
+                # The mint failed before any GitHub write was attempted: definite
+                # refusal, the key is released. A missing or unusable App id or
+                # key is a closed reason and the exception text (which names the
+                # variable) is not returned. Other mint failures keep the
+                # existing 503; that text names a variable and never a value.
                 self._release(key, "refused")
                 outcome = "unavailable"
+                if missing_app_credential(exc):
+                    detail = {"error": "no_app_credential"}
+                    return 403, {"error": "no_app_credential"}
                 detail = {"error": "app_token_error"}
                 return 503, {"error": f"app-token minting failed: {exc}"}
             except ValueError as exc:
                 self._release(key, "refused")
                 outcome = "bad_request"
-                detail = {"reason": str(exc)}
+                detail = _denied_audit_detail(action, canonical, exc)
                 return 400, {"error": str(exc)}
             except RelayGitHubError as exc:
                 # Audit only allow-listed scalar fields:  an upstream error message
                 # can carry response-body content, so it is never logged.
+                if exc.code == "repository_moved":
+                    # GitHub redirected the slug (renamed or transferred repo).  The
+                    # redirect was not followed, so nothing ran upstream:  a definite
+                    # refusal that names where the repo went, never an outage (OPS-1036).
+                    self._release(key, "refused")
+                    outcome = "github_terminal"
+                    payload = {
+                        "error": "repository moved",
+                        "github_status": exc.status,
+                        "retryable": False,
+                    }
+                    detail = {"status": exc.status, "github_code": "repository_moved"}
+                    if exc.moved_repository_id is not None:
+                        payload["repository_id"] = exc.moved_repository_id
+                        detail["repository_id"] = exc.moved_repository_id
+                        moved_to = self._moved_repository(seat, exc.moved_repository_id)
+                        if moved_to:
+                            payload["moved_to"] = moved_to
+                            detail["moved_to"] = moved_to
+                    return 400, payload
                 if exc.code == "invalid_grant":
                     # A definite credential-grant refusal:  nothing was written,
                     # the key is released, and a fixed credential may retry.  The
@@ -561,7 +703,14 @@ class Relay:
                 )
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
-            if action in SeatPolicy.WORKFLOW_ACTIONS:
+            if action == "create_repo":
+                # The request description is never an audit field.  Neither is a token.
+                detail = {
+                    field: result[field]
+                    for field in ("repo", "visibility", "result", "id")
+                    if field in result
+                }
+            elif action in SeatPolicy.WORKFLOW_ACTIONS:
                 detail = _workflow_audit_detail(canonical, result)
             else:
                 detail = {**canonical, **result}
@@ -575,17 +724,42 @@ class Relay:
             detail = {"exception": type(exc).__name__}
             return 500, {"error": "internal relay error"}
         finally:
-            self.audit.record(seat, action, repo, outcome, detail)
+            # Successful reads leave no row (SeatPolicy.audits);  every denial,
+            # error and write still records exactly one.
+            if SeatPolicy.audits(action, outcome):
+                self.audit.record(seat, action, repo, outcome, detail)
+
+    def _moved_repository(self, seat: str, repo_id: int) -> str | None:
+        """Where a moved repository lives now, named only when this seat's policy allows it.
+
+        Read as the seat's own App (src: AppTokenMinter.moved_repository_name).  A slug outside
+        the seat's repo allowlist is withheld:  the seat learns the repo moved, not a name its
+        policy does not cover.  Any failure answers None.
+        """
+        if self.app_minter is None or not hasattr(self.app_minter, "moved_repository_name"):
+            return None
+        try:
+            app_slug, _ = self.policy.app_identity(seat)
+            if not app_slug:
+                return None
+            name = self.app_minter.moved_repository_name(app_slug, repo_id)
+            if not name or find_secret(name) or not self.policy.repo_allowed(seat, name):
+                return None
+            return name
+        except Exception:
+            return None
 
     def _release(self, key: str | None, state: str) -> None:
         if key is not None:
             self.outcomes.finish(key, state)
 
-    def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
+    def _dispatch(
+        self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None
+    ) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
         if action in SeatPolicy.WORKFLOW_ACTIONS:
-            return self._dispatch_workflow(seat, action, args, repo)
+            return self._dispatch_workflow(seat, action, args, repo, caller_token=caller_token)
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         if action == "open_pr":
@@ -612,6 +786,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_label_update",
         "wf_issue_dependency_add",
         "wf_issue_dependency_remove",
+        "wf_issue_milestone_set",
         "wf_issue_update",
         "wf_review_update",
         "wf_commit_comment_update",
@@ -620,7 +795,9 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",
+        "wf_release_notes_preview",
         "wf_release_update",
+        "wf_issue_state_set",
         "wf_issue_comment_update",
         "wf_review_comment_update",
         "wf_assignees_add",
@@ -684,6 +861,21 @@ _WORKFLOW_AUDIT_SCALARS = (
 )
 
 
+def _denied_audit_detail(action: str, canonical: dict, exc: Exception) -> dict:
+    """A denied call's audit detail:  the refusal reason plus, for workflow actions,
+    the same bounded scalar allowlist a successful call audits.  The message, edits
+    and file content are never logged - they can carry a private payload.  This is
+    what lets a guarded transaction bind a denied probe call to its one-time proof
+    id through a structured, non-secret field (the probe path)."""
+    detail: dict = {"reason": str(exc)}
+    if action in SeatPolicy.WORKFLOW_ACTIONS and isinstance(canonical, dict):
+        for key in _WORKFLOW_AUDIT_SCALARS:
+            value = canonical.get(key)
+            if isinstance(value, (int, str)) and not isinstance(value, bool):
+                detail[key] = value
+    return detail
+
+
 def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
     """What a wf_ call may leave in the audit log: bounded identifiers and counts only.
 
@@ -730,8 +922,11 @@ def _is_workflow_read(self, action: str) -> bool:
     return spec is not None and not spec[1]
 
 
-def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> dict:
+def _dispatch_workflow(
+    self, seat: str, action: str, args: dict, repo: str, caller_token: str | None = None
+) -> dict:
     # Imported here: workflow_verbs imports this module.
+    from .app_tokens import AppTokenError, InstallationReadError
     from .workflow_verbs import CeilingDenied, Unknown, WorkflowVerbs
 
     if self.app_minter is None:
@@ -742,15 +937,15 @@ def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> d
             raise PolicyDenied("seat permission ceiling insufficient")
         if app_slug != seat:
             raise PolicyDenied("own App required")
-        from .app_tokens import AppTokenError, InstallationReadError
-
         try:
             return self.app_minter.installation_metadata(app_slug, repo)
         except InstallationReadError as exc:
             raise RelayGitHubError(
                 exc.status, "installation metadata read failed", retry_after=exc.retry_after
             ) from None
-        except AppTokenError:
+        except AppTokenError as exc:
+            if missing_app_credential(exc):
+                raise
             raise ServerUnavailable("own installation metadata unavailable") from None
     try:
         # handle() has already run policy.authorize for this exact seat, action and repo
@@ -765,8 +960,11 @@ def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> d
             repo,
             preauthorized=True,
             args=args,
+            caller_token=caller_token,
         )
         return handle.run(action, args)
+    except AppTokenError:
+        raise
     except Unknown:
         raise ServerUnavailable("the seat's own App credential is unavailable") from None
     except CeilingDenied as exc:
@@ -805,6 +1003,35 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
             "app_slug": app_slug,
             "expires_in_seconds": max(0, int(expiry - time.time())),
         }
+    if action == "create_repo":
+        # Not the seat mint ceiling.  organization_administration and administration
+        # writes stay rejected by token_for; this path mints the fixed pair and
+        # revokes it before returning.
+        if app_slug != seat:
+            raise PolicyDenied("own App required")
+        owner, _name = repo.split("/", 1)
+        account = SeatPolicy.create_repo_account(owner)
+        if account is None:
+            raise ValueError("repository owner is not allowed")
+        token = None
+        try:
+            token = self.app_minter.token_for_namespace(app_slug, account[0], account[1])
+            try:
+                return self.client.create_repo(
+                    repo,
+                    args["visibility"],
+                    description=args.get("description"),
+                    license_template=args.get("license_template"),
+                    bearer=token,
+                    kind=account[1],
+                )
+            except RelayGitHubError as exc:
+                if exc.code == "create_repo_pre_read":
+                    raise PreReadUnavailable() from None
+                raise
+        finally:
+            if token is not None:
+                self.app_minter.revoke_installation_token(token)
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
     if action == "workflow_dispatch" and args.get("intent_id"):
         required["contents"] = "read"
@@ -904,7 +1131,32 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._slots.release()
 
 
-def make_handler(relay: Relay):
+class _OperatorBootstrapRelay:
+    """Listener-bound capability facade:  passes operator_bootstrap=True to
+    the wrapped Relay so the operator listener alone admits bootstrap
+    resolution.  Exists only where make_handler opted in;  the public
+    listener and direct callers get Relay.handle's default (off)."""
+
+    __slots__ = ("_relay",)
+
+    def __init__(self, relay: Relay):
+        self._relay = relay
+
+    def handle(self, token, action, args, proof=None):
+        return self._relay.handle(token, action, args, proof=proof, operator_bootstrap=True)
+
+
+def make_handler(relay: Relay, operator_bootstrap: bool = False):
+    # Bootstrap admission is bound to the LISTENER, never to the peer
+    # address:  the tunnel and any local client reach the public listener
+    # alike, so remote_addr cannot distinguish an operator from the edge.
+    # The operator listener is a separate loopback-only socket the tunnel
+    # ingress never targets (main()).  Only that listener opts the relay
+    # into bootstrap admission;  everywhere else Relay.handle's default
+    # keeps it off.
+    if operator_bootstrap:
+        relay = _OperatorBootstrapRelay(relay)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "swu-git-relay/1"
 
@@ -923,12 +1175,22 @@ def make_handler(relay: Relay):
             if self.path == "/healthz":
                 self._send(200, {"ok": True})
             elif git_read.is_git_path(self.path):
+                if operator_bootstrap:
+                    # The operator listener serves the v1 API only:  Git
+                    # smart-HTTP needs the full Relay interface and is not
+                    # part of bootstrap admission, so it is refused outright
+                    # rather than delegated through the capability facade.
+                    self._send(404, {"error": "not found"})
+                    return
                 git_read.handle(relay, self, "GET")
             else:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
             if git_read.is_git_path(self.path):
+                if operator_bootstrap:
+                    self._send(404, {"error": "not found"})
+                    return
                 git_read.handle(relay, self, "POST")
                 return
             parts = self.path.strip("/").split("/")
@@ -1373,7 +1635,31 @@ def main() -> None:
     port = int(os.environ.get("GIT_RELAY_PORT", str(DEFAULT_PORT)))
     server = BoundedThreadingHTTPServer((host, port), make_handler(relay))
     print(f"git-relay listening on {host}:{port}")
-    server.serve_forever()
+    operator_port = os.environ.get("GIT_RELAY_OPERATOR_PORT")
+    operator_server = None
+    if operator_port:
+        # The operator listener carries the bootstrap capability on its own
+        # socket, bound to 127.0.0.1 explicitly - never to GIT_RELAY_HOST.
+        # The tunnel ingress never targets it (config-grounded at design
+        # time; re-verify at activation), so the public forwarded path
+        # cannot reach bootstrap admission.  Unset, the relay serves the
+        # public listener only and bootstrap admission is unavailable
+        # everywhere:  first-seat enrollment then has no admitted path.
+        # The operator listener reduces public-edge exposure only - any
+        # local process can still spend its budgets, so it is not per-user
+        # authentication.
+        operator_server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", int(operator_port)),
+            make_handler(relay, operator_bootstrap=True),
+        )
+        threading.Thread(target=operator_server.serve_forever, daemon=True).start()
+        print(f"git-relay operator listener on 127.0.0.1:{operator_port}")
+    try:
+        server.serve_forever()
+    finally:
+        if operator_server is not None:
+            operator_server.shutdown()
+            operator_server.server_close()
 
 
 if __name__ == "__main__":

@@ -1271,12 +1271,25 @@ enum MiniMaxCopy {
     }
 
     /// Where the engine's answers came from, and how old they are.
-    static func engineLine(phase: FleetStore.Phase, generatedAt: Date?) -> String {
+    ///
+    /// `showingLastAnswer` is the store's `isShowingLastAnswer`.  It is false by default,
+    /// because the panel's other words (`MiniMaxAttention.items`, `proofText`) treat a
+    /// running engine as not answered until the panel passes the same flag to them too, and
+    /// this line must not say the answers shown are the last run's while those say there are
+    /// none.
+    static func engineLine(phase: FleetStore.Phase, generatedAt: Date?, showingLastAnswer: Bool = false) -> String {
         switch phase {
         case .idle:
             return "The engine has not run yet, so nothing here is proved."
         case .running:
-            return ApplyCopy.join("The engine is checking now.", "Its answers appear when it finishes.")
+            // The store keeps the last answer on screen while a run is in flight.
+            guard showingLastAnswer, let generatedAt else {
+                return ApplyCopy.join("The engine is checking now.", "Its answers appear when it finishes.")
+            }
+            return ApplyCopy.join(
+                "The engine is checking now.",
+                "The answers shown are from its run at \(FleetTime.clock(generatedAt))."
+            )
         case .failed(let why):
             return "The engine run failed: \(ApplyCopy.normalize(why))"
         case .loaded:
@@ -1287,8 +1300,9 @@ enum MiniMaxCopy {
 
     /// What the engine's-answers section says when it has no cell for the seat.
     ///
-    /// The store clears its cells while the engine is idle, running or failed, so "no
-    /// row for the seat" is only true once the engine has answered.
+    /// The store has no cells before the engine first answers and after a run fails, and
+    /// during a run it shows the last answer, so "no row for the seat" is only claimed once
+    /// the engine has answered and is not checking again.
     static func verdictsEmptyText(phase: FleetStore.Phase, seat: String) -> String {
         if phase == .loaded {
             return "The engine has no row for seat \(seat), so there is no answer to show."
@@ -1395,8 +1409,10 @@ enum MiniMaxAttention {
         if !surface.installFound {
             items.append("MiniMax is not installed on the Mac: there is no ~/.minimax folder.")
         }
-        // The store clears its cells while the engine is idle, running or failed, so an
-        // empty list only means "no row for the seat" once the engine has answered.
+        // The store has no cells before the engine first answers and after a run fails, and
+        // during a run it keeps the last answer.  `engineAnswered` is false for a running
+        // engine unless the caller says the cells are that last answer, so an empty list
+        // only means "no row for the seat" once the engine has answered.
         if !engineAnswered {
             items.append("The engine has not answered, so nothing on this panel is proved.")
         } else if engine.isEmpty {

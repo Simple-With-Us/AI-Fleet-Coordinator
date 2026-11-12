@@ -24,7 +24,9 @@ enforcement turns on one rule class at a time and rolls back by editing a file. 
 `detect` and isolation is `off`.  `FLEET_LANE_GUARD=off` in the environment still switches everything off.
 
 The hook rules that deny temp and ~/Code destinations predate this file and are not affected by it: only the shim
-reads `temp` and `code` here.
+reads `temp` and `code` here.  `temp-build` (build output pointed into system temp outside the session scratchpad;  a fleet
+clone there is the temp class, and the watcher reports any big idle checkout left in temp) is new and obeys this file everywhere:  detect logs, and only `block` or `block temp-build`
+refuses.
 
 What a row excuses depends on its class and on who is asking (`row_excuses`), because a pattern says only where and a
 tool filling its own cache and a seat typing a clone can name the same folder:
@@ -35,6 +37,11 @@ tool filling its own cache and a seat typing a clone can name the same folder:
     package-temp        the same, and only when the destination really is in temp (pip, pnpm).
     third-party-build   a mirror or bare clone, or a clone from a local path (the two SwiftPM makes), anywhere.
     personal, trash     nothing a guard judges, since the source there is a fleet repo.  The doctor reads them.
+    temp-build          a build tool's own output in temp (Homebrew building from source, `cargo install`), and nothing else.
+
+A build in temp is judged by row_excuses_build instead:  a package-temp row excuses it, a temp-build row only outside the hook (pip and Homebrew build in
+temp folders they make and remove themselves), and so does a service or backup row.  No other class does, because a cache row
+says a clone may sit there, not that a build may.
 
 Python 3.9 safe.
 """
@@ -76,7 +83,8 @@ CLASS_HOME = "home"
 CLASS_APPS = "apps"
 CLASS_CLONE_IN_LANES = "clone-in-lanes"
 CLASS_ELSEWHERE = "elsewhere"
-RULE_CLASSES = (CLASS_TEMP, CLASS_CODE, CLASS_HOME, CLASS_APPS, CLASS_CLONE_IN_LANES, CLASS_ELSEWHERE)
+CLASS_TEMP_BUILD = "temp-build"  # build output pointed into system temp, outside the session scratchpad
+RULE_CLASSES = (CLASS_TEMP, CLASS_CODE, CLASS_HOME, CLASS_APPS, CLASS_CLONE_IN_LANES, CLASS_ELSEWHERE, CLASS_TEMP_BUILD)
 
 HOST_MAC = "mac"
 HOST_SERVER = "server"
@@ -85,7 +93,7 @@ HOSTS = (HOST_MAC, HOST_SERVER)
 CLASS_ISOLATION = "isolation"  # a harness worktree in the integration tree;  the `isolation` line decides, not the classes
 
 EXCEPTION_CLASSES = ("service", "tool-cache", "package-manager", "package-temp", "third-party-build", "backup", "personal",
-                     "trash")
+                     "trash", "temp-build")
 EXPIRY_WARNING_DAYS = 30
 REQUIRED_ROW_KEYS = ("id", "pattern", "class", "creator", "reason", "decided_by", "decided_on", "expires", "hosts")
 PATTERN_STARTS = ("{home}", "{code}", "{apps}", "{lanes}", "**/")
@@ -135,11 +143,15 @@ class Mode:
     block_classes: tuple[str, ...] = ()
     isolation: str = MODE_OFF
     problems: tuple[str, ...] = field(default=())
+    mirror: str = MODE_DETECT  # a commit or stash in a ~/Code clone:  detect warns, block refuses, own `mirror` line, never a class
 
     def blocks(self, cls: str) -> bool:
         if cls == CLASS_ISOLATION:
             return self.isolation == MODE_BLOCK
         return self.mode == MODE_BLOCK and cls in self.block_classes
+
+    def blocks_mirror(self) -> bool:
+        return self.mode != MODE_OFF and self.mirror == MODE_BLOCK
 
 
 def default_exceptions_path() -> str:
@@ -273,12 +285,22 @@ def row_excuses(row: ExceptionRow, *, via: str, clone: bool, in_temp: bool, in_c
     return not in_temp
 
 
+def row_excuses_build(row: ExceptionRow, *, typed: bool = False) -> bool:
+    """Whether a row excuses build output pointed into temp, the temp-build rule class.  A temp-build row matches a folder by
+    name alone (Homebrew's `<formula>-<date>-...`, `cargo-install...`), and an agent can choose that name, so it excuses only a
+    build the agent did not type:  the build shim's and the watcher's.  Homebrew and `cargo install` never come through the
+    hook, because neither is a build the hook reads.  `typed` is true for the hook's own judgement."""
+    if row.cls == "temp-build":
+        return not typed
+    return row.cls in ("package-temp", "service", "backup")
+
+
 def row_excuses_checkout(row: ExceptionRow, *, linked_worktree: bool, registered_app: bool) -> bool:
     """Whether a row excuses a checkout that already exists, for the doctor.  A cache holds clones, never a linked worktree, and
-    a personal row is for repos outside the fleet."""
+    a personal row is for repos outside the fleet.  A temp-build row is about build output, so it excuses no checkout."""
     if row.cls in ("service", "backup", "trash"):
         return True
-    if linked_worktree or row.cls not in EXCEPTION_CLASSES:
+    if linked_worktree or row.cls not in EXCEPTION_CLASSES or row.cls == "temp-build":
         return False
     return not (row.cls == "personal" and registered_app)
 
@@ -365,7 +387,7 @@ def mode_file_path(home: str | os.PathLike[str], env: Mapping[str, str] | None =
 def parse_mode(text: str) -> Mode:
     """Unknown words are reported in `problems` and otherwise ignored:  a typo must never turn a block on, and a line that means
     nothing leaves the lines before it standing.  The doctor and the watcher show `problems`."""
-    mode, classes, isolation = MODE_DETECT, (), MODE_OFF
+    mode, classes, isolation, mirror = MODE_DETECT, (), MODE_OFF, MODE_DETECT
     problems: list[str] = []
     for raw in text.splitlines():
         words = raw.split("#", 1)[0].replace(",", " ").split()
@@ -377,6 +399,11 @@ def parse_mode(text: str) -> Mode:
                 isolation = words[1].lower()
             else:
                 problems.append(f"bad isolation line: {raw.strip()}")
+        elif head == "mirror":
+            if len(words) == 2 and words[1].lower() in MODES:
+                mirror = words[1].lower()
+            else:
+                problems.append(f"bad mirror line: {raw.strip()}")
         elif head in MODES:
             if head != MODE_BLOCK:
                 mode, classes = head, ()
@@ -392,13 +419,13 @@ def parse_mode(text: str) -> Mode:
                 mode, classes = head, good
         else:
             problems.append(f"unknown line: {raw.strip()}")
-    return Mode(mode, tuple(classes), isolation, tuple(problems))
+    return Mode(mode, tuple(classes), isolation, tuple(problems), mirror)
 
 
 def read_mode(home: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> Mode:
     env = os.environ if env is None else env
     if (env.get(ENV_GUARD) or "").strip().lower() in OFF_VALUES:
-        return Mode(MODE_OFF, (), MODE_OFF)
+        return Mode(MODE_OFF, (), MODE_OFF, (), MODE_OFF)
     try:
         with open(mode_file_path(home, env), encoding="utf-8") as fh:
             return parse_mode(fh.read(4096))

@@ -36,7 +36,9 @@ struct FleetServicesPanel: View {
         }
         .task {
             router.reloadAllowlist()
-            await admin.refresh()
+            // A return to the panel shows the read on hand when it is fresh, rather than running
+            // pm2 and launchctl again;  the Check button below always reads.
+            await admin.refreshIfOlder()
         }
     }
 
@@ -226,7 +228,7 @@ struct FleetServicesPanel: View {
                 if let note = entry.stateNote {
                     Text(note)
                         .font(.caption)
-                        .foregroundStyle(entry.reconcileNote?.isProblem == true && !entry.stoppedByOwner ? Color.orange : Color.secondary)
+                        .foregroundStyle(entry.stateNoteIsWarning ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(entry.reconcilePolicyLine(keepServicesRunning: keepServicesRunning))

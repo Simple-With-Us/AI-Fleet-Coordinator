@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 REALM = "https://simplewithus.zulipchat.com"
-CHANNEL = "work-in-progress"  # the channel the owner renamed #agent-sync to on 2026-10-22
+CHANNEL = "work-in-progress"
 STREAM_ID = 642232
 FULL_LIST_URL = "https://github.com/Simple-With-Us/fleet-loops-data/blob/main/gb/full-list.md"
 MAC_FACTS_API_URL = (

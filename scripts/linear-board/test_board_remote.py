@@ -83,9 +83,9 @@ class Remote(unittest.TestCase):
         self.assertIn("seat: CODEX", out)
         self.assertNotIn(BEARER, out + err + json.dumps(msg))
 
-    LIST_TEXT = "agent-sync linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
+    LIST_TEXT = "simple-tools linear_list\nAFC-12 | Fix the thing | In Progress | P1\nAFC-13 | Other | Todo | P2"
     SHOW_TEXT = (
-        "agent-sync linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
+        "simple-tools linear_show: AFC-12\ndescription: the full body\nlabels: Kind/bug\n"
         "comment by CODEX: the comment body\nduplicate_of: AFC-9"
     )
 
@@ -242,6 +242,22 @@ class Remote(unittest.TestCase):
                 code, out, err, calls = self.run_writes(argv, answers)
                 self.assertEqual(code, 0, err)
                 self.assertEqual(calls[-1], {"name": tool, "arguments": args})
+
+    def test_write_without_by_still_sends_identity_after_identities(self):
+        """Regression (AFC-587): hosted writes must name identity even when --by is omitted."""
+        answers = [rpc(self.IDANS), rpc({"id": "AFC-9"}, text="done")]
+        code, _, err, calls = self.run_writes(["status", "AFC-9", "done"], answers)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            calls,
+            [
+                {"name": "identities", "arguments": {}},
+                {
+                    "name": "linear_status",
+                    "arguments": {"id": "AFC-9", "status": "done", "identity": "CODEX"},
+                },
+            ],
+        )
 
     def test_by_that_is_not_the_bearers_seat_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(

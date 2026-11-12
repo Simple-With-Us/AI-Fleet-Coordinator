@@ -2,7 +2,7 @@
 """Tests for the simple-git entry wrapper (scripts/simple-git when installed).
 
 Covers:  the installed basename survives (including through a symlink and through the Python-version
-re-exec, via SIMPLE_GIT_ARGV0);  the 3.9 interpreter fallback;  the host seat helper is NEVER consulted
+re-exec, via SIMPLE_GIT_ARGV0);  the 3.9 interpreter fallback;  the host seat helper is NEVER consulted by this entry file (the managed command wrapper runs it first)
 (each CLI user supplies their own bearer;  a declared seat still passes through untouched);  a missing
 implementation file is a clean error.
 """

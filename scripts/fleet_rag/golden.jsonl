@@ -6,19 +6,19 @@
 {"query": "how many spaces go between sentences in chat replies and commit messages", "expect_text_contains": ["two spaces"], "note": "seed: sentence gap"}
 {"query": "why is PINECONE_TRIAL_ENDS_AT earlier than the real trial end", "expect_text_contains": ["PINECONE_TRIAL_ENDS_AT"], "note": "seed: ST pinecone trial buffer"}
 {"query": "what model does the self-hosted embedding endpoint serve and where", "expect_text_contains": ["tei-bge-m3", "bge-m3"], "note": "seed: TEI infrastructure"}
-{"query": "which Coolify token do I use to trigger a deploy", "expect_text_contains": ["COOLIFY_DEPLOY"], "note": "AGENT-SYNC: Coolify tokens (no doc-id prefix: the file is ingested from both ~/apps and the repo)"}
-{"query": "I added a new LaunchAgent, what else has to change", "expect_text_contains": ["MAC-LOCAL-PROCESSES", "Background Jobs Master List"], "note": "AGENT-SYNC / MAC-LOCAL-PROCESSES: process inventory rule"}
-{"query": "what timezone should I use when telling the owner a time", "expect_text_contains": ["Central Time", "America/Chicago"], "note": "AGENT-SYNC: timestamps"}
-{"query": "PR has green checks but will not merge because of review comments", "expect_text_contains": ["resolve your threads", "required_conversation_resolution", "review thread"], "note": "AGENT-SYNC: merge requirements"}
-{"query": "which model tier should I use for a sub-agent doing mechanical edits", "expect_text_contains": ["Haiku-class", "Small/fast tier"], "note": "AGENT-SYNC: model economics"}
-{"query": "can I push a branch under another seat's prefix", "expect_text_contains": ["another seat's prefix", "own prefix"], "note": "AGENT-SYNC: branch and worktree naming"}
-{"query": "is a local Mac self-hosted GitHub Actions runner allowed for CI", "expect_text_contains": ["PERMANENTLY BANNED", "Coolify self-hosted runners"], "note": "AGENT-SYNC: CI runner policy"}
-{"query": "cloud agent needs xcodebuild on the Mac, how do I request it", "expect_text_contains": ["needs-mac"], "note": "AGENT-SYNC: cloud to Mac handoff"}
-{"query": "do I need to announce before deploying merged main to production", "expect_text_contains": ["announce-then-deploy", "announce first"], "note": "AGENT-SYNC: deploy directive"}
-{"query": "my Slack own-message filter using startsWith never matches", "expect_text_contains": ["startsWith", "repo-first"], "note": "AGENT-SYNC: self-message filtering"}
-{"query": "can I run the full verify gate while another lane is gating on the same Mac", "expect_text_contains": ["gating now", "gate clear"], "note": "AGENT-SYNC: serialize local gates"}
-{"query": "should session replay go to Datadog or Sentry", "expect_text_contains": ["Session Replay"], "note": "AGENT-SYNC: Datadog vs Sentry"}
-{"query": "my PR is sitting unmerged, should I wait and watch it", "expect_text_contains": ["idle-watch", "waiting on an"], "note": "AGENT-SYNC: never idle-watch a PR"}
+{"query": "which Coolify token do I use to trigger a deploy", "expect_text_contains": ["COOLIFY_DEPLOY"], "note": "FLEET-PROTOCOL: Coolify tokens (no doc-id prefix: the file is ingested from both ~/apps and the repo)"}
+{"query": "I added a new LaunchAgent, what else has to change", "expect_text_contains": ["MAC-LOCAL-PROCESSES", "Background Jobs Master List"], "note": "FLEET-PROTOCOL / MAC-LOCAL-PROCESSES: process inventory rule"}
+{"query": "what timezone should I use when telling the owner a time", "expect_text_contains": ["Central Time", "America/Chicago"], "note": "FLEET-PROTOCOL: timestamps"}
+{"query": "PR has green checks but will not merge because of review comments", "expect_text_contains": ["resolve your threads", "required_conversation_resolution", "review thread"], "note": "FLEET-PROTOCOL: merge requirements"}
+{"query": "which model tier should I use for a sub-agent doing mechanical edits", "expect_text_contains": ["Haiku-class", "Small/fast tier"], "note": "FLEET-PROTOCOL: model economics"}
+{"query": "can I push a branch under another seat's prefix", "expect_text_contains": ["another seat's prefix", "own prefix"], "note": "FLEET-PROTOCOL: branch and worktree naming"}
+{"query": "is a local Mac self-hosted GitHub Actions runner allowed for CI", "expect_text_contains": ["PERMANENTLY BANNED", "Coolify self-hosted runners"], "note": "FLEET-PROTOCOL: CI runner policy"}
+{"query": "cloud agent needs xcodebuild on the Mac, how do I request it", "expect_text_contains": ["needs-mac"], "note": "FLEET-PROTOCOL: cloud to Mac handoff"}
+{"query": "do I need to announce before deploying merged main to production", "expect_text_contains": ["announce-then-deploy", "announce first"], "note": "FLEET-PROTOCOL: deploy directive"}
+{"query": "my Slack own-message filter using startsWith never matches", "expect_text_contains": ["startsWith", "repo-first"], "note": "FLEET-PROTOCOL: self-message filtering"}
+{"query": "can I run the full verify gate while another lane is gating on the same Mac", "expect_text_contains": ["gating now", "gate clear"], "note": "FLEET-PROTOCOL: serialize local gates"}
+{"query": "should session replay go to Datadog or Sentry", "expect_text_contains": ["Session Replay"], "note": "FLEET-PROTOCOL: Datadog vs Sentry"}
+{"query": "my PR is sitting unmerged, should I wait and watch it", "expect_text_contains": ["idle-watch", "waiting on an"], "note": "FLEET-PROTOCOL: never idle-watch a PR"}
 {"query": "can I point Socratic.Trade retrieval at the self-hosted bge-m3 endpoint", "expect_text_contains": ["not a drop-in", "re-embedding the full"], "note": "RAG-FLEET-INFRA: embedding space mismatch"}
 {"query": "TEI container was OOM killed during warmup", "expect_doc_id_prefix": "doc/AI-Fleet-Coordinator/docs/RAG-FLEET-INFRA.md", "expect_text_contains": ["max-batch-tokens"], "note": "RAG-FLEET-INFRA: operational notes"}
 {"query": "where are the Qdrant and TEI credentials stored", "expect_text_contains": ["Infisical shared", "QDRANT_FLEET_COLLECTION"], "note": "RAG-FLEET-INFRA: credentials"}

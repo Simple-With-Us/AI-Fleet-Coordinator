@@ -99,10 +99,12 @@ final class MachineStatusTests: XCTestCase {
         ]
     )
 
-    /// Nine running,  two stopped and one not installed.
+    /// Nine running,  two stopped,  one not installed,  and the Mac's listener retired and
+    /// stopped,  as it has been since the one-listener cutover.
     private static func macServices(changing changes: [String: ManagedServiceState] = [:]) -> FleetServices {
         var states: [String: ManagedServiceState] = [
             "botfleet-mcp": .running, "app.botfleet.server": .running, "app.botfleet.companion": .notInstalled,
+            "com.jay.operator": .stopped,
             "shellular": .running, "code-main-keeper": .running, "vision-worker": .running,
             "xcode-health": .running, "agy-acp": .stopped, "grok-leader": .stopped,
             "grok-acp": .running, "clutch-web": .running, "seat-mcp": .running,
@@ -165,9 +167,9 @@ final class MachineStatusTests: XCTestCase {
         let expected = """
         The Mac
         Checked at 2:46 PM
-        Services:  9 running, 2 stopped, 1 not installed
+        Services:  9 running, 2 stopped, 1 not installed, 1 retired
         Seat Setup:  no red or drifted cells
-        Services On The Mac (12)
+        Services On The Mac (13)
             BotFleet MCP Server (On The Mac):  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}
@@ -175,6 +177,7 @@ final class MachineStatusTests: XCTestCase {
                 Restart On The Mac
                 Stop On The Mac\u{2026}
             BotFleet Companion:  not installed
+            Operator Eavesdropper:  retired (since the Nov 10 one-listener cutover)
             Shellular:  running
                 Restart On The Mac\u{2026}
                 Stop On The Mac\u{2026}

@@ -291,10 +291,10 @@ class RealClientChecks(unittest.TestCase):
         self.assertIn("unavailable", str(exc.exception))
         self.assertIn("nothing was served", str(exc.exception))
 
-    def test_vendored_client_is_the_agent_sync_client_byte_for_byte(self):
-        other = SCRIPTS / "agent_sync" / "fleet_bearer.py"
+    def test_vendored_client_is_the_simple_tools_client_byte_for_byte(self):
+        other = SCRIPTS / "simple_tools" / "fleet_bearer.py"
         if not other.exists():
-            self.skipTest("agent_sync is not deployed beside fleet_rag")
+            self.skipTest("simple_tools is not deployed beside fleet_rag")
         self.assertEqual((SCRIPTS / "fleet_rag" / "fleet_bearer.py").read_bytes(), other.read_bytes())
 
 

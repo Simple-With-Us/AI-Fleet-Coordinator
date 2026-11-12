@@ -5,15 +5,18 @@ normal code review of the full fixture, provenance and intended destination.
 No prefix/path exemption, caller override, baseline inference or diff-only scan.
 """
 
+from collections.abc import Iterable
 from hashlib import sha256
 
+from .patch_secretscan import scan_file
 from .secret_scan import find_secret
 
 # Source of truth: the corrected rename checkpoint
 # 81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3 (tree
 # b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf, built on main
-# ac6d5d44500937274aeddfc794a05fb427158f8c); all 13 triples verify byte-exact
-# against that tree. The first checkpoint
+# ac6d5d44500937274aeddfc794a05fb427158f8c); 12 of the 13 triples verify
+# byte-exact against that tree. The thirteenth, gr-workflow-v1.test.mjs, is the
+# PR #1707 exception recorded below and is not part of that tree. The first checkpoint
 # 4977e6a7970dc0a25638181600137fe06167dcec is retained as original evidence
 # only, never as a shipping target. Ten rows are unchanged from that first
 # re-attestation; three rows (test_install_mcp.py, integration.workerd.mjs,
@@ -24,6 +27,14 @@ from .secret_scan import find_secret
 # Only these exact bytes at these exact repository destinations are attested
 # synthetic fixtures.
 # The source Git blob ids and review procedure are recorded in the README.
+# The Infisical API-route row is separately refreshed for the current rename
+# reconciliation tree550beb61fb7cd372b3504d3b4f023130d7d730ec. Its immutable
+# main27801add source, five safe rename/import/env edits and whole credential-
+# line origin proof are recorded in preservation-pending-manifest.json. All
+# credential-shaped spans are unchanged; provider/loaded guards are NOT waived.
+# The gr-workflow-v1.test.mjs row was refreshed 2026-11-10 to the exact bytes under
+# review in PR #1707 (source blob 804d547cb96bba4cade20a058e76ec32c1fa7022), not the
+# 81d8bb0c checkpoint bytes, which never landed on main; provenance in the README.
 _REVIEWED_FIXTURES = frozenset(
     {
         (
@@ -44,12 +55,13 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-front.test.mjs",
-            "9de759b53f8cb987b16ade0a9cf99ff69d999659519a620b292f4aa748eee3b9",
+            # Refreshed for the gr_create_repo name-list change (AFC-632).
+            "23856d7de9e04ce7fb133b685516cdc06d6f26b93e69d528de8cc57991b7ddfb",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs",
-            "1caec47629a7a4592051b25efcfd229cfe662471027c13eb3c5d812952816e95",
+            "8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
@@ -64,7 +76,7 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple_tools/tests/test_infisical_api_route.py",
-            "34041aaa826e24b919621c7d5ed6703c2b602beda05449dd9801a13e02d67090",
+            "3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
@@ -95,16 +107,26 @@ _REVIEWED_FIXTURES = frozenset(
 )
 
 
-def unreviewed_file_secret(repo: str, path: str, raw: bytes) -> str | None:
+def unreviewed_file_secret(
+    repo: str, path: str, raw: bytes, known: Iterable[str] = ()
+) -> str | None:
     """Scan all bytes; accept a match only for an exact reviewed attestation.
 
-    The ordinary scanner is unchanged for messages, titles, binary assets and
-    every unattested file. A byte change, new secret, different repo or moved
-    destination invalidates the attestation and is refused before any write.
+    Every nonempty loaded credential value is absolute, even if short: loaded
+    values refuse before the shape scan and an attestation never waives them.
+    Legacy attestations keep their full-byte contract for the dedicated fake
+    shapes they reviewed.  Bytes no legacy review attested also pass through
+    the owning generic-fixture scanner: its exact (repo, path, sha256)
+    admission waives assigned credential and assigned secret labels only,
+    while dedicated shapes and Zulip-shaped keys stay absolute on that path.
     """
-    category = find_secret(raw.decode("utf-8", "replace"))
-    if category is None:
-        return None
+    text = raw.decode("utf-8", "replace")
+    for value in known:
+        if value and value in text:
+            return "a loaded credential"
     if (repo, path, sha256(raw).hexdigest()) in _REVIEWED_FIXTURES:
         return None
-    return category
+    category = find_secret(text)
+    if category is not None and category not in ("assigned credential", "assigned secret"):
+        return category
+    return scan_file(repo, path, text, known=())

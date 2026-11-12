@@ -81,6 +81,9 @@ struct KnobRegistry {
         var canonicalDefaultText: String? = nil
         /// Where the value came from.
         var source: KnobValueSource = .notRead
+        /// The Infisical folder the knob lives in,  such as `/wake-router`.  The root for a
+        /// registry that predates folders.  Each folder has its own copy on this Mac.
+        var folder: String = KnobReader.rootFolder
 
         var id: String { name }
 
@@ -195,6 +198,15 @@ struct KnobRegistry {
     var registryFile: String = ""
     /// The engine's live read,  once Refresh has asked for it.
     var live: KnobLiveStatus? = nil
+    /// This Mac's copy of each folder other than the root,  in folder order.
+    ///
+    /// The fields above are the root copy's,  which is the one most knobs live in.  Every
+    /// other folder is fetched on its own and has a copy of its own age,  so it is
+    /// described on its own.
+    var folderCopies: [KnobFolderCopy] = []
+
+    /// Every Infisical folder the knobs live in:  the root first,  then the rest in order.
+    var folders: [String] { KnobReader.folders(of: knobs) }
 
     /// The knobs,  as the panel shows them.
     var rows: [Row] {
@@ -360,6 +372,17 @@ struct KnobRegistry {
             if copyIsReadable && copyIsStale {
                 lines.append(KnobFreshnessLine(text: "It may not be current.", isWarning: true))
             }
+            // Another folder's copy says its own age,  in one line,  so its warning cannot
+            // repeat the root's text (the panel keys the lines by their text).
+            for other in folderCopies {
+                if other.isReadable && other.isStale {
+                    lines.append(KnobFreshnessLine(
+                        text: "\(other.headline)\(ApplyCopy.sentenceGap)It may not be current.",
+                        isWarning: true))
+                } else {
+                    lines.append(KnobFreshnessLine(text: other.headline, isWarning: !other.isReadable))
+                }
+            }
         }
         return lines
     }
@@ -445,6 +468,22 @@ struct KnobGroup: Identifiable {
 struct KnobFreshnessLine: Equatable {
     let text: String
     let isWarning: Bool
+}
+
+/// This Mac's copy of one Infisical folder other than the root.
+struct KnobFolderCopy: Equatable {
+    /// The folder,  such as `/wake-router`.
+    let folder: String
+    /// True when the copy was there and the engine would read it.
+    let isReadable: Bool
+    /// True when a readable copy is older than the engine rewrites it.
+    let isStale: Bool
+    /// The age of the copy,  or why there is no copy to read.
+    let ageText: String
+    /// The sentence the panel shows about this folder's copy.
+    let headline: String
+    /// When the copy was saved,  when it is readable.
+    let savedAt: Date?
 }
 
 /// Which machines run a job that reads a knob.
@@ -642,75 +681,61 @@ enum KnobStatusReader {
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         timeout: TimeInterval = 40
     ) async -> KnobLiveReading {
-        let process = Process()
-        let output = Pipe()
-        let errors = Pipe()
-        process.executableURL = location.interpreter
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: "/")
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = output
-        process.standardError = errors
-        process.environment = EngineRunner.childEnvironment(location: location, home: home)
-        let collected = Collected()
-        let group = DispatchGroup()
-        // Wait for the process to end without holding a thread:  the termination handler
-        // resumes this call,  and a timer ends the process when it runs past the timeout.
-        var startFailure: String?
-        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in finished.resume() }
-            // Both readers are counted before the process starts, so the notify below can
-            // never fire before they have run, however quickly the process ends.
-            group.enter()
-            group.enter()
-            do {
-                try process.run()
-            } catch {
-                // A process that did not start never calls the termination handler.
-                startFailure = error.localizedDescription
-                group.leave()
-                group.leave()
-                finished.resume()
-                return
-            }
-            DispatchQueue.global().async {
-                collected.output = output.fileHandleForReading.readDataToEndOfFile()
-                group.leave()
-            }
-            DispatchQueue.global().async {
-                collected.errors = errors.fileHandleForReading.readDataToEndOfFile()
-                group.leave()
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                if process.isRunning {
-                    collected.timedOut = true
-                    process.terminate()
-                }
+        let environment = EngineRunner.childEnvironment(location: location, home: home)
+        // The run blocks a thread while it waits,  so it waits on a dispatch thread and never
+        // on one of the threads Swift's tasks share.
+        let outcome: Result<FleetViewService.ProcessOutcome, Error> = await withCheckedContinuation { finished in
+            DispatchQueue.global(qos: .userInitiated).async {
+                // The same bounded run the fleet-view read uses:  SIGTERM at the deadline,
+                // SIGKILL after a grace period,  capped reads,  and a drain wait bounded by
+                // the grace,  so a child that ignores SIGTERM,  or a grandchild that holds a
+                // pipe open,  cannot leave the Controls page checking for ever.
+                finished.resume(returning: Result {
+                    try FleetViewService.runProcess(
+                        executable: location.interpreter,
+                        arguments: KnobStatusReader.arguments,
+                        currentDirectory: URL(fileURLWithPath: "/"),
+                        environment: environment,
+                        timeout: timeout
+                    )
+                })
             }
         }
-        if let startFailure {
-            return .failed("Muster could not start the knob engine (\(startFailure)).")
+        return reading(from: outcome, timeout: timeout)
+    }
+
+    /// What a run came to,  in the owner's words.
+    static func reading(
+        from outcome: Result<FleetViewService.ProcessOutcome, Error>,
+        timeout: TimeInterval
+    ) -> KnobLiveReading {
+        let run: FleetViewService.ProcessOutcome
+        switch outcome {
+        case .success(let value):
+            run = value
+        case .failure(let error):
+            let detail: String
+            if let serviceError = error as? FleetViewService.ServiceError,
+               case .launchFailed(let why) = serviceError {
+                detail = why
+            } else {
+                detail = error.localizedDescription
+            }
+            return .failed("Muster could not start the knob engine (\(detail)).")
         }
-        // The pipes close when the process ends, so the two reads finish at once.
-        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            group.notify(queue: .global()) { done.resume() }
-        }
-        if collected.timedOut {
+        if run.timedOut {
             return .failed("The knob engine did not answer within \(Int(timeout)) seconds.")
         }
-        if let status = KnobLiveStatus.parse(collected.output) {
+        if run.stdoutExceeded {
+            return .failed("The knob engine's answer was larger than Muster will read.")
+        }
+        if let status = KnobLiveStatus.parse(run.stdout) {
             return .read(status)
         }
-        let complaint = String(data: collected.errors, encoding: .utf8) ?? ""
+        let complaint = String(decoding: run.stderr, as: UTF8.self)
         let first = complaint.split(separator: "\n").last.map(String.init) ?? ""
         let because = first.isEmpty ? "" : " (\(first.prefix(160)))"
         return .failed("The knob engine's answer could not be read\(because).")
-    }
-
-    private final class Collected: @unchecked Sendable {
-        var output = Data()
-        var errors = Data()
-        var timedOut = false
     }
 }
 
@@ -748,7 +773,7 @@ enum KnobReader {
         home: URL,
         identity: EngineIdentity.Identity?
     ) -> KnobRegistry {
-        let copy = readCopy(in: home, identity: identity)
+        let rootCopy = readCopy(in: home, identity: identity, folder: rootFolder)
         let declared: [KnobRegistry.Knob]
         let unreadable: Int
         let problem: String?
@@ -773,8 +798,17 @@ enum KnobReader {
             problem = table.problem
             file = "INFISICAL.md"
         }
+        // Each folder is fetched on its own and has its own copy,  so a knob is read from its
+        // own folder's copy and from no other.  A folder with no usable copy leaves its knobs
+        // unknown,  even when the root copy is fresh.
+        var copies: [String: Copy] = [rootFolder: rootCopy]
+        let otherFolders = folders(of: declared).filter { $0 != rootFolder }
+        for folder in otherFolders {
+            copies[folder] = readCopy(in: home, identity: identity, folder: folder)
+        }
         let knobs = declared.map { declaredKnob -> KnobRegistry.Knob in
             var knob = declaredKnob
+            let copy = copies[knob.folder] ?? readCopy(in: home, identity: identity, folder: knob.folder)
             if knob.isSecret {
                 // The copy holds the non-secret knobs only,  so a secret is never in it and its
                 // absence says nothing about whether the secret is set.  The panel says the
@@ -806,15 +840,26 @@ enum KnobReader {
         }
         var registry = KnobRegistry(
             knobs: knobs,
-            copyAge: copy.ageText,
-            copyIsStale: copy.isStale,
-            copyHeadline: copy.headline,
+            copyAge: rootCopy.ageText,
+            copyIsStale: rootCopy.isStale,
+            copyHeadline: rootCopy.headline,
             unreadableRows: unreadable,
             problem: problem
         )
-        registry.copyIsReadable = copy.isReadable
-        registry.copySavedAt = copy.savedAt
+        registry.copyIsReadable = rootCopy.isReadable
+        registry.copySavedAt = rootCopy.savedAt
         registry.registryFile = file
+        registry.folderCopies = otherFolders.compactMap { folder -> KnobFolderCopy? in
+            guard let copy = copies[folder] else { return nil }
+            return KnobFolderCopy(
+                folder: folder,
+                isReadable: copy.isReadable,
+                isStale: copy.isStale,
+                ageText: copy.ageText,
+                headline: copy.headline,
+                savedAt: copy.savedAt
+            )
+        }
         return registry
     }
 
@@ -837,6 +882,7 @@ enum KnobReader {
             current: .unknown("not read")
         )
         knob.baseKind = KnobRegistry.Knob.baseKind(fromKindText: kind)
+        knob.folder = KnobReader.folder(fromNote: row.value(at: 6))
         if case .choice(let choices) = KnobEditorKind(kind: kind) { knob.choices = choices }
         if case .integer(let low, let high) = KnobEditorKind(kind: kind) {
             knob.minimum = low
@@ -856,6 +902,20 @@ enum KnobReader {
             knob.capNames = names.keys.sorted()
         }
         return knob
+    }
+
+    /// The folder a table row's note names,  or the root when it names none.
+    ///
+    /// The table has no folder column:  the generator leads a note with `in folder /x;`
+    /// for a knob outside the root (`scripts/fleet_knobs/inventory.py`,  `_what`).
+    static func folder(fromNote note: String) -> String {
+        let lead = "in folder "
+        guard note.hasPrefix(lead) else { return rootFolder }
+        let rest = note.dropFirst(lead.count)
+        guard let end = rest.firstIndex(of: ";") else { return rootFolder }
+        // A folder this app cannot name a copy for stays as written,  so its knobs read
+        // unknown rather than borrowing the root's copy.
+        return String(rest[..<end]).trimmingCharacters(in: .whitespaces)
     }
 
     /// What reading the generated inventory came to.
@@ -923,6 +983,12 @@ enum KnobReader {
         )
         knob.label = text("label")
         knob.group = text("group")
+        // A registry that predates folders has none,  and every knob is in the root.  A folder
+        // that is there and is not text is kept as no folder at all,  so the knob reads
+        // unknown rather than borrowing the root's copy.
+        if let folder = entry["folder"] {
+            knob.folder = (folder as? String) ?? ""
+        }
         knob.hosts = KnobHosts(registryValue: text("hosts"))
         knob.consumers = ((entry["consumers"] as? [[String: Any]]) ?? []).compactMap { $0["name"] as? String }
         knob.baseKind = baseKind
@@ -1114,6 +1180,49 @@ enum KnobReader {
     /// The largest copy the engine will read,  in bytes.
     static let maxCopyBytes = 256 * 1024
 
+    // MARK: Folders
+
+    /// The root Infisical folder,  whose copy keeps the original name `lkg.json`.
+    static let rootFolder = "/"
+
+    /// The engine's own check for a folder name,  `FOLDER_PATTERN` in
+    /// `scripts/fleet_knobs/registry.py`:  the root,  or up to four segments of lower-case
+    /// letters,  digits and dashes,  each starting with a letter or a digit.
+    static let folderPattern =
+        "^/(?:[a-z0-9][a-z0-9-]{0,62}(?:/[a-z0-9][a-z0-9-]{0,62}){0,3})?$"
+
+    /// True when the whole text is a folder the engine would take.
+    ///
+    /// The match must cover the text,  so a folder with a newline after it is refused here
+    /// even where a looser `$` would take it.  A pattern that does not compile refuses
+    /// every folder.
+    static func isKnobFolder(_ folder: String) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: folderPattern) else { return false }
+        let range = NSRange(folder.startIndex..<folder.endIndex, in: folder)
+        guard let match = regex.firstMatch(in: folder, range: range) else { return false }
+        return match.range == range
+    }
+
+    /// The name of one folder's copy,  as `lkg.path` in `scripts/fleet_knobs/lkg.py` names it,
+    /// or nil for a folder the engine would refuse.
+    ///
+    /// The root keeps `lkg.json`.  Any other folder is `lkg-` and its segments joined with
+    /// dots:  `/wake-router` is `lkg-wake-router.json` and `/a/b` is `lkg-a.b.json`.
+    static func copyFileName(for folder: String) -> String? {
+        guard isKnobFolder(folder) else { return nil }
+        if folder == rootFolder { return "lkg.json" }
+        let segments = folder.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .replacingOccurrences(of: "/", with: ".")
+        return "lkg-\(segments).json"
+    }
+
+    /// The folders the knobs live in:  the root first,  always,  then every other folder a
+    /// knob names,  once each,  in order.  A folder the engine would refuse is left out.
+    static func folders(of knobs: [KnobRegistry.Knob]) -> [String] {
+        let others = Set(knobs.map(\.folder)).filter { $0 != rootFolder && isKnobFolder($0) }
+        return [rootFolder] + others.sorted()
+    }
+
     /// What the panel says when this Mac has no copy at all.
     static let noCopyHeadline =
         "This Mac has no copy of the knobs yet.\(ApplyCopy.sentenceGap)A job on this Mac writes one after it reads Infisical."
@@ -1126,42 +1235,68 @@ enum KnobReader {
     /// The file is checked the way the engine checks it:  a file that is a symlink,
     /// not a regular file, owned by somebody else, readable by the group or by
     /// others, or too large is never trusted.
-    private static func readCopy(in home: URL, identity: EngineIdentity.Identity?) -> Copy {
-        let directory = home.appendingPathComponent(".local/state/fleet-knobs", isDirectory: true)
-        let path = directory.appendingPathComponent("lkg.json", isDirectory: false)
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path.path, isDirectory: &isDirectory),
-              isDirectory.boolValue == false else {
-            return Copy(
+    ///
+    /// Each Infisical folder has its own copy (`copyFileName(for:)`).  The root's says
+    /// what it always said;  another folder's sentences and reasons name the folder,  and
+    /// its copy must record that folder,  as the engine requires.
+    private static func readCopy(
+        in home: URL,
+        identity: EngineIdentity.Identity?,
+        folder: String = KnobReader.rootFolder
+    ) -> Copy {
+        let isRoot = folder == rootFolder
+        let subject = isRoot ? "This Mac's copy of the knobs" : "This Mac's copy of the \(folder) knobs"
+        func because(_ reason: String) -> String {
+            isRoot ? reason : "\(reason) (folder \(folder))"
+        }
+        func refused(_ ageText: String, _ reason: String, _ headline: String) -> Copy {
+            Copy(
                 knobs: [:],
-                ageText: "no local copy",
+                ageText: ageText,
                 isStale: false,
                 isReadable: false,
-                reason: "no local copy",
-                headline: noCopyHeadline
+                reason: because(reason),
+                headline: headline
             )
         }
-        guard isPrivateFile(at: path, in: directory) else {
+        let directory = home.appendingPathComponent(".local/state/fleet-knobs", isDirectory: true)
+        guard let fileName = copyFileName(for: folder) else {
+            // The engine refuses to name a copy for a folder outside its pattern,  so there
+            // is no file to read and no knob in that folder is known.
             return Copy(
                 knobs: [:],
                 ageText: "no usable copy",
                 isStale: false,
                 isReadable: false,
-                reason: "the copy is not a private file of this user",
-                headline: "This Mac's copy of the knobs is not a private file of this user, so it is not read."
+                reason: "the registry names the folder \"\(folder)\", which is not one the engine reads",
+                headline: "The registry names the folder \"\(folder)\", which is not one the engine reads, so no copy of it is read."
+            )
+        }
+        let path = directory.appendingPathComponent(fileName, isDirectory: false)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path.path, isDirectory: &isDirectory),
+              isDirectory.boolValue == false else {
+            return refused(
+                "no local copy",
+                "no local copy",
+                isRoot ? noCopyHeadline : folderNoCopyHeadline(folder)
+            )
+        }
+        guard isPrivateFile(at: path, in: directory) else {
+            return refused(
+                "no usable copy",
+                "the copy is not a private file of this user",
+                "\(subject) is not a private file of this user, so it is not read."
             )
         }
         guard
             let data = try? Data(contentsOf: path),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            return Copy(
-                knobs: [:],
-                ageText: "no usable copy",
-                isStale: false,
-                isReadable: false,
-                reason: "the copy could not be parsed",
-                headline: "This Mac's copy of the knobs could not be parsed, so it is not read."
+            return refused(
+                "no usable copy",
+                "the copy could not be parsed",
+                "\(subject) could not be parsed, so it is not read."
             )
         }
         // The engine accepts a copy only when it carries its own identity,  a map of
@@ -1171,13 +1306,11 @@ enum KnobReader {
         guard let identity else {
             // The engine did not say which project its copy belongs to,  so the copy
             // cannot be confirmed as this fleet's.  It is not read at all.
-            return Copy(
-                knobs: [:],
-                ageText: "not a copy this app knows",
-                isStale: false,
-                isReadable: false,
-                reason: "the engine did not say which project its copy belongs to",
-                headline: "This Mac's copy is not read, because the engine did not say which Infisical project it belongs to."
+            let whose = isRoot ? "This Mac's copy" : subject
+            return refused(
+                "not a copy this app knows",
+                "the engine did not say which project its copy belongs to",
+                "\(whose) is not read, because the engine did not say which Infisical project it belongs to."
             )
         }
         let schema = (object["schema"] as? NSNumber)?.doubleValue
@@ -1192,26 +1325,33 @@ enum KnobReader {
             let knobs,
             let saved
         else {
-            return Copy(
-                knobs: [:],
-                ageText: "not a copy this app knows",
-                isStale: false,
-                isReadable: false,
-                reason: "the copy is not one the engine wrote",
-                headline: "This Mac's copy of the knobs is not one the engine wrote, so it is not read."
+            return refused(
+                "not a copy this app knows",
+                "the copy is not one the engine wrote",
+                "\(subject) is not one the engine wrote, so it is not read."
+            )
+        }
+        // The root copy has never carried a folder,  so a missing one means the root.  Any
+        // other folder's copy records its folder,  and the engine refuses a copy whose folder
+        // is not the one asked for (`wrong-folder`),  so this panel does too.  A folder that
+        // is there and is not text matches nothing.
+        let recorded = object["path"]
+        let folderMatches = recorded == nil ? isRoot : (recorded as? String) == folder
+        guard folderMatches else {
+            return refused(
+                "not a copy this app knows",
+                "the copy is for another folder",
+                "\(subject) is for another folder, so it is not read."
             )
         }
         // A time that is not a number a clock could hold is not a time.  A value such
         // as 1e300 is valid JSON and would trap the conversion to an integer,  so it
         // is refused before anything tries to read it as an age.
         guard saved.isFinite, saved > 0, saved < 4_102_444_800 else {
-            return Copy(
-                knobs: [:],
-                ageText: "no usable copy",
-                isStale: false,
-                isReadable: false,
-                reason: "the copy has no time this app can read",
-                headline: "This Mac's copy of the knobs has no time this app can read, so it is not read."
+            return refused(
+                "no usable copy",
+                "the copy has no time this app can read",
+                "\(subject) has no time this app can read, so it is not read."
             )
         }
         var values: [String: String] = [:]
@@ -1225,27 +1365,32 @@ enum KnobReader {
         let stale = age > Double(refreshSeconds)
         let expired = age > Double(maxAgeSeconds) || age < -Double(futureToleranceSeconds)
         if expired {
-            return Copy(
-                knobs: [:],
-                ageText: "past its expiry",
-                isStale: false,
-                isReadable: false,
-                reason: "the copy is past its expiry",
-                headline: "This Mac's copy of the knobs is more than two days old, so the engine and this panel ignore it."
+            return refused(
+                "past its expiry",
+                "the copy is past its expiry",
+                "\(subject) is more than two days old, so the engine and this panel ignore it."
             )
         }
         let ageText = age <= 0 ? "just now" : FleetTime.age(Int(age))
         let savedAt = Date(timeIntervalSince1970: saved)
         let ago = age <= 0 ? "just now" : "\(ageText) ago"
+        let clock = FleetTime.clock(savedAt)
         return Copy(
             knobs: values,
             ageText: ageText,
             isStale: stale,
             isReadable: true,
             reason: nil,
-            headline: "Values are from this Mac's copy, saved at \(FleetTime.clock(savedAt)) (\(ago)).",
+            headline: isRoot
+                ? "Values are from this Mac's copy, saved at \(clock) (\(ago))."
+                : "Values in \(folder) are from this Mac's copy of that folder, saved at \(clock) (\(ago)).",
             savedAt: savedAt
         )
+    }
+
+    /// What the panel says when this Mac has no copy of a folder other than the root.
+    static func folderNoCopyHeadline(_ folder: String) -> String {
+        "This Mac has no copy of the \(folder) knobs yet, so their values are not known here."
     }
 
     /// Check a file the way the engine's own reader checks it.

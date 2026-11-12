@@ -218,7 +218,7 @@ for p in "$FH/Code/BotFleet" "$FH/Code/fleet-ops" "$FH/Code/Fleet-OPS" "$FH/Code
          "$(git -C "$FH/Code/BotFleet" worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}')"; do
   janitor_keep_match "$p" || fail "KEEP_RE must protect $p"
 done
-for p in /Users/jay/apps/botfleet-claude /Users/jay/apps/agent-sync-push /Users/jay/apps/botfleet-server; do   # regex only, never cd there
+for p in /Users/jay/apps/botfleet-claude /Users/jay/apps/botfleet-server; do   # regex only, never cd there
   printf '%s\n' "$p" | grep -qiE "$KEEP_RE" || fail "KEEP_RE must still protect the standing lane $p"
 done
 for p in "$LANES/BotFleet/claude-x" "$FH/Code/BotFleet/.claude/worktrees/abc" "$FH/Code/BotFleet-copy" "$FH/apps/botfleet-claude-fix"; do
@@ -242,7 +242,7 @@ janitor_is_nested_lane "$T/ext/Other/claude-x" && fail "another folder on the ex
 # stays doctor-gated; a legacy prefix folder, a review checkout, a Claude desktop folder and a Codex folder all count
 for shape in "BotFleet/review-pr-482" "BotFleet/review-pr-482-codex" "BotFleet/active-engines-display-e380b8" \
              "_codex/fix-thing/BotFleet" "Congress.Trade/claude-x" "AI-Fleet-Coordinator/claude-x" \
-             "botfleet/claude-x" "_managed/fleet/agent-sync-runtime" "_review/botfleet/pr-1"; do
+             "botfleet/claude-x" "_managed/fleet/simple-tools-runtime" "_review/botfleet/pr-1"; do
   janitor_is_nested_lane "$LANES/$shape" || fail "a v2 or legacy lane shape under the lanes root must count as nested: $shape"
 done
 

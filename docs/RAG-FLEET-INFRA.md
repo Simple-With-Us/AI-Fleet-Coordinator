@@ -73,21 +73,29 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 Agent-facing recall text is presented as nonce-fenced JSON with an explicit warning that hits
 are untrusted data, never instructions or owner approval. The shared `recall_presentation`
 helper covers the standalone stdio MCP, recall-service MCP, seat-mcp and CLI text surfaces.
-The JSON inside the fence is lossless: delimiter-like text uses JSON Unicode escapes, not
-source removal. MCP `structuredContent` and CLI `--json` stdout retain the raw result shape
-and original source text; CLI JSON writes its trust warning to stderr. REST and the Python
-API remain raw-data interfaces. Machine consumers must treat their hits as untrusted source
-data and separately verify authority before acting; indexing text does not authenticate it.
-No text fence can make an agent immune to prompt injection. The hosted/agent-sync MCP already
+
+**Compact by default (AFC-742).** `recall_search` returns a token-thrift payload unless the
+caller opts in with `full=true` / `--full`.  Compact mode keeps a modest default top-k (3 when
+`limit` is omitted), collapses multiple chunks from the same `doc_id` to the best-scoring hit,
+truncates `text` to `FLEET_RECALL_SNIPPET_CHARS` (default 280), and optionally narrows output
+with a `fields` list.  Explicit `limit` values are preserved.  MCP `structuredContent`, fenced
+text, REST `/recall/search`, and CLI text mode share this presentation.  CLI `--json` and the
+in-process Python `recall_api.recall_search` return/remain full-fidelity for machine pipelines.
+
+The JSON inside the fence is lossless relative to the presented payload: delimiter-like text
+uses JSON Unicode escapes, not source removal. Machine consumers must treat their hits as
+untrusted source data and separately verify authority before acting; indexing text does not
+authenticate it.
+No text fence can make an agent immune to prompt injection. The hosted/simple-tools MCP already
 has its own untrusted recall envelope. `install-fleet-rag.sh --with-seat-mcp` now copies the
 seat server renderer as well as its bridge/tools; the main package rsync and service Docker
 COPY include the shared helper. These source changes do not install, restart or deploy a
 runtime by themselves.
 
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, Agent] Topic` title convention |
-| `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
+| `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Also skip coverage and framework output, vendored and third-party trees, lockfiles, generated names, minified files, binaries, and files over the size cap.  Those new excludes are held out of prune until a dry run writes `doc-diet-report.json` and the operator passes `--prune-excluded`, sets `FLEET_RAG_PRUNE_EXCLUDED=1`, or sets `FLEET_RAG_PRUNE_EXCLUDED_ALLOW`.  Identical chunk bodies in one doc-source run are stored once, and later paths are listed on `also_paths`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
-| `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md` | deduped by content |
+| `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md`, and `~/.grok/skills/*/SKILL.md` | deduped by content |
 | `memory` | `~/.claude/projects/*/memory/*.md`, `~/.codex/memories/*.md` | the per-seat silos, so their lessons are shared |
 | `chat-log` | infrequent policy scan of agent transcripts (not in `ingest --all`) | **Owner 2026-09-02:** only user turns that look like an owner ruling or infra/policy shift.  Not a lesson dump.  Agents contribute lessons via `recall_contribute`; chat review is sparingly for policy/infra drift.  Explicit `recall ingest --source chat-log`. |
 | `agent-contribution` | `recall contribute` / `recall_contribute` | **Highest-yield write path.**  Scrubbed, gitleaks-gated, 40–4,000 chars.  Search first, then contribute the lesson at the moment it was learned. |
@@ -96,7 +104,9 @@ Mirror rules keep one copy of each document: the live `~/apps/*.md` copy wins ov
 repo mirror (FLEET-PROTOCOL, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
 repo copies of skills are skipped in favour of the `skill` source, effort-log mirrors are skipped
 in favour of the live boards, and checkouts reachable under two spellings are walked once.
-`recall ingest --prune` deletes the chunks of documents a source no longer yields.
+`recall ingest --prune` deletes the chunks of documents a source no longer yields.  Documents the doc diet newly excludes stay until that explicit release.
+
+The nightly server job and the Mac mirror are in `docs/RAG-NIGHTLY-INGEST.md` (AFC-687).  Both ship disabled.
 
 Every chunk goes through the secret scrub (`scripts/fleet_rag/scrub.py`: well-known token shapes,
 assignment patterns, basic-auth URLs) and then a gitleaks gate over the staged rows; anything
@@ -465,6 +475,36 @@ checksums it, copies it to Backblaze B2 (`jays-socratic-trade-eu/qdrant/socratic
 API key is read from the running container's environment at run time and never written to disk.
 A full `socratic-trade` snapshot is ~6.4 GB and takes about a minute to create.
 
+### Pre-prune snapshot (nightly ingest, AFC-754)
+
+Every non-dry-run ingest that will delete missing documents takes one extra Qdrant snapshot of the
+fleet collection **immediately before** the prune phase.  Upserts and source reads still complete;
+a snapshot failure aborts **only** the prune, with a clear error in the ingest report.
+
+On the Hetzner nightly job, the snapshot name is copied into
+`~/.local/state/fleet-rag-nightly/last.json` under `qdrant_snapshot.name`.  Archived files default to
+`~/.local/state/fleet-rag-nightly/qdrant-prune-snapshots/` when
+`FLEET_RAG_QDRANT_SNAPSHOT_VOLUME` is set on the unit (same move-off-volume pattern as
+`fleet-qdrant-snapshot.sh`).  Without a volume path, snapshots stay in Qdrant and retention uses
+the snapshots API.
+
+| Knob | Default | Purpose |
+|---|---|---|
+| `FLEET_RAG_PRUNE_SNAPSHOT_KEEP` | `3` | Local and in-Qdrant copies to retain after each pre-prune snapshot |
+| `FLEET_RAG_PRUNE_SNAPSHOT_DIR` | nightly state subdir above | Override archive directory |
+| `FLEET_RAG_QDRANT_SNAPSHOT_VOLUME` | unset | Qdrant storage root; when set, the `.snapshot` file moves off the live volume |
+
+**Restore from a pre-prune archive (server).**  Stop writers to the collection (disable the nightly
+timer and any manual `recall ingest --prune`).  On the box, pick the snapshot file under
+`qdrant-prune-snapshots/` or the name recorded in `last.json`.  If the file was archived locally,
+upload or copy it into Qdrant's snapshots directory for the fleet collection, or use Qdrant's
+`snapshots/upload` API with the write API key.  Call `POST
+/collections/<fleet-collection>/snapshots/recover` with that snapshot name and `wait=true`.  When
+`GET /collections/<fleet-collection>` shows the expected point count, re-enable the nightly timer
+and run `recall doctor --box` to confirm the ingest sentinel and backup rows are green again.  The
+daily `/data/backups/qdrant/` copies remain the long-retention DR path; pre-prune archives are the
+last known-good instant before a prune deleted rows.
+
 ## Health rows
 
 `/usr/local/sbin/fleet-health-verify.sh` (every 15 minutes, pages through the existing
@@ -712,7 +752,7 @@ Consequences:
 ## Files
 
 - `scripts/fleet_rag/` — `core` (creds, embed, rerank, Qdrant client), `scrub`, `chunk`,
-  `sources`, `ingest`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`,
+  `sources`, `ingest`, `qdrant_snapshot`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`,
   `eval`, `telemetry` (optional Sentry reporting, see *Observability*), `golden.jsonl`, `tests/`
 - `scripts/hooks/` — the Claude Code SessionStart and Stop hooks
 - `scripts/fleet-recall-service/` — the Hetzner-side recall service (`server.py`, `bootstrap.sh`,

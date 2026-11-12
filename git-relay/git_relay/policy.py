@@ -10,14 +10,119 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import threading
 import time
 
-from .app_tokens import MINT_PERMISSION_CEILING
+from .app_tokens import mint_permission_allowed
+from .shared_bearer import SharedBearerVerifier
 
 
 class PolicyError(ValueError):
     """A seat config or request is invalid."""
+
+
+# Exact owner/name and exact repo path. No globs, no dot segments, no .github.
+_GRANT_REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
+_GRANT_PATH = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,99}){0,7}"
+)
+_MAX_DEFAULT_BRANCH_PATHS = 8
+
+
+def _repo_pattern_allows(patterns, repo: str) -> bool:
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            continue
+        if pattern.endswith("/*"):
+            if repo.startswith(pattern[:-1]):
+                return True
+        elif repo == pattern:
+            return True
+    return False
+
+
+def parse_default_branch_paths(seat: str, raw, repos) -> dict[str, tuple[str, ...]]:
+    """Exact paths one seat may write on one repository's default branch.
+
+    Absent means none. A present value is a map of exact owner/name to a short
+    list of exact paths. Globs, dot segments and anything under .github are
+    refused at load, and each repository must already be in the seat's repos.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not raw:
+        raise PolicyError(f"seat {seat!r}: default_branch_paths must be a non-empty object")
+    grants: dict[str, tuple[str, ...]] = {}
+    for repo, paths in raw.items():
+        if not isinstance(repo, str) or not _GRANT_REPO.fullmatch(repo):
+            raise PolicyError(f"seat {seat!r}: default_branch_paths repo must be owner/name")
+        if not _repo_pattern_allows(repos, repo):
+            raise PolicyError(
+                f"seat {seat!r}: default_branch_paths repo is not in this seat's repos"
+            )
+        if not isinstance(paths, list) or not paths or len(paths) > _MAX_DEFAULT_BRANCH_PATHS:
+            raise PolicyError(
+                f"seat {seat!r}: default_branch_paths needs 1 to {_MAX_DEFAULT_BRANCH_PATHS} paths"
+            )
+        cleaned: list[str] = []
+        for path in paths:
+            if (
+                not isinstance(path, str)
+                or not _GRANT_PATH.fullmatch(path)
+                or any(part in ("", ".", "..") for part in path.split("/"))
+                or path == ".github"
+                or path.startswith(".github/")
+                or any(ch in path for ch in "*?[]")
+            ):
+                raise PolicyError(
+                    f"seat {seat!r}: default_branch_paths entries must be exact paths"
+                )
+            if path in cleaned:
+                raise PolicyError(f"seat {seat!r}: default_branch_paths repeats a path")
+            cleaned.append(path)
+        grants[repo] = tuple(cleaned)
+    return grants
+
+
+# Closed, non-secret causes for a credential the relay will not treat as a seat.
+# unauthenticated: empty, malformed, or not a credential this relay checks.
+# seat_not_in_policy: the bearer or assertion names an identity no shared seat claims.
+# bearer_rejected: the identity is configured and the checker refused the credential.
+# verifier_unavailable: the identity is configured and the checker could not be asked.
+AUTH_FAILURE_REASONS = frozenset(
+    {
+        "unauthenticated",
+        "seat_not_in_policy",
+        "bearer_rejected",
+        "verifier_unavailable",
+    }
+)
+
+# First-seat bootstrap probe bounds.  A seat_not_in_policy answer may be
+# probed for proof purposes, but every probe costs a blocking Worker verify,
+# so three bounds apply per window:  a GLOBAL verify count, a distinct
+# IDENTITY CARDINALITY, and a per-identity count.  The global and cardinality
+# bounds come first:  an unbounded set of parsed identities must not multiply
+# the budget by rotating names.  A refused probe behaves exactly like an
+# unverifiable bearer - the ordinary bounded denial row, no verifier call.
+# Scope, stated exactly:  the bound is per relay PROCESS (one SeatPolicy
+# instance's window);  a restart resets it.  That is sufficient only while
+# the relay runs as a single process - a multi-process deployment must move
+# the bound into shared state before relying on it.
+BOOTSTRAP_VERIFY_GLOBAL = 6
+BOOTSTRAP_VERIFY_IDENTITIES = 8
+BOOTSTRAP_VERIFY_PER_IDENTITY = 2
+BOOTSTRAP_VERIFY_WINDOW_S = 60.0
+
+
+def auth_failure_response(reason: str) -> tuple[int, dict]:
+    """HTTP answer for authenticate_with_reason's failure cause. No credential material."""
+    if reason not in AUTH_FAILURE_REASONS:
+        reason = "unauthenticated"
+    if reason == "verifier_unavailable":
+        return 503, {"error": "verifier_unavailable", "retryable": True}
+    return 401, {"error": reason}
 
 
 # Per-seat calls an hour the gateway admits before it refuses.  This is a seat-token blast-radius bound, not a
@@ -38,6 +143,11 @@ DEFAULT_WRITE_RATE_PER_HOUR = 500
 RATE_LIMIT_DENIAL = "hourly rate limit reached for this seat"
 WRITE_RATE_LIMIT_DENIAL = "hourly write limit reached for this seat"
 RATE_LIMIT_DENIALS = (RATE_LIMIT_DENIAL, WRITE_RATE_LIMIT_DENIAL)
+
+
+# GitHub repository names: start alphanumeric, then dot, underscore or hyphen.
+# `.git` (any case) and a trailing dot are rejected even when the shape matches.
+_CREATE_REPO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
 
 
 class SeatPolicy:
@@ -78,6 +188,11 @@ class SeatPolicy:
         "edit_pr",
         "reply_thread",
         "comment_pr",
+        # Account-level create.  token_for cannot mint it: that token is scoped to a
+        # repository that already exists.  Dispatch uses a namespace token the seat
+        # mint ceiling cannot request, then revokes it.  Denied unless the seat's
+        # own row lists this action.
+        "create_repo",
     )
     # Known but not implemented:  accepted in seat config, refused at dispatch
     # until their implementation and per-action policy land.
@@ -92,7 +207,12 @@ class SeatPolicy:
         "create_issue_comment",
         "request_reviewers",
         "set_branch_protection",
-        "create_repo",
+    )
+    # Hardcoded account allowlist for create_repo.  Not a per-seat setting.
+    # The spelling here is what GitHub and the seat repo patterns use.
+    CREATE_REPO_OWNERS = (
+        ("Simple-With-Us", "org"),
+        ("jaywedgeworth22", "user"),
     )
     # Workflow verbs (workflow_verbs.SPECS): policy names a seat config may list, each
     # authorized once per call by WorkflowVerbs.for_action and minted at the least
@@ -190,6 +310,7 @@ class SeatPolicy:
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",
+        "wf_release_notes_preview",
         "wf_release_create",
         "wf_release_update",
         "wf_environments",
@@ -199,8 +320,10 @@ class SeatPolicy:
         "wf_issue_list",
         "wf_issue_get",
         "wf_issue_create",
+        "wf_issue_milestone_set",
         "wf_issue_update",
         "wf_issue_comment",
+        "wf_issue_state_set",
         "wf_issue_comment_update",
         "wf_issue_comment_delete",
         "wf_review_comment_update",
@@ -218,7 +341,15 @@ class SeatPolicy:
         "wf_pr_reopen",
         "wf_automerge_enable",
         "wf_automerge_disable",
+        "wf_review_thread_comments",
         "wf_review_threads",
+        "wf_repo_hooks",
+        "wf_deploy_keys",
+        "wf_org_installations",
+        "wf_repo_list",
+        "wf_pr_search",
+        "wf_branch_rules",
+        "wf_rulesets",
         "wf_assignees_add",
         "wf_assignees_remove",
         "wf_issue_lock",
@@ -271,6 +402,7 @@ class SeatPolicy:
         "wf_run_approve",
         "wf_file_put",
         "wf_files_put",
+        "wf_file_patch",
         "wf_merge_guarded",
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
@@ -317,6 +449,10 @@ class SeatPolicy:
                 raise PolicyError(f"seat {seat!r}: oauth_assert must be true or absent")
             if oauth_assert and auth != "shared":
                 raise PolicyError(f"seat {seat!r}: oauth_assert needs shared auth")
+            # Absent means public creates are refused.  Only a literal true grants them.
+            create_repo_public = cfg.get("create_repo_public", False)
+            if not isinstance(create_repo_public, bool):
+                raise PolicyError(f"seat {seat!r}: create_repo_public must be true or absent")
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
             unknown = [a for a in actions if a not in self.ALL_ACTIONS]
@@ -355,23 +491,31 @@ class SeatPolicy:
                     for k, v in mint_perms.items()
                 ):
                     raise PolicyError(f"seat {seat!r}: mint_permissions must be name: read|write")
-                outside = [k for k in mint_perms if k not in MINT_PERMISSION_CEILING]
+                outside = [k for k, v in mint_perms.items() if not mint_permission_allowed(k, v)]
                 if outside:
                     # Config load must refuse names the minter always rejects,
                     # so a bad seat entry cannot pass startup and fail every mint.
                     raise PolicyError(
                         f"seat {seat!r}: mint_permissions outside the mint ceiling {outside}"
                     )
-            self._seats[seat] = {
+            repo_names = [str(r) for r in repos]
+            grants = parse_default_branch_paths(
+                seat, cfg.get("default_branch_paths", None), repo_names
+            )
+            stored = {
                 "auth": auth,
                 "identity": identity,
                 "oauth_assert": oauth_assert,
                 "token_hash": hashlib.sha256(token.encode()).hexdigest() if token else None,
                 "actions": set(actions),
-                "repos": [str(r) for r in repos],
+                "repos": repo_names,
                 "app_slug": app_slug,
                 "mint_permissions": dict(mint_perms),
+                "create_repo_public": create_repo_public,
             }
+            if grants:
+                stored["default_branch_paths"] = grants
+            self._seats[seat] = stored
         # Two seats may never claim the same verified identity:  resolution
         # would be order-dependent, and attribution is the point of the design.
         claimed = {}
@@ -394,35 +538,81 @@ class SeatPolicy:
         self._calls: dict[str, list[float]] = {}
         self._writes: dict[str, list[float]] = {}
         self._lock = threading.Lock()
+        self._bootstrap_calls: list[float] = []
+        self._bootstrap_idents: dict[str, list[float]] = {}
 
     def authenticate(self, token: str, proof: dict | None = None) -> str | None:
-        """Return the seat the presented credential resolves to, or None.
+        """Return the seat the presented credential resolves to, or None."""
+        seat, _reason = self.authenticate_with_reason(token, proof)
+        return seat
+
+    def bootstrap_resolve(self, token: str, now: float | None = None) -> str | None:
+        """The verifier-CONFIRMED identity of a bearer no configured seat claims, or None.
+
+        Runs only after authenticate_with_reason answered seat_not_in_policy:
+        the token already parsed as a recognizable bearer naming an identity
+        no shared seat claims.  The returned identity is the verifier's own
+        answer, never the bearer's claim;  an unverifiable bearer is None.
+        Every call costs a blocking Worker verify, so the bootstrap bounds
+        (global count, distinct identity cardinality, per-identity count)
+        reserve their slot under the lock BEFORE the call and keep the
+        reservation on failure:  a spray of one identity or of many names is
+        self-limiting either way, and concurrent probes cannot overrun the
+        budget.  Over budget returns None;  the caller then writes the
+        ordinary bounded denial row and never reaches the verifier.
+        """
+        if self._verifier is None:
+            return None
+        named = self._verifier.parse_identity(token)
+        if named is None:
+            return None
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            recent = [t for t in self._bootstrap_calls if now - t < BOOTSTRAP_VERIFY_WINDOW_S]
+            idents = {
+                i: [t for t in ts if now - t < BOOTSTRAP_VERIFY_WINDOW_S]
+                for i, ts in self._bootstrap_idents.items()
+            }
+            idents = {i: ts for i, ts in idents.items() if ts}
+            if (
+                len(recent) >= BOOTSTRAP_VERIFY_GLOBAL
+                or (named not in idents and len(idents) >= BOOTSTRAP_VERIFY_IDENTITIES)
+                or len(idents.get(named, [])) >= BOOTSTRAP_VERIFY_PER_IDENTITY
+            ):
+                self._bootstrap_calls, self._bootstrap_idents = recent, idents
+                return None
+            recent.append(now)
+            idents.setdefault(named, []).append(now)
+            self._bootstrap_calls, self._bootstrap_idents = recent, idents
+        return self._verifier.resolve(token)
+
+    def authenticate_with_reason(
+        self, token: str, proof: dict | None = None
+    ) -> tuple[str | None, str]:
+        """(seat, "") or (None, a closed AUTH_FAILURE_REASONS cause).
 
         Static tokens compare constant-time over the seats that have one.
-        With no static match and a shared verifier configured, the bearer is
-        resolved through ST-MCP;  it must land on a seat in "shared" mode
-        whose configured identity the verifier confirmed.
+        With no static match, a shared bearer is resolved through ST-MCP and
+        must land on a seat in "shared" mode whose configured identity the
+        verifier confirmed. A recognizable bearer whose identity is not in
+        the loaded policy is seat_not_in_policy and is not sent to the Worker.
+        That is a real miss when the loaded file lags the reviewed source:
+        ST-MCP accepts the bearer from its own catalog.
 
         `proof` carries {"action", "body_sha256"} of the exact request the
-        token rides on;  only the assertion family binds to it.  Bearers and
-        static tokens are bearer-equivalent credentials and ignore it.
+        token rides on; only the assertion family binds to it. Bearers and
+        static tokens ignore it.
         """
         if not token:
-            return None
+            return None, "unauthenticated"
         candidate = hashlib.sha256(token.encode()).hexdigest()
-        match = None
         for seat, cfg in self._seats.items():
             if cfg["token_hash"] and hmac.compare_digest(candidate, cfg["token_hash"]):
-                match = seat
-        if match is not None:
-            return match
-        # Worker-minted OAuth assertions:  the Worker verifies the HMAC, the
+                return seat, ""
+        # Worker-minted OAuth assertions: the Worker verifies the HMAC, the
         # action/body binding, the live grant state and the one-use jti per
-        # call (git_relay/assertion.py);  the relay holds no mint-capable key.
-        # An assertion-shaped token is refused outright when the callback, the
-        # request binding or the seat flag fails, or when no configured
-        # oauth_assert seat claims the verified identity - it never falls
-        # through to another token family.
+        # call (git_relay/assertion.py); the relay holds no mint-capable key.
+        # An assertion-shaped token never falls through to another family.
         named_assertion = (
             self._assertion_verifier.parse_identity(token)
             if self._assertion_verifier is not None
@@ -430,50 +620,66 @@ class SeatPolicy:
         )
         if named_assertion is not None:
             # Refuse locally when no configured oauth_assert seat claims the
-            # identity the token names, BEFORE the blocking remote verify:
-            # every forged shape then costs no Worker callback (mirrors the
-            # bearer pre-check below).  A valid assertion always names its
-            # flagged seat, so this can never false-refuse one.
+            # identity the token names, BEFORE the blocking remote verify.
             if not any(
                 cfg["auth"] == "shared"
                 and cfg["oauth_assert"]
                 and cfg["identity"] == named_assertion
                 for cfg in self._seats.values()
             ):
-                return None
+                return None, "seat_not_in_policy"
             resolved = self._assertion_verifier.resolve(token, proof)
             if resolved is None:
-                return None
+                return None, "bearer_rejected"
             identity, claims = resolved
-            # Scope authorization is inside the signature:  a grant approved
+            # Scope authorization is inside the signature: a grant approved
             # without zulip:write can mint assertions, but never for a write.
             if self.is_write(proof["action"]) and "zulip:write" not in claims.get("scopes", []):
-                return None
+                return None, "bearer_rejected"
             for seat, cfg in self._seats.items():
                 if cfg["auth"] == "shared" and cfg["oauth_assert"] and cfg["identity"] == identity:
-                    return seat
-            return None
-        if self._verifier is None:
-            return None
+                    return seat, ""
+            return None, "seat_not_in_policy"
         # Refuse locally when no configured shared seat claims the identity the
-        # token names:  otherwise every wrong guess - even for a family the
-        # relay does not serve - costs a blocking Worker verify before any
-        # per-seat rate limit can apply.  A valid bearer always names a
-        # configured identity, so this can never false-refuse one.
-        named = self._verifier.parse_identity(token)
+        # token names: otherwise every wrong guess costs a blocking Worker
+        # verify before any per-seat rate limit can apply. A bearer ST-MCP
+        # accepts can still miss here when the loaded policy file is behind
+        # the reviewed source. That miss is seat_not_in_policy, not a bare
+        # unauthenticated, and the Worker is not asked.
+        named = self._named_bearer(token)
         if named is None:
-            return None
+            return None, "unauthenticated"
         if not any(
             cfg["auth"] == "shared" and cfg["identity"] == named for cfg in self._seats.values()
         ):
-            return None
-        identity = self._verifier.resolve(token)
+            return None, "seat_not_in_policy"
+        if self._verifier is None:
+            return None, "verifier_unavailable"
+        identity, verdict = self._verified_identity(token)
         if identity is None:
-            return None
+            return None, verdict
         for seat, cfg in self._seats.items():
             if cfg["auth"] == "shared" and cfg["identity"] == identity:
-                return seat
-        return None
+                return seat, ""
+        return None, "seat_not_in_policy"
+
+    def _named_bearer(self, token: str) -> str | None:
+        if self._verifier is not None:
+            return self._verifier.parse_identity(token)
+        return SharedBearerVerifier.parse_identity(token)
+
+    def _verified_identity(self, token: str) -> tuple[str | None, str]:
+        detail = getattr(self._verifier, "resolve_detail", None)
+        if callable(detail):
+            identity, reason = detail(token)
+        else:
+            identity = self._verifier.resolve(token)
+            reason = "bearer_rejected"
+        if identity:
+            return identity, ""
+        if reason == "verifier_unavailable":
+            return None, "verifier_unavailable"
+        return None, "bearer_rejected"
 
     def _repo_allowed(self, seat: str, repo: str) -> bool:
         for pattern in self._seats[seat]["repos"]:
@@ -483,6 +689,19 @@ class SeatPolicy:
             elif repo == pattern:
                 return True
         return False
+
+    def repo_allowed(self, seat: str, repo: str) -> bool:
+        """Public read of the seat allowlist: org-wide verbs filter results to it."""
+        return self._repo_allowed(seat, repo)
+
+    def repo_patterns(self, seat: str) -> tuple:
+        """The seat's repository allowlist patterns (read-only copy)."""
+        return tuple(self._seats[seat]["repos"])
+
+    def default_branch_path_allowed(self, seat: str, repo: str, path: str) -> bool:
+        """True only for an exact path granted to this seat on this repository."""
+        grants = self._seats.get(seat, {}).get("default_branch_paths") or {}
+        return path in grants.get(repo, ())
 
     @classmethod
     def is_write(cls, action: str) -> bool:
@@ -502,6 +721,19 @@ class SeatPolicy:
             spec = SPECS.get(action)
             return True if spec is None else bool(spec[1])
         return True
+
+    @classmethod
+    def audits(cls, action: str, outcome: str) -> bool:
+        """Whether a finished, authenticated call writes an audit row.
+
+        Owner ruling 2026-11-06:  successful reads leave the audit log.  A call is skipped only when
+        it ended "ok" and its action is a known read (is_write False).  Every failure, denial and
+        write still records, and so does mint_token:  it changes no repository state but issues a
+        credential, which the log must show.
+        """
+        if outcome != "ok" or action == "mint_token":
+            return True
+        return action not in cls.ALL_ACTIONS or cls.is_write(action)
 
     def _rate_ok(self, seat: str, now: float, write: bool = False) -> str | None:
         """Charge one call, and one write when `write`, or None and nothing charged when either bucket is full."""
@@ -537,6 +769,29 @@ class SeatPolicy:
         """(app_slug, mintable permission ceiling) for a seat's App actions."""
         cfg = self._seats[seat]
         return cfg["app_slug"], dict(cfg["mint_permissions"])
+
+    def public_repo_allowed(self, seat: str) -> bool:
+        """Whether this seat may create a public repository.  Default false."""
+        return bool(self._seats[seat].get("create_repo_public"))
+
+    @staticmethod
+    def create_repo_account(owner: str) -> tuple[str, str] | None:
+        """(canonical owner, org|user) when owner is on the create allowlist."""
+        if not isinstance(owner, str):
+            return None
+        folded = owner.casefold()
+        for canonical, kind in SeatPolicy.CREATE_REPO_OWNERS:
+            if folded == canonical.casefold():
+                return canonical, kind
+        return None
+
+    @staticmethod
+    def valid_create_repo_name(name: str) -> bool:
+        """A GitHub repository name this verb will send.  One path segment, no .git."""
+        if not isinstance(name, str) or not _CREATE_REPO_NAME.fullmatch(name):
+            return False
+        folded = name.casefold()
+        return ".." not in name and not name.endswith(".") and not folded.endswith(".git")
 
     def bot_identities(self) -> dict[str, str]:
         """Every seat's GitHub App, for the one-bearer-one-bot audit.

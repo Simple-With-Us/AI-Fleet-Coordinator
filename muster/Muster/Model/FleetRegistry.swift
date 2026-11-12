@@ -48,8 +48,27 @@ struct FleetRegistryDocument: Decodable, Equatable {
         let bySeat: [String: String]?
         let extraSeats: [String: String]?
         struct Pattern: Decodable, Equatable {
+            /// The roles a family's tags are made of (`BF-<ROLE>`, `GB-<ROLE>`).
+            struct Lane: Decodable, Equatable {
+                let roles: [String]?
+            }
+
             let match: String
             let app: String
+            /// The family's lane block,  which names its roles.  It is read field by field:  a
+            /// lane block of a shape this app does not expect costs the roles,  never the registry.
+            let lane: Lane?
+
+            enum CodingKeys: String, CodingKey {
+                case match, app, lane
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                match = try container.decode(String.self, forKey: .match)
+                app = try container.decode(String.self, forKey: .app)
+                lane = try? container.decodeIfPresent(Lane.self, forKey: .lane)
+            }
         }
         let patterns: [Pattern]?
     }
@@ -64,7 +83,46 @@ struct FleetRegistryDocument: Decodable, Equatable {
     let seatApps: SeatAppsSection?
 
     var liveSeats: [SeatEntry] {
-        seats.filter(\.isLive)
+        seats.filter { $0.isLive && !NotASeat.contains($0.tag) }
+    }
+
+    /// The seats a family pattern names one by one:  `GB-*` with its roles is GB-COMPILER,
+    /// GB-DEPLOYER and the rest,  in the registry's own order.  A pattern with no roles names
+    /// no seat,  because a tag with a `*` in it is never a seat.  A pattern that is only `*`
+    /// names no family,  so it names no seat either:  its bare roles are not seat tags.
+    var familySeats: [String] {
+        var found: [String] = []
+        for pattern in seatApps?.patterns ?? [] {
+            guard pattern.match.hasSuffix("*") else { continue }
+            let prefix = String(pattern.match.dropLast()).uppercased()
+            guard !prefix.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            for role in pattern.lane?.roles ?? [] {
+                let name = role.trimmingCharacters(in: .whitespaces).uppercased()
+                guard !name.isEmpty else { continue }
+                found.append(prefix + name)
+            }
+        }
+        return found
+    }
+
+    /// The tags the registry retires,  or keeps only as another seat's old name.
+    var retiredTags: Set<String> {
+        Set(seats.filter { !$0.isLive || $0.aliasOf != nil }.map { $0.tag.uppercased() })
+    }
+}
+
+/// Registry tags that name a group and are never a seat.
+///
+/// Grok Bots are a group of seats, each with its own name (`GB-<NAME>`), and no seat is ever
+/// called `GROK-BOT` or carries it as a branch or pull request prefix.  The registry still
+/// has a row for the group, so the app leaves it out of every list of seats:  the roster the
+/// engine's grid and Seat Setup show, and the seats an app row names.  The group's own
+/// members come in through the `GB-*` pattern.
+enum NotASeat {
+    static let tags: Set<String> = ["GROK-BOT"]
+
+    static func contains(_ tag: String) -> Bool {
+        tags.contains(tag)
     }
 }
 
@@ -369,7 +427,7 @@ enum FleetRegistryReader {
         "antigravity": CodingAppMetadata(title: "Antigravity", cli: "agy", runsOn: ""),
         "grok-terminal": CodingAppMetadata(title: "Grok Terminal", cli: "grok", runsOn: ""),
         "grok-web": CodingAppMetadata(title: "Grok Web", cli: nil, runsOn: "Hosted, no local tool"),
-        "grok-bot": CodingAppMetadata(title: "Grok Bot", cli: nil, runsOn: "Hosted, through Cursor cloud agents"),
+        "grok-bot": CodingAppMetadata(title: "Grok Bots", cli: nil, runsOn: "Hosted, through Cursor cloud agents"),
         "muse-code": CodingAppMetadata(title: "Muse Code", cli: "muse", runsOn: ""),
         "muse-assist": CodingAppMetadata(title: "Muse Assist", cli: nil, runsOn: FleetRegistryReader.notTracked),
         "minimax-code": CodingAppMetadata(title: "MiniMax Code", cli: "mcode", runsOn: ""),
@@ -386,7 +444,7 @@ enum FleetRegistryReader {
         // The Operator is a listener service, not a command line tool:  the simple-chat CLI's
         // version says nothing about it, so no tool row stands in for it.
         "operator": CodingAppMetadata(title: "The Operator", cli: nil, runsOn: "A service, whose state is not read here"),
-        "botfleet": CodingAppMetadata(title: "BotFleet Personas", cli: nil, runsOn: FleetRegistryReader.notTracked),
+        "botfleet": CodingAppMetadata(title: "BotFleet Bots", cli: nil, runsOn: FleetRegistryReader.notTracked),
     ]
 
     /// Read `fleet-apps.json` at the repository root and build the combined summary.

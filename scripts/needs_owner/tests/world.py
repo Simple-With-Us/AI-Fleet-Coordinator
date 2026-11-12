@@ -30,7 +30,7 @@ if str(SCRIPTS) not in sys.path:
 from needs_owner import cli  # noqa: E402
 
 REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/%s/near/%d"
-OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_agent_sync.OWNER_ID)
+OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_simple_tools.OWNER_ID)
 KEYCAP = {n: "003%d-20e3" % n for n in range(1, 6)}  # Zulip's emoji_code for 1️⃣ to 5️⃣
 
 
@@ -40,7 +40,9 @@ class FakeKnobs:
     def __init__(self) -> None:
         self.values: dict = {"NEEDS_OWNER_NOTIFY_PAUSED": False,
                              "NEEDS_OWNER_CAPS": {"urgent_per_hour": 3, "per_hour": 6, "per_day": 30},
-                             "OWNER_LINEAR_USER_ID": ""}
+                             "OWNER_LINEAR_USER_ID": "",
+                             # the owner bar's knobs (bar.py, read by `file`):  off and no cap are the registry defaults
+                             "NEEDS_OWNER_BAR": "off", "NEEDS_OWNER_SEAT_DAILY_MAX": 0}
         self.stale_copy = False
         self.fail: Exception | None = None
         self.reads: list = []
@@ -88,7 +90,7 @@ class World:
         _seat.MANAGED_BIN_DIR = str(self.bin)  # the import-only seam:  the fake tools are the "managed" install
         test.addCleanup(setattr, _seat, "MANAGED_BIN_DIR", self._saved_bin)
         self._launcher("simple-board", HERE / "fake_board.py")
-        self._launcher("simple-chat", HERE / "fake_agent_sync.py")
+        self._launcher("simple-chat", HERE / "fake_simple_tools.py")
 
     def _launcher(self, name: str, script: Path) -> None:
         path = self.bin / name

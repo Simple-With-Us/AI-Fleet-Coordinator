@@ -11,7 +11,7 @@ logged or returned, and errors carry no secret.
 The corpus and public-service credentials the server already used stay as they were:  this module only
 decides whether, and as whom, a call may run.  An in-process fake corpus (FLEET_RECALL_FAKE) holds no real
 data and is not gated.  `fleet_bearer.py` is the FleetLink CLI's client, vendored byte-for-byte (a test
-compares it with scripts/agent_sync/fleet_bearer.py when that file is present).
+compares it with scripts/simple_tools/fleet_bearer.py when that file is present).
 """
 
 from __future__ import annotations

@@ -369,6 +369,8 @@ class SeatManifest:
     rules: tuple[Rule, ...] = ()
     not_applicable: tuple[NotApplicable, ...] = ()
     uncovered: tuple[UncoveredSurface, ...] = ()
+    # Where the seat's sessions run, as place words (mac, server, vm, cloud);  empty when the manifest does not say.
+    runs_on: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

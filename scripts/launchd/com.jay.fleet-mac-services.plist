@@ -19,7 +19,7 @@
   <array>
     <string>/usr/bin/python3</string>
     <string>-I</string>
-    <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet-mac-services.py</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime/scripts/fleet-mac-services.py</string>
     <string>--write</string>
     <string>/Users/jay/.local/state/fleet-tools/mac-services.json</string>
   </array>

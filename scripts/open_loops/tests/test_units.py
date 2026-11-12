@@ -48,7 +48,7 @@ class CentralTime(unittest.TestCase):
 
 class Urls(unittest.TestCase):
     def test_hash_encoding_matches_the_listeners(self):
-        from agent_sync import adapters
+        from simple_tools import adapters
         for text in ("OWNER FFX-1 pick a color", "a.b c", "100% sure", "FFX-284 open-loops gather, render, send", "ü and 日本"):
             self.assertEqual(urls.hash_part(text), adapters._hash_part(text), text)
 

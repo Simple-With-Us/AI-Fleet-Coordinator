@@ -81,7 +81,7 @@ const svcKey = (k) => `svc:${k}`;
 // Source-scoped: two vendors sharing a label must never merge incidents.
 const svcNameKey = (source, service) =>
   `svcname:${source}:${String(service || "").toLowerCase().slice(0, 120)}`;
-// Zulip refuses topics over 60 characters (scripts/agent-sync-mcp contract).
+// Zulip refuses topics over 60 characters (scripts/simple-tools-mcp contract).
 const MAX_TOPIC_LENGTH = 60;
 function boundedTopic(service) {
   if (service.length <= MAX_TOPIC_LENGTH) return service;

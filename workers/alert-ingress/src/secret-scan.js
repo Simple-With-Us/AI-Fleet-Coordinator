@@ -1,8 +1,8 @@
 // A small credential scanner for text that is about to be persisted or
 // relayed to Zulip.
 //
-// The fleet already has one:  `scripts/agent_sync/secretscan.py` for the
-// Python side and `scripts/agent-sync-mcp/src/contract.js` for the hosted MCP
+// The fleet already has one:  `scripts/simple_tools/secretscan.py` for the
+// Python side and `scripts/simple-tools-mcp/src/contract.js` for the hosted MCP
 // Worker.  This is the same list of kinds, kept next to the ingress that
 // needs it, because this Worker ships without a bundler and cannot import
 // across the repository without dragging the MCP tool contract into the

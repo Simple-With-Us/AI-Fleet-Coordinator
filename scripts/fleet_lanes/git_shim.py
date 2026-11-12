@@ -32,6 +32,7 @@ import time
 from collections.abc import Mapping, Sequence
 
 BLOCK_EXIT = 77
+WARN_EXIT = 78  # print the note on stderr, then run the real git:  the mirror rule's detect mode, which is a warning and no block
 ENV_DENY_NOTE = "FLEET_GIT_SHIM_DENY_NOTE"  # the file the shim prints a deny reason from, since Python has none of git's streams
 TIME_LIMIT_S = 3
 MAX_ALIAS_DEPTH = 64
@@ -186,6 +187,11 @@ def decide(args: Sequence[str], cwd: str, env: Mapping[str, str], *, stderr=None
     expanded = expand_aliases(args, env.get("FLEET_GIT_SHIM_REAL") or "git")
     if expanded is None:
         return 0
+    if not isinstance(expanded, ShellAlias):
+        from fleet_lanes import mirror_write
+
+        if mirror_write.write_verb(mirror_write.split_global(expanded)[1]) is not None:
+            return _decide_mirror(mirror_write, expanded, cwd, env, home, mode, placement, stderr)
     ctx = guard.make_context(env, home=home)
     origin_of = _origin_reader(env.get("FLEET_GIT_SHIM_REAL") or "git", env)
     others: list = []
@@ -222,6 +228,35 @@ def decide(args: Sequence[str], cwd: str, env: Mapping[str, str], *, stderr=None
     except (OSError, ValueError, AttributeError):
         pass  # no way to say why changes nothing:  the event is logged and the command stays blocked
     return BLOCK_EXIT
+
+
+def _say(note: str | None, text: str, stderr) -> None:
+    try:
+        if note:
+            with open(note, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        else:
+            stderr.write(text)
+    except (OSError, ValueError, AttributeError):
+        pass  # no way to say why changes nothing:  the event is logged
+
+
+def _decide_mirror(mirror_write, args: Sequence[str], cwd: str, env: Mapping[str, str], home: str, mode, placement, stderr) -> int:
+    """A commit or stash.  Only the `mirror` line of the mode file speaks here:  off is silent, detect (the default) warns and runs git,
+    block refuses.  Every hit is logged, with an action the placement watcher does not count as a misplaced checkout."""
+    if mode.mirror == placement.MODE_OFF:
+        return 0
+    hit = mirror_write.judge(args, cwd, env, env.get("FLEET_GIT_SHIM_REAL") or "git")
+    if hit is None:
+        return 0
+    blocked = mode.blocks_mirror()
+    placement.log_event(home, {
+        "via": "shim", "action": "mirror-block" if blocked else "mirror-warn", "class": mirror_write.CLASS_MIRROR,
+        "rule": mirror_write.RULE_MIRROR_WRITE, "dest": cwd, "source": hit.repo, "verb": hit.verb, "cwd": cwd,
+        "seat": env.get("AGENT_SEAT", ""), "host": placement.host_kind(env),
+    }, env)
+    _say(env.get(ENV_DENY_NOTE), ("fatal: " if blocked else "") + mirror_write.reason(hit, blocked) + "\n", stderr)
+    return BLOCK_EXIT if blocked else WARN_EXIT
 
 
 def _alarm(_signum, _frame):

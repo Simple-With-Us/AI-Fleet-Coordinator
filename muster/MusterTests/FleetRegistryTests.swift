@@ -575,7 +575,7 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertTrue(slugs.contains("grok-bot"))
 
         let botfleet = summary.codingApps.first { $0.appSlug == "botfleet" }
-        XCTAssertEqual(botfleet?.displayName, "BotFleet Personas")
+        XCTAssertEqual(botfleet?.displayName, "BotFleet Bots")
         XCTAssertEqual(botfleet?.seats, ["BF-*"])
         // FLEETVIEW-12:  the owner reads a family as its roles, not as a pattern.
         XCTAssertEqual(botfleet?.seatLabels, ["BF-<role>"])

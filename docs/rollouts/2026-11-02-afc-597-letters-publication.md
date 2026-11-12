@@ -6,7 +6,7 @@ The daemon's status output (listener/status.json) now carries the session letter
 
 ## Why
 
-The Operator SQLite registry (scripts/agent_sync/operator_registry.py) is the sole letter allocator, and the daemon already joined catalog rows to letters internally for the wake path.  The published status rows named only a lease id and a platform, so no reader outside the daemon could say which letter a live session holds.  The signed listener read API does not expose leases either, so status.json is the publication surface.
+The Operator SQLite registry (scripts/simple_tools/operator_registry.py) is the sole letter allocator, and the daemon already joined catalog rows to letters internally for the wake path.  The published status rows named only a lease id and a platform, so no reader outside the daemon could say which letter a live session holds.  The signed listener read API does not expose leases either, so status.json is the publication surface.
 
 ## What changed
 
@@ -20,18 +20,18 @@ listener_records.leases_view is unchanged on purpose.  Status rows are built in
 
 ## Files
 
-- scripts/agent_sync/daemon.py (session_letter_details, the session_labels view of it, and the status() lease rows).
-- scripts/agent_sync/operator_registry.py (lookup_many keeps the title).
-- scripts/agent_sync/tests/test_daemon.py (two status tests: a registered lease publishes its letter, title, and verified host while an unregistered one omits them; a missing registry file degrades and is never created by the read).
+- scripts/simple_tools/daemon.py (session_letter_details, the session_labels view of it, and the status() lease rows).
+- scripts/simple_tools/operator_registry.py (lookup_many keeps the title).
+- scripts/simple_tools/tests/test_daemon.py (two status tests: a registered lease publishes its letter, title, and verified host while an unregistered one omits them; a missing registry file degrades and is never created by the read).
 
 ## Verification
 
 - New tests failed first with KeyError: 'session_id' on the untouched status rows, then passed.
-- cd scripts && python3 -m unittest agent_sync.tests.test_daemon.SecurityTests.test_status_publishes_the_registered_letter_for_a_lease agent_sync.tests.test_daemon.SecurityTests.test_status_without_a_registry_file_degrades_to_todays_rows agent_sync.tests.test_daemon.SecurityTests.test_status_output — 3 tests, OK.
-- cd scripts && python3 -m unittest agent_sync.tests.test_wake_session_letters — 77 tests, OK.
+- cd scripts && python3 -m unittest simple_tools.tests.test_daemon.SecurityTests.test_status_publishes_the_registered_letter_for_a_lease simple_tools.tests.test_daemon.SecurityTests.test_status_without_a_registry_file_degrades_to_todays_rows simple_tools.tests.test_daemon.SecurityTests.test_status_output — 3 tests, OK.
+- cd scripts && python3 -m unittest simple_tools.tests.test_wake_session_letters — 77 tests, OK.
 - cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter — 242 tests, OK.
-- cd scripts && python3 -m unittest agent_sync.tests.test_daemon agent_sync.tests.test_listener_records agent_sync.tests.test_loop_status — 195 tests, 1 failure (ThreadedRunTests.test_the_entry_script_runs_the_daemon_and_sigterm_stops_it, the daemon subprocess never registers in this environment; the identical failure reproduces on the untouched base tree, so it pre-dates this change).
-- cd scripts && python3 -m unittest discover -s agent_sync/tests -t . — 3967 tests, 11 failures, 11 errors, 2 skipped.  The failures this environment produces are the subprocess-registration class above; none is in the status or letter-join paths, which the focused runs above cover green.
+- cd scripts && python3 -m unittest simple_tools.tests.test_daemon simple_tools.tests.test_listener_records simple_tools.tests.test_loop_status — 195 tests, 1 failure (ThreadedRunTests.test_the_entry_script_runs_the_daemon_and_sigterm_stops_it, the daemon subprocess never registers in this environment; the identical failure reproduces on the untouched base tree, so it pre-dates this change).
+- cd scripts && python3 -m unittest discover -s simple_tools/tests -t . — 3967 tests, 11 failures, 11 errors, 2 skipped.  The failures this environment produces are the subprocess-registration class above; none is in the status or letter-join paths, which the focused runs above cover green.
 
 ## Follow-ups left open on purpose
 

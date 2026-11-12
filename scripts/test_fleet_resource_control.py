@@ -349,7 +349,7 @@ class BrokerTests(unittest.TestCase):
 
     def credentials(self):
         token = self.ctx.home / ".config/fleet-tools/resource-policy-token"
-        project = self.ctx.home / ".agent-sync/fleet-ops-project-id"
+        project = self.ctx.home / ".simple-tools/fleet-ops-project-id"
         for path, value in (
             (token, "dedicated-test-token"),
             (project, "12345678-1234-1234-1234-123456789abc"),

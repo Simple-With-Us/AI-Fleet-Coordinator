@@ -49,11 +49,11 @@ class Install(unittest.TestCase):
                     "open_loops/sections.py", "open_loops/files.py",
                     "fleet_facts/__init__.py", "fleet_facts/activity.py", "fleet_facts/gather.py", "fleet_facts/safety.py",
                     "fleet_facts/runner.py", "fleet_facts/board.py", "fleet_facts/github_prs.py",
-                    "agent_sync/__init__.py", "agent_sync/textsafe.py", "agent_sync/secretscan.py", "agent_sync/textfmt.py"):
+                    "simple_tools/__init__.py", "simple_tools/textsafe.py", "simple_tools/secretscan.py", "simple_tools/textfmt.py"):
             self.assertTrue((self.stable / rel).is_file(), rel)
-        self.assertEqual(sorted(p.name for p in (self.stable / "agent_sync").iterdir()),
+        self.assertEqual(sorted(p.name for p in (self.stable / "simple_tools").iterdir()),
                          ["__init__.py", "secretscan.py", "textfmt.py", "textsafe.py"])
-        self.assertEqual((self.stable / "agent_sync" / "__init__.py").read_text(), "")
+        self.assertEqual((self.stable / "simple_tools" / "__init__.py").read_text(), "")
         for name in ("open_loops", "fleet_facts"):
             self.assertFalse((self.stable / name / "tests").exists(), name)
             self.assertFalse((self.stable / name / "README.md").exists(), name)
@@ -70,7 +70,7 @@ class Install(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             for word in ("gather", "render", "send"):
                 self.assertIn(word, proc.stdout)
-        # render loads the F3 renderer by path from the stable copy's own agent_sync folder
+        # render loads the F3 renderer by path from the stable copy's own simple_tools folder
         proc = self.isolated(self.link, "render", "--facts", str(self.facts_file()), "--markdown")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("## 3. Work Not on GitHub Yet", proc.stdout)

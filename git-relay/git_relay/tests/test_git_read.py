@@ -30,7 +30,7 @@ class UnauthAuditor:
     def __init__(self):
         self.count = 0
 
-    def record(self, audit, action):
+    def record(self, audit, action, cause="unauthenticated"):
         self.count += 1
         return True
 
@@ -42,6 +42,10 @@ class Policy:
 
     def authenticate(self, token, proof=None):
         return "CLAUDE" if token == BEARER else None
+
+    def authenticate_with_reason(self, token, proof=None):
+        seat = self.authenticate(token, proof)
+        return (seat, "") if seat else (None, "unauthenticated")
 
     def authorize(self, seat, action, repo, now=None):
         return self.denial
@@ -156,10 +160,8 @@ class GitReadTest(unittest.TestCase):
         self.assertEqual(headers["Git-Protocol"], "version=2")
         self.assertNotIn(BEARER, json.dumps(headers))
         self.assertNotIn(APP_TOKEN.encode(), data)
-        self.assertEqual(
-            self.audited()[0][:4], ("CLAUDE", "git_read", "example-org/example-repo", "ok")
-        )
-        self.assertNotIn(APP_TOKEN, json.dumps(self.audited()))
+        # A successful fetch is a read:  it leaves no audit row (owner ruling 2026-11-06).
+        self.assertEqual(self.audited(), [])
 
     def test_a_remote_written_without_dot_git_reaches_the_same_repo(self):
         port = self.serve(Relay())

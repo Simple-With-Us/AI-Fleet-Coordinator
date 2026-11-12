@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// The MiniMax panel:  what the MiniMax install on the Mac looks like, for seat MM.
+/// MiniMax's own files:  what the MiniMax install on the Mac looks like, for seat MM.
 ///
-/// It is one seat's panel and it covers the Mac only;  the server's MiniMax install is
-/// not read here, and the panel says so.  The top answers "does anything need a look?"
+/// This is the part of Seat Setup that only MiniMax has (its plugins, config.yaml, channels
+/// and agents), shown under its seat there.  It covers the Mac only;  the server's MiniMax
+/// install is not read here, and the panel says so.  The top answers "does anything need a look?"
 /// in plain words, with where the reading came from and how old it is.  The engine's
 /// own answers come next, then the hooks with their proof, because that is where the
 /// problems were (AFC-354).  Plugins, config.yaml, channels and agents are folded
@@ -23,28 +24,43 @@ struct MiniMaxDetailView: View {
     @State private var showChannels = false
     @State private var showAgents = false
 
+    /// True when the view sits inside the Seat Setup panel for MiniMax's seat.  That panel
+    /// already shows the engine's answers for any seat and has its own scrolling, so an
+    /// embedded view leaves out its own copy of the answers and its own scroll view.
+    var embedded = false
+
     private let seat = "MM"
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                attention
-                verdicts
-                if let surface, surface.installFound {
-                    hooks(surface)
-                    plugins(surface)
-                    settings(surface)
-                    channels(surface)
-                    agents(surface)
+        Group {
+            if embedded {
+                content
+            } else {
+                ScrollView {
+                    content
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 18)
                 }
             }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 18)
         }
         // The panel reads the disk and the engine, and the engine run finishes after
         // the window appears.  Reading once at appear time would leave the proof column
         // empty on every launch, which is the one thing that column exists to prevent.
         .task(id: store.phase) { await reload() }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            attention
+            if !embedded { verdicts }
+            if let surface, surface.installFound {
+                hooks(surface)
+                plugins(surface)
+                settings(surface)
+                channels(surface)
+                agents(surface)
+            }
+        }
     }
 
     private func reload() async {
@@ -57,7 +73,10 @@ struct MiniMaxDetailView: View {
         reading = true
         let roster = Set(store.roster)
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let proofs = store.hookProofs(seat: seat)
+        // While a run checks again the panel shows the last answer, so it takes that
+        // answer's proofs too:  a hook must not read "the engine has no rule" beside counts
+        // that say the engine answered.
+        let proofs = store.hookProofs(seat: seat, includingLastAnswer: store.isShowingLastAnswer)
         let seat = seat
         let loaded = await Task.detached(priority: .userInitiated) {
             // The MiniMax runtime names its own seat agent `mavis`, while the fleet calls
@@ -84,6 +103,13 @@ struct MiniMaxDetailView: View {
         reading ? "Reading" : "Read Again"
     }
 
+    /// Whether the engine's answer is on screen:  a finished run, or the last answer the
+    /// store keeps while a run checks again.  The attention list, the hook rows, the hook
+    /// proofs and the engine line all take the same flag, so they never disagree.
+    private var engineAnswerShown: Bool {
+        GridPresentation.engineAnswerShown(phase: store.phase, showingLastAnswer: store.isShowingLastAnswer)
+    }
+
     /// The engine's state for each config kind of this seat, in column order.
     private var engineEntries: [(kind: ConfigKind, state: CellState)] {
         ConfigKind.columnOrder.compactMap { kind -> (kind: ConfigKind, state: CellState)? in
@@ -95,14 +121,17 @@ struct MiniMaxDetailView: View {
     // MARK: - what needs a look
 
     private var attention: some View {
-        SectionPanel(title: "What Needs A Look", subtitle: "MiniMax, seat \(seat), on the Mac") {
+        SectionPanel(
+            title: embedded ? "MiniMax's Own Files" : "What Needs A Look",
+            subtitle: "MiniMax, seat \(seat), on the Mac"
+        ) {
             VStack(alignment: .leading, spacing: 8) {
                 if let surface {
                     let items = MiniMaxAttention.items(
                         surface: surface,
                         seat: seat,
                         engine: engineEntries,
-                        engineAnswered: store.phase == .loaded
+                        engineAnswered: engineAnswerShown
                     )
                     if items.isEmpty {
                         Label {
@@ -142,7 +171,11 @@ struct MiniMaxDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text(MiniMaxCopy.engineLine(phase: store.phase, generatedAt: store.generatedAt))
+                Text(MiniMaxCopy.engineLine(
+                    phase: store.phase,
+                    generatedAt: store.generatedAt,
+                    showingLastAnswer: store.isShowingLastAnswer
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -196,7 +229,7 @@ struct MiniMaxDetailView: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(surface.hooks) { hook in
-                        HookRow(hook: hook, engineAnswered: store.phase == .loaded)
+                        HookRow(hook: hook, engineAnswered: engineAnswerShown)
                         if hook.id != surface.hooks.last?.id {
                             Divider()
                         }

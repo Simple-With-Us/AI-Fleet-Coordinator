@@ -20,7 +20,7 @@ install -m 0700 "$scripts/fleet_secrets/linux-entrypoint.py" "$dest/settings/lin
 python3 - "$config/environment" <<'PY'
 import os, sys, uuid
 from pathlib import Path
-metadata = Path('/home/jay/.agent-sync/fleet-ops-project-id').read_text().strip()
+metadata = Path('/home/jay/.simple-tools/fleet-ops-project-id').read_text().strip()
 uuid.UUID(metadata)
 target = Path(sys.argv[1])
 temporary = target.with_suffix('.tmp')

@@ -668,6 +668,16 @@ final class MiniMaxSurfaceTests: XCTestCase {
         )
         XCTAssertTrue(MiniMaxCopy.engineLine(phase: .running, generatedAt: nil).hasPrefix("The engine is checking now."))
         XCTAssertTrue(MiniMaxCopy.engineLine(phase: .idle, generatedAt: nil).contains("nothing here is proved"))
+        // During a run the line names the last answer's time only when the caller says the
+        // panel shows that answer,  so it never disagrees with "the engine has not answered".
+        XCTAssertEqual(
+            MiniMaxCopy.engineLine(phase: .running, generatedAt: read),
+            "The engine is checking now.\u{00A0} Its answers appear when it finishes."
+        )
+        XCTAssertEqual(
+            MiniMaxCopy.engineLine(phase: .running, generatedAt: read, showingLastAnswer: true),
+            "The engine is checking now.\u{00A0} The answers shown are from its run at 4:13 PM."
+        )
     }
 
     // MARK: - CONTROLS-34:  a plain answer at the top

@@ -13,6 +13,7 @@ import stat
 import sys
 
 DESTINATION = ('usr', 'local', 'lib', 'fleet-resource-control')
+MUSTER_AGENT_DESTINATION = ('usr', 'local', 'lib', 'muster-agent')
 ROOT = '/'
 ROOT_UID = 0
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
@@ -78,6 +79,23 @@ def write_file(parent, name, data):
             os.unlink(temporary, dir_fd=parent)
 
 
+def muster_agent_copy():
+    """The bytes of muster-agent's installed copy of the shared reader, or None when it is absent."""
+    descriptors = []
+    try:
+        fd = os.open(ROOT, DIRECTORY_FLAGS)
+        descriptors.append(fd)
+        for component in MUSTER_AGENT_DESTINATION:
+            fd = os.open(component, DIRECTORY_FLAGS, dir_fd=fd)
+            descriptors.append(fd)
+        return read_source(fd, 'muster_trust_files.py')
+    except FileNotFoundError:
+        return None
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+
+
 def install(source_directory):
     if os.geteuid() != 0 or not sys.platform.startswith('linux'):
         raise RuntimeError('run as root on the intended Linux host')
@@ -86,8 +104,23 @@ def install(source_directory):
     with contextlib.ExitStack() as stack:
         source = os.open(source_directory, DIRECTORY_FLAGS)
         stack.callback(os.close, source)
-        for name in ('fleet-ops-control.py', 'fleet-ops-control.json', 'fleet_resource_control.py'):
+        for name in (
+            'fleet-ops-control.py',
+            'fleet-ops-control.json',
+            'fleet_resource_control.py',
+            'fleet_seat_inventory.py',
+            'reduced_status.py',
+            # The `--from-muster` entry's approval engine, loaded by the helper from beside itself
+            # and only when root-owned (install is root-owned).
+            'muster_approval.py',
+        ):
             payload[name] = read_source(source, name)
+        # The shared /etc/muster reader has one source file in the repository,
+        # scripts/muster_agent/muster_trust_files.py (server-route-spec section 10), and is
+        # installed flat beside the helper, byte for byte.
+        agent = os.open('muster_agent', DIRECTORY_FLAGS, dir_fd=source)
+        stack.callback(os.close, agent)
+        payload['muster_trust_files.py'] = read_source(agent, 'muster_trust_files.py')
         config = json.loads(payload['fleet-ops-control.json'])
         if not isinstance(config, dict) or config.get('schemaVersion') != 1:
             raise RuntimeError('the broker allowlist has an invalid schema')
@@ -117,6 +150,11 @@ def install(source_directory):
         for relative, data in payload.items():
             parts = relative.split('/')
             write_file(parent if len(parts) == 1 else packages[parts[0]], parts[-1], data)
+    # The same reader is installed for muster-agent too.  When that copy is present, the two must be
+    # the same bytes; a difference fails the installation (server-route-spec section 10).
+    other = muster_agent_copy()
+    if other is not None and other != payload['muster_trust_files.py']:
+        raise RuntimeError('the installed copies of muster_trust_files.py differ')
 
 
 if __name__ == '__main__':

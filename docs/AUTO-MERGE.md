@@ -1,5 +1,29 @@
 # Fleet auto-merge (reusable)
 
+## Temporary owner review limit (November 6-8, 2026)
+
+From November 6, 2026 at 8:02pm America/Chicago through November 8, 2026 at
+8:02pm America/Chicago, request only one Kody review per PR. Do not request another
+review after fixes or new commits. During this window this instruction overrides
+repeat-review and per-ready-head request guidance below. Read and address every
+existing finding, verify fixes and required tests, and preserve all other merge
+conditions. A failed attempt is permission to retry (owner, November 8, 2026): a Kody run
+that finished without a review is not a review, so request again.  That means a completed
+failure, error, skipped or cancelled check, a `success` check without the full-review receipt
+(title `Code Review Complete`, summary starting `Review finished successfully`, started no
+earlier than the newest request; see docs/AUTO-MERGE.md), or a "Code Review Could Not Complete"
+comment.  A run that is still queued or `in_progress` is not a failed attempt and permits no
+new request.  A retry from the same seat must use different text from the earlier request,
+because the relay returns the existing comment for identical text within 24 hours and posts
+nothing, for example a second line after `@kody start-review`.  The hourly prompter
+(docs/KODY-FIRST-REVIEW.md) never retries a failed run itself;  a seat does.  Only a completed
+review uses up the one. This limit expires at the stated time; it is not permanent.
+
+Source: Jay's direct November 6 instruction, "Raised it but please tell all 1 review
+only per pr", followed by "For the next 2 days"; fleet announcement message638301219.
+Amended by Jay's November 8 instruction, "failed attempt is permission to retry, change rule".
+
+
 One shared auto-merge armer lives here; each repo keeps a thin caller.
 Replaces the per-repo `auto-merge-prs.yml` copies that drifted apart in the
 personal-account days.
@@ -15,6 +39,9 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
+  checks: read
+  actions: read
 
 jobs:
   auto-merge:
@@ -67,7 +94,9 @@ jobs:
 - Gate lookups use `merge_token` when the caller passes it, falling back to
   `GITHUB_TOKEN`.  The called workflow's `GITHUB_TOKEN` is capped by the
   caller's permissions, so a caller that wants the fallback to work also
-  grants its workflow `checks: read`, `actions: read` and `issues: read`.
+  grants its workflow `checks: read`, `actions: read` and `issues: read`. 
+  `issues: write` lets the reusable workflow create a missing fleet hold label
+  (`do-not-automerge`, `do-not-auto-merge`, `do-not-merge`, `needs-human-merge`).  A caller that does not grant it still auto-merges: the job warns and changes nothing.
 
 - Review gates.  `require_current_approval` (default `true`) keeps the legacy
   strict contract: the fleet reviewer must have an APPROVED review on the

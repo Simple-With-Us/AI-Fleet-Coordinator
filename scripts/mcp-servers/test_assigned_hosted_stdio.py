@@ -1,5 +1,6 @@
 """Offline synthetic tests. No credentials, network or live writes; files only in temp folders."""
 
+import base64
 import http.client
 import importlib.util
 import io
@@ -533,6 +534,32 @@ class DiskCacheTests(unittest.TestCase):
         self.assertEqual(self.adapter().call(INITIALIZE)["result"], INIT_RESULT)
         self.assertEqual(self.upstream.methods, ["initialize", "initialize", "initialize"])
 
+    def test_a_modern_initialize_never_sets_the_version_that_later_legacy_frames_send(self):
+        modern_result = {**INIT_RESULT, "protocolVersion": "2026-07-28", "resultType": "complete"}
+        seen = []
+
+        def server(request, timeout):
+            seen.append({key.lower(): value for key, value in request.header_items()})
+            body = json.loads(request.data)
+            result = modern_result if body["method"] == "initialize" else {"tools": []}
+            reply = {"jsonrpc": "2.0", "id": body["id"], "result": result}
+            return Response(json.dumps(reply).encode())
+
+        adapter = self.adapter(upstream=server)
+        modern = frame(
+            "initialize", 2, protocolVersion="2025-06-18", _meta={mod.META_VERSION: "2026-07-28"}
+        )
+        adapter.call(modern)
+        self.assertEqual(seen[-1]["mcp-protocol-version"], "2026-07-28")
+        self.assertIsNone(adapter.protocol)
+        adapter.call(frame("tools/list", 3))  # A legacy frame: its body names no version.
+        self.assertEqual(seen[-1]["mcp-protocol-version"], mod.DEFAULT_PROTOCOL)
+        self.assertNotIn("mcp-method", seen[-1])
+        legacy = self.adapter()
+        legacy.call(INITIALIZE)
+        # A legacy initialize still negotiates the version.
+        self.assertEqual(legacy.protocol, INIT_RESULT["protocolVersion"])
+
     def test_an_empty_session_id_counts_as_no_session(self):
         upstream = Upstream(session="")
         adapter = self.adapter(upstream=upstream)
@@ -806,6 +833,123 @@ class FileWireEncodingTests(unittest.TestCase):
         self.assertGreater(args_size, mod.MAX_FILE_ARGS_BYTES)
         self.assertLessEqual(wire, mod.MAX_FILE_FRAME_BYTES)
         self.assertFalse(mod.file_frame_allowed(message, wire))
+
+
+class ModernHeaderTests(unittest.TestCase):
+    """A request that names a modern version in its envelope carries the standard headers the
+    hosted server requires (SEP-2243), exactly as the SDK's own client sends them.  The Worker's
+    test/stdio-adapter-headers.test.mjs sends what this adapter builds through the real SDK path."""
+
+    VERSION = "2026-07-28"
+
+    def sent(self, message):
+        upstream = Upstream()
+        mod.Adapter(TOKEN, upstream).call(message)
+        return {key.lower(): value for key, value in upstream.requests[-1].header_items()}
+
+    def modern(self, method, frame_id=1, **params):
+        return frame(method, frame_id, _meta={mod.META_VERSION: self.VERSION}, **params)
+
+    def test_a_modern_tool_call_names_its_version_method_and_tool(self):
+        headers = self.sent(self.modern("tools/call", name="whoami", arguments={}))
+        self.assertEqual(headers["mcp-protocol-version"], self.VERSION)
+        self.assertEqual(headers["mcp-method"], "tools/call")
+        self.assertEqual(headers["mcp-name"], "whoami")
+
+    def test_a_method_with_no_name_field_sends_the_method_alone(self):
+        for method in ("tools/list", "server/discover", "ping", "resources/list"):
+            headers = self.sent(self.modern(method))
+            self.assertEqual(headers["mcp-protocol-version"], self.VERSION, method)
+            self.assertEqual(headers["mcp-method"], method)
+            self.assertNotIn("mcp-name", headers, method)
+
+    def test_every_named_method_mirrors_its_own_body_field(self):
+        cases = [
+            ("tools/call", {"name": "gr_wf_runs", "arguments": {}}, "gr_wf_runs"),
+            ("prompts/get", {"name": "daily"}, "daily"),
+            ("resources/read", {"uri": "file:///notes/a b.md"}, "file:///notes/a b.md"),
+            ("tasks/get", {"taskId": "task-1"}, "task-1"),
+            ("tasks/update", {"taskId": "task-2"}, "task-2"),
+            ("tasks/cancel", {"taskId": "task-3"}, "task-3"),
+        ]
+        for method, params, expected in cases:
+            self.assertEqual(self.sent(self.modern(method, **params))["mcp-name"], expected, method)
+        # The field that names it must be a string, or no header says so and the server judges the body.
+        for params in ({"name": 5}, {"name": None}, {}, {"uri": "x"}):
+            self.assertNotIn("mcp-name", self.sent(self.modern("tools/call", **params)))
+
+    def test_a_name_that_is_not_plain_ascii_goes_out_in_the_base64_form(self):
+        self.assertEqual(mod.encode_header_value("whoami"), "whoami")
+        self.assertEqual(mod.encode_header_value("a\tb"), "a\tb")
+        self.assertEqual(mod.encode_header_value("naïve"), "=?base64?bmHDr3Zl?=")
+        self.assertEqual(mod.encode_header_value(""), "=?base64??=")
+        self.assertEqual(mod.encode_header_value(" lead"), "=?base64?IGxlYWQ=?=")
+        self.assertEqual(
+            mod.encode_header_value("\ud83d"), "=?base64?77+9?="
+        )  # a lone surrogate is U+FFFD
+        for value in ("trail ", "x\ty\t", "line\nbreak", "😀", "=?base64?abc?=", "\x7f"):
+            encoded = mod.encode_header_value(value)
+            self.assertTrue(encoded.startswith("=?base64?") and encoded.endswith("?="), value)
+        # What the server decodes is what the body says.
+        for value in ("naïve", "", " lead", "trail ", "😀", "=?base64?abc?=", "日本語"):
+            encoded = mod.encode_header_value(value)
+            self.assertEqual(
+                base64.b64decode(encoded[len("=?base64?") : -len("?=")]).decode("utf-8"), value
+            )
+        sent = self.sent(self.modern("tools/call", name="naïve", arguments={}))
+        self.assertEqual(sent["mcp-name"], "=?base64?bmHDr3Zl?=")
+
+    def test_a_modern_initialize_names_its_version_and_method_and_no_tool(self):
+        headers = self.sent(
+            self.modern("initialize", protocolVersion=self.VERSION, capabilities={})
+        )
+        self.assertEqual(headers["mcp-protocol-version"], self.VERSION)
+        self.assertEqual(headers["mcp-method"], "initialize")
+        self.assertNotIn("mcp-name", headers)
+
+    def test_legacy_requests_send_no_method_or_name_header(self):
+        for message in (INITIALIZE, TOOL_CALL, frame("tools/list"), frame("ping")):
+            headers = self.sent(message)
+            self.assertNotIn("mcp-method", headers, message["method"])
+            self.assertNotIn("mcp-name", headers, message["method"])
+        self.assertNotIn("mcp-protocol-version", self.sent(INITIALIZE))
+        self.assertEqual(self.sent(TOOL_CALL)["mcp-protocol-version"], mod.DEFAULT_PROTOCOL)
+
+    def test_a_malformed_envelope_is_left_for_the_server_to_refuse_with_none_of_the_three(self):
+        for claimed in ("two words", "", 20260728, None, ["2026-07-28"], "é"):
+            message = frame(
+                "tools/call", 1, name="whoami", arguments={}, _meta={mod.META_VERSION: claimed}
+            )
+            headers = self.sent(message)
+            for name in ("mcp-protocol-version", "mcp-method", "mcp-name"):
+                self.assertNotIn(name, headers, f"{claimed!r} {name}")
+
+    def test_a_method_that_cannot_be_a_header_value_sends_no_method_or_name(self):
+        for method in ("tools/call\nX-Evil: 1", "tools/ call", "", "é"):
+            message = {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": method,
+                "params": {"name": "x", "_meta": {mod.META_VERSION: self.VERSION}},
+            }
+            headers = self.sent(message)
+            self.assertNotIn("mcp-method", headers, repr(method))
+            self.assertNotIn("mcp-name", headers, repr(method))
+            self.assertNotIn("x-evil", headers)
+
+    def test_the_headers_leave_the_body_and_the_other_headers_as_they_were(self):
+        upstream = Upstream()
+        message = self.modern("tools/call", name="whoami", arguments={"a": 1})
+        mod.Adapter(TOKEN, upstream).call(message)
+        request = upstream.requests[-1]
+        sent_headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(sent_headers["authorization"], "Bearer " + TOKEN)
+        self.assertEqual(sent_headers["content-type"], "application/json")
+        self.assertEqual(sent_headers["user-agent"], "assigned-hosted-stdio/1.0")
+        body = json.loads(request.data)
+        self.assertEqual(body["params"]["name"], "whoami")
+        self.assertEqual(body["params"]["_meta"], {mod.META_VERSION: self.VERSION})
+        self.assertEqual(body["params"]["arguments"], {"a": 1, "identity": "ECHO"})
 
 
 if __name__ == "__main__":

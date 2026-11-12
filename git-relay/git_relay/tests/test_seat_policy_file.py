@@ -15,20 +15,28 @@ import re
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from git_relay.app_tokens import MINT_PERMISSION_CEILING
+from git_relay.app_tokens import (
+    MINT_PERMISSION_CEILING,
+    MINT_READ_ONLY_PERMISSIONS,
+    AppTokenError,
+    mint_permission_allowed,
+    missing_app_credential,
+)
+from git_relay.audit import AuditLog
 from git_relay.policy import SeatPolicy
-from git_relay.server import ACTION_REQUIRED_PERMISSIONS
+from git_relay.server import ACTION_REQUIRED_PERMISSIONS, Relay
 from git_relay.shared_bearer import SharedBearerVerifier
 from git_relay.tests.test_bot_compatibility import BOT_IDENTITIES
 from git_relay.workflow_verbs import SPECS
 
 RELAY = Path(__file__).resolve().parents[2]
 ROOT = RELAY.parent
-WORKER = ROOT / "scripts" / "agent-sync-mcp" / "src"
+WORKER = ROOT / "scripts" / "simple-tools-mcp" / "src"
 
 _spec = importlib.util.spec_from_file_location("seat_policy", RELAY / "deploy" / "seat_policy.py")
 seat_policy = importlib.util.module_from_spec(_spec)
@@ -52,8 +60,8 @@ NOT_SWU_IDENTITY = {
 # Explicit policy exclusions, documented in the deployed policy's header.
 # Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
 # 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
-# KIMI and ZC are newly added seats that do not have deployed GitHub Apps yet.
-EXCLUDED = {"JET", "BF-BUILDER", "KIMI", "ZC"}
+# KIMI is a newly added seat that does not have a deployed GitHub App yet.
+EXCLUDED = {"JET", "BF-BUILDER", "KIMI"}
 # Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {
@@ -97,8 +105,8 @@ def worker_identities() -> set[str]:
     bearer = (WORKER / "bearer-identities.js").read_text(encoding="utf-8")
     row = r'^\s+"?([A-Z][A-Z0-9-]*)"?: Object\.freeze\(\{ prefix:'
     names |= set(re.findall(row, bearer, re.MULTILINE))
-    personas = ROOT / "scripts" / "agent_sync" / "mcp" / "gb-identities.json"
-    names |= set(json.loads(personas.read_text(encoding="utf-8"))["enabled"])
+    bots = ROOT / "scripts" / "simple_tools" / "mcp" / "gb-identities.json"
+    names |= set(json.loads(bots.read_text(encoding="utf-8"))["enabled"])
     return names
 
 
@@ -202,7 +210,14 @@ class SeatPolicyFile(unittest.TestCase):
         rank = {"read": 1, "write": 2}
         for cfg in SEATS.values():
             ceiling = cfg["mint_permissions"]
-            self.assertTrue(set(ceiling) <= set(MINT_PERMISSION_CEILING))
+            self.assertTrue(
+                set(ceiling) <= set(MINT_PERMISSION_CEILING) | set(MINT_READ_ONLY_PERMISSIONS)
+            )
+            for key, level in ceiling.items():
+                self.assertTrue(
+                    mint_permission_allowed(key, level),
+                    f"seat ceiling {key}:{level} exceeds the mint allowance",
+                )
             for action in cfg["actions"]:
                 if action == "open_pr":
                     continue  # the owner's PR-only token, never the seat's App
@@ -218,12 +233,12 @@ class SeatPolicyFile(unittest.TestCase):
 
     def test_repositories_are_the_two_reviewed_namespaces(self):
         # 2026-11-01 every-repo widening (owner instruction):  each seat reaches every
-        # repository in the two verified namespaces - the org and Jay's personal account -
+        # repository in the org namespace (legacy personal-owner remotes still redirect) -
         # through the owner/* form the relay engine matches (policy._repo_allowed).  A
         # repository the org moved in keeps its old owner's name only as a redirect, so the
         # org namespace uses the current owner.  Nothing broader passes:  no bare "*", no
         # other owner, and no per-seat variation.
-        reviewed = ["Simple-With-Us/*", "jaywedgeworth22/*"]
+        reviewed = ["Simple-With-Us/*"]
         for slug, cfg in SEATS.items():
             self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
@@ -276,7 +291,7 @@ class SeatPolicyFile(unittest.TestCase):
         fleet = SEATS["swu-claude"]
         for identity in GB_SEATS | BF_SEATS:
             cfg = by_identity[identity]
-            self.assertEqual(cfg["repos"], ["Simple-With-Us/*", "jaywedgeworth22/*"], identity)
+            self.assertEqual(cfg["repos"], ["Simple-With-Us/*"], identity)
             self.assertEqual(cfg["actions"], fleet["actions"], identity)
             self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], identity)
 
@@ -285,7 +300,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "3eca9f013dcacb42")
+        self.assertEqual(seat_policy.digest(SEATS), "1f422f0b82cacc0f")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -364,11 +379,11 @@ class SeatPolicyFile(unittest.TestCase):
                 "Environment=PATH=/usr/bin GIT_RELAY_HOST=localhost GIT_RELAY_PORT=18080",
             ]
         )
-        cat = "[Service]\nLoadCredential=other-token:/tmp/fixture/other-token\nLoadCredential=git-relay-apps-token:/tmp/fixture/apps-token\n"
+        cat = "[Service]\nLoadCredential=other-token:/tmp/o\nLoadCredential=git-relay-apps-token:/tmp/a\n"
         unit = seat_policy.read_unit("relay.service", show=show, cat=cat)
         self.assertEqual(unit.relay, "/tmp/fixture/relay/code")
         self.assertEqual(unit.config, "/tmp/fixture/relay/relay.env")
-        self.assertEqual(unit.apps_token, "/tmp/fixture/apps-token")
+        self.assertEqual(unit.apps_token, "/tmp/a")
         self.assertEqual(unit.health, "http://localhost:18080/healthz")
         # No assumed bind address:  a unit that sets none cannot be health-checked.
         no_bind = seat_policy.read_unit(
@@ -449,10 +464,7 @@ class SeatPolicyOauthAssertRender(unittest.TestCase):
         # accepts the rendered JSON unchanged, assertions refused everywhere.
         policy = SeatPolicy(seat_policy.compact(SEATS), assertion_verifier=None)
         self.assertIsNone(
-            policy.authenticate(
-                "gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_"
-                "6c83d4e7a1b73c7c8afcc28641b50e8afe2b53ec21ed554f4c96947ca255f334"
-            )
+            policy.authenticate("gra1_codex_1800000000_1800000090_AbCdEfGhIjKlMnOp_" + "0" * 64)
         )
 
 
@@ -471,3 +483,236 @@ class HostedOAuthReviewedPolicyTests(unittest.TestCase):
             flagged, {"CLAUDE", "CODEX", "CURSOR", "ECHO", "GROK-WEB", "JET-CHAT", "WISE"}
         )
         self.assertNotIn("JET", flagged)
+
+
+class _Calls:
+    def __init__(self):
+        self.calls = []
+
+    def comment_pr(self, *args, **kwargs):
+        self.calls.append(("comment_pr", args, kwargs))
+
+
+class _OkMinter:
+    def token_for(self, slug, repo, perms):
+        return "ghs_test", time.time() + 3600
+
+    def installation_metadata(self, slug, repo):
+        return {"slug": slug}
+
+
+class _MissingApp:
+    def token_for(self, slug, repo, perms):
+        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_ID")
+
+    def installation_metadata(self, slug, repo):
+        raise AppTokenError("fleet-secrets has no value for GH_APP_SWU_ZC_PRIVATE_KEY")
+
+
+class _TimeoutApp:
+    def token_for(self, slug, repo, perms):
+        raise AppTokenError("fleet-secrets lookup timed out for GH_APP_SWU_ZC_ID")
+
+
+class _SuspendedApp:
+    def token_for(self, slug, repo, perms):
+        raise AppTokenError("app installation is missing, suspended, or on another account")
+
+
+class ZcAuthReasonTests(unittest.TestCase):
+    """A seat ST-MCP accepts (ZC) must not collapse to a bare unauthenticated."""
+
+    REPO = "Simple-With-Us/AI-Fleet-Coordinator"
+    ARGS = {"repo": REPO, "number": 1, "body": "hello"}
+
+    def relay(self, seats, verifier, minter):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        return Relay(
+            SeatPolicy(seat_policy.compact(seats), verifier=verifier),
+            _Calls(),
+            AuditLog(os.path.join(self.tmp.name, "a.jsonl")),
+            app_minter=minter,
+            workflow_verbs_enabled=True,
+        )
+
+    def rows(self):
+        path = os.path.join(self.tmp.name, "a.jsonl")
+        with open(path, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def test_a_confirmed_zc_bearer_is_its_own_app(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertEqual(policy.authenticate_with_reason(bearer_for("ZC")), ("swu-zc", ""))
+        # MA stays admitted on the same loaded policy: the disagreement is per seat.
+        self.assertEqual(policy.authenticate_with_reason(bearer_for("MA")), ("swu-rob", ""))
+
+    def test_zc_missing_from_the_loaded_policy_is_seat_not_in_policy(self):
+        without = {slug: cfg for slug, cfg in SEATS.items() if slug != "swu-zc"}
+        verifier = _Verifier()
+        policy = SeatPolicy(seat_policy.compact(without), verifier=verifier)
+        token = bearer_for("ZC")
+        self.assertEqual(policy.authenticate_with_reason(token), (None, "seat_not_in_policy"))
+        relay = self.relay(without, verifier, _OkMinter())
+        status, body = relay.handle(token, "comment_pr", self.ARGS)
+        self.assertEqual(status, 401)
+        self.assertEqual(body, {"error": "seat_not_in_policy"})
+        self.assertEqual(relay.client.calls, [])
+        row = self.rows()[-1]
+        self.assertEqual(row["result"], "unauthenticated")
+        self.assertEqual(row["cause"], "seat_not_in_policy")
+        self.assertNotIn(token, json.dumps(row))
+        # A seat that is in the loaded map still authenticates.
+        self.assertEqual(policy.authenticate(bearer_for("MA")), "swu-rob")
+
+    def test_a_worker_refusal_of_zc_is_bearer_rejected(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier(confirmed=False))
+        token = bearer_for("ZC")
+        self.assertEqual(policy.authenticate_with_reason(token), (None, "bearer_rejected"))
+        relay = self.relay(SEATS, _Verifier(confirmed=False), _OkMinter())
+        status, body = relay.handle(token, "comment_pr", self.ARGS)
+        self.assertEqual((status, body["error"]), (401, "bearer_rejected"))
+
+    def test_a_garbage_token_stays_unauthenticated(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        self.assertEqual(policy.authenticate_with_reason("wrong" * 8), (None, "unauthenticated"))
+        relay = self.relay(SEATS, _Verifier(), _OkMinter())
+        status, body = relay.handle("wrong" * 8, "comment_pr", self.ARGS)
+        self.assertEqual((status, body), (401, {"error": "unauthenticated"}))
+        row = self.rows()[-1]
+        self.assertEqual(row["result"], "unauthenticated")
+        self.assertNotIn("cause", row)
+
+    def test_zc_with_no_verifier_is_verifier_unavailable(self):
+        policy = SeatPolicy(seat_policy.compact(SEATS))
+        self.assertEqual(
+            policy.authenticate_with_reason(bearer_for("ZC")), (None, "verifier_unavailable")
+        )
+        relay = self.relay(SEATS, None, _OkMinter())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual(status, 503)
+        self.assertEqual(body, {"error": "verifier_unavailable", "retryable": True})
+
+    def test_a_missing_zc_app_credential_is_named_and_not_echoed(self):
+        relay = self.relay(SEATS, _Verifier(), _MissingApp())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual((status, body), (403, {"error": "no_app_credential"}))
+        self.assertEqual(relay.client.calls, [])
+        status, body = relay.handle(
+            bearer_for("ZC"), "wf_installation_metadata", {"repo": self.REPO}
+        )
+        self.assertEqual((status, body), (403, {"error": "no_app_credential"}))
+        self.assertNotIn("GH_APP", json.dumps(body))
+
+    def test_a_transient_mint_failure_is_not_called_a_missing_credential(self):
+        relay = self.relay(SEATS, _Verifier(), _TimeoutApp())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual(status, 503)
+        self.assertNotEqual(body.get("error"), "no_app_credential")
+        self.assertTrue(body["error"].startswith("app-token minting failed:"))
+
+    def test_a_shape_check_failure_is_not_a_missing_credential(self):
+        self.assertFalse(missing_app_credential(AppTokenError("invalid installation lookup")))
+
+    def test_a_suspended_installation_is_not_called_a_missing_credential(self):
+        relay = self.relay(SEATS, _Verifier(), _SuspendedApp())
+        status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            body["error"],
+            "app-token minting failed: app installation is missing, suspended, or on another account",
+        )
+
+
+class ProofKeyMintFailureTests(unittest.TestCase):
+    """A failed mint removes the partial file, so the never-overwrite refusal
+    does not permanently block later mints after one bad write."""
+
+    def _args(self, path):
+        import types
+
+        return types.SimpleNamespace(key_file=str(path))
+
+    def _mint_guards(self):
+        from unittest import mock
+
+        return (
+            mock.patch.object(os, "geteuid", return_value=0),
+            mock.patch.object(seat_policy, "_proof_key_dir_trust", return_value=None),
+        )
+
+    def test_write_failure_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fdopen", side_effect=OSError("disk full")),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # fdopen never took ownership, so the raw fd is closed exactly once.
+            self.assertEqual(mclose.call_count, 1)
+
+    def test_fstat_failure_closes_fd_and_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fstat", side_effect=OSError("io")),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # fstat raised before fdopen:  the raw fd is still ours and is
+            # closed exactly once, never leaked.
+            self.assertEqual(mclose.call_count, 1)
+
+    def test_fsync_failure_does_not_double_close_the_owned_fd(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        root_owned = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fstat", return_value=root_owned),
+                mock.patch.object(os, "fsync", side_effect=OSError("io")),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # After a successful fdopen the file object owns the descriptor:
+            # the failure path must not close it again at this level.
+            self.assertEqual(mclose.call_count, 0)
+
+    def test_post_create_check_failure_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        not_root = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 0, 1, 0, 0, 0, 0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fstat", return_value=not_root),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            self.assertEqual(mclose.call_count, 1)

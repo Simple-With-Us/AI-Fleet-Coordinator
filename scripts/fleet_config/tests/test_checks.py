@@ -426,9 +426,58 @@ class HooksTests(TempHome):
         self.assertFalse(contract.is_failing(result))
 
     def test_a_file_rule_passes_the_l0_check_with_a_broad_matcher(self):
-        self.write_json(".claude/settings.json", self._settings_with_matcher("Bash|Edit|Write"))
+        self.write_json(
+            ".claude/settings.json", self._settings_with_matcher("Bash|Read|Edit|Write")
+        )
         result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
         self.assertIs(result.state, CheckState.PASS)
+
+    def test_a_claude_file_rule_needs_the_read_tool_too(self):
+        """Claude's file guard also refuses reads of the secrets folder, so Read must reach it."""
+        self.write_json(".claude/settings.json", self._settings_with_matcher("Bash|Edit|Write"))
+        result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNPROVEN)
+        self.assertIn("Read", result.reason)
+
+    def _claude_two_groups(self) -> dict[str, Any]:
+        """The shape install_tools writes:  the shell group, then the file-guard group."""
+        settings = self.claude_settings()
+        settings["hooks"]["PreToolUse"].append(
+            {
+                "matcher": "Read|Write|Edit|MultiEdit|NotebookEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/opt/fixture/lane-tools/claude-file-guard-hook",
+                        "timeout": 10,
+                    }
+                ],
+            }
+        )
+        return settings
+
+    def test_the_claude_file_rule_passes_on_its_own_file_guard_group(self):
+        self.write_json(".claude/settings.json", self._claude_two_groups())
+        file_rule = make_rule(
+            CheckType.HOOK_REGISTERED,
+            "~/.claude/settings.json",
+            detail="PreToolUse",
+            expected=ExpectedState(
+                description="d",
+                names=("claude-file-guard-hook",),
+                timeout_seconds=10,
+                guards=("file",),
+            ),
+            kind=ConfigKind.HOOKS,
+        )
+        result = check_hook_registered(file_rule, "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS, result.reason)
+        # The shell rule still reads the shell group, whose matcher is Bash.
+        result = check_hook_registered(self._scoped_rule(("shell",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS, result.reason)
+        # And a shell-hook file rule stays unproven:  the shell group never sees Read.
+        result = check_hook_registered(self._scoped_rule(("file",)), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNPROVEN)
 
     def test_a_file_rule_does_not_apply_where_the_payload_carries_no_file_tool(self):
         """Nothing can be sent to a hook that never receives a file tool,  so the rule asks

@@ -173,6 +173,24 @@ struct EnvelopeSummary: Decodable, Equatable {
     let failing: Int
 }
 
+/// A config surface the engine names and does not check,  from the envelope's `uncovered`.
+///
+/// It fits none of the six kinds,  so it has no rule and no cover,  and the engine lists it
+/// so the app can say "not checked" instead of leaving a hole (contract.py,
+/// `build_status_envelope`).
+struct UncoveredSurface: Decodable, Equatable {
+    let seat: String
+    let surface: String
+    let reason: String
+}
+
+/// A fleet-wide rule the engine cannot run yet,  from the envelope's `notImplemented`.
+struct NotImplementedRule: Decodable, Equatable {
+    let ruleId: String
+    let ownerSeat: String
+    let reason: String
+}
+
 /// The pinned `fleet-config status --json` envelope.
 struct StatusEnvelope: Decodable, Equatable {
     let schemaVersion: Int
@@ -181,6 +199,17 @@ struct StatusEnvelope: Decodable, Equatable {
     let generatedAt: String
     let summary: EnvelopeSummary
     let results: [CheckResult]
+    /// The surfaces the engine names and does not check.  The key is additive,  so an
+    /// engine that does not send it is read as before.
+    let uncovered: [UncoveredSurface]?
+    /// The fleet-wide rules the engine cannot run yet.  Additive,  like `uncovered`.
+    let notImplemented: [NotImplementedRule]?
+
+    /// The uncovered surfaces,  none when the engine sent no list.
+    var uncoveredSurfaces: [UncoveredSurface] { uncovered ?? [] }
+
+    /// The rules the engine cannot run yet,  none when the engine sent no list.
+    var notImplementedRules: [NotImplementedRule] { notImplemented ?? [] }
 }
 
 /// Decodes the envelope, and refuses one this app cannot read.
@@ -279,5 +308,30 @@ enum FleetTime {
         var hour12 = hour24 % 12
         if hour12 == 0 { hour12 = 12 }
         return String(format: "%d:%02d %@", hour12, minute, suffix)
+    }
+
+    /// A moment on Jay's clock that may not be today:  the time alone when it falls on the same
+    /// day as `now` in America/Chicago,  and the weekday and date before it when it does not,
+    /// with the year when that differs too:  `2:46 PM`,  `Mon, Nov 9, 3:00 PM`,
+    /// `Fri, Jan 1, 2027, 9:00 AM`.
+    ///
+    /// A weekly quota that resets in four days,  or a pause set days ago,  is never shown as a
+    /// bare time that reads as today.
+    static func when(_ date: Date, now: Date = Date()) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago") ?? .current
+        if calendar.isDate(date, inSameDayAs: now) {
+            return clock(date)
+        }
+        let parts = calendar.dateComponents([.weekday, .month, .day, .year], from: date)
+        let weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        let weekday = parts.weekday.map { weekdays[max(0, min(6, $0 - 1))] } ?? ""
+        let month = parts.month.map { months[max(0, min(11, $0 - 1))] } ?? ""
+        var text = "\(weekday), \(month) \(parts.day ?? 0)"
+        if let year = parts.year, year != calendar.component(.year, from: now) {
+            text += ", \(year)"
+        }
+        return "\(text), \(clock(date))"
     }
 }
