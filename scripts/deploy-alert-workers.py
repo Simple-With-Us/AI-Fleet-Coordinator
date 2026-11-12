@@ -48,17 +48,11 @@ CREDENTIAL_PATHS = ["scripts/infisical-fetch.mjs"]
 # Bumped when the receipt's meaning changes, so an older receipt cannot arm a release.
 RECEIPT_GATE = 2
 
-# Paths whose merge must still be Kody-qualified before an alert-worker release, but which
-# do not themselves prove credential delivery and are not part of the receipt contract.
+# Paths whose merge must still be Kody-qualified before an alert-worker release. The
+# deploy tooling's package.json and lockfile stay in: `wrangler deploy` runs from the
+# lockfile installed on the workflow head, so dependency bumps need the same review.
 RELEASE_REVIEW_PATHS = [
-    path
-    for path in RELEASE_PATHS
-    if path
-    not in (
-        "docs/releases/alert-credentials-qualified.json",
-        "scripts/simple-tools-mcp/package.json",
-        "scripts/simple-tools-mcp/package-lock.json",
-    )
+    path for path in RELEASE_PATHS if path != "docs/releases/alert-credentials-qualified.json"
 ]
 
 KODY_CHECK_NAME = "Kody Code Review"
