@@ -22,7 +22,9 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024
+# Raised from 8 MiB on Nov 11, 2026:  main's 171-file runtime encoded to 8.0003 MiB and every install refused
+# bundle_too_large.  12 MiB leaves room for the files still in review;  fleet-cli-sync.py MAX_BYTES must match.
+MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
 # The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
 # library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
