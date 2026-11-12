@@ -535,6 +535,58 @@ class UnitRunTests(unittest.TestCase):
         for sid in (A1, A2):
             self.assertIsNone(self.fake.lookup("cursor", "cloud", PL.SCOPE, sid))
 
+    def _second_agent_answers(self, answer: dict):
+        real = CCL.register
+
+        def register(env, agent_row, **kw):
+            if str(agent_row.get("session_id")) == A2:
+                return dict(answer)
+            return real(env, agent_row, **kw)
+
+        return mock.patch.object(CCL, "register", side_effect=register)
+
+    def test_a_refusal_because_every_pair_is_live_does_not_fail_the_run(self) -> None:
+        # Jay's rule:  when all 26 main-chat pairs are live the letter is refused and the chat carries on.  That is the
+        # registry working as designed, so the row says refused, not error, and the unit does not read as failed.
+        refused = {"error": PL.refused_text(None, "cursor", 26), "code": "labels_exhausted", "swept": 0}
+        with self._second_agent_answers(refused):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertIn("label", rows[A1])
+        self.assertNotIn("error", rows[A2])
+        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[A2]["refused"])
+
+    def test_a_closed_chat_that_cannot_have_a_pair_again_yet_is_refused_not_failed(self) -> None:
+        refused = {"error": "this registry cannot give a closed chat a pair letter again yet", "code": "space_lost",
+                   "swept": 0}
+        with self._second_agent_answers(refused):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertNotIn("error", rows[A2])
+        self.assertIn("cannot give a closed chat a pair letter again", rows[A2]["refused"])
+
+    def test_the_real_api_path_refusal_reaches_the_row_when_every_pair_is_live(self) -> None:
+        # No mocked register:  the shared unit's own path (platform_letter._register_api over the registry API) runs
+        # against the real registry service with a one-pair space, so the second chat is refused by the registry
+        # itself and the code it answers with must reach the row.
+        with mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA",)}):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = [json.loads(out)["rows"][0], json.loads(out)["rows"][1]]
+        self.assertEqual(rows[0].get("label"), "AA")
+        self.assertNotIn("error", rows[1])
+        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[1]["refused"])
+
+    def test_any_other_registration_error_still_fails_the_run(self) -> None:
+        with self._second_agent_answers({"error": "the registry did not answer in time", "code": "timeout"}):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 1, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertEqual(rows[A2]["error"], "the registry did not answer in time")
+        self.assertNotIn("refused", rows[A2])
+
     def test_the_ssh_route_is_gone(self) -> None:
         # One assigner, reached through its API:  there is no --remote and no SESSION_LETTER_REMOTE to name another hop.
         with self.assertRaises(SystemExit), mock.patch("sys.stderr", io.StringIO()):

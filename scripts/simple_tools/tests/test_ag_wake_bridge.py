@@ -181,6 +181,12 @@ class Receiver(Base):
         with urllib.request.urlopen("http://%s:%d/health" % (host, bound), timeout=5) as response:
             answer = json.loads(response.read().decode())
         self.assertEqual(answer, {"ok": True, "seat": "AG"})
+        # `simple-chat daemon test-wake` tells this bridge from the wake router by the router's
+        # `GET /health/<SEAT>`, which the bridge must not answer (listener_cli._router_health).
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen("http://%s:%d/health/AG" % (host, bound), timeout=5)
+        self.assertEqual(caught.exception.code, 404)
+        caught.exception.close()
 
     def test_good_wake_is_accepted_and_deduped(self) -> None:
         env = self.env(

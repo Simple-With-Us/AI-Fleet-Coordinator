@@ -851,7 +851,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         params["parent_session_id"] = parent
     out = _call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
-        return {"error": refused_text(OR, args.platform), "swept": 0}
+        return {"error": refused_text(OR, args.platform), "code": "labels_exhausted", "swept": 0}
     error = _api_error(out)
     if error is not None:
         return error
@@ -866,10 +866,15 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = _call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {"error": refused_text(OR, args.platform), "swept": 0}
+            return {
+                "error": refused_text(OR, args.platform),
+                "code": "labels_exhausted",
+                "swept": 0,
+            }
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
+                "code": "space_lost",
                 "swept": 0,
             }
         error = _api_error(reopened)
