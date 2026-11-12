@@ -1111,6 +1111,131 @@ class IngestTests(unittest.TestCase):
         self.assertTrue(self._run()["ok"])       # released: runs again
         self.assertIsInstance(ingest.IngestLocked("x"), ingest.FleetRagError)
 
+    def test_a_dead_pid_in_the_lock_file_is_removed_on_start(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            f"99999999 2020-01-01T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        logs: list[str] = []
+
+        def capture(*parts: object) -> None:
+            logs.append(" ".join(str(p) for p in parts))
+
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
+        self.assertTrue(any("removing stale lock" in line for line in logs))
+        self.assertTrue(lock.exists())
+        meta = ingest._read_ingest_lock_meta(lock)
+        self.assertEqual(meta.get("pid"), os.getpid())
+
+    def test_a_live_holder_writes_lock_held_to_the_nightly_summary(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        summary = self.state.parent / "nightly-last.json"
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.write_text(
+            f"{os.getpid()} 2026-11-12T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {ingest.NIGHTLY_SUMMARY_ENV: str(summary)},
+                clear=False,
+            ):
+                with self.assertRaises(ingest.IngestLocked) as ctx:
+                    ingest.run(
+                        ",".join(sources.NIGHTLY_SOURCES),
+                        cfg={"x": "y"},
+                        qd=self.qd,
+                        state_path=self.state,
+                        last_run_path=self.last,
+                        log_path=self.logf,
+                        log=lambda *a: None,
+                        prune=True,
+                        lock_timeout_s=0.0,
+                    )
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        exc = ctx.exception
+        self.assertEqual(exc.reason, "lock_held")
+        self.assertEqual(exc.pid, os.getpid())
+        body = json.loads(summary.read_text(encoding="utf-8"))
+        self.assertEqual(body["reason"], "lock_held")
+        self.assertEqual(body["ingest_lock_pid"], os.getpid())
+        self.assertIn("lock_held", body["errors"])
+
+    def test_a_partial_refresh_does_not_write_the_nightly_summary_on_lock_held(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        summary = self.state.parent / "nightly-last.json"
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.write_text(
+            f"{os.getpid()} 2026-11-12T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {ingest.NIGHTLY_SUMMARY_ENV: str(summary)},
+                clear=False,
+            ), mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "zulip")):
+                with self.assertRaises(ingest.IngestLocked):
+                    self._run(lock_timeout_s=0.0)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertFalse(summary.exists())
+
+    def test_a_lock_without_pid_or_host_is_stale_only_past_the_age(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("not-json\n", encoding="utf-8")
+        old = time.time() - ingest.DEFAULT_INGEST_LOCK_STALE_S - 60
+        os.utime(lock, (old, old))
+        logs: list[str] = []
+
+        def capture(*parts: object) -> None:
+            logs.append(" ".join(str(p) for p in parts))
+
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
+        self.assertTrue(any("missing pid or host" in line for line in logs))
+
+        lock.write_text("not-json\n", encoding="utf-8")
+        fresh = time.time() - 60
+        os.utime(lock, (fresh, fresh))
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
+
     def test_the_nightly_pass_waits_for_the_lock_instead_of_failing(self) -> None:
         # The sheet sync's partial refresh holds this same lock for as long as it runs, and it
         # may hold it for its whole budget.  The nightly is the only run that attests the corpus
