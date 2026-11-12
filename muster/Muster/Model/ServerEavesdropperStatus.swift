@@ -101,10 +101,14 @@ enum EavesdropperStatusText {
 ///      "seats": [{"seat", "bot", "connected", "running", "wake", "paused", "wakes_24h",
 ///                 "held_back", "jobs", "last_event", "quota": {...}, "leases": [...],
 ///                 "letters": {"known", "why"}}],
-///      "skipped": [{"seat", "reason"}], "disabled": [name]}
+///      "skipped": [{"seat", "reason"}], "disabled": [name],
+///      "registry_sweep": {"ran_at", "ok", "ended", "error", "stale_after_minutes", "refused",
+///                         "refused_platforms": [name]}}
 ///
 /// The document has no schema name of its own:  `schema` is its version, and the helper's answer
 /// around it names the verb (`server eavesdropper-status`), which the answer parser checks.
+/// `registry_sweep` came later and is additive, so the version stays 1 and a document from an
+/// older helper simply has none.
 struct ReducedEavesdropperStatus: Decodable, Equatable {
     /// The one version this app reads.
     static let schemaVersion = 1
@@ -138,6 +142,8 @@ struct ReducedEavesdropperStatus: Decodable, Equatable {
     let skipped: [ServerSkippedSeat]
     /// Seats the listener's settings turn off.
     let disabled: [String]
+    /// The registry's last stale sweep on the server, or nil from an older helper.
+    let registrySweep: ServerRegistrySweepFields?
 
     enum CodingKeys: String, CodingKey {
         case schema, instance, pause, seats, skipped, disabled
@@ -145,6 +151,7 @@ struct ReducedEavesdropperStatus: Decodable, Equatable {
         case statusUpdatedText = "status_updated"
         case operatorVoice = "operator_voice"
         case pauseFileError = "pause_file_error"
+        case registrySweep = "registry_sweep"
     }
 }
 
@@ -162,6 +169,7 @@ extension ReducedEavesdropperStatus {
         skipped = container.lenientList(ServerSkippedSeat.self, .skipped)
         disabled = container.lenientList(String.self, .disabled)
             .compactMap { EavesdropperStatusText.plain($0, limit: 32) }
+        registrySweep = container.optionalField(ServerRegistrySweepFields.self, .registrySweep)
     }
 
     /// True when this is the version this app reads.
@@ -323,6 +331,128 @@ extension ServerEavesdropperPause {
     }
 
     var since: Date? { sinceText.flatMap(FleetTime.parse) }
+}
+
+// MARK: - The registry's stale sweep
+
+/// The document's `registry_sweep` block (AFC-721):  the server's one stale sweeper's last pass,
+/// as counts.  The reducer never sends the letters, record ids or machines of the chats a pass
+/// closed or held back, and nothing here asks for them.  The Mac, and a server before its first
+/// pass, send the block with every field null.
+struct ServerRegistrySweepFields: Decodable, Equatable {
+    /// When the pass ran, as written.
+    let ranAtText: String?
+    let ok: Bool?
+    /// How many chats the pass closed.
+    let ended: Int?
+    /// The reducer's code for why the pass was not clean (`sweep_share_exceeded`,
+    /// `registry_unavailable`, `registry_error`), or nil.
+    let error: String?
+    /// How long a chat must be quiet before the sweep closes it, in minutes.
+    let staleAfterMinutes: Int?
+    /// How many platform and machine groups the share guard held back.
+    let refused: Int?
+    /// The platforms of those groups, each once.
+    let refusedPlatforms: [String]
+
+    /// The most platforms the reducer sends (`MAX_SWEEP_PLATFORMS`).
+    static let maxPlatforms = 16
+    /// The row's name.
+    static let title = "Stale Chat Sweep"
+
+    enum CodingKeys: String, CodingKey {
+        case ok, ended, error, refused
+        case ranAtText = "ran_at"
+        case staleAfterMinutes = "stale_after_minutes"
+        case refusedPlatforms = "refused_platforms"
+    }
+}
+
+extension ServerRegistrySweepFields {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ranAtText = container.optionalText(.ranAtText, limit: 40)
+        ok = container.optionalField(Bool.self, .ok)
+        ended = container.optionalCount(.ended)
+        error = container.optionalText(.error, limit: 48)
+        staleAfterMinutes = container.optionalCount(.staleAfterMinutes)
+        refused = container.optionalCount(.refused)
+        refusedPlatforms = Array(
+            container.lenientList(String.self, .refusedPlatforms)
+                .compactMap { EavesdropperStatusText.plain($0, limit: 24) }
+                .prefix(Self.maxPlatforms)
+        )
+    }
+
+    /// When the pass ran, or nil.
+    var ranAt: Date? { ranAtText.flatMap(FleetTime.parse) }
+
+    /// True when the block says anything about a pass.  An all-null block (the Mac, or a server
+    /// that has not swept yet) is not shown.
+    var isReported: Bool { ranAtText != nil || ok != nil || ended != nil }
+
+    /// True when the last pass was not clean.
+    var isProblem: Bool { ok == false }
+
+    /// The short answer:  OK, or the reducer's error word.
+    var label: String {
+        switch ok {
+        case true?: return "OK"
+        case false?: return error ?? "Failed"
+        case nil: return EavesdropperStatusText.notReported
+        }
+    }
+
+    /// What the last pass did, in plain words:  when it ran, how many chats it closed, why it was
+    /// not clean, and which platforms the share guard held back.
+    func sentence(now: Date) -> String {
+        var parts: [String] = []
+        if let ranAt {
+            parts.append("It last ran at \(EavesdropperStatusText.time(ranAt, now: now)).")
+        } else {
+            parts.append("It does not say when it last ran.")
+        }
+        if let ended {
+            let chats = ended == 0 ? "no chats" : (ended == 1 ? "1 chat" : "\(ended) chats")
+            if let quiet = Self.quietText(staleAfterMinutes) {
+                parts.append("It closed \(chats) quiet for more than \(quiet).")
+            } else {
+                parts.append("It closed \(chats).")
+            }
+        }
+        switch error {
+        case "registry_unavailable"?:
+            parts.append("The session registry was not there, so it closed nothing.")
+        case "registry_error"?:
+            parts.append("It could not read or write the session registry, so it closed nothing.")
+        case nil, "sweep_share_exceeded"?:
+            if ok == false, error == nil {
+                parts.append("It did not finish cleanly, and the server did not say why.")
+            }
+        case let code?:
+            parts.append("It did not finish cleanly (\(code)).")
+        }
+        let heldBack = (refused ?? 0) > 0 || !refusedPlatforms.isEmpty || error == "sweep_share_exceeded"
+        if heldBack {
+            if !refusedPlatforms.isEmpty {
+                parts.append("Held back: \(refusedPlatforms.joined(separator: ", ")).")
+            } else if let refused, refused > 0 {
+                parts.append(refused == 1 ? "It held back 1 platform." : "It held back \(refused) platforms.")
+            }
+            parts.append("The share guard stopped it closing too many of a platform's open chats on one machine at once, so it left those chats open.")
+        }
+        return parts.joined(separator: EavesdropperStatusText.gap)
+    }
+
+    /// `2160` minutes as `36 hours`, any other whole number of minutes as minutes, or nil.
+    static func quietText(_ minutes: Int?) -> String? {
+        guard let minutes, minutes > 0 else { return nil }
+        if minutes % 60 == 0 {
+            let hours = minutes / 60
+            return hours == 1 ? "1 hour" : "\(hours) hours"
+        }
+        return minutes == 1 ? "1 minute" : "\(minutes) minutes"
+    }
 }
 
 // MARK: - One seat

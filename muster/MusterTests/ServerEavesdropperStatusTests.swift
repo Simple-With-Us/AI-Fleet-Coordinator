@@ -628,6 +628,124 @@ final class ServerEavesdropperCurrencyTests: XCTestCase {
     }
 }
 
+/// The registry's stale sweep (AFC-721), as `reduce_status` sends it.  `liveSweep` is the
+/// reducer's output for the server's live block of November 11, 2026, whose source carried the
+/// letters, record ids and machines this document never has.
+private let liveSweep = #"""
+{"ran_at":"2026-11-12T03:13:23Z","ok":false,"ended":11,"error":"sweep_share_exceeded","stale_after_minutes":2160,"refused":1,"refused_platforms":["antigravity"]}
+"""#
+
+/// A current server document generated at 9:13:30 PM Chicago time on November 11, 2026, with
+/// `sweep` as its `registry_sweep` (JSON text), or with no such key when it is nil.
+private func sweepDocument(_ sweep: String?) -> String {
+    let block = sweep.map { #","registry_sweep":"# + $0 } ?? ""
+    return #"{"schema":1,"generated_at":"2026-11-12T03:13:30Z","instance":"server","status_updated":"2026-11-12T03:13:28Z","seats":[],"skipped":[],"disabled":[]"#
+        + block + "}"
+}
+
+final class ServerRegistrySweepTests: XCTestCase {
+    private let gap = "\u{00A0} "
+
+    /// The live block reads in full:  when it ran, its error, what it closed and the platform the
+    /// share guard held back, in sentences with the house gap.
+    func test_the_live_block_reads_in_full() throws {
+        let status = try document(sweepDocument(liveSweep))
+        let sweep = try XCTUnwrap(status.registrySweep)
+        XCTAssertEqual(sweep.ranAt, try date("2026-11-12T03:13:23Z"))
+        XCTAssertEqual(sweep.ok, false)
+        XCTAssertEqual(sweep.ended, 11)
+        XCTAssertEqual(sweep.error, "sweep_share_exceeded")
+        XCTAssertEqual(sweep.staleAfterMinutes, 2160)
+        XCTAssertEqual(sweep.refused, 1)
+        XCTAssertEqual(sweep.refusedPlatforms, ["antigravity"])
+        XCTAssertTrue(sweep.isReported)
+        XCTAssertTrue(sweep.isProblem)
+        XCTAssertEqual(sweep.label, "sweep_share_exceeded")
+        let now = try date("2026-11-12T03:20:00Z")
+        XCTAssertEqual(
+            sweep.sentence(now: now),
+            "It last ran at 9:13 PM." + gap
+                + "It closed 11 chats quiet for more than 36 hours." + gap
+                + "Held back: antigravity." + gap
+                + "The share guard stopped it closing too many of a platform's open chats on one machine at once, so it left those chats open."
+        )
+        // Shown only from a current reading, as the panel does.
+        let reading = ServerEavesdropperReading.reading(of: status)
+        XCTAssertEqual(reading.currentStatus(now: try date("2026-11-12T03:14:00Z"))?.registrySweep, sweep)
+        XCTAssertNil(reading.currentStatus(now: try date("2026-11-12T03:30:00Z")))
+        // Through the parser too.
+        let parsed = ServerEavesdropperReading(outcome: outcome(planned(sweepDocument(liveSweep))))
+        XCTAssertEqual(parsed.status?.registrySweep, sweep)
+    }
+
+    /// A clean pass reads OK, and a store problem says so in words.
+    func test_a_clean_pass_and_a_store_problem() throws {
+        let clean = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"2026-11-12T03:13:23Z","ok":true,"ended":1,"error":null,"stale_after_minutes":90,"refused":0,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertFalse(clean.isProblem)
+        XCTAssertEqual(clean.label, "OK")
+        let now = try date("2026-11-12T03:20:00Z")
+        XCTAssertEqual(clean.sentence(now: now), "It last ran at 9:13 PM." + gap + "It closed 1 chat quiet for more than 90 minutes.")
+
+        let missing = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"2026-11-12T03:13:23Z","ok":false,"ended":0,"error":"registry_unavailable","stale_after_minutes":2160,"refused":0,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertEqual(missing.label, "registry_unavailable")
+        XCTAssertEqual(
+            missing.sentence(now: now),
+            "It last ran at 9:13 PM." + gap
+                + "It closed no chats quiet for more than 36 hours." + gap
+                + "The session registry was not there, so it closed nothing."
+        )
+        XCTAssertFalse(missing.sentence(now: now).contains("Held back"))
+        XCTAssertEqual(ServerRegistrySweepFields.quietText(60), "1 hour")
+        XCTAssertEqual(ServerRegistrySweepFields.quietText(1), "1 minute")
+        XCTAssertNil(ServerRegistrySweepFields.quietText(0))
+        XCTAssertNil(ServerRegistrySweepFields.quietText(nil))
+    }
+
+    /// An older helper sends no block, and the Mac or a server that has not swept yet sends one
+    /// with every field null:  neither is shown.
+    func test_an_absent_or_all_null_block_is_not_reported() throws {
+        XCTAssertNil(try document(sweepDocument(nil)).registrySweep)
+        XCTAssertNil(try XCTUnwrap(sampleReading().status).registrySweep)
+        let empty = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":null,"ok":null,"ended":null,"error":null,"stale_after_minutes":null,"refused":null,"refused_platforms":[]}"#
+        )).registrySweep)
+        XCTAssertFalse(empty.isReported)
+        XCTAssertFalse(empty.isProblem)
+        XCTAssertEqual(empty.label, "Not reported")
+        XCTAssertEqual(empty.sentence(now: Date()), "It does not say when it last ran.")
+    }
+
+    /// A field of the wrong type is nil and costs no other field;  a block that is not an object
+    /// is nil and costs nothing else in the document.
+    func test_a_malformed_block_degrades_field_by_field() throws {
+        let odd = try XCTUnwrap(try document(sweepDocument(
+            #"{"ran_at":"yesterday","ok":"yes","ended":"11","error":7,"stale_after_minutes":-5,"refused":1.5,"refused_platforms":["cursor",5,null,"  ","a‮b","p1","p2","p3","p4","p5","p6","p7","p8","p9","p10","p11","p12","p13","p14","p15","p16"]}"#
+        )).registrySweep)
+        XCTAssertNil(odd.ranAt)
+        XCTAssertNil(odd.ok)
+        XCTAssertNil(odd.ended)
+        XCTAssertNil(odd.error)
+        XCTAssertNil(odd.staleAfterMinutes)
+        XCTAssertNil(odd.refused)
+        XCTAssertEqual(odd.refusedPlatforms.count, ServerRegistrySweepFields.maxPlatforms)
+        XCTAssertEqual(Array(odd.refusedPlatforms.prefix(3)), ["cursor", "ab", "p1"])
+        // `ran_at` was text, so the block still says something.
+        XCTAssertTrue(odd.isReported)
+        XCTAssertEqual(odd.label, "Not reported")
+
+        for block in [#""ok""#, "5", "[]", "true", "null"] {
+            let status = try document(sweepDocument(block))
+            XCTAssertNil(status.registrySweep, block)
+            XCTAssertEqual(status.instance, "server", block)
+            XCTAssertEqual(status.schema, 1, block)
+        }
+    }
+}
+
 @MainActor
 final class ServerEavesdropperStoreTests: XCTestCase {
     actor Counter {
