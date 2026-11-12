@@ -1098,6 +1098,7 @@ try:
             "credential source, but it ran %r" % (SUBPROCESS_CALLS,))
 
     # 3. The item reads, and a 200 answer supplies the url/secret pair.
+    os.environ["INFISICAL_FLEET_OPS_PROJECT_ID"] = "00000000-0000-4000-8000-000000000099"
     os.environ["FAKE_SECURITY_MODE"] = "ok"
     REQUESTS.clear()
     AUTHORIZATIONS.clear()
@@ -1109,7 +1110,7 @@ try:
         # /api/v1/secrets route answers 404, so a v1 URL would fail closed
         # every time.
         assert path.startswith("/api/v3/secrets/raw/"), path
-        assert "projectId=8dae6d03-8f12-48b2-adf3-e5c1b881c8c5" in path, path
+        assert "projectId=00000000-0000-4000-8000-000000000099" in path, path
         assert "environment=prod" in path, path
         assert "secretPath=%2Fbotfleet-housekeeper-webhook" in path, path
     # The token rides in the Authorization header, and nothing else does.
@@ -1316,6 +1317,7 @@ ENV_KEYS = (
     "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET",
 )
 saved_env = {key: os.environ.pop(key, None) for key in ENV_KEYS}
+os.environ["INFISICAL_FLEET_OPS_PROJECT_ID"] = "00000000-0000-4000-8000-000000000099"
 
 
 def clear_env():
