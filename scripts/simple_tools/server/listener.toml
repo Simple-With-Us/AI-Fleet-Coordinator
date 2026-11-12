@@ -135,9 +135,9 @@ wake = "inbox"
 # JET (ChatGPT) is woken through OpenAI MCP Events:  the http wake POSTs simple-tools-wake/1 to the hosted
 # MCP Worker (https://agents.simplewithus.com/internal/wake/JET), which sends a signed `zulip.mention` event to
 # every ChatGPT chat or dot that subscribed (scripts/simple-tools-mcp/ARMING-JAY.md, "Wake Jet").  JET_ROUTINE_URL
-# is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET
-# (Infisical Fleet-OPS, `fleet-secrets get JET_ROUTINE_KEY`).  Until both are set and the container restarts, each wake
-# is logged as routine-unready and dropped;  the inbox still captures everything.  The budget sets no wake-count
+# is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET.  Both
+# come only from Infisical AFC prod /zulip (server/infisical_env.py), never a Coolify variable.  Until both are there
+# and the container restarts, each wake is logged as routine-unready and dropped;  the inbox still captures everything.  The budget sets no wake-count
 # limit (owner ruling, Nov 10:  liberal wakes, no throttles);  a seat that wants one adds `wakes_per_hour`,
 # `wakes_per_day`, `per_topic_per_hour`, `owner_per_day` or `owner_per_topic_per_hour` on its own line.  A volume
 # seeded before this change keeps JET on "inbox":  switch it with the scoped edit in ARMING-JAY.md "Wake Jet", step 1b.

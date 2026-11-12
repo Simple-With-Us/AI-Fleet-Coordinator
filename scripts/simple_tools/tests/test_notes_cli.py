@@ -29,7 +29,7 @@ from simple_tools.tests.test_notes_client import FakeFleet, FakeOperator, record
 
 TITLE = "[AFC, Claude] Cli Check"
 MASTER = "⭐️ Background Jobs Master List"
-VERBS = ("create", "update", "pin", "unpin", "read", "list", "log", "runner", "status")
+VERBS = ("create", "update", "pin", "unpin", "delete", "read", "list", "log", "runner", "status")
 
 
 class NotesCliHarness(Harness):
@@ -269,6 +269,36 @@ class MacTests(NotesCliHarness):
             as_json = json.loads(self.notes("list", "--json").out)
         self.assertEqual((as_json["total"], len(as_json["notes"])), (40, 2))
         self.assertEqual(self.notes("list", "--limit", "0").code, 2)
+
+    def test_list_defaults_to_compact_and_honors_full(self):
+        notes = [
+            {
+                "title": "n%d" % i,
+                "id": "x-coredata://n%d" % i,
+                "created": "",
+                "modified": "2026-10-22T22:03:00Z",
+            }
+            for i in range(25)
+        ]
+        answer = {"notes": notes, "total": 25, "status": "done"}
+        run = FakeRun(stdout=json.dumps(answer))
+        a, b = self.direct(run)
+        with a, b:
+            compact = self.notes("list")
+        self.assertEqual(compact.code, 0, compact.err)
+        self.assertEqual(compact.out.count("\n") - 1, 10)  # ten rows plus the truncated footer
+        self.assertIn("10 of 25 shown", compact.out)
+        self.assertEqual(run.calls[0]["argv"][1:], ["--list", "--limit", "10"])
+        a, b = self.direct(FakeRun(stdout=json.dumps(answer)))
+        with a, b:
+            full = self.notes("list", "--full")
+        self.assertEqual(full.code, 0, full.err)
+        self.assertEqual(sum(1 for line in full.out.splitlines() if line.startswith("Thu,")), 25)
+        self.assertNotIn("shown", full.out)
+        a, b = self.direct(FakeRun(stdout=json.dumps(answer)))
+        with a, b:
+            as_json = json.loads(self.notes("list", "--json").out)
+        self.assertEqual((as_json["total"], len(as_json["notes"])), (25, 25))
 
     def test_log_prints_the_entries_of_this_macs_action_log(self):
         now = datetime.now(timezone.utc)
