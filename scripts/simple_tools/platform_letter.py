@@ -1223,7 +1223,11 @@ def refused(answer: Mapping[str, Any]) -> bool:
     """The assigner answered, and the answer is no letter:  every pair is live, or it holds no registration for the
     chat.  Anything else that carries an error is a call that got no answer (not configured, unreachable, a timeout)."""
     error = str(answer.get("error") or "")
-    return error == NO_REGISTRATION or error.startswith("all ") and error.endswith(" letters are in use")
+    return (
+        error == NO_REGISTRATION
+        or error.startswith("all ")
+        and error.endswith(" letters are in use")
+    )
 
 
 def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[str, Any]:
@@ -2623,7 +2627,9 @@ def find_chat(env: Mapping[str, str], sid: str = "") -> tuple[PlatformSpec, str,
             continue
         seat = spec.seat_for({}, env)
         try:
-            own = spec.session_id({}, env)  # the spec's own reader, for one that reads the environment
+            own = spec.session_id(
+                {}, env
+            )  # the spec's own reader, for one that reads the environment
         except Exception:  # noqa: BLE001 - a reader that cannot answer here names no chat
             own = ""
         for value in (own, *(env.get(name) for name in (*spec.session_env, "AGENT_SESSION"))):

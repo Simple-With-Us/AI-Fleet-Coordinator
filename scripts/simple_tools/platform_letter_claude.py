@@ -39,7 +39,12 @@ SEAT = "CLAUDE"
 SOURCE = "claude-letter-hook"
 DISPLAY = "Claude"
 ENTRYPOINTS = ("cli", "claude-desktop")
-EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Stop": "turn", "SessionEnd": "end"}
+EVENTS = {
+    "SessionStart": "start",
+    "UserPromptSubmit": "prompt",
+    "Stop": "turn",
+    "SessionEnd": "end",
+}
 HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "Stop": 15, "SessionEnd": 15}
 CLOSE_REASONS = ("clear", "logout")
 STORE = ("Library", "Application Support", "Claude", "claude-code-sessions")

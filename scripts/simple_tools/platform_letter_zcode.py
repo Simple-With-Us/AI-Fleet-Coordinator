@@ -302,7 +302,9 @@ def hook_owned(request: Any, current: str) -> bool:
     last put on the chat (the library passes it as `shown`), it carries the "??" mark the hook puts on a chat with no
     letter, or it starts with the letter being written or one the chat holds or held.  Anything else is a person's
     name, which the hook never overwrites."""
-    if current == str(getattr(request, "shown", "") or "") or current.startswith(PL.UNLETTERED + ":"):
+    if current == str(getattr(request, "shown", "") or "") or current.startswith(
+        PL.UNLETTERED + ":"
+    ):
         return True
     letters = {str(getattr(request, "label", "") or ""), *getattr(request, "held", ())}
     return any(label and current.startswith(label + ":") for label in letters)
