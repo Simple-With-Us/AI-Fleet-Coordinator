@@ -187,6 +187,11 @@ The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) 
 init or install:  it has no prefix.  With `FLEET_WORK_BACKUP_ALLOW_MASTER=1` the restore commands (`restic`,
 `snapshots`) may fall back to it for names the scoped key leaves empty.
 
+The fetch is least-privilege:  `fleet-secrets run --only` injects just the four job names (the two master names are
+added only when `FLEET_WORK_BACKUP_ALLOW_MASTER=1`).  If `--only` exits non-zero, because one name is absent or
+the fetch failed, the job falls back to one `fleet-secrets get` per name, so the names that exist still load and the
+missing ones are reported.
+
 All four names live in Infisical Fleet-OPS (`prod`, root `/`), and the job reads them with `fleet-secrets` (AFC-359:
 nothing is read from `~/.secrets`).  They were seeded from the `AI Fleet Coordinator` project by the one-way
 `com.jay.infisical-secrets-sync` job, which is being retired.  The password must be a

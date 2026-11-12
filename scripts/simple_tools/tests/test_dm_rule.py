@@ -15,6 +15,7 @@ tests live in test_mcp_stdio.py.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -152,12 +153,29 @@ class SeatDmRefusedTests(unittest.TestCase):
         DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(SYNTHETIC_OPERATOR_ID)],
                          operator_opened=True)
 
-    def test_operator_may_open_only_a_clarifying_question(self) -> None:
+    def test_operator_may_open_only_its_status_message(self) -> None:
+        # The Operator asks nobody a clarifying question (owner ruling, Nov 10, 2026):  the status
+        # message is the one DM it may open, and the question allowance is gone.
         DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)],
-                         clarifying=True, owner_user_id=12)
+                         status=True, owner_user_id=12)
         with self.assertRaises(DMP.DmRefused) as caught:
             DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)], owner_user_id=12)
-        self.assertEqual(caught.exception.reason, "operator_not_clarifying")
+        self.assertEqual(caught.exception.reason, "operator_not_status")
+        self.assertNotIn("clarifying", str(caught.exception))
+        self.assertFalse(hasattr(DMP, "clarifying_exempt"))
+        # No new spelling of the allowance either:  the parameter set is pinned.
+        self.assertEqual(
+            set(inspect.signature(DMP.check_new_dm).parameters),
+            {"env", "identity", "recipients", "operator_opened", "owner_user_id", "status"},
+        )
+        with self.assertRaises(TypeError):
+            DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)],
+                             clarifying=True, owner_user_id=12)  # type: ignore[call-arg]
+
+    def test_no_guidance_offers_a_clarifying_question(self) -> None:
+        for kind in ("owner", "seat", "people"):
+            with self.subTest(kind=kind):
+                self.assertNotIn("clarifying", DMP.guidance_for(kind))
 
     def test_the_block_defaults_on_and_one_flag_turns_it_off(self) -> None:
         self.assertTrue(DMP.rule_enabled({}))
@@ -319,13 +337,13 @@ class OperatorOpenedDmTests(unittest.TestCase):
         # The exemptions do not need the Operator's id, so they must run before the missing
         # deployment setting becomes the answer.  Two DMs are permitted without it:  a seat
         # answering inside a conversation Operator opened (the caller has already proved that with
-        # the id, so `operator_opened` is True), and Operator's one clarifying question (the one
-        # message that is id-free).  Both were refused before the helper stopped raising (Kody
-        # review on AFC-473).
+        # the id, so `operator_opened` is True), and Operator's status message (the one message
+        # that is id-free).  Both were refused before the helper stopped raising (Kody review on
+        # AFC-473).
         DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(SYNTHETIC_OPERATOR_ID)],
                          operator_opened=True)
         DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)],
-                         operator_opened=None, clarifying=True, owner_user_id=12)
+                         operator_opened=None, status=True, owner_user_id=12)
         # The rule's own answer still stands when the id is there:  a seat that opens a new DM is
         # refused by the rule, not by a missing variable.
         with self.assertRaises(DMP.DmRefused) as caught:
@@ -881,12 +899,9 @@ class DmLookupCredentialTests(unittest.TestCase):
         self.assertEqual([m["id"] for m in tools._dm_exists([9])], [5], "only private messages, unchanged")
 
 
-class ClarifyingFlagOnTheCliTests(unittest.TestCase):
-    """`simple-chat dm` must be able to say "this is the one clarifying question".
-
-    The DM check read `args.clarifying_question`, but the `dm` parser never registered
-    `--clarifying-question`, so the attribute was always absent and Operator's clarifying DM was
-    refused on the CLI no matter what it passed."""
+class NoClarifyingFlagOnTheCliTests(unittest.TestCase):
+    """`simple-chat dm` has no `--clarifying-question` flag any more:  the Operator asks nobody a
+    clarifying question (owner ruling, Nov 10, 2026), so there is no allowance for a flag to claim."""
 
     @staticmethod
     def _parser() -> Any:
@@ -894,18 +909,16 @@ class ClarifyingFlagOnTheCliTests(unittest.TestCase):
 
         return cli.build_parser()
 
-    def test_the_dm_parser_registers_the_flag(self) -> None:
-        args = self._parser().parse_args(["dm", "--clarifying-question", "which seat?"])
-        self.assertTrue(args.clarifying_question, "the flag must reach the DM check")
+    def test_the_dm_parser_refuses_the_old_flag(self) -> None:
+        import contextlib
+        import io
 
-    def test_without_the_flag_it_is_false(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self._parser().parse_args(["dm", "--clarifying-question", "which seat?"])
+
+    def test_an_ordinary_dm_carries_no_clarifying_attribute(self) -> None:
         args = self._parser().parse_args(["dm", "which seat?"])
-        self.assertFalse(args.clarifying_question, "an ordinary DM is not a clarifying question")
-
-    def test_the_operator_allowance_reads_that_attribute(self) -> None:
-        # The attribute name the check reads is the one argparse now sets.
-        args = self._parser().parse_args(["dm", "--clarifying-question"])
-        self.assertEqual(getattr(args, "clarifying_question", None), True)
+        self.assertFalse(hasattr(args, "clarifying_question"))
 
 
 class CliRuleSwitchTests(unittest.TestCase):
@@ -1103,23 +1116,19 @@ class DamagedOperatorConfigTests(unittest.TestCase):
             to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
             cli._dm_rule(agent, types.SimpleNamespace(), to)  # a reply inside it is allowed
 
-    def test_the_operators_clarifying_question_needs_no_id(self) -> None:
-        # Operator's own clarifying question is permitted without knowing who the Operator is, so
-        # a host whose config is damaged can still send it, and no conversation is read.
+    def test_the_operator_has_no_clarifying_question_allowance(self) -> None:
+        # The Operator asks nobody (owner ruling, Nov 10, 2026):  a `clarifying_question` attribute
+        # no longer skips the rule, so the Operator on the CLI is judged like any other DM and a
+        # damaged config still fails closed by name.
         from simple_tools import cli
 
         with tempfile.TemporaryDirectory() as home:
             path = self._config(home, '[daemon]\noperator_user_id = "not-a-user-id"\n')
             agent = self._agent({"HOME": home, "SIMPLE_TOOLS_CONFIG": path}, seat="OPERATOR")
             to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
-            cli._dm_rule(agent, types.SimpleNamespace(clarifying_question=True), to)
-        self.assertEqual(type(agent).reads, 0, "the conversation is not read")
-
-    def test_the_rule_asks_dm_policy_about_the_clarifying_allowance(self) -> None:
-        # One source of truth for the exemption, so the CLI and the policy cannot drift apart.
-        self.assertTrue(DMP.clarifying_exempt("OPERATOR", clarifying=True))
-        self.assertFalse(DMP.clarifying_exempt("OPERATOR", clarifying=False))
-        self.assertFalse(DMP.clarifying_exempt("CLAUDE", clarifying=True))
+            with self.assertRaises(cli.UsageError):
+                cli._dm_rule(agent, types.SimpleNamespace(clarifying_question=True), to)
+        self.assertFalse(hasattr(DMP, "clarifying_exempt"))
 
     def test_the_pinned_id_is_read_only_when_the_environment_has_none(self) -> None:
         # `pinned` may be a callable, so the host's config is not read at all when the environment

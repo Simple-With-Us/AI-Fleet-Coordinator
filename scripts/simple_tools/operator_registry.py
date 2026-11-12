@@ -2390,11 +2390,11 @@ def registrations_for_native_id(
 ) -> list[dict[str, Any]]:
     """Every live registration of one native session id on a platform, across locations.
 
-    The ask-before-letter flow (operator_registration) needs this direction:  a session id
-    arrives without a location, and the answer is the set of locations that id is currently
-    lettered at.  Only live letters count:  a session whose letter was retired reads as
-    unlettered, so the flow asks again and the register path resumes its record with a fresh
-    letter.  A closed session is not a live registration either - the same filter every
+    This direction answers a session id that arrives without a location:  the answer is the
+    set of locations that id is currently lettered at.  (The ask-before-letter flow that first
+    needed it, operator_registration, is gone:  the Operator asks nobody, owner ruling Nov 10,
+    2026.)  Only live letters count:  a session whose letter was retired reads as unlettered,
+    and the register path resumes its record with a fresh letter.  A closed session is not a live registration either - the same filter every
     other registry read (resolve_ref, the letter reads) applies.  An empty list means unlettered, one row is the short-circuit, and several rows
     are the contradiction the owner settles - the same id lettered on both the Mac and the
     server is never merged or picked between here.
@@ -2480,7 +2480,7 @@ def candidates_for(
 ) -> list[dict[str, Any]]:
     """The live holders of one letter on one platform.
 
-    This is the query a candidate list needs:  the sessions that could hold the letter
+    This is the query a tagged letter needs:  the sessions that could hold the letter
     the sender used.  It is read-only and it never allocates, so a letter nobody holds
     simply has no candidates rather than a new one.
 
