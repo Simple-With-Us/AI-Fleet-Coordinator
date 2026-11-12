@@ -266,6 +266,24 @@ class CompareAndCliTests(HermeticTestCase):
         self.assertEqual(rc, 2)
         self.assertIn("offline", buf.getvalue())
 
+    def test_abbreviated_threshold_reaches_retrieval_eval(self):
+        cli = _load_cli()
+        seen: dict[str, float | None] = {}
+
+        def capture(args):
+            seen["threshold"] = args.threshold
+            return 0
+
+        with mock.patch("fleet_rag.retrieval_eval.run_from_namespace", capture):
+            rc = cli.main(["eval", "--offline", "--thresh", "0.5"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["threshold"], 0.5)
+        seen.clear()
+        with mock.patch("fleet_rag.retrieval_eval.run_from_namespace", capture):
+            rc = cli.main(["eval", "--offline"])
+        self.assertEqual(rc, 0)
+        self.assertIsNone(seen["threshold"])
+
     def test_recall_cli_offline_and_saved_compare(self):
         cli = _load_cli()
         with tempfile.TemporaryDirectory() as tmp:

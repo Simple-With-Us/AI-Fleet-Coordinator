@@ -371,10 +371,6 @@ def cmd_digest(a: argparse.Namespace) -> int:
     return 0
 
 
-def _threshold_was_set() -> bool:
-    return any(arg == "--threshold" or arg.startswith("--threshold=") for arg in _ARGV)
-
-
 def cmd_eval(a: argparse.Namespace) -> int:
     # Lazy on purpose: eval and retrieval_eval stay off the server mirror.  The release
     # allowlist follows only the imports recall reaches without a function-body import.
@@ -403,13 +399,15 @@ def cmd_eval(a: argparse.Namespace) -> int:
             public_fallback.require_direct_path("eval")
         from fleet_rag import retrieval_eval as rq
 
-        if not _threshold_was_set():
-            a.threshold = None
+        # None means the flag was absent, including abbreviated forms such as --thresh.
+        # retrieval_eval then applies its own 0.9 default.
         return rq.run_from_namespace(a)
 
     from fleet_rag import eval as ev
 
     public_fallback.require_direct_path("eval")
+    if a.threshold is None:
+        a.threshold = 0.6
     golden = a.golden or ev.GOLDEN
     # per_doc is not one of the A/B axes, so it is bound onto the search callable and applies to
     # every configuration; --no-rerank / --no-lessons are the axes and go through search_kwargs.
@@ -643,7 +641,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = sub.add_parser("eval", help="score a golden set: Recall@k and MRR")
     e.add_argument("--k", type=int, default=5)
-    e.add_argument("--threshold", type=float, default=0.6)
+    e.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="fail under this score. Weekly Recall@k defaults to 0.6; retrieval recall@10 defaults to 0.9",
+    )
     e.add_argument("--golden")
     e.add_argument(
         "--per-doc",
