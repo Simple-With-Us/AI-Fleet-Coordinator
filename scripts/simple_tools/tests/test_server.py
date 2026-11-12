@@ -990,6 +990,7 @@ class RoutineRunnerTests(unittest.TestCase):
             with self.subTest(auth=kw["auth"]):
                 result = self.runner.deliver(self.target(**kw), self.body, idempotency_key="w1")
                 self.assertTrue(result.accepted)
+                self.assertIsNone(result.response, "a default runner keeps no answer body")
                 got = self.routine.received[-1]
                 self.assertEqual(got.header(header), value)
                 self.assertEqual(got.body, self.body)
@@ -1087,6 +1088,7 @@ class LedgerAndSecrecyTests(ServerHarness):
             routine_extra=', header = "X-Signature-256", signature_prefix = "sha256="',
         )
         daemon = self.started()
+        self.assertFalse(daemon.routine_runner.keep_response, "the daemon never keeps an answer")
         self.routine.script = [401]
         dm = self.fake.add_direct_message(
             "Jay Wedgeworth", "deploy?", recipients=[self.gb], deliver=True
