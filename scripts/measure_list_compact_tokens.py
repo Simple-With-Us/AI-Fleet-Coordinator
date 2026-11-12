@@ -45,14 +45,27 @@ def linear_issues(n: int) -> dict:
 
 def notes_list(n: int) -> dict:
     return {
-        "notes": [{"title": f"[AFC, Agent] Note {i}", "id": f"x-coredata://{i}"} for i in range(1, n + 1)],
+        "notes": [
+            {"title": f"[AFC, Agent] Note {i}", "id": f"x-coredata://{i}"} for i in range(1, n + 1)
+        ],
         "total": n,
     }
 
 
 SAMPLES = [
-    ("zulip_read_topic (25 msgs)", zulip_messages(25), lambda d: [{"body": m["body"][: LP.COMPACT_BODY_LIMIT] + "..."} for m in d[: LP.COMPACT_DEFAULT_LIMIT]]),
-    ("linear_list_issues (30)", linear_issues(30), lambda d: LP.compact_linear_graphql(d, top_n=LP.COMPACT_DEFAULT_LIMIT)[0]),
+    (
+        "zulip_read_topic (25 msgs)",
+        zulip_messages(25),
+        lambda d: [
+            {"body": m["body"][: LP.COMPACT_BODY_LIMIT] + "..."}
+            for m in d[: LP.COMPACT_DEFAULT_LIMIT]
+        ],
+    ),
+    (
+        "linear_list_issues (30)",
+        linear_issues(30),
+        lambda d: LP.compact_linear_graphql(d, top_n=LP.COMPACT_DEFAULT_LIMIT)[0],
+    ),
     ("notes_list (100)", notes_list(100), lambda d: LP.compact_notes_list_result(d)),
 ]
 
@@ -69,10 +82,27 @@ def main() -> int:
         rows.append((label, full_t, compact_t, saved))
         total_full += full_t
         total_compact += compact_t
-    print(json.dumps({"samples": [{"label": r[0], "full_tokens": r[1], "compact_tokens": r[2], "saved_pct": round(r[3], 1)} for r in rows],
-                      "total_full_tokens": total_full,
-                      "total_compact_tokens": total_compact,
-                      "total_saved_pct": round(100.0 * (1.0 - total_compact / total_full), 1) if total_full else 0.0}, indent=2))
+    print(
+        json.dumps(
+            {
+                "samples": [
+                    {
+                        "label": r[0],
+                        "full_tokens": r[1],
+                        "compact_tokens": r[2],
+                        "saved_pct": round(r[3], 1),
+                    }
+                    for r in rows
+                ],
+                "total_full_tokens": total_full,
+                "total_compact_tokens": total_compact,
+                "total_saved_pct": round(100.0 * (1.0 - total_compact / total_full), 1)
+                if total_full
+                else 0.0,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

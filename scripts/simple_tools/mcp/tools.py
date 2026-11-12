@@ -989,7 +989,9 @@ class Tools:
         if not self.codex_thread_meta:
             self.posted_ids.add(message_id)
 
-    def _message_item(self, message: Mapping[str, Any], body_limit: int = BODY_LIMIT) -> dict[str, Any]:
+    def _message_item(
+        self, message: Mapping[str, Any], body_limit: int = BODY_LIMIT
+    ) -> dict[str, Any]:
         # MCP does not expose CLI sibling/mention attribution.  Computing it
         # would reread the full native ownership ledger for every shown item.
         j = message
@@ -1287,7 +1289,9 @@ class Tools:
             {"count": len(items), "max_ids": max_ids},
         )
 
-    def _zulip_message_read_limits(self, args: Mapping[str, Any], *, schema_default: int = 20) -> tuple[dict[str, Any], int, int]:
+    def _zulip_message_read_limits(
+        self, args: Mapping[str, Any], *, schema_default: int = 20
+    ) -> tuple[dict[str, Any], int, int]:
         work, full = LP.split_full_arg(dict(args))
         limit = LP.effective_limit(work, schema_default=schema_default, full=full)
         body_limit = LP.FULL_ZULIP_BODY_LIMIT if full else LP.COMPACT_BODY_LIMIT
@@ -1309,7 +1313,11 @@ class Tools:
         else:
             shown = [m for m in messages if not self._generic_is_self(m)]
         return self._messages_result(
-            "read_topic", [("channel", channel), ("topic", topic)], shown, next_since_id, body_limit=body_limit
+            "read_topic",
+            [("channel", channel), ("topic", topic)],
+            shown,
+            next_since_id,
+            body_limit=body_limit,
         )
 
     def _tool_zulip_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -1670,7 +1678,11 @@ class Tools:
             else [m for m in messages if not self.agent.sent_by_this_bot(m)]
         )
         return self._messages_result(
-            "dm_read", [("with", ",".join(str(i) for i in ids))], shown, next_since_id, body_limit=body_limit
+            "dm_read",
+            [("with", ",".join(str(i) for i in ids))],
+            shown,
+            next_since_id,
+            body_limit=body_limit,
         )
 
     def _check_dm_rule(self, people: Sequence[Mapping[str, Any]], args: Mapping[str, Any]) -> None:
@@ -1973,7 +1985,9 @@ class Tools:
         shown_args = [
             (k, work[k]) for k in ("query", "channel", "topic", "sender") if work.get(k) is not None
         ]
-        return self._messages_result("search", shown_args, shown, next_since_id, body_limit=body_limit)
+        return self._messages_result(
+            "search", shown_args, shown, next_since_id, body_limit=body_limit
+        )
 
     # ---- channels -------------------------------------------------------------------------
     def _tool_zulip_channels(self, args: Mapping[str, Any]) -> dict[str, Any]:

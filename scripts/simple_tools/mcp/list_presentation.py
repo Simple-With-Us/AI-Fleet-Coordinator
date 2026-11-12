@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
@@ -160,7 +159,9 @@ def compact_zulip_message_item(item: MutableMapping[str, Any], *, body_limit: in
             item["truncated"] = True
 
 
-def compact_notes_list_result(result: Mapping[str, Any], *, top_n: int = COMPACT_DEFAULT_LIMIT) -> dict[str, Any]:
+def compact_notes_list_result(
+    result: Mapping[str, Any], *, top_n: int = COMPACT_DEFAULT_LIMIT
+) -> dict[str, Any]:
     out = dict(result)
     notes = list(out.get("notes") or [])
     trimmed, cut = _slice_nodes_array(notes, top_n)
