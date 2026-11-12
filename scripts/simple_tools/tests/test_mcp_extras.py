@@ -260,6 +260,31 @@ class NotesToolTests(McpHarness):
         self.assertEqual(data["status"], "done")
         self.assertEqual(data["pin_skipped"], "Pin Coding Note Shortcut failed; note saved unpinned")
 
+    def test_direct_notes_status_returns_a_skipped_pin_and_omits_it_when_the_pin_ran(self):
+        """AFC-455:  the requester reads pin_skipped from notes_status.  A clean pin leaves the field off."""
+        reason = "Pin Coding Note Shortcut failed; note saved unpinned"
+        session = self.session()
+        run, a, b = self.direct(FakeRun(stderr="pin skipped: %s\n" % reason))
+        with a, b:
+            created = self.assert_structured(
+                "notes_create",
+                session.call("notes_create", {"title": "[AFC, Claude] unpinned", "markdown": "x", "request_id": "direct-skipped-01"}),
+            )
+            status = self.assert_structured("notes_status", session.call("notes_status", {"request_id": "direct-skipped-01"}))
+        self.assertEqual(created["pin_skipped"], reason)
+        self.assertEqual(status["pin_skipped"], reason)
+        self.assertEqual((status["status"], status["transport"]), ("done", "direct"))
+        run, a, b = self.direct()
+        with a, b:
+            clean = self.assert_structured(
+                "notes_create",
+                session.call("notes_create", {"title": "[AFC, Claude] pinned", "markdown": "x", "request_id": "direct-pinned-001"}),
+            )
+            quiet = self.assert_structured("notes_status", session.call("notes_status", {"request_id": "direct-pinned-001"}))
+        self.assertNotIn("pin_skipped", clean)
+        self.assertNotIn("pin_skipped", quiet)
+        self.assertEqual(len(run.calls), 1)
+
     def test_a_create_names_the_caller_and_every_other_write_takes_any_note(self):
         run, a, b = self.direct()
         session = self.session()
