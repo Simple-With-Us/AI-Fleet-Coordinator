@@ -564,15 +564,26 @@ def evict_oldest(OR: Any, db: str, keep: tuple[str, str], size: int = 0) -> int:
     return _close_records(OR, db, [oldest["record_id"]], "claude-letter-evict")
 
 
+def refused_text(OR: Any, limit: int = 0) -> str:
+    """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
+    limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
+    return "all %d Claude main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter" % limit
+
+
 def _with_room(
     OR: Any, db: str, keep: tuple[str, str], allocate: Callable[[], Any]
 ) -> tuple[Any, int]:
-    """Run one allocation;  when every letter of the space is live, close the least recently seen Claude chat that
-    holds a letter of that space and try once more.  A second LabelExhausted is the caller's to report."""
+    """Run one allocation.  When all 26 doubled pairs are live the Operator refuses the letter (owner, Nov 11 2026:
+    "ok just refuse actually is fine"), and the refusal is the caller's to report:  no live chat is closed to make
+    room.  Only a space other than the pairs (none is issued now) would still close the least recently seen chat that
+    holds a letter of it and try once more."""
     try:
         return allocate(), 0
     except OR.LabelExhausted as exc:
-        size = len(next(iter(OR.LETTER_SPACES[getattr(exc, "space", "single")])))
+        space = getattr(exc, "space", "double")
+        if space == "double" or space not in OR.LETTER_SPACES:
+            raise
+        size = len(next(iter(OR.LETTER_SPACES[space])))
         if not evict_oldest(OR, db, keep, size):
             raise
         return allocate(), 1
@@ -664,11 +675,7 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
             finally:
                 reg.close_db()
     except OR.LabelExhausted as exc:
-        space = getattr(exc, "space", LETTER_SPACE)
-        return {
-            "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[space]),
-            "swept": swept,
-        }
+        return {"error": refused_text(OR, getattr(exc, "limit", 0)), "swept": swept}
     out["swept"] = swept
     out["evicted"] = evicted
     if no_parent and out.get("outcome") in ("registered", "reopened"):
@@ -766,10 +773,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         params["parent_session_id"] = parent
     out = PL._call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
-        return {
-            "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
-            "swept": 0,
-        }
+        return {"error": refused_text(OR), "swept": 0}
     error = PL._api_error(out)
     if error is not None:
         return error
@@ -784,10 +788,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = PL._call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {
-                "error": "all %d Claude letters are in use" % len(OR.LETTER_SPACES[LETTER_SPACE]),
-                "swept": 0,
-            }
+            return {"error": refused_text(OR), "swept": 0}
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",

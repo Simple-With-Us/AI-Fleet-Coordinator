@@ -489,7 +489,8 @@ class RegistrySideTests(Base):
         self.assertEqual((code, out["closed"]), (0, True))
         self.assertTrue(self.registry(*self.reg_argv("touch", "s-0001"))[1]["retired"])
         back = self.register("s-0001", title="Back Again")
-        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", label, 2, label))
+        # its own pair back as the same generation:  a return is not a second issue of the pair
+        self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", label, 1, label))
         self.assertEqual(self.lookup("s-0001")["title"], "Back Again")
 
     # Two doubled pairs, and a second chat that held BB, so a freed pair can go to another chat:  a main chat takes the
@@ -597,16 +598,18 @@ class RegistrySideTests(Base):
             for i in range(3):
                 self.register("s-%04d" % i)
                 self.set_seen("s-%04d" % i, seen(2 - i))
-            self.set_seen("s-0001", seen(3))  # the oldest
-            held = self.lookup("s-0001")["label"]
-            out = self.register("s-0099", now=now)
-        self.assertEqual((out["evicted"], out["label"], out["generation"]), (1, held, 2))
-        self.assertEqual(self.lookup("s-0001")["state"], "closed")
+            self.set_seen("s-0001", seen(3))  # the least recently seen, an hour older but not stale
+            code, out = self.registry(*self.reg_argv("register", "s-0099"), now=now)
+        # Owner, Nov 11 2026:  "ok just refuse actually is fine".  The chat is refused and no live chat loses its pair.
+        self.assertEqual(code, 5)
+        self.assertIn("main-chat pairs (AA to ZZ) are live", out["error"])
+        for i in range(3):
+            self.assertEqual(self.lookup("s-%04d" % i)["state"], "active")
 
-    def test_full_letters_evict_the_least_recently_seen(self) -> None:
+    def test_full_letters_refuse_and_evict_no_one(self) -> None:
         self.fill_the_letters_and_ask_for_one_more()
 
-    def test_the_eviction_does_not_depend_on_the_calendar(self) -> None:
+    def test_the_refusal_does_not_depend_on_the_calendar(self) -> None:
         """The same scenario with the real clock years away from the fixture's: the test cannot go red with the date."""
         years_on = OR.datetime(2031, 6, 1, tzinfo=OR.UTC).timestamp()
         with mock.patch("time.time", return_value=years_on):
@@ -623,7 +626,7 @@ class RegistrySideTests(Base):
                 self.set_seen(sid, "2026-01-01T00:00:00.000Z")
             code, out = self.registry(*self.reg_argv("register", "s-0001", letter_pick="lowest"))
         self.assertEqual(code, 5)
-        self.assertIn("in use", out["error"])
+        self.assertIn("are live", out["error"])
         for sid in ("op-0001", "op-0002"):
             self.assertEqual(self.lookup(sid, "mac")["state"], "active")
 
