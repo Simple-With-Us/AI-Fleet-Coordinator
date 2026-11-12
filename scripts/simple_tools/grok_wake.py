@@ -85,9 +85,7 @@ def wake_text(wake: WR.Wake) -> str:
     )
 
 
-def router_platform(
-    env: Mapping[str, str], settings: Mapping[str, Any]
-) -> WR.Platform:
+def router_platform(env: Mapping[str, str], settings: Mapping[str, Any]) -> WR.Platform:
     """The server side.  Mac chats go over the one ssh command.  Any other host is refused."""
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
@@ -112,9 +110,7 @@ def _drive_path(env: Mapping[str, str]) -> Path:
 
 
 def _run(argv: list[str], timeout: float) -> tuple[int, str, str]:
-    proc = subprocess.run(
-        argv, capture_output=True, text=True, timeout=timeout, check=False
-    )
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     return proc.returncode, proc.stdout or "", proc.stderr or ""
 
 
