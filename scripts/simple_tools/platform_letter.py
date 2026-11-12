@@ -3511,8 +3511,7 @@ def _gone_for(
             continue
         gone = done.get("gone") or []
         if not apply:
-            for row in gone:
-                stdout.write("would report %s\n" % tag(row))
+            stdout.writelines("would report %s\n" % tag(row) for row in gone)
             stdout.write(
                 head + "%d gone  (dry run:  nothing sent;  --apply reports them now)\n" % len(gone)
             )

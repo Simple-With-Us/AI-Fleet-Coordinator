@@ -426,9 +426,15 @@ def sweep(
             # The DM's row is on disk before the DM is sent:  a run that dies between the send and the next write
             # finds "unknown" and never sends the same letter's DM twice.
             before = dict(state.get(sid) or {})
-            refusals = int(before.get("dm_refusals") or 0) if _same_letter(before, label, generation) else 0
+            refusals = (
+                int(before.get("dm_refusals") or 0)
+                if _same_letter(before, label, generation)
+                else 0
+            )
             pending = dict(before)
-            pending.update(bot=bot, label=label, generation=generation, dm="unknown", outcome="unknown", at=now)
+            pending.update(
+                bot=bot, label=label, generation=generation, dm="unknown", outcome="unknown", at=now
+            )
             state[sid] = pending
             write_state(env, state)
             dm = send_dm(bot, text, env, runner)
@@ -437,7 +443,9 @@ def sweep(
                 state[sid] = dict(pending, dm="sent", outcome="sent")
             elif dm == "refused":
                 # Nothing went out.  It is asked again on a later run, MAX_DM_REFUSALS times in all (`dm_already`).
-                state[sid] = dict(pending, dm="refused", outcome="refused", dm_refusals=refusals + 1)
+                state[sid] = dict(
+                    pending, dm="refused", outcome="refused", dm_refusals=refusals + 1
+                )
             elif dm == "not-started":
                 # It could not run, so nothing went out and nothing is remembered:  the next run tries.
                 if before:
@@ -451,7 +459,9 @@ def sweep(
         try:
             visit(agent, row)
         except Exception as exc:  # noqa: BLE001 - one agent's failure never stops the others
-            row["error"] = "failed (%s)" % type(exc).__name__  # the type only:  a message can carry a title
+            row["error"] = (
+                "failed (%s)" % type(exc).__name__
+            )  # the type only:  a message can carry a title
         rows.append(row)
     if not dry_run:
         if whole:
@@ -460,7 +470,9 @@ def sweep(
             # Every open agent counts, the stale ones too:  an agent past the window still holds its letter until the
             # registry frees it, so forgetting the DM now would tell its bot again if it woke before then.
             open_ids = {
-                a["session_id"] for a in found if isinstance(a, Mapping) and isinstance(a.get("session_id"), str)
+                a["session_id"]
+                for a in found
+                if isinstance(a, Mapping) and isinstance(a.get("session_id"), str)
             }
             for sid in [k for k in state if k not in open_ids]:
                 del state[sid]  # the agent is gone; its letter is the registry's to free
