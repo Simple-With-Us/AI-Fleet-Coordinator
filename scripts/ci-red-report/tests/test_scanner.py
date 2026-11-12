@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import scanner  # noqa: E402
-from fake_github import FixtureGitHub  # noqa: E402
+import scanner
+from fake_github import FixtureGitHub
 
 
 class ScannerTests(unittest.TestCase):

@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from typing import Any
 
 API_ROOT = "https://api.github.com"
@@ -76,7 +76,9 @@ class GitHubClient:
                 return
             page += 1
 
-    def _default_request(self, method: str, url: str, headers: dict[str, str]) -> tuple[bytes, dict[str, str]]:
+    def _default_request(
+        self, method: str, url: str, headers: dict[str, str]
+    ) -> tuple[bytes, dict[str, str]]:
         req = urllib.request.Request(url, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=60) as response:
@@ -127,7 +129,9 @@ class GitHubClient:
             except GitHubError as exc:
                 if exc.status in (403, 429) or (exc.status is not None and exc.status >= 500):
                     retry_after = getattr(exc, "retry_after", None)
-                    wait = float(retry_after) if retry_after is not None else min(60.0, 2.0**attempt)
+                    wait = (
+                        float(retry_after) if retry_after is not None else min(60.0, 2.0**attempt)
+                    )
                     if exc.status == 403:
                         self._secondary_backoff = max(wait, 2.0)
                     if attempt >= self._max_retries:

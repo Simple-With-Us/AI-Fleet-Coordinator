@@ -145,8 +145,12 @@ def scan_repo(
         latest_id = latest.get("id")
         if isinstance(latest_id, int):
             try:
-                jobs = client.get_json(f"{repo_path}/actions/runs/{latest_id}/jobs", params={"per_page": "100"})
-                job_name, step_name = github.pick_failing_job_step(jobs if isinstance(jobs, dict) else {})
+                jobs = client.get_json(
+                    f"{repo_path}/actions/runs/{latest_id}/jobs", params={"per_page": "100"}
+                )
+                job_name, step_name = github.pick_failing_job_step(
+                    jobs if isinstance(jobs, dict) else {}
+                )
             except github.GitHubError as exc:
                 errors.append(f"{owner}/{repo} run {latest_id}: cannot list jobs ({exc})")
         red_rows.append(

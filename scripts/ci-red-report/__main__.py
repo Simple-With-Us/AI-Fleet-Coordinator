@@ -28,9 +28,13 @@ def _token_from_env() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Report default-branch CI failure streaks across an org.")
+    parser = argparse.ArgumentParser(
+        description="Report default-branch CI failure streaks across an org."
+    )
     parser.add_argument("--org", default=DEFAULT_ORG, help=f"GitHub org (default: {DEFAULT_ORG})")
-    parser.add_argument("--repo", action="append", dest="repos", metavar="NAME", help="Limit to repo(s)")
+    parser.add_argument(
+        "--repo", action="append", dest="repos", metavar="NAME", help="Limit to repo(s)"
+    )
     parser.add_argument("--json-out", metavar="PATH", help="Write JSON report to PATH")
     parser.add_argument("--markdown-out", metavar="PATH", help="Write markdown summary to PATH")
     parser.add_argument(

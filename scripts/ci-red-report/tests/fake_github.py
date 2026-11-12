@@ -17,7 +17,9 @@ class FixtureGitHub(github.GitHubClient):
         super().__init__("ghs_fixture_token", request_fn=self._fixture_request)
         self.calls: list[str] = []
 
-    def _fixture_request(self, method: str, url: str, headers: dict[str, str]) -> tuple[bytes, dict[str, str]]:
+    def _fixture_request(
+        self, method: str, url: str, headers: dict[str, str]
+    ) -> tuple[bytes, dict[str, str]]:
         assert method == "GET"
         path = url.split("api.github.com", 1)[-1].split("?", 1)[0]
         self.calls.append(path)
