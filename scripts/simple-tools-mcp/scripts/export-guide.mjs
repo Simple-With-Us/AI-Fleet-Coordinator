@@ -13,10 +13,7 @@ export const GUIDE_MODULE = path.resolve(HERE, "../src/guide-text.js");
 
 export function guideModuleText() {
   const md = readFileSync(GUIDE_MD, "utf8");
-  // The bundle is one line, so a pre-commit scan re-reads the whole published
-  // guide whenever that line changes. The allowlist pragma is that scanner's
-  // escape for a value that was already in the guide.
-  return `// GENERATED from docs/protocols/simple-tools-guide.md by scripts/export-guide.mjs;  do not edit.\n// Regenerate with:  cd scripts/simple-tools-mcp && node scripts/export-guide.mjs\nexport const GUIDE_TEXT = ${JSON.stringify(md)}; // pragma: allowlist secret\n`;
+  return `// GENERATED from docs/protocols/simple-tools-guide.md by scripts/export-guide.mjs;  do not edit.\n// Regenerate with:  cd scripts/simple-tools-mcp && node scripts/export-guide.mjs\nexport const GUIDE_TEXT = ${JSON.stringify(md)};\n`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
