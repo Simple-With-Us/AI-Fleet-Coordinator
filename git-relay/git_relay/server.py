@@ -10,6 +10,8 @@ Endpoints (all JSON in, JSON out):
     POST /v1/merge_pr          {repo, number, method?}              (seat's App)
     POST /v1/workflow_dispatch {repo, workflow, ref, inputs?}       (seat's App)
     POST /v1/resolve_thread    {repo, thread_id}                    (seat's App)
+    POST /v1/create_repo       {repo, visibility?, description?,    (seat's App,
+                                license_template?}                    namespace token)
 
 Run it as `git-relay serve` (or `python3 -m git_relay.server`).
 
@@ -137,6 +139,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
     if action == git_read.ACTION:
         raise ValueError("git_read has no JSON call;  it is served on the /git/ route")
+    if action == "create_repo":
+        return _validate_create_repo(args)
     specs: dict = {"repo": ("text", True)}
     if action == "open_pr":
         specs.update(
@@ -245,6 +249,38 @@ def _validate_args(action: str, args: dict) -> dict:
         ):
             raise ValueError("invalid dispatch intent or expected source")
     GitHubClient._check_repo(canonical["repo"])
+    return canonical
+
+
+def _validate_create_repo(args: dict) -> dict:
+    """Shape for create_repo.  Owner allowlist, name, and private-by-default visibility."""
+    extra = sorted(set(args) - {"repo", "visibility", "description", "license_template"})
+    if extra:
+        raise ValueError(f"create_repo: unexpected fields ({len(extra)})")
+    repo = _text(args.get("repo"), "repo")
+    if repo.count("/") != 1:
+        raise ValueError("invalid repository")
+    owner, name = repo.split("/", 1)
+    account = SeatPolicy.create_repo_account(owner)
+    if account is None:
+        raise ValueError("repository owner is not allowed")
+    if not SeatPolicy.valid_create_repo_name(name):
+        raise ValueError("invalid repository")
+    canonical = {"repo": f"{account[0]}/{name}", "visibility": "private"}
+    if "visibility" in args:
+        visibility = args.get("visibility")
+        if visibility not in ("private", "public"):
+            raise ValueError("visibility must be private or public")
+        canonical["visibility"] = visibility
+    if args.get("description") is not None:
+        description = _clean_text(args.get("description"), "description")
+        if len(description) > 350:
+            raise ValueError("description exceeds the 350 character bound")
+        canonical["description"] = description
+    if args.get("license_template") is not None:
+        if args.get("license_template") != "apache-2.0":
+            raise ValueError("license_template must be apache-2.0")
+        canonical["license_template"] = "apache-2.0"
     return canonical
 
 
@@ -437,6 +473,12 @@ class Relay:
                 denial = self.policy.authorize(seat, action, canonical["repo"])
                 if denial:
                     raise PolicyDenied(denial)
+                if (
+                    action == "create_repo"
+                    and canonical.get("visibility") == "public"
+                    and not self.policy.public_repo_allowed(seat)
+                ):
+                    raise PolicyDenied("action 'create_repo_public' not allowed for this seat")
             except PolicyDenied as exc:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
@@ -661,7 +703,14 @@ class Relay:
                 )
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
-            if action in SeatPolicy.WORKFLOW_ACTIONS:
+            if action == "create_repo":
+                # The request description is never an audit field.  Neither is a token.
+                detail = {
+                    field: result[field]
+                    for field in ("repo", "visibility", "result", "id")
+                    if field in result
+                }
+            elif action in SeatPolicy.WORKFLOW_ACTIONS:
                 detail = _workflow_audit_detail(canonical, result)
             else:
                 detail = {**canonical, **result}
@@ -954,6 +1003,35 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
             "app_slug": app_slug,
             "expires_in_seconds": max(0, int(expiry - time.time())),
         }
+    if action == "create_repo":
+        # Not the seat mint ceiling.  organization_administration and administration
+        # writes stay rejected by token_for; this path mints the fixed pair and
+        # revokes it before returning.
+        if app_slug != seat:
+            raise PolicyDenied("own App required")
+        owner, _name = repo.split("/", 1)
+        account = SeatPolicy.create_repo_account(owner)
+        if account is None:
+            raise ValueError("repository owner is not allowed")
+        token = None
+        try:
+            token = self.app_minter.token_for_namespace(app_slug, account[0], account[1])
+            try:
+                return self.client.create_repo(
+                    repo,
+                    args["visibility"],
+                    description=args.get("description"),
+                    license_template=args.get("license_template"),
+                    bearer=token,
+                    kind=account[1],
+                )
+            except RelayGitHubError as exc:
+                if exc.code == "create_repo_pre_read":
+                    raise PreReadUnavailable() from None
+                raise
+        finally:
+            if token is not None:
+                self.app_minter.revoke_installation_token(token)
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
     if action == "workflow_dispatch" and args.get("intent_id"):
         required["contents"] = "read"
