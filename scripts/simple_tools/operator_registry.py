@@ -1527,7 +1527,8 @@ def _session_row_for_update(
 # Each session may carry `issues`:  at most MAX_ISSUES entries {"id": "AFC-694", "seen_at":
 # "<ISO 8601 UTC>"}, newest first, kept in the session_issues side table.  The wake router
 # reads them to link a wake to the chat that works on its issue.  The session-letter hooks
-# (claude_letter, platform_letter) find the ids and send the whole list through `update`.
+# (platform_letter, the one letter client for every platform) find the ids and send the whole list through
+# `update`.
 
 #: The fleet's Linear team keys, copied from TEAM_KEYS in scripts/linear-board/board (the board's
 #: routing table, which the skill and MCP copies are already pinned to).  A literal, because the

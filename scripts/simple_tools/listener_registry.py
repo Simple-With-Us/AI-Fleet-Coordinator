@@ -53,7 +53,7 @@ SessionRegistry.reopen (through operator_reopen below, so a pair letter stays a 
 held -> SessionRegistry.letters_held, pending-outbox -> pending_outbox, mark-exported ->
 mark_exported, report-gone -> the named rows closed under one guarded transaction.  `reopen` and `held`
 have no CLI verb on this tree;  their answers follow the shapes the existing callers already
-use (reopen_closed in mm_session_letter.py, and a plain letters list for held).
+use (the letter client's own reopen, and a plain letters list for held).
 
 One writer (AFC-721).  The Eavesdropper is the only process that writes the registry, and
 every write it makes goes through this module:  the API ops above, the Operator's own
