@@ -50,12 +50,17 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+# Probe path for the server unit drop-in.  Tests patch this so a real
+# /etc/fleet/rag-nightly.env on the developer host cannot leak into setup_report.
+NIGHTLY_UNIT_ENV = pathlib.Path("/etc/fleet/rag-nightly.env")
+
+
 def nightly_applies(env: dict[str, str]) -> bool:
     if (env.get("FLEET_RAG_NIGHTLY") or "").strip() == "1":
         return True
     if (env.get("FLEET_RAG_NIGHTLY_SUMMARY") or "").strip():
         return True
-    if pathlib.Path("/etc/fleet/rag-nightly.env").is_file():
+    if NIGHTLY_UNIT_ENV.is_file():
         return True
     # Import here so a minimal `python3 -I mirror.py` copy is unaffected.
     from .nightly_job import summary_path

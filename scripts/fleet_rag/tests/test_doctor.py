@@ -1161,8 +1161,16 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
             "TEI_URL": "http://t",
             "TEI_API_KEY": "t",
         }
+        # Isolate the /etc/fleet/rag-nightly.env probe from the host running the tests.
+        self._nightly_env = mock.patch.object(
+            doctor_setup,
+            "NIGHTLY_UNIT_ENV",
+            self.root / "no-such-rag-nightly.env",
+        )
+        self._nightly_env.start()
 
     def tearDown(self):
+        self._nightly_env.stop()
         self.tmp.cleanup()
 
     def test_setup_all_green_skips_optional_rows(self):
