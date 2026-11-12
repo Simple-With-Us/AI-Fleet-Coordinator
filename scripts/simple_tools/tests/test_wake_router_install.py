@@ -93,7 +93,12 @@ NAMES = ["WAKE_ROUTER_DELIVERY_ENABLED", "WAKE_ROUTER_DELIVERY_SEATS", "WAKE_ROU
 BY_NAME = {name: Spec("/wake-router", name in SECRETS) for name in NAMES}
 '''
 SYSTEMCTL_STUB = """#!/bin/sh
-echo "systemctl $*" >> "$(dirname "$0")/../systemctl.log"
+here="$(dirname "$0")/.."
+echo "systemctl $*" >> "$here/systemctl.log"
+# Like the real one:  without XDG_RUNTIME_DIR the user manager cannot be reached.
+if [ -z "$XDG_RUNTIME_DIR" ]; then echo "Failed to connect to user scope bus" >&2; exit 1; fi
+echo "$XDG_RUNTIME_DIR" > "$here/xdg.seen"
+if [ -f "$here/fail-$2" ]; then exit 1; fi
 if [ "$2" = "is-active" ]; then
   if [ -f "$(dirname "$0")/../active-$3" ]; then echo active; exit 0; fi
   echo inactive; exit 3
@@ -318,7 +323,8 @@ class InstallerTest(unittest.TestCase):
         log = self.fx.systemctl_log()
         self.assertIn("systemctl --user restart afc-wake-router.service", log)
         self.assertNotIn("restart afc-wake-tls.service", log)
-        self.assertEqual(len(list((self.fx.base / "releases").iterdir())), 1)
+        # The new release and the one the router ran before the restart;  nothing older.
+        self.assertEqual(len(list((self.fx.base / "releases").iterdir())), 2)
 
     def test_foreign_unit_is_never_overwritten(self) -> None:
         self.fx.write(self.fx.units / "afc-wake-router.service", "[Unit]\n", 0o644)
@@ -345,6 +351,47 @@ class InstallerTest(unittest.TestCase):
             self.assertTrue(path.exists(), path)
         self.assertIn("systemctl --user disable --now afc-wake-router.service", self.fx.systemctl_log())
 
+    def test_systemctl_gets_the_user_runtime_dir(self) -> None:
+        result = self.fx.install()  # the test env carries no XDG_RUNTIME_DIR
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.fx.root / "xdg.seen").read_text().strip(), "/run/user/%d" % os.getuid())
+
+    def test_uninstall_keeps_everything_when_stopping_fails(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        (self.fx.root / "fail-disable").write_text("")
+        result = self.fx.install("--uninstall", tls=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("nothing was removed", result.stdout)
+        for path in (self.fx.units / "afc-wake-router.service", self.fx.units / "afc-wake-tls.service",
+                     self.fx.env_file, self.fx.base / "current", self.fx.tls / "key.pem"):
+            self.assertTrue(path.exists(), path)
+        self.assertFalse(self.fx.staged.exists())
+
+    def test_uninstall_keeps_everything_while_a_unit_still_runs(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        (self.fx.root / "active-afc-wake-tls.service").write_text("")
+        result = self.fx.install("--uninstall", tls=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue((self.fx.units / "afc-wake-router.service").exists())
+        self.assertTrue(self.fx.env_file.exists())
+
+    def test_rerun_keeps_the_release_a_running_router_uses(self) -> None:
+        self.assertEqual(self.fx.install().returncode, 0)
+        first = os.readlink(self.fx.base / "current")
+        sentinel = self.fx.base / first / "scripts" / "sentinel"
+        sentinel.write_text("")
+        self.assertEqual(self.fx.install(tls=False).returncode, 0)  # the same release:  left alone
+        self.assertTrue(sentinel.exists())
+        (self.fx.src / "scripts" / "next.py").write_text("")
+        git(self.fx.src, "add", "-A")
+        git(self.fx.src, "commit", "-q", "-m", "next")
+        git(self.fx.src, "push", "-q", "origin", "HEAD:main")
+        result = self.fx.install(tls=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(os.readlink(self.fx.base / "current"), first)
+        self.assertTrue(sentinel.exists())  # the previous release stays until the next install
+        self.assertIn("keeps release", result.stdout)
+
     def test_help_prints_only_the_header(self) -> None:
         for script in (INSTALL, CANARY):
             out = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True).stdout
@@ -363,7 +410,7 @@ class InstallerRulesTest(unittest.TestCase):
     def test_ports_are_plain_decimal_and_never_reserved(self) -> None:
         check = self.m["check_port"]
         self.assertEqual(check("8794", "--port"), (8794, ""))
-        for bad in ("08794", "0x2262", "+8794", "8794 ", "8793", "80", "65536", "", "８７９４"):
+        for bad in ("08794", "0x2262", "+8794", "8794 ", "8793", "8791", "80", "65536", "", "８７９４"):
             with self.subTest(bad=bad):
                 self.assertIsNone(check(bad, "--port")[0])
 
@@ -448,7 +495,7 @@ class FakeRouter:
 
 def receipt(wake_id, **fields):
     record = {"wake_id": wake_id, "receipt_id": "r1", "status": "delivered", "picked_letter": "QQ",
-              "delivered": True, "seat": SEAT}
+              "delivered": True, "seat": SEAT, "session_id": "0123abcd" * 4, "picked_generation": 2}
     record.update(fields)
     return record
 
@@ -520,6 +567,12 @@ class CanaryTest(unittest.TestCase):
             "missing wake id": ([(202, {"receipt_id": "r1", "status": "accepted"})], [], 1),
             "other wake id": ([(202, {"wake_id": "w-9", "receipt_id": "r1"})], [], 1),
             "refused": ([(401, {"error": "bad bearer"})], [], 1),
+            "dead with no pick": ([accept], [(200, receipt("w-1", status="dead", delivered=False,
+                                                           picked_letter="", session_id="",
+                                                           picked_generation=0))], 4),
+            "no session": ([accept], [(200, receipt("w-1", session_id=""))], 1),
+            "no generation": ([accept], [(200, receipt("w-1", picked_generation=0))], 1),
+            "reused wake id": ([(200, receipt("w-1"))], [], 1),
         }
         for name, (post, receipts, code) in cases.items():
             with self.subTest(name=name):
@@ -542,6 +595,15 @@ class CanaryTest(unittest.TestCase):
                 result = self.run_canary(router, "--test")
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 self.assertTrue(json.loads(router.bodies[1]).get("test"))
+
+    def test_session_prefix_must_match(self) -> None:
+        accept = (202, {"wake_id": "w-1", "receipt_id": "r1", "status": "accepted"})
+        for prefix, code in (("0123abcd", 0), ("ffffffff", 6)):
+            with self.subTest(prefix=prefix):
+                router = FakeRouter(self, self.healthy({
+                    "/wake/" + SEAT: [accept], "/receipt/%s/w-1" % SEAT: [(200, receipt("w-1"))]}))
+                result = self.run_canary(router, "--session", prefix)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
 
     def test_redirect_is_never_followed(self) -> None:
         other = FakeRouter(self, {})

@@ -24,7 +24,10 @@
 #   --url URL          the router, plain http on loopback only (default http://127.0.0.1:8794)
 #   --wait SECONDS     how long to follow the receipt (default 1100);  0 does not follow
 #   --poll-seconds S   the pause between receipt reads (default 5, from 0.05 to 60)
-#   --wake-id ID       use this id instead of a new canary-<utc>-<hex> one
+#   --wake-id ID       use this id instead of a new canary-<utc>-<hex> one (it must be new:  an id
+#                      the router already finished is refused, never reported as proven)
+#   --session PREFIX   also require the picked chat's session id to start with PREFIX (8 or more
+#                      hex characters)
 #   --topic T, --channel C   carried as metadata
 #
 # The bearer is WAKE_ROUTER_KEY, read in this process through fleet_knobs from the installed
@@ -33,7 +36,7 @@
 # used.
 #
 # Exit:  0 proven (a test answer, or a delivered receipt with the same wake_id and receipt_id
-# that picked --letter);  3 held (delivery is off);  4 dead, or delivered is false or null;
+# that picked --letter, with a session id and a generation, and --session when given);  3 held (delivery is off);  4 dead, or delivered is false or null;
 # 5 no final receipt in --wait;  6 another letter was picked;  1 a health, transport or router
 # error, or an answer for another wake;  2 bad arguments.
 set -euo pipefail
@@ -100,6 +103,7 @@ def parse_args(argv):
     parser.add_argument("--wait", default="1100")
     parser.add_argument("--poll-seconds", default="5")
     parser.add_argument("--wake-id", default="")
+    parser.add_argument("--session", default="")
     parser.add_argument("--topic", default="AFC-694 Operator cross-platform coordination")
     parser.add_argument("--channel", default="Work-In-Progress")
     try:
@@ -129,6 +133,9 @@ def parse_args(argv):
         raise Fail("--poll-seconds must be between 0.05 and 60", 2)
     if args.wake_id and not WAKE_ID_RE.fullmatch(args.wake_id):
         raise Fail("--wake-id is malformed", 2)
+    if args.session and not re.fullmatch(r"(sess_)?[0-9a-f]{8,64}", args.session):
+        raise Fail("--session must be 8 or more lower-case hex characters of a session id", 2)
+    args.session = args.session[5:] if args.session.startswith("sess_") else args.session
     args.host, args.port = check_url(args.url)
     return args
 
@@ -238,7 +245,7 @@ def request(args, method, path, key=None, body=None):
 
 
 def summary(record):
-    keys = ("status", "picked", "picked_letter", "picked_generation", "session_id", "reason",
+    keys = ("status", "picked", "picked_letter", "picked_generation", "session_id", "host", "reason",
             "delivered", "route", "ack", "code", "attempts", "receipt_id", "wake_id")
     return {k: record.get(k) for k in keys if k in record}
 
@@ -258,11 +265,21 @@ def same_wake(record, wake_id, receipt_id):
     return rid
 
 
-def check_letter(record, letter):
+def check_target(record, args):
+    """The pick must be the named letter, in a named chat at a known generation."""
     picked = record.get("picked_letter")
-    if picked != letter:
+    if picked != args.letter:
         show("pick", summary(record))
-        raise Fail("the router picked letter %r, not %s" % (picked, letter), 6)
+        raise Fail("the router picked letter %r, not %s" % (picked, args.letter), 6)
+    session = record.get("session_id")
+    generation = record.get("picked_generation")
+    if not isinstance(session, str) or not session:
+        raise Fail("the pick names no session_id")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise Fail("the pick names no picked_generation")
+    bare = session[5:] if session.startswith("sess_") else session
+    if args.session and not bare.startswith(args.session):
+        raise Fail("the router picked session %s..., not %s..." % (bare[:8], args.session[:8]), 6)
 
 
 def main(argv, environ, uid):
@@ -315,10 +332,14 @@ def main(argv, environ, uid):
                 raise Fail("the router did not answer as a test")
             if answer.get("delivered") is not False:
                 raise Fail("a test answer must say delivered: false")
-            check_letter(answer, args.letter)
+            check_target(answer, args)
             show("pick", summary(answer))
             print("proven: test pick of %s for %s" % (args.letter, wake_id))
             return 0
+        if status != 202 or answer.get("status") != "accepted":
+            show("answer", summary(answer))
+            raise Fail("the router did not accept a new wake (the id %s was already used?);  "
+                       "nothing was proven" % wake_id)
         show("accepted", {"http": status, **answer})
         record = answer
     else:
@@ -345,10 +366,10 @@ def main(argv, environ, uid):
     if record["status"] == "held":
         print("held: delivery is off for %s;  nothing was delivered" % args.seat)
         return 3
-    check_letter(record, args.letter)
     if record["status"] == "dead" or record.get("delivered") is not True:
         print("not proven: status %s, delivered %s" % (record["status"], json.dumps(record.get("delivered"))))
         return 4
+    check_target(record, args)
     print("proven: %s delivered to %s, receipt %s;  read the same wake id in the woken chat"
           % (wake_id, args.letter, receipt_id))
     return 0

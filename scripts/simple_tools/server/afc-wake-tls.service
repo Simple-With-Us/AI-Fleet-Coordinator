@@ -18,7 +18,7 @@ After=afc-wake-router.service
 
 [Service]
 Type=simple
-ExecStart=@SOCAT@ OPENSSL-LISTEN:@FRONT_PORT@,bind=@TAILNET_ADDR@,reuseaddr,fork,cert=%h/.local/state/afc-wake-router/tls/cert.pem,key=%h/.local/state/afc-wake-router/tls/key.pem,verify=0 TCP:@ROUTER_ADDR@:@ROUTER_PORT@
+ExecStart=@SOCAT@ OPENSSL-LISTEN:@FRONT_PORT@,bind=@TAILNET_ADDR@,reuseaddr,fork,max-children=32,openssl-min-proto-version=TLS1.2,cert=%h/.local/state/afc-wake-router/tls/cert.pem,key=%h/.local/state/afc-wake-router/tls/key.pem,verify=0 TCP:@ROUTER_ADDR@:@ROUTER_PORT@
 Restart=always
 RestartSec=10
 Nice=5

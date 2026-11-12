@@ -100,7 +100,7 @@ REPORTED = (
     "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
 )
 MAC_SSH = "mac-wake"
-RESERVED_PORTS = frozenset({8793})  # zc-wake-tls.service
+RESERVED_PORTS = frozenset({8791, 8793})  # in use by other services;  8793 is zc-wake-tls.service
 LOOPBACK_ALLOWED = frozenset({"127.0.0.1"})
 TAILNET = ipaddress.ip_network((0x64400000, 10))  # Tailscale's CGNAT range, the /10 at 100.64
 PORT_RE = re.compile(r"[1-9][0-9]{3,4}")
@@ -190,7 +190,7 @@ def check_port(text, label):
     if not 1025 <= port <= 65535:
         return None, "%s must be between 1025 and 65535" % label
     if port in RESERVED_PORTS:
-        return None, "%s %d belongs to zc-wake-tls.service" % (label, port)
+        return None, "%s %d is reserved for another service (8793 is zc-wake-tls.service)" % (label, port)
     return port, ""
 
 
@@ -284,9 +284,18 @@ def ours(path):
 
 
 class Host:
-    def __init__(self, path_env, home):
+    """Runs tools with a small, explicit environment:  PATH, HOME, LANG, and what
+    `systemctl --user` needs to reach the user manager (XDG_RUNTIME_DIR, and the session bus
+    address when the caller has one).  Without XDG_RUNTIME_DIR it fails with "Failed to connect to
+    user scope bus"."""
+
+    def __init__(self, path_env, home, runtime_dir, bus=""):
         self.path_env = path_env
         self.home = str(home)
+        self.base_env = {"PATH": path_env, "HOME": self.home, "LANG": "C.UTF-8",
+                         "XDG_RUNTIME_DIR": runtime_dir}
+        if bus:
+            self.base_env["DBUS_SESSION_BUS_ADDRESS"] = bus
 
     def which(self, tool):
         return shutil.which(tool, path=self.path_env)
@@ -300,7 +309,7 @@ class Host:
             input=stdin,
             capture_output=True,
             text=not binary,
-            env=env if env is not None else {"PATH": self.path_env, "HOME": self.home, "LANG": "C.UTF-8"},
+            env=env if env is not None else dict(self.base_env),
             timeout=300,
         )
         if check and result.returncode != 0:
@@ -429,7 +438,7 @@ def atomic_write(path, text, mode):
         raise
 
 
-def install(args, plan, host, home, etc, uid, here):
+def install(args, plan, host, home, etc, uid, here, interpreter):
     user = pwd.getpwuid(uid).pw_name
     unit_dir = home / ".config" / "systemd" / "user"
     env_path = home / ".config" / "afc-wake-router" / "env"
@@ -471,6 +480,11 @@ def install(args, plan, host, home, etc, uid, here):
     socat = host.which("socat") or ""
     if not socat:
         plan.refuse("socat is not installed")
+    # The knob check runs the same interpreter the router's unit runs (/usr/bin/python3), so a
+    # check that passes here cannot pass on a different Python than the router will use.
+    code, out, _err = host.run([interpreter, "-I", "-c", "import sys; print(sys.version_info >= (3, 11))"])
+    if code != 0 or out.strip() != "True":
+        plan.refuse("%s must exist and be Python 3.11 or newer (the router's unit runs it)" % interpreter)
 
     # The token:  already installed, or staged and about to move.  Never both, never neither.
     token, installed_problem = read_token_file(env_path, uid, allow_bare=False)
@@ -522,7 +536,7 @@ def install(args, plan, host, home, etc, uid, here):
             except (OSError, ValueError) as exc:
                 plan.refuse("cannot render the units from origin/main:  %s" % exc)
             if token:
-                check_knobs(host, sys.executable, scripts, token, plan, args.start)
+                check_knobs(host, interpreter, scripts, token, plan, args.start)
             else:
                 say("knobs: not checked (no usable token)")
         say("release: origin/main %s" % (sha or "unknown"))
@@ -541,23 +555,32 @@ def install(args, plan, host, home, etc, uid, here):
         releases = base / "releases"
         releases.mkdir(parents=True, exist_ok=True)
         os.chmod(str(base), 0o700)
+        # A release folder is never rebuilt or deleted while it may be running:  the router resolves
+        # its code under releases/<sha> at start and imports lazily from there, so the release
+        # `current` named before this run is kept until the next install, and a release that is
+        # already here (the same commit) is left as it is.
         target = releases / sha
-        if target.exists():
-            shutil.rmtree(target)
-        fresh = releases / (".new-" + secrets.token_hex(4))
-        fresh.mkdir()
-        shutil.move(str(scripts), str(fresh / "scripts"))
-        os.replace(str(fresh), str(target))
+        if not (target / "scripts" / "simple-chat").is_file():
+            if target.exists():
+                shutil.rmtree(target)
+            fresh = releases / (".new-" + secrets.token_hex(4))
+            fresh.mkdir()
+            shutil.move(str(scripts), str(fresh / "scripts"))
+            os.replace(str(fresh), str(target))
         current = base / "current"
         before = os.readlink(current) if current.is_symlink() else ""
         link = base / (".current-" + secrets.token_hex(4))
         os.symlink(os.path.join("releases", sha), str(link))
         os.replace(str(link), str(current))
         release_changed = before != os.path.join("releases", sha)
+        keep = {sha, os.path.basename(before)}
         for old in releases.iterdir():
-            if old.name != sha:
+            if old.name not in keep:
                 shutil.rmtree(old) if old.is_dir() and not old.is_symlink() else old.unlink()
         say("installed release %s" % sha[:12])
+        if release_changed and before and not args.start:
+            say("a running router keeps release %s until it restarts;  that release is kept" %
+                os.path.basename(before)[:12])
 
         if installed_problem == "missing":
             env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -641,12 +664,24 @@ def uninstall(args, plan, host, home, uid):
         for action in actions:
             say("dry run:  would " + action)
         return 0
+    # Stop and disable first, and prove each unit is down, before anything is removed:  a failure
+    # here leaves every file and the token in place, so the install can still be recovered.
     for unit in remove_units:
-        host.systemctl("disable", "--now", unit)
+        code, _out, err = host.systemctl("disable", "--now", unit)
+        if code != 0:
+            say("systemctl --user disable --now %s failed (%d);  nothing was removed" % (unit, code))
+            return 1
+        state = host.systemctl("is-active", unit)[1].strip()
+        if state in ("active", "activating", "deactivating", "reloading"):
+            say("%s is still %s;  nothing was removed" % (unit, state))
+            return 1
+    for unit in remove_units:
         (unit_dir / unit).unlink()
         say("removed %s" % unit)
-    if remove_units:
-        host.systemctl("daemon-reload")
+    if remove_units and host.systemctl("daemon-reload")[0] != 0:
+        say("systemctl --user daemon-reload failed after the unit files were removed;  the token, "
+            "release and certificate are kept:  run daemon-reload, then --uninstall again")
+        return 1
     if env_path.exists():
         staged.parent.mkdir(parents=True, exist_ok=True)
         os.replace(str(env_path), str(staged))
@@ -683,12 +718,15 @@ def main(argv, environ, uid):
     path_env = environ.get("PATH", "/usr/bin:/bin")
     if test_root:
         path_env = os.path.join(test_root, "bin") + os.pathsep + path_env
-    host = Host(path_env, home)
+    runtime_dir = environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % uid
+    host = Host(path_env, home, runtime_dir, environ.get("DBUS_SESSION_BUS_ADDRESS", ""))
     if args.uninstall:
         return uninstall(args, plan, host, home, uid)
     if host.which("systemctl") is None:
         plan.refuse("systemctl is not available")
-    return install(args, plan, host, home, etc, uid, environ.get("WAKE_ROUTER_INSTALLER_HERE", "."))
+    # The router's unit runs /usr/bin/python3;  offline tests use the interpreter running them.
+    interpreter = sys.executable if test_root else "/usr/bin/python3"
+    return install(args, plan, host, home, etc, uid, environ.get("WAKE_ROUTER_INSTALLER_HERE", "."), interpreter)
 
 
 if __name__ == "__main__":
