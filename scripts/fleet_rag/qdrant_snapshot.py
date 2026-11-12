@@ -143,7 +143,9 @@ def maybe_snapshot_before_prune(
         msg = "prune aborted: pre-prune Qdrant snapshot failed: no Qdrant client"
         report["errors"].append(msg)
         report["ok"] = False
-        report.setdefault("guard_trips", []).append({"source": "qdrant", "reason": "snapshot-failed"})
+        report.setdefault("guard_trips", []).append(
+            {"source": "qdrant", "reason": "snapshot-failed"}
+        )
         log(f"[prune] ERROR {msg}")
         return False
     try:
@@ -152,7 +154,9 @@ def maybe_snapshot_before_prune(
         msg = f"prune aborted: pre-prune Qdrant snapshot failed: {exc}"
         report["errors"].append(msg)
         report["ok"] = False
-        report.setdefault("guard_trips", []).append({"source": "qdrant", "reason": "snapshot-failed"})
+        report.setdefault("guard_trips", []).append(
+            {"source": "qdrant", "reason": "snapshot-failed"}
+        )
         log(f"[prune] ERROR {msg}")
         return False
     report["qdrant_prune_snapshot"] = meta
