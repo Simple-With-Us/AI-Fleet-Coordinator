@@ -237,9 +237,7 @@ class OpenPrReadBack(unittest.TestCase):
         # the answer is the explicit outcome unknown with readback_status 0.
         for delay in (limit - 0.5, limit, 29, 100):
             with self.subTest(delay=delay):
-                responses, calls, rows = self.run_open(
-                    READY_RECEIPT, create_delay=delay, replays=1
-                )
+                responses, calls, rows = self.run_open(READY_RECEIPT, create_delay=delay, replays=1)
                 self.assert_unknown(responses[0], "open_pr_readback_skipped")
                 self.assertEqual(responses[0][1]["readback_status"], 0)
                 self.assert_unknown_row(rows[0], "open_pr_readback_skipped")
@@ -600,9 +598,7 @@ class OpenPrReadBack(unittest.TestCase):
         self.assertNotIn("readback_retry_after_seconds", error)
         # Without the fields the answer is the plain unknown outcome, as before.
         error = self.call_mcp(502, {"outcome": "unknown"})
-        self.assertEqual(
-            set(error), {"code", "message", "retryable", "http_status"}
-        )
+        self.assertEqual(set(error), {"code", "message", "retryable", "http_status"})
         # Values that are not a short code or a bounded number are dropped, never echoed.
         error = self.call_mcp(
             502,
