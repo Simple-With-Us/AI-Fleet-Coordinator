@@ -972,6 +972,28 @@ class HookTests(Base):
         self.assertIn("10 minutes", out["additionalContext"])
         self.assertEqual(len(down.calls), 1)
 
+    def test_a_chat_whose_host_exports_another_seat_carries_on_with_no_letter(self) -> None:
+        # AFC-772:  the Mac exported AGENT_SEAT=ZC, the hook takes its seat from it, and the registry refuses a claude
+        # chat under ZCode's seat.  The chat reads why, takes no letter, and is never stopped.
+        def no_ssh(*a, **k):
+            raise AssertionError("the Mac never uses ssh")
+
+        env = self.env(AGENT_SEAT="ZC")
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                        env=env, runner=no_ssh, platform="darwin")
+        self.assertIn("No Operator letter yet (SeatPlatformMismatch: platform claude registers under seat CLAUDE, "
+                      "not ZC)", out["additionalContext"])
+        self.assertIn("10 minutes", out["additionalContext"])
+        self.assertNotIn("sessionTitle", out)
+        self.assertIsNone(self.lookup("m-0001", "mac"))
+        with open(os.path.join(self.state, "ZC", "letters", "m-0001.json")) as fh:
+            self.assertEqual(json.load(fh)["state"], "failed")
+        # The same chat once its host names no other seat:  the platform's own, and a letter.
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "m-0001", "source": "startup"},
+                        env=self.env(), runner=no_ssh, platform="darwin")
+        self.assertEqual(out["sessionTitle"], "AA: New Chat")
+        self.assertEqual(self.lookup("m-0001", "mac")["seat"], "CLAUDE")
+
     def test_a_named_chat_keeps_its_words(self) -> None:
         out = self.start("s-0001", source="resume", session_title="Fleet PR Sweep")
         self.assertEqual(out["sessionTitle"], "AA: Fleet PR Sweep")
@@ -2530,7 +2552,10 @@ class ArchiveSweepTests(Base):
         self.assertEqual(self.lookup("s-0001", "mac")["state"], "closed")
 
     def test_another_seat_is_never_closed(self) -> None:
-        self.registry("register", "--location", "mac", "--session-id", "s-0001", "--seat", "MM")
+        # A row filed under another seat before the registry refused one (AFC-772):  it is still there to be swept past.
+        with mock.patch.object(OR, "check_seat_platform", lambda *_: None):
+            code, made = self.registry("register", "--location", "mac", "--session-id", "s-0001", "--seat", "ZC")
+        self.assertEqual((code, made.get("outcome")), (0, "registered"), made)
         self.archived_record("local_aaaaaaaa-0001", "s-0001")
         code, out = self.sweep("--apply")
         self.assertEqual(code, 0, out)
