@@ -174,7 +174,7 @@ class SourceTests(Fixture):
         self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
 
     def test_receiver_cap_may_exceed_sender_cap_but_never_trail_it(self):
-        self.assertEqual(S.MAX_BYTES, 8 * 1024 * 1024)
+        self.assertEqual(S.MAX_BYTES, 11 * 1024 * 1024)
         self.put("scripts/fleet-cli-release.py", POLICY.replace("12*1024*1024", "4*1024*1024"))
         self.commit()
         self.assert_code("receiver_policy_invalid", S.build_bundle, self.repo)
@@ -272,8 +272,8 @@ class SourceTests(Fixture):
         self.assert_code("bundle_too_many_files", S.build_bundle, self.repo)
 
     def test_encoded_size_limit_is_checked_after_base64(self):
-        # Raw stays under the 8 MiB sender cap.  Base64 of 7 MiB, plus the other files, crosses it.
-        self.put("scripts/simple_tools/large.py", "x" * (7 * 1024 * 1024))
+        # Raw stays under the 11 MiB sender cap.  Base64 of 9 MiB, plus the other files, crosses it.
+        self.put("scripts/simple_tools/large.py", "x" * (9 * 1024 * 1024))
         self.commit()
         self.assert_code("bundle_too_large", S.build_bundle, self.repo)
 
