@@ -638,7 +638,7 @@ private let liveSweep = #"""
 /// A current server document generated at 9:13:30 PM Chicago time on November 11, 2026, with
 /// `sweep` as its `registry_sweep` (JSON text), or with no such key when it is nil.
 private func sweepDocument(_ sweep: String?) -> String {
-    let block = sweep.map { #","registry_sweep":# + $0 } ?? ""
+    let block = sweep.map { #","registry_sweep":"# + $0 } ?? ""
     return #"{"schema":1,"generated_at":"2026-11-12T03:13:30Z","instance":"server","status_updated":"2026-11-12T03:13:28Z","seats":[],"skipped":[],"disabled":[]"#
         + block + "}"
 }
