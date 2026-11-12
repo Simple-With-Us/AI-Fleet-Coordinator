@@ -33,6 +33,7 @@ VOICE_TOKEN = "st.operator-voice-service-token-fixture"
 OPERATOR_ID = 4242
 OPERATOR_EMAIL = "operator-bot@realm.example.test"
 OPERATOR_KEY = "operator-key-" + "x" * 24
+WAKE_TOKEN = "st.wake-router-token-fixture-value"
 
 
 def voice_env(**overrides: str) -> dict[str, str]:
@@ -41,6 +42,7 @@ def voice_env(**overrides: str) -> dict[str, str]:
         "INFISICAL_PROJECT_ID": PRIMARY_PROJECT,
         MODULE.OPERATOR_VOICE_PROJECT: FLEET_OPS_PROJECT,
         MODULE.OPERATOR_VOICE_TOKEN: VOICE_TOKEN,
+        MODULE.WAKE_ROUTER_TOKEN: WAKE_TOKEN,
         "SIMPLE_TOOLS_INSTANCE": "server",
         "OPERATOR_ZULIP_USER_ID": str(OPERATOR_ID),
         "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL,
@@ -126,7 +128,12 @@ class BuildEnvVoiceTests(unittest.TestCase):
                 if isinstance(voice, Exception):
                     raise voice
                 return voice
-            return {}
+            if kwargs.get("path") == MODULE.OPERATOR_PATH:
+                # The Operator's identity comes from /operator, never from the container copy.
+                return {"OPERATOR_ZULIP_USER_ID": str(OPERATOR_ID), "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL}
+            if kwargs.get("path") == MODULE.WAKE_ROUTER_PATH:
+                return {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "r" * 40, "WAKE_ROUTER_KEY": "w" * 40}
+            return {"JET_ROUTINE_URL": "https://jet.example.test/wake/JET", "JET_ROUTINE_KEY": "j" * 40}
 
         with (
             patch.object(MODULE, "server_codes", return_value={"MA"}),

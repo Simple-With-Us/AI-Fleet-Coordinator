@@ -6,7 +6,9 @@
 entrypoint.sh runs this only when INFISICAL_TOKEN and INFISICAL_PROJECT_ID are
 set.  The scoped primary service token is used directly as a bearer to read the
 configured folder (INFISICAL_SECRET_PATH, default /zulip) and /operator.  Its exact
-read-only prod grant must contain only those paths, with duplicates removed.  If
+read-only prod grant must contain only those paths, with duplicates removed.  A second
+required read-only token, EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN, reads exactly AFC
+prod /wake-router (the wake router's folder) in the same project.  If
 INFISICAL_LISTENER_READ_PROJECT_ID enables the secondary project read, it also requires
 INFISICAL_LISTENER_READ_TOKEN, a different read-only token scoped only to prod /zulip
 in that project.  The primary token is never reused for the secondary project.  Each
@@ -23,10 +25,6 @@ The allowlist is built from the seat partition (every seat it gives to "server")
     ZULIP_ALERT_<CODE>_ENDPOINT, ZULIP_ALERT_<CODE>_KEY  a Grok Bot routine webhook (URL and bare key)
     <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY               the listener's default routine names
     SENTRY_FLEET_DSN, SIMPLE_TOOLS_SENTRY_DSN              the Sentry Crons heartbeat's DSN (heartbeat.py); not per seat
-    OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL         the Operator service bot's own Zulip identity;  a
-                                                         user id and an address, never a credential, and
-                                                         needed so a seat can answer inside a DM the
-                                                         Operator opened (dm_policy.py)
     OPERATOR_NOTES_{WORKER,SERVER,RUNNER}_KEY            the notes queue's three keys, from the folder /operator
                                                          (AFC-486), with the same login
     ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY         the Operator bot's own address and key (AFC-602), from
@@ -36,14 +34,31 @@ The allowlist is built from the seat partition (every seat it gives to "server")
 
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
+
+Some names have Infisical as their only source (INFISICAL_ONLY, a table of exported name to the folders and
+names it may come from, first present wins).  A container copy of any of them is removed before anything is
+read, and a name that no listed folder holds stops startup with an error naming the NAME and folder, never a
+value, so a Coolify copy is never used:
+
+    OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL         /operator:  the Operator service bot's own Zulip
+                                                         identity, a user id and an address (dm_policy.py)
+    OPERATOR_REGISTRY_KEY                                the registry service's signing key
+                                                         (listener_registry.py):  /wake-router
+                                                         SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY, the key's one
+                                                         home, else /operator OPERATOR_REGISTRY_KEY while that
+                                                         copy still exists
+    WAKE_ROUTER_KEY                                      /wake-router:  the wake router's one bearer
+    JET_ROUTINE_URL, JET_ROUTINE_KEY                     /zulip:  where a <CODE>_ROUTINE_* pair lives
 The Operator's two names live in the Operator's own folder (/zulip_operator), so a container that reads that
 folder has to point INFISICAL_SECRET_PATH at it;  a container that reads /zulip has to carry the two names
 there instead.  Either way the host provides them, and the runtime never guesses an id.
 
-Infisical is the intended source of these variables.  Missing or invalid service-token configuration and any
-primary fetch failure stop startup; the listener never falls back to container copies.  Errors name the stage and HTTP status,
-never a body or a value.  A successful load logs one line with
-the variable count and how many GB seats got both Zulip names from Infisical (names only).  No value is ever
+Infisical is the intended source of these variables.  Missing or invalid service-token configuration, a
+failed read of /zulip, /operator or /wake-router, and a missing INFISICAL_ONLY name stop startup;  the
+listener never falls back to container copies.  Errors name the stage and HTTP status, never a body or a
+value.  A successful load logs one line with
+the variable count, how many GB seats got both Zulip names from Infisical and which folder each
+INFISICAL_ONLY name came from (counts and names only).  No value is ever
 printed or logged.
 """
 
@@ -74,11 +89,17 @@ OPERATOR_VOICE_TOKEN = "INFISICAL_OPERATOR_VOICE_TOKEN"
 OPERATOR_VOICE_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 OPERATOR_VOICE_PATH = "/zulip_operator"
 OPERATOR_VOICE_NAMES = frozenset({"ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY"})
+#: The wake router's folder (#1816) in the primary (AI Fleet Coordinator) project, read with its own
+#: read-only token scoped to exactly prod /wake-router (eavesdropper-wake-router-ro).  Required:  the
+#: Eavesdropper takes the router's bearer and the registry signing key from it and from nowhere else.
+WAKE_ROUTER_TOKEN = "EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN"
+WAKE_ROUTER_PATH = "/wake-router"
 AUTH_ENV_VARS = frozenset(
     {
         TOKEN,
         LISTENER_READ_TOKEN,
         OPERATOR_VOICE_TOKEN,
+        WAKE_ROUTER_TOKEN,
         "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
         "INFISICAL_WRITE_TOKEN",
         "INFISICAL_CLIENT_ID",
@@ -112,17 +133,37 @@ SHARED_NAMES = frozenset(
     {
         "SENTRY_FLEET_DSN",
         "SIMPLE_TOOLS_SENTRY_DSN",
-        #  The Operator service bot's own Zulip identity.  A user id and an address, never a
-        #  credential:  the runtime needs them to tell a DM the Operator opened from one a seat
-        #  opened, and it refuses by name rather than guessing when a host does not provide them.
-        "OPERATOR_ZULIP_USER_ID",
-        "OPERATOR_ZULIP_EMAIL",
     }
-)  # the heartbeat's DSN and the Operator's identity;  the first of the two DSN names wins
+)  # the heartbeat's DSN;  the first of the two names wins
+ZULIP_PATH = "/zulip"
 # The Operator's notes-queue keys (AFC-486, docs/protocols/operator-notes.md), read from their own folder.
 OPERATOR_PATH = "/operator"
 OPERATOR_NAMES = frozenset(
     {"OPERATOR_NOTES_WORKER_KEY", "OPERATOR_NOTES_SERVER_KEY", "OPERATOR_NOTES_RUNNER_KEY"}
+)
+#: Names whose only source is Infisical:  (the name exported to the daemon, the (folder, name) pairs it may
+#: come from, first present wins).  A container copy of an exported or a source name is removed before
+#: anything is read, and a name no listed folder holds stops startup.  One table for every platform:  a
+#: row names where a value lives, never a seat-specific branch.
+INFISICAL_ONLY: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    # The Operator service bot's own Zulip identity.  A user id and an address, never a credential:  the
+    # runtime needs them to tell a DM the Operator opened from one a seat opened.
+    ("OPERATOR_ZULIP_USER_ID", ((OPERATOR_PATH, "OPERATOR_ZULIP_USER_ID"),)),
+    ("OPERATOR_ZULIP_EMAIL", ((OPERATOR_PATH, "OPERATOR_ZULIP_EMAIL"),)),
+    # The registry service's signing key (listener_registry.OPERATOR_KEY_ENV).  /wake-router is its one
+    # home, shared with every registry client;  the /operator copy is read only until it is deleted.
+    (
+        "OPERATOR_REGISTRY_KEY",
+        (
+            (WAKE_ROUTER_PATH, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"),
+            (OPERATOR_PATH, "OPERATOR_REGISTRY_KEY"),
+        ),
+    ),
+    # The wake router's one bearer (wake_settings.KEY_KNOB).
+    ("WAKE_ROUTER_KEY", ((WAKE_ROUTER_PATH, "WAKE_ROUTER_KEY"),)),
+    # A routine pair lives in /zulip, beside the seat's Zulip names.
+    ("JET_ROUTINE_URL", ((ZULIP_PATH, "JET_ROUTINE_URL"),)),
+    ("JET_ROUTINE_KEY", ((ZULIP_PATH, "JET_ROUTINE_KEY"),)),
 )
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
@@ -474,9 +515,76 @@ def operator_voice_keys(env: Mapping[str, str], **kw) -> tuple[dict[str, str], s
     )
 
 
+def infisical_only_names() -> set[str]:
+    """Every exported and source name of INFISICAL_ONLY:  none of them may come from the container."""
+    names: set[str] = set()
+    for export, sources in INFISICAL_ONLY:
+        names.add(export)
+        names |= {name for _, name in sources}
+    return names
+
+
+def _wake_router_token(env: Mapping[str, str]) -> str:
+    token = (env.get(WAKE_ROUTER_TOKEN) or "").strip()
+    if not token:
+        raise LoadError(
+            "configuration: missing %s (the read-only token for prod %s)" % (WAKE_ROUTER_TOKEN, WAKE_ROUTER_PATH)
+        )
+    if not SERVICE_TOKEN_RE.fullmatch(token):
+        raise LoadError("service-token: %s is invalid" % WAKE_ROUTER_TOKEN)
+    return token
+
+
+def wake_router_values(env: Mapping[str, str], **kw) -> dict[str, str]:
+    """Every name in prod /wake-router of the primary project, read with its own exact-scope token.
+
+    Fatal on any failure:  the primary token is never used for this folder."""
+    return fetch(
+        env,
+        path=WAKE_ROUTER_PATH,
+        token=_wake_router_token(env),
+        expected_paths=(WAKE_ROUTER_PATH,),
+        stage="read %s" % WAKE_ROUTER_PATH,
+        **kw,
+    )
+
+
+def resolve_infisical_only(folders: Mapping[str, Mapping[str, str]]) -> tuple[dict[str, str], list[str]]:
+    """({exported name: value}, ["NAME from /folder", ...]).  Raises naming every missing NAME and folder."""
+    values: dict[str, str] = {}
+    sources: list[str] = []
+    missing: list[str] = []
+    for export, options in INFISICAL_ONLY:
+        for folder, name in options:
+            if folder not in folders:
+                raise LoadError("configuration: %s is read from %s, which this loader does not read" % (name, folder))
+        for folder, name in options:
+            value = (folders[folder].get(name) or "").strip()
+            if value:
+                values[export] = value
+                sources.append(
+                    "%s from %s" % (export, folder) if name == export else "%s from %s %s" % (export, folder, name)
+                )
+                break
+        else:
+            missing.append(
+                "%s (%s)"
+                % (
+                    export,
+                    " or ".join(folder if name == export else "%s %s" % (folder, name) for folder, name in options),
+                )
+            )
+    if missing:
+        raise LoadError("Infisical is missing %s;  a container copy is never used" % ", ".join(missing))
+    return values, sources
+
+
 def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     """(the environment to exec with, the one log line).  Bootstrap credentials are removed."""
-    out = {k: v for k, v in env.items() if k not in AUTH_ENV_VARS}
+    # Bootstrap credentials go, and so does every container copy of a name whose only source is Infisical.
+    only = infisical_only_names()
+    out = {k: v for k, v in env.items() if k not in AUTH_ENV_VARS and k not in only}
+    removed = sorted(name for name in only if name in env)
     # Opt-in native secondary keys never fall back to primary-project or container copies.
     secondary_names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES}
     if (env.get(LISTENER_READ_PROJECT) or "").strip():
@@ -490,6 +598,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     project_id = (env.get("INFISICAL_PROJECT_ID") or "").strip()
     if not PROJECT_ID_RE.fullmatch(project_id):
         raise LoadError("configuration: INFISICAL_PROJECT_ID is invalid")
+    _wake_router_token(env)  # checked before any request, so its absence is named on its own
     partition = env.get("SIMPLE_TOOLS_PARTITION") or PARTITION_DEFAULT
     try:
         codes = server_codes(partition)
@@ -505,38 +614,43 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         found = fetch(env, token=token, expected_paths=primary_paths, **kw)
     except LoadError as exc:
         raise exc
-    # The Operator's notes-queue keys (AFC-486) live in their own folder.  A failed read of it never stops the
-    # listener:  the queue then refuses every principal, and the line says so.
-    try:
-        operator = {
-            name: value
-            for name, value in fetch(
-                env,
-                path=OPERATOR_PATH,
-                token=token,
-                expected_paths=primary_paths,
-                stage="read operator",
-                **kw,
-            ).items()
-            if name in OPERATOR_NAMES
-        }
-        operator_note = "; notes-queue keys from %s: %d of %d" % (
-            OPERATOR_PATH,
-            len(operator),
-            len(OPERATOR_NAMES),
-        )
-    except LoadError as exc:
-        operator, operator_note = {}, "; notes-queue keys not loaded (%s)" % exc
+    # /operator holds the notes-queue keys (AFC-486) and INFISICAL_ONLY names, so a failed read stops startup.
+    # A missing notes-queue key does not:  the queue then refuses that principal, and the line says so.
+    operator_all = fetch(
+        env,
+        path=OPERATOR_PATH,
+        token=token,
+        expected_paths=primary_paths,
+        stage="read operator",
+        **kw,
+    )
+    operator = {name: value for name, value in operator_all.items() if name in OPERATOR_NAMES}
+    operator_note = "; notes-queue keys from %s: %d of %d" % (
+        OPERATOR_PATH,
+        len(operator),
+        len(OPERATOR_NAMES),
+    )
+    only_values, only_sources = resolve_infisical_only(
+        {primary_path: found, OPERATOR_PATH: operator_all, WAKE_ROUTER_PATH: wake_router_values(env, **kw)}
+    )
     read_keys, read_note = listener_read_keys(env, codes, **kw)
     if (env.get(LISTENER_READ_PROJECT) or "").strip():
         found = {name: value for name, value in found.items() if name not in secondary_names}
     voice_keys, voice_note = operator_voice_keys(env, **kw)
-    found = dict(found, **operator, **read_keys, **voice_keys)
-    allowed = allowed | set(operator) | set(voice_keys)
+    found = {name: value for name, value in found.items() if name not in only}
+    found = dict(found, **operator, **read_keys, **voice_keys, **only_values)
+    allowed = allowed | set(operator) | set(voice_keys) | set(only_values)
     loaded = sorted(name for name in found if name in allowed)
     replaced = sum(1 for name in loaded if name in env)
     for name in loaded:
         out[name] = found[name]
+    only_note = "; Infisical-only names: %d of %d (%s); container copies removed: %d%s" % (
+        len(only_values),
+        len(INFISICAL_ONLY),
+        ", ".join(only_sources),
+        len(removed),
+        " (" + ", ".join(removed) + ")" if removed else "",
+    )
     where = "%s %s" % (
         (env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
         (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip(),
@@ -559,7 +673,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     ignored = len(found) - len(loaded)
     return out, (
         f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
-        f"{ignored} other names in the folder ignored){coverage}{operator_note}{read_note}{voice_note}"
+        f"{ignored} other names in the folder ignored){coverage}{operator_note}{only_note}{read_note}{voice_note}"
     )
 
 

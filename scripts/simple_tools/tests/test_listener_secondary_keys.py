@@ -18,6 +18,10 @@ PRIMARY_PROJECT = str(UUID(int=1))
 SECONDARY_PROJECT = str(UUID(int=2))
 PRIMARY_TOKEN = "st.primary-service-token-fixture-value"
 SECONDARY_TOKEN = "st.secondary-service-token-fixture-value"
+WAKE_TOKEN = "st.wake-router-token-fixture-value"
+OPERATOR_VALUES = {"OPERATOR_ZULIP_USER_ID": "4242", "OPERATOR_ZULIP_EMAIL": "operator@example.test"}
+WAKE_VALUES = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "r" * 40, "WAKE_ROUTER_KEY": "w" * 40}
+JET_PAIR = {"JET_ROUTINE_URL": "https://jet.example.test/wake/JET", "JET_ROUTINE_KEY": "jet" * 15}
 
 
 class ListenerSecondaryKeyTests(unittest.TestCase):
@@ -27,6 +31,7 @@ class ListenerSecondaryKeyTests(unittest.TestCase):
             "INFISICAL_PROJECT_ID": PRIMARY_PROJECT,
             MODULE.LISTENER_READ_PROJECT: SECONDARY_PROJECT,
             MODULE.LISTENER_READ_TOKEN: SECONDARY_TOKEN,
+            MODULE.WAKE_ROUTER_TOKEN: WAKE_TOKEN,
             "MA_ROUTINE_KEY": "stale" * 12,
         }
         values.update(overrides)
@@ -41,12 +46,14 @@ class ListenerSecondaryKeyTests(unittest.TestCase):
                 if isinstance(secondary, Exception):
                     raise secondary
                 return secondary
+            if kwargs.get("path") == MODULE.WAKE_ROUTER_PATH:
+                return dict(WAKE_VALUES)
             if kwargs.get("path") == MODULE.OPERATOR_PATH:
-                return {}
+                return dict(OPERATOR_VALUES)
             return {
                 "ZULIP_MA_EMAIL": "own@example.test",
                 "MA_ROUTINE_KEY": "primary" * 12,
-                "JET_ROUTINE_KEY": "jet" * 15,
+                **JET_PAIR,
                 "PATH": "untrusted",
             }
 
@@ -100,9 +107,12 @@ class ListenerSecondaryKeyTests(unittest.TestCase):
                     "ZC_ROUTINE_URL": "http://elsewhere.invalid/wake/ZC",
                     "ZULIP_ZC_EMAIL": "foreign@example.test",
                 }
+            if kwargs.get("path") == MODULE.WAKE_ROUTER_PATH:
+                return dict(WAKE_VALUES)
             if kwargs.get("path") == MODULE.OPERATOR_PATH:
-                return {}
+                return dict(OPERATOR_VALUES)
             return {
+                **JET_PAIR,
                 "ZULIP_ZC_EMAIL": "zc@example.test",
                 "ZC_ROUTINE_URL": zc_url,
                 "ZC_ROUTINE_KEY": "primary-copy" * 4,

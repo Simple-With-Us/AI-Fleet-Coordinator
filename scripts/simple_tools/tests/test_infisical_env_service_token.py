@@ -180,9 +180,24 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
             "INFISICAL_SHARED_CLIENT_ID": "shared-id-sentinel",
             "INFISICAL_SHARED_CLIENT_SECRET": "shared-secret-sentinel",
         }
+        credentials[MODULE.WAKE_ROUTER_TOKEN] = "st.synthetic-wake-router-token"
         env = dict(self.env(), **credentials, KEEP_CONFIG="retained")
+
+        def fetch(source, **kwargs):
+            return {
+                MODULE.OPERATOR_PATH: {"OPERATOR_ZULIP_USER_ID": "1", "OPERATOR_ZULIP_EMAIL": "op@example.test"},
+                MODULE.WAKE_ROUTER_PATH: {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "r" * 40, "WAKE_ROUTER_KEY": "w" * 40},
+            }.get(
+                kwargs.get("path"),
+                {
+                    "ZULIP_TEST_EMAIL": "fixture@example.test",
+                    "JET_ROUTINE_URL": "https://jet.example.test/wake/JET",
+                    "JET_ROUTINE_KEY": "j" * 40,
+                },
+            )
+
         with patch.object(MODULE, "server_codes", return_value={"TEST"}), patch.object(
-            MODULE, "fetch", return_value={"ZULIP_TEST_EMAIL": "fixture@example.test"}
+            MODULE, "fetch", side_effect=fetch
         ):
             child, _ = MODULE.build_env(env)
         self.assertEqual(child["ZULIP_TEST_EMAIL"], "fixture@example.test")
@@ -192,12 +207,47 @@ class InfisicalEnvironmentServiceTokenTests(unittest.TestCase):
         for name in {"INFISICAL_TOKEN", *credentials}:
             self.assertNotIn(name, child)
 
+    def test_infisical_only_is_one_table_of_folders_the_loader_reads(self):
+        read = {MODULE.ZULIP_PATH, MODULE.OPERATOR_PATH, MODULE.WAKE_ROUTER_PATH}
+        exports = [export for export, _ in MODULE.INFISICAL_ONLY]
+        self.assertEqual(len(exports), len(set(exports)))
+        for export, sources in MODULE.INFISICAL_ONLY:
+            with self.subTest(export=export):
+                self.assertTrue(sources)
+                for folder, name in sources:
+                    self.assertIn(folder, read)
+                    self.assertRegex(name, r"^[A-Z][A-Z0-9_]*$")
+        self.assertEqual(
+            dict(MODULE.INFISICAL_ONLY)["OPERATOR_REGISTRY_KEY"][0],
+            (MODULE.WAKE_ROUTER_PATH, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"),
+        )
+        self.assertTrue(MODULE.infisical_only_names().isdisjoint(MODULE.AUTH_ENV_VARS))
+
+    def test_resolver_names_every_missing_name_and_folder_and_never_a_value(self):
+        folders = {
+            MODULE.ZULIP_PATH: {"JET_ROUTINE_URL": "https://jet.example.test/secret-path"},
+            MODULE.OPERATOR_PATH: {"OPERATOR_ZULIP_USER_ID": "1", "OPERATOR_ZULIP_EMAIL": "op@example.test"},
+            MODULE.WAKE_ROUTER_PATH: {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "r" * 40},
+        }
+        with self.assertRaises(MODULE.LoadError) as caught:
+            MODULE.resolve_infisical_only(folders)
+        message = str(caught.exception)
+        self.assertIn("WAKE_ROUTER_KEY (/wake-router)", message)
+        self.assertIn("JET_ROUTINE_KEY (/zulip)", message)
+        self.assertNotIn("secret-path", message)
+        self.assertNotIn("r" * 40, message)
+
+    def test_resolver_refuses_a_folder_the_loader_did_not_read(self):
+        with self.assertRaisesRegex(MODULE.LoadError, "which this loader does not read"):
+            MODULE.resolve_infisical_only({MODULE.OPERATOR_PATH: {}, MODULE.WAKE_ROUTER_PATH: {}})
+
     def test_standalone_auth_inventory_matches_shared_helper(self):
         from fleet_secrets import core
 
         self.assertEqual(
             MODULE.AUTH_ENV_VARS,
-            core.AUTH_ENV_VARS | {MODULE.LISTENER_READ_TOKEN, MODULE.OPERATOR_VOICE_TOKEN},
+            core.AUTH_ENV_VARS
+            | {MODULE.LISTENER_READ_TOKEN, MODULE.OPERATOR_VOICE_TOKEN, MODULE.WAKE_ROUTER_TOKEN},
         )
 
 
