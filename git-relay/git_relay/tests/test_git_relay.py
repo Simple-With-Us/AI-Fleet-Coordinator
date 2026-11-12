@@ -579,8 +579,9 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
-        # The original seven come first and unchanged;  the wf verbs follow (AFC-664 item 6,
-        # tested in test_mcp_wf_verbs).  mint_token stays HTTP-only: raw App tokens never cross stdio.
+        # The original seven come first and unchanged;  create_repo follows them;
+        # the wf verbs follow that (AFC-664 item 6, tested in test_mcp_wf_verbs).
+        # mint_token stays HTTP-only: raw App tokens never cross stdio.
         self.assertEqual(
             names[:7],
             [
@@ -593,10 +594,11 @@ class TestMcpWrapper(unittest.TestCase):
                 "resolve_thread",
             ],
         )
+        self.assertEqual(names[7], "create_repo")
         # mint_token stays HTTP-only: raw App tokens never cross stdio
         from git_relay.mcp_server import WF_ACTIONS
 
-        self.assertEqual(set(names[7:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
+        self.assertEqual(set(names[8:]), set(WF_ACTIONS) | {"stage_chunk", "stage_abort"})
         self.assertNotIn("mint_token", names)
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):

@@ -41,6 +41,7 @@ import {
   SEAT_SECRETS,
   SEAT_LABELS,
   WAKE_SECRETS,
+  LISTENER_KEY_SECRET_NAMES,
   KNOWN_SEATS,
   GRANT_MAX_AGE_MS,
 } from "./config.js";
@@ -489,6 +490,7 @@ async function serveMcp(request, env, ctx) {
     // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
     // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
+    workerEnv: env,
   });
   // The authenticated grant assigns the acting principal. No per-call peer or
   // bot credential loader is installed, even for legacy shared OAuth seats.
@@ -628,6 +630,7 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
     recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     notes: operatorNotesClientFromEnv(env),
+    workerEnv: env,
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
     config: { ...config, botEmails: { ...config.botEmails, [identity]: credentials.email } },
@@ -757,6 +760,7 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     fleetlink: fleetlinkClientFromSecret(Object.hasOwn(ADDITIONAL_BEARER_SEATS, seat) ? "" : fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     notes: operatorNotesClientFromEnv(env),
+    workerEnv: env,
   });
   const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = { token: grantRef, clientId: "sbt-bearer", scopes, extra: { seat } };
@@ -848,8 +852,8 @@ async function serveSpike(request, env, ctx, config) {
   const wakeKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
-  // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
-  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
+  // SPIKE_HMAC_KEY must never equal any seat's wake or read key, not only this seat's.
+  const wakeKeys = await resolveWakeKeys(env, LISTENER_KEY_SECRET_NAMES);
   if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
@@ -900,8 +904,8 @@ async function serveLinearHealth(request, env, config) {
   if (!key) return notFound();
   // Every wake key Infisical serves, as serveSpike reads them (sentry
   // 4364275301):  in required mode the wake bindings may be gone, and an env
-  // read would miss a health key equal to a wake key.
-  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
+  // read would miss a health key equal to a wake key (or a read key).
+  const wakeKeys = await resolveWakeKeys(env, LISTENER_KEY_SECRET_NAMES);
   const spikeKeyRaw = typeof env.SPIKE_HMAC_KEY === "string" ? env.SPIKE_HMAC_KEY.trim() : "";
   if (wakeKeys.includes(key) || (spikeKeyRaw && spikeKeyRaw === key)) {
     console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));

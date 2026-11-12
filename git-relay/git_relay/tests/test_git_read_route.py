@@ -41,6 +41,9 @@ class FakePolicy:
     def authenticate(self, token, proof):
         return "seat-one"
 
+    def authenticate_with_reason(self, token, proof=None):
+        return "seat-one", ""
+
     def authorize(self, seat, action, repo):
         return None
 

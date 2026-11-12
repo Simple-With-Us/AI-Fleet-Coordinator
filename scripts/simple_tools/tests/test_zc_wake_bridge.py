@@ -69,7 +69,7 @@ class Base(unittest.TestCase):
         with open(self.key_file, "w", encoding="utf-8") as fh:
             fh.write(self.key + "\n")
         os.chmod(self.key_file, 0o600)
-        self.config = {"target_host": "server"}
+        self.config = {"target_host": "server", "delivery_enabled": False}
         self.config_file = os.path.join(self.state, "config.json")
         with open(self.config_file, "w", encoding="utf-8") as fh:
             json.dump(self.config, fh)
@@ -166,9 +166,10 @@ class Receiver(Base):
              "closed_at": None},
         )))
         status, answer = self.post(self.wake(), env, key=self.key)
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 202)  # accepted and routed; the worker delivers
         self.assertEqual(answer["session_id"], "sess_a", answer)
         self.assertEqual(answer["picked"], "topic-match")
+        self.assertFalse(answer["delivered"])  # delivery off in this fixture: recorded, not run
         # a second identical wake is a no-op
         status, answer = self.post(self.wake(), env, key=self.key)
         self.assertEqual(status, 200)
@@ -199,7 +200,7 @@ class Receiver(Base):
              "state": "open", "assigned_at": 9, "retired_at": None, "closed_at": None},
         )))
         status, answer = self.post(self.wake(), env, key=self.key)
-        self.assertEqual(status, 200, answer)
+        self.assertEqual(status, 503, answer)  # routed to nothing: not accepted
         self.assertIn(answer.get("reason"), ("no-live-session",))
         self.assertEqual(answer.get("session_id"), "")
 
@@ -218,6 +219,71 @@ class ConfigLoad(Base):
         bad.write_text(json.dumps({"target_host": "cloud"}), encoding="utf-8")
         with self.assertRaises(SystemExit):
             B.load_config(bad)
+
+
+class IsoTimes(Base):
+    """The registry writes ISO timestamps for assigned_at; a bare float() on them is the
+    crash Claude AA's read-only pass caught (zc-wake-bridge pick on every letterless wake)."""
+
+    def test_iso_assigned_at_ranks_against_numbers(self) -> None:
+        rows = self.rows(
+            {"native_session_id": "sess_iso", "title": "Letters letters", "verified_host": "server",
+             "state": "open", "assigned_at": "2026-11-10T23:00:00Z", "retired_at": None,
+             "closed_at": None},
+            {"native_session_id": "sess_num", "title": "Letters letters", "verified_host": "server",
+             "state": "open", "assigned_at": 5, "retired_at": None, "closed_at": None},
+        )
+        sid, why = B.pick_target(rows, "Letters letters", Path(self.store), "server")
+        self.assertEqual(sid, "sess_iso")  # 2026 epoch dwarfs 5
+        self.assertEqual(why, "topic-match")
+
+    def test_a_bad_time_is_zero_not_a_crash(self) -> None:
+        rows = self.rows(
+            {"native_session_id": "sess_junk", "title": "Letters", "verified_host": "server",
+             "state": "open", "assigned_at": "not-a-time", "retired_at": None, "closed_at": None},
+        )
+        sid, why = B.pick_target(rows, "Letters", Path(self.store), "server")
+        self.assertEqual((sid, why), ("sess_junk", "topic-match"))
+
+
+class UserAgentHeader(Base):
+    """The registry host is Cloudflare-fronted and refuses a bare urllib signature (1010);
+    every request the bridge sends carries the explicit agent (found live:  the first real
+    wake receipt picked nothing because Cloudflare 1010'd the history read)."""
+
+    def test_history_and_resolve_carry_the_agent(self) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        seen: list[str] = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):  # noqa: N802
+                pass
+
+            def do_GET(self) -> None:  # noqa: N802
+                seen.append(str(self.headers.get("User-Agent")))
+                body = b'{"found": true, "native_session_id": "sess_ua_check_0001"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        host, port = server.server_address[:2]
+        env = self.env(
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="http://%s:%d" % (host, port),
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY="k" * 40,
+        )
+        sid = B.resolve_letter(env, "AA")
+        self.assertEqual(sid, "sess_ua_check_0001")
+        self.assertEqual(seen, [B.USER_AGENT])
+        B.registry_history(env)
+        self.assertEqual(seen, [B.USER_AGENT, B.USER_AGENT])
 
 
 class LetterAddress(Base):
@@ -276,7 +342,7 @@ class LetterAddress(Base):
         )
         self.assertEqual(receipt["session_id"], "sess_fb")
         self.assertEqual(receipt["picked"], "topic-match")
-        self.assertEqual(receipt["reason"], "letter-not-live-fell-back")
+        self.assertEqual(receipt["reason"], "delivery-disabled")  # the fallback marker rides the receipt's letter field; delivery is off in this fixture
 
     def test_a_dead_letter_delivers_nowhere(self) -> None:
         env = self.env()  # no registry URL:  resolve_letter answers "" (nothing live)
@@ -361,6 +427,98 @@ class DeliverCli(Base):
         receipt = json.loads(result.stdout.decode().strip().splitlines()[-1])
         log = json.loads(open(os.path.join(self.state, "wakes.jsonl")).read().splitlines()[-1])
         self.assertEqual(log["wake_id"], "w-cli-1")
+
+
+class FailureClassification(Base):
+    """A failed delivery command records allowlisted typed metadata only:  the classifier
+    parses a bounded tail of the child's output in memory, and raw output - which can quote
+    private prompt content or tokens - never reaches the durable receipt.  Classification
+    records;  it never activates a retry."""
+
+    def _receipt(self) -> dict:
+        return {
+            "at": time.time(),
+            "wake_id": "w-fc",
+            "letter": "",
+            "session_id": "sess_fc",
+            "thread_link": "",
+            "picked": "topic-match",
+            "reason": "",
+            "delivered": None,
+            "channel": "c",
+            "topic": "t",
+            "zulip_link": "",
+        }
+
+    def _deliver(self, script_body: str):
+        fake = os.path.join(self.tmp.name, "fake-cmd")
+        marker = os.path.join(self.tmp.name, "invocations")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\necho run >> \"%s\"\n%s" % (marker, script_body))
+        os.chmod(fake, 0o700)
+        cfg = dict(self.config)
+        cfg["delivery_enabled"] = True
+        cfg["command_template"] = [fake, "--resume", "{session_id}", "-p", "{wake_text}"]
+        log_path = Path(self.state) / "wakes.jsonl"
+        B.deliver_receipt(self.env(), cfg, self._receipt(), log_path)
+        receipt = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+        runs = Path(marker).read_text(encoding="utf-8").splitlines() if os.path.exists(marker) else []
+        return receipt, json.dumps(receipt), len(runs)
+
+    def test_documented_pre_accept_signature_records_typed_code(self) -> None:
+        receipt, raw, runs = self._deliver(
+            "echo 'Error: project_token_login_failed' >&2\nexit 1\n"
+        )
+        self.assertEqual(receipt["reason"], "command-failed-1")
+        self.assertFalse(receipt["delivered"])
+        self.assertEqual(receipt["failure_code"], "model-auth-login-failed")
+        self.assertEqual(receipt["failure_stage"], "model-auth")
+        self.assertEqual(receipt["exit_code"], 1)
+        self.assertEqual(runs, 1)  # a command-failed exit is never retried
+
+    def test_unmatched_failure_is_unknown_and_raw_output_never_persists(self) -> None:
+        receipt, raw, runs = self._deliver(
+            "echo 'boom SENTINEL_PRIVATE_SESSION_CONTENT' >&2\nexit 1\n"
+        )
+        self.assertEqual(receipt["failure_code"], "unknown")
+        self.assertEqual(receipt["failure_stage"], "unknown")
+        self.assertEqual(receipt["exit_code"], 1)
+        self.assertNotIn("SENTINEL_PRIVATE_SESSION_CONTENT", raw)
+        self.assertEqual(runs, 1)
+
+    def test_silent_failure_is_unknown(self) -> None:
+        receipt, raw, runs = self._deliver("exit 1\n")
+        self.assertEqual(receipt["failure_code"], "unknown")
+        self.assertEqual(receipt["exit_code"], 1)
+
+    def test_scan_window_is_bounded(self) -> None:
+        # The signature only classifies inside the bounded tail:  a match older than the
+        # cap is not read (the scan never walks unbounded output).
+        receipt, raw, runs = self._deliver(
+            "printf 'project_token_login_failed ' >&2\n"
+            "printf 'x%.0s' $(seq 9000) >&2\nexit 1\n"
+        )
+        self.assertEqual(receipt["failure_code"], "unknown")
+
+    def test_success_records_no_failure_fields(self) -> None:
+        receipt, raw, runs = self._deliver("exit 0\n")
+        self.assertEqual(receipt["reason"], "ok")
+        self.assertTrue(receipt["delivered"])
+        self.assertNotIn("failure_code", receipt)
+        self.assertNotIn("exit_code", receipt)
+        self.assertEqual(runs, 1)
+
+    def test_classifier_unit_edges(self) -> None:
+        self.assertEqual(
+            B.classify_command_failure(1, "project_token_login_failed"),
+            {"failure_code": "model-auth-login-failed", "failure_stage": "model-auth",
+             "exit_code": 1},
+        )
+        self.assertEqual(
+            B.classify_command_failure(2, "anything else")["failure_code"], "unknown"
+        )
+        self.assertEqual(B.classify_command_failure(1, "")["failure_code"], "unknown")
+        self.assertEqual(B.classify_command_failure(1, None)["exit_code"], 1)
 
 
 if __name__ == "__main__":

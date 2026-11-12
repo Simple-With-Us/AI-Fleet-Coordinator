@@ -7,7 +7,7 @@ import unittest
 import fleet_knobs
 from fleet_knobs import KnobError
 from fleet_knobs.tests._fake import KnobTestCase
-from needs_owner import notifier
+from needs_owner import bar, notifier
 from needs_owner.errors import NeedsOwnerError
 
 OWNER = "0b1c2d3e-0000-4000-8000-00000000aaaa"
@@ -55,8 +55,57 @@ class RealKnobsTests(KnobTestCase):
         self.assertTrue(issubclass(KnobError, Exception))
 
     def test_the_knobs_this_unit_reads_are_registered(self) -> None:
-        for name in ("NEEDS_OWNER_NOTIFY_PAUSED", "NEEDS_OWNER_CAPS", "OWNER_LINEAR_USER_ID"):
+        for name in ("NEEDS_OWNER_NOTIFY_PAUSED", "NEEDS_OWNER_CAPS", "OWNER_LINEAR_USER_ID", bar.MODE_KNOB, bar.CAP_KNOB):
             self.assertIn(name, fleet_knobs.BY_NAME)
+
+
+class BarKnobsTests(KnobTestCase):
+    """The owner bar's two knobs through the real `fleet_knobs` against a fake `infisical` (`bar.read_policy()` with no reader
+    given is what `needs-owner file` runs)."""
+
+    def test_the_bar_comes_from_infisical(self) -> None:
+        self.fake.set(secrets={"NEEDS_OWNER_BAR": "ENFORCE", "NEEDS_OWNER_SEAT_DAILY_MAX": "3"})
+        self.assertEqual(bar.read_policy(), bar.Policy("enforce", 3))
+        self.assertEqual(len(self.fake.calls()), 1, "one fetch per run")
+
+    def test_unset_knobs_are_off_with_no_cap(self) -> None:
+        self.fake.set(secrets={})
+        self.assertEqual(bar.read_policy(), bar.Policy("off", 0))
+
+    def test_an_invalid_value_is_off_and_an_invalid_cap_is_no_cap(self) -> None:
+        for bad in ("bogus", "warning", "on", "enforce please"):
+            self.new_process()
+            self.fake.set(secrets={"NEEDS_OWNER_BAR": bad, "NEEDS_OWNER_SEAT_DAILY_MAX": "5"})
+            self.assertEqual(bar.read_policy(), bar.Policy("off", 0), bad)
+        for bad in ("51", "-1", "many", "2.5"):
+            self.new_process()
+            self.fake.set(secrets={"NEEDS_OWNER_BAR": "warn", "NEEDS_OWNER_SEAT_DAILY_MAX": bad})
+            self.assertEqual(bar.read_policy(), bar.Policy("warn", 0), bad)
+
+    def test_an_outage_with_no_copy_is_off(self) -> None:
+        self.fake.set(mode="fail")
+        self.assertEqual(bar.read_policy(), bar.Policy("off", 0))
+
+    def test_an_outage_keeps_the_last_known_bar(self) -> None:
+        self.fake.set(secrets={"NEEDS_OWNER_BAR": "enforce", "NEEDS_OWNER_SEAT_DAILY_MAX": "4"})
+        self.assertEqual(bar.read_policy(), bar.Policy("enforce", 4))
+        self.new_process()
+        self.fake.set(mode="fail")
+        self.assertEqual(bar.read_policy(), bar.Policy("enforce", 4), "the last-known-good copy still holds it")
+
+    def test_a_refused_environment_is_off_and_fetches_nothing(self) -> None:
+        import os
+
+        os.environ["INFISICAL_ENV"] = "staging"
+        self.addCleanup(os.environ.pop, "INFISICAL_ENV", None)
+        self.fake.set(secrets={"NEEDS_OWNER_BAR": "enforce"})
+        self.assertEqual(bar.read_policy(), bar.Policy("off", 0))
+        self.assertEqual(self.fake.calls(), [])
+
+    def test_the_bar_knobs_are_not_the_notifiers(self) -> None:
+        self.fake.set(secrets={"NEEDS_OWNER_BAR": "enforce", "NEEDS_OWNER_SEAT_DAILY_MAX": "2"})
+        got = notifier.read_settings(notifier.FleetKnobs())
+        self.assertEqual((got.paused, got.caps, got.owner_linear_id), (False, {"urgent_per_hour": 3, "per_hour": 6, "per_day": 30}, ""))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -125,8 +125,10 @@ STDIN_LIMIT = 1 << 20
 # or never saw the chat), and what the hook reads as "register again".
 NO_REGISTRATION = "this chat has no registration"
 
-#: The events the library knows, whatever a platform calls them.
-EVENTS = ("start", "prompt", "rename", "end")
+#: The events the library knows, whatever a platform calls them.  `turn` is the end of one turn (Claude Code's and
+#: ZCode's Stop):  it reports what the turn touched (AFC-702) and never closes anything.  A spec maps its own event to
+#: it;  none does by default.
+EVENTS = ("start", "prompt", "rename", "end", "turn")
 #: The event names Claude Code and Codex style hooks use, and the default for a spec.
 DEFAULT_EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SessionEnd": "end"}
 #: Timeouts in seconds for those hook entries.  The ssh hop takes up to REMOTE_TIMEOUT, and a SessionEnd budget is
@@ -754,13 +756,30 @@ def _with_room(
 ) -> tuple[Any, int]:
     """Run one allocation; when every letter of the space is live, close the least recently seen chat of this
     adapter and try once more.  A second LabelExhausted is the caller's to report."""
+    # Owner, Nov 11 2026:  "ok just refuse actually is fine".  When all 26 doubled pairs are live the refusal is the
+    # caller's to report, and no live chat is closed to make room.  Only a space other than the pairs (none is issued
+    # now) would still close the least recently seen chat of this adapter that holds a letter of it.
     try:
         return allocate(), 0
     except OR.LabelExhausted as exc:
-        space = getattr(exc, "space", args.letter_space)
+        space = getattr(exc, "space", "double")
+        if space == "double":
+            raise
         if not evict_oldest(OR, db, args.platform, args.source, keep, space):
             raise
         return allocate(), 1
+
+
+def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
+    """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
+    limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
+    return (
+        "all %d %s main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter"
+        % (
+            limit,
+            platform,
+        )
+    )
 
 
 def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, Any]:
@@ -830,8 +849,8 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                     )  # register keeps an existing record's old title
             finally:
                 reg.close_db()
-    except OR.LabelExhausted:
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": swept}
+    except OR.LabelExhausted as exc:
+        return {"error": refused_text(OR, args.platform, getattr(exc, "limit", 0)), "swept": swept}
     except SpaceLost:
         return {
             "error": "this registry cannot give a closed chat a pair letter again yet",
@@ -866,7 +885,14 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
                 ),
                 "label": rec["label"],
             }
-        return {"ok": True, "label": rec["label"], "generation": rec["generation"]}
+        elif args.op == "issues":
+            return record_issues_local(OR, db, _api_identity(args, sid), args.issues)
+        return {
+            "ok": True,
+            "label": rec["label"],
+            "generation": rec["generation"],
+            "record_id": rid,
+        }
     finally:
         reg.close_db()
 
@@ -884,11 +910,17 @@ _NOT_REGISTERED_MARK = "is not registered on"
 #: listener answers in well under a second.  The batch callers of registry_api (the
 #: operator-registry CLI) keep its longer default.
 _API_TIMEOUT = 6
-REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "mm-registry-env")
+REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
+
+
+#: The retired pointer variable (it named the variable holding the key).  registry_api
+#: no longer reads it;  this reader still forwards it from the host's env file until P6 of
+#: the AFC-694 consolidation deletes with_registry_env, and then this name goes with it.
+_RETIRED_KEY_POINTER = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV"
 
 
 def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
-    """Return `env` enriched from `$HOME/.local/bin/mm-registry-env` when no registry API URL or SSH remote is set.
+    """Return `env` enriched from `$HOME/.local/bin/operator-registry-env` when no registry API URL or SSH remote is set.
 
     Hook processes launched by Antigravity, Codex, OpenCode, Muse and ZCode inherit no login profile, so on both the
     server and the Mac the shared registry env file is where `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` and the signing key
@@ -904,7 +936,7 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     path = os.path.join(home, REGISTRY_ENV_SUBPATH)
     if not os.path.isfile(path):
         return env
-    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_ENV, RA.KEY_REF_ENV)
+    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_VAR, _RETIRED_KEY_POINTER)
     script = (
         '. "$1" >/dev/null 2>&1 || true\n'
         "for k in %s; do\n"
@@ -917,10 +949,10 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
         '  [ -n "$rv" ] && printf "%%s=%%s\\0" "$ref" "$rv"\n'
         "fi\n"
         "exit 0\n"
-    ) % (" ".join(names), RA.KEY_REF_ENV)
+    ) % (" ".join(names), _RETIRED_KEY_POINTER)
     try:
         proc = subprocess.run(
-            ["/bin/sh", "-c", script, "mm-registry-env", path],
+            ["/bin/sh", "-c", script, "operator-registry-env", path],
             env=dict(env),
             capture_output=True,
             timeout=5,
@@ -1006,7 +1038,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         params["parent_session_id"] = parent
     out = _call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+        return {"error": refused_text(OR, args.platform), "swept": 0}
     error = _api_error(out)
     if error is not None:
         return error
@@ -1021,7 +1053,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = _call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+            return {"error": refused_text(OR, args.platform), "swept": 0}
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
@@ -1060,8 +1092,9 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
     and answer in the registry's own words, so this path probes with the touch op where the
     local path reads:  a touch stamps a live session seen, answers outcome "closed" for a
     closed one without writing anything, and refuses a session the registry does not hold.
-    The registry's touch answer carries the stamp, not the letter, so a touch here answers
-    with the record id alone where the local path also names the letter and generation."""
+    A current registry's touch answer also names the letter and generation, and this path
+    passes them on as the local path does (`_touch_answer`); an older registry's names
+    neither, and the answer then carries the record id alone, which the hook reads as no change."""
     identity = _api_identity(args, sid)
     if args.op == "show":
         # The API has no show op:  `held` answers the letter side of the record (its id and
@@ -1088,6 +1121,8 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         if out.get("outcome") == "already_closed":
             return {"retired": True, "record_id": out.get("record_id", "")}
         return {"closed": bool(out.get("closed")), "label": out.get("label", "")}
+    if args.op == "issues":
+        return record_issues_api(env, identity, args.issues)
     probe = _call_api(env, "touch", identity)
     error = _api_error(probe)
     if error is not None:
@@ -1096,16 +1131,35 @@ def _on_record_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict
         return {"retired": True, "record_id": probe.get("record_id", "")}
     title = clean_title(args.title) if args.op == "title" else ""
     if args.op == "touch" or not title:
-        return {"ok": True, "record_id": probe.get("record_id", "")}
+        return _touch_answer(probe)
     updated = _call_api(env, "update", {**identity, "title": title})
     error = _api_error(updated)
     if error is not None:
         return error
-    return {
+    out = {
         "ok": True,
         "label": updated.get("label", ""),
         "generation": updated.get("generation"),
     }
+    if updated.get("record_id"):
+        out["record_id"] = updated[
+            "record_id"
+        ]  # as a touch's answer carries it, for the hook's note
+    return out
+
+
+def _touch_answer(probe: Mapping[str, Any]) -> dict[str, Any]:
+    """The registry side's answer to a touch that found a live session, from the API's touch answer.
+
+    The letter and generation go on when the registry named a letter, so the hook can follow a letter
+    the registry changed in place.  A registry from before the touch named them answers without
+    them, and so does this answer: the hook reads a missing letter as no change."""
+    out: dict[str, Any] = {"ok": True, "record_id": probe.get("record_id", "")}
+    if probe.get("label"):
+        out["label"] = probe["label"]
+        if probe.get("generation") is not None:
+            out["generation"] = probe["generation"]
+    return out
 
 
 def _make_parser() -> Any:
@@ -1123,12 +1177,13 @@ def _make_parser() -> Any:
 
     parser = Parser(prog=ENTRY + " registry", add_help=False, allow_abbrev=False)
     parser.refused = Refused  # type: ignore[attr-defined]
-    parser.add_argument("op", choices=("register", "title", "touch", "close", "show"))
+    parser.add_argument("op", choices=("register", "title", "touch", "close", "show", "issues"))
     parser.add_argument("--platform", required=True)
     parser.add_argument("--location", required=True, choices=REGISTRY_LOCATIONS)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--seat", default="")
     parser.add_argument("--title", default="")
+    parser.add_argument("--issues", default="[]")  # the `issues` op's list, as JSON (AFC-694)
     parser.add_argument("--source", default="")
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--letter-space", default="double", choices=("single", "double"))
@@ -1375,7 +1430,7 @@ class Chat:
 
     # ---- the registry ----------------------------------------------------------------------
 
-    def argv(self, op: str, title: str = "", parent: str = "") -> list[str]:
+    def argv(self, op: str, title: str = "", parent: str = "", issues: str = "") -> list[str]:
         """The registry side's command line.  Values that carry words go in the `--name=value` form, so a title that
         starts with a dash is still the title and never an option."""
         argv = [
@@ -1399,18 +1454,22 @@ class Chat:
                 argv.append("--parent-session-id=" + SI.check(parent, "the parent session id"))
             except ValueError:
                 pass  # not a session id, so no parent: the chat is picked like a main chat
+        if issues and op == "issues":
+            argv.append("--issues=" + issues)
         return argv
 
-    def registry(self, op: str, title: str = "", parent: str = "") -> dict[str, Any]:
+    def registry(
+        self, op: str, title: str = "", parent: str = "", issues: str = ""
+    ) -> dict[str, Any]:
         """One call to the registry side, answered as its JSON.  Whatever goes wrong, on the way or in the registry
         side, is an error answer: a hook never blocks a chat, and never stops on a call that failed."""
         try:
-            return self._registry(op, title, parent)
+            return self._registry(op, title, parent, issues)
         except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat
             return {"error": "the registry call failed (%s)" % type(exc).__name__}
 
-    def _registry(self, op: str, title: str, parent: str) -> dict[str, Any]:
-        argv = self.argv(op, title, parent)
+    def _registry(self, op: str, title: str, parent: str, issues: str = "") -> dict[str, Any]:
+        argv = self.argv(op, title, parent, issues)
         if self.transport is not None:
             return _answer(dict(self.transport(argv)))
         if self.location == "mac":
@@ -1593,6 +1652,628 @@ def _reissued(spec: PlatformSpec, answer: Mapping[str, Any]) -> str:
             "issued %s.  " % (previous, label)
         )
     return ""
+
+
+def follow_letter(note: dict[str, Any], answer: Mapping[str, Any]) -> str:
+    """Fold the letter a touch or title answer names into an open chat's note.  Returns the letter the chat held
+    before when the registry's is a different one, else "".
+
+    The registry can change a live chat's letter in place (a relabel, or a restore that moves records between
+    letters), and the touch and title answers are where the hook hears of it.  A different letter is the caller's
+    cue to retitle the chat and tell the model.  The same letter under another generation is folded into the note
+    silently, because the title carries no generation and a chat registered by hand can differ from its note by
+    generation alone.  An answer with no letter (an error, a retired letter, or a registry from before the touch
+    named one) changes nothing.  The letter is followed as given: the registry is the allocator, and a restore can
+    hand a chat a letter another chat's note still holds, so nothing here second-guesses it."""
+    if "error" in answer or answer.get("retired") or note.get("state") != "open":
+        return ""
+    label = answer.get("label")
+    held_now = str(note.get("label") or "")
+    if not isinstance(label, str) or not LABEL_RE.fullmatch(label) or not held_now:
+        return ""
+    gen = answer.get("generation")
+    valid = isinstance(gen, int) and not isinstance(gen, bool) and gen >= 1
+    if valid:
+        note["generation"] = gen
+    rid = answer.get("record_id")
+    if isinstance(rid, str) and rid:
+        note["record_id"] = rid
+    if label == held_now:
+        return ""
+    note["label"] = label
+    if not valid:
+        # The old letter's generation says nothing about the new one: it is the first, as `_apply` reads a register
+        # answer that names none.
+        note["generation"] = 1
+    return held_now
+
+
+def _follow_title(note: dict[str, Any], prior: str, shown: str) -> str:
+    """The title for a chat whose letter just moved from `prior` to the note's: the words of `shown` with every letter
+    the chat held taken off (the note's title when that leaves none), under the new letter.  The old letter stays
+    in the note's history, so a later prompt still reads a title that carries it as this chat's own."""
+    label = str(note["label"])
+    note["labels"] = list(held(note, label, prior))[:8]
+    note["placeholder"] = compose(label, "")
+    words = bare(shown, held(note))
+    if not words or words == PLACEHOLDER:
+        words = str(note.get("title") or "")
+    return compose(label, "" if words == PLACEHOLDER else words)
+
+
+def relabeled(prior: str, label: str) -> str:
+    """The context line for a chat whose letter the registry changed in place."""
+    return "This chat's Operator letter changed from %s to %s; it is addressed as %s now.  " % (
+        prior,
+        label,
+        label,
+    )
+
+
+# ---- the Linear issues a chat works on (AFC-694) ----------------------------------------
+#
+# At the start of each turn the hook looks at what the turn before touched (the transcript lines
+# since its last look, the git branch of the chat's folder, and the Zulip topics it posted to),
+# folds the issue ids it finds into the note, and tells the registry when the set of ids changed.
+# The registry keeps the list for the wake router (operator_registry.normalize_issues has the rule).
+# Nothing here may block or break a prompt: every read is bounded and every failure is silent.
+
+#: The most transcript one turn reads: only its newest lines, so a huge transcript never slows a prompt.
+ISSUE_SCAN_BYTES = 256 * 1024
+ISSUE_GIT_TIMEOUT = 2
+# The topic of a `simple-chat post --topic "..."` command, and the line `simple-chat post` prints.
+_TOPIC_FLAG = re.compile(r"--topic(?:=|\s+)(?:\"([^\"\n]*)\"|'([^'\n]*)'|(\S+))")
+_POSTED_TOPIC = re.compile("posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)")
+# The parts of a transcript line that are a tool's output, not the chat's own words: a file the turn
+# read can name dozens of issues it never worked on, so only the topic rules read those parts.
+_QUOTED_TYPES = frozenset({"tool_result", "function_call_output", "custom_tool_call_output"})
+_QUOTED_KEYS = frozenset({"toolUseResult", "output", "stdout", "stderr", "result"})
+_issue_finders: dict[bool, Any] = {}
+
+
+def _issue_finder(any_case: bool) -> Any:
+    """The rule that finds an issue id in text.  Text writes an id the way Linear does, in capitals;
+    a branch name is lower case by convention ("claude/afc-694-slug"), so it is read in either case."""
+    if any_case not in _issue_finders:
+        from . import operator_registry as OR
+
+        _issue_finders[any_case] = re.compile(
+            r"(?<![A-Za-z0-9])((?:%s)-[0-9]{1,7})(?![A-Za-z0-9])" % OR.ISSUE_KEYS_PATTERN,
+            re.IGNORECASE if any_case else 0,
+        )
+    return _issue_finders[any_case]
+
+
+def issue_ids_in(text: str, *, any_case: bool = False) -> set[str]:
+    from . import operator_registry as OR
+
+    return {OR.valid_issue_id(m.group(1)) for m in _issue_finder(any_case).finditer(text)} - {""}
+
+
+def _topic_issue_ids(text: str) -> set[str]:
+    found: set[str] = set()
+    for m in _TOPIC_FLAG.finditer(text):
+        found |= issue_ids_in(next(g for g in m.groups() if g is not None))
+    for m in _POSTED_TOPIC.finditer(text):
+        found |= issue_ids_in(m.group(1))
+    return found
+
+
+def _transcript_strings(
+    value: Any, own: list[str], quoted: list[str], inside: bool, depth: int = 0
+) -> None:
+    if depth > 40:
+        return
+    if isinstance(value, str):
+        (quoted if inside else own).append(value)
+    elif isinstance(value, Mapping):
+        kind = value.get("type")
+        hidden = (
+            inside
+            or (isinstance(kind, str) and kind in _QUOTED_TYPES)
+            or value.get("isMeta") is True
+        )
+        for key, item in value.items():
+            _transcript_strings(item, own, quoted, hidden or key in _QUOTED_KEYS, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            _transcript_strings(item, own, quoted, inside, depth + 1)
+
+
+_NOT_JSON = object()
+
+
+def parsed_lines(lines: list[str]) -> list[tuple[str, Any]]:
+    """Each transcript line with its JSON (or _NOT_JSON), parsed once for every reader of the same lines."""
+    out: list[tuple[str, Any]] = []
+    for line in lines:
+        try:
+            out.append((line, json.loads(line)))
+        except ValueError:
+            out.append((line, _NOT_JSON))
+    return out
+
+
+def issue_ids_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> set[str]:
+    """The issue ids a stretch of transcript names: any id in the chat's own words (its prompts, its
+    replies, the commands and tool inputs it wrote), and the topic of any Zulip post, even one a tool's
+    output shows.  A line that is not JSON is read as the chat's own words."""
+    found: set[str] = set()
+    for line, entry in parsed_lines(lines) if parsed is None else parsed:
+        if entry is _NOT_JSON:
+            found |= issue_ids_in(line) | _topic_issue_ids(line)
+            continue
+        own: list[str] = []
+        quoted: list[str] = []
+        _transcript_strings(entry, own, quoted, False)
+        for text in own:
+            found |= issue_ids_in(text) | _topic_issue_ids(text)
+        for text in quoted:
+            found |= _topic_issue_ids(text)
+    return found
+
+
+def read_new_lines(path: object, root: str, scan: object) -> tuple[list[str], dict[str, Any]]:
+    """The complete lines a transcript gained since `scan` (the {"path", "offset"} the last call
+    returned), and the scan to keep for the next call.
+
+    Only a regular file under `root` is read, so a stray path in hook data cannot point anywhere else.
+    At most ISSUE_SCAN_BYTES are read: a first scan, and a transcript that shrank or grew by more than
+    that, take only its tail, from the first whole line in it.  A line still being written waits for
+    the next turn.  Raises OSError or ValueError for anything that cannot be read."""
+    if not isinstance(path, str) or not path:
+        raise ValueError("no transcript path")
+    base = os.path.realpath(root) + os.sep
+    real = os.path.realpath(path)
+    if not real.startswith(base) or not os.path.isfile(real):
+        raise ValueError("the transcript is not under the platform's own folder")
+    size = os.path.getsize(real)
+    last = scan if isinstance(scan, Mapping) else {}
+    offset = last.get("offset") if last.get("path") == real else None
+    known = isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset <= size
+    start = offset if known else max(0, size - ISSUE_SCAN_BYTES)
+    if size - start > ISSUE_SCAN_BYTES:
+        start, known = size - ISSUE_SCAN_BYTES, False
+    with open(real, "rb") as fh:
+        fh.seek(start)
+        blob = fh.read(size - start)
+    end = blob.rfind(b"\n")
+    if end < 0:
+        return [], {"path": real, "offset": start}
+    lines = blob[: end + 1].decode("utf-8", errors="replace").splitlines()
+    if start > 0 and not known:
+        lines = lines[1:]  # the cut landed inside a line, or at the start of one it cannot tell
+    return lines, {"path": real, "offset": start + end + 1}
+
+
+def branch_issue_ids(cwd: object, run: Callable[..., Any] = subprocess.run) -> set[str]:
+    """The issue ids in the git branch of `cwd` ("claude/afc-694-slug" names AFC-694), or none.  Only a
+    folder that is a git tree answers, and git gets ISSUE_GIT_TIMEOUT seconds and no prompt."""
+    if not isinstance(cwd, str) or not cwd or not os.path.isdir(cwd):
+        return set()
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    try:
+        proc = run(
+            ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=ISSUE_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return set()
+    if getattr(proc, "returncode", 1) != 0:
+        return set()
+    branch = str(getattr(proc, "stdout", "") or "").strip()
+    return issue_ids_in(branch, any_case=True) if branch and branch != "HEAD" else set()
+
+
+#: The most Zulip topics a note keeps for its chat (the newest), and the longest topic it keeps (Zulip's own limit).
+TOPIC_KEEP = 20
+TOPIC_CHARS = 60
+# The hosted Zulip tools a chat posts with (`zulip_post`, `zulip_reply`, under any MCP server prefix).
+_POST_TOOLS = re.compile(r"(?:^|__)zulip_(?:post|reply)$")
+# The programs and verbs that post, the flags they take before the verb with a value, and the line `simple-chat post`
+# prints for each post it made (cli.py `cmd_post`), read only from the output of that same command.
+_POST_PROGRAMS = frozenset({"simple-chat", "agent-sync"})
+_POST_VERBS = frozenset({"post", "reply"})
+_GLOBAL_VALUE_FLAGS = frozenset({"--as", "--default-seat", "--rc", "--session"})
+_POSTED_LINE = re.compile("^posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)$", re.MULTILINE)
+_SHELL_PUNCTUATION = ";&|()\n"
+# The words that may stand before the program in the command that runs it:  a wrapper (and its flags and their
+# values) or a shell keyword.  `echo simple-chat post ...` only names the program, so it is not a post.
+_PREFIX_WORDS = frozenset(
+    {
+        "sudo",
+        "env",
+        "command",
+        "nohup",
+        "time",
+        "exec",
+        "timeout",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "then",
+        "do",
+        "else",
+        "if",
+        "while",
+        "!",
+    }
+)
+_ASSIGNMENT = re.compile("^[A-Za-z_][A-Za-z0-9_]*=")
+_DURATION = re.compile("^[0-9]+(?:[.][0-9]+)?[smhd]?$")  # `timeout 10 simple-chat ...`
+
+
+def _clean_topic(text: object) -> str:
+    if not isinstance(text, str):
+        return ""
+    return " ".join(text.split())[:TOPIC_CHARS].strip()
+
+
+def _runs_program(before: list[str]) -> bool:
+    """True when the words before a program name only wrap it (`sudo`, `env A=b`, a shell keyword), so it is run."""
+    for i, word in enumerate(before):
+        if (
+            os.path.basename(word) in _PREFIX_WORDS
+            or _ASSIGNMENT.match(word)
+            or word.startswith("-")
+            or _DURATION.match(word)
+        ):
+            continue
+        if i > 0 and before[i - 1].startswith("-") and "=" not in before[i - 1]:
+            continue  # the value of a wrapper's flag, such as `sudo -u jay`
+        return False
+    return True
+
+
+def _shell_tokens(command: str, posix: bool) -> list[str]:
+    lexer = shlex.shlex(command, posix=posix, punctuation_chars=_SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"  # a newline ends a command, as `;` does
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _command_posts(command: object) -> list[str] | None:
+    """The literal `--topic` of each `simple-chat` (or `agent-sync`) `post` or `reply` in one shell command, or None
+    when the command posts nothing.  A topic that is not literal (a `$VAR`) is kept as "" so the printed line can
+    name it.  `read --topic`, another program's `--topic` and a command that does not parse are not posts."""
+    if not isinstance(command, str):
+        return None
+    try:
+        tokens = _shell_tokens(command, True)
+        raw_tokens = _shell_tokens(command, False)  # the same words with their quotes kept
+    except ValueError:
+        return None
+    if len(raw_tokens) != len(tokens):
+        raw_tokens = [""] * len(
+            tokens
+        )  # no quoting to go by:  a `$` topic then needs the printed line
+    segments: list[list[str]] = [[]]
+    raw_segments: list[list[str]] = [[]]
+    for token, raw in zip(tokens, raw_tokens):
+        if token and all(ch in _SHELL_PUNCTUATION for ch in token):
+            segments.append([])
+            raw_segments.append([])
+        else:
+            segments[-1].append(token)
+            raw_segments[-1].append(raw)
+    posts: list[str] = []
+    for words, raws in zip(segments, raw_segments):
+        for at, word in enumerate(words):
+            if os.path.basename(word) not in _POST_PROGRAMS or not _runs_program(words[:at]):
+                continue
+            rest = words[at + 1 :]
+            i = 0
+            while i < len(rest) and rest[i].startswith("-"):
+                i += 2 if rest[i] in _GLOBAL_VALUE_FLAGS else 1
+            if i >= len(rest) or rest[i] not in _POST_VERBS:
+                break
+            topic = ""
+            args = rest[i + 1 :]
+            raw_args = raws[at + 1 :][i + 1 :]
+            raw_topic = ""
+            for j, arg in enumerate(args):
+                if arg == "--topic" and j + 1 < len(args):
+                    topic, raw_topic = args[j + 1], raw_args[j + 1]
+                elif arg.startswith("--topic="):
+                    topic, raw_topic = arg[len("--topic=") :], raw_args[j][len("--topic=") :]
+            # A shell variable or a substitution is not the topic the command posted to:  only the printed line says
+            # that.  (A hosted call's topic and a printed line's never went through a shell, so `$` is just text.)
+            # A topic in single quotes is literal, so it is kept:  judged from this argument's own quoting.
+            expands = any(mark in topic for mark in ("$", "`")) and raw_topic != f"'{topic}'"
+            posts.append("" if expands else _clean_topic(topic))
+            break
+    return posts or None
+
+
+def _result_text(value: Any, depth: int = 0) -> str:
+    """The text of a tool result's content (a string, or a list of text parts)."""
+    if depth > 8:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(_result_text(item, depth + 1) for item in value)
+    if isinstance(value, Mapping):
+        return _result_text(
+            value.get("text") if "text" in value else value.get("content"), depth + 1
+        )
+    return ""
+
+
+def _walk_topics(
+    value: Any, pending: dict[str, tuple[str, list[str]]], found: list[str], depth: int = 0
+) -> None:
+    """One transcript entry's part in the topic count:  a post call (a Bash `simple-chat post` or `reply`, or a hosted
+    `zulip_post` or `zulip_reply`) waits in `pending` under its tool_use id, and counts only when its own tool_result
+    comes back without an error."""
+    if depth > 40:
+        return
+    if isinstance(value, list):
+        for item in value:
+            _walk_topics(item, pending, found, depth + 1)
+        return
+    if not isinstance(value, Mapping):
+        return
+    kind = value.get("type")
+    if kind == "tool_use":
+        call_id, name, args = value.get("id"), value.get("name"), value.get("input")
+        if not (
+            isinstance(call_id, str)
+            and call_id
+            and isinstance(name, str)
+            and isinstance(args, Mapping)
+        ):
+            return
+        if _POST_TOOLS.search(name):
+            pending[call_id] = ("hosted", [_clean_topic(args.get("topic"))])
+        else:
+            posts = _command_posts(args.get("command"))
+            if posts is not None:
+                pending[call_id] = ("command", posts)
+        return
+    if kind == "tool_result":
+        call = (
+            pending.pop(value.get("tool_use_id"), None)
+            if isinstance(value.get("tool_use_id"), str)
+            else None
+        )
+        if call is None or value.get("is_error") is True:
+            return
+        how, topics = call
+        if how == "command":
+            printed = [
+                m.group(1) for m in _POSTED_LINE.finditer(_result_text(value.get("content")))
+            ]
+            topics = [_clean_topic(t) for t in printed] if printed else topics
+        found.extend(topics)
+        return
+    for item in value.values():
+        if isinstance(item, (list, Mapping)):
+            _walk_topics(item, pending, found, depth + 1)
+
+
+def topics_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> list[str]:
+    """The Zulip topics a stretch of a Claude Code transcript posted to, in the order the posts came back, each once:
+    a Bash `simple-chat post` or `reply` command the chat ran (the topic its printed `posted id N to #channel › topic`
+    line names, else its literal `--topic`), and a hosted `zulip_post` or `zulip_reply` call.  Either counts only when
+    its own tool result comes back without an error.  Nothing else is a post:  not a `--topic` in a prompt, a reply or
+    another command (`simple-chat read --topic`), and not a `posted id` line in some other tool's output (a log the
+    turn read).  A call whose result is not in these lines is not counted.  Other platforms' transcripts give none."""
+    found: list[str] = []
+    pending: dict[str, tuple[str, list[str]]] = {}
+    for _, entry in parsed_lines(lines) if parsed is None else parsed:
+        if entry is not _NOT_JSON:
+            _walk_topics(entry, pending, found)
+    seen: set[str] = set()
+    out: list[str] = []
+    for topic in found:
+        if topic and topic not in seen:
+            seen.add(topic)
+            out.append(topic)
+    return out
+
+
+def merge_topics(old: object, seen: list[str], now: float) -> list[dict[str, Any]]:
+    """The note's `topics` list with `seen` folded in:  each topic once, stamped with the last time a turn posted to
+    it, newest last, at most TOPIC_KEEP."""
+    kept: dict[str, float] = {}
+    for item in old if isinstance(old, list) else []:
+        if isinstance(item, Mapping):
+            topic = _clean_topic(item.get("topic"))
+            at = item.get("at")
+            if topic and isinstance(at, (int, float)) and not isinstance(at, bool):
+                kept.pop(topic, None)
+                kept[topic] = float(at)
+    for topic in (_clean_topic(item) for item in seen):
+        if topic:
+            kept.pop(topic, None)
+            kept[topic] = now
+    ordered = sorted(kept.items(), key=lambda kv: kv[1])[-TOPIC_KEEP:]
+    return [{"topic": topic, "at": at} for topic, at in ordered]
+
+
+def collect_issue_ids(
+    note: dict[str, Any],
+    data: Mapping[str, Any],
+    root: str,
+    run: Callable[..., Any] = subprocess.run,
+    now: float | None = None,
+) -> set[str]:
+    """The ids this turn finds, from the hook data's `transcript_path` (only the lines since the scan
+    point the note keeps) and `cwd` (its branch).  A source that fails gives nothing.  Given `now`, the
+    Zulip topics those lines posted to are folded into the note's `topics` as well (AFC-702)."""
+    found: set[str] = set()
+    path = data.get("transcript_path")
+    if isinstance(path, str) and path:
+        try:
+            lines, note["issues_scan"] = read_new_lines(path, root, note.get("issues_scan"))
+            parsed = parsed_lines(lines)  # one parse for both readers
+            found |= issue_ids_in_lines(lines, parsed)
+            if now is not None:
+                topics = topics_in_lines(lines, parsed)
+                if topics:
+                    note["topics"] = merge_topics(note.get("topics"), topics, now)
+        except (OSError, ValueError, TypeError):
+            pass
+    try:
+        found |= branch_issue_ids(data.get("cwd"), run)
+    except Exception:  # noqa: BLE001 - a hook never stops for this
+        pass
+    return found
+
+
+def sync_issues(
+    note: dict[str, Any],
+    data: Mapping[str, Any],
+    root: str,
+    now: float,
+    send: Callable[[str], Mapping[str, Any]],
+    *,
+    run: Callable[..., Any] = subprocess.run,
+) -> None:
+    """Fold this turn's ids into the note's `issues`, and tell the registry when the set of ids changed.
+
+    `send` takes the whole list as JSON (the registry's update replaces what it holds) and answers with
+    the registry's answer.  It is called only when the set of ids differs from the one the registry
+    last took (`issues_sent`), and not again for RETRY_SECONDS after a call that failed, so a registry
+    that is down, or too old to know the field, costs one call per wait.  A hook with neither a
+    transcript nor a folder in its data finds nothing and sends nothing.  Nothing here raises."""
+    try:
+        from . import operator_registry as OR
+
+        seen = collect_issue_ids(note, data, root, run, now)
+        old = note.get("issues")
+        issues = OR.merge_issues(old, seen, now) if seen else OR.normalize_issues(old or [])
+        if issues:
+            note["issues"] = issues
+        wanted = sorted(OR.issue_ids(issues))
+        if not wanted or wanted == sorted(note.get("issues_sent") or []):
+            return
+        if now - float(note.get("issues_failed_at") or 0) < RETRY_SECONDS:
+            return
+        answer = send(json.dumps(issues, separators=(",", ":")))
+        if not isinstance(answer, Mapping) or "error" in answer or answer.get("retired"):
+            note["issues_failed_at"] = now
+            return
+        taken = answer.get("issues")
+        note["issues_sent"] = sorted(OR.issue_ids(taken)) if isinstance(taken, list) else wanted
+        note.pop("issues_failed_at", None)
+    except Exception:  # noqa: BLE001 - a hook never stops for this
+        return
+
+
+def end_of_turn(
+    note: dict[str, Any],
+    data: Mapping[str, Any],
+    root: str,
+    now: float,
+    send: Callable[[str], Mapping[str, Any]],
+    *,
+    run: Callable[..., Any] = subprocess.run,
+) -> None:
+    """The end-of-turn report a platform's turn-end hook calls (AFC-702):  the Linear issues and Zulip topics the turn
+    that just ended touched, so the last turn of a chat is recorded without waiting for a next prompt.
+
+    It is the same scan the prompt hook runs (`sync_issues`), from the same scan point, so a turn is read once:  the
+    prompt hook stays the fallback for a turn whose end hook never ran (a platform with no turn-end event, a hook that
+    timed out), and finds nothing new after one that did.  The issues reach the registry;  the topics stay in the
+    chat's own note until the registry has a field for them.  Only an open chat with a letter reports.  Nothing here
+    raises, and a registry that does not answer costs at most one call per RETRY_SECONDS."""
+    if note.get("state") != "open" or not note.get("label"):
+        return
+    sync_issues(note, data, root, now, send, run=run)
+
+
+#: The note keys the end-of-turn report owns.  Only these go back into the note after the registry call.
+TURN_KEYS = ("issues", "issues_scan", "issues_sent", "issues_failed_at", "topics")
+
+
+def turn_note(
+    before: Mapping[str, Any], after: Mapping[str, Any], fresh: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """The note to save after an end-of-turn report:  the note as it is on disk now (`fresh`, read again after the
+    registry call, which can take seconds), with only TURN_KEYS taken from the report's copy (`after`;  a key the
+    report removed from `before` is removed).  So a SessionEnd or a prompt hook that wrote the note meanwhile (a
+    close, a new title) is never undone by a stale copy.  None when the note is gone:  nothing is saved."""
+    if not fresh:
+        return None
+    out = dict(fresh)
+    for key in TURN_KEYS:
+        if key in after:
+            out[key] = after[key]
+        elif key in before:
+            out.pop(key, None)
+    return out
+
+
+def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
+    """A turn ended (a spec that maps its turn-end event to `turn`):  report it, print nothing, close nothing."""
+    note = chat.read()
+    if not note:
+        return 0
+    before = copy.deepcopy(note)
+    end_of_turn(
+        note,
+        data,
+        _text(chat.env.get("HOME")) or os.path.expanduser("~"),
+        chat.now,
+        lambda text: chat.registry("issues", issues=text),
+    )
+    merged = turn_note(before, note, chat.read())
+    if merged is not None:
+        chat.write(merged)
+    return 0
+
+
+def _issues_answer(out: Mapping[str, Any]) -> dict[str, Any]:
+    """The registry side's answer to an `issues` call, from the registry's update answer."""
+    if out.get("outcome") == "closed":
+        return {"retired": True, "record_id": out.get("record_id", "")}
+    return {
+        "ok": True,
+        "record_id": out.get("record_id", ""),
+        "issues": list(out.get("issues") or []),
+    }
+
+
+def _issues_value(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text  # refused by the registry as any value that is not a list is
+
+
+def record_issues_local(OR: Any, db: str, identity: Mapping[str, Any], text: str) -> dict[str, Any]:
+    """The `issues` op on a registry file: the session's update with the list it carries."""
+    out = OR.update_session(
+        db,
+        platform=identity["platform"],
+        verified_host=identity["location"],
+        profile_scope=identity["scope"],
+        native_session_id=identity["session_id"],
+        issues=_issues_value(text),
+    )
+    return _issues_answer(out)
+
+
+def record_issues_api(
+    env: Mapping[str, str], identity: Mapping[str, Any], text: str
+) -> dict[str, Any]:
+    """The `issues` op through the registry API: its update, with the list it carries."""
+    out = _call_api(env, "update", {**identity, "issues": _issues_value(text)})
+    error = _api_error(out)
+    if error is not None:
+        return error
+    return _issues_answer(out)
 
 
 def _write_title(
@@ -1915,6 +2596,14 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             answer = _push(chat, note, "title", str(note["unsent"]))  # an earlier send failed
         elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
             answer = _push(chat, note, "touch")
+    moved = ""
+    prior = follow_letter(note, answer)
+    if prior:
+        # The registry changed this chat's letter in place: the title takes the new one, over the words the chat
+        # shows (or is about to show) with any letter it held taken off.
+        title = _follow_title(note, prior, title or current)
+        moved = relabeled(prior, str(note["label"]))
+        announce = True
     if _gone(answer):
         # The Operator has no registration for this chat any more (its letter was retired, or the registry was
         # restored from an older copy): check with it again, in case it needs a new one.
@@ -1935,11 +2624,20 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         shown = present(chat, note, title, current, data, "prompt")
     else:
         _retry_pending(chat, note, current, data)
+    if note.get("state") == "open" and note.get("label"):
+        # The Linear issues the turn before touched (AFC-694), from the transcript and folder the hook data names.
+        sync_issues(
+            note,
+            data,
+            _text(chat.env.get("HOME")) or os.path.expanduser("~"),
+            chat.now,
+            lambda text: chat.registry("issues", issues=text),
+        )
     chat.write(note)
     if announce or (shown and shown != current):
         out.emit(
             "prompt",
-            context=reminder(spec, note) if announce else "",
+            context=moved + reminder(spec, note) if announce else "",
             title=shown,
             label=str(note.get("label") or ""),
         )
@@ -1956,13 +2654,25 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if not (words or show):
         return 0
     note["seen"] = current
+    moved = ""
+    answer: dict[str, Any] = {}
     if words:
         note["title"] = words
-        _push(chat, note, "title", words)  # a failed send is kept in the note for a later prompt
+        answer = _push(
+            chat, note, "title", words
+        )  # a failed send is kept in the note for a later prompt
+    elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
+        # Only the letter was dropped, so the Operator needs no words, but the letter put back must be the one the
+        # registry holds now, so a touch that is due (TOUCH_SECONDS, as on a prompt) is made here.
+        answer = _push(chat, note, "touch")
+    prior = follow_letter(note, answer)
+    if prior:
+        show = _follow_title(note, prior, show or current)
+        moved = relabeled(prior, str(note["label"])) + reminder(chat.spec, note)
     shown = present(chat, note, show, current, data, "rename") if show else None
     chat.write(note)
-    if shown:
-        out.emit("rename", title=shown, label=str(note.get("label") or ""))
+    if shown or moved:
+        out.emit("rename", context=moved, title=shown, label=str(note.get("label") or ""))
     return 0
 
 
@@ -2090,6 +2800,8 @@ def _run_hook(
         return on_prompt(chat, data, out)
     if event == "rename":
         return on_rename(chat, data, out)
+    if event == "turn":
+        return on_turn(chat, data)
     return on_end(chat, data)
 
 

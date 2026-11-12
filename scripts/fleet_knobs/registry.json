@@ -41,7 +41,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "what the autopush hooks may do;  full also needs FLEET_AUTOPUSH_IDLE_COMMIT"
+   "note": "what the autopush hooks may do;  full also needs FLEET_AUTOPUSH_IDLE_COMMIT",
+   "folder": "/"
   },
   {
    "name": "FLEET_AUTOPUSH_REPOS",
@@ -72,7 +73,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "allowlist of owner/repo names the hooks may touch"
+   "note": "allowlist of owner/repo names the hooks may touch",
+   "folder": "/"
   },
   {
    "name": "FLEET_AUTOPUSH_IDLE_COMMIT",
@@ -108,7 +110,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "true lets the idle backstop commit on its own (mode full only)"
+   "note": "true lets the idle backstop commit on its own (mode full only)",
+   "folder": "/"
   },
   {
    "name": "FLEET_AUTOPUSH_IDLE_HOURS",
@@ -139,7 +142,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "hours a lane sits unchanged before the backstop sweep acts"
+   "note": "hours a lane sits unchanged before the backstop sweep acts",
+   "folder": "/"
   },
   {
    "name": "FLEET_AUTOPUSH_PUBLIC_DRAFTS",
@@ -170,7 +174,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "public repos where a draft PR may open;  empty means none"
+   "note": "public repos where a draft PR may open;  empty means none",
+   "folder": "/"
   },
   {
    "name": "FLEET_FACTS_SIGNING_KEY",
@@ -206,7 +211,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "HMAC key for the signed facts files;  never cached, a job without it publishes nothing"
+   "note": "HMAC key for the signed facts files;  never cached, a job without it publishes nothing",
+   "folder": "/"
   },
   {
    "name": "FLEET_FACTS_PUBLISH_FULL_COPY",
@@ -247,7 +253,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "true also publishes the full mac-facts.json, which keeps lane paths and is readable by everything that can read fleet-loops-data;  false (the default) publishes only the path-free gb/ copy and the full list"
+   "note": "true also publishes the full mac-facts.json, which keeps lane paths and is readable by everything that can read fleet-loops-data;  false (the default) publishes only the path-free gb/ copy and the full list",
+   "folder": "/"
   },
   {
    "name": "FLEET_FACTS_PUBLISH_CAP_MINUTES",
@@ -283,7 +290,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "minutes a publish run may take before it ends itself and its child processes;  10 is the least that leaves room for the gatherers (5 minutes are reserved) and the writes"
+   "note": "minutes a publish run may take before it ends itself and its child processes;  10 is the least that leaves room for the gatherers (5 minutes are reserved) and the writes",
+   "folder": "/"
   },
   {
    "name": "FLEET_FACTS_PUBLISH_MAX_LOAD1",
@@ -319,7 +327,119 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "a publish run is skipped when the one-minute load average is over this"
+   "note": "a publish run is skipped when the one-minute load average is over this",
+   "folder": "/"
+  },
+  {
+   "name": "FLEET_FACTS_RELAY_URL",
+   "label": "Facts Relay URL",
+   "group": "Facts Publisher",
+   "owner": "F7",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "",
+   "default_text": "unset",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "mac",
+   "consumers": [
+    {
+     "name": "the facts publisher",
+     "path": "scripts/fleet_facts/publish.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "^(https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]{0,200})?)?$",
+   "format": "empty, or an https URL with no userinfo",
+   "example": "https://relay.example.test",
+   "once": false,
+   "requires_explicit": false,
+   "note": "git-relay base URL for facts publishes;  empty keeps the gh contents API, and a set URL never falls back to gh",
+   "folder": "/"
+  },
+  {
+   "name": "FLEET_FACTS_RELAY_BRANCH",
+   "label": "Facts Relay Branch",
+   "group": "Facts Publisher",
+   "owner": "F7",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "",
+   "default_text": "unset",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "mac",
+   "consumers": [
+    {
+     "name": "the facts publisher",
+     "path": "scripts/fleet_facts/publish.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._/-]{0,120}$",
+   "format": "empty, or a branch name",
+   "example": "main",
+   "once": false,
+   "requires_explicit": false,
+   "note": "branch the facts publisher asks the relay to write;  it must be that repository's default branch, and it is read only when the relay URL is set",
+   "folder": "/"
+  },
+  {
+   "name": "FLEET_FACTS_RELAY_TOKEN",
+   "label": "Facts Relay Token",
+   "group": "Facts Publisher",
+   "owner": "F7",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": true,
+   "default": null,
+   "default_text": "none, fails closed",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "mac",
+   "consumers": [
+    {
+     "name": "the facts publisher",
+     "path": "scripts/fleet_facts/publish.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "seat bearer for the facts publisher's relay writes;  fetched only when the relay URL is set, never cached, and a missing token refuses the publish",
+   "folder": "/"
   },
   {
    "name": "FLEET_LOOPS_DATA_ALLOWED_APPS",
@@ -355,7 +475,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "app slugs the owner accepts as able to read the private fleet-loops-data repository;  empty means the publisher refuses while any installed app can read it"
+   "note": "app slugs the owner accepts as able to read the private fleet-loops-data repository;  empty means the publisher refuses while any installed app can read it",
+   "folder": "/"
   },
   {
    "name": "NEEDS_OWNER_NOTIFY_PAUSED",
@@ -400,7 +521,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "true pauses the fallback notifier;  an Infisical outage past the 48 hour copy limit reads false and unpauses it"
+   "note": "true pauses the fallback notifier;  an Infisical outage past the 48 hour copy limit reads false and unpauses it",
+   "folder": "/"
   },
   {
    "name": "NEEDS_OWNER_CAPS",
@@ -440,7 +562,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "notifier post caps"
+   "note": "notifier post caps",
+   "folder": "/"
   },
   {
    "name": "OWNER_LINEAR_USER_ID",
@@ -476,7 +599,95 @@
    "example": "00000000-0000-4000-8000-000000000000",
    "once": false,
    "requires_explicit": false,
-   "note": "the owner's Linear user id;  empty means no Linear reply is accepted as the owner's"
+   "note": "the owner's Linear user id;  empty means no Linear reply is accepted as the owner's",
+   "folder": "/"
+  },
+  {
+   "name": "NEEDS_OWNER_BAR",
+   "label": "Owner Bar Mode",
+   "group": "Owner Bar",
+   "owner": "C6",
+   "kind": "enum",
+   "kind_text": "enum: off < warn < enforce",
+   "choices": [
+    "off",
+    "warn",
+    "enforce"
+   ],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "off",
+   "default_text": "off",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the needs-owner filing command",
+     "path": "scripts/needs_owner/bar.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [
+    {
+     "value": "warn",
+     "text": "A needs-owner filing with no reason class still goes through,  with one warning line to the seat."
+    },
+    {
+     "value": "enforce",
+     "text": "A needs-owner filing with no reason class is refused,  so the seat decides it,  asks a peer in Side-Chats or posts to Pending-for-Jay."
+    }
+   ],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "how hard the bar is on `needs-owner file`;  off changes nothing, warn files the item and warns when --why-owner is missing, enforce refuses a filing with no reason class;  an unreadable or unknown value is off",
+   "folder": "/"
+  },
+  {
+   "name": "NEEDS_OWNER_SEAT_DAILY_MAX",
+   "label": "Owner Bar Daily Filing Cap",
+   "group": "Owner Bar",
+   "owner": "C6",
+   "kind": "int",
+   "kind_text": "int 0 to 50",
+   "choices": [],
+   "minimum": 0,
+   "maximum": 50,
+   "unit": "filings a day",
+   "step": 1,
+   "secret": false,
+   "default": "0",
+   "default_text": "0",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the needs-owner filing command",
+     "path": "scripts/needs_owner/bar.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "most needs-owner items one seat may file in 24 hours, counted on the host that files them;  0 means no cap;  applies in warn (a warning) and enforce (a refusal) and never in off",
+   "folder": "/"
   },
   {
    "name": "CLAIM_EXPIRY_MODE",
@@ -516,7 +727,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "act also needs CLAIM_EXPIRY_LAUNCH_AT"
+   "note": "act also needs CLAIM_EXPIRY_LAUNCH_AT",
+   "folder": "/"
   },
   {
    "name": "CLAIM_EXPIRY_CAPS",
@@ -551,7 +763,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "code ceilings are the same numbers;  Infisical can lower them"
+   "note": "code ceilings are the same numbers;  Infisical can lower them",
+   "folder": "/"
   },
   {
    "name": "CLAIM_EXPIRY_LAUNCH_AT",
@@ -582,7 +795,8 @@
    "example": "2026-11-05T09:00:00-06:00",
    "once": true,
    "requires_explicit": false,
-   "note": "ISO 8601 time the claim clock starts, set once;  empty means the clock has not started"
+   "note": "ISO 8601 time the claim clock starts, set once;  empty means the clock has not started",
+   "folder": "/"
   },
   {
    "name": "ASK_CAPTURE_ENABLED",
@@ -613,7 +827,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "false turns the capture hooks and the drain off"
+   "note": "false turns the capture hooks and the drain off",
+   "folder": "/"
   },
   {
    "name": "ASK_CAPTURE_SHADOW",
@@ -649,7 +864,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "true appends would-file rows for review and never calls board"
+   "note": "true appends would-file rows for review and never calls board",
+   "folder": "/"
   },
   {
    "name": "ASK_CAPTURE_CAPS",
@@ -684,7 +900,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "extractor and filing caps"
+   "note": "extractor and filing caps",
+   "folder": "/"
   },
   {
    "name": "LANE_SWEEP_MODE",
@@ -728,7 +945,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "act arms merges and retires merged-PR lanes;  retire adds the Phase 3 deletions"
+   "note": "act arms merges and retires merged-PR lanes;  retire adds the Phase 3 deletions",
+   "folder": "/"
   },
   {
    "name": "LANE_SWEEP_CAPS",
@@ -762,7 +980,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "sweep action caps"
+   "note": "sweep action caps",
+   "folder": "/"
   },
   {
    "name": "LANE_SWEEP_OPTIN_REPOS",
@@ -793,7 +1012,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "money-path repos the sweep may act on;  empty means none"
+   "note": "money-path repos the sweep may act on;  empty means none",
+   "folder": "/"
   },
   {
    "name": "OPERATOR_API_URL",
@@ -829,7 +1049,8 @@
    "example": "https://operator.example.com",
    "once": false,
    "requires_explicit": false,
-   "note": "the Operator API's https origin (no path):  where simple-notes, the stdio MCP and the Mac runner send Apple Notes requests off a Mac (docs/protocols/operator-notes.md);  empty means not configured;  the Worker has the same origin as its LISTENER_API_URL var"
+   "note": "the Operator API's https origin (no path):  where simple-notes, the stdio MCP and the Mac runner send Apple Notes requests off a Mac (docs/protocols/operator-notes.md);  empty means not configured;  the Worker has the same origin as its LISTENER_API_URL var",
+   "folder": "/"
   },
   {
    "name": "APPLE_NOTES_PIN_RETRY",
@@ -865,7 +1086,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a local narrowing override and can turn the retry off, never on"
+   "note": "true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a local narrowing override and can turn the retry off, never on",
+   "folder": "/"
   },
   {
    "name": "CONSULT_ENABLED",
@@ -896,7 +1118,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "false refuses every consult verb"
+   "note": "false refuses every consult verb",
+   "folder": "/"
   },
   {
    "name": "FLEET_SHEET_INGEST_ENABLED",
@@ -932,7 +1155,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "false writes the registry mirror and skips the `recall ingest --source doc` that carries it;  the sheet itself is still written"
+   "note": "false writes the registry mirror and skips the `recall ingest --source doc` that carries it;  the sheet itself is still written",
+   "folder": "/"
   },
   {
    "name": "FLEET_SHEET_INGEST_TIMEOUT_MS",
@@ -968,7 +1192,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "milliseconds the Fleet RAG ingest may run before fleet-apps-sheet-sync.mjs gives up on it;  a full corpus walk took about 43 minutes, so the default is 90;  a local file may only lower it"
+   "note": "milliseconds the Fleet RAG ingest may run before fleet-apps-sheet-sync.mjs gives up on it;  a full corpus walk took about 43 minutes, so the default is 90;  a local file may only lower it",
+   "folder": "/"
   },
   {
    "name": "COMPLIANCE_CERT_EXPIRY_DAYS",
@@ -1004,7 +1229,8 @@
    "example": "",
    "once": false,
    "requires_explicit": true,
-   "note": "days before an Apple signing certificate expires that the fleet-config compliance rule calls a finding;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use"
+   "note": "days before an Apple signing certificate expires that the fleet-config compliance rule calls a finding;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use",
+   "folder": "/"
   },
   {
    "name": "COMPLIANCE_SECRETS_FINDINGS_MAX",
@@ -1040,7 +1266,8 @@
    "example": "",
    "once": false,
    "requires_explicit": true,
-   "note": "how many secrets-hygiene findings the fleet-config compliance rule tolerates;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use"
+   "note": "how many secrets-hygiene findings the fleet-config compliance rule tolerates;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use",
+   "folder": "/"
   },
   {
    "name": "CF_USAGE_WATCHDOG_MODE",
@@ -1084,7 +1311,8 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "observe only alerts;  enforce also stops the Worker behind a breach.  A STOP file in the watchdog's state directory forces observe"
+   "note": "observe only alerts;  enforce also stops the Worker behind a breach.  A STOP file in the watchdog's state directory forces observe",
+   "folder": "/"
   },
   {
    "name": "CF_USAGE_WATCHDOG_PROFILE",
@@ -1123,7 +1351,659 @@
    "example": "",
    "once": false,
    "requires_explicit": false,
-   "note": "which threshold profile in config.json applies:  paid catches runaways, free is 80% of the Free caps"
+   "note": "which threshold profile in config.json applies:  paid catches runaways, free is 80% of the Free caps",
+   "folder": "/"
+  },
+  {
+   "name": "WAKE_ROUTER_DELIVERY_ENABLED",
+   "label": "Wake Delivery On",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "bool",
+   "kind_text": "bool",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "false",
+   "default_text": "false",
+   "cap_names": [],
+   "safe": false,
+   "narrower": null,
+   "local": "narrow",
+   "local_rule": "A local file can only set it to false.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [
+    {
+     "value": "true",
+     "knob": "WAKE_ROUTER_DELIVERY_SEATS"
+    }
+   ],
+   "consequences": [
+    {
+     "value": "true",
+     "text": "The wake router delivers wakes for the seats listed."
+    }
+   ],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "false makes the wake router pick and write receipts and deliver nothing;  true also needs the seat named in WAKE_ROUTER_DELIVERY_SEATS",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_DELIVERY_SEATS",
+   "label": "Seats Wake Delivery Covers",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "list",
+   "kind_text": "list",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "",
+   "default_text": "empty",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "the seats the wake router may deliver for;  empty means none, whatever WAKE_ROUTER_DELIVERY_ENABLED says",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_WORKERS",
+   "label": "Wake Router Workers",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 64",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 64,
+   "unit": "threads",
+   "step": 1,
+   "secret": false,
+   "default": "4",
+   "default_text": "4",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "narrow",
+   "local_rule": "A local file can only lower it.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "wake router worker threads;  read when the router starts, so a new value needs a restart",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_MAX_DELIVERIES",
+   "label": "Most Wake Deliveries At Once",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 256",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 256,
+   "unit": "deliveries",
+   "step": 1,
+   "secret": false,
+   "default": "16",
+   "default_text": "16",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "narrow",
+   "local_rule": "A local file can only lower it.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "deliveries that may run at once, each of which may be a whole headless turn",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_MAX_ATTEMPTS",
+   "label": "Most Wake Delivery Tries",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 50",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 50,
+   "unit": "tries",
+   "step": 1,
+   "secret": false,
+   "default": "5",
+   "default_text": "5",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "narrow",
+   "local_rule": "A local file can only lower it.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "failed tries before a wake ends in a dead receipt;  a busy or unreachable chat uses up none",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_RETRY_BACKOFF",
+   "label": "Wake Retry Backoff",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "30,120,300,900",
+   "default_text": "30,120,300,900",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "^[1-9][0-9]{0,5}(,[1-9][0-9]{0,5}){0,15}$",
+   "format": "whole seconds separated by commas",
+   "example": "30,120,300,900",
+   "once": false,
+   "requires_explicit": false,
+   "note": "seconds to wait after each failed try, in order;  the last repeats",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_BUSY_RETRY_SECONDS",
+   "label": "Busy Chat Retry Wait",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 3600",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 3600,
+   "unit": "seconds",
+   "step": 1,
+   "secret": false,
+   "default": "30",
+   "default_text": "30",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "max",
+   "local": "narrow",
+   "local_rule": "A local file can only raise it.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "seconds before asking a busy chat again",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_UNREACHABLE_RETRY_SECONDS",
+   "label": "Unreachable Host Retry Wait",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 86400",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 86400,
+   "unit": "seconds",
+   "step": 1,
+   "secret": false,
+   "default": "300",
+   "default_text": "300",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "max",
+   "local": "narrow",
+   "local_rule": "A local file can only raise it.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "seconds before trying a host that did not answer again",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_MAX_AGE_SECONDS",
+   "label": "Longest A Wake May Wait",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 60 to 604800",
+   "choices": [],
+   "minimum": 60,
+   "maximum": 604800,
+   "unit": "seconds",
+   "step": 1,
+   "secret": false,
+   "default": "86400",
+   "default_text": "86400",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "narrow",
+   "local_rule": "A local file can only lower it.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "how long a wake may wait before it ends in a dead receipt",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_SHUTDOWN_WAIT_SECONDS",
+   "label": "Wake Router Shutdown Wait",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 3600",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 3600,
+   "unit": "seconds",
+   "step": 1,
+   "secret": false,
+   "default": "1000",
+   "default_text": "1000",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "what a SIGTERM waits for running deliveries;  keep it above the resume limit plus 60 and below the service's stop timeout, or a restart closes a delivery as interrupted",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_RESUME_TIMEOUT_SECONDS",
+   "label": "Wake Resume Time Limit",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 60 to 3600",
+   "choices": [],
+   "minimum": 60,
+   "maximum": 3600,
+   "unit": "seconds",
+   "step": 1,
+   "secret": false,
+   "default": "900",
+   "default_text": "900",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "narrow",
+   "local_rule": "A local file can only lower it.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "how long one headless resume of a chat may run before it is stopped and refused",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_CONFIRM_SECONDS",
+   "label": "Wake Confirmation Wait",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 1 to 300",
+   "choices": [],
+   "minimum": 1,
+   "maximum": 300,
+   "unit": "seconds",
+   "step": 1,
+   "secret": false,
+   "default": "20",
+   "default_text": "20",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "narrow",
+   "local_rule": "A local file can only lower it.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "how long a socket delivery watches the chat's transcript for proof it arrived",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_SETTINGS_REFRESH_SECONDS",
+   "label": "Wake Router Settings Refresh",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "int",
+   "kind_text": "int 30 to 86400",
+   "choices": [],
+   "minimum": 30,
+   "maximum": 86400,
+   "unit": "seconds",
+   "step": 1,
+   "secret": false,
+   "default": "300",
+   "default_text": "300",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "min",
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "how often the wake router reads these knobs again;  SIGHUP reads them at once",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_MAC_SSH",
+   "label": "Wake Router Mac Destination",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "",
+   "default_text": "unset",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]*$",
+   "format": "an ssh destination, with no options",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "the ssh destination of the Mac for wakes to its chats, and the only one;  empty means a wake to a Mac chat is refused as no-ssh-destination",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "WAKE_ROUTER_KEY",
+   "label": "Wake Router Bearer",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": true,
+   "default": null,
+   "default_text": "none, fails closed",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "narrow",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "server",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "the one bearer the wake router checks on every request, for every seat;  never written to disk, held in memory through a failed refresh and changed only by a fetch that worked, and while the router holds none it refuses every request and says why on /health",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+   "label": "Operator Registry Address",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": false,
+   "default": "",
+   "default_text": "unset",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    },
+    {
+     "name": "the registry client",
+     "path": "scripts/simple_tools/registry_api.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$",
+   "format": "an https origin, with no path",
+   "example": "https://registry.example.com",
+   "once": false,
+   "requires_explicit": false,
+   "note": "the Operator registry API's origin (no path);  the server's wake router reads the registry at it, and registry_api falls back to it for a process environment that does not set it (the Mac's wake-deliver keeps the shared registry env file);  http only to a loopback address;  empty means not configured, so every pick is a bounded retry and /health says so",
+   "folder": "/wake-router"
+  },
+  {
+   "name": "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+   "label": "Operator Registry Key",
+   "group": "Wake Router",
+   "owner": "W2",
+   "kind": "str",
+   "kind_text": "str",
+   "choices": [],
+   "minimum": null,
+   "maximum": null,
+   "unit": "",
+   "step": 1,
+   "secret": true,
+   "default": null,
+   "default_text": "none, fails closed",
+   "cap_names": [],
+   "safe": null,
+   "narrower": null,
+   "local": "narrow",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the wake router",
+     "path": "scripts/simple_tools/wake_settings.py"
+    },
+    {
+     "name": "the registry client",
+     "path": "scripts/simple_tools/registry_api.py"
+    },
+    {
+     "name": "the Eavesdropper's loader",
+     "path": "scripts/simple_tools/server/infisical_env.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "the one key Operator registry calls are signed with (at least 32 characters, as the registry requires);  the server's wake router holds it like its bearer, and registry_api falls back to it for a process environment that does not set it;  without it every registry call answers not configured and the router's /health says so",
+   "folder": "/wake-router"
   }
  ]
 }
