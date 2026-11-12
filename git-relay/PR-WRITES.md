@@ -50,6 +50,24 @@ transport failure, 404, 408, 429, 5xx, or a 403 with Retry-After is retried
 after 0.5 then 1 second, or after Retry-After when that still fits the budget;
 any other status, a mismatch, or a wait that does not fit ends it at once.
 
+The budget is a real deadline: the body is read one raw receive at a time
+(read1) and checked after each, so a read that trickles past it fails the
+attempt as a transport failure (readback_status 0). At most one socket
+operation (3 seconds) can overshoot; a peer trickling the response headers
+before the body is not bounded by this deadline.
+It also starts when open_pr starts, not after the create: the budget is the
+smaller of 8 seconds and CALLER_BUDGET_SECONDS (30, the MCP wrapper's own wait)
+less the time already spent and READBACK_MARGIN_SECONDS (4). When less than
+READBACK_MIN_ATTEMPT_SECONDS (1) is left the read-back is skipped and the
+answer is the same outcome UNKNOWN, held, with github_code
+open_pr_readback_skipped and readback_status 0. A draft create whose own
+receipt does not verify (another URL, or draft not true) is github_code
+open_pr_receipt_mismatch, with the number in the audit row only as
+unconfirmed_number. The read-back GET carries the same credential selection as
+the create. The MCP wrapper's outcome_unknown answer carries github_code,
+readback_status and readback_retry_after_seconds from this answer, and never a
+number or URL.
+
 The store records unknown, not ok: an identical retry returns 409 with zero
 upstream calls, so it cannot open a duplicate pull request and cannot replay a
 success that was never confirmed. Re-verifying on the retry was rejected: the

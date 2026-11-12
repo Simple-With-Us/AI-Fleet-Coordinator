@@ -35,6 +35,20 @@ READBACK_ATTEMPTS = 3
 READBACK_BACKOFF_SECONDS = (0.5, 1.0)
 # A further attempt is made only when at least this much of the budget would be left for it.
 READBACK_MIN_ATTEMPT_SECONDS = 1
+# The whole open_pr call (create and read-back) must finish inside the MCP wrapper's own wait,
+# mcp_server.TIMEOUT_SECONDS (30), or that caller reports an unknown outcome while the relay is
+# still working.  Kept as a documented constant, not an import, so the two modules stay
+# independent;  a test pins the two equal.  The read-back budget starts when open_pr begins:
+# min(READBACK_BUDGET_SECONDS, CALLER_BUDGET_SECONDS - time already spent - the margin).
+CALLER_BUDGET_SECONDS = 30
+# Held back for the one socket operation that can outlast the deadline (at most
+# READBACK_TIMEOUT_SECONDS, since the body is read with read1) plus the relay's own handling.
+# Not covered:  the response headers arrive inside urllib's opener, before any deadline check, so
+# a peer that trickles its headers can still run one attempt past the deadline.
+READBACK_MARGIN_SECONDS = 4
+# The read-back reads its body in pieces of at most this size, one raw receive per piece, and
+# checks its deadline after each.
+READBACK_READ_CHUNK = 16384
 MAX_DISPATCH_INPUTS = 32
 MAX_DISPATCH_INPUT_VALUE = 1024
 
@@ -348,7 +362,14 @@ class GitHubClient:
         expected_status=None,
         allow_empty_object=False,
         timeout=None,
+        deadline=None,
     ) -> dict:
+        """deadline is an absolute self._clock() time for the whole answer.
+
+        urllib's timeout bounds each socket operation, not the call, so a peer that trickles
+        bytes keeps one read alive.  With a deadline the body is read in pieces and the
+        deadline is checked between them;  expiry is a transport failure (status 0).
+        """
         if bearer is not None and not bearer:
             # Fail closed:  an empty task credential must never fall back to the
             # owner token and run a privileged write under the wrong identity.
@@ -374,7 +395,10 @@ class GitHubClient:
         )
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS if timeout is None else timeout) as resp:
-                raw = resp.read(limit + 1)
+                if deadline is None:
+                    raw = resp.read(limit + 1)
+                else:
+                    raw = self._read_until(resp, limit + 1, deadline)
                 completion_body_ok = not raw
                 if allow_empty_object and expected_status in (201, 202):
                     try:
@@ -442,6 +466,27 @@ class GitHubClient:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
+
+    def _read_until(self, resp, size: int, deadline) -> bytes:
+        """Read up to size bytes in pieces, giving up once the clock passes the deadline.
+
+        A real http.client response blocks inside read(n) until n bytes or EOF, and each raw
+        receive restarts the socket timeout, so read(n) could outlive the deadline.  read1(n)
+        returns after one raw receive, so the deadline is checked after every socket operation;
+        a response without read1 (a test double) falls back to read.
+        """
+        pieces = []
+        total = 0
+        step = getattr(resp, "read1", None) or resp.read
+        while total < size:
+            if self._clock() >= deadline:
+                raise RelayGitHubError(0, "connection failed: read deadline exceeded")
+            piece = step(min(READBACK_READ_CHUNK, size - total))
+            if not piece:
+                break
+            pieces.append(piece)
+            total += len(piece)
+        return b"".join(pieces)
 
     def upload_release_asset(self, repo, release_id, name, content, bearer, max_bytes=32768):
         """Fixed GitHub upload host, own bearer, no redirects or arbitrary URL."""
@@ -663,8 +708,18 @@ class GitHubClient:
         return _create_repo_receipt(repo, found, "already_exists")
 
     def open_pr(
-        self, repo: str, base: str, head: str, title: str, body: str, draft: bool = False
+        self,
+        repo: str,
+        base: str,
+        head: str,
+        title: str,
+        body: str,
+        draft: bool = False,
+        bearer=None,
     ) -> dict:
+        """Create the pull request, then read it back.  bearer selects the credential for
+        both the create and the read-back (None is the client's own token)."""
+        started = self._clock()
         self._check_repo(repo)
         if type(draft) is not bool:
             raise ValueError("draft must be a boolean")
@@ -675,6 +730,7 @@ class GitHubClient:
             "POST",
             f"/repos/{repo}/pulls",
             payload,
+            bearer=bearer,
         )
         if draft:
             number = data.get("number") if isinstance(data, dict) else None
@@ -692,7 +748,14 @@ class GitHubClient:
                 or full_name.casefold() != repo.casefold()
                 or data.get("draft") is not True
             ):
-                raise RelayGitHubError(502, "draft PR creation outcome unverifiable")
+                # The create answered 2xx:  a pull request may exist.  The number, when the
+                # answer had a usable one, is audit-only (unconfirmed), never answered.
+                raise RelayGitHubError(
+                    502,
+                    "draft PR creation outcome unverifiable",
+                    code="open_pr_receipt_mismatch",
+                    unconfirmed_number=number,
+                )
         number = data.get("number") if isinstance(data, dict) else None
         if type(number) is not int or not 1 <= number <= 2**53 - 1:
             # The create answered 2xx without a usable number:  a pull request may exist, so
@@ -700,14 +763,32 @@ class GitHubClient:
             raise RelayGitHubError(
                 502, "PR creation receipt carried no usable number", code="open_pr_receipt_invalid"
             )
-        self._confirm_pr_after_create(repo, number, base, head, draft, data.get("html_url"))
+        # The budget runs from the start of this call, so create plus read-back stay inside
+        # the caller's own wait.  Too little left:  skip the read-back, outcome unknown.
+        budget = min(
+            READBACK_BUDGET_SECONDS,
+            CALLER_BUDGET_SECONDS - (self._clock() - started) - READBACK_MARGIN_SECONDS,
+        )
+        if budget < READBACK_MIN_ATTEMPT_SECONDS:
+            raise RelayGitHubError(
+                502,
+                "PR was created but the caller's time ran out before its read-back",
+                code="open_pr_readback_skipped",
+                readback_status=0,
+                unconfirmed_number=number,
+            )
+        self._confirm_pr_after_create(
+            repo, number, base, head, draft, data.get("html_url"), bearer, budget
+        )
         return {"number": number, "url": data.get("html_url"), "verified": True}
 
-    def _read_back_pr(self, repo: str, number: int):
+    def _read_back_pr(self, repo: str, number: int, bearer=None, budget=READBACK_BUDGET_SECONDS):
         """GET the new pull request, retrying a read that may only be early or throttled.
 
-        At most READBACK_ATTEMPTS reads, each with READBACK_TIMEOUT_SECONDS, all inside
-        READBACK_BUDGET_SECONDS.  A transport failure, 404 (the new pull request is not
+        At most READBACK_ATTEMPTS reads, each with READBACK_TIMEOUT_SECONDS, all inside the
+        budget (READBACK_BUDGET_SECONDS, less when the create used up the caller's time), as
+        a real deadline:  a body that trickles past it fails the attempt.  The reads carry
+        the create's bearer.  A transport failure, 404 (the new pull request is not
         readable yet), 408, 429, 5xx, or a 403 that names a Retry-After is retried after the
         longer of the backoff and the Retry-After, when that still fits the budget.  Any
         other answer, or an exhausted budget, ends the read-back.
@@ -716,14 +797,16 @@ class GitHubClient:
         attempt = 0
         while True:
             attempt += 1
-            remaining = READBACK_BUDGET_SECONDS - (self._clock() - started)
+            remaining = budget - (self._clock() - started)
             try:
                 return self._call(
                     "GET",
                     f"/repos/{repo}/pulls/{number}",
+                    bearer=bearer,
                     timeout=max(
                         READBACK_MIN_ATTEMPT_SECONDS, min(READBACK_TIMEOUT_SECONDS, remaining)
                     ),
+                    deadline=started + budget,
                 )
             except RelayGitHubError as exc:
                 failure = exc
@@ -736,7 +819,7 @@ class GitHubClient:
             if retryable and attempt < READBACK_ATTEMPTS:
                 wait = max(READBACK_BACKOFF_SECONDS[attempt - 1], failure.retry_after or 0)
                 spent = self._clock() - started
-                if spent + wait + READBACK_MIN_ATTEMPT_SECONDS > READBACK_BUDGET_SECONDS:
+                if spent + wait + READBACK_MIN_ATTEMPT_SECONDS > budget:
                     wait = None
             if wait is None:
                 # 502 is the relay's classification (outcome unknown, key held).  What the
@@ -753,16 +836,24 @@ class GitHubClient:
             self._sleep(wait)
 
     def _confirm_pr_after_create(
-        self, repo: str, number: int, base: str, head: str, draft: bool, created_url=None
+        self,
+        repo: str,
+        number: int,
+        base: str,
+        head: str,
+        draft: bool,
+        created_url=None,
+        bearer=None,
+        budget=READBACK_BUDGET_SECONDS,
     ) -> None:
-        """Read the new pull request back with the same owner token the create used.
+        """Read the new pull request back with the same credential the create used.
 
         A number is reported only for a pull request the provider confirms.  Every failure
         here is raised as 502, which the relay records as outcome UNKNOWN and holds:  the
         create already answered 2xx, so a 404, a 429 or a transport error on this read is
         not a refusal of the write and must not release the key for a second create.
         """
-        found = self._read_back_pr(repo, number)
+        found = self._read_back_pr(repo, number, bearer, budget)
         # The answer's url is the create's html_url:  it is reported only when both the
         # create and the read-back name this repository's own page for this number.
         want_url = f"https://github.com/{repo}/pull/{number}".casefold()

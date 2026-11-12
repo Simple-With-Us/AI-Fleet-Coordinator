@@ -56,8 +56,13 @@ class FakeResponse:
     def __init__(self, payload: dict):
         self._raw = json.dumps(payload).encode()
 
-    def read(self, _limit: int) -> bytes:
-        return self._raw
+    _pos = 0
+
+    def read(self, limit: int) -> bytes:
+        # Like a real response:  at most limit bytes, then empty once the body is consumed.
+        piece = self._raw[self._pos : self._pos + limit]
+        self._pos += len(piece)
+        return piece
 
     def __enter__(self):
         return self
