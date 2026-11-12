@@ -6,7 +6,7 @@
 //   (f3)  a seat-to-seat attempt is refused and no message of any kind is sent
 //   (f4)  a seat's ping to Jay is refused and points at Pending-for-Jay
 //         a reply inside a DM Operator opened stays allowed
-//   OPERATOR may open only a clarifying question
+//   no clarifying-question allowance:  the Operator asks nobody (owner ruling, Nov 10, 2026)
 //
 // No dependencies:  CI runs this with plain `node --test`.
 
@@ -162,13 +162,24 @@ test("a conversation the seat opened itself is still refused after 50 messages",
 });
 
 // Operator is deliberately NOT in KNOWN_SEATS:  it is the server-side admin seat, not an OAuth
-// connector seat, so no hosted grant may act as it.  The one-DM-it-may-open rule is therefore
-// unreachable from here and is proven in scripts/simple_tools/tests/test_dm_rule.py instead;  what
-// this transport must prove is that no hosted seat can open a DM at all.
-test("no hosted seat can act as Operator to reach the clarifying-question allowance", async () => {
-  const { tools, codex } = harness();
-  const error = errorOf(await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "which seat?", clarifying_question: true }), "dm_not_allowed");
-  assert.match(error.message, /may not open a new direct message/);
+// connector seat, so no hosted grant may act as it.  What this transport must prove is that no
+// hosted seat can open a DM at all, and that the old clarifying-question flag is no longer an
+// argument:  the Operator asks nobody (owner ruling, Nov 10, 2026), so there is no allowance to claim.
+test("zulip_dm_send has no clarifying-question argument, and the guidance offers none", async () => {
+  const { tools, fake, codex } = harness();
+  // The closed schema refuses the old argument before the DM rule runs:  on the code before this
+  // change it reached the rule and was refused as dm_not_allowed instead.
+  const stale = errorOf(await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "which seat?", clarifying_question: true }), "invalid_argument");
+  assert.match(stale.message, /unknown argument 'clarifying_question'/);
+  assert.deepEqual(directMessages(fake), [], "nothing was sent");
+  // A person who is neither a bot nor the owner gets the `people` guidance, the sentence that used
+  // to offer a clarifying question.
+  const ana = fake.addUser("ana@zulip.test", "Ana");
+  const error = errorOf(await tools.call("zulip_dm_send", { user_ids: [ana.user_id], text: "which seat?" }), "dm_not_allowed");
+  assert.match(error.message, /may not open a new direct message \(people\)/);
+  assert.match(error.message, /Direct messages are Operator's to open/);
+  assert.doesNotMatch(error.message, /clarifying/);
+  assert.deepEqual(directMessages(fake), [], "nothing was sent");
 });
 
 test("the DM-rule check is metered as a read, and a cached send does not pay for it twice", async () => {
