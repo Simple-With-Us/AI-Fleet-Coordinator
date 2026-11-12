@@ -32,12 +32,13 @@ this way for the rest of the session.
 > Brief each worker thoroughly: exact paths, what you already verified, what you ruled out, the
 > exact commands to run, because every fact you withhold it must rediscover at its own cost.
 > Give it only the tools it needs; a read-only job gets read-only tools.  Spawn in the
-> background and do other useful work while it runs.  Never spend a turn just checking whether a
-> worker finished.
+> background and do other useful work while it runs.  When only their results remain, end
+> the turn.  Their completion notification starts the turn that collects them.  Never spend
+> a turn just checking whether a worker finished.
 >
 > Carry the work to done.  I often want agents to do entire projects autonomously without any
 > input from me, so never cut a turn short, stop early, or end a turn to "stay available" while
-> work remains.  Keep going until the work is done or a decision is truly mine.
+> work you can still do remains.  Keep going until that work is done or a decision is truly mine.
 >
 > The sharp test: if the material is not already in your context, delegate — reading it inline
 > costs you again on every later turn.  If it already is, stay inline.
@@ -58,7 +59,7 @@ sub-parts you must first discover — you delegate.  A leaf worker may still sp
 genuinely separable, expensive sub-part; it must never fan out its whole assignment and return
 empty.
 
-Whoever delegates owns collecting the result and reporting it concretely before ending the turn.
+Whoever delegates owns the result.  When the workers are still running and nothing else is left to do, end the turn so their completion notification starts the turn that collects the result and reports it.  Do not end the turn while you still have work you can do.
 
 ## Why this is the standard
 

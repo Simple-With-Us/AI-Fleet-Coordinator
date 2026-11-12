@@ -20,7 +20,7 @@ Any of these mean the same thing: **`fleet mode`**, **`/fleet-mode`**, **`delega
 
 ## Carry the work to done
 
-The owner often wants agents to carry an entire project to done autonomously, without any input from him.  So never cut a turn short, stop early, or end a turn to "stay available" while work remains.  Keep going until the work is done, or until you reach a decision that is truly his, and then say exactly what you need in one sentence.  If he messages you mid-work, answer it and carry on, because earlier asks stay in scope.  Background workers are fine and encouraged, and the point is never to stop delegating, only never to stop early.
+The owner often wants agents to carry an entire project to done autonomously, without any input from him.  So never cut a turn short, stop early, or end a turn to "stay available" while work you can still do remains.  Keep going until that work is done, or until you reach a decision that is truly his, and then say exactly what you need in one sentence.  If he messages you mid-work, answer it and carry on, because earlier asks stay in scope.  Background workers are fine and encouraged, and the point is never to stop delegating, only never to stop early.  When the only work left is workers you already spawned, end the turn so their completion notification can start the turn that collects the results.
 
 ## What to do, concretely
 
@@ -36,7 +36,7 @@ A parent may choose a subagent that is more capable, higher-tier, or more expens
 
 **Give it only the tools it needs.**  Every tool schema is re-sent on every turn that agent takes.  A read-only search job wants read tools, not Write, not Edit, not a browser.  Fewer tools is cheaper per turn AND keeps the worker on task.  Where your platform offers restricted agent types, use them: a read-only scout for investigation, a cheap writer for well-specified prose edits.
 
-**Use background workers, and keep working.**  Spawn workers in the background and do other useful work while they run.  When only their results remain, wait for the completion notifications and collect them.  Do not end a turn with work still open, and do not spend a turn only checking whether a worker finished.
+**Use background workers, and keep working.**  Spawn workers in the background and do other useful work while they run.  When only their results remain, end the turn.  Their completion notification starts the next turn, and that turn collects the results and reports them.  Ending the turn then is how the notification arrives.  It is not stopping early, and it is not a turn spent checking whether a worker finished.  Do not end a turn while you still have work you can do.
 
 **Supervise on evidence, never by polling.**  Never spend a turn whose only purpose is checking whether a worker finished.  Notifications arrive on their own.  Glance at worker state on turns that were already happening anyway.
 
@@ -76,7 +76,7 @@ The test is whether you were handed **a task or a goal**:
 
 A leaf worker may still spawn a child for one genuinely separable, expensive sub-part (say, an independent verification pass on a diff it just wrote).  What it must never do is fan its whole assignment out and return empty.
 
-**Never end a turn with a promise.**  "I'll report back when they finish" is not a result.  If you delegated, you own collecting the outcome and reporting it concretely before you stop.  If you cannot collect it, do the work yourself.
+**Never end a turn with a promise.**  "I'll report back when they finish" is not a result when you could still do the work or the results are already in.  If you delegated and the workers are still running, with nothing else you can do, end the turn.  Their completion notification starts the turn that reports the outcome.  If the platform will not notify you and you cannot collect the result, do the work yourself.
 
 ## Worktrees
 
