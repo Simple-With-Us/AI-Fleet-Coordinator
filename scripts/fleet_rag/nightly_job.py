@@ -48,8 +48,8 @@ from simple_tools.secretscan import scan as scan_secrets
 from fleet_rag import ingest, mirror
 from fleet_rag.core import FleetRagError, infisical_api, infisical_project
 
-# The command the timer runs.  --no-heartbeat keeps the process off fleet-secrets,
-# which is the machine-identity reader.  Apple Notes are not in the source list.
+# The command the timer runs.  --no-heartbeat keeps the process off fleet-secrets.
+# Apple Notes are not in the source list.  Credentials come from scoped service tokens.
 INGEST_ARGV = ["--source", "linear,doc,skill,memory", "--prune", "--no-heartbeat"]
 INGEST_SOURCES = ("linear", "doc", "skill", "memory")
 
