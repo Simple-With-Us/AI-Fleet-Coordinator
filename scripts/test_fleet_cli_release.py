@@ -194,6 +194,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn(path, release.REQUIRED)
         for path in [
             "scripts/fleet_rag/eval.py",
+            "scripts/fleet_rag/retrieval_eval.py",
+            "scripts/fleet_rag/retrieval_golden.json",
             "scripts/fleet_rag/ingest.py",
             "scripts/fleet_rag/golden.jsonl",
             "scripts/fleet_rag/tests/test_core.py",
