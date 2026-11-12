@@ -1365,6 +1365,29 @@ export function loadRegistry(file) {
   return reg;
 }
 
+/**
+ * Every non-skipped app's `paths` must exist on that repo's default branch (main).
+ * Stale directory names (for example a retired `native/ios` tree) make the freshness
+ * check think no commit ever touches the app.
+ */
+export async function assertRegistryPathsExist(registry, gh) {
+  const missing = [];
+  for (const [key, app] of Object.entries(registry.apps)) {
+    if (app.skip) continue;
+    const repo = `${registry.owner}/${app.repo}`;
+    for (const p of app.paths || []) {
+      const enc = p.split("/").map(encodeURIComponent).join("/");
+      try {
+        await gh(`repos/${repo}/contents/${enc}?ref=main`);
+      } catch (err) {
+        const detail = err.notFound ? "not found on main" : String(err.message || err);
+        missing.push(`${key}: ${repo}/${p} (${detail})`);
+      }
+    }
+  }
+  if (missing.length) throw new Error(`testflight-apps.json paths:  ${missing.join(";  ")}`);
+}
+
 export async function runCheck(opts, deps, registry) {
   const now = deps.now();
   const errors = [];

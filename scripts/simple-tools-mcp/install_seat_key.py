@@ -49,13 +49,10 @@ from fleet_secrets import core as scoped_secrets
 WRANGLER_JSONC = HERE / "wrangler.jsonc"
 INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator (INFISICAL.md)
-FLEET_OPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"  # Fleet-OPS (fleet-secrets core.py)
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
-INFISICAL_TOKEN_ENVS = {
-    INFISICAL_PROJECT: "SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN",
-    FLEET_OPS_PROJECT: "SIMPLE_TOOLS_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN",
-}
+AFC_TOKEN_ENV = "SIMPLE_TOOLS_MCP_SEAT_KEY_AFC_INFISICAL_READ_TOKEN"
+FLEET_OPS_TOKEN_ENV = "SIMPLE_TOOLS_MCP_SEAT_KEY_FLEETOPS_INFISICAL_READ_TOKEN"
 REALM = "https://simplewithus.zulipchat.com"
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
 MEMBER_ROLE = 400
@@ -70,8 +67,7 @@ SEATS = {
     # The Fleet-OPS seats carry a 5-tuple:  (project, email name, key name,
     # Worker secret name, email var).  A None project is the Fleet-OPS project,
     # resolved at call time by fleet_ops_project():  env
-    # INFISICAL_FLEET_OPS_PROJECT_ID, then ~/.simple-tools/fleet-ops-project-id,
-    # then the FLEET_OPS_PROJECT fallback.
+    # INFISICAL_FLEET_OPS_PROJECT_ID, then ~/.simple-tools/fleet-ops-project-id.
     #
     # Codex's bot key already lives in Fleet-OPS prod /zulip as CODEX_ZULIP_*
     # (names verified live 2026-10-23):  read it there instead of duplicating
@@ -123,9 +119,7 @@ def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
 def fleet_ops_project() -> str:
     """Fleet-OPS project id: env INFISICAL_FLEET_OPS_PROJECT_ID, then the first
     line of ~/.simple-tools/fleet-ops-project-id (same sources as
-    scripts/fleet_secrets/core.py), with the committed constant as the fallback
-    when neither is set.  A value that is set but is not a UUID fails closed,
-    naming both sources and never echoing the value, as fleet-secrets does."""
+    scripts/fleet_secrets/core.py).  Fails closed when neither holds a UUID."""
     value = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
     if not value:
         try:
@@ -140,7 +134,10 @@ def fleet_ops_project() -> str:
             # RuntimeError:  Path.home() when no home directory can be found.
             value = ""
     if not value:
-        return FLEET_OPS_PROJECT
+        fail(
+            "the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID "
+            "or put it in ~/.simple-tools/fleet-ops-project-id (it lives in the private fleet-ops inventory)"
+        )
     if not UUID_RE.match(value):
         fail(
             "the Fleet-OPS Infisical project id (INFISICAL_FLEET_OPS_PROJECT_ID or "
@@ -239,8 +236,11 @@ def infisical_pair(
     email_name: str, key_name: str, project: str = INFISICAL_PROJECT
 ) -> tuple[str, str]:
     """(email, key) for a seat from Infisical.  Neither is printed."""
-    token_name = INFISICAL_TOKEN_ENVS.get(project)
-    if token_name is None:
+    if project == INFISICAL_PROJECT:
+        token_name = AFC_TOKEN_ENV
+    elif project == fleet_ops_project():
+        token_name = FLEET_OPS_TOKEN_ENV
+    else:
         fail("unsupported Infisical project")
     token = os.environ.get(token_name, "").strip()
     if (
