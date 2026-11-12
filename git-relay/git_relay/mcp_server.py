@@ -90,7 +90,16 @@ TIMEOUT_SECONDS = 30
 TOOLS = [
     {
         "name": "open_pr",
-        "description": "Open a pull request as the relay's GitHub identity",
+        "description": (
+            "Open a pull request as the relay's GitHub identity.  The new pull request is "
+            "read back from GitHub before the answer:  a success carries number, url and "
+            "verified true.  If the create answered but the read back fails or does not "
+            "match repo, base, head and url (and draft when requested), the answer is "
+            "outcome unknown with no number, and readback_status says what the read "
+            "back answered:  "
+            "check the repository for the pull request before any retry, because an "
+            "identical call is refused until the outcome is reconciled."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {

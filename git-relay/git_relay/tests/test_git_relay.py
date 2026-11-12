@@ -256,7 +256,15 @@ class TestAudit(unittest.TestCase):
 
 class TestClient(unittest.TestCase):
     def test_open_pr_posts_to_pulls_with_auth(self):
-        opener = FakeOpener({"number": 7, "html_url": "https://x/pr/7"})
+        # One payload answers both the create and the read-back of the same pull request.
+        opener = FakeOpener(
+            {
+                "number": 7,
+                "html_url": "https://github.com/o/r/pull/7",
+                "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+                "head": {"ref": "feat", "label": "o:feat"},
+            }
+        )
         client = GitHubClient("tok", base_url="https://api.test", opener=opener)
         result = client.open_pr("o/r", "main", "feat", "t", "b")
         req = opener.requests[0]
@@ -264,7 +272,15 @@ class TestClient(unittest.TestCase):
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(req.get_header("Authorization"), "Bearer tok")
         self.assertEqual(json.loads(req.data)["head"], "feat")
-        self.assertEqual(result, {"number": 7, "url": "https://x/pr/7"})
+        self.assertEqual(
+            result, {"number": 7, "url": "https://github.com/o/r/pull/7", "verified": True}
+        )
+        readback = opener.requests[1]
+        self.assertEqual(len(opener.requests), 2)
+        self.assertEqual(readback.full_url, "https://api.test/repos/o/r/pulls/7")
+        self.assertEqual(readback.get_method(), "GET")
+        self.assertEqual(readback.get_header("Authorization"), "Bearer tok")
+        self.assertIsNone(readback.data)
 
     def test_reply_thread_carries_in_reply_to(self):
         opener = FakeOpener({"id": 5, "html_url": "u"})

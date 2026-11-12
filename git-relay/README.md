@@ -42,12 +42,35 @@ the owner's cutover decision.
 
 | Action | Endpoint | Body | GitHub call |
 | --- | --- | --- | --- |
-| open_pr | POST /v1/open_pr | repo, base, head, title, body | POST /repos/{repo}/pulls |
+| open_pr | POST /v1/open_pr | repo, base, head, title, body, draft? | POST /repos/{repo}/pulls, then GET /repos/{repo}/pulls/{number} |
 | edit_pr | POST /v1/edit_pr | repo, number, title?, body? | PATCH /repos/{repo}/pulls/{number} |
 | reply_thread | POST /v1/reply_thread | repo, number, comment_id, body | POST /repos/{repo}/pulls/{number}/comments (in_reply_to) |
 | comment_pr | POST /v1/comment_pr | repo, number, body | POST /repos/{repo}/issues/{number}/comments |
 
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
+
+`open_pr` never reports a number for a pull request it has not seen.  After the create answers,
+the relay reads the pull request back by number with the same owner token and checks the number,
+the repository, the base branch and the head branch (and the owner, for an `owner:branch` or
+`owner:repo:branch` head), and draft when a draft was requested.  The `url` is checked too:  the
+create and the read-back must both name `https://github.com/{repo}/pull/{number}`.
+A success is `{"number", "url", "verified": true}`.  When the create answered but the read-back
+fails (a transport error or any HTTP error, 404 and 429 included) or does not match, the answer
+is 502 with `"outcome": "unknown"`, `"retryable": false` and `github_code`
+`open_pr_readback_failed` or `open_pr_readback_mismatch` (`open_pr_receipt_invalid` when the
+create answer had no usable number), and no number or URL.  `github_status` is 502 for every
+read-back failure, because 502 is the relay's classification (outcome unknown, key held);  the
+cause is in `github_code`, and what the read-back itself answered is in `readback_status` (the
+HTTP status, 0 for a transport failure or an unreadable body, 200 for a mismatch) with
+`readback_retry_after_seconds` when GitHub named a wait.  The read-back is bounded:  at most 3
+reads of 3 seconds each inside 8 seconds in total, waiting 0.5 then 1 second (or GitHub's
+Retry-After, when it fits) after a transport failure, 404, 408, 429, 5xx or a 403 that names a
+Retry-After;  any other status, or a mismatch, is not retried.  The outcome store holds that key as
+unknown:  an identical call answers 409 with no GitHub call, so it can neither open a second
+pull request nor replay an unconfirmed success.  A held key is never evicted and counts toward
+the store's capacity until an operator reconciles it;  the audit row carries the number the
+create named as `unconfirmed_number` for that.  Look for the pull request in the repository
+before any retry.
 
 Only opening a PR is authored as the owner through the scoped PR-only token.  Edits, review
 replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
@@ -353,7 +376,9 @@ arguments, with explicit pending / ok / refused / unknown states.  A 4xx answer 
 definite refusal and releases the key, with two exceptions:  408 (request timeout) can arrive
 after GitHub applied the write, so it is treated as outcome UNKNOWN, and 429 is simply
 retryable.  A transport failure or 5xx likewise leaves the outcome UNKNOWN:  the relay answers 502 with `"retryable": false`, and an identical
-replay is refused with 409 until the seat checks GitHub and changes the request.  A replay of a
+replay is refused with 409 until the seat checks GitHub and changes the request.  An `open_pr`
+whose create answered but whose read-back failed or did not match is recorded the same way, as
+unknown and never as ok, so no later call replays its number.  A replay of a
 successful call returns the stored result without touching GitHub twice.  A crash mid-write loads
 as unknown - the store fails closed, never replays.  The registry is bounded:  ok rows are
 evicted after a 24 h replay window, refused rows are evicted oldest-first under capacity, and

@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import parse_qsl, quote
@@ -25,6 +26,15 @@ MAX_BODY = 1024 * 1024
 MAX_PAGE_BODY = 8 * 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
+# open_pr's read-back runs after the create already answered, inside the same caller wait.
+# It gets a short timeout of its own and a total budget (attempts, waits and all), so the
+# two calls together stay well inside the callers' own timeouts.
+READBACK_TIMEOUT_SECONDS = 3
+READBACK_BUDGET_SECONDS = 8
+READBACK_ATTEMPTS = 3
+READBACK_BACKOFF_SECONDS = (0.5, 1.0)
+# A further attempt is made only when at least this much of the budget would be left for it.
+READBACK_MIN_ATTEMPT_SECONDS = 1
 MAX_DISPATCH_INPUTS = 32
 MAX_DISPATCH_INPUT_VALUE = 1024
 
@@ -190,9 +200,22 @@ class RelayGitHubError(Exception):
         credential_preview: str | None = None,
         diagnostics: dict | None = None,
         moved_repository_id: int | None = None,
+        readback_status: int | None = None,
+        unconfirmed_number: int | None = None,
     ):
         super().__init__(f"github {status}: {message}")
         self.status = status
+        # Set only by open_pr's read-back:  what the read-back GET itself answered (0 for a
+        # transport failure, the HTTP status otherwise, 200 for a mismatch), and the number
+        # the create named but the read-back did not confirm.  Numbers, never upstream text.
+        self.readback_status = (
+            readback_status if type(readback_status) is int and 0 <= readback_status <= 599 else None
+        )
+        self.unconfirmed_number = (
+            unconfirmed_number
+            if type(unconfirmed_number) is int and 0 < unconfirmed_number <= 2**53 - 1
+            else None
+        )
         self.message = message
         self.code = code
         # Set only with code "repository_moved":  the numeric id GitHub's redirect named
@@ -310,6 +333,9 @@ class GitHubClient:
         self._token = token
         self._base = base_url.rstrip("/")
         self._opener = opener or urllib.request.build_opener(_NoRedirect()).open
+        # Injectable so a test can run open_pr's read-back retries without waiting.
+        self._sleep = time.sleep
+        self._clock = time.monotonic
 
     def _call(
         self,
@@ -319,6 +345,7 @@ class GitHubClient:
         bearer=None,
         expected_status=None,
         allow_empty_object=False,
+        timeout=None,
     ) -> dict:
         if bearer is not None and not bearer:
             # Fail closed:  an empty task credential must never fall back to the
@@ -344,7 +371,9 @@ class GitHubClient:
             },
         )
         try:
-            with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
+            with self._opener(
+                req, timeout=TIMEOUT_SECONDS if timeout is None else timeout
+            ) as resp:
                 raw = resp.read(limit + 1)
                 completion_body_ok = not raw
                 if allow_empty_object and expected_status in (201, 202):
@@ -664,7 +693,123 @@ class GitHubClient:
                 or data.get("draft") is not True
             ):
                 raise RelayGitHubError(502, "draft PR creation outcome unverifiable")
-        return {"number": data.get("number"), "url": data.get("html_url")}
+        number = data.get("number") if isinstance(data, dict) else None
+        if type(number) is not int or not 1 <= number <= 2**53 - 1:
+            # The create answered 2xx without a usable number:  a pull request may exist, so
+            # the outcome is unknown, never a success and never a retryable refusal.
+            raise RelayGitHubError(
+                502, "PR creation receipt carried no usable number", code="open_pr_receipt_invalid"
+            )
+        self._confirm_pr_after_create(repo, number, base, head, draft, data.get("html_url"))
+        return {"number": number, "url": data.get("html_url"), "verified": True}
+
+    def _read_back_pr(self, repo: str, number: int):
+        """GET the new pull request, retrying a read that may only be early or throttled.
+
+        At most READBACK_ATTEMPTS reads, each with READBACK_TIMEOUT_SECONDS, all inside
+        READBACK_BUDGET_SECONDS.  A transport failure, 404 (the new pull request is not
+        readable yet), 408, 429, 5xx, or a 403 that names a Retry-After is retried after the
+        longer of the backoff and the Retry-After, when that still fits the budget.  Any
+        other answer, or an exhausted budget, ends the read-back.
+        """
+        started = self._clock()
+        attempt = 0
+        while True:
+            attempt += 1
+            remaining = READBACK_BUDGET_SECONDS - (self._clock() - started)
+            try:
+                return self._call(
+                    "GET",
+                    f"/repos/{repo}/pulls/{number}",
+                    timeout=max(
+                        READBACK_MIN_ATTEMPT_SECONDS, min(READBACK_TIMEOUT_SECONDS, remaining)
+                    ),
+                )
+            except RelayGitHubError as exc:
+                failure = exc
+            retryable = (
+                failure.status in (0, 404, 408, 429)
+                or failure.status >= 500
+                or (failure.status == 403 and failure.retry_after is not None)
+            )
+            wait = None
+            if retryable and attempt < READBACK_ATTEMPTS:
+                wait = max(READBACK_BACKOFF_SECONDS[attempt - 1], failure.retry_after or 0)
+                spent = self._clock() - started
+                if spent + wait + READBACK_MIN_ATTEMPT_SECONDS > READBACK_BUDGET_SECONDS:
+                    wait = None
+            if wait is None:
+                # 502 is the relay's classification (outcome unknown, key held).  What the
+                # read-back itself answered travels in readback_status and retry_after.
+                raise RelayGitHubError(
+                    502,
+                    "PR was created but its read-back failed",
+                    code="open_pr_readback_failed",
+                    retry_after=failure.retry_after,
+                    diagnostics=failure.diagnostics,
+                    readback_status=failure.status,
+                    unconfirmed_number=number,
+                ) from None
+            self._sleep(wait)
+
+    def _confirm_pr_after_create(
+        self, repo: str, number: int, base: str, head: str, draft: bool, created_url=None
+    ) -> None:
+        """Read the new pull request back with the same owner token the create used.
+
+        A number is reported only for a pull request the provider confirms.  Every failure
+        here is raised as 502, which the relay records as outcome UNKNOWN and holds:  the
+        create already answered 2xx, so a 404, a 429 or a transport error on this read is
+        not a refusal of the write and must not release the key for a second create.
+        """
+        found = self._read_back_pr(repo, number)
+        # The answer's url is the create's html_url:  it is reported only when both the
+        # create and the read-back name this repository's own page for this number.
+        want_url = f"https://github.com/{repo}/pull/{number}".casefold()
+        found_url = found.get("html_url") if isinstance(found, dict) else None
+        urls_ok = all(
+            isinstance(url, str) and len(url) <= 2048 and url.casefold() == want_url
+            for url in (created_url, found_url)
+        )
+        base_row = found.get("base") if isinstance(found, dict) else None
+        head_row = found.get("head") if isinstance(found, dict) else None
+        base_repo = base_row.get("repo") if isinstance(base_row, dict) else None
+        full_name = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+        base_ref = base_row.get("ref") if isinstance(base_row, dict) else None
+        head_ref = head_row.get("ref") if isinstance(head_row, dict) else None
+        head_label = head_row.get("label") if isinstance(head_row, dict) else None
+        prefix = "refs/heads/"
+        want_base = base[len(prefix) :] if base.startswith(prefix) else base
+        # ``owner:branch`` or ``owner:repo:branch``:  the owner is before the first colon and
+        # the branch after the last (a branch name cannot contain a colon).
+        want_owner, sep, _ = head.partition(":")
+        want_head = head.rpartition(":")[2]
+        if want_head.startswith(prefix):
+            want_head = want_head[len(prefix) :]
+        if (
+            not urls_ok
+            or type(found.get("number") if isinstance(found, dict) else None) is not int
+            or found["number"] != number
+            or not isinstance(full_name, str)
+            or full_name.casefold() != repo.casefold()
+            or base_ref != want_base
+            or head_ref != want_head
+            or (
+                sep
+                and (
+                    not isinstance(head_label, str)
+                    or head_label.partition(":")[0].casefold() != want_owner.casefold()
+                )
+            )
+            or (draft and found.get("draft") is not True)
+        ):
+            raise RelayGitHubError(
+                502,
+                "PR read-back did not match the request",
+                code="open_pr_readback_mismatch",
+                readback_status=200,
+                unconfirmed_number=number,
+            )
 
     def edit_pr(
         self, repo: str, number: int, title: str | None, body: str | None, bearer=None
