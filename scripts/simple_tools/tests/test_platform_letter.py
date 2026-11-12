@@ -1433,6 +1433,11 @@ class HookTests(Base):
         single = [self.calls(("a", "Bash", {"command": "simple-chat post --topic 'Price $5' -b y"})),
                   self.results(("a", "{}", False))]
         self.assertEqual(PL.topics_in_lines(single), ["Price $5"])
+        # A quoted copy of the text elsewhere in the command does not make an expanding topic literal.
+        other = [self.calls(("a", "Bash", {"command": "echo 'x $T y'; simple-chat post --topic $T -b 'a'; "
+                                                      "echo '$T'"})),
+                 self.results(("a", "{}", False))]
+        self.assertEqual(PL.topics_in_lines(other), [])
         # A literal `$VAR` in the command is not the topic, and with no printed line it names nothing.
         bare = [self.calls(("a", "Bash", {"command": 'simple-chat post --topic "$T" -b y'})),
                 self.results(("a", "{}", False))]

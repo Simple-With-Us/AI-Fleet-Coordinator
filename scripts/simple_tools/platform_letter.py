@@ -1866,7 +1866,24 @@ _SHELL_PUNCTUATION = ";&|()\n"
 # The words that may stand before the program in the command that runs it:  a wrapper (and its flags and their
 # values) or a shell keyword.  `echo simple-chat post ...` only names the program, so it is not a post.
 _PREFIX_WORDS = frozenset(
-    {"sudo", "env", "command", "nohup", "time", "exec", "timeout", "nice", "ionice", "stdbuf", "then", "do", "else", "if", "while", "!"}
+    {
+        "sudo",
+        "env",
+        "command",
+        "nohup",
+        "time",
+        "exec",
+        "timeout",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "then",
+        "do",
+        "else",
+        "if",
+        "while",
+        "!",
+    }
 )
 _ASSIGNMENT = re.compile("^[A-Za-z_][A-Za-z0-9_]*=")
 _DURATION = re.compile("^[0-9]+(?:[.][0-9]+)?[smhd]?$")  # `timeout 10 simple-chat ...`
@@ -1894,27 +1911,39 @@ def _runs_program(before: list[str]) -> bool:
     return True
 
 
+def _shell_tokens(command: str, posix: bool) -> list[str]:
+    lexer = shlex.shlex(command, posix=posix, punctuation_chars=_SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"  # a newline ends a command, as `;` does
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
 def _command_posts(command: object) -> list[str] | None:
     """The literal `--topic` of each `simple-chat` (or `agent-sync`) `post` or `reply` in one shell command, or None
     when the command posts nothing.  A topic that is not literal (a `$VAR`) is kept as "" so the printed line can
     name it.  `read --topic`, another program's `--topic` and a command that does not parse are not posts."""
     if not isinstance(command, str):
         return None
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=_SHELL_PUNCTUATION)
-    lexer.whitespace = " \t\r"  # a newline ends a command, as `;` does
-    lexer.whitespace_split = True
     try:
-        tokens = list(lexer)
+        tokens = _shell_tokens(command, True)
+        raw_tokens = _shell_tokens(command, False)  # the same words with their quotes kept
     except ValueError:
         return None
+    if len(raw_tokens) != len(tokens):
+        raw_tokens = [""] * len(
+            tokens
+        )  # no quoting to go by:  a `$` topic then needs the printed line
     segments: list[list[str]] = [[]]
-    for token in tokens:
+    raw_segments: list[list[str]] = [[]]
+    for token, raw in zip(tokens, raw_tokens):
         if token and all(ch in _SHELL_PUNCTUATION for ch in token):
             segments.append([])
+            raw_segments.append([])
         else:
             segments[-1].append(token)
+            raw_segments[-1].append(raw)
     posts: list[str] = []
-    for words in segments:
+    for words, raws in zip(segments, raw_segments):
         for at, word in enumerate(words):
             if os.path.basename(word) not in _POST_PROGRAMS or not _runs_program(words[:at]):
                 continue
@@ -1926,15 +1955,17 @@ def _command_posts(command: object) -> list[str] | None:
                 break
             topic = ""
             args = rest[i + 1 :]
+            raw_args = raws[at + 1 :][i + 1 :]
+            raw_topic = ""
             for j, arg in enumerate(args):
                 if arg == "--topic" and j + 1 < len(args):
-                    topic = args[j + 1]
+                    topic, raw_topic = args[j + 1], raw_args[j + 1]
                 elif arg.startswith("--topic="):
-                    topic = arg[len("--topic=") :]
+                    topic, raw_topic = arg[len("--topic=") :], raw_args[j][len("--topic=") :]
             # A shell variable or a substitution is not the topic the command posted to:  only the printed line says
             # that.  (A hosted call's topic and a printed line's never went through a shell, so `$` is just text.)
-            # A topic in single quotes is literal, so it is kept (the lexer has already removed the quotes).
-            expands = any(mark in topic for mark in ("$", "`")) and f"'{topic}'" not in command
+            # A topic in single quotes is literal, so it is kept:  judged from this argument's own quoting.
+            expands = any(mark in topic for mark in ("$", "`")) and raw_topic != f"'{topic}'"
             posts.append("" if expands else _clean_topic(topic))
             break
     return posts or None
