@@ -249,6 +249,7 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
 # for the core ones).
 # fleetlink_* are FleetLink's own CLI, `fleetlink` (its MCP_TO_CLI table in the FleetLink repo,
 # test/cli-mcp-parity.test.mjs);  the stdio server runs each one as `fleetlink tool NAME` (fleetlink_tools.py).
+# peer_actions_log runs `simple-peer-actions log`.
 EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
@@ -270,6 +271,7 @@ EXTERNAL_CLI: dict[str, str] = {
     "fleetlink_renew_share": "fleetlink renew",
     "fleetlink_delete_share": "fleetlink delete",
     "fleetlink_whoami": "fleetlink whoami",
+    "peer_actions_log": "simple-peer-actions log",
 }
 UPLOAD_MCP_MAX = 1024 * 1024  # an MCP upload carries the file in its arguments:  at most 1 MB
 UNTRUSTED_NOTE = (
@@ -321,16 +323,17 @@ def _load(path: str) -> dict[str, Any]:
 def load_served_tools() -> dict[str, Any]:
     """What stdio tools/list serves:  tools.json, then eavesdropper-tools.json, notes-tools.json (the notes_*
     tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js), the linear_*
-    tools from the board catalogs (linear_tools.py) and fleetlink-tools.json (the fleetlink_* tools, generated
-    from the hosted src/fleetlink.js).  The hosted Worker serves the same names."""
+    tools from the board catalogs (linear_tools.py), peer-actions-tools.json (peer_actions_log) and
+    fleetlink-tools.json (the fleetlink_* tools, generated from the hosted src/fleetlink.js, served last).
+    The hosted Worker serves the same names."""
     return {
         "tools": load_tools()["tools"]
         + load_eavesdropper_tools()["tools"]
         + _load(NOTES_TOOLS_PATH)["tools"]
         + _load(RECALL_TOOLS_PATH)["tools"]
         + LINEAR.tool_specs()
-        + _load(FLEETLINK_TOOLS_PATH)["tools"]
         + _load(PEER_ACTIONS_TOOLS_PATH)["tools"]
+        + _load(FLEETLINK_TOOLS_PATH)["tools"]
     }
 
 
