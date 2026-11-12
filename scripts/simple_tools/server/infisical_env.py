@@ -528,7 +528,8 @@ def _wake_router_token(env: Mapping[str, str]) -> str:
     token = (env.get(WAKE_ROUTER_TOKEN) or "").strip()
     if not token:
         raise LoadError(
-            "configuration: missing %s (the read-only token for prod %s)" % (WAKE_ROUTER_TOKEN, WAKE_ROUTER_PATH)
+            "configuration: missing %s (the read-only token for prod %s)"
+            % (WAKE_ROUTER_TOKEN, WAKE_ROUTER_PATH)
         )
     if not SERVICE_TOKEN_RE.fullmatch(token):
         raise LoadError("service-token: %s is invalid" % WAKE_ROUTER_TOKEN)
@@ -549,7 +550,9 @@ def wake_router_values(env: Mapping[str, str], **kw) -> dict[str, str]:
     )
 
 
-def resolve_infisical_only(folders: Mapping[str, Mapping[str, str]]) -> tuple[dict[str, str], list[str]]:
+def resolve_infisical_only(
+    folders: Mapping[str, Mapping[str, str]],
+) -> tuple[dict[str, str], list[str]]:
     """({exported name: value}, ["NAME from /folder", ...]).  Raises naming every missing NAME and folder."""
     values: dict[str, str] = {}
     sources: list[str] = []
@@ -557,13 +560,18 @@ def resolve_infisical_only(folders: Mapping[str, Mapping[str, str]]) -> tuple[di
     for export, options in INFISICAL_ONLY:
         for folder, name in options:
             if folder not in folders:
-                raise LoadError("configuration: %s is read from %s, which this loader does not read" % (name, folder))
+                raise LoadError(
+                    "configuration: %s is read from %s, which this loader does not read"
+                    % (name, folder)
+                )
         for folder, name in options:
             value = (folders[folder].get(name) or "").strip()
             if value:
                 values[export] = value
                 sources.append(
-                    "%s from %s" % (export, folder) if name == export else "%s from %s %s" % (export, folder, name)
+                    "%s from %s" % (export, folder)
+                    if name == export
+                    else "%s from %s %s" % (export, folder, name)
                 )
                 break
         else:
@@ -571,11 +579,16 @@ def resolve_infisical_only(folders: Mapping[str, Mapping[str, str]]) -> tuple[di
                 "%s (%s)"
                 % (
                     export,
-                    " or ".join(folder if name == export else "%s %s" % (folder, name) for folder, name in options),
+                    " or ".join(
+                        folder if name == export else "%s %s" % (folder, name)
+                        for folder, name in options
+                    ),
                 )
             )
     if missing:
-        raise LoadError("Infisical is missing %s;  a container copy is never used" % ", ".join(missing))
+        raise LoadError(
+            "Infisical is missing %s;  a container copy is never used" % ", ".join(missing)
+        )
     return values, sources
 
 
@@ -631,7 +644,11 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         len(OPERATOR_NAMES),
     )
     only_values, only_sources = resolve_infisical_only(
-        {primary_path: found, OPERATOR_PATH: operator_all, WAKE_ROUTER_PATH: wake_router_values(env, **kw)}
+        {
+            primary_path: found,
+            OPERATOR_PATH: operator_all,
+            WAKE_ROUTER_PATH: wake_router_values(env, **kw),
+        }
     )
     read_keys, read_note = listener_read_keys(env, codes, **kw)
     if (env.get(LISTENER_READ_PROJECT) or "").strip():
