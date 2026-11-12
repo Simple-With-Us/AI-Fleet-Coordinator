@@ -31,7 +31,7 @@ The rules that hold for every field:
     a flag that only switches something on (`known`, `fallback.stands_in`) reads as not set.  The
     daemon writes booleans, so no real document is affected, and the check is by identity on
     purpose (`is True`, never `== 1`).
-  * Lists are capped (seats, leases per seat, names), so a hostile document cannot make a large
+  * Lists are capped (seats, leases per seat, names, refused sweep platforms), so a hostile document cannot make a large
     answer.
 
 The document:
@@ -56,9 +56,21 @@ The document:
                             "verified_host": "mac" | "server" | "cloud" | null,
                             "why": token | null, "topics": int | null,
                             "watcher": bool | null}],
-                "letters": {"known": bool, "why": "partial" | null}}],
+                "letters": {"known": bool, "why": "partial" | null},
+                "routine": {"ready": bool | null,
+                            "auth": "header" | "bearer" | "hmac-sha256" | "other" | null,
+                            "why": "routine_not_configured" | "routine_key_refused" |
+                                   "routine_url_refused" | "other" | null} | null}],
      "skipped": [{"seat": name, "reason": token}],
-     "disabled": [name]}
+     "disabled": [name],
+     "registry_sweep": {"ran_at": ISO | null, "ok": bool | null, "ended": int | null,
+                        "error": code | null, "stale_after_minutes": int | null,
+                        "refused": int | null, "refused_platforms": [token]}}
+
+`registry_sweep` was added after v1 shipped.  It is additive:  a reader that does not know the key
+ignores it, so `schema` stays 1.  Each seat's `routine` came later still, in the same way:  a
+reader that does not know it ignores it, and a reader that does must allow for a document from an
+older reducer that has no `routine` key at all.
 
 Where each field comes from (`Daemon.status()` in daemon.py, which this module reads and never
 changes):
@@ -112,6 +124,29 @@ changes):
   * `skipped` is the source's `skipped_seats`.  Its problems are config error text, so the first
     problem of each seat is classified into a fixed vocabulary and the text is dropped.
     `disabled` is the source's `disabled`.
+  * `registry_sweep` is the source's `registry_sweep` (AFC-721):  the one stale sweeper's last pass
+    on the server (`listener_registry.Sweeper.run`), cut down to counts.  `ran_at` is the pass's
+    `ran_at` (epoch seconds), `ok`, `ended` and `stale_after_minutes` are the source's own, and
+    `refused` is how many (platform, host) groups the share guard held back, counted from the
+    source's `refused` list.  `refused_platforms` is the platforms of those groups, each once,
+    sorted, at most MAX_SWEEP_PLATFORMS, and only those that are a token.  `error` is the source's
+    `error` when it is already a code (`sweep_share_exceeded`);  a store problem is written by the
+    source as an exception's class name and message, so the class picks a fixed code
+    (`registry_unavailable`, or `registry_error` for any other class whose name ends in Error)
+    and the message is dropped;  anything else is null.  A
+    block that is absent (the Mac, a listener from before AFC-721, or a server before its first
+    pass, all of which write null) or is not an object reads as all null with no platforms, as
+    `operator_voice` does.
+  * `routine` is the source seat's `routine` block, which the daemon writes only for a seat whose
+    wake is "http" (a seat that wakes through the router) and as null for every other seat.  It
+    says whether the router the seat's wakes go to is ready, never whether a wake reached anyone.
+    `ready` is the source's `ready` flag.  `auth` is the routine's auth mode when it is one of
+    the modes the daemon's config allows (`config.ROUTINE_AUTH`), "other" for any other value,
+    and null when the source has none (an "http" seat with no routine block).  `why` is the
+    reason the routine is not ready when it is one of the codes `adapters.resolve_routine` writes,
+    "other" for any other value, and null when the source's is null (a ready routine).  A block
+    that is absent, null or not an object is null, so a seat that does not wake through the
+    router reads as null.
 
 What the source does NOT carry, and so is null here (or never produced) whatever the document says:
 
@@ -130,14 +165,20 @@ What the source does NOT carry, and so is null here (or never produced) whatever
 
 Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partition_file`,
 `owner_user_id`, `loop_guard`, `chat_nudges`, `pid`, `version`, `started`, each
-seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `routine`, `pin`, `pinned`, `model`, `red`, `live`,
+seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
 lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652
 planned-drain checklist, on-host operator tooling the fleet CLI reads from the raw status.json
 before a SIGTERM, and its terminal rows name message ids and effect reasons - an id and free
 text are exactly what this document never emits, and the apps have no drain surface to feed.
-`registry_sweep` (AFC-721) is not read:  it is the one stale sweeper's last pass on the server,
-with letters and record ids in it, for the Eavesdropper's own status readers.
+Of `registry_sweep`, only the fields above are read.  Its `platforms` (the session letters and
+registry record ids of every chat a pass ended, by platform and seat) and each refused entry's
+`host`, `open` and `would_end` are never read:  a record id is an id, and the letters and hosts
+of ended chats are for the Eavesdropper's own status readers (fleet-ops-ctl eavesdropper-status),
+not the apps.
+Of a seat's `routine`, only `ready`, `auth` and `why` are read.  Its `host` (the router's host
+name), `detail` (a sentence that names environment variables) and `method` are never read, and no
+value of `auth` or `why` is copied unless it is one of the fixed words above.
 """
 
 from __future__ import annotations
@@ -163,6 +204,7 @@ MAX_SEATS = 96
 MAX_LEASES = 16
 MAX_NAMES = 96
 MAX_SKIPPED = 64
+MAX_SWEEP_PLATFORMS = 16
 COUNT_MAX = 1_000_000_000
 TOKEN_MAX = 24
 CODE_MAX = 48
@@ -215,6 +257,11 @@ _LEASE_WHY = {
 }
 _NOT_INTERACTIVE = "not an interactive claude"
 
+# A routine's auth modes (`config.ROUTINE_AUTH`), and the codes `adapters.resolve_routine` gives
+# for a routine that is not ready.  Nothing else is ever copied from the source's `routine`.
+_ROUTINE_AUTH = ("header", "bearer", "hmac-sha256")
+_ROUTINE_WHY = ("routine_not_configured", "routine_key_refused", "routine_url_refused")
+
 # The first matching fragment of a skipped seat's first config problem picks its reason.
 _SKIP_REASONS = (
     ("not a valid seat section", "invalid_section"),
@@ -227,6 +274,12 @@ _SKIP_REASONS = (
     ("environment variable", "invalid_environment"),
     ("_env", "invalid_environment"),
 )
+
+# A sweep that failed on its store writes "<exception class>: <message>" as its error
+# (`listener_registry.Sweeper.run`).  The class picks the code;  the message is never read.  Only
+# a name shaped like an exception class counts (RegistryUnavailable, or one ending in Error).
+_SWEEP_ERROR_CLASS_RE = re.compile(r"([A-Z][A-Za-z0-9]{0,63}): ")
+_SWEEP_ERROR_CLASSES = {"RegistryUnavailable": "registry_unavailable"}
 
 _DIGITS_RE = re.compile(r"[0-9]{7,}")
 _WORD_EDGE = ".,:;!?'\"()[]{}<>*#"
@@ -496,6 +549,27 @@ def _letters(leases: list[Any]) -> dict[str, Any]:
     return {"known": False, "why": "partial" if lettered else None}
 
 
+def _fixed_word(value: Any, words: tuple[str, ...]) -> str | None:
+    """`value` when it is one of `words`, null when it is null, and "other" for anything else."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value in words:
+        return value
+    return "other"
+
+
+def _routine(raw: Any) -> dict[str, Any] | None:
+    """The source's `routine` block as a flag and two fixed words, or null when it is absent,
+    null or not an object.  Its `host`, `detail` and `method` are never read."""
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "ready": _bool(raw.get("ready")),
+        "auth": _fixed_word(raw.get("auth"), _ROUTINE_AUTH),
+        "why": _fixed_word(raw.get("why"), _ROUTINE_WHY),
+    }
+
+
 def _seat(name: str, row: dict[str, Any], fresh: bool) -> dict[str, Any]:
     raw_leases = row.get("leases")
     leases = raw_leases[:MAX_LEASES] if isinstance(raw_leases, list) else []
@@ -515,6 +589,7 @@ def _seat(name: str, row: dict[str, Any], fresh: bool) -> dict[str, Any]:
         "quota": _quota(row.get("quota")),
         "leases": [item for item in (_lease(lease) for lease in leases) if item is not None],
         "letters": _letters(leases),
+        "routine": _routine(row.get("routine")),
     }
 
 
@@ -566,6 +641,49 @@ def _disabled(raw: Any) -> list[str]:
     return sorted(names)[:MAX_NAMES]
 
 
+def _sweep_error(value: Any) -> str | None:
+    """The sweep's error as a code:  already one, or picked by the exception class it names."""
+    code = _code(value)
+    if code is not None or not isinstance(value, str):
+        return code
+    found = _SWEEP_ERROR_CLASS_RE.match(value[:80])
+    if found is None:
+        return None
+    name = found.group(1)
+    if name in _SWEEP_ERROR_CLASSES:
+        return _SWEEP_ERROR_CLASSES[name]
+    return "registry_error" if name.endswith("Error") else None
+
+
+def _registry_sweep(raw: Any) -> dict[str, Any]:
+    """The source's `registry_sweep` as counts and tokens;  all null when it is absent.  Its
+    `platforms` (letters and record ids) and each refused entry's host are never read."""
+    out: dict[str, Any] = {
+        "ran_at": None,
+        "ok": None,
+        "ended": None,
+        "error": None,
+        "stale_after_minutes": None,
+        "refused": None,
+        "refused_platforms": [],
+    }
+    if not isinstance(raw, dict):
+        return out
+    out["ran_at"] = _when(raw.get("ran_at"))
+    out["ok"] = _bool(raw.get("ok"))
+    out["ended"] = _count(raw.get("ended"))
+    out["error"] = _sweep_error(raw.get("error"))
+    out["stale_after_minutes"] = _count(raw.get("stale_after_minutes"))
+    refused = raw.get("refused")
+    if isinstance(refused, list):
+        rows = [row for row in refused if isinstance(row, dict)]
+        out["refused"] = min(len(rows), COUNT_MAX)
+        # Every valid platform, once, and only then the cap, as in `_disabled`.
+        platforms = {name for name in (_token(row.get("platform")) for row in rows) if name}
+        out["refused_platforms"] = sorted(platforms)[:MAX_SWEEP_PLATFORMS]
+    return out
+
+
 # ---- the entry point ---------------------------------------------------------------------------
 
 
@@ -587,6 +705,7 @@ def _skeleton(now: float, instance: str | None) -> dict[str, Any]:
         "seats": [],
         "skipped": [],
         "disabled": [],
+        "registry_sweep": _registry_sweep(None),
     }
 
 
@@ -620,6 +739,7 @@ def reduce_status(status: Any, now: Any, instance: Any) -> dict[str, Any]:
             "seats": _seats(status.get("seats"), fresh),
             "skipped": _skipped(status.get("skipped_seats")),
             "disabled": _disabled(status.get("disabled")),
+            "registry_sweep": _registry_sweep(status.get("registry_sweep")),
         }
     except Exception:  # noqa: BLE001 - a hostile document must degrade, never raise
         return _skeleton(moment, where)

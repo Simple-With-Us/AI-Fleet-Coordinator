@@ -97,7 +97,13 @@ class NightlyJobTests(unittest.TestCase):
             def ingest_ok():
                 seen["require"] = os.environ.get("FLEET_RAG_REQUIRE_CODE_ROOT", "")
                 seen["qdrant"] = os.environ.get("QDRANT_API_KEY", "")
-                return 0, {"ok": True, "errors": [], "guard_trips": [], "warnings": []}
+                return 0, {
+                    "ok": True,
+                    "errors": [],
+                    "guard_trips": [],
+                    "warnings": [],
+                    "qdrant_prune_snapshot": {"name": "snap-2026", "collection": "test-collection"},
+                }
 
             posts: list[dict] = []
             summary = nightly_job.execute(
@@ -111,10 +117,12 @@ class NightlyJobTests(unittest.TestCase):
         self.assertTrue(summary["ok"])
         self.assertEqual(summary["alert"], "quiet")
         self.assertEqual(posts, [])
+        self.assertEqual(summary.get("qdrant_snapshot", {}).get("name"), "snap-2026")
         self.assertEqual(seen["require"], "1")
         self.assertEqual(seen["qdrant"], "value-QDRANT_API_KEY")
         self.assertNotIn("value-QDRANT_API_KEY", json.dumps(summary))
         self.assertEqual(os.environ.get("QDRANT_API_KEY"), before)
+        self.assertIsNone(summary["mirror_stale"])
 
         def ingest_guard():
             return 0, {
@@ -608,6 +616,10 @@ class NightlyJobTests(unittest.TestCase):
         self.assertFalse(Path(seen["mirror"]).exists())
         self.assertEqual(summary["guard_trips"], [{"source": "mirror", "reason": "unconfigured"}])
         self.assertEqual(summary["alert"], "posted")
+        self.assertEqual(summary["mirror_stale"]["reason"], "unconfigured")
+        self.assertIsNone(summary["mirror_stale"]["age_s"])
+        self.assertTrue(summary["mirror_stale"]["marker"].endswith("mirror-unconfigured/.complete"))
+        self.assertEqual(summary["mirror_stale"]["max_age_s"], 36 * 3600)
 
     def test_http_zulip_site_is_refused(self) -> None:
         with self.assertRaises(nightly_job.NightlyError):
@@ -732,7 +744,10 @@ class NightlyJobTests(unittest.TestCase):
         posts: list[dict] = []
         now = int(time.time())
 
+        seen: dict[str, str | None] = {}
+
         def ingest_runner():
+            seen["age"] = os.environ.get("FLEET_RAG_MIRROR_MAX_AGE_S")
             return 0, {"ok": True, "errors": [], "guard_trips": [], "warnings": []}
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -742,6 +757,7 @@ class NightlyJobTests(unittest.TestCase):
             live.mkdir(parents=True)
             mirror.write_stamp(live, now - 40 * 3600, {})
             env[mirror.MIRROR_ENV] = str(live)
+            env["FLEET_RAG_MIRROR_MAX_AGE_S"] = "7200"
             summary = nightly_job.execute(
                 env,
                 read_file=nightly_job.read_token_file,
@@ -749,10 +765,18 @@ class NightlyJobTests(unittest.TestCase):
                 sync=lambda: 0,
                 ingest_runner=ingest_runner,
                 post=lambda site, email, key, fields: posts.append(fields),
+                now=now,
             )
         self.assertTrue(summary["ok"])
         self.assertEqual(summary["alert"], "posted")
         self.assertIn("mirror is stale", posts[0]["content"])
+        self.assertIn("ingest and prune skipped", posts[0]["content"])
+        self.assertEqual(seen["age"], "7200")
+        self.assertEqual(summary["mirror_stale"]["age_s"], 40 * 3600)
+        self.assertEqual(summary["mirror_stale"]["reason"], "stale")
+        self.assertEqual(summary["mirror_stale"]["marker"], str(live / ".complete"))
+        self.assertEqual(summary["mirror_stale"]["max_age_s"], 7200)
+        self.assertEqual(summary["sources"], ["linear", "doc", "skill", "memory"])
 
     def test_units_ship_disabled(self) -> None:
         service = (REPO / "scripts/systemd/fleet-rag-nightly.service").read_text(encoding="utf-8")
@@ -773,6 +797,11 @@ class NightlyJobTests(unittest.TestCase):
         self.assertNotIn(needle, example)
         self.assertNotIn(needle, plist)
         self.assertIn("<key>RunAtLoad</key>\n  <false/>", plist)
+        self.assertIn("<key>StandardOutPath</key>", plist)
+        self.assertIn("<key>StandardErrorPath</key>", plist)
+        self.assertIn("@LOG@", plist)
+        mirror_env = (REPO / "scripts/launchd/fleet-rag-mirror.env.example").read_text(encoding="utf-8")
+        self.assertIn("FLEET_RAG_MIRROR_REMOTE_SCRIPT=", mirror_env)
         self.assertIn("@PYTHON@", plist)
         self.assertEqual(
             nightly_job.INGEST_ARGV,
@@ -881,11 +910,15 @@ class MirrorTests(unittest.TestCase):
 
     def test_a_disabled_push_does_not_run_a_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = Path(tmp) / "mirror.json"
+            root = Path(tmp)
+            log_path = root / "mirror.log"
+            cfg = root / "mirror.json"
             cfg.write_text(
                 json.dumps(
                     {
                         "enabled": False,
+                        "home": str(root),
+                        "log": str(log_path),
                         "ssh_target": "server",
                         "remote_root": "/srv/mirror",
                         "remote_script": "/srv/repo/scripts/fleet_rag/mirror.py",
@@ -896,6 +929,7 @@ class MirrorTests(unittest.TestCase):
             os.chmod(cfg, 0o600)
             with mock.patch.object(mirror.subprocess, "run", side_effect=AssertionError("ran")):
                 self.assertEqual(mirror._cmd_push(cfg), 0)
+            self.assertIn("outcome=disabled", log_path.read_text(encoding="utf-8"))
 
     def test_status_reasons(self) -> None:
         now = 1_700_000_000
@@ -906,11 +940,39 @@ class MirrorTests(unittest.TestCase):
             (root / ".complete").write_text("{", encoding="utf-8")
             self.assertEqual(mirror.mirror_status(root, now, 36 * 3600).reason, "bad-stamp")
             mirror.write_stamp(root, now - 40 * 3600, {})
-            self.assertEqual(mirror.mirror_status(root, now, 36 * 3600).reason, "stale")
+            stale = mirror.mirror_status(root, now, 36 * 3600)
+            self.assertEqual(stale.reason, "stale")
+            self.assertEqual(stale.age_s, 40 * 3600)
+            record = mirror.stale_record(root, now, 36 * 3600)
+            self.assertEqual(record["age_s"], 40 * 3600)
+            self.assertEqual(record["marker"], str(root / ".complete"))
+            self.assertIsNone(mirror.stale_record(root, now, 50 * 3600))
             mirror.write_stamp(root, now - 3600, {})
             status = mirror.mirror_status(root, now, 36 * 3600)
             self.assertTrue(status.fresh)
             self.assertEqual(status.reason, "fresh")
+            self.assertEqual(status.age_s, 3600)
+            missing = mirror.mirror_status(root / "gone", now, 36 * 3600)
+            self.assertEqual(missing.reason, "missing")
+            self.assertIsNone(missing.age_s)
+
+    def test_server_home_uses_the_default_marker_when_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            missing = base / "absent" / "current"
+            with mock.patch.object(mirror, "DEFAULT_LIVE", missing):
+                self.assertEqual(mirror.configured_root({"HOME": "/home/jay"}), missing)
+                self.assertIsNone(mirror.configured_root({"HOME": "/home/ubuntu"}))
+                self.assertIsNone(mirror.configured_root({mirror.MIRROR_ENV: "", "HOME": "/home/jay"}))
+                record = mirror.stale_record(
+                    mirror.configured_root({"HOME": "/home/jay"}), 1_700_000_000, 36 * 3600
+                )
+            self.assertEqual(record["reason"], "missing")
+            self.assertIsNone(record["age_s"])
+            self.assertEqual(record["marker"], str(missing / ".complete"))
+            live = base / "current"
+            with mock.patch.object(mirror, "DEFAULT_LIVE", live):
+                self.assertEqual(mirror.configured_root({"HOME": "/tmp/other"}), live)
 
 
 class InstallTests(unittest.TestCase):
@@ -938,6 +1000,9 @@ class InstallTests(unittest.TestCase):
             payload = json.loads((root / "mirror.json").read_text(encoding="utf-8"))
             plist = (root / "agent.plist").read_text(encoding="utf-8")
             mode = stat.S_IMODE((root / "mirror.json").stat().st_mode)
+        self.assertEqual(payload["log"], str(home / "Library" / "Logs" / "fleet-rag-mirror.log"))
+        self.assertIn("StandardOutPath", plist)
+        self.assertIn("fleet-rag-mirror.log", plist)
         self.assertFalse(payload["enabled"])
         self.assertFalse(result["bootstrapped"])
         self.assertEqual(mode, 0o600)
