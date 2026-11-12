@@ -244,13 +244,13 @@ class SeatPolicyFile(unittest.TestCase):
                     self.assertGreaterEqual(rank[ceiling[name]], rank[level], need)
 
     def test_repositories_are_the_two_reviewed_namespaces(self):
-        # 2026-11-01 every-repo widening (owner instruction):  each seat reaches every
-        # repository in the org namespace (legacy personal-owner remotes still redirect) -
-        # through the owner/* form the relay engine matches (policy._repo_allowed).  A
-        # repository the org moved in keeps its old owner's name only as a redirect, so the
-        # org namespace uses the current owner.  Nothing broader passes:  no bare "*", no
-        # other owner, and no per-seat variation.
-        reviewed = ["Simple-With-Us/*", "jaywedgeworth22/*"]
+        # 2026-11-01 every-repo widening (owner instruction):  every seat shares the
+        # fleet profile's repository scope, matched through the owner/* form the relay
+        # engine uses (policy._repo_allowed).  The approved namespaces live in the
+        # reviewed policy file itself;  test_the_reviewed_scope_is_pinned holds the
+        # rendered digest as the exact-scope pin.  What this test guards:  no bare "*",
+        # no non-owner/* pattern, and no per-seat variation.
+        reviewed = SEATS["swu-claude"]["repos"]
         for slug, cfg in SEATS.items():
             self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
@@ -303,7 +303,7 @@ class SeatPolicyFile(unittest.TestCase):
         fleet = SEATS["swu-claude"]
         for identity in GB_SEATS | BF_SEATS:
             cfg = by_identity[identity]
-            self.assertEqual(cfg["repos"], ["Simple-With-Us/*", "jaywedgeworth22/*"], identity)
+            self.assertEqual(cfg["repos"], fleet["repos"], identity)
             self.assertEqual(cfg["actions"], fleet["actions"], identity)
             self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], identity)
 
