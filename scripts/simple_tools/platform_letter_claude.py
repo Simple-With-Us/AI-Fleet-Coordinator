@@ -32,6 +32,12 @@ never fails a chat's start over this file.
   UUID, and a nested run, which has no record, has no parent.  A parent is a session id that is not this chat's own;
   anything else is no parent, and the chat is picked like any other.  A user fork (`forkedFromSessionId`) is not a
   sub-thread here.
+- A parent, asked of the Mac (`parent_from_mac`).  The app keeps its records on the Mac, and it runs most chats
+  on the server over ssh, where the chat's hook finds no store.  A hook on a host with no store asks the Mac, when
+  it was told where the Mac is (SESSION_LETTER_MAC_SSH, the hook's `--mac-ssh`):  one read-only ssh call that
+  runs `platform-letter parent --platform claude` there and prints the parent's session id or nothing.  The ids
+  are checked before they reach the command line, the call is bounded (MAC_TIMEOUT_SECONDS), and a Mac that does
+  not answer is no parent.  Nothing but that question crosses:  the registry is never reached over ssh.
 - A parent registered first (`claude_chat_payload`).  The library registers a sub-thread's parent ahead of it when the
   parent holds no letter on this host, and asks this file about the parent with a payload that says so.  Only a chat
   whose record this host holds and that runs on this host is one:  a chat the app runs over ssh (`sshConfig`) has its
@@ -61,6 +67,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -124,6 +132,11 @@ REMOTE_LOCATION = "server"
 REMOTE_SCAN_DAYS = 14
 REMOTE_SCAN_RECORDS = 300
 REMOTE_QUIET_SECONDS = 3600
+# Asking the Mac for a chat's parent (`parent_from_mac`):  the command it runs there, how long ssh may take to
+# connect (an asleep or unreachable Mac costs this much), and the whole round trip, inside SessionStart's budget.
+MAC_COMMAND = '"$HOME"/.local/bin/platform-letter parent --platform claude'
+MAC_CONNECT_SECONDS = 3
+MAC_TIMEOUT_SECONDS = 5.0
 # A chat's state in the app (`archive_states`).  A chat with no record at all is left out of the answer.
 ARCHIVED = "archived"
 UNARCHIVED = "unarchived"
@@ -369,8 +382,64 @@ def lookup(
     return parent, ""
 
 
+def _run_ssh(cmd: list[str], timeout: float) -> Any:
+    """Run one ssh command with nothing on its standard input.  The one seam a test replaces."""
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False
+    )
+
+
+#: What the Mac answered in this process, so one hook run asks it once however many readers want the parent.
+_ASKED: dict[tuple[str, ...], str] = {}
+
+
+def parent_from_mac(
+    env: Mapping[str, str], sid: str, host_session_id: str = "", cleared: bool = False
+) -> str:
+    """The session id of the chat that started chat `sid`, asked of the Mac, or "".
+
+    The desktop app's records are on the Mac, and a chat the app runs over ssh has its hook on the other host.  So
+    a hook that finds no store asks the Mac, with ONE ssh call that only reads:  it runs `platform-letter parent`
+    there, which prints the parent's session id or nothing.  The destination is the host's own setting
+    (`platform_letter.mac_ssh`);  with none, nothing is asked.  The session id and the app id are checked against
+    their own patterns before they are put on the command line (an app id that fails is left out, a session id
+    that fails asks nothing), ssh may not prompt (BatchMode) and the round trip is cut at MAC_TIMEOUT_SECONDS.
+    Any failure, a timeout, or an answer that is not a session id is no parent."""
+    dest = PL.mac_ssh(env)
+    sid = _session_id(sid)
+    if not dest or not sid:
+        return ""
+    words = ["--session-id", sid]
+    if isinstance(host_session_id, str) and HOST_ID.fullmatch(host_session_id):
+        words += ["--app-id", host_session_id]
+    if cleared:
+        words += ["--source", "clear"]
+    key = (dest, *words)
+    if key in _ASKED:
+        return _ASKED[key]
+    remote = MAC_COMMAND + " " + " ".join(shlex.quote(word) for word in words)
+    cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % MAC_CONNECT_SECONDS]
+    cmd += ["--", dest, remote]
+    parent = ""
+    try:
+        done = _run_ssh(cmd, MAC_TIMEOUT_SECONDS)
+        if done.returncode == 0:
+            lines = [line.strip() for line in str(done.stdout or "").splitlines() if line.strip()]
+            parent = _session_id(lines[-1]) if lines else ""
+    except (OSError, subprocess.SubprocessError):
+        parent = ""  # the Mac is asleep, unreachable or slow:  no parent is known
+    if parent == sid:
+        parent = ""
+    _ASKED[key] = parent
+    return parent
+
+
 def claude_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     """The session id of the chat that started this one, from the desktop app's records, or "".
+
+    On a host with no app store (the server, where the app's chats run over ssh), the Mac is asked
+    (`parent_from_mac`).  Asked by another host through the `parent` verb, this host answers from its own records
+    only, with the app id the question carries.
 
     A parent is a non-empty session id that is not this chat's own.  Anything unreadable or malformed is no parent:
     the lookup is a hint the chat was never owed, so nothing it can raise stops a chat's start.  The start after a
@@ -379,13 +448,18 @@ def claude_parent(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
     if not sid:
         return ""
     cleared = payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "clear"
+    # Another host's question, through the `parent` verb, is answered from this host's own records.
+    asked = payload.get(PL.PARENT_VERB) is True
+    host = str(env.get(ENV_HOST_SESSION) or "")
+    if asked and isinstance(payload.get(PL.PARENT_APP_ID), str):
+        host = payload[PL.PARENT_APP_ID]
     try:
-        parent, _why = lookup(
-            _home(env),
-            host_session_id=str(env.get(ENV_HOST_SESSION) or ""),
-            cli_session_id=sid,
-            allow_lag=cleared,
-        )
+        if not asked and not os.path.isdir(store_root(_home(env))):
+            parent = parent_from_mac(env, sid, host, cleared)
+        else:
+            parent, _why = lookup(
+                _home(env), host_session_id=host, cli_session_id=sid, allow_lag=cleared
+            )
     except Exception:  # noqa: BLE001 - the app's private file;  a surprise is no parent, never a failed start
         return ""
     if not isinstance(parent, str) or not parent or parent == sid:

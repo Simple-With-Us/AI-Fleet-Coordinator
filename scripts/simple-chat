@@ -36,10 +36,10 @@ if (
 
 # `letter` is the one letter client, the same command and verbs on every platform (`platform-letter`):  the hook every
 # platform's hook file runs, `request` (ask the one assigner for this chat's letter now), `show`, `install`,
-# `registry` and `gone` (the archived chats whose letters the hooks free).  It never needs the hosted server, and
-# the managed wrapper on a seat host turns remote mode on for every seat, so it must run whether or not
-# SIMPLE_CHAT_REMOTE is set:  skipped, it would fall through to the CLI's argument parser and exit 2, which blocks
-# the prompt.
+# `registry`, `gone` (the archived chats whose letters the hooks free) and `parent` (who started a chat, for a hook
+# on another host).  It never needs the hosted server, and the managed wrapper on a seat host turns remote mode on
+# for every seat, so it must run whether or not SIMPLE_CHAT_REMOTE is set:  skipped, it would fall through to the
+# CLI's argument parser and exit 2, which blocks the prompt.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
     from simple_tools.platform_letter import main as letter_main  # noqa: E402
 

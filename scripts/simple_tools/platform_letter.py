@@ -8,6 +8,8 @@ every interactive chat on every platform (owner request, Oct 29, 2026;  one clie
     platform-letter request [--session-id S]   ask the assigner for this chat's letter now (`request_main`)
     platform-letter gone [--platform P] [--apply]   the chats of this host that are gone for good (archived in
                                             a platform's app):  what the hooks would report, or report it now
+    platform-letter parent --platform P --session-id S   the chat that started a chat, from this host's own
+                                            records:  what another host's hook asks this one (read only)
 
 `simple-chat letter <verb>` is the same command with the same verbs.  An adapter is one file,
 `simple_tools/platform_letter_<platform>.py`, with a `SPEC` (a PlatformSpec: where the platform's session id, parent
@@ -58,6 +60,13 @@ a report of their own for that location.  The assigner closes the open rows nam
 would close more than its share of a location's live rows.  Nothing schedules it, and nothing it does can fail a
 chat's start (`report_gone`, `report_gone_elsewhere`).  `gone` shows what would be reported, and `gone --apply`
 reports it now.
+
+A parent on another host.  A platform's app can keep its record of which chat started which on one host (the
+Mac) while the chat's hook runs on another.  SESSION_LETTER_MAC_SSH (the hook's `--mac-ssh` flag, which `install
+--mac-ssh DEST` writes) names the ssh destination of the Mac for an adapter that can ask it (`mac_ssh`), and
+`parent` is the read-only verb such an adapter runs there:  it prints the parent's session id, or nothing.  A
+chat's parent is asked for once:  the note keeps one that was found, and a lookup that found none is not
+repeated for RETRY_SECONDS (`parent_of`).
 
 The title reaches the chat the way the platform allows: in the hook's own output (`hook` style, a `sessionTitle`
 field), through the adapter's `title_writer` (a callable that renames the chat natively), or from a plugin that reads
@@ -112,6 +121,11 @@ LABEL_RE = re.compile(r"[A-Z]{1,2}")
 ENV_OFF = "SESSION_LETTER"
 ENV_LOCATION = "SESSION_LETTER_LOCATION"
 ENV_CLOSE_ON = "SESSION_LETTER_CLOSE_ON"
+#: The ssh destination of the Mac, for a hook on another host whose adapter must ask the Mac something only it
+#: holds (`mac_ssh`).  The hook's `--mac-ssh DEST` flag sets it, since a hook file has no env block.
+ENV_MAC_SSH = "SESSION_LETTER_MAC_SSH"
+#: What an ssh destination may look like:  a host or user@host, and nothing ssh could read as an option.
+MAC_SSH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
 
 TOUCH_SECONDS = 1800
 # The stamp that throttles asking again:  a chat whose ask failed (no letter, or a send the registry did not take)
@@ -470,6 +484,15 @@ def location(env: Mapping[str, str], platform: str = sys.platform, flag: str = "
     if forced:
         return forced if forced in LOCATIONS else None
     return "mac" if platform == "darwin" else None
+
+
+def mac_ssh(env: Mapping[str, str]) -> str:
+    """The ssh destination of the Mac this host was told (SESSION_LETTER_MAC_SSH, or the hook's `--mac-ssh`), or
+    "" when it names none or names something that is not a destination.  For an adapter whose platform keeps what
+    it needs on the Mac while the chat's hook runs on another host:  the destination is configuration, never a
+    constant, and nothing in this library connects anywhere by itself."""
+    dest = _text(env.get(ENV_MAC_SSH))
+    return dest if MAC_SSH_RE.fullmatch(dest) else ""
 
 
 def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
@@ -2123,7 +2146,7 @@ def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
         on_rename(chat, data, Out(io.StringIO(), chat.spec, ""))
         note = chat.read()
     elif not lettered(note) and note.get("state") not in ("mismatch", "closed"):
-        parent = _text(chat.spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        parent = parent_of(chat, note, data)
         note = ask_again(chat, note, str(note.get("title") or ""), parent)
         if lettered(note) and note.get("announce"):
             current = tidy(chat.spec.current_title(data, chat.env))
@@ -2288,6 +2311,28 @@ def _push(chat: Chat, note: dict[str, Any], op: str, words: str = "") -> dict[st
     return answer
 
 
+def parent_of(chat: Chat, note: dict[str, Any], data: Mapping[str, Any]) -> str:
+    """The session id of the chat that started this one, or "".
+
+    A parent the note knows is not asked for again:  a chat's parent never changes.  A lookup that found none is
+    not repeated for RETRY_SECONDS (the note's `parent_asked_at`), because an adapter's lookup can cost a call to
+    another host, and a chat with no letter would otherwise make it on every prompt.  An adapter that raises has
+    found no parent."""
+    known = str(note.get("parent") or "")
+    asked = note.get("parent_asked_at")
+    if known or (asked is not None and 0 <= chat.now - _seconds(asked) < RETRY_SECONDS):
+        return known
+    note["parent_asked_at"] = chat.now
+    try:
+        found = _text(chat.spec.parent_id(data, chat.env))
+    except Exception:  # noqa: BLE001 - a parent is a hint the chat was never owed
+        return ""
+    if found:
+        # Kept at once:  the registration that uses it may wait for its own window.
+        note["parent"] = found
+    return found
+
+
 def _settled(note: Mapping[str, Any]) -> bool:
     """The note needs no registration made for it: the chat holds a letter, or another seat holds the chat."""
     return note.get("state") == "mismatch" or (
@@ -2371,7 +2416,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     loose = named
     if not loose and source in ("resume", "fork"):
         loose = clean_title(spec.stored_title(data, chat.env))
-    parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+    parent = parent_of(chat, note, data)
     answer = _enroll(chat, loose, parent)
     start = dict(note, inherited=inherited, title=loose or note.get("title", ""), parent=parent)
     if inherited:
@@ -2457,7 +2502,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     if not lettered(note):  # a note that says open with no letter is not one to trust
         # No letter yet:  ask again when the stamp says it is due, else (or when the answer is still no) keep the
         # chat titled "??: <words>", the words being a name someone gave it, its start's title or its first prompt.
-        parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        parent = parent_of(chat, note, data)
         note = ask_again(chat, note, _first_title(note, current, data.get("prompt")), parent)
         if not lettered(note):
             shown = unlettered(
@@ -2564,7 +2609,7 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         if not words or current in (note.get("shown"), note.get("seen")):
             return 0
         note["seen"] = current
-        parent = _text(chat.spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
+        parent = parent_of(chat, note, data)
         note = ask_again(chat, note, words, parent)
         if lettered(note):
             note["titled"] = True
@@ -2928,6 +2973,62 @@ def request_main(
     chat.write(note)
     stdout.write("no letter: %s\n" % (note.get("error") or "no answer"))
     return 1
+
+
+# --------------------------------------------------------------------------------------------
+# A chat's parent, for a hook on another host:  `parent`, a read-only verb
+# --------------------------------------------------------------------------------------------
+
+#: The payload key that carries the platform's own id for a chat (`parent --app-id`), for an adapter whose
+#: records are keyed by it.  A hook's own payload never has it.
+PARENT_APP_ID = "letter_app_id"
+#: The payload key that marks the `parent` verb's own question, so an adapter that would ask another host for a
+#: parent answers this one from its own records and never passes the question on.
+PARENT_VERB = "letter_parent_verb"
+#: What such an id may look like on a command line:  the characters of a session id, and no more of them.
+APP_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+
+def parent_main(
+    argv: list[str], env: Mapping[str, str] | None = None, stdout: TextIO | None = None
+) -> int:
+    """`parent --platform P --session-id S [--app-id A] [--source SRC]`:  the session id of the chat that started
+    chat S, on a line of its own, or nothing when this host knows none.  Exit 0 either way, 2 for bad arguments.
+
+    It only reads:  the adapter's `parent_id` is asked about a start payload made from the arguments (`--app-id`,
+    the platform's own id for the chat, rides in it as PARENT_APP_ID;  `--source` is the start's source), and no
+    registry is called and no note is read or written.  It is what a hook on another host runs here over ssh when
+    the platform keeps its record of who started whom on this host.  Every argument is checked before the
+    adapter sees it, and only a session id is ever printed."""
+    env = os.environ if env is None else env
+    stdout = stdout or sys.stdout
+    try:
+        flags = _flags(argv, ("--platform", "--session-id", "--app-id", "--source"))
+        sid = SI.check(flags.get("session-id", ""), "the session id")
+    except ValueError:
+        return 2
+    name = flags.get("platform", "")
+    app_id, source = flags.get("app-id", ""), flags.get("source", "")
+    spec = load_spec(name) if valid_platform(name) else None
+    if spec is None or (app_id and not APP_ID_RE.fullmatch(app_id)):
+        return 2
+    if source and source not in ("startup", "resume", "clear", "fork"):
+        return 2
+    payload: dict[str, Any] = {
+        "hook_event_name": "SessionStart",
+        "session_id": sid,
+        "source": source or "startup",
+        PARENT_VERB: True,
+    }
+    if app_id:
+        payload[PARENT_APP_ID] = app_id
+    try:
+        parent = SI.check(spec.parent_id(payload, env), "the parent session id")
+    except Exception:  # noqa: BLE001 - no parent known is no line, never an error
+        return 0
+    if parent != sid:
+        stdout.write(parent + "\n")
+    return 0
 
 
 # --------------------------------------------------------------------------------------------
@@ -3421,9 +3522,10 @@ def _gone_for(
 # --------------------------------------------------------------------------------------------
 
 
-def command_for(home: str, platform: str, where: str = "") -> str:
+def command_for(home: str, platform: str, where: str = "", mac: str = "") -> str:
     """The hook command an adapter's hook file carries: this host's own `platform-letter` by absolute path, with the
-    location as a flag (a hook file has no env block to put it in)."""
+    location, and the Mac's ssh destination when the host was given one, as flags (a hook file has no env block to
+    put them in)."""
     parts = [
         shlex.quote(os.path.join(home, ".local", "bin", ENTRY)),
         "hook",
@@ -3432,6 +3534,8 @@ def command_for(home: str, platform: str, where: str = "") -> str:
     ]
     if where:
         parts += ["--location", where]
+    if mac and MAC_SSH_RE.fullmatch(mac):
+        parts += ["--mac-ssh", mac]
     return " ".join(parts)
 
 
@@ -3630,6 +3734,7 @@ class InstallOptions:
     location: str = ""
     check: bool = False
     remove: bool = False
+    mac_ssh: str = ""
 
 
 def _write_private(path: str, data: bytes, mode: int, *, exclusive: bool = False) -> None:
@@ -3721,7 +3826,8 @@ def install_json_hooks(
     ]
     inherited = next((w for w in already if w), [])
     where = opts.location or _flag(inherited, "--location")
-    command = command_for(home, platform, where)
+    mac = opts.mac_ssh or _flag(inherited, "--mac-ssh")
+    command = command_for(home, platform, where, mac)
     have = {
         ev: any(installed_command(e, platform) for e in events.get(ev) or [])
         for ev in installer.events
@@ -3782,19 +3888,23 @@ def install_json_hooks(
 
 
 def install_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`install --platform P [--location server|mac] [--check | --remove]`: find the platform's
-    adapter and run its installer.  An adapter with its own `install(options, env, stdout)` (a plugin directory, a
+    """`install --platform P [--location server|mac] [--mac-ssh DEST] [--check | --remove]`: find the platform's
+    adapter and run its installer.  `--mac-ssh` names the ssh destination of the Mac for a host that is not the Mac
+    (SESSION_LETTER_MAC_SSH):  the hook command carries it, and an install without the flag keeps the one it finds.  An adapter with its own `install(options, env, stdout)` (a plugin directory, a
     bundle) is called as it is; one with an `INSTALL` (a JsonHookInstaller) gets `install_json_hooks`."""
     import argparse
 
     parser = argparse.ArgumentParser(prog=ENTRY + " install")
     parser.add_argument("--platform", required=True)
     parser.add_argument("--location", choices=LOCATIONS)
+    parser.add_argument("--mac-ssh", default="")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--remove", action="store_true")
     args = parser.parse_args(argv)
-    opts = InstallOptions(args.platform, args.location or "", args.check, args.remove)
+    if args.mac_ssh and not MAC_SSH_RE.fullmatch(args.mac_ssh):
+        return _emit(stdout, {"error": "--mac-ssh must name an ssh destination"}, 2)
+    opts = InstallOptions(args.platform, args.location or "", args.check, args.remove, args.mac_ssh)
     spec = load_spec(args.platform)
     adapter = load_adapter(args.platform)
     if spec is None:
@@ -3816,9 +3926,10 @@ USAGE = (
     "usage: platform-letter {hook --platform P [--location L]\n"
     "                        | registry OP --platform P ...\n"
     "                        | show --platform P [--session-id S]\n"
-    "                        | install --platform P [--location L] [--check | --remove]\n"
+    "                        | install --platform P [--location L] [--mac-ssh DEST] [--check | --remove]\n"
     "                        | request [--session-id S]\n"
-    "                        | gone [--platform P] [--location L] [--apply]}\n"
+    "                        | gone [--platform P] [--location L] [--apply]\n"
+    "                        | parent --platform P --session-id S [--app-id A] [--source SRC]}\n"
 )
 
 
@@ -3860,7 +3971,14 @@ def main(
         try:
             # A command line this hook cannot read (a retired flag) is a hook that does nothing and exits 0:  the hook
             # never blocks a chat.  Re-running `install` writes the current command.
-            flags = _flags(argv[1:], ("--platform", "--location"))
+            flags = _flags(argv[1:], ("--platform", "--location", "--mac-ssh"))
+            if MAC_SSH_RE.fullmatch(flags.get("mac-ssh", "")):
+                # The flag is the setting, for a hook file with no env block.  The process environment is kept
+                # as the mapping it is (the registry API reads its own settings from that very object).
+                if env is os.environ:
+                    os.environ[ENV_MAC_SSH] = flags["mac-ssh"]
+                else:
+                    env = {**env, ENV_MAC_SSH: flags["mac-ssh"]}
             spec = load_spec(flags.get("platform", ""))
             if spec is None:
                 stderr.write("platform-letter hook: no adapter for the platform\n")
@@ -3913,6 +4031,8 @@ def main(
         return install_main(argv[1:], env, stdout)
     if argv[0] == "request":
         return request_main(argv[1:], env, stdout, transport=transport)
+    if argv[0] == "parent":
+        return parent_main(argv[1:], env, stdout)
     if argv[0] in ("gone", "sweep-archived"):  # the second is the verb's name before this client
         return gone_main(argv[1:], env, stdout, transport=transport)
     stderr.write(USAGE)

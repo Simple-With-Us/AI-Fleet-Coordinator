@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from simple_tools import platform_letter as PL
@@ -460,6 +462,10 @@ class HookBase(TableBase):
     """Claude chats on the Mac, through the hook, against the assigner served in process."""
 
     PARENT, CHILD = "local_aaaaaaaa-0001", "local_bbbbbbbb-0002"
+
+    def setUp(self) -> None:
+        super().setUp()
+        PC._ASKED.clear()  # what one hook run remembers of the Mac's answers:  each test is its own run
 
     def claude_env(self, host: str = "", **extra: str) -> dict[str, str]:
         if host:
@@ -1204,6 +1210,215 @@ class GoneElsewhereTests(HookBase):
             "would report Claude - (01234567, server)",
             "Claude gone report, server:  1 gone  (dry run:  nothing sent;  --apply reports them now)",
         ])
+
+
+class ParentFromMacTests(HookBase):
+    """A chat the app runs on the server has its record on the Mac.  Its hook, which finds no store, asks the Mac
+    for its parent with one read-only ssh call, when it was told where the Mac is."""
+
+    DEST = "jay@mac.example"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.server_home = os.path.join(self.tmp.name, "server-home")
+        os.makedirs(self.server_home)
+        self.calls: list[tuple[list[str], float]] = []
+        self.answer: object = "p-0001\n"
+
+        def run(cmd, timeout):
+            self.calls.append((list(cmd), timeout))
+            if isinstance(self.answer, BaseException):
+                raise self.answer
+            if callable(self.answer):
+                return self.answer(cmd)
+            return SimpleNamespace(returncode=0, stdout=self.answer, stderr="")
+
+        patch = mock.patch.object(PC, "_run_ssh", run)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def server_env(self, host: str = "local_bbbbbbbb-0002", dest: str | None = None, **extra: str) -> dict[str, str]:
+        env = dict(self.claude_env(host, **extra), HOME=self.server_home,
+                   SIMPLE_TOOLS_STATE_DIR=os.path.join(self.server_home, "state"))
+        env[PL.ENV_MAC_SSH] = self.DEST if dest is None else dest
+        return env
+
+    def server_hook(self, payload: dict, *, now: float | None = None, env=None, transport=None) -> dict:
+        out, err = io.StringIO(), io.StringIO()
+        code = PL.hook(PC.SPEC, env if env is not None else self.server_env(), io.StringIO(json.dumps(payload)), out,
+                       now=time.time() if now is None else now, platform="linux", location_flag="server",
+                       transport=transport, stderr=err)
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        return json.loads(out.getvalue())["hookSpecificOutput"] if out.getvalue().strip() else {}
+
+    def server_note(self, sid: str) -> dict:
+        with open(os.path.join(self.server_home, "state", "CLAUDE", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def test_the_mac_is_asked_once_with_one_bounded_read_only_command(self) -> None:
+        parent = PC.claude_parent({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"},
+                                  self.server_env())
+        self.assertEqual(parent, "p-0001")
+        cmd, timeout = self.calls[0]
+        self.assertEqual(cmd, [
+            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "--", self.DEST,
+            '"$HOME"/.local/bin/platform-letter parent --platform claude --session-id c-0001'
+            " --app-id local_bbbbbbbb-0002",
+        ])
+        self.assertEqual((timeout, PC.MAC_TIMEOUT_SECONDS), (5.0, 5.0))
+        self.assertLess(PC.MAC_TIMEOUT_SECONDS, PC.HOOK_TIMEOUTS["SessionStart"])
+        # The start after a /clear says so, and a chat with no app id is asked about by its session id alone.
+        PC.claude_parent({"hook_event_name": "SessionStart", "session_id": "c-0002", "source": "clear"},
+                         self.server_env())
+        self.assertTrue(self.calls[-1][0][-1].endswith("--session-id c-0002 --app-id local_bbbbbbbb-0002 --source clear"))
+        PC.claude_parent({"session_id": "c-0003"}, self.server_env(host=""))
+        self.assertTrue(self.calls[-1][0][-1].endswith("parent --platform claude --session-id c-0003"))
+        # One hook run asks once, however many readers want the parent.
+        before = len(self.calls)
+        self.assertEqual(PC.claude_parent({"session_id": "c-0003"}, self.server_env(host="")), "p-0001")
+        self.assertEqual(len(self.calls), before)
+
+    def test_a_mac_that_fails_or_does_not_answer_is_no_parent(self) -> None:
+        for n, answer in enumerate((
+            subprocess.TimeoutExpired("ssh", 5.0),
+            OSError("no ssh here"),
+            lambda cmd: SimpleNamespace(returncode=255, stdout="", stderr="ssh: connect to host: timed out"),
+            lambda cmd: SimpleNamespace(returncode=126, stdout="p-0001\n", stderr="not allowed on this key"),
+            "",
+            "\n\n",
+            "not a session id\n",
+            "../../etc/passwd\n",
+            "c-%04d\n",  # the chat itself
+            None,
+        )):
+            sid = "c-%04d" % n
+            self.answer = answer % n if isinstance(answer, str) and "%" in answer else answer
+            with self.subTest(n=n):
+                self.assertEqual(PC.claude_parent({"session_id": sid}, self.server_env()), "")
+                self.assertEqual(len(self.calls), n + 1)
+        # A banner line before the answer does not hide it:  the last line is the answer.
+        self.answer = "Welcome to the Mac\np-0001\n"
+        self.assertEqual(PC.claude_parent({"session_id": "c-0100"}, self.server_env()), "p-0001")
+
+    def test_a_hostile_id_never_reaches_the_command_line(self) -> None:
+        for sid in ("c-0001; rm -rf /", "$(id)", "../x", "a b", "", "x" * 200):
+            self.assertEqual(PC.claude_parent({"session_id": sid}, self.server_env()), "", sid)
+        self.assertEqual(self.calls, [])  # a session id that is not one asks nothing
+        for host in ("local_x; id", "local_$(id)", "../../x", "local_a b", "nope", "local_" + "a" * 200):
+            PC._ASKED.clear()
+            self.assertEqual(PC.claude_parent({"session_id": "c-0001"}, self.server_env(host=host)), "p-0001")
+            self.assertEqual(self.calls[-1][0][-1],
+                             '"$HOME"/.local/bin/platform-letter parent --platform claude --session-id c-0001', host)
+        # A destination that is not one, or none at all, asks nothing either:  it is configuration, never a guess.
+        self.calls.clear()
+        for dest in ("", "-oProxyCommand=evil", "mac; id", "a b"):
+            PC._ASKED.clear()
+            self.assertEqual(PC.claude_parent({"session_id": "c-0001"}, self.server_env(dest=dest)), "", dest)
+        self.assertEqual(self.calls, [])
+
+    def test_the_mac_itself_never_asks_and_never_passes_the_question_on(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+        mac = dict(self.claude_env(self.CHILD), **{PL.ENV_MAC_SSH: self.DEST})
+        self.assertEqual(PC.claude_parent({"session_id": "c-0001"}, mac), "p-0001")  # its own records answer
+        self.assertEqual(self.calls, [])
+        # The `parent` verb's own question is answered from this host's records even where there are none.
+        asked = {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup",
+                 PL.PARENT_VERB: True, PL.PARENT_APP_ID: self.CHILD}
+        self.assertEqual(PC.claude_parent(asked, self.server_env()), "")
+        self.assertEqual(self.calls, [])
+
+    def test_the_verb_on_the_mac_answers_from_the_apps_records(self) -> None:
+        self.app_record(self.PARENT, "p-0001")
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT)
+
+        def verb(*argv: str) -> tuple[int, str]:
+            out = io.StringIO()
+            # The Mac's ssh shell:  no app id in its environment, only what the question carries.
+            return PL.parent_main(["--platform", "claude", *argv], {"HOME": self.home}, out), out.getvalue()
+
+        self.assertEqual(verb("--session-id", "c-0001", "--app-id", self.CHILD), (0, "p-0001\n"))
+        self.assertEqual(verb("--session-id", "c-0001"), (0, "p-0001\n"))  # found by its session id alone
+        self.assertEqual(verb("--session-id", "p-0001", "--app-id", self.PARENT), (0, ""))  # nobody started it
+        self.assertEqual(verb("--session-id", "n-0001", "--app-id", self.CHILD), (0, ""))  # a nested run:  no parent
+        # After a /clear the app may not have written the new session id yet:  the app id decides then, and only then.
+        self.assertEqual(verb("--session-id", "new-0001", "--app-id", self.CHILD, "--source", "clear"),
+                         (0, "p-0001\n"))
+        self.assertEqual(verb("--session-id", "new-0001", "--app-id", self.CHILD), (0, ""))
+
+    def test_a_server_chat_is_placed_after_its_parent_through_the_whole_round_trip(self) -> None:
+        # The Mac holds the records;  the fake ssh runs the Mac's own verb with the command the server built.
+        self.app_record(self.PARENT, "p-0001", sshConfig={"sshHost": "the-server"})
+        self.app_record(self.CHILD, "c-0001", started_by=self.PARENT, sshConfig={"sshHost": "the-server"})
+
+        def mac(cmd):
+            words = shlex.split(cmd[-1].replace('"$HOME"', "HOME"))
+            self.assertEqual(words[:2], ["HOME/.local/bin/platform-letter", "parent"])
+            out = io.StringIO()
+            code = PL.parent_main(words[2:], {"HOME": self.home}, out)
+            return SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr="")
+
+        self.answer = mac
+        t0 = time.time()
+        self.server_hook({"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"},
+                         env=self.server_env(host=self.PARENT), now=t0)
+        calls = Calls(self)
+        child = self.server_hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"},
+                                 env=self.server_env(host=self.CHILD), now=t0, transport=calls)
+        self.assertIn("--parent-session-id=p-0001", calls.calls[0])
+        self.assertEqual([call[0] for call in calls.calls], ["register"])  # the registry is reached as ever:  the API
+        parent, label = self.row("p-0001", "server")["label"], self.row("c-0001", "server")["label"]
+        self.assertEqual((label[0], label != parent), (parent[0], True))
+        self.assertEqual(self.server_note("c-0001")["parent"], "p-0001")
+        # A chat another chat started is told to put its letter on the app's title, on the server too.
+        self.assertIn('"%s: <that title>"' % label, child["additionalContext"])
+        # One ssh call for the parent's own start (nobody started it) and one for the child's.
+        self.assertEqual(len(self.calls), 2)
+
+    def test_the_answer_is_kept_in_the_note_for_the_window(self) -> None:
+        self.answer = subprocess.TimeoutExpired("ssh", 5.0)
+        down = Calls(self, fail=TimeoutError("down"))
+        start = {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "go"}
+        t0 = time.time()
+        self.server_hook(start, now=t0, transport=down)
+        self.assertEqual(len(self.calls), 1)
+        note = self.server_note("c-0001")
+        self.assertEqual((note["parent"], note["parent_asked_at"]), ("", t0))
+        # A chat with no letter asks for one on its prompts.  Each is its own process (nothing is remembered in
+        # memory), and none of them asks the Mac again inside the window.
+        for n in range(1, 4):
+            PC._ASKED.clear()
+            self.server_hook(prompt, now=t0 + n, transport=down)
+        self.assertEqual(len(self.calls), 1)
+        # After the window the Mac is asked again;  a parent it names then is kept, and never asked for again.
+        self.answer = "p-0001\n"
+        PC._ASKED.clear()
+        self.server_hook(prompt, now=t0 + PL.RETRY_SECONDS + 10)
+        self.assertEqual((len(self.calls), self.server_note("c-0001")["parent"]), (2, "p-0001"))
+        for n in (20, 40):
+            PC._ASKED.clear()
+            self.server_hook(dict(start, source="resume"), now=t0 + n * PL.RETRY_SECONDS)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_a_server_with_no_destination_is_a_main_chat_and_asks_nothing(self) -> None:
+        out = self.server_hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"},
+                               env=self.server_env(dest=""))
+        self.assertEqual(self.calls, [])
+        label = self.row("c-0001", "server")["label"]
+        self.assertEqual((label[0], out["sessionTitle"]), (label[1], "%s: New Chat" % label))
+
+    def test_install_on_the_server_carries_the_destination(self) -> None:
+        out = io.StringIO()
+        code = PL.install_main(["--platform", "claude", "--location", "server", "--mac-ssh", self.DEST],
+                               {"HOME": self.server_home}, out)
+        self.assertEqual(code, 0, out.getvalue())
+        with open(os.path.join(self.server_home, ".claude", "settings.json"), encoding="utf-8") as fh:
+            hooks = json.load(fh)["hooks"]
+        commands = {h["command"] for groups in hooks.values() for group in groups for h in group["hooks"]}
+        self.assertEqual(commands, {shlex.quote(os.path.join(self.server_home, ".local", "bin", "platform-letter"))
+                                    + " hook --platform claude --location server --mac-ssh " + self.DEST})
+        self.assertEqual(sorted(hooks), ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
 
 
 if __name__ == "__main__":

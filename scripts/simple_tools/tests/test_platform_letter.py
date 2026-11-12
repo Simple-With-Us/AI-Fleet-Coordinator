@@ -3075,6 +3075,194 @@ class RetiredNoteTests(Base):
         self.assertNotIn("platform", self.on_disk(other))
 
 
+class ParentTests(Base):
+    """A chat's parent is asked for once:  an adapter's lookup can cost a call to another host.  And `parent` is the
+    read-only verb such a lookup runs on the host that holds the records."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.parents: dict[str, str] = {}
+        self.lookups: list[dict] = []
+
+        def parent_id(payload, env):
+            self.lookups.append({"payload": dict(payload), "mac": env.get(PL.ENV_MAC_SSH, "")})
+            return self.parents.get(payload.get("session_id"), "")
+
+        self.spec = make_spec(platform="faux", source="faux-hook", display="Faux", parent_id=parent_id)
+        patch = mock.patch.dict(PL.SPECS, {"faux": self.spec})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def run_hook(self, payload: dict, at: float, transport=None) -> None:
+        self.assertEqual(PL.hook(self.spec, self.env(), io.StringIO(json.dumps(payload)), io.StringIO(), now=at,
+                                 platform="darwin", transport=transport), 0)
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def test_a_lookup_that_found_no_parent_is_not_repeated_inside_the_window(self) -> None:
+        down = Calls(self, fail=TimeoutError("down"))
+        start = {"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}
+        prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "c-0001", "prompt": "go"}
+        t0 = time.time()
+        self.run_hook(start, t0, transport=down)
+        self.assertEqual(len(self.lookups), 1)
+        self.assertEqual((self.note("c-0001")["parent"], self.note("c-0001")["parent_asked_at"]), ("", t0))
+        # A chat with no letter asks for one on its prompts:  each of them would look the parent up again.
+        for n in range(1, 4):
+            self.run_hook(prompt, t0 + n, transport=down)
+        self.run_hook(dict(start, source="resume"), t0 + 5, transport=down)
+        self.assertEqual(len(self.lookups), 1)
+        # After the window it is asked again, and a parent that is found then is used and kept.
+        self.parents["c-0001"] = "p-0001"
+        self.run_hook(prompt, t0 + PL.RETRY_SECONDS + 10)
+        self.assertEqual(len(self.lookups), 2)
+        self.assertEqual(self.note("c-0001")["parent"], "p-0001")
+        # A parent the note knows is never asked for again.
+        self.run_hook(dict(start, source="resume"), t0 + 10 * PL.RETRY_SECONDS)
+        self.run_hook(prompt, t0 + 20 * PL.RETRY_SECONDS)
+        self.assertEqual(len(self.lookups), 2)
+        self.assertEqual(self.note("c-0001")["parent"], "p-0001")
+
+    def test_a_parent_found_at_the_start_places_the_chat_after_it(self) -> None:
+        t0 = time.time()
+        self.run_hook({"hook_event_name": "SessionStart", "session_id": "p-0001", "source": "startup"}, t0)
+        self.parents["c-0001"] = "p-0001"
+        calls = Calls(self)
+        self.run_hook({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"}, t0,
+                      transport=calls)
+        self.assertIn("--parent-session-id=p-0001", calls.calls[0])
+        parent, child = self.note("p-0001")["label"], self.note("c-0001")["label"]
+        self.assertEqual((child[0], child != parent), (parent[0], True))
+
+    def test_an_adapter_whose_lookup_raises_has_found_no_parent(self) -> None:
+        spec = make_spec(parent_id=mock.Mock(side_effect=OSError("the other host is asleep")))
+        chat = PL.Chat(spec, self.env(), "mac", "c-0001", now=50.0)
+        note: dict = {}
+        self.assertEqual(PL.parent_of(chat, note, {"session_id": "c-0001"}), "")
+        self.assertEqual(note, {"parent_asked_at": 50.0})
+        # A parent that is found is kept in the note at once, whether or not a registration follows now.
+        found = make_spec(parent_id=lambda payload, env: "p-0001")
+        note = {"parent_asked_at": 50.0 - PL.RETRY_SECONDS}
+        self.assertEqual(PL.parent_of(PL.Chat(found, self.env(), "mac", "c-0001", now=50.0), note, {}), "p-0001")
+        self.assertEqual(note, {"parent_asked_at": 50.0, "parent": "p-0001"})
+
+    # ---- `platform-letter parent`:  what another host's hook asks this one ----
+
+    def verb(self, *argv: str) -> tuple[int, str]:
+        out = io.StringIO()
+        return PL.parent_main(list(argv), self.env(), out), out.getvalue()
+
+    def test_the_verb_prints_the_parents_session_id_and_nothing_else(self) -> None:
+        self.parents["c-0001"] = "p-0001"
+        self.assertEqual(self.verb("--platform", "faux", "--session-id", "c-0001", "--app-id", "local_abc-1",
+                                   "--source", "clear"), (0, "p-0001\n"))
+        # The adapter is asked about a start payload made from the arguments, marked as this verb's question.
+        self.assertEqual(self.lookups[-1]["payload"], {
+            "hook_event_name": "SessionStart", "session_id": "c-0001", "source": "clear",
+            PL.PARENT_VERB: True, PL.PARENT_APP_ID: "local_abc-1"})
+        self.assertEqual(self.verb("--platform", "faux", "--session-id", "x-0001"), (0, ""))  # no parent:  no line
+        self.assertEqual(self.lookups[-1]["payload"], {
+            "hook_event_name": "SessionStart", "session_id": "x-0001", "source": "startup", PL.PARENT_VERB: True})
+        # Through the entry point, and it reads only:  no note, no stamp, no registry call.
+        before = list(self.fake.requests)
+        out = io.StringIO()
+        self.assertEqual(PL.main(["parent", "--platform", "faux", "--session-id", "c-0001"], env=self.env(),
+                                 stdout=out, stderr=out), 0)
+        self.assertEqual(out.getvalue(), "p-0001\n")
+        self.assertEqual(self.fake.requests, before)
+        self.assertFalse(os.path.exists(self.state))
+
+    def test_the_verb_prints_only_what_is_a_session_id_and_not_the_chat_itself(self) -> None:
+        for answer in ("c-0001", "not a session id", "../../etc", "", "x\ny-0001", 7, None):
+            self.parents["c-0001"] = answer
+            self.assertEqual(self.verb("--platform", "faux", "--session-id", "c-0001"), (0, ""), answer)
+        spec = make_spec(platform="faux", source="faux-hook", display="Faux",
+                         parent_id=mock.Mock(side_effect=RuntimeError("the store changed")))
+        with mock.patch.dict(PL.SPECS, {"faux": spec}):
+            self.assertEqual(self.verb("--platform", "faux", "--session-id", "c-0001"), (0, ""))
+
+    def test_the_verb_refuses_arguments_it_cannot_check(self) -> None:
+        for bad in (
+            [],
+            ["--platform", "faux"],
+            ["--platform", "nosuch", "--session-id", "c-0001"],
+            ["--platform", "../x", "--session-id", "c-0001"],
+            ["--platform", "faux", "--session-id", "../x"],
+            ["--platform", "faux", "--session-id", "c-0001; rm -rf /"],
+            ["--platform", "faux", "--session-id", "c-0001", "--app-id", "$(id)"],
+            ["--platform", "faux", "--session-id", "c-0001", "--app-id", "a b"],
+            ["--platform", "faux", "--session-id", "c-0001", "--app-id", "x" * 200],
+            ["--platform", "faux", "--session-id", "c-0001", "--source", "compact"],
+            ["--platform", "faux", "--session-id", "c-0001", "--bogus", "1"],
+        ):
+            self.assertEqual(self.verb(*bad), (2, ""), bad)
+        self.assertEqual(self.lookups, [])
+
+    # ---- SESSION_LETTER_MAC_SSH:  where the Mac is, for a hook on another host ----
+
+    def test_the_mac_destination_is_a_setting_that_is_checked(self) -> None:
+        self.assertEqual(PL.mac_ssh({PL.ENV_MAC_SSH: "jay@mac.example"}), "jay@mac.example")
+        self.assertEqual(PL.mac_ssh({PL.ENV_MAC_SSH: " mac-mini "}), "mac-mini")
+        for bad in ("", "-oProxyCommand=evil", "mac mini", "mac;id", "$(id)", "a/b", "x" * 300):
+            self.assertEqual(PL.mac_ssh({PL.ENV_MAC_SSH: bad}), "", bad)
+        self.assertEqual(PL.mac_ssh({}), "")
+        self.assertEqual(PL.ENV_MAC_SSH, "SESSION_LETTER_MAC_SSH")  # no platform's name is in the setting
+
+    def test_the_hooks_flag_is_the_setting(self) -> None:
+        payload = json.dumps({"hook_event_name": "SessionStart", "session_id": "c-0001", "source": "startup"})
+        out = io.StringIO()
+        code = PL.main(["hook", "--platform", "faux", "--location", "server", "--mac-ssh", "jay@mac"],
+                       env=self.env(), stdin=io.StringIO(payload), stdout=out, stderr=out)
+        self.assertEqual((code, self.lookups[-1]["mac"]), (0, "jay@mac"))
+        # In the process environment it is set in place:  the registry API reads its settings from that same object.
+        with mock.patch.dict(os.environ, self.env(), clear=False):
+            os.environ.pop(PL.ENV_MAC_SSH, None)
+            code = PL.main(["hook", "--platform", "faux", "--location", "server", "--mac-ssh=other@mac"],
+                           stdin=io.StringIO(payload.replace("c-0001", "c-0002")), stdout=io.StringIO(),
+                           stderr=io.StringIO())
+            self.assertEqual((code, os.environ.get(PL.ENV_MAC_SSH)), (0, "other@mac"))
+            self.assertEqual(self.note("c-0002")["state"], "open")  # the registry call was made, through that env
+        # A flag that names no destination is not the setting, and the hook still runs.
+        code = PL.main(["hook", "--platform", "faux", "--location", "server", "--mac-ssh", "-oProxyCommand=x"],
+                       env=self.env(), stdin=io.StringIO(payload.replace("c-0001", "c-0003")), stdout=io.StringIO(),
+                       stderr=io.StringIO())
+        self.assertEqual((code, self.lookups[-1]["mac"]), (0, ""))
+
+    def test_install_writes_the_destination_on_the_hook_command_and_keeps_it(self) -> None:
+        installer = PL.JsonHookInstaller(path=os.path.join(".faux", "hooks.json"), events=PL.HOOK_TIMEOUTS)
+
+        def install(*argv: str) -> tuple[int, dict]:
+            out = io.StringIO()
+            with mock.patch.object(PL, "load_adapter", return_value=SimpleNamespace(INSTALL=installer, SPEC=self.spec)):
+                code = PL.install_main(["--platform", "faux", *argv], self.env(), out)
+            return code, json.loads(out.getvalue())
+
+        def commands() -> set[str]:
+            with open(os.path.join(self.home, ".faux", "hooks.json"), encoding="utf-8") as fh:
+                hooks = json.load(fh)["hooks"]
+            return {h["command"] for groups in hooks.values() for group in groups for h in group["hooks"]}
+
+        entry = shlex.quote(os.path.join(self.home, ".local", "bin", "platform-letter"))
+        code, answer = install("--location", "server", "--mac-ssh", "jay@mac.example")
+        self.assertEqual(code, 0, answer)
+        want = entry + " hook --platform faux --location server --mac-ssh jay@mac.example"
+        self.assertEqual((commands(), answer["command"]), ({want}, want))
+        # An install that does not name it keeps the one the host has, as it keeps the location.
+        code, answer = install()
+        self.assertEqual((code, answer["changed"], commands()), (0, [], {want}))
+        code, answer = install("--mac-ssh", "mini")
+        self.assertEqual(commands(), {entry + " hook --platform faux --location server --mac-ssh mini"})
+        # Something ssh could read as an option is refused, and nothing is written.
+        for bad in ("-oProxyCommand=evil", "a b", "x;y"):
+            code, answer = install("--mac-ssh=" + bad)
+            self.assertEqual((code, answer), (2, {"error": "--mac-ssh must name an ssh destination"}), bad)
+        self.assertEqual(commands(), {entry + " hook --platform faux --location server --mac-ssh mini"})
+        self.assertEqual(PL.command_for("/h", "faux", "server", "-bad"), "/h/.local/bin/platform-letter hook "
+                         "--platform faux --location server")
+
+
 class DurableWriteTests(Base):
     """A file renamed into place survives a crash only when its folder is flushed too:  the note, the gone stamp and
     a platform's hook file are each fsynced, renamed, and then their folder is fsynced."""
