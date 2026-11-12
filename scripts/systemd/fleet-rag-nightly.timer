@@ -1,0 +1,16 @@
+# 02:30 America/Chicago.  Confirm the next elapse with systemd-analyze calendar
+# before enabling.  Persistent runs a missed night after boot.  Enabling this
+# timer still does nothing until /etc/fleet/rag-nightly.env exists and sets
+# FLEET_RAG_NIGHTLY=1.  See docs/RAG-NIGHTLY-INGEST.md.
+[Unit]
+Description=Fleet RAG nightly ingest at 02:30 America/Chicago
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 America/Chicago
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=fleet-rag-nightly.service
+
+[Install]
+WantedBy=timers.target

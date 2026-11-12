@@ -85,7 +85,7 @@ class TeamDriftTest(unittest.TestCase):
 class LinearTeamKeysTest(unittest.TestCase):
     def run_with(self, **run):
         with (
-            mock.patch.object(L.shutil, "which", return_value="/usr/bin/board"),
+            mock.patch.object(L.shutil, "which", return_value="/usr/bin/simple-board"),
             mock.patch.object(L.subprocess, "run", **run),
         ):
             return L.linear_team_keys()
@@ -94,6 +94,17 @@ class LinearTeamKeysTest(unittest.TestCase):
         out = json.dumps({"teams": {"nodes": [{"key": "AFC"}, {"key": "C"}]}})
         proc = mock.Mock(stdout=out)
         self.assertEqual(self.run_with(return_value=proc), ["AFC", "C"])
+
+    def test_runs_the_checked_simple_board_command(self):
+        # #860 r4:  the guard checks shutil.which("simple-board"), so the subprocess must run
+        # that command too — running the retired `board` would silently disable the team-drift check.
+        out = json.dumps({"teams": {"nodes": [{"key": "AFC"}]}})
+        with (
+            mock.patch.object(L.shutil, "which", return_value="/usr/bin/simple-board"),
+            mock.patch.object(L.subprocess, "run", return_value=mock.Mock(stdout=out)) as run,
+        ):
+            self.assertEqual(L.linear_team_keys(), ["AFC"])
+        self.assertEqual(run.call_args[0][0][:3], ["simple-board", "api", "query"])
 
     def test_timeout_means_unavailable_not_a_crash(self):
         timeout = L.subprocess.TimeoutExpired(cmd="board", timeout=60)
@@ -113,7 +124,9 @@ class LinearTeamKeysTest(unittest.TestCase):
 class PlanTest(unittest.TestCase):
     def live(self, **overrides):
         rules = [
-            {"id": i, "pattern": p, "url_template": u} for i, p, u in L.TARGET if i is not None
+            #  A row with no id yet is a rule Zulip has numbered once it exists, so give it one here.
+            {"id": i if i is not None else 9000 + n, "pattern": p, "url_template": u}
+            for n, (i, p, u) in enumerate(L.TARGET)
         ]
         for rule in rules:
             rule.update(overrides.get(str(rule["id"]), {}))
@@ -150,10 +163,11 @@ class PlanTest(unittest.TestCase):
 
     def test_row_without_an_id_is_matched_by_pattern_not_added_again(self):
         row = (None, "NEW#(?P<id>[0-9]+)", "https://example.invalid/{id}")
-        live = self.live() + [{"id": 8000, "pattern": row[1], "url_template": row[2]}]
+        before = self.live()
+        live = before + [{"id": 8000, "pattern": row[1], "url_template": row[2]}]
         with mock.patch.object(L, "TARGET", [*L.TARGET, row]):
             self.assertEqual(L.plan(live), ([], []))
-            self.assertEqual([s[0] for s in L.plan(self.live())[0]], ["add"])
+            self.assertEqual([s[0] for s in L.plan(before)[0]], ["add"])
 
 
 class FakeZulip:
@@ -173,7 +187,7 @@ class FakeZulip:
         if method == "POST":
             self.posts += 1
             if self.posts == self.fail_post:
-                raise SystemExit("POST realm/filters:  HTTP 400 refused")
+                raise L.ZulipError("POST realm/filters:  HTTP 400 refused")
             rule = {"id": 9000 + self.posts, **data}
             self.live.append(rule)
         elif method == "PATCH" and path == "realm/linkifiers":
@@ -185,8 +199,8 @@ class FakeZulip:
 class ApplyTest(unittest.TestCase):
     def two_missing(self):
         live = [
-            {"id": i, "pattern": p, "url_template": u}
-            for i, p, u in L.TARGET
+            {"id": i if i is not None else 9000 + n, "pattern": p, "url_template": u}
+            for n, (i, p, u) in enumerate(L.TARGET)
             if i not in (5142, 5143)
         ]
         return FakeZulip(live, fail_post=2), live
@@ -194,7 +208,7 @@ class ApplyTest(unittest.TestCase):
     def test_failure_part_way_still_moves_the_generic_rule_last(self):
         zulip, live = self.two_missing()
         steps, _ = L.plan(live)
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(L.ZulipError):
             L.apply_plan(zulip, steps, [])
         self.assertEqual(zulip.live[-1]["id"], L.GENERIC_ID)
         self.assertEqual(len(zulip.live), len(live) + 1)
@@ -202,7 +216,7 @@ class ApplyTest(unittest.TestCase):
     def test_rerun_after_a_failure_adds_only_what_is_left(self):
         zulip, live = self.two_missing()
         steps, _ = L.plan(live)
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(L.ZulipError):
             L.apply_plan(zulip, steps, [])
         rerun, unlisted = L.plan(zulip.linkifiers())
         self.assertEqual([s[0] for s in rerun], ["add"])
@@ -212,6 +226,33 @@ class ApplyTest(unittest.TestCase):
             L.apply_plan(zulip, rerun, [])
         self.assertEqual(L.plan(zulip.linkifiers()), ([], []))
         self.assertIsNone(L.order(zulip.linkifiers()))
+
+
+class ZulipErrorTests(unittest.TestCase):
+    def test_call_raises_zulip_error_not_system_exit(self):
+        import urllib.error
+
+        body = io.BytesIO(b'{"msg": "refused"}')
+        err = urllib.error.HTTPError("https://x/api/v1/realm/filters", 400, "Bad Request", {}, body)
+        zulip = L.Zulip("e", "k", L.REALM)
+        with mock.patch.object(L.urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(L.ZulipError) as caught:
+                zulip.call("POST", "realm/filters", {"pattern": "P-X-1"})
+        self.assertIsInstance(caught.exception, Exception)
+        self.assertNotIsInstance(caught.exception, SystemExit)
+        self.assertIn("HTTP 400", str(caught.exception))
+
+    def test_main_reports_zulip_errors_with_exit_1_not_a_traceback(self):
+        with (
+            mock.patch.object(L, "credentials", return_value=("e", "k", L.REALM)),
+            mock.patch.object(
+                L.Zulip, "linkifiers", side_effect=L.ZulipError("GET x: HTTP 400 bad")
+            ),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(L.main([]), 1)
+            self.assertIn("zulip:", err.getvalue())
 
 
 class CredentialTests(unittest.TestCase):
@@ -234,8 +275,8 @@ class CredentialTests(unittest.TestCase):
 
     def test_admin_reads_env_first_and_ignores_member_env(self):
         env = {
-            "REALM_ADMIN_ZULIP_EMAIL": "admin-bot@example.test",
-            "REALM_ADMIN_ZULIP_KEY": "k",
+            "ZULIP_OPERATOR_EMAIL": "admin-bot@example.test",
+            "ZULIP_OPERATOR_API_KEY": "k",
             "ZULIP_EMAIL": "member@example.test",
             "ZULIP_API_KEY": "m",
         }
@@ -246,7 +287,7 @@ class CredentialTests(unittest.TestCase):
             email, key, site = L.credentials(None, admin=True)
         self.assertEqual((email, key), ("admin-bot@example.test", "k"))
         self.assertEqual(site, L.REALM)
-        fs.assert_called_once_with("REALM_ADMIN_ZULIP_SITE")
+        fs.assert_called_once_with("ZULIP_OPERATOR_SITE")
 
     def test_admin_falls_back_to_zulipadmin_folder_first(self):
         calls = []
@@ -256,18 +297,16 @@ class CredentialTests(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="v\n")
 
         env = {
-            k: ""
-            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+            k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
         }
         with mock.patch.dict("os.environ", env), mock.patch("subprocess.run", fake_run):
             L.credentials(None, admin=True)
         self.assertTrue(calls)
-        self.assertTrue(all(c[3:5] == ["--path", "/zulipadmin"] for c in calls))
+        self.assertTrue(all(c[3:5] == ["--path", "/zulip_operator"] for c in calls))
 
     def test_admin_without_credentials_exits_naming_the_folder(self):
         env = {
-            k: ""
-            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+            k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
         }
         with (
             mock.patch.dict("os.environ", env),
@@ -275,7 +314,7 @@ class CredentialTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as cm:
                 L.credentials(None, admin=True)
-        self.assertIn("/zulipadmin, /zulip, or the root", str(cm.exception.code))
+        self.assertIn("/zulip_operator", str(cm.exception.code))
 
 
 if __name__ == "__main__":

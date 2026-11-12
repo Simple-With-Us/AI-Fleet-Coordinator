@@ -41,10 +41,10 @@ not fetched lately, the newest commit it shares with that branch;  `local-remote
 
 A checkout with nothing unpushed, no stash and nothing dirty leaves nothing behind.
 
-**(b) Non-git files** under `~/apps`, outside any checkout:  `AGENT-SYNC.md`, the effort logs,
+**(b) Non-git files** under `~/apps`, outside any checkout:  `FLEET-PROTOCOL.md`, the effort logs,
 `MAC-LOCAL-PROCESSES.md`, helper scripts, runtime
 configs.  They are staged under `files/`, which mirrors the path relative to the home directory
-(`files/apps/AGENT-SYNC.md`).  The loose files directly in `~/Code` are included too.  SQLite files
+(`files/apps/FLEET-PROTOCOL.md`).  The loose files directly in `~/Code` are included too.  SQLite files
 are copied with the online backup API (a live WAL-mode database is never torn;  `-wal` and `-shm`
 sidecars are skipped).  Symlinks are stored as symlinks, never followed.  A folder whose `.git` points
 nowhere (a pruned worktree) is not a checkout, so its files are kept here.
@@ -237,26 +237,26 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   not `lock-held`, which means another run is working) is counted;  after 8 in a row the line carries
   `warn=no-complete-backup-for-about-24h` and every such line shows `last_ok=`.
 - **Alert:**  at that point the job tells two places, each tried even when the other fails.  (1) One post through
-  `agent-sync post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the
+  `simple-chat post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#Work-In-Progress`), with the count, the
   last complete run, the run line (names and counts only) and where the logs are
   (`~/Library/Logs/fleet-work-backup.log`, `.detail.log`, `.out.log`, `.err.log`).  The post @-mentions each name in
   `FLEET_WORK_BACKUP_ALERT_TO` (a comma list of seats or people;  empty wakes nobody) and ends with
   `FLEET_WORK_BACKUP_ALERT_NOTE`, a standing instruction.  (2) When `FLEET_WORK_BACKUP_ALERT_DM_OWNER` is `1`,
-  `true` or `yes`, a Zulip DM to the owner through `agent-sync dm --as CLAUDE --owner`, with the same text and
+  `true` or `yes`, a Zulip DM to the owner through `simple-chat dm --as CLAUDE --owner`, with the same text and
   without the note.  This install's plist sets all three (owner ruling, Jay, Oct 10, 2026:  DM him, and tell the
   Plumbers to investigate and fix it without asking him):  `ALERT_TO=BF-PLUMBER,GB-PLUMBER`, `ALERT_DM_OWNER=1`,
   and a note that says the first Plumber to reply "taking it" in the topic owns the fix and the other reviews it.
   The job posts as the CLAUDE bot, which is a different seat from both Plumbers, so its mention can wake them.
   BF-Plumber is woken by BotFleet's own Zulip listener and GB-Plumber through the Grok Bot routine webhook on the
-  agent-sync server (live and connected as of Oct 10, 2026 10:34pm by `agent-sync status` on the server).  Neither
+  Operator server (live and connected as of Oct 10, 2026 10:34pm by `simple-chat status` on the server).  Neither
   has posted yet, so the wake path is unproven end to end.  BotFleet caps peer wakes (6 per bot per hour, 2 per
   topic per hour, and after 4 peer wakes in one topic with no message from Jay the topic stops waking that bot
   until Jay speaks there), so a failure that lasts for days can stop waking BF-Plumber in this topic.  **The owner
   DM is the delivery that is guaranteed.**  The alert goes out once when the count reaches 8 and again at most once
   a day while runs stay not ok (the mention and the note go with each).  When a complete run follows, the
   all-clear goes out to the owner by DM and to the topic as a post with **no** mention and no note, so good news
-  spends no one's wake budget.  The CLI is `~/.local/bin/agent-sync` (launchd's `PATH` lacks it;
-  `FLEET_WORK_BACKUP_AGENT_SYNC` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
+  spends no one's wake budget.  The CLI is `~/.local/bin/simple-chat` (launchd's `PATH` lacks it;
+  `FLEET_WORK_BACKUP_SIMPLE_CHAT` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
   change the topic and the seat.  When neither send is delivered the detail log says `alert-not-posted` (naming
   `post`, `dm` or both);  when only one is, it says `alert-partly-posted` and names the other, and the alert
   counts as sent for that day, so a DM that failed beside a post that landed is not retried until tomorrow.

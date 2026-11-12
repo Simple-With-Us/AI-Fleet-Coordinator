@@ -1,0 +1,13 @@
+# Every 15 minutes, well inside Muster's 45-minute freshness window.  Persistent=true runs
+# a missed slot at the next boot or login; the user manager runs at boot only with linger on
+# (see fleet-server-status.service).
+[Unit]
+Description=Every 15 minutes, refresh the fleet server status report (fleet-server-status.service)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

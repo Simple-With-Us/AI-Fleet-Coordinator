@@ -12,9 +12,9 @@ Run it in your own terminal:
 
 Credentials (AFC-359:  the owner's key is not needed, nothing prompts, no credential folder is read):
 it signs in only as the realm-admin bot (role 200, administrator).  Each of
-REALM_ADMIN_ZULIP_EMAIL and REALM_ADMIN_ZULIP_KEY is read from the environment first, then
-from Infisical Fleet-OPS folder /zulipadmin through `fleet-secrets get NAME --path /zulipadmin`
-(binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).  REALM_ADMIN_ZULIP_SITE is
+ZULIP_OPERATOR_EMAIL and ZULIP_OPERATOR_API_KEY is read from the environment first, then
+from Infisical Fleet-OPS folder /zulip_operator through `fleet-secrets get NAME --path /zulip_operator`
+(binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).  ZULIP_OPERATOR_SITE is
 read the same way and defaults to the realm when absent.  A fleet-secrets failure stops the
 run with a message naming the folder and the key, never the value.
 
@@ -31,7 +31,7 @@ For each bot in ROSTER it:
     is stored in Infisical /zulip,
   - skips a name that belongs to a non-bot user,
   - writes <out-dir>/<file>-zuliprc (mode 600, atomically) for each new or regenerated bot.
-    --out-dir defaults to ~/.agent-sync/provisioned/ (created mode 700).  An existing file is
+    --out-dir defaults to ~/.simple-tools/provisioned/ (created mode 700).  An existing file is
     never overwritten without --force, and such a bot is skipped BEFORE anything is created
     or rotated, so a key can never be lost to a kept file.  Nothing is ever written under
     the retired credentials folder,
@@ -45,7 +45,7 @@ the out-dir.  Keys are never printed.
 What the realm-admin bot CANNOT do (needs the organization OWNER, role 100, i.e. Jay's own
 login in the web UI):  change a user's role to owner, deactivate or reactivate users, and
 change realm-level settings.  GET /bots answers HTTP 400 to a bot caller, so this script
-never uses it.  Grok Bot (GB-*) personas are out of scope.
+never uses it.  Grok Bot (GB-*) bots are out of scope.
 """
 
 import argparse
@@ -58,9 +58,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# The fleet's coordination channel, from the runtime that owns it:  a provisioned bot has to be
+# subscribed to the channel the seats actually use, and a name written here goes stale the day
+# the realm renames it.  This script runs from scripts/, which is where the package lives.
+from simple_tools.zulip import default_channel
+
 REALM = "https://simplewithus.zulipchat.com"
-ADMIN_FOLDER = "/zulipadmin"
-DEFAULT_OUT_DIR = "~/.agent-sync/provisioned"
+ADMIN_FOLDER = "/zulip_operator"
+DEFAULT_OUT_DIR = "~/.simple-tools/provisioned"
 ROLE_OWNER, ROLE_ADMIN = 100, 200
 
 
@@ -69,7 +74,7 @@ def fleet_secrets_bin():
 
 
 def admin_secret(name, required=True):
-    """A realm-admin value:  env var of that name first, then fleet-secrets /zulipadmin.
+    """A realm-admin value:  env var of that name first, then fleet-secrets /zulip_operator.
 
     Never prints a value or the tool's stderr.  Returns "" for a missing optional value and
     exits with a message naming the folder and key for a missing required one.
@@ -106,7 +111,7 @@ def admin_secret(name, required=True):
     )
 
 
-CHANNELS = ["agent-sync", "alerts", "builds", "trading", "ideas"]
+CHANNELS = [default_channel(os.environ), "alerts", "builds", "trading", "ideas"]
 
 # (full name shown in Zulip, short name, zuliprc file stem).
 # Zulip appends "-bot" to the short name, in the API and in the web form alike:
@@ -129,7 +134,7 @@ ROSTER = [
         "OpenCode",
         "opencode",
         "OpenCode",
-    ),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in agent_sync/zulip.py
+    ),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in simple_tools/zulip.py
     ("Rob (Muse)", "muse-assist", "MA"),
     # BotFleet role bots
     ("BF-Builder", "bf-builder", "BF-Builder"),
@@ -161,7 +166,7 @@ def call(email, key, method, path, data=None):
         url,
         data=body,
         method=method,
-        headers={"Authorization": auth, "User-Agent": "agent-sync-provision/2"},
+        headers={"Authorization": auth, "User-Agent": "simple-tools-provision/2"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -181,10 +186,10 @@ def call(email, key, method, path, data=None):
 
 
 def credentials():
-    """(email, key, source):  the realm-admin bot, from env else Infisical /zulipadmin."""
-    email = admin_secret("REALM_ADMIN_ZULIP_EMAIL")
-    key = admin_secret("REALM_ADMIN_ZULIP_KEY")
-    site = admin_secret("REALM_ADMIN_ZULIP_SITE", required=False) or REALM
+    """(email, key, source):  the realm-admin bot, from env else Infisical /zulip_operator."""
+    email = admin_secret("ZULIP_OPERATOR_EMAIL")
+    key = admin_secret("ZULIP_OPERATOR_API_KEY")
+    site = admin_secret("ZULIP_OPERATOR_SITE", required=False) or REALM
     if urllib.parse.urlparse(site).hostname != urllib.parse.urlparse(REALM).hostname:
         raise SystemExit(f"credential is for {site}, expected {REALM}")
     return email, key, f"realm-admin bot (env, else Infisical {ADMIN_FOLDER})"

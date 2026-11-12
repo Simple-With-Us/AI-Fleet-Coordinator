@@ -1,5 +1,4 @@
-"""fleet-secrets tests.  The Infisical CLI and the Keychain are faked at subprocess.run, so no
-test touches the network, the real CLI, the real Keychain, the real HOME or any secrets file."""
+"""fleet-secrets CLI behavior tests with fake REST and explicit manual-session boundaries."""
 
 from __future__ import annotations
 
@@ -16,18 +15,20 @@ from fleet_secrets import cli, core
 
 FAKE_CLI = "/fake/bin/infisical"
 PROJECT = "00000000-0000-4000-8000-000000000001"  # a placeholder, not the real project id
+OTHER_PROJECT = (
+    "00000000-0000-4000-8000-000000000002"  # placeholder for the AI Fleet Coordinator project
+)
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
 CLIENT_SECRET = "SENTINEL_CLIENT_SECRET_5ec7"
 ACCESS_TOKEN = "SENTINEL_ACCESS_TOKEN_a11"
 ALL_SENTINELS = (VAL_A, VAL_B, CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN)
-FAKE_LOGIN_KEYCHAIN = "/fake/home/Library/Keychains/login.keychain-db"
-KEYCHAIN_FULL = {core.KEYCHAIN_CLIENT_ID: CLIENT_ID, core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET}
+KEYCHAIN_FULL = {"infisical-client-id": CLIENT_ID, "infisical-client-secret": CLIENT_SECRET}
 
 
 class World:
-    """Stands in for subprocess.run:  the infisical CLI plus /usr/bin/security."""
+    """Fake REST responses and the explicit interactive CLI-session route."""
 
     def __init__(
         self,
@@ -45,6 +46,26 @@ class World:
         self.export_stdout = export_stdout
         self.login_rc = login_rc
         self.calls = []
+        self.fetches = []
+
+    def fetch_project(
+        self, project, path, env, *, token=None, writer=False, names=None, timeout=None
+    ):
+        refusal = core.environment_refusal(env)
+        if refusal:
+            raise core.SecretsError(refusal, 2)
+        if self.export_rc:
+            message = "timeout" if self.export_rc == 124 else "fetch-failed"
+            raise core.SecretsError(message)
+        project_name = core.project_name_for_id(project, env)
+        token = token or core.resolve_token(env, writer=writer, project_name=project_name)
+        self.fetches.append((project, path, dict(env), token, writer, names, timeout))
+        if self.export_stdout is not None:
+            try:
+                return core._pairs(json.loads(self.export_stdout.decode("utf-8")))
+            except (ValueError, UnicodeDecodeError):
+                raise core.SecretsError("fetch-failed: bad-output") from None
+        return {key: value for key, value in self.secrets.items() if core.NAME_RE.fullmatch(key)}
 
     def run(self, argv, **kw):
         argv = list(argv)
@@ -57,12 +78,12 @@ class World:
             elif argv[-1] == FAKE_LOGIN_KEYCHAIN:
                 store = self.keychain
             else:
-                raise AssertionError("keychain lookup without an explicit keychain path: %r" % argv)
+                raise AssertionError(f"keychain lookup without an explicit keychain path: {argv!r}")
             if acct in store:
                 return subprocess.CompletedProcess(argv, 0, (store[acct] + "\n").encode(), b"")
             return subprocess.CompletedProcess(argv, 44, b"", b"not found")
         if argv[0] != FAKE_CLI:
-            raise AssertionError("unexpected program %r" % argv[0])
+            raise AssertionError(f"unexpected program {argv[0]!r}")
         if argv[1] == "--version":
             return subprocess.CompletedProcess(argv, 0, b"infisical version 0.43.141\n", b"")
         if argv[1] == "login" and len(argv) > 2 and argv[2] == "status":
@@ -85,7 +106,7 @@ class World:
                 else json.dumps(self.secrets).encode()
             )
             return subprocess.CompletedProcess(argv, 0, body, b"")
-        raise AssertionError("unexpected argv %r" % (argv[:2],))
+        raise AssertionError(f"unexpected argv {argv[:2]!r}")
 
     def exports(self):
         return [(a, e) for a, e in self.calls if len(a) > 1 and a[1] == "export"]
@@ -103,12 +124,19 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
-        self.env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", core.ENV_PROJECT: PROJECT}
+        self.env = {
+            "HOME": str(self.home),
+            "PATH": "/usr/bin:/bin",
+            core.ENV_PROJECT: PROJECT,
+            core.PROJECT_SOURCES["ai-fleet-coordinator"][0]: OTHER_PROJECT,
+            core.ENV_TOKEN: "st.test-service-token-fixture",
+            core.ENV_AI_FLEET_COORDINATOR_TOKEN: "st.ai-fleet-token-fixture",
+            core.ENV_WRITE_TOKEN: "st.test-write-token-fixture",
+        }
         self.exec_calls = []
         patches = [
             mock.patch.object(core, "find_cli", lambda env: FAKE_CLI),
             mock.patch.object(core, "SECURITY_BIN", sys.executable),  # exists on every platform
-            mock.patch.object(core, "login_keychain", lambda: FAKE_LOGIN_KEYCHAIN),
             mock.patch.object(
                 cli.os, "execvpe", lambda f, a, e: self.exec_calls.append((f, list(a), dict(e)))
             ),
@@ -121,6 +149,9 @@ class Base(unittest.TestCase):
         p = mock.patch.object(core.subprocess, "run", world.run)
         p.start()
         self.addCleanup(p.stop)
+        fetch = mock.patch.object(core, "fetch_project", world.fetch_project)
+        fetch.start()
+        self.addCleanup(fetch.stop)
         return world
 
     def call(self, *argv, env=None):
@@ -140,6 +171,21 @@ class GetTests(Base):
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out, err), (0, VAL_A, ""))
 
+    def test_get_several_names_prints_one_json_object(self):
+        w = self.use(World())
+        code, out, err = self.call("get", "ALPHA", "BETA")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {"ALPHA": VAL_A, "BETA": VAL_B})
+        self.assertEqual(len(w.fetches), 1)
+        self.assertEqual((w.fetches[0][0], w.fetches[0][1]), (PROJECT, "/"))
+
+    def test_get_several_names_with_one_absent_exits_3_and_prints_nothing(self):
+        self.use(World())
+        code, out, err = self.call("get", "ALPHA", "NOPE")
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("NOPE", err)
+        self.assertNoSentinel(out, err)
+
     def test_missing_key_exits_3_and_names_only_the_key(self):
         self.use(World())
         code, out, err = self.call("get", "NOPE")
@@ -150,16 +196,32 @@ class GetTests(Base):
     def test_path_is_passed_and_prod_is_the_only_env(self):
         w = self.use(World())
         self.call("get", "ALPHA", "--path", "/global-api-keys")
-        argv, _ = w.exports()[0]
-        self.assertIn("--path=/global-api-keys", argv)
-        self.assertIn("--env=prod", argv)
-        self.assertIn("--projectId=" + PROJECT, argv)
-        self.assertNotIn("--token", " ".join(argv))
+        self.assertEqual((w.fetches[0][0], w.fetches[0][1]), (PROJECT, "/global-api-keys"))
 
     def test_path_equals_form(self):
         w = self.use(World())
         self.call("names", "--path=/x")
-        self.assertIn("--path=/x", w.exports()[0][0])
+        self.assertEqual(w.fetches[0][1], "/x")
+
+    def test_project_option_reads_the_other_project_for_get_and_names(self):
+        other = "00000000-0000-4000-8000-000000000002"
+        self.env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = other
+        w = self.use(World())
+        self.assertEqual(
+            self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")[:2], (0, VAL_A)
+        )
+        self.assertEqual(
+            self.call("names", "--project=ai-fleet-coordinator", "--path", "/fleetlink")[0], 0
+        )
+        self.call("get", "ALPHA")
+        ids = [item[0] for item in w.fetches]
+        self.assertEqual(ids, [other, other, PROJECT])
+
+    def test_unknown_project_is_a_usage_error_before_any_fetch(self):
+        w = self.use(World())
+        self.assertEqual(self.call("get", "ALPHA", "--project", "other")[0], 2)
+        self.assertEqual(self.call("get", "ALPHA", "--project")[0], 2)
+        self.assertEqual(w.calls, [])
 
     def test_bad_name_and_bad_path_are_usage_errors_before_any_fetch(self):
         w = self.use(World())
@@ -167,11 +229,23 @@ class GetTests(Base):
         self.assertEqual(self.call("get", "ALPHA", "--path", "../x")[0], 2)
         self.assertEqual(w.calls, [])
 
+    def test_a_path_with_a_trailing_newline_is_refused_before_any_fetch(self):
+        # The whole path must match:  `$` also matches before a final newline,
+        # so a bare re.match would pass "/github-apps\n" on to the export as a
+        # folder of its own.
+        w = self.use(World())
+        self.assertEqual(self.call("get", "ALPHA", "--path", "/github-apps\n")[0], 2)
+        self.assertEqual(self.call("names", "--path=/x\n")[0], 2)
+        self.assertEqual(w.calls, [])
+        with self.assertRaises(core.UsageError):
+            core.check_path("/github-apps\n")
+        self.assertEqual(core.check_path("/github-apps"), "/github-apps")
+
 
 class UnresolvedReferenceTests(Base):
     def test_unresolved_reference_fails_closed_naming_the_key(self):
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${folder.OTHER}"}))
-        code, out, err = self.call("run", "--", "true")
+        code, _out, err = self.call("run", "--", "true")
         self.assertEqual(code, 5)
         self.assertIn("BROKEN", err)
         self.assertNotIn("folder.OTHER", err)
@@ -184,21 +258,30 @@ class UnresolvedReferenceTests(Base):
         self.assertEqual((code, out), (5, ""))
         self.assertIn("BROKEN", err)
 
-    def test_names_fails_closed_too(self):
+    def test_names_lists_keys_despite_an_unresolved_value(self):
+        # Listing keys uses no value, so one key whose value is an unexpanded
+        # reference must not take the whole listing down (AFC-592).  `get` and
+        # `run` still fail closed on that key (covered above).
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${x}"}))
-        code, out, err = self.call("names")
-        self.assertEqual((code, out), (5, ""))
+        code, out, _err = self.call("names")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.split(), ["ALPHA", "BROKEN"])
+        self.assertNotIn(VAL_A, out)
+        self.assertNotIn("${x}", out)
 
     def test_a_value_that_merely_contains_a_reference_is_fine(self):
         self.use(World(secrets={"ALPHA": "prefix-${x}-suffix"}))
-        self.assertEqual(self.call("get", "ALPHA")[:2], (0, "prefix-${x}-suffix"))
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (5, ""))
+        self.assertIn("ALPHA", err)
+        self.assertNotIn("${x}", err)
 
 
 class RunTests(Base):
     def test_run_injects_env_and_execs(self):
         self.use(World())
         self.env["KEEP"] = "kept"
-        code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
+        _code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
         self.assertEqual(err, "")
         ((prog, argv, env),) = self.exec_calls
         self.assertEqual((prog, argv), ("mycmd", ["mycmd", "--flag", "x"]))
@@ -209,6 +292,36 @@ class RunTests(Base):
         self.env["ALPHA"] = "old"
         self.call("run", "--", "mycmd")
         self.assertEqual(self.exec_calls[0][2]["ALPHA"], VAL_A)
+
+    def test_noninteractive_get_names_and_run_require_a_scoped_token(self):
+        for args in (("get", "ALPHA"), ("names",), ("run", "--", "mycmd")):
+            with self.subTest(args=args):
+                world = self.use(World())
+                env = dict(self.env)
+                env.pop(core.ENV_TOKEN)
+                env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+                code, _out, err = self.call(*args, env=env)
+                self.assertEqual(code, 4)
+                self.assertIn(core.ENV_TOKEN, err)
+                self.assertEqual(world.fetches, [])
+                self.assertEqual(self.exec_calls, [])
+
+    def test_interactive_get_keeps_the_manual_cli_session_route(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
@@ -276,15 +389,21 @@ class RunTests(Base):
             "INFISICAL_CLIENT_SECRET": "STORED_SECRET_SENTINEL",
             core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
         }
-        w = self.use(World(secrets=secrets))
+        self.use(World(secrets=secrets))
         self.call("run", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["ALPHA"], VAL_A)
         self.assertEqual(
-            {k for k in env if k.startswith("INFISICAL_")}, {core.ENV_PROJECT}
-        )  # only the parent's own
+            {k for k in env if k.startswith("INFISICAL_")},
+            {k for k in self.env if k.startswith("INFISICAL_")}
+            - {
+                core.ENV_TOKEN,
+                core.ENV_AI_FLEET_COORDINATOR_TOKEN,
+                core.ENV_WRITE_TOKEN,
+            },
+        )
         for var in ("INFISICAL_TOKEN", "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET"):
-            code, _, err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
+            code, _, _err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
             self.assertEqual(code, 2, var)
         self.assertEqual(len(self.exec_calls), 1)
         self.assertEqual(
@@ -293,7 +412,7 @@ class RunTests(Base):
 
     def test_the_parents_auth_variables_never_reach_the_child(self):
         self.use(World())
-        self.env[core.ENV_TOKEN] = "PARENT_TOKEN_SENTINEL"
+        self.env[core.ENV_TOKEN] = "st.parent-token-fixture"
         self.env[core.ENV_CLIENT_ID] = "PARENT_ID_SENTINEL"
         self.env[core.ENV_CLIENT_SECRET] = "PARENT_SECRET_SENTINEL"
         self.call("run", "--", "mycmd")
@@ -334,183 +453,28 @@ class NamesTests(Base):
         self.assertNoSentinel(out)
 
 
-class AuthSelectionTests(Base):
-    def test_session_is_used_without_a_keychain_item(self):
-        w = self.use(World())
-        self.call("get", "ALPHA")
-        self.assertEqual(w.logins(), [])
-        self.assertNotIn(core.ENV_TOKEN, w.exports()[0][1])
-
-    def test_keychain_identity_logs_in_and_exports_with_the_token_in_env(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL))
+class ScopedServiceTokenTests(Base):
+    def test_fleet_ops_token_is_passed_directly_without_login(self):
+        world = self.use(World())
         code, out, _ = self.call("get", "ALPHA")
         self.assertEqual((code, out), (0, VAL_A))
-        ((largv, lenv),) = w.logins()
-        self.assertIn("--method=universal-auth", largv)
-        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        eargv, eenv = w.exports()[0]
-        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
-        self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
+        self.assertEqual(world.logins(), [])
+        self.assertEqual(world.fetches[0][3], self.env[core.ENV_TOKEN])
+        self.assertFalse(world.fetches[0][4])
 
-    def test_system_keychain_identity_is_used_when_the_login_keychain_is_empty(self):
-        w = self.use(World(system_keychain=KEYCHAIN_FULL))
-        code, out, _ = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (0, VAL_A))
-        ((largv, lenv),) = w.logins()
-        self.assertIn("--method=universal-auth", largv)
-        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
-        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        eargv, eenv = w.exports()[0]
-        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
-        self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
-        lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
-        self.assertIn(
-            [
-                core.SECURITY_BIN,
-                "find-generic-password",
-                "-s",
-                "fleet-secrets",
-                "-a",
-                core.KEYCHAIN_CLIENT_SECRET,
-                "-w",
-                core.SYSTEM_KEYCHAIN,
-            ],
-            lookups,
-        )
+    def test_invalid_service_token_fails_before_export(self):
+        world = self.use(World())
+        env = dict(self.env, **{core.ENV_TOKEN: "st.short"})
+        code, _, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual(code, 4)
+        self.assertIn("service-token-required", err)
+        self.assertEqual(world.fetches, [])
 
-    def test_only_system_has_the_items_so_the_mode_is_system_keychain_not_keychain(self):
-        # Every lookup names its keychain, so System items are never found through the login lookup.
-        w = self.use(World(system_keychain=KEYCHAIN_FULL))
-        self.assertEqual(core.auth_mode(self.env), "system-keychain")
-        lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
-        self.assertTrue(lookups)
-        self.assertTrue(all(a[-1] in (FAKE_LOGIN_KEYCHAIN, core.SYSTEM_KEYCHAIN) for a in lookups))
-
-    def test_no_usable_login_keychain_falls_cleanly_to_system(self):
-        self.use(World(system_keychain=KEYCHAIN_FULL))
-        with mock.patch.object(core, "login_keychain", lambda: None):
-            self.assertEqual(core.auth_mode(self.env), "system-keychain")
-            code, out, _ = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (0, VAL_A))
-
-    def test_one_item_in_each_keychain_is_not_mixed(self):
-        w = self.use(
-            World(
-                keychain={core.KEYCHAIN_CLIENT_ID: CLIENT_ID},
-                system_keychain={core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET},
-            )
-        )
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("keychain-incomplete", err)
-        self.assertEqual(w.logins(), [])
-
-    def test_login_keychain_beats_the_system_keychain(self):
-        w = self.use(
-            World(
-                keychain=KEYCHAIN_FULL,
-                system_keychain={
-                    core.KEYCHAIN_CLIENT_ID: "OTHER_ID",
-                    core.KEYCHAIN_CLIENT_SECRET: "OTHER_SECRET",
-                },
-            )
-        )
-        self.call("get", "ALPHA")
-        ((_, lenv),) = w.logins()
-        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
-
-    def test_env_token_beats_both_keychains(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL, system_keychain=KEYCHAIN_FULL))
-        self.env[core.ENV_TOKEN] = "ENV_TOKEN_SENTINEL"
-        self.call("get", "ALPHA")
-        self.assertEqual(w.logins(), [])
-        self.assertEqual(w.exports()[0][1][core.ENV_TOKEN], "ENV_TOKEN_SENTINEL")
-
-    def test_half_filled_system_keychain_fails_instead_of_downgrading(self):
-        w = self.use(World(system_keychain={core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET}))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("keychain-incomplete", err)
-        self.assertIn("System keychain", err)
-        self.assertEqual(w.exports(), [])
-        self.assertNoSentinel(err)
-
-    def test_system_keychain_secret_and_token_never_appear_in_argv_or_the_run_child(self):
-        w = self.use(World(system_keychain=KEYCHAIN_FULL))
-        self.call("get", "ALPHA")
-        self.call("run", "--", "mycmd")
-        for argv, _ in w.calls:
-            joined = "\x00".join(argv)
-            for s in (CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN):
-                self.assertNotIn(s, joined)
-        env = self.exec_calls[0][2]
-        for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
-            self.assertNotIn(var, env)
-
-    def test_failed_system_keychain_login_error_holds_no_secret(self):
-        self.use(World(system_keychain=KEYCHAIN_FULL, login_rc=1))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("login-failed", err)
-        self.assertNoSentinel(err)
-
-    def test_get_returns_the_automation_identity_keys_that_run_refuses_to_inject(self):
-        # `get` is how the seeding script reads the pair;  only `run` withholds INFISICAL_* names.
-        self.use(
-            World(
-                secrets={
-                    "INFISICAL_AUTOMATION_CLIENT_ID": VAL_A,
-                    "INFISICAL_AUTOMATION_CLIENT_SECRET": VAL_B,
-                }
-            )
-        )
-        code, out, _ = self.call("get", "INFISICAL_AUTOMATION_CLIENT_ID")
-        self.assertEqual((code, out), (0, VAL_A))
-        code, out, _ = self.call("get", "INFISICAL_AUTOMATION_CLIENT_SECRET")
-        self.assertEqual((code, out), (0, VAL_B))
-        self.assertEqual(self.call("run", "--", "mycmd")[0], 0)
-        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_ID", self.exec_calls[0][2])
-
-    def test_client_secret_and_token_never_appear_in_any_argv(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL))
-        self.call("get", "ALPHA")
-        self.call("run", "--", "mycmd")
-        self.assertTrue(w.calls)
-        for argv, _ in w.calls:
-            joined = "\x00".join(argv)
-            for s in (CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN):
-                self.assertNotIn(s, joined)
-            self.assertNotIn("--client-secret", joined)
-            self.assertNotIn("--token", joined)
-
-    def test_the_machine_token_does_not_reach_the_command_run_by_run(self):
-        self.use(World(keychain=KEYCHAIN_FULL))
-        self.call("run", "--", "mycmd")
-        env = self.exec_calls[0][2]
-        for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
-            self.assertNotIn(var, env)
-
-    def test_half_filled_keychain_fails_instead_of_downgrading(self):
-        w = self.use(World(keychain={core.KEYCHAIN_CLIENT_ID: CLIENT_ID}))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("keychain-incomplete", err)
-        self.assertEqual(w.exports(), [])
-        self.assertNoSentinel(err)
-
-    def test_token_in_env_is_used_as_is(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL))
-        self.env[core.ENV_TOKEN] = "ENV_TOKEN_SENTINEL"
-        self.call("get", "ALPHA")
-        self.assertEqual(w.exports()[0][1][core.ENV_TOKEN], "ENV_TOKEN_SENTINEL")
-        self.assertEqual(w.logins(), [])
-
-    def test_failed_login_error_holds_no_secret(self):
-        self.use(World(keychain=KEYCHAIN_FULL, login_rc=1))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("login-failed", err)
-        self.assertNoSentinel(err)
+    def test_second_project_uses_separate_token_binding(self):
+        world = self.use(World())
+        code, _, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")
+        self.assertEqual(code, 0)
+        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
 
 
 class NoValueInErrorsTests(Base):
@@ -518,7 +482,7 @@ class NoValueInErrorsTests(Base):
         self.use(World(export_rc=1))
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out), (4, ""))
-        self.assertIn("exit-1", err)
+        self.assertIn("fetch-failed", err)
         self.assertNoSentinel(out, err)
 
     def test_bad_json_is_a_reason_token_only(self):
@@ -529,18 +493,13 @@ class NoValueInErrorsTests(Base):
         self.assertNoSentinel(err)
 
     def test_timeout_and_missing_cli(self):
-        def boom(argv, **kw):
-            if argv[0] == core.SECURITY_BIN:
-                return subprocess.CompletedProcess(argv, 44, b"", b"")
-            raise subprocess.TimeoutExpired(argv, 1)
-
-        with mock.patch.object(core.subprocess, "run", boom):
-            code, _, err = self.call("get", "ALPHA")
+        world = self.use(World(export_rc=124))
+        code, _, err = self.call("get", "ALPHA")
         self.assertEqual((code, err.strip()), (4, "fleet-secrets: timeout"))
+        world.export_rc = 0
         with mock.patch.object(core, "find_cli", lambda env: None):
             code, _, err = self.call("get", "ALPHA")
-        self.assertEqual(code, 4)
-        self.assertIn("cli-missing", err)
+        self.assertEqual((code, err), (0, ""))
 
     def test_list_shaped_export_is_accepted(self):
         body = json.dumps(
@@ -552,9 +511,9 @@ class NoValueInErrorsTests(Base):
 
 class ConfigTests(Base):
     def test_project_id_env_beats_file(self):
-        (self.home / ".agent-sync").mkdir()
+        (self.home / ".simple-tools").mkdir()
         other = "00000000-0000-4000-8000-0000000000ff"
-        (self.home / ".agent-sync" / "fleet-ops-project-id").write_text(other + "\n")
+        (self.home / ".simple-tools" / "fleet-ops-project-id").write_text(other + "\n")
         self.assertEqual(core.infisical_project_id({core.ENV_PROJECT: PROJECT}, self.home), PROJECT)
         self.assertEqual(core.infisical_project_id({}, self.home), other)
 
@@ -565,7 +524,7 @@ class ConfigTests(Base):
         self.assertEqual((code, out), (4, ""))
         self.assertIn(
             "the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID "
-            "or put it in ~/.agent-sync/fleet-ops-project-id "
+            "or put it in ~/.simple-tools/fleet-ops-project-id "
             "(it lives in the private fleet-ops inventory)",
             err,
         )
@@ -591,6 +550,20 @@ class ConfigTests(Base):
 
 
 class DoctorTests(Base):
+    def test_doctor_checks_the_second_project_with_its_scoped_token(self):
+        self.use(World())
+        code, out, _ = self.call("doctor", "--json")
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertTrue(rep["ai_fleet_coordinator_project_id_resolvable"])
+        self.assertTrue(rep["ai_fleet_coordinator_fetch_ok"])
+        self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
+        code, out, _ = self.call("doctor", "--json")
+        rep = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
+        self.assertFalse(rep["ok"])
+
     def test_doctor_reports_booleans_and_counts_only(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         code, out, err = self.call("doctor", "--json")
@@ -603,31 +576,40 @@ class DoctorTests(Base):
             and rep["fetch_names_ok"]
         )
         self.assertEqual(
-            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("keychain", 2, "0.43.141")
+            (rep["auth_mode"], rep["names_count"], rep["cli_version"]), ("token", 2, "0.43.141")
         )
+        self.assertTrue(rep["reader_configured"])
+        self.assertTrue(rep["writer_configured"])
         for v in rep.values():
             self.assertIsInstance(v, (bool, int, str, type(None)))
         self.assertNoSentinel(out, err)
         self.assertNotIn(PROJECT, out)
 
-    def test_doctor_reports_the_system_keychain_as_booleans_and_its_auth_mode(self):
-        self.use(World(system_keychain=KEYCHAIN_FULL))
+    def test_doctor_reports_write_token_presence_without_values(self):
+        self.use(World())
         code, out, err = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 0)
-        self.assertEqual(rep["auth_mode"], "system-keychain")
-        self.assertIs(rep["system_keychain_client_id_present"], True)
-        self.assertIs(rep["system_keychain_client_secret_present"], True)
-        self.assertIs(rep["keychain_client_id_present"], False)
-        self.assertIs(rep["keychain_client_secret_present"], False)
+        self.assertEqual(rep["auth_mode"], "token")
+        self.assertTrue(rep["writer_configured"])
         self.assertNoSentinel(out, err)
 
     def test_doctor_session_mode_text_output(self):
         self.use(World())
-        code, out, _ = self.call("doctor")
-        self.assertEqual(code, 0)
-        self.assertIn("auth_mode: session\n", out)
-        self.assertIn("session_login_valid: true\n", out)
+        self.env.pop(core.ENV_TOKEN)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, _ = self.call("doctor")
+        self.assertEqual(code, 1)
+        self.assertIn("auth_mode: missing\n", out)
+        self.assertIn("reader_configured: false\n", out)
         self.assertNoSentinel(out)
 
     def test_doctor_exits_1_and_gives_a_reason_when_the_fetch_fails(self):
@@ -653,6 +635,7 @@ class SetTests(Base):
         super().setUp()
         self.api = []
         self.statuses = {}
+        self.bodies = {}
 
     def fake_api(self, method, path, token, body, env):
         self.api.append((method, path, token, dict(body or {})))
@@ -661,9 +644,15 @@ class SetTests(Base):
             self.statuses.get(method, 200),
         )
 
+    def fake_api_json(self, method, path, token, body, env, **kwargs):
+        status = self.fake_api(method, path, token, body, env)
+        return status, self.bodies.get((method, path), None)
+
     def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
         with (
             mock.patch.object(core, "_api", self.fake_api),
+            mock.patch.object(core, "_api_json", self.fake_api_json),
+            mock.patch.object(core, "verify_service_token", return_value=("/linear",)),
             mock.patch.object(cli.sys, "stdin", io.StringIO(stdin)),
         ):
             return self.call("set", *argv, env=env)
@@ -674,7 +663,8 @@ class SetTests(Base):
         self.assertEqual((code, out, err), (0, "updated CACHE_MY_APP at /linear\n", ""))
         method, path, token, body = self.api[-1]
         self.assertEqual(
-            (method, path, token), ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", ACCESS_TOKEN)
+            (method, path, token),
+            ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.ENV_WRITE_TOKEN]),
         )
         self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
         self.assertEqual(
@@ -744,7 +734,50 @@ class SetTests(Base):
         self.assertEqual(self.api, [])
 
     def test_the_allowlist_is_exactly_the_reviewed_one(self):
-        self.assertEqual(core.WRITE_ALLOWLIST, (("/linear", r"^CACHE_[A-Z0-9_]+$"),))
+        self.assertEqual(
+            core.WRITE_ALLOWLIST,
+            (
+                ("/linear", r"^CACHE_[A-Z0-9_]+$"),
+                (
+                    r"/cli-logins/[A-Z][A-Z0-9-]{0,15}",
+                    r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)$",
+                ),
+                (
+                    r"/cli-logins",
+                    r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$",
+                ),
+            ),
+        )
+
+    def test_folder_probe_accepts_existing_path_without_creating_anything(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        with (
+            mock.patch.object(core, "_api_json", self.fake_api_json),
+            mock.patch.object(core, "verify_service_token", return_value=("/cli-logins/OPENCODE",)),
+        ):
+            core.ensure_folder("/cli-logins/OPENCODE", self.env, "SENTINEL_TOKEN_x1")
+        self.assertEqual([item[0] for item in self.api], ["GET"])
+        self.assertFalse(any("/v1/folders" in item[1] for item in self.api))
+
+    def test_a_rejected_folder_that_is_not_an_existing_folder_is_a_failure(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["GET"] = 500
+        with (
+            mock.patch.object(core, "_api_json", self.fake_api_json),
+            mock.patch.object(core, "verify_service_token", return_value=("/cli-logins/OPENCODE",)),
+        ):
+            with self.assertRaises(core.SecretsError) as caught:
+                core.ensure_folder("/cli-logins/OPENCODE", self.env, "SENTINEL_TOKEN_x1")
+        self.assertIn("folder-missing-or-inaccessible", caught.exception.message)
+
+    def test_the_folder_is_never_created_outside_prod(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        env = dict(self.env)
+        env["INFISICAL_ENV"] = "staging"
+        with self.assertRaises(core.SecretsError) as caught:
+            core.ensure_folder("/cli-logins/OPENCODE", env, "SENTINEL_TOKEN_x1")
+        self.assertEqual(self.api, [])
+        self.assertIn("prod", caught.exception.message)
 
     def test_a_failed_write_exits_4_and_never_echoes_the_value_or_token(self):
         self.use(World(keychain=KEYCHAIN_FULL))
@@ -754,11 +787,13 @@ class SetTests(Base):
         self.assertIn("http-403", err)
         self.assertNoSentinel(out, err)
 
-    def test_the_cli_login_session_is_refused_because_it_cannot_hand_over_a_token(self):
-        self.use(World())  # no keychain items:  session mode
-        code, out, err = self.run_set("CACHE_K", "--path", "/linear")
+    def test_set_requires_separate_write_token(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_WRITE_TOKEN)
+        code, _out, err = self.run_set("CACHE_K", "--path", "/linear", env=env)
         self.assertEqual(code, 4)
-        self.assertIn("machine identity", err)
+        self.assertIn(core.ENV_WRITE_TOKEN, err)
         self.assertEqual(self.api, [])
 
     def test_an_empty_value_and_a_bad_name_are_usage_errors_before_any_call(self):
@@ -771,10 +806,269 @@ class SetTests(Base):
     def test_the_value_is_never_an_argument_and_never_reaches_a_subprocess(self):
         w = self.use(World(keychain=KEYCHAIN_FULL))
         self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_B)
-        for argv, env in w.calls:
-            self.assertNotIn(VAL_B, " ".join(argv))
-            self.assertNotIn(VAL_B, " ".join(env.values()))
+        self.assertTrue(any(VAL_B == body.get("secretValue") for _, _, _, body in self.api))
+        self.assertFalse(w.calls)
+        for _, path, token, _body in self.api:
+            self.assertNotIn(VAL_B, path)
+            self.assertNotIn(VAL_B, token)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFetchVerified(unittest.TestCase):
+    """fetch_verified:  the REST row's own fields prove the folder."""
+
+    ENV = {
+        "INFISICAL_FLEET_OPS_PROJECT_ID": "00000000-0000-4000-8000-000000000042",
+        core.ENV_TOKEN: "st.test-service-token-fixture",
+    }
+    PROJECT = "00000000-0000-4000-8000-000000000042"
+    PATH = "/git-relay-owner"
+
+    def _secret(self, **overrides):
+        row = {
+            "workspace": self.PROJECT,
+            "environment": "prod",
+            "type": "shared",
+            "secretKey": "GITHUB_TOKEN",
+            "secretValue": "the-value",
+            "secretValueHidden": False,
+            "secretPath": self.PATH,
+            "id": "row-id",
+            "version": 3,
+        }
+        row.update(overrides)
+        return row
+
+    def _run(self, status=200, answer=None, row_overrides=None):
+        if answer is None:
+            answer = {"secret": self._secret(**(row_overrides or {}))}
+        calls = []
+
+        def fake_api_json(method, path, token, body, env, max_bytes=None, deadline=None):
+            calls.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "token": token,
+                    "max_bytes": max_bytes,
+                }
+            )
+            if path == "/v2/service-token":
+                return 200, {
+                    "workspace": self.PROJECT,
+                    "permissions": ["read"],
+                    "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                }
+            return status, answer
+
+        with mock.patch.object(core, "_api_json", fake_api_json):
+            try:
+                value = core.fetch_verified(
+                    "GITHUB_TOKEN", self.PATH, self.ENV, token=self.ENV[core.ENV_TOKEN]
+                )
+                return value, calls, None
+            except core.SecretsError as exc:
+                return None, calls, exc
+
+    def test_happy_path_returns_the_value(self):
+        value, calls, err = self._run()
+        self.assertIsNone(err)
+        self.assertEqual(value, "the-value")
+        call = next(item for item in calls if item["path"].startswith("/v3/"))
+        self.assertEqual(call["method"], "GET")
+        self.assertIn("/v3/secrets/raw/GITHUB_TOKEN?", call["path"])
+        self.assertIn("workspaceId=" + self.PROJECT, call["path"])
+        self.assertIn("environment=prod", call["path"])
+        self.assertIn("secretPath=%2Fgit-relay-owner", call["path"])
+        self.assertEqual(call["token"], self.ENV[core.ENV_TOKEN])
+        self.assertEqual(call["max_bytes"], core.MAX_VERIFIED_BYTES)
+
+    def test_wrong_secret_path_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretPath": "/"})
+        self.assertIsNotNone(err)
+        self.assertEqual(err.code, 4)
+        self.assertIn("secretPath", str(err))
+        self.assertNotIn("the-value", str(err))
+
+    def test_wrong_workspace_fails_closed(self):
+        _, _, err = self._run(row_overrides={"workspace": "other-uuid"})
+        self.assertEqual(err.code, 4)
+        self.assertNotIn("the-value", str(err))
+
+    def test_wrong_environment_fails_closed(self):
+        _, _, err = self._run(row_overrides={"environment": "dev"})
+        self.assertEqual(err.code, 4)
+
+    def test_personal_type_fails_closed(self):
+        _, _, err = self._run(row_overrides={"type": "personal"})
+        self.assertEqual(err.code, 4)
+
+    def test_wrong_key_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretKey": "OTHER_KEY"})
+        self.assertEqual(err.code, 4)
+
+    def test_hidden_value_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValueHidden": True})
+        self.assertEqual(err.code, 4)
+
+    def test_missing_hidden_field_fails_closed(self):
+        row = self._secret()
+        del row["secretValueHidden"]
+        _, _, err = self._run(answer={"secret": row})
+        self.assertEqual(err.code, 4)
+
+    def test_non_string_value_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValue": 42})
+        self.assertEqual(err.code, 4)
+
+    def test_empty_value_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValue": ""})
+        self.assertEqual(err.code, 4)
+
+    def test_unresolved_reference_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValue": "${OTHER_KEY}"})
+        self.assertIsNotNone(err)
+
+    def test_missing_secret_row_fails_closed(self):
+        _, _, err = self._run(answer={"unexpected": {}})
+        self.assertEqual(err.code, 4)
+
+    def test_absent_key_is_exit_3_naming_folder_and_key_only(self):
+        for status in (400, 404):
+            _, _, err = self._run(status=status, answer=None)
+            self.assertEqual(err.code, 3)
+            self.assertIn("GITHUB_TOKEN", str(err))
+            self.assertIn("/git-relay-owner", str(err))
+            self.assertNotIn("the-value", str(err))
+
+    def test_other_status_is_a_fetch_failure(self):
+        _, _, err = self._run(status=500, answer={"secret": self._secret()})
+        self.assertEqual(err.code, 4)
+        self.assertIn("status-500", str(err))
+
+    def test_unreachable_is_a_fetch_failure(self):
+        _, _, err = self._run(status=0, answer=None)
+        self.assertEqual(err.code, 4)
+        self.assertIn("unreachable", str(err))
+
+    def test_non_json_answer_fails_closed(self):
+        # The service-token metadata response is valid, while the raw-secret response is not.
+        def fake_api(method, path, token, body, env, **kwargs):
+            if path == "/v2/service-token":
+                return 200, {
+                    "workspace": self.PROJECT,
+                    "permissions": ["read"],
+                    "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                }
+            return 200, None
+
+        with mock.patch.object(core, "_api_json", fake_api):
+            with self.assertRaises(core.SecretsError) as ctx:
+                core.fetch_verified(
+                    "GITHUB_TOKEN", self.PATH, self.ENV, token=self.ENV[core.ENV_TOKEN]
+                )
+        self.assertEqual(ctx.exception.code, 4)
+        self.assertIn("bad-output", str(ctx.exception))
+
+    def test_missing_service_token_is_refused(self):
+        with self.assertRaises(core.SecretsError) as ctx:
+            core.fetch_verified(
+                "GITHUB_TOKEN", self.PATH, {"INFISICAL_FLEET_OPS_PROJECT_ID": self.PROJECT}
+            )
+        self.assertIn("INFISICAL_TOKEN", str(ctx.exception))
+
+    def test_valid_service_token_is_used_when_not_passed_explicitly(self):
+        def fake_api(method, path, token, body, env, **kwargs):
+            if path == "/v2/service-token":
+                return 200, {
+                    "workspace": self.PROJECT,
+                    "permissions": ["read"],
+                    "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                }
+            return 200, {"secret": self._secret()}
+
+        with mock.patch.object(core, "_api_json", fake_api):
+            self.assertEqual(core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV), "the-value")
+
+
+class TestApiJsonBoundedRead(unittest.TestCase):
+    def test_oversized_answer_fails_closed_without_logging(self):
+        class _Resp:
+            status = 200
+
+            def read(self, limit=None):
+                data = b"x" * (core.MAX_VERIFIED_BYTES + 10)
+                return data if limit is None else data[:limit]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch.object(core, "_opener", lambda: mock.Mock(open=lambda *a, **k: _Resp())):
+            status, answer = core._api_json(
+                "GET", "/v3/secrets/raw/X", "tok", None, {}, max_bytes=core.MAX_VERIFIED_BYTES
+            )
+        self.assertEqual((status, answer), (0, None))
+
+    def test_unbounded_default_is_unchanged(self):
+        class _Resp:
+            status = 200
+
+            def read(self, limit=None):
+                self.saw_limit = limit
+                return b'{"ok": true}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        resp = _Resp()
+        with mock.patch.object(core, "_opener", lambda: mock.Mock(open=lambda *a, **k: resp)):
+            status, answer = core._api_json("GET", "/v1/x", "tok", None, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, {"ok": True})
+        self.assertEqual(resp.saw_limit, core.MAX_OUTPUT_BYTES + 1)
+
+
+class TestCmdGetVerified(unittest.TestCase):
+    def test_prints_the_value_only(self):
+        import io
+
+        from fleet_secrets import cli
+
+        out = io.StringIO()
+        with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):
+            rc = cli.cmd_get_verified(["NAME", "--path", "/folder"], {}, out)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "v")
+
+    def test_root_path_is_a_usage_error(self):
+        import io
+
+        from fleet_secrets import cli
+
+        with self.assertRaises(core.UsageError):
+            cli.cmd_get_verified(["NAME"], {}, io.StringIO())
+
+    def test_dispatched_from_main(self):
+        import io
+
+        from fleet_secrets import cli
+
+        out = io.StringIO()
+        with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):
+            rc = cli.main(
+                ["get-verified", "NAME", "--path", "/folder"],
+                {core.ENV_TOKEN: "st.test-service-token-fixture"},
+                out,
+                io.StringIO(),
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "v")

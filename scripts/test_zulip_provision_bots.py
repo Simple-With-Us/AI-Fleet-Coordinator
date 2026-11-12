@@ -33,8 +33,8 @@ ADMIN_EMAIL = "admin-bot@127.0.0.1"
 ADMIN_KEY = "test-admin-key-AAAA1111"
 OLD_KEY = "test-old-codex-key-BBBB2222"
 ADMIN_ENV = {
-    "REALM_ADMIN_ZULIP_EMAIL": ADMIN_EMAIL,
-    "REALM_ADMIN_ZULIP_KEY": ADMIN_KEY,
+    "ZULIP_OPERATOR_EMAIL": ADMIN_EMAIL,
+    "ZULIP_OPERATOR_API_KEY": ADMIN_KEY,
 }
 
 
@@ -158,11 +158,11 @@ if os.environ.get("FAKE_FS_FAIL") == "1":
     sys.stderr.write("LEAKY-STDERR-should-never-surface test-admin-key-AAAA1111\\n")
     sys.exit(3)
 values = {{
-    "REALM_ADMIN_ZULIP_EMAIL": "{email}",
-    "REALM_ADMIN_ZULIP_KEY": "{key}",
-    "REALM_ADMIN_ZULIP_SITE": "{site}",
+    "ZULIP_OPERATOR_EMAIL": "{email}",
+    "ZULIP_OPERATOR_API_KEY": "{key}",
+    "ZULIP_OPERATOR_SITE": "{site}",
 }}
-if sys.argv[1:2] != ["get"] or sys.argv[3:5] != ["--path", "/zulipadmin"] or sys.argv[2] not in values:
+if sys.argv[1:2] != ["get"] or sys.argv[3:5] != ["--path", "/zulip_operator"] or sys.argv[2] not in values:
     sys.exit(3)
 print(values[sys.argv[2]])
 """
@@ -237,16 +237,16 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                "get REALM_ADMIN_ZULIP_EMAIL --path /zulipadmin",
-                "get REALM_ADMIN_ZULIP_KEY --path /zulipadmin",
-                "get REALM_ADMIN_ZULIP_SITE --path /zulipadmin",
+                "get ZULIP_OPERATOR_EMAIL --path /zulip_operator",
+                "get ZULIP_OPERATOR_API_KEY --path /zulip_operator",
+                "get ZULIP_OPERATOR_SITE --path /zulip_operator",
             ],
         )
         self.assertIn("role 200", out)
-        self.assertIn("/zulipadmin", out)
+        self.assertIn("/zulip_operator", out)
 
     def test_env_wins_over_fleet_secrets(self):
-        with mock.patch.dict(os.environ, {**ADMIN_ENV, "REALM_ADMIN_ZULIP_SITE": self.fake.url}):
+        with mock.patch.dict(os.environ, {**ADMIN_ENV, "ZULIP_OPERATOR_SITE": self.fake.url}):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.fs_calls(), [])
@@ -262,8 +262,8 @@ class ProvisionTests(unittest.TestCase):
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
         msg = str(code.code)
-        self.assertIn("/zulipadmin", msg)
-        self.assertIn("REALM_ADMIN_ZULIP_EMAIL", msg)
+        self.assertIn("/zulip_operator", msg)
+        self.assertIn("ZULIP_OPERATOR_EMAIL", msg)
         self.assertNotIn("LEAKY", msg + out + err)
         self.assert_no_keys(msg, out, err)
         self.assertEqual(self.fake.requests, [])
@@ -272,7 +272,7 @@ class ProvisionTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"FLEET_SECRETS_BIN": str(self.root / "nope")}):
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
-        self.assertIn("/zulipadmin", str(code.code))
+        self.assertIn("/zulip_operator", str(code.code))
 
     def test_only_the_realm_admin_bot_is_ever_asked_for(self):
         with mock.patch.dict(
@@ -286,7 +286,7 @@ class ProvisionTests(unittest.TestCase):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
         self.assertTrue(self.fs_calls())
-        self.assertTrue(all(c.split()[1].startswith("REALM_ADMIN_ZULIP_") for c in self.fs_calls()))
+        self.assertTrue(all(c.split()[1].startswith("ZULIP_OPERATOR_") for c in self.fs_calls()))
         self.assertIn(ADMIN_EMAIL, out)
 
     def test_no_credential_override_option_exists(self):
@@ -298,7 +298,7 @@ class ProvisionTests(unittest.TestCase):
 
     def test_credential_for_another_realm_is_refused(self):
         with mock.patch.dict(
-            os.environ, {**ADMIN_ENV, "REALM_ADMIN_ZULIP_SITE": "https://evil.example"}
+            os.environ, {**ADMIN_ENV, "ZULIP_OPERATOR_SITE": "https://evil.example"}
         ):
             code, out, err = self.run_main("--dry-run")
         self.assertIsInstance(code, SystemExit)
@@ -431,7 +431,7 @@ class ProvisionTests(unittest.TestCase):
 
     def test_undecodable_fleet_secrets_output_does_not_crash(self):
         self.fs.write_text("#!/bin/sh\nprintf 'ok\\377\\376'\n")
-        value = prov.admin_secret("REALM_ADMIN_ZULIP_SITE", required=False)
+        value = prov.admin_secret("ZULIP_OPERATOR_SITE", required=False)
         self.assertIsInstance(value, str)
         self.assertTrue(value.startswith("ok"))
 

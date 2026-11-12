@@ -363,7 +363,7 @@ class RefusalTests(World):
         self.assertTrue(link.is_symlink())
 
     def test_the_runtime_checkout_is_always_skipped(self) -> None:
-        runtime = self.lanes / "_managed" / "fleet" / "agent-sync-runtime"
+        runtime = self.lanes / "_managed" / "fleet" / "simple-tools-runtime"
         runtime.parent.mkdir(parents=True)
         git(self.repos["AI-Fleet-Coordinator"], "worktree", "add", "-q", "--detach", str(runtime))
         item = self.plan()[str(runtime)]

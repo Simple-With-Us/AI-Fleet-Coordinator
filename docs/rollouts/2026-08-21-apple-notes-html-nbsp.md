@@ -9,7 +9,7 @@ Notes.app is an HTML renderer.  Two ASCII spaces in a `<p>` collapse to one, so 
 ## What
 
 - `--html` and MD-converted bodies: leftover `.  ` / `!  ` / `?  ` become `.&nbsp; ` (skipped inside `<code>` / `<pre>`).
-- Skills + FLEET-UI-COPY + AGENT-SYNC: HTML that a renderer will show uses `&nbsp; ` after sentence punctuation.  Markdown files still use two ASCII spaces.
+- Skills + FLEET-UI-COPY + FLEET-PROTOCOL: HTML that a renderer will show uses `&nbsp; ` after sentence punctuation.  Markdown files still use two ASCII spaces.
 - Incident note rewritten with `&nbsp; `.
 
 ## Verify

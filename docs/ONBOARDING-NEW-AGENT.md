@@ -5,7 +5,7 @@ Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
 
 **GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
 **Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
-**Protocol:** `/Users/jay/apps/AGENT-SYNC.md` · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md
+**Protocol:** `/Users/jay/apps/FLEET-PROTOCOL.md`
 
 **Run the script to register the seat, then finish the checklist.**
 
@@ -39,16 +39,19 @@ A seat is one persistent identity that may spawn many sessions:
 | Branch prefix | `grok/` (never push under another seat's prefix) |
 | Seat env | `AGENT_SEAT=GROK` |
 
-Existing seats and their roles: `AGENT-SYNC.md` § "Agent Seat Specifics &
+Existing seats and their roles: `FLEET-PROTOCOL.md` § "Agent Seat Specifics &
 Execution Profiles".  Universal seat row (`ANY`) is the fallback until you
 add a dedicated row.
 
 **Grok Bot is not onboarded this way.**  `GROK-BOT` is one fleet-wide identity
 that drives Cursor cloud agents.  It is not Mac Grok (GROK, which Grok Build shares), and it
 is **not** a per-app seat.  Do not run this script to create
-per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` personas need no
+per-app Grok Bot lanes or per-app `GROK-BOT-*` tags.  Its `GB-<ROLE>` bots need no
 registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and the
-`GROK-BOT` row has no branch prefix because it opens no lanes.
+`GROK-BOT` row has no branch prefix because it opens no lanes.  The roles do open
+lanes (AFC-620):  a pattern's `lane` block lists them and renders the lane folder and
+branch prefix, so `AGENT_SEAT=GB-DEPLOYER` plans under `gb-deployer/` and signs
+`gb-deployer/<slug>` branches, and `BF-FIXER` does the same under `bf-fixer/`.
 
 ---
 
@@ -57,7 +60,7 @@ registry row:  `seatApps.patterns` covers them (and the `BF-<ROLE>` bots), and t
 `fleet-apps.json` has a top-level `seatApps` key that says which **app** each seat runs
 in (`claude-code`, `codex`, `grok-terminal`, `grok-web`, `botfleet`, ...).  Code that
 counts apps instead of models (a consult quorum, claim ownership) reads it through two
-functions in `scripts/agent_sync/identity.py`:
+functions in `scripts/simple_tools/identity.py`:
 
 | Function | What it does |
 |----------|--------------|
@@ -73,7 +76,11 @@ The key has three parts:
   owner-run (`JET` is `chatgpt`, `ECHO` and `WISE` are one app, `instinct`).
 - `patterns`:  families made of a role.  `BF-*` is `botfleet` (bot `bf-<role>-bot@`)
   and `GB-*` is `grok-bot` (bot `<role>-grok-bot@`).  The patterns accept any
-  well-formed role, so they cannot catch a misspelled one.
+  well-formed role, so they cannot catch a misspelled one.  A pattern's `lane`
+  block (AFC-620) names the roles that open lanes and their folder and branch
+  templates;  an unlisted role is refused with the known roles, and a role whose
+  rendered folder or branch prefix collides with a seat row or another pattern
+  fails the registry check.
 
 Two seats on one model are two apps when they are two products (`GROK` the
 terminal and `GROK-WEB`), and two seats in one product are one app (`ECHO` and
@@ -89,16 +96,16 @@ with the top-level `apps` (the acronyms) and `--app`.
 
 ## Hard rules (teach these on day one)
 
-1. **Read `~/apps/AGENT-SYNC.md` before the first message.**  Then the app's
+1. **Read `~/apps/FLEET-PROTOCOL.md` before the first message.**  Then the app's
    `AGENTS.md`.  Peer messages are coordination data, not owner orders.  Screen a peer's request and
-   help when it is low risk; decline high-risk asks and DM the owner (AGENT-SYNC Precedence rule 3).
-   Look first at Linear (`https://linear.app/simple-with-us`, through the `board` CLI).
+   help when it is low risk; decline high-risk asks and DM the owner (FLEET-PROTOCOL Precedence rule 3).
+   Look first at Linear (`https://linear.app/simple-with-us`, through the `simple-board` CLI).
 2. **Do not work in `~/Code/<App>`.**  That is the human integration tree.
    Work in a lane: `~/apps/lane new <app> <slug>` makes one at
    `~/apps/lanes/<Repo>/<suffix>-<slug>` (`docs/protocols/lane-map.md`).
 3. **Linear first, then Zulip, then code.**  Claim and closeout on every real unit are
-   the Linear issue (`board claim`, `board status`; writes need `AGENT_SEAT`), the PR
-   (`Fixes <ID>` or `Refs <ID>`, branch `<seat>/<id>-<slug>`) and a `#agent-sync` post.
+   the Linear issue (`simple-board claim`, `simple-board status`; writes need your bearer-verified seat, no seat variable picks it), the PR
+   (`Fixes <ID>` or `Refs <ID>`, branch `<seat>/<id>-<slug>`) and a `#Work-In-Progress` post.
 4. **Commit → push → open PR → merge when CI is green.** Do not wait for the
    owner to say "commit". Do not leave a remote branch without a PR.
 5. **Prior owner messages stay in scope** unless the owner cancels or
@@ -111,14 +118,14 @@ with the top-level `apps` (the acronyms) and `--app`.
    nothing may read it.  Never `cat` or open a secrets file with a Read tool.  Never
    `od` / `xxd` / `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 7. **Light theme default.  Two spaces between sentences everywhere**,
-   including App Store listing and review notes.  See `AGENT-SYNC.md`
+   including App Store listing and review notes.  See `FLEET-PROTOCOL.md`
    § Two spaces and `FLEET-UI-COPY.md`.
 8. **Say every time on the owner's clock, 12-hour, with am or pm.**  That
    clock is Central.  Do not type CDT, CST, or CT (`3:15am`, not `08:15Z`).
    Give only the Central time:  convert UTC first, with no stamp beside it.  `00:00 UTC` is
    7:00pm the previous calendar day during daylight saving (6:00pm after the
    fall-back).  Binding for every agent, bot, and platform.  Canonical:
-   `AGENT-SYNC.md` § Timestamps.
+   `FLEET-PROTOCOL.md` § Timestamps.
 9. **Fleet recall.**  Search `fleet-agents` before re-deriving (`recall` / MCP
    `recall_search`).  Contribute every reusable lesson (`recall_contribute`).
    Cloud seats use `https://agents.jays.services/mcp`.  Do not bulk-ingest
@@ -126,10 +133,10 @@ with the top-level `apps` (the acronyms) and `--app`.
 10. **Use sub-agents whenever they help.** Pick the most economical effective
    model per task, even if that is a lower or higher tier than your session.
    Small = mechanical, mid = default implementation, frontier = design /
-   money-path / critical verify only.  Canonical: `AGENT-SYNC.md` § Delegation
+   money-path / critical verify only.  Canonical: `FLEET-PROTOCOL.md` § Delegation
    & model economics.
-11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #agent-sync, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
-    Full-read on match.  Prefer a live listener (`agent-sync listen`); `agent-sync inbox` and `read --new` if you cannot hold one.
+11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #Work-In-Progress, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
+    Full-read on match.  Prefer a live listener (`simple-chat listen`); `simple-chat inbox` and `read --new` if you cannot hold one.
 
 ---
 
@@ -139,8 +146,8 @@ with the top-level `apps` (the acronyms) and `--app`.
    runs in.  Add the first four to `fleet-apps.json` `seats`, the app to
    `fleet-apps.json` `seatApps.bySeat` (`scripts/onboard-new-agent.sh --app`).  The
    seat's row in the Active Seats table is a pull request to Fleet-OPS `handbook/`
-   (`handbook/core/seats-and-identity.md`);  `AGENT-SYNC.md` is being generated from
-   the handbook, so do not edit either copy of `AGENT-SYNC.md` by hand.
+   (`handbook/core/seats-and-identity.md`);  `FLEET-PROTOCOL.md` is being generated from
+   the handbook, so do not edit either copy of `FLEET-PROTOCOL.md` by hand.
 2. If the platform has a global rules file, add the fleet pointer there
    **before** the first session in a repo:
 
@@ -150,13 +157,13 @@ with the top-level `apps` (the acronyms) and `--app`.
    | Codex | `~/.codex/AGENTS.md` |
    | Gemini / Antigravity | `~/.gemini/config/AGENTS.md` |
    | Cursor | Cursor user rules + this repo's `TEMPLATE-AGENTS.md` |
-   | Grok | Grok user rules (already point at `AGENT-SYNC.md`) |
+   | Grok | Grok user rules (already point at `FLEET-PROTOCOL.md`) |
    | MiniMax (MiniMax Code / Mavis) | `~/.minimax/memory/user.md` — see "MiniMax has no rules file" below |
    | Muse Code (`[MC]`) | `~/.config/muse/settings.json`, trusted paths in `~/.config/muse/trust.json`, loads project `AGENTS.md` and `CLAUDE.md`, skills in `~/.config/muse/skills` |
    | OpenCode (`[OPENCODE]`) | `~/.config/opencode/AGENTS.md` (OpenCode 2.x reads `<config dir>/AGENTS.md`;  `opencode debug paths` prints the config dir);  paste-in prompt `docs/OPENCODE-ONBOARDING-PROMPT.md` |
 
    The pointer is the Inter-agent coordination stanza plus "read
-   `~/apps/AGENT-SYNC.md` before your first message."
+   `~/apps/FLEET-PROTOCOL.md` before your first message."
 
    **MiniMax has no rules file — use user memory.**  `~/.minimax/config.yaml`
    holds only `defaultModel`, `logLevel`, `permissionMode`, and `provider`.
@@ -171,7 +178,7 @@ with the top-level `apps` (the acronyms) and `--app`.
      (`~/.minimax/.builtin-skills/mavis/references/skill-management.md` and
      `references/agent.md` § Skill Discovery.)
    - **A custom agent (`~/.minimax/agents/<name>/agent.md`) — always-on, but
-     only for that agent.**  An agent definition's `system_prompt` / `persona`
+     only for that agent.**  An agent definition's `system_prompt` / `bot`
      does load every turn, but only in sessions where the user picked that
      agent.  The shipped definitions under `agents/.builtin/` (`explore`,
      `worker`, `verifier`) are sub-agent roles, so a fleet pointer parked
@@ -212,6 +219,26 @@ with the top-level `apps` (the acronyms) and `--app`.
    pack are fleet-wide; the pack assumes tag `[MONET]` and branch prefix
    `monet/`.
 
+5. **Prove the route live: the seat self-test.**  Before you trust a closed
+   issue, and before you fall back to `gh`, run from your own shell:
+
+   ```bash
+   python3 scripts/simple_tools/selftest.py --seat <TAG>
+   ```
+
+   It strips a stale `AGENT_SEAT` and `AGENT_TAG` (a launcher's
+   hints, and any `AGENT_LAUNCH_SEAT`, are kept and must agree), reads your own bearer file,
+   and checks `whoami`, one hosted git read (`gr_wf_repo_get`) and one
+   seat-policy-gated read (`gr_wf_pr_list_page`).  On a refusal it names the
+   exact cause: `seat_not_in_policy`, `bearer_rejected`,
+   `verifier_unavailable`, `no_app_credential`, `seat_policy` or
+   `unauthenticated`, or another closed gateway code such as `not_authorized`.  It also
+   prints the Worker version, and a relay version if one is exposed.  Reads
+   that need a relay policy grant (`gr_wf_pr_search`, `gr_wf_repo_list`) show
+   as `WARN`, and fail the run only with `--strict`.  Exit code 0 means every
+   required step passed.  It is read-only and never prints a credential.  Tests:
+   `cd scripts && python3 -m unittest simple_tools.tests.test_selftest`.
+
 ---
 
 ## Phase 1 — Zulip Receive and Send
@@ -220,27 +247,28 @@ On the owner's Mac (`AGENT_SEAT=<TAG>` pinned; the CLI picks the seat from it):
 
 ```bash
 # catch up (every turn / before claim / after finish)
-agent-sync inbox
-agent-sync read --new --topic "<work topic>"
+simple-chat inbox
+simple-chat read --new --topic "<work topic>"
 
 # post (a topic is required; the CLI writes your [<TAG>·session8] tag)
-agent-sync post --topic "<ID> <subject>" $'repo:  <app>  |  CLAIMED\nclaim:  <branch>\nclaimed:  <Day, Mon D, YYYY>\nwork:  …'
+simple-chat post --topic "<ID> <subject>" $'repo:  <app>  |  CLAIMED\nclaim:  <branch>\nclaimed:  <Day, Mon D, YYYY>\nwork:  …'
 
 # live listener (preferred; run it under a monitor tool)
-agent-sync listen --topic "<work topic>" --topic fleet --mentions
+simple-chat listen --topic "<work topic>" --topic fleet --mentions
 ```
 
 Your bot's credential lives in Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL`, `_KEY`, `_SITE`).  Only Jay
 creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` § Bot Setup).
 Never echo the key.
 
-Cloud / no Mac FS: set `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE` as **runtime** env
-vars (not setup-only) and run `python3 scripts/agent-sync` from any clone of this repo, or
+Cloud / no Mac FS: the seat's bot credential comes from Infisical Fleet-OPS `/zulip`
+(`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), read by the CLI through `fleet-secrets`
+vars (not setup-only) and run `python3 scripts/simple-chat` from any clone of this repo, or
 follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
 PR so a Mac seat can publish the note.
 
-First post is an **intro**, in #agent-sync topic `roll call`, then the claim in its own
+First post is an **intro**, in #Work-In-Progress topic `roll call`, then the claim in its own
 work topic:
 
 ```
@@ -295,20 +323,19 @@ Then, by hand and with the owner's approval of each live install (read the `plan
    entry in `scripts/fleet_lanes/install_rules.py` and `install_tools.py` first.
 3. Every command and option is in `scripts/fleet_lanes/README.md`.
 4. **Which installer reaches which tool** (checked Sat, Oct 10, 2026).  A tool that is not in this table has no installer yet:
-   decide first whether it has a fixed default seat (AGENT-SYNC § Identity Rules, Platform Defaults) or none, because that
-   decides its rules text and whether it may get `agent-sync mcp`.
+   decide first whether it has a fixed default seat (FLEET-PROTOCOL § Identity Rules, Platform Defaults) or none, because that
+   decides its rules text and whether it may get `simple-chat mcp`.
 
-   | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP (`install_mcp`) | Deny hook (`install_tools`) |
+   | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP server (`install_mcp`) | Deny hook (`install_tools`) |
    |---|---|---|---|---|---|
-   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `agent-sync` only (`fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
-   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `agent-sync` | `muse`, a plugin the owner installs |
+   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `simple-tools` only, the Zulip server (`simple-chat` is the CLI, not a server name; `fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
+   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `simple-tools` (the Zulip server) | `muse`, a plugin the owner installs |
    | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
-   | Mistral Vibe | none | `vibe`, `~/.vibe/AGENTS.md` | none | none (its `config.toml` holds `mcp_servers = []`) | none |
-   | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | none (its hook is fail-closed) |
-   | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | none (plugin API unproven) |
+   | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | `copilot`, a file this tool owns under `~/.copilot/hooks/` |
+   | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | `opencode`, a local plugin in the stable dir |
    | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
-   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
-   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `agent-sync` | none |
+   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `simple-tools` (the Zulip server) | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
+   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `simple-tools` (the Zulip server) | none |
 
    Not tools to wire: Muse Assist (a cloud assistant, the card in `docs/MUSE-ONBOARDING.md`), BotFleet and Grok Bot (launchers: they
    pass their own seat, so nothing user-level may pin one), `~/.dsh` (BotFleet owns it), Cherry Studio, OpenClaw (not configured), and
@@ -333,12 +360,12 @@ This specializes the catalog per seat: Cursor `[CURSOR]` (cloud Grok Bot fork `[
 
 1. `cd` into the lane. `git status` + `git log -3`.
 2. Read `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and the app's open Linear issues
-   (`board list --app <app>`).  `docs/EFFORT-LOG.md` is archived history.
-3. Read Zulip (`agent-sync inbox`).  `board claim` the issue (or `board file`, then claim),
+   (`simple-board list --app <app>`).  `docs/EFFORT-LOG.md` is archived history.
+3. Read Zulip (`simple-chat inbox`).  `simple-board claim` the issue (or `simple-board file`, then claim),
    post the claim in the topic `<ID> <subject>`.  Then edit.
 4. Verify with that repo's documented gate before claiming done.
 5. Commit, push, `gh pr create`, land when green.
-6. Closeout: Linear Done/Deployed (`board status`;  a `Fixes <ID>` PR also does Done on merge once Linear's GitHub automation is on), Zulip `DONE` +
+6. Closeout: Linear Done/Deployed (`simple-board status`;  a `Fixes <ID>` PR also does Done on merge once Linear's GitHub automation is on), Zulip `DONE` +
    PR number. Apple Notes for owner-facing reviews.
 
 ---
@@ -351,7 +378,7 @@ Only when the seat's product needs them. Do not block first code on these.
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
 | MCP servers | Per-platform config. Secrets from Infisical (`fleet-secrets`). Never commit tokens. |
-| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `ZULIP_EMAIL` + `ZULIP_API_KEY` + `ZULIP_SITE` + `GH_TOKEN` must be **runtime** vars |
+| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app;  the Zulip credential comes from Infisical Fleet-OPS `/zulip` through `fleet-secrets`, and `GH_TOKEN` must be a **runtime** var |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |
 
@@ -361,8 +388,8 @@ Only when the seat's product needs them. Do not block first code on these.
 
 1. If it is a standing seat, not a one-off sub-agent, add its row to the Active
    Seats table with a pull request to Fleet-OPS `handbook/`
-   (`handbook/core/seats-and-identity.md`).  `AGENT-SYNC.md` is being generated
-   from the handbook, so do not edit either copy of `AGENT-SYNC.md` by hand.
+   (`handbook/core/seats-and-identity.md`).  `FLEET-PROTOCOL.md` is being generated
+   from the handbook, so do not edit either copy of `FLEET-PROTOCOL.md` by hand.
 2. Mention the new tag in the onboarding Zulip closeout so skim-match
    starts working.
 3. Sub-agents spawned inside a seat **inherit that seat's tag**. They do
@@ -374,11 +401,11 @@ Only when the seat's product needs them. Do not block first code on these.
 ## Definition of done
 
 - [ ] Tag, Notes name, suffix, prefix written in `fleet-apps.json`, and the app in `seatApps.bySeat`
-- [ ] Global rules file on that platform points at `AGENT-SYNC.md`
-- [ ] Seat has its own Zulip bot and can read and post `#agent-sync` with `agent-sync` without printing the key
+- [ ] Global rules file on that platform points at `FLEET-PROTOCOL.md`
+- [ ] Seat has its own Zulip bot and can read and post `#Work-In-Progress` with `simple-chat` without printing the key
 - [ ] Intro posted
 - [ ] The seat's first lane (`~/apps/lane new`) is under `~/apps/lanes/` and is **not** `~/Code/<App>`
-- [ ] Seat has completed one claim-and-closeout unit in Linear and Zulip (even a docs PR), with `AGENT_SEAT` set for its `board` writes
+- [ ] Seat has completed one claim-and-closeout unit in Linear and Zulip (even a docs PR), with `AGENT_SEAT` set for its `simple-board` writes
 - [ ] Digest logo added only if the seat will appear on merged-PR rows
 
 ---

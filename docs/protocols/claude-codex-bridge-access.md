@@ -1,15 +1,15 @@
 # Claude and Codex bridge access (AFC-296)
 
-Prepared Mon, Oct 12, 2026.  The hosted Agent-Sync endpoint is
-`https://agent-sync.jays.services/mcp`; the server binds each grant to a seat and
+Prepared Mon, Oct 12, 2026.  The hosted Simple-Tools endpoint is
+`https://agents.simplewithus.com/mcp`; the server binds each grant to a seat and
 uses that seat's bot credential.  Identity is never a caller-supplied argument.
 
 | Surface | Supported route | Status in this change |
 | --- | --- | --- |
 | Claude web, mobile, Desktop, Cowork | Hosted remote custom connector; independent public OAuth client; exact `https://claude.ai/api/mcp/auth_callback` | CLAUDE configuration prepared; provisioning, deploy, registration, consent and real hosted acceptance pending |
 | Claude Code cloud | Cloud host delivers claude.ai connectors, subject to organization and session policy | Can use the hosted CLAUDE connector after connection and surface acceptance |
-| Claude Code native | Direct HTTP OAuth with loopback, or local stdio `agent-sync mcp` | Separate route; no native callback added |
-| Codex local desktop, CLI, IDE | Native Streamable HTTP OAuth or local stdio `agent-sync mcp` | Client supports independent configured OAuth ID; no hosted CODEX binding added |
+| Claude Code native | Direct HTTP OAuth with loopback, or local stdio `simple-chat mcp` | Separate route; no native callback added |
+| Codex local desktop, CLI, IDE | Native Streamable HTTP OAuth or local stdio `simple-chat mcp` | Client supports independent configured OAuth ID; no hosted CODEX binding added |
 | Codex Cloud / hosted Work | Hosted plugin MCP connection | Actual independent callback/client identity required before enabling CODEX |
 
 ## Hosted identity requirements
@@ -21,7 +21,7 @@ its own seat tag, and its callback belongs only to CLAUDE.  Worker bindings
 AFC `prod` `/zulip` entry names; Worker provisioning remains unconfirmed.  The existing JET
 client and grant cannot be reused.  A real `whoami` must confirm CLAUDE,
 `claude-bot@simplewithus.zulipchat.com`, role 400 and hosted transport.  Follow
-[owner connection steps](../../scripts/agent-sync-mcp/ARMING-JAY.md#connect-hosted-claude-claude-afc-296).
+[owner connection steps](../../scripts/simple-tools-mcp/ARMING-JAY.md#connect-hosted-claude-claude-afc-296).
 
 Codex Cloud needs a separate hosted MCP connection's actual OAuth identity from
 its management page or a matching owner-initiated refusal.  OpenAI's hosted
@@ -36,7 +36,7 @@ Hosted CODEX Linear access is a separate track from Zulip OAuth.  Currently
 off globally.  Future CODEX access needs its own Linear app credential pair,
 verified app identity, a scoped policy change and real `linear_whoami` acceptance.
 Do not enable global writes or change GROK-WEB as a shortcut.  The server-local
-`board` route is independent of hosted Linear permissions.
+`simple-board` route is independent of hosted Linear permissions.
 
 Native Codex uses different client metadata documents:
 `https://chatgpt.com/oauth/codex/client.json` with issuer-bound responses, or

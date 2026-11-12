@@ -1,8 +1,8 @@
-"""The test harness:  a temp world with a fake `board` and a fake `agent-sync` on PATH.
+"""The test harness:  a temp world with a fake `simple-board` and a fake `simple-chat` on PATH.
 
     world = World(self)
     code, out, err = world.run("file", "--by", "CLAUDE", ...)
-    world.calls("board")            # every call a fake received, with argv, seat and file contents
+    world.calls("simple-board")            # every call a fake received, with argv, seat and file contents
     world.zulip()["messages"]       # what was posted
 
 `run` calls `needs_owner.cli.main` in process with a synthetic environment (the test's own, never the
@@ -29,8 +29,8 @@ if str(SCRIPTS) not in sys.path:
 
 from needs_owner import cli  # noqa: E402
 
-REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/%s/near/%d"
-OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_agent_sync.OWNER_ID)
+REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/%s/near/%d"
+OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_simple_tools.OWNER_ID)
 KEYCAP = {n: "003%d-20e3" % n for n in range(1, 6)}  # Zulip's emoji_code for 1️⃣ to 5️⃣
 
 
@@ -40,7 +40,9 @@ class FakeKnobs:
     def __init__(self) -> None:
         self.values: dict = {"NEEDS_OWNER_NOTIFY_PAUSED": False,
                              "NEEDS_OWNER_CAPS": {"urgent_per_hour": 3, "per_hour": 6, "per_day": 30},
-                             "OWNER_LINEAR_USER_ID": ""}
+                             "OWNER_LINEAR_USER_ID": "",
+                             # the owner bar's knobs (bar.py, read by `file`):  off and no cap are the registry defaults
+                             "NEEDS_OWNER_BAR": "off", "NEEDS_OWNER_SEAT_DAILY_MAX": 0}
         self.stale_copy = False
         self.fail: Exception | None = None
         self.reads: list = []
@@ -71,12 +73,24 @@ class World:
         self.bin = self.root / "bin"
         self.state = self.root / "state"
         self.home = self.root / "home"
-        for d in (self.bin, self.state, self.home):
+        self.tmp = self.root / "tmp"
+        for d in (self.bin, self.state, self.home, self.tmp):
             d.mkdir()
+        # The CLI runs in process, so its private files land wherever `tempfile` points.  Point it at this
+        # world's own directory for the life of the world, so another run on the same machine cannot fail
+        # this run's leak check (and this run cannot fail theirs).
+        self._saved_tempdir = tempfile.tempdir
+        tempfile.tempdir = str(self.tmp)
+        test.addCleanup(setattr, tempfile, "tempdir", self._saved_tempdir)
         self.knobs = FakeKnobs()
         self.now = dt.datetime(2026, 10, 11, 18, 0, 0, tzinfo=dt.timezone.utc)  # well after every issue the fake board stamps
-        self._launcher("board", HERE / "fake_board.py")
-        self._launcher("agent-sync", HERE / "fake_agent_sync.py")
+        from needs_owner import seat as _seat
+
+        self._seat_module, self._saved_bin = _seat, _seat.MANAGED_BIN_DIR
+        _seat.MANAGED_BIN_DIR = str(self.bin)  # the import-only seam:  the fake tools are the "managed" install
+        test.addCleanup(setattr, _seat, "MANAGED_BIN_DIR", self._saved_bin)
+        self._launcher("simple-board", HERE / "fake_board.py")
+        self._launcher("simple-chat", HERE / "fake_simple_tools.py")
 
     def _launcher(self, name: str, script: Path) -> None:
         path = self.bin / name
@@ -90,8 +104,18 @@ class World:
     # ---- running -----------------------------------------------------------------------------
     def env(self, **extra: str) -> dict:
         env = {"PATH": "%s:/usr/bin:/bin" % self.bin, "HOME": str(self.home), "FAKE_STATE_DIR": str(self.state),
-               "FAKE_SCRIPTS_DIR": str(SCRIPTS), "AGENT_SEAT": "CLAUDE", "PYTHONDONTWRITEBYTECODE": "1"}
+               "FAKE_SCRIPTS_DIR": str(SCRIPTS), "AGENT_SEAT": "CLAUDE", "PYTHONDONTWRITEBYTECODE": "1",
+               # A run in a subprocess does not see this process's tempfile.tempdir, so it is pointed at the
+               # same per-world folder here and the leak check covers it too.
+               "TMPDIR": str(self.tmp), "TEMP": str(self.tmp), "TMP": str(self.tmp)}
         env.update(extra)
+        # The harness plays the trusted launcher:  a seat binds the run to a bearer file and the fake board
+        # proves that seat (FAKE_BEARER_SEAT).  AGENT_SEAT itself is never an identity any more, so it is not
+        # passed on;  no seat means no bearer file and the run refuses.
+        seat = env.pop("AGENT_SEAT", None)
+        if seat:
+            env["SIMPLE_BOARD_BEARER_FILE"] = "/run/seat-bearers/%s" % seat.replace("-", "_").lower()
+            env["FAKE_BEARER_SEAT"] = seat
         return {k: v for k, v in env.items() if v is not None}
 
     def run(self, *argv: str, env: dict | None = None) -> Run:
@@ -150,7 +174,7 @@ class World:
         world.update(changes)
         (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
 
-    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "agent-sync",
+    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "work-in-progress",
                     sender_id: int | None = None, client: str | None = None, email: str | None = None,
                     reactions: list | None = None) -> int:
         """A message someone else put in a topic, after the fact.  `seat` is a bot's seat tag;  with none it
@@ -218,7 +242,7 @@ class World:
             nodes.append({"id": "lbl-" + key, "name": name, "parent": {"name": parent} if parent else None})
         world["issues"][ident] = {
             "id": str(uuid.uuid5(uuid.NAMESPACE_URL, "seed/" + ident)), "identifier": ident,
-            "url": "https://linear.app/simple-with-us/issue/" + ident, "title": title, "description": text,
+            "url": "https://linear.app/test-fleet/issue/" + ident, "title": title, "description": text,
             "priority": priority, "createdAt": "2026-10-11T07:%02d:00.000Z" % (world["tick"] % 60),
             "updatedAt": "2026-10-11T07:00:00.000Z", "state": {"name": state}, "team": {"key": team},
             "labels": {"nodes": nodes}, "attachments": {"nodes": []}, "comments": []}
@@ -259,4 +283,4 @@ class World:
         self.save_board(world)
 
     def leftover_temp_files(self) -> list[str]:
-        return sorted(p for p in os.listdir(tempfile.gettempdir()) if p.startswith(".needs-owner-"))
+        return sorted(p for p in os.listdir(self.tmp) if p.startswith(".needs-owner-"))

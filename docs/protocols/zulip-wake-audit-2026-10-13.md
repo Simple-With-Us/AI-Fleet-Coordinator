@@ -41,7 +41,7 @@ AFC-305 tracks registry implementation and dormant-chat resume coverage.  This a
 
 ## Existing-Chat Nudge Delivery
 
-`agent-sync daemon chats` manages explicit per-seat topic bindings and the durable nudge queue.  A binding identifies a host, platform, session ID and workspace; titles are never routing keys.  Only an eligible wake on the exact topic enters this queue.  A bound nudge replaces the headless response for that message; unbound messages keep their existing routing.
+`simple-chat daemon chats` manages explicit per-seat topic bindings and the durable nudge queue.  A binding identifies a host, platform, session ID and workspace; titles are never routing keys.  Only an eligible wake on the exact topic enters this queue.  A bound nudge replaces the headless response for that message; unbound messages keep their existing routing.
 
 The first transport is `grok-leader`, through the shared Grok leader's existing `session/resume` and `session/prompt` methods.  It requires a live Grok process, the exact workspace, and idle session state.  Busy, permission-waiting, disconnected and unknown sessions remain pending.  It never invokes session creation, cancellation, a model change, or an additional agent owner.  A correlated prompt response or the exact nudge in the chat's saved real-user history confirms transport acceptance.  A timeout without either receipt remains uncertain and is never retried automatically.  The worker checks uncertain deliveries for later saved receipts.  Acceptance does not prove that the agent subsequently read or answered Zulip.
 
@@ -52,14 +52,14 @@ Shellular's installed CLI has no supported local prompt API.  Its private `AI_PR
 Local administration (keep the caller's own seat in `--as`; `--target-seat` selects the delivery identity):
 
 ```sh
-agent-sync --as CODEX daemon chats list --target-seat GROK
-agent-sync --as CODEX daemon chats bind --target-seat GROK \
-  --channel agent-sync --topic 'ISSUE-123 Work Topic' \
+simple-chat --as CODEX daemon chats list --target-seat GROK
+simple-chat --as CODEX daemon chats bind --target-seat GROK \
+  --channel Work-In-Progress --topic 'ISSUE-123 Work Topic' \
   --session-id '<discovered-session-id>' --cwd '<discovered-workspace>'
-agent-sync --as CODEX daemon chats status --target-seat GROK
-agent-sync --as CODEX daemon chats cancel --target-seat GROK --item-id '<held-item-id>'
-agent-sync --as CODEX daemon chats unbind --target-seat GROK \
-  --channel agent-sync --topic 'ISSUE-123 Work Topic'
+simple-chat --as CODEX daemon chats status --target-seat GROK
+simple-chat --as CODEX daemon chats cancel --target-seat GROK --item-id '<held-item-id>'
+simple-chat --as CODEX daemon chats unbind --target-seat GROK \
+  --channel Work-In-Progress --topic 'ISSUE-123 Work Topic'
 ```
 
 AFC-307 separately tracks the older shared Grok prompt helper's uncorrelated `queued: true` result.  The new nudge transport bypasses that acceptance path.
@@ -70,10 +70,12 @@ Topic renames and channel moves migrate explicit chat bindings and pending nudge
 
 The tool-less Muse router first receives metadata for up to 24 relevant records from a bounded read-only catalog, with a 24,000-character context ceiling.  If metadata is insufficient, `chat_inspect` requests one exact readable record and the listener supplies up to four recent user/assistant messages for one final decision.  A wake permits at most two Muse calls, with no recursive inspection.  The collector scans native stores without starting another ACP owner, excludes tool output and reasoning, and scrubs text before sending it to Muse.  Every direct message or explicit bot mention can initiate this Muse routing path, from Jay or a peer.  Trigger text is untrusted input and may rank bounded metadata, but it cannot grant transcript access or override deterministic safety gates.  Muse may request one excerpt for either sender; Muse makes the relevance and safety judgment, while the listener enforces exact listed/read-capable targets and fixed bounds.  Peer-triggered chat selection still requires Muse to return `risk: low`.
 
+> **Note added Nov 7, 2026.**  This audit is the Oct 13 record and is not rewritten.  Two of its statements are superseded:  that every direct message or explicit bot mention can start this Muse routing path, and the owner preference at the top for a Muse-then-mcode router chain.  The owner ruled (owner, Nov 7, 2026) "Seat wake doesn't need an agent" and "Only the operator does headless runs sometimes":  the Operator's consultant runs only when deterministic code cannot decide, on a preset the owner made on OpenRouter.  The per-seat model wakes still run until Phase 2, which is not built;  PR #1506 only records each model start and whether a deterministic rule could have decided it.  The current state is in [Zulip Wake Routing](zulip-wake-routing.md).
+
 The output field `chat_target` selects one opaque ID from that exact snapshot.  The listener requires a Muse wake, refreshes the record, rejects stale/read-only/unknown targets, verifies unchanged host/platform/workspace, and queues one fixed Zulip reminder.  Peer-triggered selection additionally requires `risk: low`; a private DM can target only a chat belonging to the addressed seat.  The model cannot choose the prompt text, create a chat, change its model, or select a host.  A simultaneous seat route is rejected to prevent duplicate handoffs.  Busy targets stay queued behind existing work; uncertain sends require receipts or explicit cancellation.
 
 Supported stores and transports are distinct.  Claude and Codex native logs provide bounded text, Cursor local provides metadata, and verified native Muse/MiniMax/Fx stores provide the capabilities advertised by each reader.  Grok shared-leader and Cursor Cloud existing-agent runs are the callable wake transports.  Other records are read-only until an existing-owner delivery API is verified.  Missing adapters remain visible as unavailable instead of disappearing or being recreated.
 
-`agent-sync --as CODEX daemon chats catalog --limit 120` lists the bounded catalog.  `agent-sync --as CODEX daemon chats peek --chat-id <opaque-id>` reads up to four recent messages from an exact discovered record.  Catalog and excerpts stay local/in memory; no transcript is added to public source or the durable wake queue.  Cursor Cloud queue status/cancellation use `--target-seat CURSOR`; Grok uses `--target-seat GROK`.
+`simple-chat --as CODEX daemon chats catalog --limit 120` lists the bounded catalog.  `simple-chat --as CODEX daemon chats peek --chat-id <opaque-id>` reads up to four recent messages from an exact discovered record.  Catalog and excerpts stay local/in memory; no transcript is added to public source or the durable wake queue.  Cursor Cloud queue status/cancellation use `--target-seat CURSOR`; Grok uses `--target-seat GROK`.
 
 The changed wake schema and contract invalidate the previous Muse pin.  Run the standard hostile-message contract test and review its result before pinning the new contract.  A synthetic positive-selection canary should also verify that the model returns a known wake-capable ID despite hostile transcript text, without dispatching that test selection.

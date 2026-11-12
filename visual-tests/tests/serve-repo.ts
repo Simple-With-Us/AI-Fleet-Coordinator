@@ -30,10 +30,35 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+// Failures the in-test origin must never produce: aborted subresources
+// (missing files), console errors, and uncaught page exceptions.  Collected
+// here so specs can assert the page was fully clean (this would have caught
+// the stale digest's missing agent-logos/app-harness.png).
+const errorsKey = '__serveRepoErrors';
+
+export function serveErrors(page: Page): string[] {
+  return (page as unknown as Record<string, string[]>)[errorsKey] ?? [];
+}
+
 export async function serveRepo(
   page: Page,
-  opts: { stripMetaRefresh?: boolean } = {},
+  opts: { stripMetaRefresh?: boolean; deferMetaRefresh?: boolean } = {},
 ): Promise<void> {
+  (page as unknown as Record<string, string[]>)[errorsKey] = [];
+  const errors = serveErrors(page);
+  page.on('requestfailed', (request) => {
+    errors.push(
+      `requestfailed: ${request.url()} ${request.failure()?.errorText ?? ''}`.trim(),
+    );
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error') {
+      errors.push(`console.error: ${message.text()}`);
+    }
+  });
+  page.on('pageerror', (error) => {
+    errors.push(`pageerror: ${error.message}`);
+  });
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== TEST_ORIGIN) {
@@ -64,6 +89,19 @@ export async function serveRepo(
         body = body
           .toString('utf-8')
           .replace(/<meta[^>]*http-equiv=["']refresh["'][^>]*>/i, '');
+      } else if (opts.deferMetaRefresh && file.endsWith('.html')) {
+        // Same redirect, different need:  the smoke spec asserts the tag's own
+        // content, so the tag must stay - but a zero-delay refresh races the
+        // assertions (its provisional navigation suspends locator polling;
+        // CI 05:24Z read href="" on a loaded runner).  Deferring the firing
+        // delay far past the test keeps the tag, its URL and the real DOM
+        // readable;  the spec asserts nothing about the delay value.
+        body = body
+          .toString('utf-8')
+          .replace(
+            /(<meta[^>]*http-equiv=["']refresh["'][^>]*>)/i,
+            (tag) => tag.replace(/(content=["'])0(;)/i, '$13600$2'),
+          );
       }
       await route.fulfill({
         body,
