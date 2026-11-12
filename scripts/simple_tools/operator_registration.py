@@ -6,8 +6,9 @@ is never issued on a guessed, defaulted or self-evident location, because the le
 a wake address resolves, and the location is what decides how that chat can be woken.
 
 This module is the decision core and the durable queue.  It never sends a Zulip message and
-never opens the registry itself:  the caller (the Operator's CLI today, the listener daemon
-next) delivers the question, brings the reply back, and injects the registry functions, so
+never opens the registry itself:  the caller (the Eavesdropper, the server's listener daemon,
+which alone answers;  AFC-721) delivers the question, brings the reply back, and injects the
+registry functions, so
 the queue can be tested without a database and the registry never contends with the wake
 path's read handles.
 
@@ -940,10 +941,15 @@ def answer_reply(result: Mapping[str, Any]) -> str:
     return "No open question with that ref - it was answered already or expired unanswered."
 
 
-# ---- the Operator's CLI:  ask, answer, sweep, pending -----------------------------------
+# ---- the Operator's CLI:  ask, sweep, pending -----------------------------------
 
 
-def _registry_functions(db_path: str):
+def _registrations_reader(db_path: str):
+    """The CLI's one registry call:  a read of the letters a session id holds.
+
+    One writer (AFC-721):  this CLI never issues a letter.  A location answer is taken only by
+    the Eavesdropper, in the chat's own topic, through its registry service;  the CLI's old
+    `answer` verb, a second process that could register a letter, is gone (hard cut)."""
     # Imported lazily so the queue module and its tests never need the registry's 3.11+
     # import surface, and the read handle stays read-only by behaviour (operator_registry).
     from . import operator_registry as OR
@@ -956,15 +962,7 @@ def _registry_functions(db_path: str):
             return []
         return OR.registrations_for_native_id(db_path, platform, session_id)
 
-    def register(**identity: Any) -> dict[str, Any]:
-        return OR.register_session(
-            db_path,
-            source="operator-registration",
-            issuer=OR.ISSUER_OPERATOR,
-            **identity,
-        )
-
-    return registrations, register
+    return registrations
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -983,10 +981,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     a.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
 
-    n = sub.add_parser("answer", help="register with the answered location and print the letter")
-    n.add_argument("--entry", required=True)
-    n.add_argument("--location", required=True, help="one of:  mac, server, cloud")
-
     sub.add_parser("sweep", help="drop unanswered questions past their deadline")
     sub.add_parser("pending", help="list the questions still waiting for an answer")
 
@@ -1002,35 +996,19 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"pending": pending_entries(db_path)}))
         return 0
 
-    registrations, register = _registry_functions(db_path)
+    registrations = _registrations_reader(db_path)
     try:
-        if args.command == "ask":
-            out = begin(
-                db_path,
-                platform=args.platform,
-                profile_scope=args.scope,
-                session_id=args.session_id,
-                seat=args.seat,
-                requester=args.requester,
-                evidence_location=args.evidence_location,
-                registrations=registrations,
-                timeout_seconds=args.timeout,
-            )
-        else:
-            out = answer(
-                db_path,
-                entry_id=args.entry,
-                location=args.location,
-                registrations=registrations,
-                register=register,
-                # The CLI runs on the Operator's own machine under their session, so
-                # its caller is the pinned owner (kody 4366220357):  pass the owner
-                # classification explicitly rather than defaulting it inside answer().
-                answerer="owner",
-            )
-    except OR.LabelExhausted as exc:
-        print(json.dumps({"error": str(exc), "code": LABELS_EXHAUSTED}))
-        return 2
+        out = begin(
+            db_path,
+            platform=args.platform,
+            profile_scope=args.scope,
+            session_id=args.session_id,
+            seat=args.seat,
+            requester=args.requester,
+            evidence_location=args.evidence_location,
+            registrations=registrations,
+            timeout_seconds=args.timeout,
+        )
     except (ValueError, RegistrationRefused, OR.RegistryUnavailable) as exc:
         print(json.dumps({"error": str(exc)}))
         return 2
