@@ -23,6 +23,10 @@ import spend
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_WORKFLOWS = HERE.parents[1] / ".github" / "workflows"
+GH_AUTH_TIMEOUT_S = 30
+# Rewrite the resumable cache every this many measurements.  Each rewrite is
+# O(cache), so a small interval made the total cost quadratic.
+CACHE_SAVE_EVERY = 250
 
 
 def resolve_token():
@@ -41,7 +45,16 @@ def resolve_token():
     env = os.environ.copy()
     for key in ("GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN"):
         env.pop(key, None)
-    proc = subprocess.run(["gh", "auth", "token"], capture_output=True, env=env)
+    try:
+        proc = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, env=env, timeout=GH_AUTH_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired:
+        print("GitHub auth timed out (gh auth token). No token is printed.", file=sys.stderr)
+        raise SystemExit(124) from None
+    except FileNotFoundError:
+        print("GitHub auth failed: gh is not installed. No token is printed.", file=sys.stderr)
+        raise SystemExit(127) from None
     if proc.returncode != 0 or not proc.stdout.strip():
         raise SystemExit(f"GitHub auth failed (status {proc.returncode}). No token is printed.")
     return proc.stdout.decode().strip()
@@ -133,21 +146,40 @@ def _load_cache(path):
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        row = json.loads(line)
-        found[row["id"]] = row["result"]
+        try:
+            row = json.loads(line)
+            found[row["id"]] = row["result"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # A torn or hand-edited line costs one re-measurement, not the report.
+            continue
     return found
 
 
-def _save_cache(path, cache):
+def _save_cache(path, cache, keep=None):
+    """Atomically rewrite the cache, keeping only `keep` ids when given."""
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as handle:
         for run_id, result in cache.items():
+            if keep is not None and run_id not in keep:
+                continue
             handle.write(json.dumps({"id": run_id, "result": result}) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     os.chmod(tmp, 0o600)
     tmp.replace(path)
+    try:
+        fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def measure(client, repo, runs, cache_path, workers, profiles=None):
@@ -163,6 +195,9 @@ def measure(client, repo, runs, cache_path, workers, profiles=None):
         except github_api.ApiError:
             partial = True
             break
+        except Exception as exc:  # leave this run unmeasured; partial is set below
+            print(f"probe failed error={type(exc).__name__} run={run.get('id')}", file=sys.stderr)
+            continue
         if result.get("source") == "timing":
             positives += 1
         cache[run["id"]] = result
@@ -184,6 +219,7 @@ def measure(client, repo, runs, cache_path, workers, profiles=None):
     print(f"lookup order {preview}", file=sys.stderr)
     lock = threading.Lock()
     done = 0
+    keep = {run["id"] for run in runs}
 
     def work(run):
         nonlocal done
@@ -194,20 +230,23 @@ def measure(client, repo, runs, cache_path, workers, profiles=None):
         except github_api.RateLimited:
             return
         except github_api.ApiError as exc:
-            print(f"measure failed status={exc.status} path={run.get('path')}", file=sys.stderr)
+            print(f"measure failed status={exc.status} run={run.get('id')}", file=sys.stderr)
+            return
+        except Exception as exc:  # one bad run must not drop the whole batch
+            print(f"measure failed error={type(exc).__name__} run={run.get('id')}", file=sys.stderr)
             return
         with lock:
             cache[run["id"]] = result
             done += 1
-            if done % 25 == 0:
-                _save_cache(cache_path, cache)
+            if done % CACHE_SAVE_EVERY == 0:
+                _save_cache(cache_path, cache, keep)
             if done % 100 == 0:
                 print(f"measured {done}/{len(order)}", file=sys.stderr)
 
     if order:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             list(pool.map(work, order))
-    _save_cache(cache_path, cache)
+    _save_cache(cache_path, cache, keep)
     if client.stop or any(spend.needs_job_lookup(run) and run["id"] not in cache for run in runs):
         partial = True
     return cache, method, partial
@@ -223,7 +262,9 @@ def build(runs, measured, profiles, meta):
 
 
 def write_outputs(report, out_dir, token):
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_dir.is_symlink():
+        raise SystemExit(f"refusing to write the report through a symlinked --out-dir: {out_dir}")
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     markdown = spend.redact(spend.render_markdown(report), token)
     document = spend.redact(json.dumps(report, indent=2) + "\n", token)
     (out_dir / "report.md").write_text(markdown, encoding="utf-8")
@@ -248,7 +289,12 @@ def parse_args(argv):
     parser.add_argument("--reuse-runs", action="store_true")
     parser.add_argument("--max-long-waits", type=int, default=1)
     parser.add_argument("--max-wait-minutes", type=float, default=45)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.slice_hours > 0:
+        parser.error("--slice-hours must be greater than 0")
+    if not args.days > 0:
+        parser.error("--days must be greater than 0")
+    return args
 
 
 def _write_runs(path, runs, truncated, start, end):
