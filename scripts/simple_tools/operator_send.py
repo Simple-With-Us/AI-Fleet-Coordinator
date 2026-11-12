@@ -18,10 +18,9 @@ Two things follow, and this module enforces both:
     exact shape of the call:  a client verified as the pinned Operator bot, one recipient, and a
     content that is exactly a text this vocabulary builds (operator_status_text.is_status_text).
 
-The Operator's clarifying question is not here.  Its reply leg is not built:  the sender's answer
-would be a direct message to the Operator, which the owner guard refuses for a bot, and nothing
-reads such an answer yet (clarify.py is not wired in).  The candidate list (operator_candidates.py)
-is a different message:  it names session ids and titles, so it stays a conversation the owner is in.
+The Operator asks nobody a clarifying question (owner ruling, Nov 10, 2026), and it sends no
+candidate list either.  The delivery ledger this module reserves and records its sends in is
+shared with the other Operator senders, in operator_candidates.py.
 
 The answer is a dict, never an exception, like the other Operator senders.  `status` is `sent`,
 `refused` or `duplicate`.  A wake outcome is reported to a sender once:  the same outcome for the

@@ -82,7 +82,24 @@ class DefaultBranchPaths(unittest.TestCase):
         self.assertEqual(payload["branch"], "main")
         self.assertEqual(payload["sha"], SHA)
         self.assertTrue(payload["message"].startswith(_DEFAULT_BRANCH_PREFIX))
-        self.assertEqual(len(client.calls), 3)
+        # Repository read, blob read, write: no branch read on the exact default branch.
+        self.assertEqual([call[0] for call in client.calls], ["GET", "GET", "PUT"])
+
+    def test_case_variant_of_the_default_branch_is_refused_before_any_read(self):
+        # Branch names are case-sensitive at the provider, so a spelling of the default that is
+        # not the exact name cannot take the grant and CAS route: refused after the repository
+        # read alone, on a granted path and an ungranted one alike.
+        for path in (PATH, "docs/a.md"):
+            for branch in ("Main", "MAIN", "refs/heads/main", "heads/main"):
+                client = Boom({"default_branch": "main"})
+                with (
+                    self.subTest(path=path, branch=branch),
+                    self.assertRaisesRegex(Refused, "default branch is not writable"),
+                ):
+                    handle(client, "wf_file_put").run(
+                        "wf_file_put", put_args(branch=branch, path=path)
+                    )
+                self.assertEqual([call[0] for call in client.calls], ["GET"])
 
     def test_disallowed_path_keeps_the_existing_refusal(self):
         client = Boom({"default_branch": "main"})
@@ -138,6 +155,28 @@ class DefaultBranchPaths(unittest.TestCase):
         self.assertEqual(client.calls[-1][0], "DELETE")
         self.assertEqual(client.calls[-1][2]["sha"], SHA)
         self.assertTrue(client.calls[-1][2]["message"].startswith(_DEFAULT_BRANCH_PREFIX))
+
+    def test_delete_case_variant_of_the_default_branch_is_refused_before_any_read(self):
+        # Same rule as wf_file_put: only the exact default name takes the grant and CAS route,
+        # so a case or segment variant is refused after the repository read alone.
+        for path in ("mac-facts.json", "docs/a.md"):
+            for branch in ("Main", "MAIN", "heads/main"):
+                client = Boom({"default_branch": "main"})
+                with (
+                    self.subTest(path=path, branch=branch),
+                    self.assertRaisesRegex(Refused, "default branch is not writable"),
+                ):
+                    handle(client, "wf_file_delete").run(
+                        "wf_file_delete",
+                        {
+                            "repo": REPO,
+                            "path": path,
+                            "branch": branch,
+                            "message": "remove the full copy",
+                            "prior_sha": SHA,
+                        },
+                    )
+                self.assertEqual([call[0] for call in client.calls], ["GET"])
 
     def test_delete_cas_mismatch_does_not_delete(self):
         client = Boom(

@@ -19,13 +19,13 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@modelcontextprotocol/server": "2.4.0",
-    "agents": "0.31.0",
+    "agents": "0.32.0",
     "graphql": "17.0.2",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "standardwebhooks": "1.1.1",
-    "wrangler": "4.155.0"
+    "wrangler": "4.156.0"
   },
   "overrides": {
     "agents": {

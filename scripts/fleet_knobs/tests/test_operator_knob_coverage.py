@@ -40,19 +40,22 @@ SCANNED = sorted(
 
 # Settings read outside the registry today, each with the reason it is not a knob.  A new Operator or
 # wake-router setting must be registered in fleet_knobs/registry.py (and INFISICAL.md), not added here.
-# The first group are real settings the registry does not hold yet:  they are listed so the gap is
-# visible and nothing else can join them silently.  Remove a row when its knob is registered.
+# The first group are settings read from the environment that the registry does not hold: they are listed so
+# the gap is visible and nothing else can join them silently.  Remove a row when its knob is registered.
+# AFC-773 reviewed each row: only the Linear dry-run switch is a tunable the owner would change, and it waits
+# for the Eavesdropper to read knobs from Infisical and for a folder to be chosen.  The wake alerter's
+# settings are per host, and the alerter has no Infisical access.  The DM mode awaits an owner decision.
 ALLOWLIST: dict[str, str] = {
-    # Tunable behaviour that is still an environment variable:  candidates to register as knobs.
-    "SIMPLE_TOOLS_OPERATOR_DM_MODE": "Operator DM mode, read from the host environment;  not yet a registered knob.",
-    "OPERATOR_ZULIP_USER_ID": "the Operator's pinned Zulip user id, from the host environment;  not yet a registered knob.",
-    "OPERATOR_ALERTER_HOOK": "wake alerter hook command, a per-host setting;  not yet a registered knob.",
-    "OPERATOR_ALERTER_HOOK_TIMEOUT": "wake alerter hook time limit;  not yet a registered knob.",
-    "OPERATOR_LISTENER_URL": "address the wake alerter posts to;  not yet a registered knob.",
-    "OPERATOR_WAKE_CHANNEL": "Zulip channel the alerter posts in;  not yet a registered knob.",
-    "OPERATOR_WAKE_TOPIC": "Zulip topic the alerter posts in;  not yet a registered knob.",
-    "OPERATOR_SEAT": "seat the alerter speaks as;  not yet a registered knob.",
-    "OPERATOR_LINEAR_DRY_RUN": "Operator Linear dry-run switch;  not yet a registered knob.",
+    # Settings read from the environment that are not registered knobs, each with its reason.
+    "SIMPLE_TOOLS_OPERATOR_DM_MODE": "staged Operator DM policy (legacy or clarify); whether to register or remove it is an owner decision (AFC-773).",
+    "OPERATOR_ZULIP_USER_ID": "the Operator's Zulip identity pin, an identity and not an owner-tunable: the environment wins, else `[daemon] operator_user_id` in the host's listener.toml, and on the server the Eavesdropper's loader fills it from Infisical /operator; so not a knob.",
+    "OPERATOR_ALERTER_HOOK": "a command line the per-host wake alerter runs; the alerter has no Infisical access.",
+    "OPERATOR_ALERTER_HOOK_TIMEOUT": "the per-host wake alerter's hook time limit, read at import; the alerter has no Infisical access.",
+    "OPERATOR_LISTENER_URL": "the address one host's wake alerter polls, a per-host URL.",
+    "OPERATOR_WAKE_CHANNEL": "written into the hook child's environment for each wake, never read as a setting.",
+    "OPERATOR_WAKE_TOPIC": "written into the hook child's environment for each wake, never read as a setting.",
+    "OPERATOR_SEAT": "the seat one host's wake alerter speaks as, a per-host identity.",
+    "OPERATOR_LINEAR_DRY_RUN": "the one tunable here: a switch that makes the Operator's Linear mirror write nothing, read once at engine build as the exact text 1; register it as a knob when the Eavesdropper reads knobs from Infisical and its folder is chosen (AFC-773).",
     # Where a secret or a credential is found:  names of locations and identities, never values.
     "OPERATOR_ROUTINE_KEY_NAME": "name of the secret that holds the routine key, not the secret.",
     "OPERATOR_SECRET_PATH": "Infisical folder of a secret, not a value.",
@@ -64,7 +67,7 @@ ALLOWLIST: dict[str, str] = {
     "ZULIP_SITE": "the Zulip site address, a host fact shared by every seat.",
     # Per-host paths and test seams, not owner-tunable behaviour.
     "OPERATOR_STATE": "local state directory.",
-    "OPERATOR_WAKE_STATE": "local state directory.",
+    "OPERATOR_WAKE_STATE": "the wake's state word, written into the hook child's environment, never read as a setting.",
     "OPERATOR_WAKE_ID": "per-run wake id passed to a child process.",
     "OPERATOR_LINEAR_STATE": "local state directory.",
     "SIMPLE_TOOLS_OPERATOR_REGISTRY": "path of the local registry file, a per-host seam.",

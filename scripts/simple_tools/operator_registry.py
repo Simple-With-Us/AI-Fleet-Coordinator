@@ -18,7 +18,14 @@ generation > 1 letter must carry the generation:  "MM A (gen 2)".
 
 Seat is checked separately from identity:  a resolve under an unexpected seat returns the
 existing record with outcome "seat_mismatch", writes an events row, and changes nothing.  No
-rebind, and no token or wake authority is derived from a match.
+rebind to another seat, except the one correction below, and no token or wake authority is derived from a
+match.  A seat also has to be one of its
+platform's (AFC-772):  a claude chat under ZC is refused with SeatPlatformMismatch before a row is
+written or a letter moved, while a platform fleet-apps.json `seatApps` does not name registers
+under any seat (check_seat_platform).  A known platform's seat is stored as its tag (filed_seat),
+and a live row filed under a wrong seat earlier is still resumed under it until it is closed.  The one
+correction:  a register that names the one seat of a platform that has exactly one (fixed_seat) re-seats a
+row filed under another seat (SessionRegistry._reseat, event `reseat`), and never the other way.
 
 Standard library only, Python 3.11+.
 """
@@ -40,6 +47,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import identity as I
 from . import secretscan
 from . import session_ids as SI
 from .operator_registry_schema import DDL, SCHEMA_VERSION
@@ -256,6 +264,48 @@ class LabelExhausted(RuntimeError):
 
 class UnknownRecord(KeyError):
     """No session with this record_id."""
+
+
+SEAT_PLATFORM_MISMATCH = "seat_platform_mismatch"
+
+
+class SeatPlatformMismatch(ValueError):
+    """A platform's chat arrived under a seat that is not one of that platform's (AFC-772).
+
+    Three Claude Code chats once registered as platform "claude" under the seat ZC, because their
+    host exported another platform's seat and the letter hook passed it on.  The wake router picks
+    only rows of its own seat, no op changed a stored seat, and a second registration under the
+    right seat answered `seat_mismatch`, so those chats were left with a letter nothing could reach
+    (a register under the platform's own seat now re-seats such a row:  SessionRegistry._reseat).
+    The refusal comes before anything is written.
+
+    It is a ValueError, so a caller that catches ValueError still catches it and no letter client
+    crashes on it, and it is its own type, so the API answers it with its own code (`code`).
+    `platform` is the folded namespace, `seat` the canonical seat that was refused ("" when what
+    arrived is not a seat tag, so nothing a caller typed by mistake is repeated back), and
+    `expected` the seats the platform registers under (tags, then role patterns such as BF-*).
+    """
+
+    code = SEAT_PLATFORM_MISMATCH
+
+    def __init__(self, platform: str, seat: str, expected: Sequence[str]) -> None:
+        self.platform = platform
+        self.seat = seat
+        self.expected = tuple(expected)
+        owners = " or ".join(self.expected)
+        super().__init__(
+            f"platform {platform} registers under seat {owners}, not {seat or 'the seat given'}"
+        )
+
+    def answer(self) -> dict[str, Any]:
+        """The refusal as the API and the CLI print it."""
+        return {
+            "error": str(self),
+            "code": self.code,
+            "platform": self.platform,
+            "seat": self.seat,
+            "expected": list(self.expected),
+        }
 
 
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -817,14 +867,65 @@ class SessionRegistry:
             (_ulid(), "session_upsert", json.dumps({"cells": _session_cells(row, letter)}), now),
         )
 
+    def _reseat(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        seat: str,
+        letter: str,
+        source: str,
+        now: str,
+    ) -> None:
+        """Move a row filed under a seat that is not its platform's onto the platform's own (AFC-772).
+
+        The one place a stored seat changes.  It runs inside resolve_or_register's write transaction,
+        so the seat, the `reseat` event (old and new seat in its details) and the outbox rows for the
+        changed row commit together or not at all.  It changes the seat and nothing else:  the
+        record, its letter and generation, its state and its closed time stay as they were, so a
+        closed row is re-seated and left closed.
+        """
+        conn.execute("UPDATE sessions SET seat = ? WHERE record_id = ?", (seat, row["record_id"]))
+        self._insert_event(
+            conn,
+            row["record_id"],
+            letter,
+            "reseat",
+            seat,
+            "reseated",
+            source,
+            f"seat {row['seat']} to {seat}",
+            now,
+        )
+        self._enqueue_session_upsert(conn, row["record_id"], now)
+
     def resolve_or_register(self, identity: Mapping[str, Any]) -> dict[str, Any]:
         """Resume an existing registration or create a new one, atomically with its label,
-        events row and outbox rows.  Never rebinds identity on a seat change.
+        events row and outbox rows.  A seat change never rebinds identity, with one exception:
+        a row filed under another seat than its fixed-seat platform's is re-seated, below.
 
         The platform is folded to its namespace before anything is read or written, so
         the record is keyed on the platform ("cursor") and not on the adapter the caller
         discovered it through ("cursor-cloud").  One Cursor session under each adapter
         would otherwise be two records with the same letter.
+
+        A platform's chat under a seat that is not one of that platform's is refused
+        (check_seat_platform, SeatPlatformMismatch) with nothing written:  this is the only
+        place a session row is made.  One case passes:  a live row that was filed under that
+        same seat before the check existed is still resumed under it, as it was before, so its
+        chat keeps its heartbeat and can end the row itself.  Once that row is closed it is
+        not brought back.
+
+        A known platform's seat is filed and compared as its tag (filed_seat), so a spelling
+        the check accepts ("claude", "Grok Build") is stored as CLAUDE or GROK and the same
+        chat resumes under the tag.
+
+        A row filed under another seat before the check existed is healed, one way only:  when the
+        seat the caller sends (the payload, never the signed principal) is the one seat of a
+        platform that has exactly one (fixed_seat), the row is re-seated to it (_reseat) and answers
+        as the platform's own row, so the chat takes its letter again.  A wrong seat is still
+        refused when the stored one is right, a platform with no single seat (a role pattern, or
+        several tags) and one the table does not name are left alone, and a closed row is re-seated
+        and stays closed.
         """
         required = IDENTITY_FIELDS + ("seat", "source")
         missing = [k for k in required if not identity.get(k)]
@@ -832,13 +933,32 @@ class SessionRegistry:
             raise ValueError(f"missing identity fields: {', '.join(missing)}")
         identity = dict(identity)
         identity["platform"] = normalize_platform(str(identity["platform"]))
+        identity["seat"] = filed_seat(identity["platform"], identity["seat"])
+        refusal: SeatPlatformMismatch | None = None
+        try:
+            check_seat_platform(identity["platform"], identity["seat"])
+        except SeatPlatformMismatch as exc:
+            refusal = exc
         with self._write_txn() as conn:
             now = _utcnow()
             row = self._get_by_identity(*(identity[k] for k in IDENTITY_FIELDS))
+            if refusal is not None and (
+                row is None or row["closed_at"] or row["seat"] != identity["seat"]
+            ):
+                raise refusal
             if row is not None:
                 record_id = row["record_id"]
                 letter, generation = self._active_alias(conn, record_id)
-                if row["seat"] != identity["seat"]:
+                if (
+                    row["seat"] != identity["seat"]
+                    and refusal is None
+                    and identity["seat"] == fixed_seat(identity["platform"])
+                ):
+                    # The caller names its platform's own seat and the row is filed under another:  the
+                    # AFC-772 rows.  Re-seat it here, in this transaction, then carry on as the platform's
+                    # own row (a live one resumes with its letter, a closed one stays closed).
+                    self._reseat(conn, row, identity["seat"], letter, identity["source"], now)
+                elif row["seat"] != identity["seat"]:
                     self._insert_event(
                         conn,
                         record_id,
@@ -1282,6 +1402,87 @@ def normalize_platform(platform: str) -> str:
     return PLATFORM_NAMESPACES.get(text, text)
 
 
+def seat_table_problem() -> str:
+    """Why the platform's seats cannot be read (fleet-apps.json `seatApps`), or "".
+
+    While the table cannot be read the seat check below refuses nothing, so the caller that owns a
+    log says so:  a guard that is off is worse unsaid."""
+    try:
+        I.load_seat_registry()
+    except I.SeatRegistryError as exc:
+        return str(exc)[:200]
+    return ""
+
+
+def check_seat_platform(platform: object, seat: object) -> None:
+    """Refuse a platform's chat that arrives under a seat that is not one of that platform's.
+
+    The pairs are not a table of this module's.  `identity.platform_seats` reads them from
+    fleet-apps.json `seatApps` (the app each seat runs in), the one table a platform contributes its
+    row to, by way of the folded namespace:  claude is CLAUDE, zcode is ZC, any Cursor adapter is
+    CURSOR, the Grok leader is GROK, and a launcher whose bots each have a seat is its pattern
+    (botfleet is BF-*, grok-bot is GB-* or GROK-BOT).  The seat is compared as
+    `identity.canonical_seat` reads it, so case and the published aliases do not matter.
+
+    Wakes and letters are liberal, so only a known platform under another seat is refused, with
+    SeatPlatformMismatch.  A platform the table does not name registers under any seat, and so
+    does every platform while the table cannot be read (seat_table_problem says why).
+
+    The check is on every path that takes a platform and a seat from its caller:
+    resolve_or_register (the one place a row is made, and the resume of one), register_session and
+    relabel_session.  No op changes a stored platform, and the only one that changes a seat is the
+    re-seat in resolve_or_register, toward the platform's own.  This check reads no stored row, so a row
+    filed under a wrong seat before the check existed is still touched, updated, swept, reported
+    gone and closed (ending it must always work), and `reopen`, which names a record and no seat,
+    is not checked.  While such a row is live, resolve_or_register still resumes it under the seat
+    it is stored under:  a refused resume would leave its chat with no way to end it.
+    """
+    namespace = normalize_platform(platform if isinstance(platform, str) else "")
+    try:
+        owners = I.platform_seats(namespace)
+    except I.SeatRegistryError:
+        return
+    if owners is None or owners.allows(seat):
+        return
+    tag = I.canonical_seat(seat if isinstance(seat, str) else "")
+    shown = tag if I.valid_seat(tag) and not secretscan.scan(tag) else ""
+    raise SeatPlatformMismatch(namespace, shown, owners.expected)
+
+
+def filed_seat(platform: object, seat: Any) -> Any:
+    """The seat a session of `platform` is stored and compared under.
+
+    check_seat_platform reads a known platform's seat through `identity.canonical_seat`, so
+    "claude", " CLAUDE " and "Grok Build" pass it.  Stored as typed, such a row could never be
+    resumed under CLAUDE or GROK (`seat_mismatch`, no rebind) and the wake router, which only
+    upper-cases the column, would skip it:  the stuck row of AFC-772 again, reached by spelling.
+    So for a platform the table knows the seat is its canonical tag from here on.  A platform the
+    table does not name, and every platform while the table cannot be read, keeps the seat as
+    given, as before.
+    """
+    if not isinstance(seat, str):
+        return seat
+    namespace = normalize_platform(platform if isinstance(platform, str) else "")
+    try:
+        known = I.platform_seats(namespace) is not None
+    except I.SeatRegistryError:
+        return seat
+    return I.canonical_seat(seat) if known else seat
+
+
+def fixed_seat(platform: object) -> str:
+    """The one seat tag every chat of `platform` is filed under, or "".
+
+    "" for a platform the table does not name, for a launcher whose bots each have a seat (a role
+    pattern, so no one seat is right), for an app with several tags, and while the table cannot be
+    read:  resolve_or_register re-seats a row only toward a seat this returns."""
+    try:
+        owners = I.platform_seats(normalize_platform(platform if isinstance(platform, str) else ""))
+    except I.SeatRegistryError:
+        return ""
+    return owners.sole_seat if owners is not None else ""
+
+
 def register_session(
     db_path: str,
     *,
@@ -1369,6 +1570,14 @@ def register_session(
     ):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("%s is required" % name)
+    # A platform's chat under another platform's seat is refused (AFC-772).  With no store there is
+    # no row to resume, so the refusal comes before one is made.  With a store, resolve_or_register
+    # refuses it under the write lock, unless a live row was filed under that seat earlier.
+    try:
+        check_seat_platform(platform, seat)
+    except SeatPlatformMismatch:
+        if not os.path.isfile(db_path):
+            raise
     registry = SessionRegistry(db_path)
     try:
         out = registry.resolve_or_register(
@@ -1420,6 +1629,10 @@ def relabel_session(
     letter_space and letter_pick are checked and ignored:  every chat holds a pair.
 
     The seat is checked against the stored one, so a seat cannot re-letter another seat's session.
+    It is checked against the platform first (check_seat_platform, AFC-772):  the seat named here
+    is the stored one, so a session filed under a seat that is not one of its platform's is given
+    no new letter, and the refusal (SeatPlatformMismatch) comes before the store is opened.  A
+    known platform's seat is then compared as its tag (filed_seat), the way it was stored.
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
         raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
@@ -1429,6 +1642,8 @@ def relabel_session(
         raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
     native = SI.check(native_session_id, "the native session id")
     platform = normalize_platform(platform)
+    check_seat_platform(platform, seat)
+    seat = filed_seat(platform, seat)
     registry = SessionRegistry(db_path)
     try:
         row = registry.session_by_identity(
@@ -2175,11 +2390,11 @@ def registrations_for_native_id(
 ) -> list[dict[str, Any]]:
     """Every live registration of one native session id on a platform, across locations.
 
-    The ask-before-letter flow (operator_registration) needs this direction:  a session id
-    arrives without a location, and the answer is the set of locations that id is currently
-    lettered at.  Only live letters count:  a session whose letter was retired reads as
-    unlettered, so the flow asks again and the register path resumes its record with a fresh
-    letter.  A closed session is not a live registration either - the same filter every
+    This direction answers a session id that arrives without a location:  the answer is the
+    set of locations that id is currently lettered at.  (The ask-before-letter flow that first
+    needed it, operator_registration, is gone:  the Operator asks nobody, owner ruling Nov 10,
+    2026.)  Only live letters count:  a session whose letter was retired reads as unlettered,
+    and the register path resumes its record with a fresh letter.  A closed session is not a live registration either - the same filter every
     other registry read (resolve_ref, the letter reads) applies.  An empty list means unlettered, one row is the short-circuit, and several rows
     are the contradiction the owner settles - the same id lettered on both the Mac and the
     server is never merged or picked between here.
@@ -2265,7 +2480,7 @@ def candidates_for(
 ) -> list[dict[str, Any]]:
     """The live holders of one letter on one platform.
 
-    This is the query a candidate list needs:  the sessions that could hold the letter
+    This is the query a tagged letter needs:  the sessions that could hold the letter
     the sender used.  It is read-only and it never allocates, so a letter nobody holds
     simply has no candidates rather than a new one.
 
@@ -3016,6 +3231,9 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             # A platform that asks for a letter gets an answer it can read, never a traceback and an empty line.
             print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
             return 2
+        except SeatPlatformMismatch as exc:
+            print(json.dumps(exc.answer()))
+            return 2
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
@@ -3046,6 +3264,9 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             return 2
         except SessionUnknown as exc:
             print(json.dumps({"error": str(exc), "code": "not_registered"}))
+            return 2
+        except SeatPlatformMismatch as exc:
+            print(json.dumps(exc.answer()))
             return 2
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))

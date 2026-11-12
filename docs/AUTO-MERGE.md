@@ -148,6 +148,17 @@ jobs:
   Callers pin the reusable by SHA, so the gate reaches a repo when its pin is
   bumped.
 
+A seat can read the receipt fields itself in one `gr_wf_checks` call on the exact
+head sha (relay action `wf_checks`; `git-relay/CHECK-RUN-PAGES.md` has the full
+contract).  Each row carries `app_id`, `app_slug`, `name`, `conclusion`, `title` (cut
+to 255 characters), `summary` (cut to 500, so "starts with" still holds) and
+`started_at` (ISO 8601 text, or null when the provider sent no valid instant).  A row
+with `output_withheld` true, or with a null `title` or `summary`, gives no readable
+verdict and is not a receipt.  `latest_per_name: true` keeps the newest run per app
+and check name, and is the latest for the commit only when `complete` is true.  This
+read helps a seat decide whether to request or retry a review; the gate above still
+does its own lookups.
+
 ## Arming boundary
 
 Classification and arming are separate moments.  The arm job's first step
