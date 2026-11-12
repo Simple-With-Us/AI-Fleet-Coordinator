@@ -9,7 +9,6 @@ import unittest
 from pathlib import Path
 
 from mac_gitops.diff import (
-    DiffResult,
     DriftKind,
     MacLayout,
     diff_launch_agent,
@@ -17,9 +16,8 @@ from mac_gitops.diff import (
     diff_pm2,
     parse_pm2_jlist,
 )
-from mac_gitops.manifest import HelperPair, LaunchAgentSpec, MacManifest, Pm2Spec, load_manifest
-from mac_gitops.plist_norm import plist_views_equal, plist_view
-
+from mac_gitops.manifest import HelperPair, LaunchAgentSpec, Pm2Spec, load_manifest
+from mac_gitops.plist_norm import plist_view, plist_views_equal
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -55,7 +53,9 @@ class DiffLaunchAgentTests(unittest.TestCase):
             with template.open("wb") as handle:
                 plistlib.dump({"Label": "com.jay.test", "RunAtLoad": True}, handle)
             spec = LaunchAgentSpec("com.jay.test", "scripts/launchd/com.jay.test.plist")
-            layout = MacLayout(home=home, launch_agents_dir=home / "Library" / "LaunchAgents", repo_root=repo)
+            layout = MacLayout(
+                home=home, launch_agents_dir=home / "Library" / "LaunchAgents", repo_root=repo
+            )
             drifts: list = []
             diff_launch_agent(spec, layout, drifts)
             self.assertEqual(len(drifts), 1)
@@ -101,8 +101,12 @@ class DiffPm2Tests(unittest.TestCase):
             (repo / "scripts").mkdir(parents=True)
             (repo / "scripts" / "pm2-ecosystem.config.cjs").write_text("module.exports = {};\n")
             (home / "apps" / "pm2-ecosystem.config.cjs").write_text("module.exports = {x:1};\n")
-            pm2 = Pm2Spec("scripts/pm2-ecosystem.config.cjs", "apps/pm2-ecosystem.config.cjs", ("a",))
-            layout = MacLayout(home=home, launch_agents_dir=home / "Library" / "LaunchAgents", repo_root=repo)
+            pm2 = Pm2Spec(
+                "scripts/pm2-ecosystem.config.cjs", "apps/pm2-ecosystem.config.cjs", ("a",)
+            )
+            layout = MacLayout(
+                home=home, launch_agents_dir=home / "Library" / "LaunchAgents", repo_root=repo
+            )
             drifts: list = []
             diff_pm2(pm2, layout, drifts)
             self.assertTrue(any(d.kind == DriftKind.PM2_ECOSYSTEM_DRIFT for d in drifts))

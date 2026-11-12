@@ -6,7 +6,6 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable
 
 from mac_gitops.manifest import LaunchAgentSpec, MacManifest, Pm2Spec
 from mac_gitops.plist_norm import plist_view, plist_views_equal, sha256_file
@@ -133,7 +132,9 @@ def diff_pm2(pm2: Pm2Spec, layout: MacLayout, out: list[DriftItem]) -> None:
     i_hash = sha256_file(installed) if installed.is_file() else None
     if t_hash is None:
         out.append(
-            DriftItem(DriftKind.PM2_ECOSYSTEM_DRIFT, "pm2-ecosystem", "tracked ecosystem file missing")
+            DriftItem(
+                DriftKind.PM2_ECOSYSTEM_DRIFT, "pm2-ecosystem", "tracked ecosystem file missing"
+            )
         )
     elif i_hash is None:
         out.append(
@@ -175,7 +176,9 @@ def diff_excluded(manifest: MacManifest, layout: MacLayout, out: list[DriftItem]
             )
 
 
-def diff_manifest(manifest: MacManifest, layout: MacLayout, *, report_excluded: bool = True) -> DiffResult:
+def diff_manifest(
+    manifest: MacManifest, layout: MacLayout, *, report_excluded: bool = True
+) -> DiffResult:
     drifts: list[DriftItem] = []
     for spec in manifest.launch_agents:
         diff_launch_agent(spec, layout, drifts)

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -90,7 +89,11 @@ def load_manifest(path: Path) -> MacManifest:
     for row in excl_root.get("note") or []:
         notes.append((str(row.get("category", "")), str(row.get("reason", ""))))
     pm2_block = data.get("pm2") if isinstance(data.get("pm2"), dict) else {}
-    app_names = tuple(str(a["name"]) for a in (pm2_block.get("app") or []) if isinstance(a, dict) and a.get("name"))
+    app_names = tuple(
+        str(a["name"])
+        for a in (pm2_block.get("app") or [])
+        if isinstance(a, dict) and a.get("name")
+    )
     pm2 = Pm2Spec(
         ecosystem_template=str(pm2_block.get("ecosystem_template", "")),
         ecosystem_installed=str(pm2_block.get("ecosystem_installed", "")),

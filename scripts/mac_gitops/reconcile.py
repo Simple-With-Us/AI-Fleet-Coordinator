@@ -12,6 +12,7 @@ from pathlib import Path
 
 from mac_gitops.diff import MacLayout, diff_manifest, parse_pm2_jlist
 from mac_gitops.manifest import default_manifest_path, load_manifest
+
 EXIT_OK = 0
 EXIT_DRIFT = 1
 EXIT_REFUSED = 2
@@ -92,7 +93,9 @@ def apply_file_copy(manifest_path: Path, layout: MacLayout) -> list[str]:
 def run_check(args: argparse.Namespace) -> int:
     manifest_path = Path(args.manifest).expanduser().resolve()
     manifest = load_manifest(manifest_path)
-    repo_root = repo_root_from_manifest(manifest_path) if args.repo_root is None else Path(args.repo_root)
+    repo_root = (
+        repo_root_from_manifest(manifest_path) if args.repo_root is None else Path(args.repo_root)
+    )
     layout = build_layout(
         repo_root,
         Path(args.home) if args.home else None,
@@ -130,7 +133,9 @@ def run_apply(args: argparse.Namespace) -> int:
         print("refused: apply runs only on Darwin", file=sys.stderr)
         return EXIT_REFUSED
     manifest_path = Path(args.manifest).expanduser().resolve()
-    repo_root = repo_root_from_manifest(manifest_path) if args.repo_root is None else Path(args.repo_root)
+    repo_root = (
+        repo_root_from_manifest(manifest_path) if args.repo_root is None else Path(args.repo_root)
+    )
     layout = build_layout(repo_root, Path(args.home) if args.home else None, include_pm2=False)
     actions = apply_file_copy(manifest_path, layout)
     if args.json:
