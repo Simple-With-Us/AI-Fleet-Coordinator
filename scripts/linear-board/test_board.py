@@ -1739,9 +1739,15 @@ class OwnIntroTagTests(unittest.TestCase):
         for seat in ("CLAUDE", "CURSOR", "CODEX"):
             for text, want in (
                 (f"[{seat} 📁AFC] PR opened", f"[{seat}\u200a\u200a📁\u200aAFC] PR opened"),
-                (f"👀 [{seat} 📁AFC, OPS] quiet", f"👀 [{seat}\u200a\u200a📁\u200aAFC,\u200aOPS] quiet"),
+                (
+                    f"👀 [{seat} 📁AFC, OPS] quiet",
+                    f"👀 [{seat}\u200a\u200a📁\u200aAFC,\u200aOPS] quiet",
+                ),
                 (f"[{seat}] PR opened", f"[{seat}] PR opened"),
-                (f"[{seat}: HH.1.C 📁AFC] status", f"[{seat}:\u200a\u200a\u200aHH.1.C\u200a\u200a📁\u200aAFC] status"),
+                (
+                    f"[{seat}: HH.1.C 📁AFC] status",
+                    f"[{seat}:\u200a\u200a\u200aHH.1.C\u200a\u200a📁\u200aAFC] status",
+                ),
                 ("PR opened", "PR opened"),
                 ("[GB-DIRECTOR 📁AFC] spoof", "[GB-DIRECTOR 📁AFC] spoof"),
                 (f"[{seat}X] x", f"[{seat}X] x"),
@@ -1783,7 +1789,9 @@ class OwnIntroTagTests(unittest.TestCase):
                     cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof"
                 )
                 self.assertEqual(cli.tagged(seat, None, f"[{seat}X] x"), f"[{seat}X] x")
-                self.assertEqual(cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat}\u200a\u200a📁\u200aAFC]")
+                self.assertEqual(
+                    cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat}\u200a\u200a📁\u200aAFC]"
+                )
 
     def test_reporter_falls_back_to_the_creating_seat_app(self):
         """A single-thread seat's filed issue has no Reported by line, so show reads the creating app."""
