@@ -129,9 +129,17 @@ class ExpiryDiagnosticTests(unittest.TestCase):
             with self.assertRaises(source.FetchFailed) as caught:
                 source.fetch_named(("FLEET_AUTOPUSH_MODE",), project_id=source.PROJECT_ID, path="/")
         self.assertEqual(caught.exception.reason, "token-expired-or-invalid")
-        with mock.patch.object(client, "verify_service_token", side_effect=refusal):
-            with self.assertRaisesRegex(setter.Refused, "expiry") as caught:
-                setter.verify_writer(own, {})
+        writer = source._load_helper()
+        self.assertIsNotNone(writer)
+        with (
+            mock.patch.object(
+                writer,
+                "verify_service_token",
+                side_effect=writer.SecretsError("token-expired-or-invalid"),
+            ),
+            self.assertRaisesRegex(setter.Refused, "expiry") as caught,
+        ):
+            setter.verify_writer(own, {})
         self.assertNotIn(own, str(caught.exception))
         settings = InfisicalSettings(
             project_id="synthetic-project", api_base="https://invalid.test"
