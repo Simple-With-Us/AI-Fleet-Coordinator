@@ -155,6 +155,23 @@ _SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t")
 # (`@_**Name**`) has the underscore between the at sign and the stars, so it matches neither pattern.
 _LOUD_MENTION_RE = re.compile(r"(?<![\\\w*])@(?:\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*)")
 _MENTION_NAME_RE = re.compile(r"(?<![\\\w*])@\*\*([^*|\n]+?)(?:\|\d+)?\*\*")
+
+#: A plain @SEAT tag (`@MC`, `@CODEX`):  the tag in any ASCII case, not the tail of a word, an
+#: address, a path or an escape (`jay@MC`, `/x/@MC`, `\@MC`), and not the start of a longer
+#: token (`@MCX`, `@MC-BUILD`, `@MC|123`), and not the start of a domain-like continuation
+#: (`@MC.example`), while a sentence-ending dot still counts (`look, @MC.`).  The same boundary
+#: set the letter router uses for its
+#: plain at-form (NOT_A_TAIL).  A plain unprefixed name (`MC`, `Codex`) is a reference and never
+#: matches here.
+def plain_at_seat(visible: str, seat: str) -> bool:
+    """Is the seat's tag written as a plain @SEAT in text already outside code and quotes?
+    (Jay, Nov 12 2026:  a plain @SEAT wakes the seat, in addition to the @**Name** mention.)"""
+    tag = str(seat or "").strip()
+    if not tag:
+        return False
+    return bool(
+        re.search(r"(?<![\w@*/.\\])@(?ai:%s)(?![\w|-])(?!\.[\w|-])" % re.escape(tag), visible)
+    )
 _THREAD_LETTER_RE = re.compile(r"\s*:\s*([A-Za-z0-9]+)")
 MAX_LETTER_LENGTH = 8
 _LEGACY_ARROW_RE = re.compile(r"(?:\u2192|->)([^\]]*)\]")
@@ -242,6 +259,29 @@ def header_peers(content: str) -> list[str]:
     if not arrow:
         return []
     return [p.strip() for p in re.split(r"\s*,\s*", arrow.group(1)) if p.strip()]
+
+
+def bracket_names_seat(content: str, me: SeatIdentity) -> bool:
+    """Is this seat named in the recipient list of the post's leading bracket intro?
+
+    Only the list after the arrow counts (`header_peers`):  the sender's own tag before it
+    (`[CLAUDE: AA.1.S ...]`) is the sender's, never a recipient.  An item names the seat when it
+    is the seat's tag or its mention name, in any ASCII case, with or without an `@`, a mention
+    wrapper (silent included:  the fleet's posting tools make a bot's header mention silent) or a
+    session letter after it (`CODEX BB.1.M`) - the same shapes `header_letters` reads for letter
+    routing, except that the name alone, which addresses no chat, still names the seat.  The
+    header is parsed only at the very start of the post, so a bracket inside code or a quote can
+    never name anyone.
+    """
+    known = [re.escape(n) for n in dict.fromkeys((me.full_name, me.seat)) if n]
+    if not known:
+        return False
+    name = "(?ai:%s)" % "|".join(known)
+    item = re.compile(
+        r"[ \t]*(?:@_?\*\*%s(?:\|\d+)?\*\*|@?%s)"
+        r"(?:[ \t]+[A-Z]{2}(?:\.[0-9]+\.[A-Z])?)?[ \t]*" % (name, name)
+    )
+    return any(item.fullmatch(peer) for peer in header_peers(content))
 
 
 def mentioned_names(visible: str) -> list[str]:
@@ -397,15 +437,25 @@ def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
     return bool(_broadcast_tokens_visible(content_outside_code) & BROADCAST_TOKENS)
 
 
-def tags_seat(content: str, me: SeatIdentity) -> bool:
-    """Does this text tag the seat:  its own `@**Name**` (or `@**Name|id**`), or a fleet-wide `@all`,
-    `@channel` or `@stream`, outside code and quotes?  A silenced `@_**Name**` never counts.
+def tags_seat(content: str, me: SeatIdentity, *, bracket_ok: bool = False) -> bool:
+    """Does this text tag the seat:  its own `@**Name**` (or `@**Name|id**`), a plain `@SEAT`
+    tag (`plain_at_seat`), or a fleet-wide `@all`, `@channel` or `@stream`, outside code and
+    quotes?  A silenced `@_**Name**` never counts.
+
+    With `bracket_ok` (the seat's `bracket_recipient_wakes` switch), being named in the leading
+    bracket intro's `→` recipient list tags the seat too (`bracket_names_seat`).
 
     An edit wakes a seat only when the new text tags it and the old text did not (owner, Oct 29
     2026), so a mention that was already there never wakes it a second time."""
     visible = outside_code(str(content or ""))
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
-    return any(n in visible for n in names) or fleet_wake_mention(visible, ())
+    if (
+        any(n in visible for n in names)
+        or plain_at_seat(visible, me.seat)
+        or fleet_wake_mention(visible, ())
+    ):
+        return True
+    return bracket_ok and bracket_names_seat(str(content or ""), me)
 
 
 def is_owner_topic(topic: str) -> bool:
@@ -520,6 +570,7 @@ class Context:
         operator_user_id: int = 0,
         seat_has_routine: bool = False,
         topic_ledger: Any = None,
+        bracket_recipient_wakes: bool = False,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
@@ -541,6 +592,9 @@ class Context:
         # The topic ledger (TopicLedger below) that decides a reply wake, or None:  with none, no
         # post is a reply to a chat and routing is exactly what it was before reply wakes.
         self.topic_ledger = topic_ledger
+        # The seat's own switch (`seat.X.bracket_recipient_wakes`, off by default):  being named in
+        # a post's leading bracket recipient list then tags the seat the way its mention does.
+        self.bracket_recipient_wakes = bool(bracket_recipient_wakes)
 
 
 class LeaseView:
@@ -592,6 +646,9 @@ class Classes:
             False
         )
         self.route_tag = False
+        # The seat opted in (`bracket_recipient_wakes`) and the post's bracket recipient list
+        # names it:  a directed ask without an @, woken exactly like its mention.
+        self.bracket_recipient = False
         self.no_wake = False
         self.owner_topic = self.owner_topic_peer = self.owner_note = False
         self.reply_to: int | None = None
@@ -626,6 +683,7 @@ class Classes:
                 "dm",
                 "wake_tag",
                 "route_tag",
+                "bracket_recipient",
                 "no_wake",
                 "stale",
                 "owner_topic",
@@ -720,6 +778,9 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     c.wildcard = any(f in flags for f in WILDCARD_FLAGS)
     c.wake_tag = bool(_WAKE_TAG_RE.match(content))
     c.route_tag = bool(_ROUTE_TAG_RE.match(content))
+    c.bracket_recipient = bool(
+        ctx.bracket_recipient_wakes and not c.dm and bracket_names_seat(content, me)
+    )
     ts = message.get("timestamp")
     c.stale = isinstance(ts, (int, float)) and ctx.now - float(ts) > ctx.stale_after
     first_line = content.split("\n", 1)[0]
@@ -830,6 +891,13 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
         # A fleet bot's `@all` wakes like the owner's (owner, Oct 27 2026):  the same stale rule,
         # the same loop guard, the peer budgets.  It is still peer data, never owner authority.
         return (None, "stale") if c.stale else ("peer", None)
+    if c.bracket_recipient:
+        # The seat asked to be woken when a post's bracket recipient list names it, with no @
+        # needed:  the same stale rule, loop guard and budgets as a mention.  The owner's wakes
+        # as the owner's, a peer's as a peer's - peer data, never owner authority.
+        if c.stale:
+            return None, "stale"
+        return ("owner" if c.owner else "peer"), None
     if c.reply_to_chat is not None:
         # An untagged post that answers one of the seat's chats (owner, Nov 10 2026:  "more liberal
         # with what it considered a wake").  The class already excludes a stale, no-wake, `·wake`,
@@ -858,7 +926,7 @@ def route(
     if c.reply_to_chat is not None:
         d.linked_by = "reply"
         d.reply_target_letter = c.reply_to_chat.letter
-    if not c.dm and c.key in ctx.muted and not c.direct:
+    if not c.dm and c.key in ctx.muted and not (c.direct or c.bracket_recipient):
         d.drop_reason = "muted"
         return c, d
     on_topic = [l for l in leases if not c.dm and c.key in l.topics]
@@ -876,6 +944,7 @@ def route(
         and not c.no_wake
         and (
             c.direct
+            or c.bracket_recipient
             or c.dm
             or (c.owner and c.fleet)
             # The owner's and a fleet bot's channel-wide mention (owner, Oct 27 2026):  both take a
@@ -910,6 +979,7 @@ def route(
                 and (
                     (c.owner and not c.everyone_inert)
                     or c.direct
+                    or c.bracket_recipient
                     or (
                         not c.everyone_inert
                         and c.reply_to is not None
@@ -950,6 +1020,7 @@ def route(
             return c, d
     if (
         c.direct
+        or c.bracket_recipient
         or c.dm
         or c.fleet
         or c.broadcast_all
