@@ -125,8 +125,9 @@ def _direct_values(env: Mapping[str, str]) -> dict[str, str]:
         try:
             import fleet_infisical as FI
 
-            expected_reader = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
-                                           "fleet_infisical.py")
+            expected_reader = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fleet_infisical.py"
+            )
             if os.path.realpath(getattr(FI, "__file__", "")) != expected_reader:
                 raise ImportError("foreign shared reader")
             scoped_env = dict(env)

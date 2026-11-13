@@ -28,7 +28,9 @@ class HelperLoadingTests(unittest.TestCase):
         target = package / "source.py"
         shutil.copyfile(SCRIPTS / "fleet_knobs/source.py", target)
         self.client = self.root / "fleet_infisical.py"
-        self.bytes = (SCRIPTS / "fleet_infisical.py").read_bytes() + b"\n_SOURCE_TEST_MARKER = 'one'\n"
+        self.bytes = (
+            SCRIPTS / "fleet_infisical.py"
+        ).read_bytes() + b"\n_SOURCE_TEST_MARKER = 'one'\n"
         self.client.write_bytes(self.bytes)
         name = "fixture_knob_source_" + uuid.uuid4().hex
         spec = importlib.util.spec_from_file_location(name, target)

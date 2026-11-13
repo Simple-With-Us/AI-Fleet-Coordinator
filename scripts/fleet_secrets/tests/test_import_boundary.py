@@ -20,8 +20,7 @@ class AliasImportTests(unittest.TestCase):
             )
             boot = (
                 "import sys\nfrom pathlib import Path\n"
-                "sys.path.insert(0,sys.argv[1])\nsys.path.insert(0,sys.argv[2])\n"
-                + code
+                "sys.path.insert(0,sys.argv[1])\nsys.path.insert(0,sys.argv[2])\n" + code
             )
             return subprocess.run(
                 [sys.executable, "-I", "-B", "-c", boot, str(scripts), str(hostile)],
@@ -40,7 +39,9 @@ assert core is fleet_infisical
 assert Path(core.__file__).resolve() == Path(sys.argv[1]) / 'fleet_infisical.py'
 print('pinned-client')
 """)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "pinned-client"), result.stderr)
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()), (0, "pinned-client"), result.stderr
+        )
 
     def test_legitimate_preload_preserves_identity_and_intentional_monkeypatch(self):
         result = self.run_probe("""
@@ -58,7 +59,9 @@ assert importlib.import_module('fleet_secrets.core') is fleet_infisical
 assert fleet_infisical._api_json is marker
 print('identity-preserved')
 """)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "identity-preserved"), result.stderr)
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()), (0, "identity-preserved"), result.stderr
+        )
 
     def test_preloaded_foreign_missing_or_forged_file_only_origin_fails_fixed(self):
         result = self.run_probe("""
@@ -85,7 +88,9 @@ for kind in ('foreign','missing','file-only','foreign-spec','lazy-marker','block
     assert 'fleet_secrets.core' not in sys.modules
 print('foreign-refused')
 """)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "foreign-refused"), result.stderr)
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()), (0, "foreign-refused"), result.stderr
+        )
 
     def test_missing_pinned_source_never_uses_another_path_candidate(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -94,7 +99,8 @@ print('foreign-refused')
             package.mkdir()
             for name in ("__init__.py", "core.py"):
                 shutil.copyfile(SCRIPTS / "fleet_secrets" / name, package / name)
-            result = self.run_probe("""
+            result = self.run_probe(
+                """
 import importlib
 try:
     importlib.import_module('fleet_secrets.core')
@@ -104,8 +110,12 @@ else:
     raise AssertionError('missing source accepted')
 assert 'fleet_infisical' not in sys.modules
 print('missing-refused')
-""", scripts=payload)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "missing-refused"), result.stderr)
+""",
+                scripts=payload,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()), (0, "missing-refused"), result.stderr
+        )
 
     def test_concurrent_direct_import_waits_for_alias_client_initialization(self):
         self.concurrent_imports(alias_first=True)
@@ -126,7 +136,11 @@ print('missing-refused')
                 "assert builtins.fixture_release.wait(5)\n"
                 "READY = True\n"
             )
-            result = self.run_probe("FIRST_ALIAS = " + repr(alias_first) + "\n" + """
+            result = self.run_probe(
+                "FIRST_ALIAS = "
+                + repr(alias_first)
+                + "\n"
+                + """
 import builtins, importlib, threading
 from concurrent.futures import ThreadPoolExecutor
 builtins.fixture_started = threading.Event()
@@ -153,8 +167,14 @@ with ThreadPoolExecutor(max_workers=2) as pool:
     module, ready = second.result(timeout=2)
     assert ready and module is first.result(timeout=2)
 print('initialization-serialized')
-""", scripts=payload)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "initialization-serialized"), result.stderr)
+""",
+                scripts=payload,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()),
+            (0, "initialization-serialized"),
+            result.stderr,
+        )
 
     def test_failed_or_interrupted_pinned_initialization_cleans_registration_and_flag(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,7 +183,8 @@ print('initialization-serialized')
             package.mkdir()
             for name in ("__init__.py", "core.py"):
                 shutil.copyfile(SCRIPTS / "fleet_secrets" / name, package / name)
-            result = self.run_probe("""
+            result = self.run_probe(
+                """
 import builtins, importlib
 path = Path(sys.argv[1]) / 'fleet_infisical.py'
 for error, expected in (('RuntimeError','ImportError'),('KeyboardInterrupt','KeyboardInterrupt')):
@@ -184,8 +205,14 @@ for error, expected in (('RuntimeError','ImportError'),('KeyboardInterrupt','Key
     client = importlib.import_module('fleet_secrets.core')
     assert client.READY and client.__spec__._initializing is False
 print('failure-cleanup-verified')
-""", scripts=payload)
-        self.assertEqual((result.returncode, result.stdout.strip()), (0, "failure-cleanup-verified"), result.stderr)
+""",
+                scripts=payload,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()),
+            (0, "failure-cleanup-verified"),
+            result.stderr,
+        )
 
 
 if __name__ == "__main__":
