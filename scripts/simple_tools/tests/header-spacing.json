@@ -1,0 +1,53 @@
+[
+  {
+    "name": "Lettered Lists",
+    "input": "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE, AG] Body.\u00a0 Next.",
+    "expected": "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX EE,\u200a\u200aAG] Body.\u00a0 Next.",
+    "repos": ["AFC", "OPS"],
+    "peers": ["CODEX EE", "AG"]
+  },
+  {
+    "name": "Unlettered",
+    "input": "[JET 📁ST, CTS] Body, unchanged.",
+    "expected": "[JET\u200a\u200a📁\u200aST,\u200aCTS] Body, unchanged.",
+    "repos": ["ST", "CTS"],
+    "peers": []
+  },
+  {
+    "name": "Operator Letter Replaces Transport Fragment",
+    "input": "👀 [CODEX·deadbeef: EE.1.S 📁OPS,AFC → CODEX EE,AG] Body",
+    "expected": "👀 [CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aOPS,\u200aAFC → CODEX EE,\u200a\u200aAG] Body",
+    "repos": ["OPS", "AFC"],
+    "peers": ["CODEX EE", "AG"]
+  },
+  {
+    "name": "Legacy Hyphens And Arrow",
+    "input": "[MM: HH-1-M 📁AFC -> CODEX EE, AG] body",
+    "expected": "[MM:\u200a\u200a\u200aHH-1-M\u200a\u200a📁\u200aAFC → CODEX EE,\u200a\u200aAG] body",
+    "repos": ["AFC"],
+    "peers": ["CODEX EE", "AG"]
+  },
+  {
+    "name": "Legacy Transport Only",
+    "input": "[CODEX·abcdefgh→AG,CURSOR] Body",
+    "expected": "[CODEX·abcdefgh → AG,\u200a\u200aCURSOR] Body"
+  },
+  {
+    "name": "Foreign Quotation",
+    "seat": "CODEX",
+    "input": "[MA 📁OPS] quoted",
+    "expected": "[MA 📁OPS] quoted"
+  },
+  {
+    "name": "Only First Header",
+    "input": "[CODEX: EE.1.S 📁AFC] First.\u00a0 Next.\n[AG: AA.1.M 📁OPS] quoted",
+    "expected": "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC] First.\u00a0 Next.\n[AG: AA.1.M 📁OPS] quoted",
+    "repos": ["AFC"],
+    "peers": []
+  },
+  {
+    "name": "Malformed Repo List",
+    "input": "[CODEX 📁,OPS] body",
+    "expected": "[CODEX 📁,OPS] body"
+  }
+]
