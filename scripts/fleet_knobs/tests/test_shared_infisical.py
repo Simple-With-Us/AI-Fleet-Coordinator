@@ -62,9 +62,16 @@ print('pinned-writer-verified')
                     api.requests.clear()
                     proc = subprocess.run(
                         [sys.executable, "-I", "-B", "-c", boot, scripts, str(poison), mode],
-                        env={"HOME": home, "PATH": "/unavailable", **api.env,
-                             "FLEET_KNOBS_WRITE_TOKEN": api.token},
-                        cwd=home, capture_output=True, text=True, timeout=10,
+                        env={
+                            "HOME": home,
+                            "PATH": "/unavailable",
+                            **api.env,
+                            "FLEET_KNOBS_WRITE_TOKEN": api.token,
+                        },
+                        cwd=home,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
                     self.assertNotIn(api.token, proc.stdout + proc.stderr)
                     self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -115,8 +122,11 @@ else:
 """
         with tempfile.TemporaryDirectory() as home:
             payload = Path(home) / "payload"
-            shutil.copytree(scripts / "fleet_knobs", payload / "fleet_knobs",
-                            ignore=shutil.ignore_patterns("__pycache__", "tests"))
+            shutil.copytree(
+                scripts / "fleet_knobs",
+                payload / "fleet_knobs",
+                ignore=shutil.ignore_patterns("__pycache__", "tests"),
+            )
             from fleet_knobs.tests._fake import fixture_service_token
 
             own = fixture_service_token()
@@ -127,7 +137,10 @@ else:
                     proc = subprocess.run(
                         [sys.executable, "-I", "-B", "-c", boot, str(payload)],
                         env={"HOME": home, "PATH": "/unavailable", "FLEET_KNOBS_WRITE_TOKEN": own},
-                        cwd=home, capture_output=True, text=True, timeout=10,
+                        cwd=home,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
                     self.assertNotIn(own, proc.stdout + proc.stderr)
                     self.assertEqual(proc.returncode, 0, proc.stderr)

@@ -131,13 +131,15 @@ class ExpiryDiagnosticTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "token-expired-or-invalid")
         writer = source._load_helper()
         self.assertIsNotNone(writer)
-        with mock.patch.object(
-            writer,
-            "verify_service_token",
-            side_effect=writer.SecretsError("token-expired-or-invalid"),
+        with (
+            mock.patch.object(
+                writer,
+                "verify_service_token",
+                side_effect=writer.SecretsError("token-expired-or-invalid"),
+            ),
+            self.assertRaisesRegex(setter.Refused, "expiry") as caught,
         ):
-            with self.assertRaisesRegex(setter.Refused, "expiry") as caught:
-                setter.verify_writer(own, {})
+            setter.verify_writer(own, {})
         self.assertNotIn(own, str(caught.exception))
         settings = InfisicalSettings(
             project_id="synthetic-project", api_base="https://invalid.test"
