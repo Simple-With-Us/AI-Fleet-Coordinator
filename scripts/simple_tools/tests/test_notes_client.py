@@ -252,20 +252,16 @@ class BaseUrlTests(unittest.TestCase):
                 with mock.patch.object(NC, "fleet_secrets_get", return_value="http://secrets.example.test"):
                     self.assertIsNone(NC.base_url(env), "the same https-origin rule applies")
 
-    def test_the_url_is_read_from_the_project_root_with_fleet_secrets(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            binary = Path(tmp) / "fleet-secrets"
-            binary.write_text("#!/bin/sh\nexit 99\n")  # never run:  the runner below stands in for it
-            binary.chmod(0o700)
-            runs: list[list[str]] = []
-
-            def runner(argv, **kwargs):
-                runs.append(list(argv))
-                return subprocess.CompletedProcess(argv, 0, '"https://secrets.example.test"\n', "")
-
-            with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")):
-                self.assertEqual(NC.base_url({"PATH": tmp}, runner), "https://secrets.example.test")
-        self.assertEqual(runs, [[str(binary), "get", "OPERATOR_API_URL", "--path", "/", "--project", "ai-fleet-coordinator"]])
+    def test_the_url_is_read_directly_from_the_exact_project_root(self):
+        env = {"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": "11111111-2222-3333-4444-555555555555",
+               "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4,
+               "INFISICAL_READ_PATHS": "/,/unrelated"}
+        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), \
+                mock.patch.object(NC.FI, "fetch_project", return_value={"OPERATOR_API_URL": "https://secrets.example.test"}) as fetch:
+            self.assertEqual(NC.base_url(env, runner=mock.Mock(side_effect=AssertionError("no subprocess"))), "https://secrets.example.test")
+        self.assertEqual(fetch.call_args.args[:2], (env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"], "/"))
+        self.assertEqual(fetch.call_args.args[2]["INFISICAL_READ_PATHS"], "/")
+        self.assertEqual(fetch.call_args.kwargs["names"], ("OPERATOR_API_URL",))
 
     def test_operator_client_is_not_configured_without_an_origin(self):
         with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), mock.patch.object(NC, "fleet_secrets_get", return_value=""):
@@ -285,7 +281,10 @@ class KeySourceTests(unittest.TestCase):
         self.bin.mkdir()
         self.now = [1000.0]
         self.runs: list[list[str]] = []
-        self.answer = subprocess.CompletedProcess([], 0, '"%s"\n' % TEST_KEY, "")
+        self.answer = {"OPERATOR_NOTES_SERVER_KEY": TEST_KEY}
+        patcher = mock.patch.object(NC.FI, "fetch_project", side_effect=self.reader)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def fake_secrets(self):
         path = self.bin / "fleet-secrets"
@@ -293,15 +292,18 @@ class KeySourceTests(unittest.TestCase):
         path.chmod(0o700)
         return path
 
-    def runner(self, argv, **kwargs):
-        self.runs.append(list(argv))
+    def reader(self, project, path, env, **kwargs):
+        self.runs.append([project, path, kwargs["names"]])
         self.kwargs = kwargs
+        self.read_env = env
         if isinstance(self.answer, BaseException):
             raise self.answer
         return self.answer
 
     def source(self, env):
-        return NC.KeySource(W.SERVER, env, runner=self.runner, clock=lambda: self.now[0])
+        env = {"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": "11111111-2222-3333-4444-555555555555",
+               "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4, **env}
+        return NC.KeySource(W.SERVER, env, runner=mock.Mock(side_effect=AssertionError("no subprocess")), clock=lambda: self.now[0])
 
     def test_the_environment_comes_first_and_quotes_are_dropped(self):
         source = self.source({"OPERATOR_NOTES_SERVER_KEY": " '%s' " % TEST_KEY, "PATH": str(self.bin)})
@@ -309,14 +311,13 @@ class KeySourceTests(unittest.TestCase):
         self.assertEqual(self.runs, [])
         self.assertIsNone(self.source({"OPERATOR_NOTES_SERVER_KEY": "short", "PATH": str(self.bin)}).get(), "under 32 characters is no key")
 
-    def test_else_fleet_secrets_is_asked_once_and_the_answer_is_cached(self):
-        binary = self.fake_secrets()
+    def test_else_the_direct_reader_is_asked_once_and_the_answer_is_cached(self):
         env = {"PATH": str(self.bin), "HOME": self.tmp.name}
         source = self.source(env)
         self.assertEqual(source.get(), TEST_KEY)
-        self.assertEqual(self.runs, [[str(binary), "get", "OPERATOR_NOTES_SERVER_KEY", "--path", "/operator", "--project", "ai-fleet-coordinator"]])
-        self.assertEqual((self.kwargs["capture_output"], self.kwargs["text"], self.kwargs["check"]), (True, True, False))
-        self.assertEqual(self.kwargs["env"], env)
+        self.assertEqual(self.runs, [["11111111-2222-3333-4444-555555555555", "/operator", ("OPERATOR_NOTES_SERVER_KEY",)]])
+        self.assertEqual(self.kwargs["timeout"], 30.0)
+        self.assertEqual(self.read_env["INFISICAL_READ_PATHS"], "/operator")
         self.now[0] += NC.KEY_CACHE_S - 1
         self.assertEqual(source.get(), TEST_KEY)
         self.assertEqual(len(self.runs), 1, "cached")
@@ -327,25 +328,21 @@ class KeySourceTests(unittest.TestCase):
         source.get()
         self.assertEqual(len(self.runs), 3, "forget drops it at once")
 
-    def test_a_failing_or_missing_fleet_secrets_is_no_key(self):
-        self.fake_secrets()
+    def test_a_failed_or_missing_service_binding_is_no_key(self):
         env = {"PATH": str(self.bin)}
-        self.answer = subprocess.CompletedProcess([], 3, "", "denied")
+        self.answer = NC.FI.SecretsError("not available", 3)
         self.assertIsNone(self.source(env).get())
         self.answer = OSError("cannot run")
         self.assertIsNone(self.source(env).get())
         # A hung lookup is not a missing key:  it says so, and that nothing was sent.
-        self.answer = subprocess.TimeoutExpired("fleet-secrets", 30)
+        self.answer = TimeoutError("untrusted failure text")
         with self.assertRaises(N.NotesError) as caught:
             self.source(env).get()
         self.assertEqual(caught.exception.code, "not_configured")
         self.assertIn("did not answer within 30 seconds", caught.exception.message)
         self.assertIn("nothing was sent", caught.exception.message)
         self.runs.clear()
-        empty = Path(self.tmp.name) / "empty"
-        empty.mkdir()
-        with mock.patch.object(NC.os.path, "expanduser", return_value=str(empty / "nope")):
-            self.assertIsNone(self.source({"PATH": str(empty)}).get())
+        self.assertIsNone(NC.KeySource(W.SERVER, {"HOME": self.tmp.name}).get())
         self.assertEqual(self.runs, [], "nothing to run")
 
 class ClientTests(unittest.TestCase):

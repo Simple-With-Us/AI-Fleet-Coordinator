@@ -7,7 +7,7 @@ Credential order (first hit wins, nothing is merged):
      directory;  there is no default directory any more)
   4. env ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE  (cloud seats)
   5. Infisical Fleet-OPS /zulip  (prod), the resolved seat's own three keys <BOT>_ZULIP_EMAIL, _KEY and
-     _SITE, read through `fleet-secrets` (off with SIMPLE_TOOLS_INFISICAL=0;  OPS-818, AFC-359).  The
+     _SITE, read directly through the shared Infisical library (off with SIMPLE_TOOLS_INFISICAL=0).  The
      server instance has no reader:  its loader (server/infisical_env.py) reads the keys with a scoped
      INFISICAL_TOKEN and puts them in the daemon's environment before it starts
 No credential folder is read (AFC-359:  the old folder is retired).  A .env file, ./zuliprc and
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import configparser
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -34,7 +35,6 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import threading
 import time
@@ -108,11 +108,10 @@ ENV_INFISICAL = "SIMPLE_TOOLS_INFISICAL"  # 0, false, off or no turns the Infisi
 ENV_INFISICAL_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 INFISICAL_PROJECT_FILE = ".simple-tools/fleet-ops-project-id"
 INFISICAL_PATH = "/zulip"
-# The fleet's scoped-token reader (scripts/fleet_secrets, installed as ~/.local/bin/fleet-secrets).  Tests point
-# FLEET_SECRETS_BIN at a fake.  Noninteractive calls require the caller's registered read-token binding.
+# Compatibility names for callers still migrating; Zulip reads Infisical directly through the shared library.
 ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
 FLEET_SECRETS_TIMEOUT = (
-    15.0  # interactive commands wait at most this long for one fleet-secrets call
+    15.0  # compatibility name: interactive commands bound one direct Infisical read
 )
 # The listener is not interactive, and it starts right after a runtime update, often while the Mac's load
 # average is above 100:  a 15 second cap left two seats refused for five minutes on Mon, Oct 19 (AFC-359).
@@ -566,8 +565,7 @@ _UUID_RE = re.compile(
 
 def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
     """The Fleet-OPS Infisical project id, from env INFISICAL_FLEET_OPS_PROJECT_ID or the first line of
-    ~/.simple-tools/fleet-ops-project-id.  Fails closed, naming both, and never echoes a malformed value.
-    (fleet-secrets reads the same two places itself;  this copy is for messages and callers.)"""
+    ~/.simple-tools/fleet-ops-project-id.  Fails closed, naming both, and never echoes a malformed value."""
     value = (env.get(ENV_INFISICAL_PROJECT) or "").strip()
     if not value:
         try:
@@ -595,7 +593,7 @@ def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
 
 
 def fleet_secrets_bin(env: Mapping[str, str], home: Path) -> str | None:
-    """env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets, else `fleet-secrets` on PATH."""
+    """Legacy helper for unmigrated callers; this module's credential readers never call it."""
     explicit = (env.get(ENV_FLEET_SECRETS_BIN) or "").strip()
     if explicit:
         return os.path.expanduser(explicit)
@@ -605,34 +603,20 @@ def fleet_secrets_bin(env: Mapping[str, str], home: Path) -> str | None:
     return shutil.which("fleet-secrets", path=env.get("PATH") or os.defpath)
 
 
-# fleet-secrets exit codes (scripts/fleet_secrets/cli.py) as reason tokens:  its stderr is never read out.
-_FLEET_SECRETS_EXITS = {
-    2: "refused-configuration",
-    3: "key-absent",
-    4: "fetch-or-auth-failure",
-    5: "unresolved-reference",
-    126: "cannot-start",
-    127: "cannot-start",
-}
-# Run by `fleet-secrets run --only ...`:  prints just the named variables, as JSON, to the pipe we read.
-_PRINT_NAMED_ENV = (
-    "import json,os,sys;json.dump({n:os.environ.get(n,'') for n in sys.argv[1:]},sys.stdout)"
-)
-
 _cache_lock = threading.Lock()
-_value_cache: dict[tuple[str, str, str, str], tuple[float, str]] = {}  # (bin, project, path, name)
-_names_cache: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}  # (bin, project) -> names
+_value_cache: dict[tuple[str, str, str, str], tuple[float, str]] = {}  # (binding route, project, path, name)
+_names_cache: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}  # (binding route, project) -> names
 _failures: dict[
     tuple[str, ...], tuple[float, str]
-] = {}  # (bin, project, what...) -> (failed at, reason), memory only
+] = {}  # (binding route, project, what...) -> (failed at, reason), memory only
 
 
 def _project_scope(env: Mapping[str, str], home: Path) -> str:
-    """The Infisical project this read targets, for cache keying only (never echoed).  One binary can
+    """The Infisical project this read targets, for cache keying only (never echoed).  One process can
     serve several projects (the AFC /zulip the Notes service reads, the Fleet-OPS /zulip the seats
     read), so values, names and outages are kept apart per project:  an outage in one store must not
     refuse a fetch from a healthy one.  Fails closed like infisical_project_id, which resolves the same
-    two places and is what fleet-secrets itself does:  an unresolvable project is never cached under
+    two places: an unresolvable project is never cached under
     an empty scope, and no value can be fetched without one."""
     return infisical_project_id(env, home)
 
@@ -644,72 +628,48 @@ def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
     return None
 
 
-def _child_env(env: Mapping[str, str]) -> dict[str, str]:
-    child = {k: v for k, v in env.items() if k not in ("ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_RC")}
-    child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
-    return child
+def _infisical_context(env: Mapping[str, str], home: Path, path: str) -> tuple[str, str, dict[str, str]]:
+    """The caller's explicit project binding and exact folder; no CLI or credential-store fallback."""
+    import fleet_infisical as FI
 
-
-def _run_fleet_secrets(argv: list[str], env: Mapping[str, str]) -> bytes:
-    """Run fleet-secrets, return its stdout.  Raises CredentialError with a reason token, never output."""
+    project = _project_scope(env, home)
+    scoped = dict(env, HOME=str(home))
+    scoped[FI.ENV_READ_PATHS] = path
     try:
-        proc = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=FLEET_SECRETS_TIMEOUT,
-            cwd="/",
-            env=_child_env(env),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        raise CredentialError("fleet-secrets timeout") from None
-    except OSError:
-        raise CredentialError("fleet-secrets cannot-start") from None
-    if proc.returncode != 0:
-        raise CredentialError(
-            "fleet-secrets %s (exit %d)"
-            % (_FLEET_SECRETS_EXITS.get(proc.returncode, "failed"), proc.returncode)
-        )
-    return proc.stdout
+        binding = FI.resolve_token(scoped)
+    except FI.SecretsError:
+        raise CredentialError("Infisical service-token-required: INFISICAL_TOKEN is not usable") from None
+    route = hashlib.sha256((scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()).hexdigest()
+    return project, route, scoped
 
 
-def _fleet_secrets_values(
-    wanted: tuple[str, ...], binary: str, env: Mapping[str, str], path: str
+def _direct_infisical_values(
+    wanted: tuple[str, ...], env: Mapping[str, str], home: Path, path: str
 ) -> dict[str, str]:
-    """The CLI route's one call:  `fleet-secrets run --only`, parsed.  Raises CredentialError with a
-    reason token, never output."""
-    argv = [
-        binary,
-        "run",
-        "--path",
-        path,
-        "--only",
-        ",".join(wanted),
-        "--",
-        sys.executable,
-        "-I",
-        "-c",
-        _PRINT_NAMED_ENV,
-        *wanted,
-    ]
-    out = _run_fleet_secrets(argv, env)
+    """Read named values with verified service-token metadata and row provenance."""
+    import fleet_infisical as FI
+
+    project, _route, scoped = _infisical_context(env, home, path)
     try:
-        payload = json.loads(out.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        raise CredentialError("fleet-secrets bad-output") from None
-    finally:
-        out = b""
-    if not isinstance(payload, dict):
-        raise CredentialError("fleet-secrets bad-output")
-    return {n: payload[n] for n in wanted if isinstance(payload.get(n), str)}
+        binding = FI.resolve_token(scoped)
+        values = FI.fetch_project(project, path, scoped, token=binding,
+                                  names=wanted, timeout=FLEET_SECRETS_TIMEOUT)
+    except TimeoutError:
+        raise CredentialError("Infisical timeout") from None
+    except FI.SecretsError as exc:
+        reason = "key-absent" if exc.code == 3 else "fetch-or-auth-failure"
+        raise CredentialError("Infisical " + reason) from None
+    except Exception:
+        raise CredentialError("Infisical fetch-or-auth-failure") from None
+    if any(name not in values for name in wanted):
+        raise CredentialError("Infisical key-absent")
+    return values
 
 
 def _fetch_from_fleet_secrets(
     names: tuple[str, ...], env: Mapping[str, str], home: Path, path: str = INFISICAL_PATH
 ) -> Mapping[str, str]:
-    """Just these names, through the fleet's Infisical reader (one Infisical call for all of them):
-    `fleet-secrets run --only`.
+    """Just these names, through the shared direct Infisical reader.
     Cached in memory for INFISICAL_CACHE_TTL;  a failed refresh returns the values this process already
     holds.  Raises CredentialError with a reason token, never output.
 
@@ -719,13 +679,9 @@ def _fetch_from_fleet_secrets(
     by route, project and folder so one store's outage never refuses the other store's fetch.
     """
     wanted = tuple(sorted(set(names)))
-    binary = fleet_secrets_bin(env, home)
-    if not binary:
-        raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
-    route = binary
+    project, route, scoped = _infisical_context(env, home, path)
     now = time.monotonic()
     with _cache_lock:
-        project = _project_scope(env, home)
         held = {n: _value_cache.get((route, project, path, n)) for n in wanted}
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
@@ -741,7 +697,7 @@ def _fetch_from_fleet_secrets(
                 "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
             )
         try:
-            got = _fleet_secrets_values(wanted, binary, env, path)
+            got = _direct_infisical_values(wanted, scoped, home, path)
         except CredentialError as exc:
             _failures[failure_key] = (now, str(exc))
             if "key-absent" not in str(exc):
@@ -759,44 +715,49 @@ def _fetch_from_fleet_secrets(
 
 
 def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[str]:
-    """The key NAMES in /zulip (`fleet-secrets names`:  no value reaches this process).  Cached like values."""
-    binary = fleet_secrets_bin(env, home)
-    if not binary:
-        raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
+    """The key names in the caller's exact /zulip folder, cached like values."""
+    project, route, scoped = _infisical_context(env, home, INFISICAL_PATH)
     now = time.monotonic()
     with _cache_lock:
-        project = _project_scope(env, home)
-        held = _names_cache.get((binary, project))
+        held = _names_cache.get((route, project))
         if held is not None and now - held[0] < INFISICAL_CACHE_TTL:
             return held[1]
-        failure_key = (binary, project, "names")
+        failure_key = (route, project, "names")
         recent = _recent_failure(failure_key, now)
         if recent is not None and held is None:
             raise CredentialError(
                 "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
             )
         try:
-            out = _run_fleet_secrets([binary, "names", "--path", INFISICAL_PATH], env)
+            import fleet_infisical as FI
+
+            binding = FI.resolve_token(scoped)
+            names = FI.list_project_names(project, INFISICAL_PATH, scoped,
+                                          token=binding, timeout=FLEET_SECRETS_TIMEOUT)
+        except TimeoutError:
+            reason = "Infisical timeout"
+            _failures[failure_key] = (now, reason)
+            if held is not None:
+                return held[1]
+            raise CredentialError(reason) from None
+        except FI.SecretsError:
+            reason = "Infisical fetch-or-auth-failure"
+            _failures[failure_key] = (now, reason)
+            if held is not None:
+                return held[1]
+            raise CredentialError(reason) from None
         except CredentialError as exc:
             _failures[failure_key] = (now, str(exc))
             if held is not None:
                 return held[1]
             raise
         _failures.pop(failure_key, None)
-        try:
-            text = out.decode("utf-8")
-        except UnicodeDecodeError:
-            raise CredentialError("fleet-secrets bad-output") from None
-        names = frozenset(
-            line.strip()
-            for line in text.splitlines()
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", line.strip())
-        )
-        _names_cache[(binary, project)] = (now, names)
+        names = frozenset(name for name in names if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
+        _names_cache[(route, project)] = (now, names)
         return names
 
 
-# The names tests replace (simple_tools/tests/__init__.py), so none can reach the real fleet-secrets.
+# Compatibility function names remain for callers and test seams; both readers use the direct library.
 _default_infisical_fetch = _fetch_from_fleet_secrets
 _default_infisical_names = _list_from_fleet_secrets
 
@@ -1346,11 +1307,11 @@ class ZulipClient:
             self.owner_user_id = int(owner_user_id)
         except (TypeError, ValueError):
             self.owner_user_id = 0
-        token = base64.b64encode(("%s:%s" % (creds.email, creds.key)).encode("utf-8")).decode(
+        encoded_auth = base64.b64encode(("%s:%s" % (creds.email, creds.key)).encode("utf-8")).decode(
             "ascii"
         )
-        self._auth = "Basic " + token
-        self._hidden = [value for value in (creds.key, token) if value]
+        self._auth = "Basic " + encoded_auth
+        self._hidden = [value for value in (creds.key, encoded_auth) if value]
         # Set only by mark_operator_verified, after `users/me` was checked against the pinned
         # Operator bot.  Nothing else turns the one-to-one status exemption on, and the marker
         # carries the Operator's id and address and the owner pin it was checked against, so a
