@@ -207,8 +207,7 @@ const FENCE_LINE = /^BEGIN_UNTRUSTED_[A-Z]+ nonce=[0-9a-f]{16}$/m;
 
 /**
  * A successful result as a client should get it.  When the served tool has no outputSchema and
- * the result is a fenced envelope or carries an empty structuredContent ({}, which okResult makes
- * when a tool passes no structured value), structuredContent is dropped so the text is what the
+ * the result is a fenced envelope or carries an empty structuredContent, structuredContent is dropped so the text is what the
  * client shows.  A tool that advertises an outputSchema always keeps its structuredContent, which
  * an SDK client requires.
  */

@@ -47,8 +47,8 @@
           },
           "summary": {
             "type": "string",
-            "maxLength": 280,
-            "description": "A one-line summary for the notification and the note's quick view.  No double quote or backslash."
+            "maxLength": 1000,
+            "description": "Optional Summary paragraph for a long note (max 5 sentences, real context beyond the title).  No double quote or backslash."
           },
           "pr": {
             "type": "string",
@@ -170,8 +170,8 @@
           },
           "summary": {
             "type": "string",
-            "maxLength": 280,
-            "description": "A one-line summary for the notification and the note's quick view.  No double quote or backslash."
+            "maxLength": 1000,
+            "description": "Optional Summary paragraph for a long note (max 5 sentences, real context beyond the title).  No double quote or backslash."
           },
           "pr": {
             "type": "string",

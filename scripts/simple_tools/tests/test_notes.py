@@ -236,7 +236,7 @@ class FlagTests(unittest.TestCase):
             {"pin": "yes"},
             {"html": 1},
             {"summary": 'a "b"'},
-            {"summary": "x" * 300},
+            {"summary": "x" * 1100},
             {"summary": "two\nlines"},
             {"pr": "46; rm -rf"},
             {"pr": 46},
@@ -635,6 +635,18 @@ class DirectRunnerTests(unittest.TestCase):
             },
         )  # AGENT_SEAT is the verified identity;  no Zulip or Operator key
         self.assertEqual((env["AGENT_SEAT"], env["AGENT_NOTES_CALLER"], env["AGENT_NOTES_REQUEST_ID"]), ("CLAUDE", "cli", RID))
+
+    def test_the_summary_tuning_knobs_reach_the_script(self) -> None:
+        run = FakeRun()
+        env = dict(
+            self.ENV,
+            APPLE_NOTES_SUMMARY_MIN_BODY_CHARS="1200",
+            APPLE_NOTES_SUMMARY_MAX_PCT="15",
+        )
+        N.run_direct(request(flags={"pin": False}), self.SCRIPT, env=env, runner=run)
+        child = run.calls[0]["env"]
+        self.assertEqual(child["APPLE_NOTES_SUMMARY_MIN_BODY_CHARS"], "1200")
+        self.assertEqual(child["APPLE_NOTES_SUMMARY_MAX_PCT"], "15")
 
     def test_a_runner_write_names_the_requester_and_carries_one_provenance_line(self):
         run = FakeRun()
@@ -1082,13 +1094,14 @@ class ContentTests(unittest.TestCase):
         banners = (
             '<div style="background-color: #FFF3CD"><b>⚠️ NEEDS OWNER REVIEW / ACTION</b></div>\n'
             '<div style="background-color: #F8F9FA"><b>📌 Mobile Quick View:</b> the short summary</div>\n'
+            '<div style="background-color: #F8F9FA"><b>Summary:</b> the longer readable summary</div>\n'
         )
         head, rest = STORED_HTML.split("<div>Live end-to-end", 1)
         body = head + banners + "<div>Live end-to-end" + rest
         self.assertEqual(N.content_html(body, STORED_TITLE), STORED_CONTENT_HTML)
         text = STORED_TEXT.replace(
             "\nLive end-to-end",
-            "\n⚠️ NEEDS OWNER REVIEW / ACTION\n📌 Mobile Quick View: the short summary\nLive end-to-end",
+            "\n⚠️ NEEDS OWNER REVIEW / ACTION\n📌 Mobile Quick View: the short summary\nSummary: the longer readable summary\nLive end-to-end",
         )
         self.assertEqual(N.content_text(text, STORED_TITLE), STORED_CONTENT_TEXT)
 
@@ -1096,6 +1109,18 @@ class ContentTests(unittest.TestCase):
         body = "<div>First line of a hand-made note.</div>\n<div>Second.</div>"
         self.assertEqual(N.content_html(body, "Hand Made"), body)
         self.assertEqual(N.content_text("First line.\nSecond.", "Hand Made"), "First line.\nSecond.")
+
+    def test_a_body_block_that_only_starts_with_the_label_is_kept(self):
+        """Only the generated banner strips:  a body block opening with the same words is content."""
+        head, rest = STORED_HTML.split("<div>Live end-to-end", 1)
+        lookalike = "<div>Summary: the plan we agreed still stands.</div>\n"
+        out = N.content_html(head + lookalike + "<div>Live end-to-end" + rest, STORED_TITLE)
+        self.assertIn("Summary: the plan we agreed still stands.", out)
+        self.assertTrue(out.startswith("<div>Summary: the plan"), out[:120])
+
+    def test_a_text_note_without_the_writer_header_keeps_a_lookalike_first_line(self):
+        text = "Summary: my own heading.\nThe body of a hand-made note."
+        self.assertEqual(N.content_text(text, "Hand Made"), text)
 
     def test_a_note_written_through_the_operator_reads_back_without_its_line(self):
         stored = STORED_HTML.split("<div><i>Relayed")[0] + (

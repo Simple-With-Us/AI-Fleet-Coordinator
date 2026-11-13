@@ -101,9 +101,14 @@ def mac_collect(
 def collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
     """Run one rule on one platform with the collector the rule names.
 
-    The mac collector runs the check;  a reserved collector yields the pinned
-    ``UNSUPPORTED`` result.
+    The mac collector runs locally, ``api`` runs through the allowlisted remote
+    observer adapter (or returns ``UNSUPPORTED`` until configured), and reserved
+    collectors yield the pinned ``UNSUPPORTED`` result.
     """
+    if rule.collector is Collector.API:
+        from . import api_collector
+
+        return api_collector.api_collect(rule, platform, ctx)
     if rule.collector is not Collector.MAC:
         return unsupported_collector(rule, platform, ctx)
     return mac_collect(rule, platform, ctx)

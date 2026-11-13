@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// The server Eavesdropper's own settings, in the Wake & Listener panel.
+/// The Operator's settings, in the Operator panel:  the server Eavesdropper's own allowlisted
+/// settings.
 ///
 /// Every value comes from the server editor's get, and every change goes Show Plan, then Touch ID,
 /// through the shared action sheet:  the sheet shows what the plan changes and the Eavesdropper's
 /// own check, the owner approves, and the server applies only that plan.  A row Muster will not
-/// change says why.  `ServerListenerSettings.swift` holds the rules.
+/// change says why.  `ServerListenerSettings.swift` holds the rules.  The panel around this view
+/// gives it its heading.
 struct ServerListenerSettingsSection: View {
     @ObservedObject private var store = ServerListenerSettingsStore.shared
     @ObservedObject private var controller = OpsController.shared
@@ -13,22 +15,20 @@ struct ServerListenerSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Server Eavesdropper Settings")
-                    .font(.headline)
+                Text("A seat's on or off switch and wake type change only through the server's allowlisted editor.\(ServerStatusCopy.sentenceGap)Every other setting here is read only, and each row says why.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 if store.isReading { ProgressView().controlSize(.small) }
-                Button("Read Server Settings") { Task { await store.refresh() } }
+                Button("Read Settings") { Task { await store.refresh() } }
                     .disabled(store.isReading)
             }
-            Text("The server listener holds every seat.\(ServerStatusCopy.sentenceGap)A seat's on or off switch and wake type change only through the server's allowlisted editor.\(ServerStatusCopy.sentenceGap)Every other setting here is read only, and each row says why.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             content
         }
-        // Read every time the panel appears:  the store outlives the panel, so an old read would
-        // otherwise be shown.
-        .task { await store.refresh() }
+        // The Operator panel reads these settings with its other answers (on open, on Refresh,
+        // every minute and on a wake), so this section starts no read of its own.  Edits not yet
+        // planned stay when it reads again.
         .onChange(of: controller.completedRuns) { _, _ in
             // Only a run of this section's own action can have changed the server's listener file,
             // so only that run is followed by a read.  A knob set, a restart or a redeploy is not.
@@ -57,19 +57,18 @@ struct ServerListenerSettingsSection: View {
             .font(.callout)
         case .read?:
             if store.allowlist == nil {
-                Text("This checkout's copy of the allowlist (\(ServerSettingsAllowlist.relativePath)) could not be read, so Muster offers nothing to change.")
+                Text(store.allowlistProblem ?? "The allowlist could not be read, so Muster offers nothing to change.")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Label {
-                Text(store.applyEnabled == true ? ServerSettingsCopy.applyOn : ServerSettingsCopy.applyOff)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(applyText).fixedSize(horizontal: false, vertical: true)
             } icon: {
-                Image(systemName: store.applyEnabled == true ? "touchid" : "lock.fill").accessibilityHidden(true)
+                Image(systemName: applySymbol).accessibilityHidden(true)
             }
             .font(.callout)
-            .foregroundStyle(store.applyEnabled == true ? Color.primary : Color.orange)
+            .foregroundStyle(store.applyEnabled == false ? Color.orange : (store.applyEnabled == true ? Color.primary : Color.secondary))
             ForEach(store.groups) { group in
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 4) {
@@ -99,6 +98,23 @@ struct ServerListenerSettingsSection: View {
                 }
                 .disabled(store.drafts.isEmpty || controller.isBusy)
             }
+        }
+    }
+
+    /// What the server's `applyEnabled` says, in words:  on, off, or that it did not say.
+    private var applyText: String {
+        switch store.applyEnabled {
+        case true?: return ServerSettingsCopy.applyOn
+        case false?: return ServerSettingsCopy.applyOff
+        case nil: return ServerSettingsCopy.applyUnknown
+        }
+    }
+
+    private var applySymbol: String {
+        switch store.applyEnabled {
+        case true?: return "touchid"
+        case false?: return "lock.fill"
+        case nil: return "questionmark.circle"
         }
     }
 

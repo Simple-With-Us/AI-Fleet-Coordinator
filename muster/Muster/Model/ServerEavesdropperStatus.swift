@@ -18,7 +18,7 @@ import Foundation
 
 // MARK: - Reading one field at a time
 
-private extension KeyedDecodingContainer {
+extension KeyedDecodingContainer {
     /// A field, or nil when it is missing, null or not of this type.
     func optionalField<T: Decodable>(_ type: T.Type, _ key: Key) -> T? {
         guard let value = try? decodeIfPresent(type, forKey: key) else { return nil }
@@ -46,7 +46,7 @@ private extension KeyedDecodingContainer {
 }
 
 /// One list entry, or nil when it cannot be read.
-private struct LenientEntry<T: Decodable>: Decodable {
+struct LenientEntry<T: Decodable>: Decodable {
     let value: T?
 
     init(from decoder: Decoder) throws {
