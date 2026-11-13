@@ -213,7 +213,7 @@ Hosted only, JET-CHAT (the full Jet login) only, and only while the WhatsApp bri
 
 GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 
-**The route rule (owner ruling 2026-11-08).  Every GitHub read or write goes through the relay — the `gr_*` / `gr_wf_*` verbs on the hosted front, the `wf_*` verbs through GR-MCP, or `simple-git` — under the seat's own identity.  `gh` is backup only, for an operation the relay has no verb for, and every `gh` fallback is logged the same day in the Fleet GitOPS deficiencies document (Linear, Part 2: the missing verb, what `gh` did, and why).
+**The route rule.** Every GitHub read or write goes through Fleet Tools under the seat's own GitHub App: the `gr_*` / `gr_wf_*` hosted tools, GR-MCP, or `simple-git`. Do not use personal credentials or direct `gh`/API fallback when a tool is missing or refused. Report the supported-route gap while keeping the affected action paused.
 
 **git-relay** is the relay: a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`): a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
@@ -254,7 +254,7 @@ A relay refusal arrives as a tool error carrying the relay's own HTTP status, ne
 
 ### gh Command To Relay Verb, And Paging
 
-Use the relay verb in the right column, never `gh`.  `gh` is the logged fallback only, for an operation no verb covers.  Hosted names are the `gr_*` and `gr_wf_*` tools; GR-MCP uses the same names without the `gr_` prefix, so `gr_wf_checks` is `wf_checks` there.
+Use the relay verb in the right column, never `gh`. A missing or refused verb is a supported-route gap, not permission for direct access.  Hosted names are the `gr_*` and `gr_wf_*` tools; GR-MCP uses the same names without the `gr_` prefix, so `gr_wf_checks` is `wf_checks` there.
 
 | gh command (retired) | Relay verb |
 |---|---|
@@ -267,8 +267,8 @@ Use the relay verb in the right column, never `gh`.  `gh` is the logged fallbac
 | `gh run rerun --failed` | `gr_wf_run_rerun` for the run; `gr_wf_job_rerun` for one job |
 | `gh pr merge N --squash --auto` | `gr_wf_automerge_enable` with `method` `SQUASH` |
 | `gh pr merge N --squash` | `gr_wf_merge_guarded` with `method` `squash` and `expected_head_sha`, the full head sha read from `gr_wf_pr_get` |
-| `gh pr create` | `gr_open_pr`, which is owner-authored by design |
-| `gh pr edit` | `gr_edit_pr` for the title and body; `wf_pr_edit` is ungranted |
+| `gh pr create` | `gr_wf_pr_create` as the caller's own App, with the current head SHA in `expected_head_sha` |
+| `gh pr edit` | `gr_edit_pr` for the title and body; `wf_pr_edit` only when granted by live seat policy |
 | `gh pr comment N` | `gr_comment_pr` |
 | `gh pr ready` and `gh pr ready --undo` | `gr_wf_pr_ready` and `gr_wf_pr_draft` |
 | `gh pr list` | `gr_wf_pr_list` |
