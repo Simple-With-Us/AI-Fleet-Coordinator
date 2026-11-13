@@ -1394,11 +1394,15 @@ class ParentFromMacTests(HookBase):
 
     def test_ssh_runs_with_nothing_on_stdin_and_its_own_messages_thrown_away(self) -> None:
         ran = SimpleNamespace(returncode=0, stdout="p-0001\n")
-        with mock.patch.object(subprocess, "run", return_value=ran) as run:
+        parent_env = {"PATH": "/usr/bin:/bin", "SSH_AUTH_SOCK": "/private/agent.sock",
+                      "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "fake.bootstrap",
+                      "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "fake.signing"}
+        with mock.patch.dict(os.environ, parent_env, clear=True), mock.patch.object(subprocess, "run", return_value=ran) as run:
             self.assertIs(self.real_run_ssh(["ssh", "-T", "--", self.DEST, "x"], 2.0), ran)
         run.assert_called_once_with(
             ["ssh", "-T", "--", self.DEST, "x"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, timeout=2.0, check=False,
+            env={"PATH": "/usr/bin:/bin", "SSH_AUTH_SOCK": "/private/agent.sock"},
         )
 
     def test_a_hostile_id_never_reaches_the_command_line(self) -> None:
