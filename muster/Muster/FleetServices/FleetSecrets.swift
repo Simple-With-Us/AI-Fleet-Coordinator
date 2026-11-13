@@ -211,9 +211,17 @@ public extension FleetSecrets {
 
     private func runReader(_ arguments: [String]) throws -> String {
         guard let location else { throw FleetSecretError.notInstalled }
-        return try commands.run(location.interpreter.path,
-                                ["-I", location.packageDirectory.appendingPathComponent("fleet_infisical_cli.py").path] + arguments,
-                                environment: secretsEnvironment, timeout: 20)
+        let reader = location.packageDirectory.appendingPathComponent("fleet_infisical_cli.py").path
+        let missingEntryDiagnostics = ["can't open file '\(reader)': [Errno 2]",
+                                       "can't open file \"\(reader)\": [Errno 2]"]
+        do {
+            return try commands.run(location.interpreter.path, ["-I", reader] + arguments,
+                                    environment: secretsEnvironment, timeout: 20)
+        } catch let exit as CommandExitError where exit.status == 2
+            && missingEntryDiagnostics.contains(where: { exit.errorOutput.contains($0) }) {
+            // Python started, but its reviewed entry is absent; raw diagnostics stay private.
+            throw FleetSecretError.notInstalled
+        }
     }
 
     /// Names at one path, through the `names` verb only.  This path never calls `get`.
