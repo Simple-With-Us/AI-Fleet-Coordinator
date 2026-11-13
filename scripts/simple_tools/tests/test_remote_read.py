@@ -440,7 +440,7 @@ class EntrypointTrap(unittest.TestCase):
         # A seat host's managed wrapper turns remote mode on for every seat.  The letter hook needs no hosted server,
         # and refused here it would fall to the argument parser and exit 2, which blocks the prompt.
         for remote in (True, False):
-            code, err, imported = self.run_entry("letter", remote=remote, module="simple_tools.claude_letter")
+            code, err, imported = self.run_entry("letter", remote=remote, module="simple_tools.platform_letter")
             self.assertTrue(imported, "remote=%s: %s" % (remote, err))
             self.assertNotIn("invalid choice", err)
 

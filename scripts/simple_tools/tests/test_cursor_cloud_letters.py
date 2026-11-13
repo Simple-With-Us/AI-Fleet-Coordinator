@@ -17,6 +17,7 @@ from unittest import mock
 from simple_tools import cursor_cloud_letters as CCL
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
+from simple_tools.tests.registry_fake import FakeRegistry
 
 A1 = "bc-11111111-aaaa-4bbb-8ccc-000000000001"
 A2 = "bc-22222222-aaaa-4bbb-8ccc-000000000002"
@@ -57,9 +58,12 @@ class SweepTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.state = os.path.join(self.tmp.name, "state")
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
-        self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE"}
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner")).install()
+        self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
+        self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE",
+                    **self.assigner.env()}
         self.agents = [agent(A1, "GB-Director: tidy the board"), agent(A2, "fix the login page")]
         self.dm = Fake()
         self.steer = Steer()
@@ -166,6 +170,169 @@ class SweepTests(unittest.TestCase):
         self.assertNotIn("javascript", text)
         self.assertIn(A1, text)
 
+    def test_an_agent_of_the_wrong_shape_gets_a_row_and_the_others_go_on(self) -> None:
+        self.agents = ["nope", {"title": "x"}, dict(agent(A1, "GB-Director: tidy"), title=7),
+                       dict(agent(A1, "GB-Director: tidy"), updated_at=True), agent(A2, "fix the login page")]
+        out = self.run_sweep()
+        self.assertEqual([r["error"] for r in out["rows"] if "error" in r], [
+            "invalid agent: the agent must be an object",
+            "invalid agent: session_id must be a non-empty string",
+            "invalid agent: title must be a string",
+            "invalid agent: updated_at must be a number or a string",
+        ])
+        self.assertEqual((out["invalid"], out["agents"]), (4, 1))
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A2])  # the one good agent is registered and steered
+        self.assertRegex(self.label(A2), r"^[A-Z]{2}$")
+
+    def test_one_agents_failure_does_not_stop_the_next(self) -> None:
+        class Boom(Steer):
+            def __call__(self, sid: str, text: str) -> str:
+                if sid == A1:
+                    raise RuntimeError("words from a title")
+                return super().__call__(sid, text)
+
+        self.steer = Boom()
+        out = self.run_sweep()
+        self.assertEqual(out["rows"][0]["error"], "failed (RuntimeError)")  # the type only, never the message
+        self.assertNotIn("words from a title", json.dumps(out))
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A2])
+        self.assertIn("label", out["rows"][1])
+
+    def test_a_secret_shaped_word_in_a_title_never_reaches_the_dm(self) -> None:
+        key = "ghp_" + "a1B2" * 9  # built here, so no key-shaped literal is in the file
+        self.steer = Steer("unavailable")
+        self.agents = [agent(A1, "GB-Director: rotate %s today" % key)]
+        self.run_sweep()
+        text = self.dm.calls[0][-1]
+        self.assertNotIn(key, text)
+        self.assertIn("rotate", text)
+        self.assertIn("today", text)
+        self.assertEqual(CCL.plain(key), "")
+
+    def test_a_key_that_one_mark_had_split_is_not_rejoined_into_the_dm(self) -> None:
+        # Taking the markup out of a title can join the halves of a key that one mark had split.  The values are
+        # built here, so no key-shaped literal is in the file.
+        whole = ("sk-" + "ant-" + "a1B2c3", "D4e5F6g7H8i9J0k1L2"), ("AK" + "IA", "ABCDEFGHIJKLMNOP")
+        self.steer = Steer("unavailable")
+        for n, (head, tail) in enumerate(whole):
+            self.assertTrue(PL.secretscan.scan(head + tail), n)  # the shape the scanner knows
+            for mark in "`*|\\[":
+                broken = head + mark + tail
+                self.assertEqual(CCL.plain("rotate %s today" % broken), "rotate today", (n, mark))
+                self.assertEqual(CCL.plain(broken), "", (n, mark))
+        self.agents = [agent(A1, "GB-Director: rotate %s`%s today" % whole[0])]
+        self.run_sweep()
+        text = self.dm.calls[0][-1]
+        self.assertNotIn(whole[0][0] + whole[0][1], text)
+        self.assertNotIn(whole[0][1], text)
+        self.assertIn('"GB-Director rotate today"', text)  # the words around it still go
+        # Words that hold no secret still go, with their marks taken out as before.
+        self.assertEqual(CCL.plain("fix `the` *login* page"), "fix the login page")
+
+    def test_a_title_that_reads_as_a_secret_is_in_no_steer_and_no_rename_title(self) -> None:
+        # The title goes into an instruction to the agent:  a title that reads as a secret, as a line or in one word,
+        # contributes no text at all (the values are built here, so no key-shaped literal is in the file).
+        key = "sk-" + "ant-" + "a1B2c3D4e5F6g7H8i9J0k1L2"
+        split = ("AK" + "IA", "ABCDEFGHIJKLMNOP")
+        for current in ("rotate %s today" % key, key, "%s%s" % split, "fix the login page %s" % split[0] + split[1]):
+            wanted = CCL.wanted_title("AB", current)
+            self.assertEqual(wanted, PL.compose("AB", ""), current[:8])
+            self.assertFalse(any(part in wanted for part in (key, split[1], "rotate", "login")))
+            prompt = CCL.rename_prompt(wanted, False)
+            self.assertFalse(PL.secretscan.scan(prompt))
+            self.assertFalse(any(part in prompt for part in (key, split[1])))
+        # A title with no secret in it is as before.
+        self.assertEqual(CCL.wanted_title("AB", "fix the login page"), "AB: fix the login page")
+        # End to end:  an agent whose title carries a key is steered with the letter and no text of its title.
+        self.steer = Steer("sent")
+        self.agents = [agent(A1, "rotate %s today" % key)]
+        self.run_sweep()
+        self.assertTrue(self.steer.calls)
+        self.assertFalse(any(key in text or split[1] in text for _, text in self.steer.calls))
+        self.assertFalse(any(PL.secretscan.scan(text) for _, text in self.steer.calls))
+
+    def test_a_bot_name_shaped_like_a_key_is_no_bots_name(self) -> None:
+        name = "GB-" + "aB3dE6gH" + "9jK2mN5p" + "Q8sT1vW4" + "yZ7bC0dF"  # 32 mixed-case letters and digits
+        self.assertTrue(PL.secretscan.scan(name))
+        self.assertEqual(CCL.bot_of(name + ": fix the login page"), ("", ""))
+        self.assertEqual(CCL.bot_of("GB-Director: fix the login page"), ("GB-Director", "fix the login page"))
+        self.steer = Steer("unavailable")
+        self.agents = [agent(A1, name + ": fix the login page")]
+        out = self.run_sweep()
+        row = out["rows"][0]
+        self.assertNotIn("bot", row)  # not in the printed row
+        self.assertNotIn("dm", row)
+        self.assertEqual(self.dm.calls, [])  # no DM, so no `--to` and no text carries it
+        self.assertNotIn(name, json.dumps(out))
+        self.assertNotIn(name, json.dumps(CCL.read_state(self.env)))
+
+    def test_a_state_that_cannot_be_saved_ends_the_run_before_anything_more_is_sent(self) -> None:
+        self.steer = Steer("unavailable")
+        self.agents = [agent(A1, "GB-Director: tidy the board"), agent(A2, "GB-Builder: fix the login page")]
+        real, writes = CCL.write_state, []
+
+        def failing_once(env, state):
+            writes.append(json.loads(json.dumps(state)))
+            if len(writes) == 1:
+                raise OSError("no space left on device")
+            return real(env, state)
+
+        with mock.patch.object(CCL, "write_state", failing_once), self.assertRaises(CCL.StateUnsaved) as stopped:
+            self.run_sweep()
+        self.assertEqual(str(stopped.exception), "OSError")  # the type only:  a message can hold a path
+        self.assertEqual(writes[0][A1]["dm"], "unknown")  # the write that failed was the one before the send
+        self.assertEqual(self.dm.calls, [])  # nothing was sent
+        self.assertEqual([sid for sid, _ in self.steer.calls], [A1])  # and the next agent was never reached
+        self.assertEqual(len(writes), 1)  # nor was the unsaved row written by a later save
+        self.assertNotIn("dm", CCL.read_state(self.env).get(A1, {}))
+        # The next run, with a disk that works, sends the DM:  nothing recorded it as sent.
+        out = self.run_sweep()
+        self.assertEqual([row.get("dm") for row in out["rows"]], ["sent", "sent"])
+        self.assertEqual([call[3] for call in self.dm.calls], ["GB-Director", "GB-Builder"])
+        self.assertEqual(CCL.read_state(self.env)[A1]["dm"], "sent")
+
+    def test_the_command_reports_an_unsaved_state_in_one_line(self) -> None:
+        with mock.patch.object(CCL, "sweep", side_effect=CCL.StateUnsaved("OSError")), \
+                mock.patch("builtins.print") as printed:
+            self.assertEqual(CCL.main(["sweep"]), 1)
+        self.assertEqual(json.loads(printed.call_args[0][0])["error"], "StateUnsaved")
+
+    def test_a_refused_dm_is_asked_again_and_is_final_after_three_refusals(self) -> None:
+        self.steer = Steer("unavailable")
+        self.dm = Fake(code=2, out="refused: unknown name GB-Director")
+        for n in (1, 2, 3):
+            self.assertEqual(self.run_sweep()["rows"][0]["dm"], "refused")
+            self.assertEqual(len(self.dm.calls), n)
+        self.assertNotIn("dm", self.run_sweep()["rows"][0])  # the fourth pass does not ask
+        self.assertEqual(len(self.dm.calls), 3)
+        self.assertEqual(CCL.read_state(self.env)[A1]["dm_refusals"], 3)
+
+    def test_a_run_that_dies_in_the_send_does_not_send_the_dm_again(self) -> None:
+        self.steer = Steer("unavailable")
+
+        def dies(argv, **kw):
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            CCL.sweep(self.env, discover=lambda: list(self.agents), runner=dies, steer=self.steer,
+                      transport=self.transport)
+        self.assertEqual(CCL.read_state(self.env)[A1]["dm"], "unknown")  # written before the send
+        self.run_sweep()
+        self.assertEqual(self.dm.calls, [])
+
+    def test_a_dm_that_could_not_start_is_not_remembered_and_is_tried_again(self) -> None:
+        self.steer = Steer("unavailable")
+
+        def missing(argv, **kw):
+            raise OSError("no such program")
+
+        out = CCL.sweep(self.env, discover=lambda: list(self.agents), runner=missing, steer=self.steer,
+                        transport=self.transport)
+        self.assertEqual(out["rows"][0]["dm"], "not-started")
+        self.assertNotIn("dm", CCL.read_state(self.env)[A1])
+        self.run_sweep()
+        self.assertEqual(len(self.dm.calls), 1)
+
     def test_a_gone_agent_is_forgotten(self) -> None:
         self.run_sweep()
         self.agents = [self.agents[1]]
@@ -236,9 +403,12 @@ class SharedUnitSweepTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.state = os.path.join(self.tmp.name, "state")
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
-        self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE"}
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner")).install()
+        self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
+        self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE",
+                    **self.assigner.env()}
         self.agents = [agent(A1, "GB-Director: tidy the board"), agent(A2, "fix the login page")]
         self.dm = Fake()
         self.sent: list[list[str]] = []
@@ -274,11 +444,12 @@ class SharedUnitSweepTests(unittest.TestCase):
 
     def test_api_only_with_no_registry_url_tries_no_other_route(self) -> None:
         with mock.patch.object(PL, "with_registry_env", side_effect=AssertionError("env file read")):
-            answer = CCL.register(self.env, agent(A1, "x"), runner=self.dm, now=0.0, remote="mac",
-                                  transport=None, api_only=True)
+            answer = CCL.register(
+                {"HOME": self.tmp.name, "AGENT_SEAT": "CLAUDE"}, agent(A1, "x"), now=0.0, transport=None, api_only=True
+            )
         self.assertEqual(answer["code"], "not_configured")
         self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", answer["error"])
-        self.assertEqual(self.dm.calls, [])  # no ssh hop
+        self.assertEqual(self.dm.calls, [])  # no ssh hop:  nothing ran
 
 
 class UnitRunTests(unittest.TestCase):
@@ -416,7 +587,8 @@ class UnitRunTests(unittest.TestCase):
         self.assertEqual(rows[A2]["error"], "the registry did not answer in time")
         self.assertNotIn("refused", rows[A2])
 
-    def test_api_only_and_remote_cannot_be_combined(self) -> None:
+    def test_the_ssh_route_is_gone(self) -> None:
+        # One assigner, reached through its API:  there is no --remote and no SESSION_LETTER_REMOTE to name another hop.
         with self.assertRaises(SystemExit), mock.patch("sys.stderr", io.StringIO()):
             CCL.main(["sweep", "--api-only", "--remote", "mac"])
 
