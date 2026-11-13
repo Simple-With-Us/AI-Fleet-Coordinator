@@ -98,11 +98,12 @@ class InstallTests(unittest.TestCase):
         again = self.run_install(str(self.checkout))
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("symlink already correct: %s" % link, again.stdout)
-        # A regular file at the link path is never overwritten.
+        # A regular file at the link path (the host's own) is never overwritten, and is said to be left as it is.
         link.unlink()
         link.write_text("mine")
         refused = self.run_install(str(self.checkout))
-        self.assertEqual(refused.returncode, 1)
+        self.assertEqual(refused.returncode, 0, refused.stderr)
+        self.assertIn("leaving %s as it is" % link, refused.stdout)
         self.assertEqual(link.read_text(), "mine")
 
     def test_a_relative_checkout_path_still_makes_an_absolute_link_that_works(self) -> None:
@@ -170,6 +171,47 @@ class InstallTests(unittest.TestCase):
         refused = self.run_install(str(self.checkout))
         self.assertEqual(refused.returncode, 1)
         self.assertEqual((bin_dir / "simple-chat").read_text(), "mine")
+
+    def test_the_hosts_own_platform_letter_wrapper_is_never_repointed_unless_forced(self) -> None:
+        # On the Mac that name is a link to a wrapper that sets the registry settings;  a link to the checkout's script has none.
+        shutil.copy(ENTRY, self.checkout / "scripts" / "platform-letter")
+        os.chmod(self.checkout / "scripts" / "platform-letter", 0o755)
+        bin_dir = self.home / ".local" / "bin"
+        libexec = self.home / ".local" / "libexec" / "simple-tools-hooks"
+        bin_dir.mkdir(parents=True)
+        libexec.mkdir(parents=True)
+        wrapper = libexec / "platform-letter"
+        wrapper.write_text("#!/bin/sh\nexec true\n")
+        wrapper.chmod(0o755)
+        (bin_dir / "platform-letter").symlink_to(wrapper)
+        for flags in (["--dry-run"], []):
+            result = self.run_install(*flags, str(self.checkout))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("leaving", result.stdout)
+            self.assertIn("--force-platform-letter", result.stdout)
+            self.assertNotIn("repoint %s" % (bin_dir / "platform-letter"), result.stdout)
+            self.assertEqual(os.readlink(bin_dir / "platform-letter"), str(wrapper))
+        # The other commands were still linked, and a rerun says the same one line.
+        self.assertEqual(os.readlink(bin_dir / "simple-chat"), str(self.checkout / "scripts" / "simple-chat"))
+        # A host's wrapper that is a plain script is the same:  it is also left, with no error.
+        (bin_dir / "platform-letter").unlink()
+        (bin_dir / "platform-letter").write_text("#!/bin/sh\nexec true\n")
+        result = self.run_install(str(self.checkout))
+        self.assertEqual((result.returncode, (bin_dir / "platform-letter").is_symlink()), (0, False))
+        self.assertIn("leaving", result.stdout)
+        (bin_dir / "platform-letter").unlink()
+        (bin_dir / "platform-letter").symlink_to(wrapper)
+        # Forced, it repoints.
+        forced = self.run_install("--force-platform-letter", str(self.checkout))
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertEqual(os.readlink(bin_dir / "platform-letter"), str(self.checkout / "scripts" / "platform-letter"))
+        # A link already at the checkout's script, and a dangling one, are ours:  no line, and the dangling one is repointed.
+        again = self.run_install(str(self.checkout))
+        self.assertNotIn("leaving", again.stdout)
+        (bin_dir / "platform-letter").unlink()
+        (bin_dir / "platform-letter").symlink_to(self.tmp / "gone")
+        self.assertEqual(self.run_install(str(self.checkout)).returncode, 0)
+        self.assertEqual(os.readlink(bin_dir / "platform-letter"), str(self.checkout / "scripts" / "platform-letter"))
 
     def test_missing_checkout_file_fails_without_touching_home(self) -> None:
         result = self.run_install(str(self.tmp / "nowhere"))

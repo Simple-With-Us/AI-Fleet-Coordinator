@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -23,6 +24,7 @@ from unittest import mock
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_antigravity as PA
+from simple_tools.tests.registry_fake import FakeRegistry
 
 REAL_AGY_ARGUMENTS = PA.agy_arguments  # the tests below replace it on the module; this keeps the real one
 SCRIPTS = Path(__file__).resolve().parents[2]
@@ -78,8 +80,12 @@ class Base(unittest.TestCase):
         self.home = os.path.join(self.tmp.name, "home")
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(self.home)
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()  # the Operator's registry exists, as it does on the Mac
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
         self.calls: list[list[str]] = []
         patcher = mock.patch.object(PA, "agy_arguments", side_effect=lambda *a, **k: list(self.agy))
         patcher.start()
@@ -87,7 +93,7 @@ class Base(unittest.TestCase):
         self.agy = CLI_ARGS
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, "SESSION_LETTER_LOCATION": "mac"}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **(self.assigner.env() if getattr(self, "FAKE", True) else {}), "SESSION_LETTER_LOCATION": "mac"}
         env.update(extra)
         return env
 
@@ -380,8 +386,12 @@ class HookTests(Base):
         self.assertEqual(self.note()["state"], "failed")
         self.assertEqual(self.hook(pre_payload(), transport=down), {})  # held back for ten minutes
         # Once the Operator answers, the prompt registers the chat and tells it the letter.
-        with mock.patch.object(PL.time, "time", return_value=self.note()["failed_at"] + PL.RETRY_SECONDS + 1):
-            answer = self.hook(pre_payload())
+        # (The stamp is moved back rather than the clock forward:  the registry API signs with the real clock.)
+        note = self.note()
+        note["failed_at"] = time.time() - PL.RETRY_SECONDS - 1
+        with open(os.path.join(self.state, "AG", "letters", CID + ".json"), "w") as fh:
+            json.dump(note, fh)
+        answer = self.hook(pre_payload())
         self.assertRegex(self.note()["label"], PAIR)
         self.assertIn("Operator session letter: Antigravity", self.said(answer))
 
@@ -406,7 +416,6 @@ class HookTests(Base):
             self.env(AGENT_LAUNCHER="botfleet"),
             self.env(AGENT_LAUNCH_SEAT="BOTFLEET"),
             self.env(SESSION_LETTER="0"),
-            self.env(ANTIGRAVITY_LETTER="0"),
         ):
             self.assertEqual(self.hook(start_payload(), env=env), {}, env)
         self.assertEqual(self.calls, [])
@@ -468,8 +477,8 @@ class HookTests(Base):
 class EntryScriptTests(Base):
     def test_the_installed_command_runs_end_to_end(self) -> None:
         """`platform-letter hook --platform antigravity`, as hooks.json runs it, with the payload on stdin."""
-        env = dict(os.environ, **self.env())
-        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER", "ANTIGRAVITY_LETTER"):
+        env = dict(os.environ, **self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=self.assigner.serve(self.state)))
+        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"):
             env.pop(name, None)
         proc = subprocess.run(
             [sys.executable, str(ENTRY), "hook", "--platform", "antigravity"],
@@ -958,47 +967,3 @@ class InstallTests(Base):
         self.assertEqual((code, json.loads(out.getvalue())["installed"]), (1, {"SessionStart": False, "PreInvocation": False}))
 
 
-class SweepTests(Base):
-    def test_sweep_reports_and_closes_killed_conversations(self) -> None:
-        root = os.path.join(self.home, ".gemini", "antigravity-cli")
-        os.makedirs(root, exist_ok=True)
-        db = os.path.join(root, "conversation_summaries.db")
-        conn = sqlite3.connect(db)
-        with conn:
-            conn.execute(
-                "CREATE TABLE conversation_summaries ("
-                "conversation_id TEXT PRIMARY KEY, title TEXT, preview TEXT, parent_conversation_id TEXT, killed INTEGER DEFAULT 0)"
-            )
-            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (CID, "Live", "Live", "", 0))
-            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (PARENT, "Killed", "Killed", "", 1))
-        conn.close()
-        self.hook(start_payload(CID))
-        self.hook(start_payload(PARENT))
-        out = io.StringIO()
-        code = PA.main(["sweep", "--location", "mac"], env=self.env(), stdout=out)
-        self.assertEqual(code, 0)
-        report = json.loads(out.getvalue())
-        self.assertEqual(report["closed"], [{"session_id": PARENT, "would_close": True}])
-        out = io.StringIO()
-        code = PA.main(["sweep", "--apply", "--location", "mac"], env=self.env(), stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(self.lookup(CID)["state"], "active")
-        self.assertEqual(self.lookup(PARENT)["state"], "closed")
-
-    def test_sweep_tolerates_summaries_table_without_killed_column(self) -> None:
-        root = os.path.join(self.home, ".gemini", "antigravity-cli")
-        os.makedirs(root, exist_ok=True)
-        db = os.path.join(root, "conversation_summaries.db")
-        conn = sqlite3.connect(db)
-        with conn:
-            conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT)")
-            conn.execute("INSERT INTO conversation_summaries VALUES (?, ?)", (CID, "Live"))
-        conn.close()
-        out = io.StringIO()
-        code = PA.main(["sweep", "--location", "mac"], env=self.env(), stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue())["found"], 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

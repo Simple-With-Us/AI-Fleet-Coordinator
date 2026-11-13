@@ -44,8 +44,9 @@ RECEIVER_PATH = "scripts/fleet-cli-release.py"
 # The 155th is simple_tools/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
 # dispatches for Muster's Seats panel.
 # The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
-# The 157th to 159th are the ZCode letter adapter, the ZC wake bridge and the ZC letter hook wrapper
-# (OPS-1048);  fleet-cli-release.py carries the same ledger.
+# The 157th and 158th are the ZCode letter adapter and the ZC wake bridge (OPS-1048).  The 159th, the ZC letter hook
+# wrapper, was deleted (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
+# fleet-cli-release.py carries the same ledger.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
 # simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
 # The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
