@@ -27,6 +27,10 @@ struct ServerListenerSettingsSection: View {
             Label(why, systemImage: "questionmark.circle")
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
         case .read?:
+            if let problem = store.refreshProblem {
+                Label("Refresh failed: \(problem)", systemImage: "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
             if store.allowlist == nil {
                 Text(store.allowlistProblem ?? "The settings types could not be read.")
                     .font(.callout).foregroundStyle(.orange)
@@ -36,7 +40,8 @@ struct ServerListenerSettingsSection: View {
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(group.rows) { row in
-                            ServerSettingRowView(row: row, draft: draftBinding(row), state: store.saveStates[row.id])
+                            ServerSettingRowView(row: row, draft: draftBinding(row), state: store.saveStates[row.id],
+                                removing: store.removalDrafts.contains(row.id), remove: { store.removeOverride(row.id) })
                         }
                     }.padding(.leading, 4)
                 } label: {
@@ -57,7 +62,8 @@ struct ServerListenerSettingsSection: View {
     }
 
     private func draftBinding(_ row: ServerSettingRow) -> Binding<String> {
-        Binding(get: { store.drafts[row.id] ?? row.editText }, set: { store.edit(row.id, text: $0) })
+        Binding(get: { store.removalDrafts.contains(row.id) ? "" : (store.drafts[row.id] ?? row.editText) },
+                set: { store.edit(row.id, text: $0) })
     }
 }
 
@@ -65,12 +71,20 @@ private struct ServerSettingRowView: View {
     let row: ServerSettingRow
     @Binding var draft: String
     let state: ServerSettingsSaveState?
+    let removing: Bool
+    let remove: () -> Void
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(row.title).font(.system(size: 11)).frame(width: 240, alignment: .leading)
             VStack(alignment: .leading, spacing: 3) {
                 control
+                if row.isLimit, !removing, row.current != nil || !draft.isEmpty {
+                    Button("Unset Limit", action: remove).buttonStyle(.link).font(.caption)
+                }
+                if removing {
+                    Text("Limit will be unset.").font(.caption).foregroundStyle(.secondary)
+                }
                 if let state { saveStatus(state) }
                 if let information = row.information {
                     Text(information).font(.caption).foregroundStyle(.secondary)
@@ -111,7 +125,7 @@ private struct ServerSettingRowView: View {
                 ForEach(values, id: \.self) { Text($0).tag($0) }
             }.labelsHidden().frame(width: 240)
         case .whole?, .number?, .text?:
-            TextField("Not set", text: $draft).textFieldStyle(.roundedBorder)
+            TextField(row.isLimit ? "No limit" : "Not set", text: $draft).textFieldStyle(.roundedBorder)
                 .font(.system(size: 11, design: .monospaced)).frame(width: 190)
         case .pairs?:
             ServerPresencePairsEditor(draft: $draft, channelNames: row.channelNames)
