@@ -13,7 +13,7 @@ description: >-
 
 This pack is for **MC** (Muse Code interactive terminal coding agent).  Session tag `[MC·session8]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>` (make one with `~/apps/lane new <app> <slug>`).  Distinct from Muse Assist (`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  `MC` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

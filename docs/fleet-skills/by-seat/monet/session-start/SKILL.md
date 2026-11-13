@@ -10,7 +10,7 @@ description: MONET is retired.  Do not start a Monet session.  Do not take wor
 
 This pack is for the retired **MONET** Claude account (owner 2026-10-07: the account and app are no longer used).  Historical session tag `[MONET·session8]`, with no Zulip bot.  Notes name `Monet`.  Branches `monet/<slug>` stay readable.  `CLAUDE` is the only Claude seat.  Do not take new work as MONET.
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

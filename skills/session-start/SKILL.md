@@ -8,7 +8,7 @@ description: >-
 
 This universal skill applies across all agent platforms and seats.  Identify your active seat (**AG**, **CURSOR**, **CODEX**, **GROK**, **CLAUDE**, **<YOUR_AGENT_TAG>**, **RENOIR**, **DSH**, **MM**, **FX**, or a Grok Bot `[GB-<NAME>]` role).  Terminal Grok and Grok Build are one seat, **GROK** (GROK-BUILD in any spelling is an alias, not a tag).  Use your own Zulip session tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-FIXER]`, `[DSH·session8]`, `[MM·session8]`), your seat's own bot and `<BOT>_ZULIP_*` names in Infisical Fleet-OPS `/zulip`, branch prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in Title Case).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

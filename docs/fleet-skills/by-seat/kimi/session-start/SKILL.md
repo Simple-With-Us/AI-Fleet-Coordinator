@@ -13,7 +13,7 @@ description: >-
 
 This pack is for **KIMI** (Moonshot AI Kimi Code CLI).  Session tag `[KIMI·session8]`.  Notes name `Kimi`.  Branches `kimi/<slug>` only.  Lanes `~/apps/lanes/<Repo>/kimi-<slug>`.  `KIMI` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

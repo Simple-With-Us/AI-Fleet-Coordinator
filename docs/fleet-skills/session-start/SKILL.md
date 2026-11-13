@@ -8,7 +8,7 @@ description: >-
 
 This pack is for the **MONET** Claude account.  Session tag `[MONET·session8]`.  Notes name `Monet`.  Branches `monet/<slug>` only.
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 CLAUDE and MONET are two different Claude accounts.  Local `~/.claude` (hooks, memory, skills) is shared.  The worktree folder is **not** a seat signal.  Pin `AGENT_SEAT=MONET`.  If the owner did not name Monet and the worktree is anonymous, **ask** — do not default to CLAUDE.  Incident: 2026-07-05 CLAUDE↔MONET ping-pong from inferred seats.
 

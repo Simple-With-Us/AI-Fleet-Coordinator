@@ -10,7 +10,7 @@ description: RENOIR is retired.  Do not start a Renoir session.  Do not take w
 
 This pack is for the retired **RENOIR** seat (the seat never opened; owner 2026-10-07).  Notes name `Renoir`.  Branches `renoir/<slug>` stay readable.  Renoir is not Monet and not Claude.  `CLAUDE` is the only Claude seat.  Do not take fleet work as RENOIR.
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

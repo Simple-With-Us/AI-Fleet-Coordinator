@@ -13,7 +13,7 @@ description: >-
 
 This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` (historical `muse/<slug>`).  No Mac lane (cloud VM): use your durable VM checkout, one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run `~/apps/lane`.  Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly distinguish from Muse Code (`[MC]`).  `MA` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 
