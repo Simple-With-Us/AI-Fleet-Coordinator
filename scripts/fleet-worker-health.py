@@ -86,9 +86,7 @@ def read_key(env=None, reader=None):
         return ""
     try:
         fetch = reader if reader is not None else _shared_client().fetch_project
-        values = fetch(
-            project, "/", {}, token=token, names=(SECRET_NAME,), timeout=READ_TIMEOUT
-        )
+        values = fetch(project, "/", {}, token=token, names=(SECRET_NAME,), timeout=READ_TIMEOUT)
         value = values.get(SECRET_NAME)
         return value.strip() if isinstance(value, str) else ""
     except Exception:
