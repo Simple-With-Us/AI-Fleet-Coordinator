@@ -5,7 +5,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 import fleet_infisical
 from fleet_knobs.tests._fake import ScopedReadAPI
@@ -59,6 +61,106 @@ print(json.dumps(source.fetch({'OPERATOR_API_URL'})))
                         )
                         self.assertEqual(len(api.requests), 2)
                     self.assertNotIn(api.token, proc.stdout + proc.stderr)
+
+
+class NamesOnlyTests(unittest.TestCase):
+    def setUp(self):
+        self.project, self.path = "fixture-project", "/zulip"
+        self.token = "st." + "fixture" * 8
+        self.env = {}
+        self.metadata = {
+            "workspace": self.project,
+            "scopes": [{"environment": "prod", "secretPath": self.path}],
+            "permissions": ["read"],
+            "expiresAt": None,
+        }
+        self.records = [self.record("B_KEY"), self.record("A_KEY")]
+
+    def record(self, name, **extra):
+        return {
+            "secretKey": name,
+            "secretValueHidden": True,
+            "workspace": self.project,
+            "environment": "prod",
+            "secretPath": self.path,
+            "type": "shared",
+            **extra,
+        }
+
+    def listing(self, responses=None):
+        responses = responses or [(200, self.metadata), (200, {"secrets": self.records})]
+        with mock.patch.object(fleet_infisical, "_api_json", side_effect=responses) as api:
+            result = fleet_infisical.list_project_names(
+                self.project, self.path, self.env, token=self.token, timeout=2.0
+            )
+        return result, api.call_args_list
+
+    def test_names_only_query_shares_transport_provenance_and_one_deadline(self):
+        result, calls = self.listing()
+        self.assertEqual(result, ("A_KEY", "B_KEY"))
+        self.assertEqual(calls[0].args[:2], ("GET", "/v2/service-token"))
+        parsed = urllib.parse.urlsplit(calls[1].args[1])
+        self.assertEqual(parsed.path, "/v3/secrets/raw")
+        self.assertEqual(
+            urllib.parse.parse_qs(parsed.query),
+            {
+                "workspaceId": [self.project],
+                "environment": ["prod"],
+                "secretPath": [self.path],
+                "viewSecretValue": ["false"],
+                "expandSecretReferences": ["false"],
+                "recursive": ["false"],
+                "include_imports": ["false"],
+            },
+        )
+        self.assertEqual(calls[0].kwargs["deadline"], calls[1].kwargs["deadline"])
+        self.assertNotIn("secretValue", repr(result))
+
+    def test_values_duplicates_and_foreign_record_provenance_fail_closed(self):
+        for change in (
+            {"secretValue": "unexpected-value"},
+            {"workspace": "foreign-project"},
+            {"environment": "dev"},
+            {"secretPath": "/other"},
+            {"type": "personal"},
+            {"secretKey": "bad name"},
+            {"secretKey": "A_KEY"},
+        ):
+            with self.subTest(change=change):
+                self.records[0] = self.record("B_KEY", **change)
+                with self.assertRaises(fleet_infisical.SecretsError) as caught:
+                    self.listing()
+                self.assertNotIn("unexpected-value", str(caught.exception))
+
+    def test_ambient_multifolder_and_writer_grants_never_reach_values(self):
+        for wider in ("folder", "writer"):
+            with self.subTest(wider=wider):
+                metadata = dict(self.metadata)
+                self.env[fleet_infisical.ENV_READ_PATHS] = "/zulip,/other"
+                if wider == "folder":
+                    metadata["scopes"] = self.metadata["scopes"] + [
+                        {"environment": "prod", "secretPath": "/other"}
+                    ]
+                else:
+                    metadata["permissions"] = ["read", "write"]
+                with mock.patch.object(
+                    fleet_infisical, "_api_json", return_value=(200, metadata)
+                ) as api:
+                    with self.assertRaises(fleet_infisical.SecretsError):
+                        fleet_infisical.list_project_names(
+                            self.project, self.path, self.env, token=self.token
+                        )
+                self.assertEqual(api.call_count, 1)
+
+    def test_bad_binding_and_nonprod_fail_before_network(self):
+        for token, env in (("invalid", {}), (self.token, {"INFISICAL_ENVIRONMENT": "dev"})):
+            with self.subTest(binding=token == self.token):
+                with mock.patch.object(fleet_infisical, "_api_json") as api:
+                    with self.assertRaises(fleet_infisical.SecretsError):
+                        fleet_infisical.list_project_names(
+                            self.project, self.path, env, token=token
+                        )
+                api.assert_not_called()
 
 
 if __name__ == "__main__":
