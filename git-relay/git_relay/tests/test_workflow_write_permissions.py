@@ -422,7 +422,12 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_added_workflow_file(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        added = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
+        added = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(files, head_rows=[added])
         handle.run("wf_update_branch", args)
         self.assertEqual(len(minter.calls), 2)
@@ -431,7 +436,12 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_removed_workflow_file(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        removed = {"type": "blob", "path": ".github/workflows/old.yml", "sha": "3" * 40, "mode": "100644"}
+        removed = {
+            "type": "blob",
+            "path": ".github/workflows/old.yml",
+            "sha": "3" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(files, base_rows=[removed])
         handle.run("wf_update_branch", args)
         self.assertEqual(len(minter.calls), 2)
@@ -439,8 +449,18 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_changed_workflow_blob(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
-        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "3" * 40, "mode": "100644"}
+        head_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
+        base_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "3" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(
             files, head_rows=[head_row], base_rows=[base_row]
         )
@@ -509,8 +529,18 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_mode_only_workflow_change(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        head_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100755"}
-        base_row = {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"}
+        head_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100755",
+        }
+        base_row = {
+            "type": "blob",
+            "path": ".github/workflows/ci.yml",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
         client, minter, handle, args = self.update_branch_trees(
             files, head_rows=[head_row], base_rows=[base_row]
         )
@@ -544,7 +574,12 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_accepts_git_paths_with_spaces(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        spaced = {"type": "blob", "path": "dir with spaces/f ile.py", "sha": "2" * 40, "mode": "100644"}
+        spaced = {
+            "type": "blob",
+            "path": "dir with spaces/f ile.py",
+            "sha": "2" * 40,
+            "mode": "100644",
+        }
         spaced["path"] = "dir with spaces/f\u00e9le.py"
         client, minter, handle, args = self.update_branch_trees(files, head_rows=[spaced])
         handle.run("wf_update_branch", args)
@@ -554,8 +589,18 @@ class WorkflowPrElevation(unittest.TestCase):
 
     def test_update_branch_trees_fallback_detects_workflow_gitlink_change(self):
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
-        head_row = {"type": "commit", "path": ".github/workflows/sub", "sha": "2" * 40, "mode": "160000"}
-        base_row = {"type": "commit", "path": ".github/workflows/sub", "sha": "3" * 40, "mode": "160000"}
+        head_row = {
+            "type": "commit",
+            "path": ".github/workflows/sub",
+            "sha": "2" * 40,
+            "mode": "160000",
+        }
+        base_row = {
+            "type": "commit",
+            "path": ".github/workflows/sub",
+            "sha": "3" * 40,
+            "mode": "160000",
+        }
         client, minter, handle, args = self.update_branch_trees(
             files, head_rows=[head_row], base_rows=[base_row]
         )
@@ -743,7 +788,12 @@ class WorkflowPrElevation(unittest.TestCase):
             "truncated": False,
             "tree": [
                 {"type": "blob", "path": "src/a.py", "sha": "1" * 40, "mode": "100644"},
-                {"type": "blob", "path": ".github/workflows/ci.yml", "sha": "2" * 40, "mode": "100644"},
+                {
+                    "type": "blob",
+                    "path": ".github/workflows/ci.yml",
+                    "sha": "2" * 40,
+                    "mode": "100644",
+                },
             ],
         }
         base_tree = {
@@ -753,15 +803,18 @@ class WorkflowPrElevation(unittest.TestCase):
         }
         head_commit = {"sha": SHA, "tree": {"sha": "c" * 40}}
         base_commit = {"sha": "b" * 40, "tree": {"sha": "d" * 40}}
-        minter, client = Minter(), Big(
-            pr,
-            {"object": {"sha": "b" * 40}},
-            head_commit,
-            head_tree,
-            base_commit,
-            base_tree,
-            {"object": {"sha": "b" * 40}},
-            {"message": "ok"},
+        minter, client = (
+            Minter(),
+            Big(
+                pr,
+                {"object": {"sha": "b" * 40}},
+                head_commit,
+                head_tree,
+                base_commit,
+                base_tree,
+                {"object": {"sha": "b" * 40}},
+                {"message": "ok"},
+            ),
         )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
@@ -797,15 +850,18 @@ class WorkflowPrElevation(unittest.TestCase):
         }
         head_commit = {"sha": SHA, "tree": {"sha": "c" * 40}}
         base_commit = {"sha": "b" * 40, "tree": {"sha": "c" * 40}}
-        minter, client = Minter(), Big(
-            pr,
-            {"object": {"sha": "b" * 40}},
-            head_commit,
-            tree,
-            base_commit,
-            tree,
-            {"object": {"sha": "b" * 40}},
-            {"message": "ok"},
+        minter, client = (
+            Minter(),
+            Big(
+                pr,
+                {"object": {"sha": "b" * 40}},
+                head_commit,
+                tree,
+                base_commit,
+                tree,
+                {"object": {"sha": "b" * 40}},
+                {"message": "ok"},
+            ),
         )
         args = {"repo": REPO, "number": 7, "expected_head_sha": SHA}
         handle = WorkflowVerbs.for_action(
