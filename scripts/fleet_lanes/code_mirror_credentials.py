@@ -1,10 +1,10 @@
 """Bind only the existing read-only Code mirror settings credential during a fetch."""
-from contextlib import contextmanager
 import os
-from pathlib import Path
 import stat
 import subprocess
 import sys
+from contextlib import contextmanager
+from pathlib import Path
 
 NAME = "code-mirrors-settings-read"
 ENV = "FLEET_KNOBS_INFISICAL_TOKEN"

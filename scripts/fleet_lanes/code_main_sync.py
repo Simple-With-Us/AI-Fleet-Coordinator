@@ -28,6 +28,7 @@ clone that should have moved did not.  Python 3.9 safe.  Tests: fleet_lanes/test
 from __future__ import annotations
 
 import sys
+
 sys.dont_write_bytecode = True
 
 import argparse
@@ -539,6 +540,7 @@ def write_sync_stamp(env: Mapping[str, str], exit_code: int, now: float | None =
 def read_interval() -> int:
     """Read the shared interval from Infisical or its verified last-known-good copy."""
     from fleet_knobs import knobs
+
     from fleet_lanes.code_mirror_credentials import settings_read_binding
     with settings_read_binding():
         knobs.refresh()

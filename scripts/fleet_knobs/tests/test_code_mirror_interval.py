@@ -1,8 +1,9 @@
 """The shared mirror interval stays bounded and in its narrow consumer folder."""
+
 import unittest
 
 from fleet_knobs import values
-from fleet_knobs.registry import spec_for, names_in
+from fleet_knobs.registry import names_in, spec_for
 
 
 class CodeMirrorIntervalTests(unittest.TestCase):
