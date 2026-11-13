@@ -610,7 +610,8 @@ def rename_thread(
 
 # The repair pass (`repair_unlettered`) scans for threads still showing the "??: " placeholder:  at most this
 # many, only chats old enough that their own start hook has finished (a brand-new chat's "??" can be its start in
-# flight), and none older than a week (an ancient "??" chat is history, not a repair).
+# flight), never an archived one (an archived chat is put away, not lost), and none older than a week (an ancient
+# "??" chat is history, not a repair).
 UNLETTERED_SCAN = 20
 UNLETTERED_MIN_AGE_SECONDS = 900
 UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
@@ -634,7 +635,7 @@ def codex_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     try:
         try:
             rows = conn.execute(
-                "SELECT id FROM threads WHERE name LIKE '??: %' AND created_at >= ? AND created_at <= ?"
+                "SELECT id FROM threads WHERE name LIKE '??: %' AND archived = 0 AND created_at >= ? AND created_at <= ?"
                 " ORDER BY created_at DESC LIMIT ?",
                 (
                     now - UNLETTERED_MAX_AGE_SECONDS,
