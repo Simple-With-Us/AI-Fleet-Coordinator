@@ -39,7 +39,7 @@ import * as state from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { classifyPath } from "../src/policy.js";
 import { ChannelSet } from "../src/channels.js";
-import { testEnv } from "./helpers.mjs";
+import { testEnv, SYNTHETIC_STREAM_ID } from "./helpers.mjs";
 
 // Synthetic test values, not credentials:  a whsec_ secret of 32 bytes of 7s, and HMAC keys of
 // repeated letters.  The golden run below must use exactly these to match origin/main.
@@ -48,7 +48,7 @@ const CALLBACK = "https://chatgpt.com/backend-api/mcp-events/callback_123";
 const SPIKE_CALLBACK = "https://chatgpt.com/backend-api/mcp-events/callback_spike";
 const configOff = loadConfig(testEnv());
 const configOn = loadConfig(testEnv({ SPIKE_EXTRA_EVENTS: "on" }));
-const allowed = new ChannelSet([{ stream_id: 642232, name: "work-in-progress", invite_only: false }]);
+const allowed = new ChannelSet([{ stream_id: SYNTHETIC_STREAM_ID, name: "work-in-progress", invite_only: false }]);
 const channels = async () => allowed;
 const SPIKE_KEY = "a".repeat(64);
 const WAKE_KEY = "b".repeat(64);
@@ -96,7 +96,7 @@ const SUB = (name = EVENT_NAME, url = CALLBACK, extra = {}) => ({ name, argument
 
 function goldenWake() {
   return {
-    contract: "simple-tools-wake/1", seat: "JET", wake_id: "w-golden", message_id: 77, dm: false, channel: "work-in-progress", topic: "t", stream_id: 642232,
+    contract: "simple-tools-wake/1", seat: "JET", wake_id: "w-golden", message_id: 77, dm: false, channel: "work-in-progress", topic: "t", stream_id: SYNTHETIC_STREAM_ID,
     sender_full_name: "Jay", sender_user_id: 1211974, is_bot: false, owner: true, excerpt: "<<<x>>>",
     zulip_link: "https://simplewithus.zulipchat.com/#narrow/near/77", reply_to: { type: "stream", channel: "work-in-progress", topic: "t" }, sent_at: 1792000000,
   };

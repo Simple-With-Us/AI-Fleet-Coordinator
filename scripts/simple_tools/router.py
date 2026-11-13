@@ -114,7 +114,7 @@ OWNER_TOPIC_PREFIX = "owner "
 _RESOLVED_MARKS = ("\u2714\ufe0f", "\u2714")
 # The notifier's directed note (`simple-chat --as CLAUDE --session needsown post --to SEAT`) is tagged `[CLAUDE\u00b7needsown\u2192SEAT]`.
 NOTE_SENDER_SEAT = "CLAUDE"
-_NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown(?:\u2192|->)")
+_NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown\s*(?:\u2192|->)\s*")
 
 #: The no-wake marker (owner ask, relayed by Jet on 2026-10-21, Zulip 633790364):  a leading
 #: eyes emoji on a message means "never wake anyone".  The message stays readable in Zulip, and
@@ -134,7 +134,7 @@ _SEAT_TAG_PREFIX_RE = re.compile(
     r"(?:"
     r"(?P<session>\u00b7[^\]]*?)(?:\u2192[^\]]*)?\]"
     r"|"
-    r"(?:\u2192[^\]]*)?\]"
+    r"(?:\s*\u2192[^\]]*)?\]"
     r"|"
     r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?\s+📁[^\]]*\]"
     r")"
@@ -149,7 +149,7 @@ _COMPACT_INTRO_RE = re.compile(
     r"\s+📁(?P<after>[^\]]*)\]"
 )
 _FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t")
+_SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t", "\u200a")
 
 # Reply wakes.  A loud mention:  `@**Name**`, `@**Name|id**` or a user group `@*group*`.  A silent one
 # (`@_**Name**`) has the underscore between the at sign and the stars, so it matches neither pattern.

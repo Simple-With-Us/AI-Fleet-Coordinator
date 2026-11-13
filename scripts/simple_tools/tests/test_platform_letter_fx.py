@@ -22,6 +22,7 @@ from simple_tools import listener_registry as RG
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_fx as FX
+from simple_tools.tests.registry_fake import FakeRegistry
 
 PAIR = r"^[A-Z]{2}$"
 
@@ -37,13 +38,17 @@ class Base(unittest.TestCase):
         self.home = os.path.join(self.tmp.name, "home")
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(self.home)
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
         self.sessions = os.path.join(self.home, ".fx", "sessions")
         os.makedirs(self.sessions)
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **(self.assigner.env() if getattr(self, "FAKE", True) else {})}
         env.update(extra)
         return env
 
@@ -111,7 +116,7 @@ class FxTests(Base):
         self.add_session(sid, title="Old work", updated=time.time() - 1000)
         self.sync("--apply", now=time.time())
         self.assertIsNotNone(self.lookup(sid))
-        answer = self.sync("--apply", now=time.time() + PL.STALE_SECONDS + 60)
+        answer = self.sync("--apply", now=time.time() + FX.LIVE_SECONDS + 60)
         self.assertEqual(answer["closed"], [sid])
         self.assertEqual(self.lookup(sid)["state"], "closed")
 
@@ -135,7 +140,7 @@ class FxTests(Base):
         self.sync("--apply")
         with open(os.path.join(self.sessions, sid, "session.json"), "w") as fh:
             json.dump({"title": "Live"}, fh)
-        answer = self.sync("--apply", now=time.time() + PL.STALE_SECONDS + 60)
+        answer = self.sync("--apply", now=time.time() + FX.LIVE_SECONDS + 60)
         self.assertEqual(answer["closed"], [])
         self.assertEqual(self.lookup(sid)["state"], "active")
         fresh = conv(27)
@@ -161,7 +166,7 @@ class FxTests(Base):
         with mock.patch.object(OR, "check_seat_platform", lambda *_: None):
             code = PL.registry_main(argv + ["--seat", "OPERATOR", "--source", "test"], env=self.env(), stdout=out)
         self.assertEqual(code, 0, out.getvalue())
-        answer = self.sync("--apply", now=time.time() + PL.STALE_SECONDS + 60)
+        answer = self.sync("--apply", now=time.time() + FX.LIVE_SECONDS + 60)
         self.assertEqual(answer["closed"], [])
         self.assertEqual(self.lookup(sid)["state"], "active")
 
@@ -174,6 +179,7 @@ class FxTests(Base):
 
 
 class FxApiTests(Base):
+    FAKE = False  # a real listener on loopback answers here
     def test_sync_registers_through_the_registry_api(self) -> None:
         key = secrets.token_hex(24)
         service = RG.RegistryService(self.db, {"OPERATOR": key})

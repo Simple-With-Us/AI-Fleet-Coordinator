@@ -378,6 +378,22 @@ class LeaseRoutingTests(unittest.TestCase):
         c, d = R.route(msg(sender=10, content="[CLAUDE·aaaa1111 📁OPS] status"), ME, ctx(), [own, sibling])
         self.assertEqual(d.lease_items, [("other", "passive", "sibling")])
 
+    def test_lettered_post_uses_private_posted_ids_and_delivers_only_to_sibling(self) -> None:
+        from simple_tools.post_header import normalize_header
+
+        content = normalize_header("[CLAUDE: HH.1.M 📁OPS → CODEX EE, AG] working")
+        own = lease("own", topics=[("simple-tools", "t")], posted=[500], prefix="[CLAUDE·aaaa1111")
+        sibling = lease("other", topics=[("simple-tools", "t")], prefix="[CLAUDE·bbbb2222")
+        message = msg(sender=10, content=content, mid=500)
+        self.assertNotIn("·", content)
+        self.assertTrue(own.posted_this(message))
+        self.assertFalse(sibling.posted_this(message))
+        classified, decision = R.route(message, ME, ctx(), [own, sibling])
+        self.assertTrue(classified.own)
+        self.assertEqual(decision.lease_items, [("other", "passive", "sibling")])
+        self.assertFalse(decision.seat_inbox)
+        self.assertIsNone(decision.wake)
+
     def test_own_posts_go_to_sibling_leases_only(self) -> None:
         poster = lease("A", topics=[("simple-tools", "t")], posted=[500])
         tagged = lease("B", topics=[("simple-tools", "t")], prefix="[CLAUDE·aaaa1111")
@@ -672,6 +688,25 @@ class OwnerTopicTests(unittest.TestCase):
         tagged_arrow = NOTE.replace("\u2192", "->")
         self.assertEqual(self.route(msg(sender=10, content=tagged_arrow, flags=MENTION_CODEX, topic=OWNER_TOPIC,
                                         email="claude-bot@zulip.test"), me=CODEX_ME)[1].wake, "peer")
+
+    def test_actual_formatted_note_keeps_owner_topic_notification_eligible(self) -> None:
+        from types import SimpleNamespace
+        from simple_tools import cli
+
+        agent = SimpleNamespace(seat="CLAUDE", tag_prefix="[CLAUDE·needsown")
+        for arrow in ("→", "->"):
+            legacy = NOTE.replace("→", arrow)
+            formatted = cli._compose(agent, legacy, labels=["CODEX"], mentions=[], no_tag=False)
+            self.assertTrue(formatted.startswith("[CLAUDE·needsown → CODEX]"))
+            for content in (legacy, formatted):
+                with self.subTest(content=content):
+                    note = msg(sender=10, content=content, flags=MENTION_CODEX, topic=OWNER_TOPIC,
+                               email="claude-bot@zulip.test")
+                    classified, decision = self.route(note, me=CODEX_ME)
+                    self.assertTrue(classified.owner_note and classified.eligible)
+                    self.assertFalse(classified.owner_topic_peer)
+                    self.assertEqual((decision.seat_inbox, decision.wake, decision.wake_block),
+                                     (True, "peer", None))
 
     def test_the_note_needs_claudes_bot_and_the_notifiers_tag(self) -> None:
         # Another seat's bot copying the notifier's tag.

@@ -71,6 +71,7 @@ class FakeRegistry:
         #: Every request served, as (method, path with query), in order.
         self.requests: list[tuple[str, str]] = []
         self._saved: tuple[Any, Any] | None = None
+        self._servers: list[Any] = []
 
     # ---- the client's view ------------------------------------------------
 
@@ -93,6 +94,17 @@ class FakeRegistry:
             return reg.lookup(platform, location, scope, session_id)
         finally:
             reg.close_db()
+
+    def serve(self, state_dir: str) -> str:
+        """The same store behind a real listener on loopback, for a test that runs the client in a subprocess (the
+        patched seam reaches only this process).  Answers the base URL;  uninstall() stops the listener."""
+        from simple_tools import listener_api as API
+
+        server = API.ListenerReadApi("127.0.0.1", 0, state_dir, {}, registry=self.service)
+        server.start()
+        self._servers.append(server)
+        host, port = server.address
+        return "http://%s:%d" % (host, port)
 
     # ---- install --------------------------------------------------------------
 
@@ -123,6 +135,8 @@ class FakeRegistry:
         return self
 
     def uninstall(self) -> None:
+        while self._servers:
+            self._servers.pop().close()
         if self._saved is not None:
             registry_api._open, registry_api._knob_value = self._saved  # type: ignore[assignment]
             self._saved = None

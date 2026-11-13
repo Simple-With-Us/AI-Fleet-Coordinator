@@ -636,6 +636,18 @@ class DirectRunnerTests(unittest.TestCase):
         )  # AGENT_SEAT is the verified identity;  no Zulip or Operator key
         self.assertEqual((env["AGENT_SEAT"], env["AGENT_NOTES_CALLER"], env["AGENT_NOTES_REQUEST_ID"]), ("CLAUDE", "cli", RID))
 
+    def test_the_summary_tuning_knobs_reach_the_script(self) -> None:
+        run = FakeRun()
+        env = dict(
+            self.ENV,
+            APPLE_NOTES_SUMMARY_MIN_BODY_CHARS="1200",
+            APPLE_NOTES_SUMMARY_MAX_PCT="15",
+        )
+        N.run_direct(request(flags={"pin": False}), self.SCRIPT, env=env, runner=run)
+        child = run.calls[0]["env"]
+        self.assertEqual(child["APPLE_NOTES_SUMMARY_MIN_BODY_CHARS"], "1200")
+        self.assertEqual(child["APPLE_NOTES_SUMMARY_MAX_PCT"], "15")
+
     def test_a_runner_write_names_the_requester_and_carries_one_provenance_line(self):
         run = FakeRun()
         self.run_direct(request("update", title=MASTER, markdown="Body text."), run, caller="runner", requester="CODEX")
