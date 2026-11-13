@@ -399,7 +399,9 @@ def library_documents(
                         try:
                             rendered = text_from_bytes(data, Path(source).suffix)
                         except DocumentTooLarge:
-                            warn("doc: unreadable-or-excluded generated visible text above bounded size cap")
+                            warn(
+                                "doc: unreadable-or-excluded generated visible text above bounded size cap"
+                            )
                             continue
                         except ValueError:
                             if Path(source).suffix.casefold() == ".pdf":
