@@ -426,7 +426,7 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 4. **Second body line:** local create/update stamp + optional PR #, e.g.  `Sun, Aug 9, 3:52pm · PR #18`
    (refresh on every material update; pass `--pr "18"` to helper).  Helper auto-injects/preserves this.
 5. **Helper:** `/Users/jay/apps/apple-notes-coding.sh "Title" "body"`  
-   (supports `--html path`, `--update`, `--pr "18"`, `--notify` for instant Pushover alerts, `--needs-owner` for amber review banners, and `--summary "text"` for mobile quick view).  
+   (supports `--html path`, `--update`, `--pr "18"`, `--notify` for instant Pushover alerts, `--needs-owner` for amber review banners, and `--summary "text"` for an optional, readable `Summary:` block at the top - long notes only, up to 4-5 sentences of real context beyond the title, never a restatement of it; the helper drops a summary on a note under 800 characters of body text (`APPLE_NOTES_SUMMARY_MIN_BODY_CHARS` adjusts the floor) or one over 20% of the note length (`APPLE_NOTES_SUMMARY_MAX_PCT` adjusts it)).  
    Fleet-coordinator copy: `scripts/apple-notes-coding.sh`.  Converts MD → HTML (Notes does not render raw markdown).
    Prefer `--html` with `<div><br></div>` after every heading and paragraph and between every bullet (owner 2026-08-21 — Notes collapses adjacent blocks).  The MD path now emits those spacers for blank lines and consecutive list items.
 6. **Pin / Unpin Keyboard & Headless Shortcuts:**
