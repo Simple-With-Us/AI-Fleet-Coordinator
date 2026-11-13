@@ -91,7 +91,9 @@ class StopHookTests(HookBase):
         self.assertEqual(out["decision"], "block")
         self.assertTrue(out["reason"].startswith(REASON_START))
         self.assertIn("recall_contribute", out["reason"])
-        self.assertIn("'no lesson'", out["reason"])
+        self.assertIn("search for duplicates", out["reason"])
+        self.assertIn("finish without filler or a public declaration", out["reason"])
+        self.assertNotIn("reply with", out["reason"])
         marker = self.state / "hook-nudged" / "sess-1"
         self.assertTrue(marker.is_file())
         self.assertEqual(json.loads(marker.read_text())["tool_uses"], 30)

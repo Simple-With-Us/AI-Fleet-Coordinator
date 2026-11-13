@@ -25,6 +25,20 @@ from unittest import mock
 from fleet_lanes import install_rules as IR
 from fleet_lanes import layout as L
 
+class EveryTurnRecallPolicy(unittest.TestCase):
+    def test_all_instruction_variants_include_shared_recall_contract(self):
+        shared = (IR.RULES_DIR / 'fleet-recall.md').read_text().strip()
+        for platform in IR.PLATFORMS:
+            if platform.variant is None:
+                continue
+            with self.subTest(platform=platform.name):
+                body = IR.body_text(platform.variant)
+                self.assertIn(shared, body)
+                self.assertNotIn('{{FLEET_RECALL}}', body)
+                self.assertIn('including continuations and mechanical tasks', body)
+                self.assertIn('At the end of every turn', body)
+                self.assertIn('otherwise add nothing', body)
+
 _APPS = [
     ("Socratic-Trade", "ST", "trading", "Socratic-Trade"),
     ("Congress.Trade", "CT", "congress", "Congress.Trade"),
@@ -194,10 +208,10 @@ class TemplateTests(unittest.TestCase):
                 self.assertEqual(lines[-1], "<!-- fleet-lane-map:end -->")
                 self.assertEqual(IR.block_text(variant), "\n".join(lines) + "\n")
 
-    def test_minimal_variant_is_three_lines(self) -> None:
-        body = IR.body_text("minimal").split("\n")
-        self.assertEqual(len(body), 3)
-        self.assertTrue(all(body))
+    def test_minimal_variant_keeps_three_lane_lines_and_shared_recall(self) -> None:
+        body = IR.body_text("minimal").split("\n\n", 1)
+        self.assertEqual(len(body[0].splitlines()), 3)
+        self.assertIn('## Fleet Recall At Every Turn', body[1])
 
     def test_cursor_frontmatter_comes_first_and_body_matches_full(self) -> None:
         fm = IR.frontmatter_lines("cursor")
@@ -633,7 +647,7 @@ class PlanTests(HomeCase):
 
     def test_codex_size_warning_and_cap(self) -> None:
         fill = "x" * 79 + "\n"
-        near = fill * 380                                   # 30,400 bytes: new size passes 30 KiB
+        near = "x" * (IR.CODEX_WARN + 100 - len(IR.block_text("full").encode("utf-8")))
         self.write(".codex/AGENTS.md", near)
         entry = IR.build_entry(IR.PLATFORM_BY_NAME["codex"], self.home, registry=REGISTRY)
         self.assertEqual(entry.status, "ok")
@@ -994,7 +1008,8 @@ class ApplyTests(HomeCase):
         self.assertEqual(snapshot(self.home), before)
 
     def test_codex_warning_is_printed_by_a_successful_apply(self) -> None:
-        self.write(".codex/AGENTS.md", ("x" * 79 + "\n") * 380)
+        block_size = len(IR.block_text("full").encode("utf-8"))
+        self.write(".codex/AGENTS.md", "x" * (IR.CODEX_WARN + 100 - block_size))
         code, out, _ = self.run_cli("apply", "codex")
         self.assertEqual(code, IR.EXIT_OK)
         self.assertIn("warning:", out)
@@ -1253,7 +1268,7 @@ class FleetBasicsTests(HomeCase):
         self.assertIn("65536-byte cap", out)
 
     def test_clutch_block_is_small(self) -> None:
-        self.assertLess(len(IR.block_text("clutch").encode("utf-8")), 8 * 1024,
+        self.assertLess(len(IR.block_text("clutch").encode("utf-8")), 10 * 1024,
                         "the engine drops the broadest file first when the 64 KiB baseline fills")
 
     def test_copilot_prints_its_unverified_caveat(self) -> None:

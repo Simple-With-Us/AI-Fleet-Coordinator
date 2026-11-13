@@ -21,10 +21,9 @@ import re
 import sys
 
 MIN_TOOLS_DEFAULT = 25
-REASON = ("Fleet recall: this session did substantial work and has not committed a lesson.  If you "
-          "learned something reusable (a gotcha, a measured number, an owner preference, a runbook "
-          "step), call recall_contribute once now (search first).  If there is genuinely nothing "
-          "reusable, reply with the words 'no lesson' and finish.")
+REASON = ("Fleet recall: this session did substantial work.\u00a0 Consider whether a useful, durable "
+          "lesson would help the fleet; if so, search for duplicates and call recall_contribute.\u00a0 "
+          "If none is appropriate, finish without filler or a public declaration.")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]")
 _CONTRIB_CMD = re.compile(r"recall\s+contribute\b")
 

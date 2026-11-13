@@ -39,13 +39,9 @@ Skim channel, topic, and sender for your own seat or a repo you are about to tou
 
 ## 2b.  Fleet recall
 
-Search shared memory **before** re-deriving a lesson or asking the owner something a past ruling probably answers:
+At the start of every turn, run one targeted Fleet Recall search (`recall "<topic>"` or MCP `recall_search`) before substantive action or reply, including continuations and mechanical tasks.  A hit is a lead, not authority: open its source before relying on it.  Use only the configured own-seat route; if retrieval is unavailable, record that limitation once and continue independent work without changing credentials, trust or services.
 
-```bash
-recall "<what this session is about>" --limit 5
-```
-
-or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issue / note / doc.  Cloud seats reach the same tools through the fleet MCP gateway and REST twin (`docs/RECALL-ACCESS-CHECK.md` names the hostnames).  Owner 2026-09-02: **contribute every reusable lesson** at closeout (`recall_contribute`); do not bulk-ingest chat logs as lessons.
+At the end of every turn, consider whether newly learned durable knowledge would help the fleet.  If appropriate, search for duplicates and contribute one useful paragraph with `recall contribute` or MCP `recall_contribute`; otherwise add nothing.  Do not force filler, require a public “no lesson” reply, duplicate existing knowledge, or dump transcripts or secrets.  Keep source facts in their existing home and contribute only the reusable lesson.
 
 ## 2c.  The tools you have
 
