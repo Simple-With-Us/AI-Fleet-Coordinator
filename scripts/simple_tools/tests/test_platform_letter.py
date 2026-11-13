@@ -2456,6 +2456,9 @@ class UnletteredRepairTests(Base):
     def note_path(self, sid: str) -> str:
         return os.path.join(self.state, "CODEX", "letters", sid + ".json")
 
+    def stamp(self, platform: str = "faux", where: str = "server") -> dict:
+        return PL._read_json(PL.repair_stamp_path(self.server_env(), "CODEX", platform, where))
+
     def test_a_chat_the_assigner_still_knows_resumes_its_own_letter(self) -> None:
         # The register landed but the hook died before saving:  the assigner holds the letter, the host does not.
         held = self.register("s-0100", title="Resolve CodeCaps PR 520 And 521", platform="faux", seat="CODEX")
@@ -2518,6 +2521,54 @@ class UnletteredRepairTests(Base):
         out = self.start("s-0006")
         # The rider's own answer names its own letter only:  the repaired chat's context goes nowhere.
         self.assertNotIn("s-0106", json.dumps(out))
+
+    def test_a_finished_pass_leaves_its_outcome_in_the_stamp(self) -> None:
+        self.unlettered.extend(["s-0110", "s-0111"])
+        self.start("s-0001")
+        self.assertEqual(
+            self.stamp()["outcome"], {"found": 2, "asked": 2, "repaired": 2, "failed": 0}
+        )
+
+    def test_a_listing_failure_leaves_its_error_in_the_stamp(self) -> None:
+        def boom(env):
+            raise RuntimeError("store locked")
+
+        spec = make_spec(
+            platform="faux2",
+            source="faux2-hook",
+            display="Faux2",
+            unlettered_sessions=boom,
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "session_id": sid},
+        )
+        done = PL.repair_unlettered(
+            spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+        )
+        self.assertIn("skipped", done)
+        stamp = self.stamp(platform="faux2")
+        self.assertIn("at", stamp)  # the window is still consumed:  the next try comes after it
+        self.assertEqual(stamp["outcome"], {"error": "the adapter could not list them"})
+
+    def test_a_chat_whose_replay_raises_is_counted_not_fatal(self) -> None:
+        def payload(sid):
+            if sid == "s-0113":
+                raise RuntimeError("payload boom")
+            return {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid}
+
+        spec = make_spec(
+            platform="faux3",
+            source="faux3-hook",
+            display="Faux3",
+            unlettered_sessions=lambda env: ["s-0112", "s-0113"],
+            chat_payload=payload,
+        )
+        done = PL.repair_unlettered(
+            spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+        )
+        self.assertEqual(done["asked"], ["s-0112"])
+        self.assertEqual(
+            self.stamp(platform="faux3")["outcome"],
+            {"found": 2, "asked": 1, "repaired": 1, "failed": 1},
+        )
 
 
 class RepairCliTests(Base):
