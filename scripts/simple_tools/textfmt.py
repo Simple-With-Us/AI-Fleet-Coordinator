@@ -296,7 +296,9 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
         r_hour = r_minute = None
 
     def clock(when: Any) -> str:
-        return str(when.hour % 12 or 12) + when.strftime(":%M") + (" AM" if when.hour < 12 else " PM")
+        return (
+            str(when.hour % 12 or 12) + when.strftime(":%M") + (" AM" if when.hour < 12 else " PM")
+        )
 
     try:
         if hour is None:

@@ -18,7 +18,9 @@ from zoneinfo import ZoneInfo
 
 SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
 #  the script drops the year only when it is the current one, so the expected date follows the clock
-OCT_19 = "Mon, Oct 19" if datetime.now(ZoneInfo("America/Chicago")).year == 2026 else "Mon, Oct 19, 2026"
+OCT_19 = (
+    "Mon, Oct 19" if datetime.now(ZoneInfo("America/Chicago")).year == 2026 else "Mon, Oct 19, 2026"
+)
 PLATFORM_VARS = (
     "AGENT_SESSION",
     "CLAUDE_CODE_SESSION_ID",
