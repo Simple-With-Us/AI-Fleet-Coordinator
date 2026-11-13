@@ -179,6 +179,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet_infisical_bootstrap.py",
         "scripts/fleet_infisical_cli.py",
         "scripts/simple_tools/mcp/tools.json",
+        "scripts/simple_tools/post_header.py",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
         "scripts/simple_tools/mcp/gb-identities.json",

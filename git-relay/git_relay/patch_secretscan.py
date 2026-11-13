@@ -23,8 +23,8 @@ kind to both in one change.
 somewhere durable (the signed facts published to the private fleet-loops-data repo, a ledger):  it
 replaces each secret-shaped string field with `[withheld: secret-shaped]` and says where.
 
-Standard library only (`re` and `base64`;  `json` is imported inside `_key_path`, the one place that needs
-it) and no imports from this package:  it is safe on the hook fast path, and
+Standard library only; structured-output and command imports stay inside their helpers.
+There are no imports from this package, so it is safe on the hook fast path, and
 `scripts/check-routine-prompts.py` loads it by file path.
 """
 
@@ -35,7 +35,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-__all__ = ["WITHHELD", "basic_forms", "redact_fields", "scan"]
+__all__ = ["WITHHELD", "basic_forms", "main", "redact_fields", "scan"]
 
 WITHHELD = "[withheld: secret-shaped]"
 
@@ -173,16 +173,43 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
 )
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
 
+# Immutable public package-integrity reviews, not a general SRI exemption.
+# The complete files and public artifact bytes were independently verified.
+# See docs/security/reviewed-public-integrities.md for provenance and authority.
+_REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/package-lock.json",
+            "72462e4c39a4a9a2ba6927214072e0f607565db11c3aa1be034e31eb197af7b9",
+        ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/package-lock.json",
+            "eb44b787f36b8149d5173d84e39d23d5c2b235721cc8c6eab9a6970d5ade5bd1",
+        ),
+    }
+)
+
 
 def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str | None:
-    """Normal scan, except exact reviewed full-file generic assignment fixtures.
+    """Normal scan, except the separately reviewed exact full-file subtypes.
 
-    Dedicated shapes and every loaded value remain absolute, even if short.
+    Generic fixtures waive generic assignments only.  Public-integrity reviews
+    waive only the Zulip-shape result for their two immutable files; all other
+    patterns and every loaded value remain absolute, even if short.
     No basename/path prefix, caller approval flag or renamed/corrupt-file waiver.
     """
     import hashlib
 
     key = (repo, path, hashlib.sha256(text.encode("utf-8")).hexdigest())
+    if key in _REVIEWED_PUBLIC_INTEGRITIES:
+        known = tuple(known)
+        for value in known:
+            if value and value in text:
+                return "a loaded credential"
+        kind = scan(text, known)
+        return None if kind == "a Zulip-shaped API key" else kind
     if key not in _REVIEWED_GENERIC_FIXTURES:
         return scan(text, known)
     for value in known:
@@ -268,3 +295,86 @@ def redact_fields(obj: Any, known: Iterable[str] = ()) -> tuple[Any, list[str]]:
 
     clean = walk(obj, "$", 0)
     return clean, list(dict.fromkeys(paths))
+
+
+def main(argv=None, *, stdin=None, stdout=None) -> int:
+    """Scan standard input and report only a field name and safe reason.
+
+    The module is shipped with the shared fleet CLI release.  Call its absolute
+    path with Python isolated mode; credential text belongs on stdin, never argv.
+    """
+    import argparse
+    import json
+    import sys
+
+    class ScanParser(argparse.ArgumentParser):
+        def error(self, message):
+            raise ValueError("invalid_arguments")
+
+    parser = ScanParser(
+        prog="python3 -I secretscan.py", description="Scan stdin without echoing its text"
+    )
+    parser.add_argument(
+        "--field", default="text", help="allow-listed field identifier for the result"
+    )
+    output = sys.stdout if stdout is None else stdout
+    try:
+        args = parser.parse_args(argv)
+    except ValueError:
+        output.write(json.dumps({"ok": False, "code": "invalid_arguments"}) + "\n")
+        return 2
+    fields = {
+        "text",
+        "request",
+        "request_source",
+        "action_taken",
+        "result",
+        "body",
+        "topic",
+        "title",
+        "description",
+        "status_text",
+        "filename",
+        "url",
+        "channel",
+    }
+    if args.field not in fields:
+        output.write(json.dumps({"ok": False, "code": "invalid_field"}) + "\n")
+        return 2
+    try:
+        stream = getattr(sys.stdin, "buffer", sys.stdin) if stdin is None else stdin
+        raw = stream.read(256 * 1024 + 1)
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        if not isinstance(raw, bytes):
+            raise TypeError("invalid_input")
+    except (OSError, UnicodeError, ValueError, AttributeError, TypeError):
+        output.write(json.dumps({"ok": False, "field": args.field, "code": "invalid_input"}) + "\n")
+        return 2
+    reason = None
+    if not raw:
+        output.write(json.dumps({"ok": False, "field": args.field, "code": "invalid_input"}) + "\n")
+        return 2
+    if len(raw) > 256 * 1024:
+        reason = "input_too_large"
+    else:
+        try:
+            text = raw.decode("utf-8", "strict")
+        except UnicodeError:
+            reason = "invalid_utf8"
+    if reason:
+        output.write(json.dumps({"ok": False, "field": args.field, "code": reason}) + "\n")
+        return 2
+    kind = scan(text)
+    result = {
+        "ok": kind is None,
+        "field": args.field,
+        "code": "refused_secret" if kind else "safe",
+        "kind": kind,
+    }
+    output.write(json.dumps(result) + "\n")
+    return 1 if kind else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

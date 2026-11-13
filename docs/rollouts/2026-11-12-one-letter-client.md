@@ -8,11 +8,11 @@ This page is the order of work on the Mac and on the server when the change merg
 
 ## Read This First
 
-- **The registry settings reach a hook through the host's wrapper, in shell, and never through this client's Python.**  A hook is launched with no profile, so its environment holds neither `SIMPLE_TOOLS_OPERATOR_REGISTRY_URL` nor its key, and a hook that runs with neither answers `not_configured` and no chat gets a letter.  The retired clients read the host's env script inside Python;  this client deliberately does not (a signing key is never read from a local file by our code).  What sets them instead is `<home>/.local/bin/platform-letter`, which every hook this client installs runs (never a bare python path):
-  - **On the Mac** it is a script of the host's, installed outside this repository (a link to `~/.local/libexec/simple-tools-hooks/platform-letter`):  it sets the state folder, sources `~/.local/bin/platform-letter-registry-env` and runs the runtime's `scripts/platform-letter`.  `scripts/simple_tools/install.sh` no longer repoints it (it leaves an existing one as it is and says so);  `--force-platform-letter` overrides that, and would drop the settings from every Mac hook.
-  - **On the server** it is the fleet-cli managed wrapper.  It used to set nothing, because the retired clients read the env script themselves.  `scripts/fleet-cli-release.py` now generates it as a bash wrapper that sources `~/.local/bin/platform-letter-registry-env` or, when that is absent, `~/.local/bin/operator-registry-env` (the file the server's other hooks read today), and `fleet-cli-git-update` rewrites an older managed `platform-letter` wrapper on its next run after the merge (a wrapper without the marker, and a link, are never touched).  Its text is under "The Managed Wrapper" below.
-  - The retired `simple-chat letter ...` line (a Claude hook installed today), which sources nothing, re-runs itself once through `<home>/.local/bin/platform-letter` with its arguments as this client reads them, when its environment lacks the settings and that wrapper is on the host.  `SIMPLE_TOOLS_LETTER_WRAPPED` marks the re-run, so it happens once.  With no wrapper, or with the settings in place, it runs where it is.
-  - ZCode's installed hook runs `~/.local/bin/zc-letter/platform-letter`, a host wrapper that sources `~/.local/bin/operator-registry-env` and runs the checkout's `scripts/platform-letter`;  that file stays in the checkout, so it keeps working after the merge.
+- **Registry credentials come from Infisical through the shared client.**  A hook starts without a shell profile, so the shared bootstrap must bind the host's own narrow read-only service token before `registry_api` resolves its URL and signing key.  The durable bootstrap is tracked in [#2166](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2166), and is a rollout dependency; merging this client alone does not prove a clean hook has registry access.
+  - Inspect each installed host wrapper before replacement.  A wrapper that sources `platform-letter-registry-env` or `operator-registry-env` still reads the retired local signing-key source and must be migrated through the shared bootstrap rollout.  Do not source those files to make a verification pass, and never cache the signing key locally.
+  - The retired `simple-chat letter ...` command can re-run once through `<home>/.local/bin/platform-letter`, guarded by `SIMPLE_TOOLS_LETTER_WRAPPED`.  That compatibility route must lead to the same reviewed bootstrap and runtime as a direct `platform-letter` hook.
+  - ZCode's older `zc-letter` wrapper is replaced by the common hook command after the clean-environment proof succeeds.
+  - Title writers receive a copy of the platform environment without Operator bootstrap bindings or the registry signing key.  Direct RPC and inspection subprocesses enforce the same boundary; the registry parent retains its credentials, and platform launcher settings remain available.
 - **Server Claude chats register through the Mac today and register directly after this.**  The retired Claude client on the server sent its registry calls over ssh to the Mac (`CLAUDE_LETTER_REMOTE`), so the server never needed the registry settings for Claude.  This client calls the registry API from the host the hook runs on.  So the settings must be provisioned on the server before the merge (Before The Merge, step 1), or every server Claude chat is titled `??`.
 - **A server on the old code with a Mac on the new** (the two hosts update at different moments):  the old server client asks the Mac's `simple-chat letter registry register ... --host-session-id=...`, which the new Mac answers `{"error": "bad arguments"}` with exit 2.  The old client then retries without that flag, so the chat registers, but its sub-thread placement under its parent is lost for as long as that mix lasts.  To avoid it update the server first (its `fleet-cli-git-update` brings the runtime to main by itself), or accept the gap, which ends when both are on the new code.
 - **The MiniMax gap starts when `~/Code/AI-Fleet-Coordinator` resets to main, not at the runtime sync.**  The installed wrapper `~/.local/bin/mm-session-letter` looks first for the managed runtime's `scripts/mm_session_letter.py` (not there on the Mac today) and then for the one in `~/Code/AI-Fleet-Coordinator`, which a daemon resets to main:  once that tree has this change the file is gone and the wrapper exits 0, so a MiniMax chat's letter hook does nothing until Mac step 3.  No registration is lost:  after step 3 an open chat takes its note from the retired client's own letter cache at its next turn end and re-attaches to the letter it holds.
@@ -21,30 +21,12 @@ This page is the order of work on the Mac and on the server when the change merg
 
 ## Before The Merge
 
-1. **Server:  provision the registry settings, and prove a clean environment finds them.**  The server's Claude hooks have not needed them.  `ls ~/.local/bin/platform-letter-registry-env ~/.local/bin/operator-registry-env` should name at least one (the second is the file the server's Codex, OpenCode and ZCode hooks read today).  If neither is there, the host's owner provisions one:  this change does not write it.  Proof, which prints a word and never a value:  `env -i HOME=$HOME PATH=/usr/bin:/bin bash -c '.  "$HOME/.local/bin/operator-registry-env" >/dev/null 2>&1; [ -n "$SIMPLE_TOOLS_OPERATOR_REGISTRY_URL" ] && [ -n "$SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY" ] && echo set || echo MISSING'` prints `set` (use the name of the file that is there).
+1. **Verify the shared bootstrap before activation.**  Complete the scoped-token custody and metadata checks in the [AFC-785 bootstrap rollout](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2166) on each host.  The clean-environment `platform-letter install --platform claude --check` proof below must report `registry.configured` as true without sourcing a retired helper.  A missing or refused binding remains a concrete rollout gate; it does not authorize borrowing another consumer's token.
 2. **Server first, if the mix matters.**  Let the server's `fleet-cli-git-update` take the merge before the Mac does, to avoid the sub-thread gap above.
 
 ## The Managed Wrapper
 
-After the next `fleet-cli-git-update` (which runs after the merge reaches main) the server's `~/.local/bin/platform-letter` is exactly this, with `<home>` the server account's home folder:
-
-```bash
-#!/bin/bash
-# fleet-cli managed wrapper v1
-# The registry settings of a session-letter hook come from the host's env script, sourced here in shell.
-for f in "$HOME/.local/bin/platform-letter-registry-env" "$HOME/.local/bin/operator-registry-env"; do
-  if [ -f "$f" ]; then
-    if [ "$( . "$f" >/dev/null 2>&1 </dev/null; echo ok )" = ok ]; then
-      . "$f" >/dev/null 2>&1 </dev/null
-      export SIMPLE_TOOLS_OPERATOR_REGISTRY_URL SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY
-    fi
-    break
-  fi
-done
-exec /usr/bin/python3 -I -B <home>/.local/share/fleet-cli/current/scripts/platform-letter "$@"
-```
-
-The first env script that is a file is the one used.  It is run once in a subshell with its output thrown away and is sourced into the wrapper only when that run reached its end, so a script that exits cannot stop a hook;  one that fails or does not parse is sourced as far as bash goes and the hook runs all the same.  Nothing it prints is shown, its status is not the wrapper's, and the three names it may set are exported whether or not it exported them.  The wrapper `exec`s, so the hook's standard input and arguments reach the script as they came.  A wrapper the host wrote itself (no marker line) is never rewritten.
+The installed wrapper must preserve the hook's standard input and arguments, run the shared runtime, and use the reviewed bootstrap from #2166.  It must not source a cached registry signing key.  The shared bootstrap and reader validate the host consumer's own token before reading registry settings from Infisical; the signing key stays in memory.  Verify the actual installed wrapper and clean-environment result after updating it, rather than inferring installation from a source template or a successful merge.
 
 ## Mac
 
@@ -71,7 +53,7 @@ The first env script that is a file is the one used.  It is run once in a subsh
 2. **Claude.**  `platform-letter install --platform claude --location server --mac-ssh DEST`, then `platform-letter install --platform claude --location server --check` (exit 0, every `current` true).  The install's answer carries `mac_authorized_keys`, the line of Mac step 8, and `mac_note`, which says whose step it is.  Until this step the retired entries go on working:  their hook line re-runs through the wrapper with the location and the destination the retired installer put in the `env` block of `~/.claude/settings.json`.
 3. **The key line on the Mac** is Mac step 8, and it is the owner's.  Until it is there, or with the Mac unreachable, a server chat gets no answer within its 2 seconds and is placed as a main chat;  nothing else about its letter changes.
 4. **Every other platform with hooks on the server.**  `platform-letter install --platform <name> --location server --check` for each one, and an install only where the check answers exit 1.
-5. **ZCode, last.**  `platform-letter install --platform zcode --location server` replaces a working `zc-letter` entry with the `<home>/.local/bin/platform-letter` command, which now sources the env script like `zc-letter` did, so the hook goes on registering (a server-shaped home with the managed wrapper and a `zc-letter` wrapper was tested to).  Do it after the checks of steps 1 and 2 have shown the settings reach a clean environment.
+5. **ZCode, last.**  `platform-letter install --platform zcode --location server` replaces the `zc-letter` entry with the shared `<home>/.local/bin/platform-letter` command.  Do it after the checks of steps 1 and 2 have proved the reviewed bootstrap reaches the registry from a clean environment.
 
 ## What To Remove
 

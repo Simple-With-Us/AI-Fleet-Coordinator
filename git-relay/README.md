@@ -49,6 +49,12 @@ the owner's cutover decision.
 
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
 
+### PR Headers
+
+PR titles, descriptions and comments use compact fleet headers, for example `[CODEX:   EE.1.S]`, without `📁` or repository names.  Keep the actual writing session and any recipients; do not derive a session letter from the GitHub author or repository.  Kody trigger comments start with the literal `@kody start-review`, put the compact header on line 2 and include the full reviewed head SHA and context afterward.
+
+The hosted Fleet Tools front normalizes supplied headers on explicit PR title/body/comment/review routes.  Direct HTTP and GR-MCP callers supply the compact form themselves; the independently packaged relay preserves it without importing another formatter.  Generic workflow issue-comment verbs retain ordinary issue context because their target may be an issue rather than a PR; use the explicit PR comment verb for PR context.  The existing `sentence_gap: false` option preserves supplied bytes, so those callers also supply the compact form.  Ordinary GitHub issue, Zulip and Linear headers retain repository names.  Source publication does not establish a deployed formatter or delivered-message receipt.
+
 `open_pr` never reports a number for a pull request it has not seen.  After the create answers,
 the relay reads the pull request back by number with the same owner token and checks the number,
 the repository, the base branch and the head branch (and the owner, for an `owner:branch` or
@@ -276,12 +282,14 @@ gap this attestation exists to close:
 | `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
 | `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
 | `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
-| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `8b5c00c94f3bd0635335226e607bc0a94a3a8660` | `dc79d7b078aa35816ffc5ce35ee3c9c2dbaff5d4fdf47499f46f8480f6d478db` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `3a7c6b485d91a7f2dfee5922b3d026450d087fb1` | `2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394` |
 | `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `804d547cb96bba4cade20a058e76ec32c1fa7022` | `8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2` |
 | `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
 | `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
 | `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
 | `scripts/fleet_lanes/tests/test_install_mcp.py` | `6b2392ff3238806f7ad251b347e424b8bb99b57d` | `a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b` |
+
+The `gr-front.test.mjs` row was refreshed after merging main (with AFC-734, PR #1826) into AFC-727.  The bytes combine the `gr_create_repo` pinned name list (AFC-632), the AFC-734 not_configured reasons, and the intent-only `gr_workflow_dispatch` assertions from this branch.  Source blob `3a7c6b485d91a7f2dfee5922b3d026450d087fb1` supersedes the earlier attestations.
 
 The table records the current 13-entry source registry, not an installed-state claim.
 The Infisical API-route row is separately refreshed from immutable main
@@ -326,6 +334,8 @@ attested bytes are a FUTURE target until PR #1707 merges; this source change dep
 only through the relay operator's normal review and authorizes no write by itself.
 
 On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the exact bytes on PR #1826 after merging main (source blob `8b5c00c94f3bd0635335226e607bc0a94a3a8660`, SHA-256 `dc79d7b078aa35816ffc5ce35ee3c9c2dbaff5d4fdf47499f46f8480f6d478db`, 30639 UTF-8 bytes).  The prior digests attested AFC-632's `gr_create_repo` name list and the pre-merge AFC-734 copy separately.  The complete file was re-reviewed, not only the added lines.  Those lines are the not_configured reason tests and the pinned `gr_create_repo` tool name.  They name seat-bearer shapes and never a credential literal, and none of the added lines match a dedicated secret pattern.  The whole file still matches bearer_credential because of the synthetic bearer header fixtures the prior attestation already covered.  Changing one byte of this file fails closed.  This source change deploys only through the relay operator's normal review and authorizes no write by itself.
+On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the AFC-727 bytes (source blob `6c5cae45145f20b36cf1641c59397c432cfb3784`, SHA-256 `34c5596e04e2352a729d0c377bfe15a5c8dc2a7a3fcef4bcadc1dd689833a46a`, 27,053 UTF-8 bytes).  The prior digest attested the pre-change bytes.  The whole file was re-checked.  The only delta is the dispatch-intent test now accepting `intent_id` without `expected_head_sha`, plus the paired call that follows it.  No credential literal was added or removed.  Dedicated shapes and loaded values still refuse, and any other byte still fails closed.
+After merging main (with PR #1826) into AFC-727, the row was refreshed again to the combined bytes (source blob `3a7c6b485d91a7f2dfee5922b3d026450d087fb1`, SHA-256 `2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394`, 30787 UTF-8 bytes).
 
 `mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the

@@ -37,7 +37,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import git_read
 from .app_tokens import AppTokenError, missing_app_credential
 from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
-from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
+from .github_client import (
+    DispatchPreReadUnavailable,
+    GitHubClient,
+    RelayGitHubError,
+    intent_branch_ref,
+)
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import (
     DEFAULT_RATE_PER_HOUR,
@@ -241,13 +246,14 @@ def _validate_args(action: str, args: dict) -> dict:
     if action == "workflow_dispatch":
         intent = canonical.get("intent_id")
         expected = canonical.get("expected_head_sha")
-        if (intent is None) != (expected is None):
-            raise ValueError("intent_id and expected_head_sha must be supplied together")
-        if intent is not None and (
-            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent)
-            or not re.fullmatch(r"[0-9a-f]{40}", expected)
-        ):
+        if expected is not None and intent is None:
+            raise ValueError("expected_head_sha requires intent_id")
+        if intent is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent):
             raise ValueError("invalid dispatch intent or expected source")
+        if expected is not None and not re.fullmatch(r"[0-9a-f]{40}", expected):
+            raise ValueError("invalid dispatch intent or expected source")
+        if intent is not None and not intent_branch_ref(canonical.get("ref")):
+            raise ValueError("intent dispatch requires a canonical branch name")
     GitHubClient._check_repo(canonical["repo"])
     return canonical
 
@@ -1046,7 +1052,7 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
             if token is not None:
                 self.app_minter.revoke_installation_token(token)
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
-    if action == "workflow_dispatch" and args.get("intent_id"):
+    if action == "workflow_dispatch" and args.get("expected_head_sha"):
         required["contents"] = "read"
     missing = _perm_within_ceiling(required, ceiling)
     if missing:

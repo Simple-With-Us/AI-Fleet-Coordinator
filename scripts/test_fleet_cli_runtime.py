@@ -261,6 +261,49 @@ class ActualRuntime(unittest.TestCase):
         self.assert_exit(result, 0)
         self.assertFalse(result.stdout)
 
+    def test_installed_cli_serializes_the_shared_header_and_refuses_a_missing_helper(self):
+        relative = "scripts/simple_tools/post_header.py"
+        self.assertIn(relative, self.bundle["files"])
+        self.assertIn(relative, self.receiver.EXACT)
+        self.assertIn(relative, self.receiver.TOOL_REQUIRED)
+        self.assertNotIn(relative, self.receiver.BASE_REQUIRED)
+        program = (
+            AUDIT
+            + "\n"
+            + (
+                "import json,sys\n"
+                "from types import SimpleNamespace\n"
+                "sys.path.insert(0,sys.argv[1])\n"
+                "from simple_tools import cli\n"
+                "agent=SimpleNamespace(seat='CODEX',tag_prefix='[CODEX·deadbeef')\n"
+                "body=cli._compose(agent,'[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] status',"
+                "labels=['AG'],mentions=[],no_tag=False)\n"
+                "print(json.dumps({'content':body},ensure_ascii=False))\n"
+            )
+        )
+        result = RUN(
+            [sys.executable, "-I", "-B", "-c", program, str(self.release / "scripts")],
+            env=self.env,
+            cwd=self.home,
+            capture_output=True,
+            timeout=15,
+        )
+        self.assert_exit(result, 0)
+        self.assertEqual(
+            json.loads(result.stdout)["content"],
+            "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS"
+            " → CODEX EE,\u200a\u200aAG] status",
+        )
+        module = self.release / relative
+        held = module.with_suffix(".withheld")
+        module.rename(held)
+        try:
+            missing = self.command("scripts/simple-chat", ["--help"])
+        finally:
+            held.rename(module)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn(b"post_header", missing.stderr)
+
     def test_actual_allowlist_installs_and_verifies(self):
         self.assertEqual(self.receipt["status"], "activated")
         self.assertEqual(self.receipt["bundle_sha256"], self.bundle["bundle_sha256"])

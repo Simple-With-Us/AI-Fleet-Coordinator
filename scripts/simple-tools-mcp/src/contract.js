@@ -498,10 +498,89 @@ export function tagPrefix(seat, tag) {
   return tag ? `[${seat}·${tag}` : `[${seat}`;
 }
 
+// Exact numeric owner contract (OPS-1086); sentence gaps remain NBSP plus ASCII space.
+export const HEADER_HAIR = "\u200a";
+export const HEADER_AFTER_COLON = HEADER_HAIR.repeat(3);
+export const HEADER_BEFORE_FOLDER = HEADER_HAIR.repeat(2);
+export const HEADER_AFTER_FOLDER = HEADER_HAIR;
+export const HEADER_REPO_SEPARATOR = `,${HEADER_HAIR}`;
+export const HEADER_RECIPIENT_SEPARATOR = `,${HEADER_HAIR.repeat(2)}`;
+
+/** At most 32 lines/8 KiB of flat criteria may precede a blank-separated, column-zero PR body envelope. */
+function prBodyPrefix(text) {
+  let cursor = 0, size = 0;
+  let sawBullet = false, separated = false;
+  for (let count = 0; count < 32; count += 1) {
+    const chunk = text.slice(cursor, cursor + 8193);
+    const newline = chunk.indexOf("\n");
+    const line = (newline < 0 ? chunk : chunk.slice(0, newline)).replace(/\r$/u, "");
+    const bullet = /^(?:[-*+]|[0-9]{1,9}[.)]) ([^\r\n]+)$/u.exec(line);
+    if (bullet) {
+      const payload = bullet[1].replace(/^[ \t]*/u, "").replace(/^\[[ xX]\][ \t]+/u, "");
+      if (newline < 0 || !payload || /^(?:>|<|`{3}|~{3})/u.test(payload)) return null;
+      sawBullet = true;
+      separated = false;
+    } else if (line.replace(/[ \t]/gu, "")) {
+      return sawBullet && !separated ? null : cursor;
+    } else if (newline < 0) {
+      return cursor;
+    } else {
+      separated = true;
+    }
+    const consumed = chunk.slice(0, newline + 1);
+    size += new TextEncoder().encode(consumed).length;
+    if (size > 8192) return null;
+    cursor += consumed.length;
+  }
+  return sawBullet && !separated ? null : cursor;
+}
+
+/** The Python post_header.normalize_header contract: only the first complete header changes. */
+export function normalizeHeader(text, { seat = null, context = "message" } = {}) {
+  if (!["message", "github-pr", "github-pr-body", "github-pr-title"].includes(context)) throw new TypeError("unknown header context");
+  const isPr = context !== "message";
+  let prefix = isPr ? /^@kody start-review\r?\n/u.exec(text)?.[0] ?? "" : "";
+  let criteria = "";
+  if (context === "github-pr-body") {
+    const description = text.slice(prefix.length);
+    const end = prBodyPrefix(description);
+    if (end === null) return text;
+    criteria = description.slice(0, end);
+    prefix += criteria;
+  }
+  const content = text.slice(prefix.length);
+  let pattern = /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;
+  if (context === "github-pr" || context === "github-pr-body") {
+    pattern = criteria.replace(/[ \t\r\n]/gu, "")
+      ? /^(?<lead>(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u
+      : /^(?<lead> {0,3}(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;
+  }
+  const match = pattern.exec(content);
+  if (!match) return text;
+  const parts = match.groups.inner.split(/\s*(?:→|->)\s*/u);
+  if (parts.length > 2) return text;
+  const peers = parts.length > 1 ? parts[1].split(",").map((part) => part.trim()) : [];
+  const folder = parts[0].split("📁");
+  if (folder.length > 2 && !isPr) return text;
+  const sender = /^(?<seat>[A-Z0-9][A-Z0-9_-]*)(?<transport>·[^\s:→\]]+)?(?:\s*:\s*(?<thread>[A-Za-z0-9][A-Za-z0-9.-]*))?$/u.exec(folder[0].trim());
+  if (!sender || (seat !== null && sender.groups.seat !== seat)) return text;
+  const repos = folder.length > 1 ? folder[1].split(",").map((part) => part.trim()) : [];
+  if ((!isPr && folder.length > 1 && repos.some((part) => !part)) || (parts.length > 1 && peers.some((part) => !part))) return text;
+  const thread = sender.groups.thread ?? "";
+  let transport = sender.groups.transport ?? "";
+  // PRs omit private transport; an Operator letter also identifies ordinary message threads without it.
+  if (isPr || /^[A-Z]{1,2}[.-]\d+[.-][MSC]$/u.test(thread)) transport = "";
+  let inner = sender.groups.seat + transport;
+  if (thread) inner += `:${HEADER_AFTER_COLON}${thread}`;
+  if (repos.length && !isPr) inner += `${HEADER_BEFORE_FOLDER}📁${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
+  if (peers.length) inner += ` → ${peers.join(HEADER_RECIPIENT_SEPARATOR)}`;
+  return `${prefix}${match.groups.lead}[${inner}]${content.slice(match[0].length)}`;
+}
+
 /** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
 export function ownIntro(prefix, text) {
   const seat = prefix.slice(1).split("·", 1)[0];
-  const leading = text.match(/^(?:👀\s*)?\s*/u)[0];
+  const leading = text.match(/^\s*(?:(?:👀|:eyes:)\s*)?/u)[0];
   const start = leading.length;
   if (!text.startsWith(`[${seat}`, start)) return null;
   const after = start + seat.length + 1;
@@ -512,20 +591,23 @@ export function ownIntro(prefix, text) {
   if (!folder && !["]", " ", ":", "·", "→", "\t"].includes(text.charAt(after))) return null;
   const end = text.indexOf("]", start);
   if (end < 0 || /[\r\n\[]/.test(text.slice(start + 1, end))) return null;
-  let intro = text.slice(0, end);
-  // Exactly one ASCII space before 📁, the Policy shape the router parses.
-  if (folder) intro = intro.slice(0, after) + " " + intro.slice(after).replace(/^\s*/u, "");
-  return { end, intro, rest: text.slice(end + 1) };
+  const intro = text.slice(0, end);
+  return { end, intro, leading, rest: text.slice(end + 1) };
 }
 
 /** The text with every leading own-seat intro removed (`[SEAT]`, `[SEAT 📁AFC]`, a legacy `[SEAT] [SEAT 📁AFC]`
- * pair, each optionally after 👀).  A foreign-seat or malformed bracket is content and stays.  Text that is only an
+ * pair, each optionally after 👀 or :eyes:).  The pre-bracket lead stays, including a no-wake marker.
+ * A foreign-seat or malformed bracket is content and stays.  Text that is only an
  * intro is returned unchanged, so a write never goes out empty. */
 export function stripOwnIntro(seat, text) {
   const original = String(text ?? "");
   let rest = original;
-  for (let own = ownIntro(`[${seat}`, rest); own; own = ownIntro(`[${seat}`, rest)) rest = own.rest.replace(/^[ \t]*(?:\r?\n)*/u, "");
-  return rest.trim() ? rest : original;
+  let leading = "";
+  for (let own = ownIntro(`[${seat}`, rest); own; own = ownIntro(`[${seat}`, rest)) {
+    leading += own.leading;
+    rest = own.rest.replace(/^[ \t]*(?:\r?\n)*/u, "");
+  }
+  return rest.trim() ? leading + rest : original;
 }
 
 // A body mention counts only where Zulip would notify:  outside code and block quotes, and with
@@ -567,21 +649,21 @@ export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
   if (own) {
     let intro = own.intro;
     const seatEnd = intro.indexOf("[") + 1 + prefix.slice(1).split("·", 1)[0].length;
-    const suffix = intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
+    const suffix = intro.slice(seatEnd).replace(/^·(?:(?!->)[^\s:→\]])*/u, "");
     const session = prefix.includes("·") ? prefix.slice(prefix.indexOf("·")) : "";
     // Supplied session is operational attribution and overrides a stale text session.
     if (session) intro = intro.slice(0, seatEnd) + session + suffix;
-    const arrow = intro.indexOf("→");
-    const existing = arrow < 0 ? [] : intro.slice(arrow + 1).split(",").map((v) => v.trim());
+    const arrow = /→|->/u.exec(intro);
+    const existing = arrow === null ? [] : intro.slice(arrow.index + arrow[0].length).split(",").map((v) => v.trim());
     const added = [...new Set(labels)].filter((label) => !existing.includes(label));
-    if (added.length) intro += `${arrow < 0 ? " →" : ","}${added.join(",")}`;
+    if (added.length) intro += `${arrow === null ? " →" : ","}${added.join(",")}`;
     const tail = own.rest && !/^\s/u.test(own.rest) ? ` ${own.rest}` : own.rest;
     const addedMentions = mentionsMissingFrom(tail, mentions);
     parts = [`${intro}]${addedMentions.length ? ` ${addedMentions.join(" ")}` : ""}${tail}`];
   } else {
     parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentionsMissingFrom(text, mentions), text];
   }
-  const body = parts.filter(Boolean).join(" ");
+  const body = normalizeHeader(parts.filter(Boolean).join(" "));
   const length = codePoints(body).length;
   if (length > MAX_CONTENT_LENGTH) throw new UsageError(`the message is ${length} characters; Zulip allows at most ${MAX_CONTENT_LENGTH}`);
   return body;

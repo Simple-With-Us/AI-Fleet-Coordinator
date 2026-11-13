@@ -31,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     log.add_argument("--result", required=True, metavar="TEXT")
     log.add_argument(
+        "--hosted",
+        action="store_true",
+        help="use this bot's own hosted Fleet Tools bearer; never local Google credentials",
+    )
+    log.add_argument(
         "--dry-run", action="store_true", help="validate and print the row without writing"
     )
     log.add_argument(
@@ -43,15 +48,72 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _acting_seat(ns: argparse.Namespace) -> str:
-    raw = ns.acting_seat or ns.as_seat
-    if raw:
-        return I.canonical_seat(raw)
-    resolved = I.resolve_seat(os.environ, flag=None, default=None)
+    resolved = I.resolve_seat(os.environ, flag=ns.acting_seat or ns.as_seat, default=None)
+    if resolved.problem:
+        raise P.PeerActionsError("invalid_argument", resolved.problem)
     if resolved.seat:
         return resolved.seat
     raise P.PeerActionsError(
         "invalid_argument", "name the acting seat with --acting or set AGENT_LAUNCH_SEAT"
     )
+
+
+def _hosted_log(entry: P.LogEntry, *, dry_run: bool) -> dict:
+    # Reuse the fixed endpoint, secret scan, bounded parser, no-redirect and
+    # unknown-outcome handling of the existing supported hosted transport.
+    from .cli import RemoteError, _remote_call, _remote_write_identity
+
+    # Match ECMAScript trim() at the hosted boundary, including BOM.  Python
+    # strip() alone keeps U+FEFF, which otherwise makes a successful receipt
+    # look different from the request.  Revalidate before any identity/network call.
+    trim_chars = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+    entry = P.build_entry(
+        acting_seat=entry.acting_seat,
+        requesting_seat=entry.requesting_seat,
+        request_source=entry.request_source.strip(trim_chars),
+        action_taken=entry.action_taken.strip(trim_chars),
+        result=entry.result.strip(trim_chars),
+    )
+    if not os.environ.get("SIMPLE_TOOLS_BEARER", "").strip():
+        raise P.PeerActionsError(
+            "not_configured", "hosted mode needs this bot's own SIMPLE_TOOLS_BEARER"
+        )
+    try:
+        who = _remote_write_identity(os.environ)
+        if I.canonical_seat(who) != entry.acting_seat:
+            raise P.PeerActionsError(
+                "invalid_argument",
+                "the hosted bearer belongs to a different acting seat; nothing was sent",
+            )
+        result = _remote_call(
+            os.environ,
+            "peer_actions_log",
+            {
+                "identity": who,
+                "requesting_seat": entry.requesting_seat,
+                "request": entry.request_source,
+                "action_taken": entry.action_taken,
+                "result": entry.result,
+                "dry_run": dry_run,
+            },
+            write=not dry_run,
+        )
+    except RemoteError as exc:
+        # No retry and no direct fallback, including after an ambiguous write.
+        raise P.PeerActionsError("hosted_failed", str(exc)) from None
+    out = result.get("structuredContent")
+    if (
+        not isinstance(out, dict)
+        or out.get("dry_run") is not dry_run
+        or not isinstance(out.get("row"), list)
+        or len(out["row"]) != 6
+        or out["row"][1:] != entry.row()[1:]
+    ):
+        raise P.PeerActionsError(
+            "hosted_failed",
+            "the hosted logger returned an unexpected receipt; do not repeat a possible write",
+        )
+    return out
 
 
 def cmd_log(ns: argparse.Namespace) -> int:
@@ -63,7 +125,12 @@ def cmd_log(ns: argparse.Namespace) -> int:
             action_taken=ns.action_taken,
             result=ns.result,
         )
-        out = P.log_row(entry, dry_run=bool(ns.dry_run))
+        hosted = bool(ns.hosted) or os.environ.get("PEER_ACTIONS_REMOTE", "").strip() == "1"
+        out = (
+            _hosted_log(entry, dry_run=bool(ns.dry_run))
+            if hosted
+            else P.log_row(entry, dry_run=bool(ns.dry_run))
+        )
     except P.PeerActionsError as exc:
         if ns.json:
             print(
