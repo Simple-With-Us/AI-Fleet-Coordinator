@@ -145,7 +145,6 @@ SHIPPED = (
     "fleet-apps.json",
     "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
-    "scripts/fleet_infisical.py",
     "scripts/fleet_infisical_cli.py",
     "scripts/recall",
     "scripts/fleet_rag/",
@@ -153,6 +152,7 @@ SHIPPED = (
     "scripts/fleet_knobs/",
     "scripts/fleet_secrets/__init__.py",
     "scripts/fleet_secrets/core.py",
+    "scripts/fleet_infisical.py",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
     "docs/protocols/simple-tools-guide.md",
@@ -175,7 +175,6 @@ SHIPPED_EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
-        "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
@@ -199,10 +198,10 @@ SHIPPED_EXACT = frozenset(
         # routines POST to).
         "scripts/zc-wake-bridge",
         "scripts/ag-wake-bridge",
-        # The scoped verifier library the new knobs and recall bundles depend on.  The generic
-        # secrets CLI does not ship, so only these two modules are listed.
+        # The shared scoped client and the compatibility imports its existing consumers use.
         "scripts/fleet_secrets/__init__.py",
         "scripts/fleet_secrets/core.py",
+        "scripts/fleet_infisical.py",
         "docs/protocols/simple-tools-guide.md",
         "scripts/simple_tools/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
