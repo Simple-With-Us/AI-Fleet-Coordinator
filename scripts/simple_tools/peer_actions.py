@@ -29,6 +29,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import identity as I
+from . import secretscan
 
 TAB_TITLE = "Peer-Actions Registry"
 APPEND_RANGE = "'Peer-Actions Registry'!A:F"
@@ -226,6 +227,8 @@ def _clean_field(name: str, value: str, *, min_len: int = TEXT_MIN, max_len: int
         raise PeerActionsError("invalid_argument", f"{name} must be at most {max_len} characters")
     if "\n" in text:
         raise PeerActionsError("invalid_argument", f"{name} must be a single line")
+    if secretscan.scan(text):
+        raise PeerActionsError("refused_secret", f"{name} contains credential-shaped text")
     return text
 
 
