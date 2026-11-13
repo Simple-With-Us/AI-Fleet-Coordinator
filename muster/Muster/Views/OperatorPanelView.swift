@@ -12,7 +12,8 @@ import SwiftUI
 /// `server operator-sessions` and `server operator-wakes`, together, each kept on its own so a
 /// read that fails never blanks another.  It reads when it opens, every minute while it is open
 /// and when the Mac wakes, and on Refresh.  Nothing here changes anything except the settings
-/// section, which goes Show Plan, then Touch ID, through the shared action sheet.
+/// section, which coalesces typed edits and authenticates automatically through the shared
+/// server command; only verified persistence, readback and runtime application appear Saved.
 struct OperatorPanelView: View {
     /// Opens the Controls panel, where the Operator's knobs are.
     var openControls: () -> Void = {}
