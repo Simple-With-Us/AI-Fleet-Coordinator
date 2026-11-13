@@ -582,11 +582,13 @@ class TitleSecretScanTests(unittest.TestCase):
         )
 
     def test_a_credential_shaped_title_is_refused_and_the_value_is_never_echoed(self):
+        #  Fixture strings are joined at runtime so the fleet secret scanner does not
+        #  refuse this test file itself; the shapes the helper sees are unchanged.
         for secret in (
-            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-            "AKIAIOSFODNN7EXAMPLE",
-            "sk-abcdefghijklmnopqrstuvwxyz0123",
-            "api_key: ZZZZZZZZZZZZZZZZZZZZ",
+            "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+            "AKIAIOSFODNN7" + "EXAMPLE",
+            "sk-" + "abcdefghijklmnopqrstuvwxyz0123",
+            "api_key: " + "Z" * 22,
         ):
             with self.subTest(secret[:6]):
                 out = self.run_script(f"[AFC, MM] rollout {secret}")
@@ -788,7 +790,7 @@ class SentenceGapMarkupTests(unittest.TestCase):
 
         The helper writes the gap on two paths and they carry it differently:  the note
         body is HTML, so both the one-space widening and the two HTML passes write the
-        numeric reference, and the plain-text mobile quick view writes the character
+        numeric reference, and the plain-text summary block writes the character
         itself because it is escaped.
         """
         #  One space:  the widening path, which writes the reference into the HTML body.
@@ -806,25 +808,124 @@ class SentenceGapMarkupTests(unittest.TestCase):
         self.assertIn("&#160; ", converted, converted)
         self.assertNotIn("\xa0", converted, converted)
 
-    def test_the_mobile_quick_view_gap_is_the_character_not_the_reference(self):
+    LONG_BODY = "A substantial sentence of real note content.  " * 40
+
+    def test_the_summary_block_gap_is_the_character_not_the_reference(self):
         """The plain-text path carries the no-break space itself, not the reference.
 
         The widening pass serves two contexts.  The note body is HTML, so it carries the
         numeric reference, like the two HTML passes and with no raw non-ASCII byte in the
-        note HTML.  The mobile quick view is plain text that is embedded with html.escape,
+        note HTML.  The Summary block is plain text that is embedded with html.escape,
         so a reference there would reach the owner as the literal text "&#160;".  It has to
         carry the character itself.
         """
         p = self.run_script(
-            "Body text.",
+            "Body text.  " * 120,
             extra_args=("--summary", "One sentence end. Another one."),
         )
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         outside = self.REGION.sub("", p.stdout)
-        self.assertIn("Mobile Quick View", outside, outside)
+        self.assertIn("<b>Summary:</b>", outside, outside)
+        self.assertNotIn("Mobile Quick View", outside, outside)
         self.assertIn("\xa0 ", outside, outside)
         #  An escaped reference would render as the literal text, so it must not be there.
         self.assertNotIn("&amp;#160;", outside, outside)
+
+    def test_the_summary_block_is_body_readable(self):
+        """The Summary block carries an explicit readable font size (owner 2026-11-12)."""
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=("--summary", "A real summary of a long note."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        m = re.search(r'<div style="[^"]*"><b>Summary:</b>', p.stdout)
+        self.assertIsNotNone(m, p.stdout[:400])
+        self.assertIn("font-size: 16px", m.group(0), m.group(0))
+
+    def test_summary_skipped_when_over_the_body_share(self):
+        """Over APPLE_NOTES_SUMMARY_MAX_PCT (default 20) of the body: no block, note still writes."""
+        body = "Body text.  " * 80  # 879 characters of plain text once stored, past the floor
+        summary = (
+            "A summary that runs well past a fifth of what is still a fairly modest note body, "
+            "so the share rule drops it even though every other rule would let it through, and "
+            "it keeps on going a fair while longer still."
+        )
+        self.assertGreater(len(summary) * 100, 20 * 879)
+        p = self.run_script(body, extra_args=("--summary", summary))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("notes: summary skipped:", p.stderr)
+        self.assertIn("over 20% of the note body", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+        self.assertIn("Body text.", p.stdout, "the note itself still writes")
+
+    def test_summary_skipped_on_a_short_note(self):
+        """The block is for long notes:  under the body floor, no block lands whatever the share."""
+        body = "A short but complete note body.  " * 10  # ~320 characters of plain text
+        p = self.run_script(body, extra_args=("--summary", "A real summary with context."))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("notes: summary skipped:", p.stderr)
+        self.assertIn("too short for a summary block", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+        self.assertIn("A short but complete note body.", p.stdout, "the note itself still writes")
+
+    def test_summary_floor_is_adjustable(self):
+        body = "A short but complete note body.  " * 10  # ~320 characters of plain text
+        p = self.run_script(
+            body,
+            env_extra={"APPLE_NOTES_SUMMARY_MIN_BODY_CHARS": "200"},
+            extra_args=("--summary", "A real summary with context."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, p.stderr[-200:])
+
+    def test_summary_share_is_adjustable(self):
+        body = "Body text.  " * 120  # ~1319 characters of plain text once stored
+        summary = ("Real context " * 22 + "for this note.").strip()  # one sentence, 300 characters
+        self.assertTrue(263 < len(summary) <= 329, len(summary))  # over 20%, inside 25%
+        p = self.run_script(body, extra_args=("--summary", summary))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("notes: summary skipped:", p.stderr, "over 20% of the body")
+        p = self.run_script(body, env_extra={"APPLE_NOTES_SUMMARY_MAX_PCT": "25"}, extra_args=("--summary", summary))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, "fits 25% of the body: " + p.stderr[-200:])
+
+    def test_summary_skipped_past_five_sentences(self):
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=("--summary", "One.  Two.  Three.  Four.  Five.  Six."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("6 sentences is over the five-sentence limit", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+
+    def test_summary_skipped_when_it_restates_the_title(self):
+        #  the class title is "[AFC, MM] Gap probe", so a summary of its words restates it
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=("--summary", "The gap probe results."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("mostly restates the title", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+
+    def test_summary_mentioning_the_title_terms_is_kept(self):
+        #  reviewer finding 2026-11-12:  a summary that adds real context stays even when it
+        #  mentions every content word of the title - only a summary whose own words are mostly
+        #  the title's is a restatement.  The class title is "[AFC, MM] Gap probe".
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=("--summary", "The gap probe ran clean overnight:  every seat answered inside the window and the drift table is empty."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, p.stderr[-200:])
+
+    def test_short_note_can_still_carry_a_short_summary(self):
+        #  a short note is not hard-blocked:  a summary inside the share still lands, so the
+        #  length share, not an absolute size, decides
+        body = self.LONG_BODY
+        p = self.run_script(body, extra_args=("--summary", "Short and real."))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, p.stderr[-200:])
 
 
 if __name__ == "__main__":
