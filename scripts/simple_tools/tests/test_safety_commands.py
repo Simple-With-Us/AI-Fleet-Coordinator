@@ -36,7 +36,7 @@ class ToOwnerTests(OwnerHarness):
         result = self.run_cli("post", "--topic", "OWNER AFC-1 question", "--to-owner", "--", "Which option?")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.last_post().form["content"],
-                         "[CLAUDE·%s→OWNER] %s**Jay Wedgeworth|%d** Which option?" % (TAG, AT, OWNER_ID))
+                         '[CLAUDE·%s → OWNER] %s**Jay Wedgeworth|%d** Which option?' % (TAG, AT, OWNER_ID))
 
     def test_the_mention_comes_from_the_live_name_for_that_id(self) -> None:
         self.pin_owner()
@@ -104,7 +104,7 @@ class ToOwnerTests(OwnerHarness):
         result = self.run_cli("post", "--topic", "t", "--to-owner", "--to", "Codex", "--to", "Jay Wedgeworth", "go")
         self.assertEqual(result.code, 0, result.err)
         content = self.last_post().form["content"]
-        self.assertEqual(content, "[CLAUDE·%s→OWNER,CODEX] %s**Jay Wedgeworth|%d** %s**Codex** go" % (TAG, AT, OWNER_ID, AT))
+        self.assertEqual(content, '[CLAUDE·%s → OWNER,\u200a\u200aCODEX] %s**Jay Wedgeworth|%d** %s**Codex** go' % (TAG, AT, OWNER_ID, AT))
         self.assertEqual(content.count("Jay Wedgeworth"), 1)
 
     def test_to_owner_works_with_stdin_text_and_the_fleet_wake_check_still_runs_first(self) -> None:
@@ -123,7 +123,7 @@ class ToOwnerTests(OwnerHarness):
         self.assertEqual(result.code, 0, result.err)
         form = self.last_post().form
         self.assertEqual((form["to"], form["topic"]), ("simple-tools", "OWNER AFC-2 thread"))
-        self.assertEqual(form["content"], "[CLAUDE·%s→OWNER] %s**Jay Wedgeworth|%d** Done." % (TAG, AT, OWNER_ID))
+        self.assertEqual(form["content"], '[CLAUDE·%s → OWNER] %s**Jay Wedgeworth|%d** Done.' % (TAG, AT, OWNER_ID))
 
     def test_reply_to_owner_unpinned_exits_2_before_any_request(self) -> None:
         original = self.fake.add_message("Codex", "simple-tools", "t", "question")
