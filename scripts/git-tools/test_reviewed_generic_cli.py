@@ -63,8 +63,10 @@ class CliPublicIntegrityTests(unittest.TestCase):
                 with patch.object(scanner, "_REVIEWED_PUBLIC_INTEGRITIES", registry):
                     self.assertIsNone(git._scan_arguments(args, "", tool))
                     self.assertIsNotNone(git._scan_arguments(args, "Ab1", tool))
-                    self.assertEqual(git._scan_arguments(dict(args, message=body), "", tool),
-                                     "secret_scan:message")
+                    self.assertEqual(
+                        git._scan_arguments(dict(args, message=body), "", tool),
+                        "secret_scan:message",
+                    )
                     self.assertIsNotNone(git._scan_arguments(dict(args, repo=repo + "2"), "", tool))
                     self.assertIsNotNone(git._scan_arguments(args, "", "gr_wf_issue_create"))
         with patch.object(scanner, "_REVIEWED_PUBLIC_INTEGRITIES", registry):
@@ -72,5 +74,7 @@ class CliPublicIntegrityTests(unittest.TestCase):
                 changed = dict(single, content_b64=base64.b64encode(text.encode()).decode())
                 self.assertIsNotNone(git._scan_arguments(changed, "", "gr_wf_file_put"))
             # A second unreviewed file cannot borrow the first file's admission.
-            other = dict(multi, files=multi["files"] + [{"path": "other.json", "content_b64": encoded}])
+            other = dict(
+                multi, files=multi["files"] + [{"path": "other.json", "content_b64": encoded}]
+            )
             self.assertIsNotNone(git._scan_arguments(other, "", "gr_wf_files_put"))
