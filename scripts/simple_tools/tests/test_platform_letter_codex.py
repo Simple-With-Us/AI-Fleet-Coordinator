@@ -716,14 +716,25 @@ class BinaryTests(Base):
         seen = []
 
         def popen(argv, **kw):
-            seen.append(argv)
+            seen.append((argv, kw["env"]))
             return FakeServer("ws" if argv[-1] == "proxy" else "lines", standard)
 
-        env = self.env(CODEX_LETTER_BIN=binary)
+        env = self.env(CODEX_LETTER_BIN=binary, AGENT_LAUNCHER="platform-launcher", OPENAI_API_KEY="fake.app-auth",
+                       SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN="fake.bootstrap",
+                       FLEET_KNOBS_INFISICAL_TOKEN="fake.old", FLEET_KNOBS_WRITE_TOKEN="fake.writer")
+        original = dict(env)
         for daemon, framing, argv in ((True, "ws", [binary, "app-server", "proxy"]), (False, "lines", [binary, "app-server"])):
             with C.open_rpc(env, deadline(), daemon=daemon, popen=popen) as rpc:
                 self.assertEqual(rpc.framing, framing)
-            self.assertEqual(seen[-1], argv)
+            self.assertEqual(seen[-1][0], argv)
+            child = seen[-1][1]
+            self.assertEqual(child["CODEX_HOME"], self.codex)
+            self.assertEqual(child["AGENT_LAUNCHER"], "platform-launcher")
+            self.assertEqual(child["OPENAI_API_KEY"], "fake.app-auth")
+            for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN", "FLEET_KNOBS_INFISICAL_TOKEN",
+                         "FLEET_KNOBS_WRITE_TOKEN", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+                self.assertNotIn(name, child)
+        self.assertEqual(env, original)
         with self.assertRaises(C.RpcError):
             C.open_rpc(self.env(CODEX_LETTER_BIN="/nonexistent/codex"), deadline(), daemon=False, popen=popen)
 
