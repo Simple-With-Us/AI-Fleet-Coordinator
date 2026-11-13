@@ -545,17 +545,22 @@ export function ownIntro(prefix, text) {
   const end = text.indexOf("]", start);
   if (end < 0 || /[\r\n\[]/.test(text.slice(start + 1, end))) return null;
   const intro = text.slice(0, end);
-  return { end, intro, rest: text.slice(end + 1) };
+  return { end, intro, leading, rest: text.slice(end + 1) };
 }
 
 /** The text with every leading own-seat intro removed (`[SEAT]`, `[SEAT 📁AFC]`, a legacy `[SEAT] [SEAT 📁AFC]`
- * pair, each optionally after 👀).  A foreign-seat or malformed bracket is content and stays.  Text that is only an
+ * pair, each optionally after 👀 or :eyes:).  The pre-bracket lead stays, including a no-wake marker.
+ * A foreign-seat or malformed bracket is content and stays.  Text that is only an
  * intro is returned unchanged, so a write never goes out empty. */
 export function stripOwnIntro(seat, text) {
   const original = String(text ?? "");
   let rest = original;
-  for (let own = ownIntro(`[${seat}`, rest); own; own = ownIntro(`[${seat}`, rest)) rest = own.rest.replace(/^[ \t]*(?:\r?\n)*/u, "");
-  return rest.trim() ? rest : original;
+  let leading = "";
+  for (let own = ownIntro(`[${seat}`, rest); own; own = ownIntro(`[${seat}`, rest)) {
+    leading += own.leading;
+    rest = own.rest.replace(/^[ \t]*(?:\r?\n)*/u, "");
+  }
+  return rest.trim() ? leading + rest : original;
 }
 
 // A body mention counts only where Zulip would notify:  outside code and block quotes, and with
