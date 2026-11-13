@@ -247,6 +247,20 @@ test("a search waits longer than a write: the read budget is 45 s, the write bud
 
 // ---------------------------------------------------------------- the request
 
+test("search refuses credential-shaped input before budget reservation, upstream or query rendering", async () => {
+  const { tools, upstream, logs } = harness();
+  let reserved = 0;
+  tools.reserve = async () => { reserved += 1; };
+  const query = "inspect " + "sk-" + "x".repeat(24);
+  const error = toolError(await tools.call("recall_search", { query }), "refused_secret");
+  assert.equal(error.message, "refused_secret:query");
+  assert.equal(reserved, 0);
+  assert.equal(upstream.requests.length, 0);
+  assert.ok(!JSON.stringify(error).includes(query));
+  assert.ok(!logs.join("\n").includes(query));
+  assert.ok(!logs.join("\n").includes("x".repeat(24)));
+});
+
 test("search sends the three auth headers, a real User-Agent, no redirects and only the documented fields", async () => {
   const { tools, upstream } = harness();
   ok(await tools.call("recall_search", { query: "  simple-tools bridge ", limit: 3, app: "fleet", category: "lesson" }), "recall_search");
