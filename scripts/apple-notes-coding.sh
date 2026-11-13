@@ -5,7 +5,7 @@
 #
 #   Title:  "[TEAM_KEY, Agent] Topic"  e.g. "[UM, Claude] TestFlight first ship"
 #           Multi-app: "[ST, CT, MM] …"  Acronyms: UM ST CT CTS AFC (TEAM_KEY is the team key)
-#   Row 2:  "Sun, Aug 9, 3:52 PM"        local create/update stamp (auto-injected)
+#   Row 2:  "Sun, Aug 9, 3:52 PM"        America/Chicago create/update stamp (auto-injected)
 #
 # Usage:
 #   apple-notes-coding.sh "Title" "Plain body text or Markdown"
