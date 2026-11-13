@@ -119,6 +119,10 @@ CHILD_ENV_KEYS = (
     "APPLE_NOTES_PIN_RETRY",
     #  Not a credential:  where the script writes its action log (AFC-486), or `off`.
     "APPLE_NOTES_ACTION_LOG",
+    #  Not credentials:  the operator's local tuning for the optional Summary block
+    #  (body floor and share cap;  the script's compiled defaults hold when unset).
+    "APPLE_NOTES_SUMMARY_MIN_BODY_CHARS",
+    "APPLE_NOTES_SUMMARY_MAX_PCT",
 )
 #  Keys the write-time RAG child may inherit.  Values are never logged here.  On the Mac the
 #  scoped Infisical service-token binding (`FLEET_RECALL_INFISICAL_TOKEN`) is the supported
