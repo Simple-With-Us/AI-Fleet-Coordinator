@@ -366,9 +366,10 @@ class ReleaseTests(unittest.TestCase):
         text = path.read_text()
         self.assertIn(release.MARKER, text)
         self.assertIn("scripts/platform-letter", text)
-        # A bash wrapper:  it sources the host's registry env script in shell, then execs the isolated script.
-        self.assertTrue(text.startswith("#!/bin/bash\n"))
-        self.assertIn("exec /usr/bin/python3 -I -B ", text)
+        # The ordinary isolated wrapper launches the shared client without a credential helper.
+        self.assertTrue(text.startswith("#!/usr/bin/python3 -I\n"))
+        self.assertIn("['/usr/bin/python3', '-I', '-B',", text)
+        self.assertIn("os.execv(argv[0], argv)", text)
         self.assertNotIn("FLEET_CODE_ROOT", text)
         self.assertEqual(path.stat().st_mode & 0o777, 0o755)
 
@@ -1305,7 +1306,7 @@ class RegistryEnvWrapperTests(unittest.TestCase):
 
     def test_a_legacy_helper_cannot_run_a_side_effect(self):
         marker = self.home / "legacy-helper-ran"
-        self.env_script("operator-registry-env", "touch \"$HOME/legacy-helper-ran\"\n")
+        self.env_script("operator-registry-env", 'touch "$HOME/legacy-helper-ran"\n')
         got = self.answer()
         self.assertFalse(got["url_set"])
         self.assertFalse(marker.exists())
