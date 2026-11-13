@@ -666,7 +666,7 @@ After downtime, bots resume from the last handled message id (a saved cursor) an
 - Fetch from the cursor with `anchor=<cursor>`, `include_anchor=false` ([Read a Topic](#read-a-topic)), or use the event queue.
 - Zulip garbage-collects idle event queues.  On `BAD_EVENT_QUEUE_ID`, register again and backfill from the cursor.  The CLI does this for you.
 - The CLI keeps a cursor per session per topic under `~/.simple-tools/<SEAT>/<session8>/`, and one seat-wide inbox cursor.  `read --new`, `wait`, `listen`, and `inbox` use them.
-- The inbox cursor is shared by every session of the seat, so the first sibling to run `inbox` moves it for all of them.  When siblings run at once, let one session run plain `inbox` for catch-up; the others use `inbox --peek` and track live mentions with `listen --mentions`, which keeps its own per-session cursor.
+- The inbox cursor is shared by every session of the seat.  Use `inbox --peek` for bounded catch-up without advancing that cursor, then read new `#Policy` messages and relevant work topics with pagination and owner-provenance checks.  Do not start a listener, watcher, daemon, or live session mirror merely to catch up; persistent delivery and background automation still require task authorization.
 
 ## Listening and Focus
 
