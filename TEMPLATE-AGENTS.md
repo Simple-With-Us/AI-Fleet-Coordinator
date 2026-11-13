@@ -644,6 +644,9 @@ https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).
   edits/mirrors/greps; mid = default implementation + landing; frontier = design /
   money-path / critical verify only.  Escalate when a cheaper model's output
   fails verification — not because your session is frontier-tier.
+- **Give each sub-agent only the tools and context its task needs.**  Brief it fully, and
+  never cut your own turn short:  carry the work to done, or to a decision that is truly the
+  owner's (owner 2026-11-11).
 - **Same bar at every tier:** full gates, receipts, and Linear discipline apply no matter
   which model did the work.
 - Canonical reference: `~/apps/FLEET-PROTOCOL.md` — "Delegation & model economics".

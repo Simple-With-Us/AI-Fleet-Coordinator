@@ -1,4 +1,5 @@
 import { withServiceTitle } from "./tool-titles.js";
+import { isSingleThread } from "./session-ids.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
@@ -42,6 +43,7 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
+  stripOwnIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
   formatTime,
@@ -2013,10 +2015,13 @@ export class HostedTools {
   }
 
   /** The caller's Linear body as posted:  no seat tag is prepended and a supplied session is not
-   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  `session` stays on
-   * the signature because callers and idempotency keys still pass it. */
+   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  A single-thread seat's
+   * own typed intro is dropped too (Jay 2026-11-12):  its app already names it, while a multi-threaded
+   * seat keeps its intro because it names the thread.  `session` stays on the signature because callers
+   * and idempotency keys still pass it. */
   linearBody(text, session) {
     void session;
+    if (isSingleThread(this.seat)) text = stripOwnIntro(seatTagForSeat(this.seat), text);
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
     // AFC-722:  the full house gap (one or more spaces), unless the call passed sentence_gap: false.
@@ -2293,7 +2298,8 @@ export class HostedTools {
   linearFileBody(args, slug, team) {
     const seat = seatTagForSeat(this.seat);
     const text = args.description?.trim() || "_No description given._";
-    const footer = [`---`, "", "**Filed from simple-tools**", "", `- Reported by ${seat}`, `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
+    // A single-thread seat's Linear app is the reporter, so it gets no Reported by line (Jay 2026-11-12).
+    const footer = [`---`, "", "**Filed from simple-tools**", "", ...(isSingleThread(this.seat) ? [] : [`- Reported by ${seat}`]), `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
     if (args.kind) footer.push(`- Kind: ${args.kind}`);
     if (args.severity) footer.push(`- Severity: ${args.severity}`);
     if (args.env) footer.push(`- Env: ${ENVS[args.env]}`);

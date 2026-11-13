@@ -516,6 +516,16 @@ export function ownIntro(prefix, text) {
   return { end, intro, rest: text.slice(end + 1) };
 }
 
+/** The text with every leading own-seat intro removed (`[SEAT]`, `[SEAT 📁AFC]`, a legacy `[SEAT] [SEAT 📁AFC]`
+ * pair, each optionally after 👀).  A foreign-seat or malformed bracket is content and stays.  Text that is only an
+ * intro is returned unchanged, so a write never goes out empty. */
+export function stripOwnIntro(seat, text) {
+  const original = String(text ?? "");
+  let rest = original;
+  for (let own = ownIntro(`[${seat}`, rest); own; own = ownIntro(`[${seat}`, rest)) rest = own.rest.replace(/^[ \t]*(?:\r?\n)*/u, "");
+  return rest.trim() ? rest : original;
+}
+
 // A body mention counts only where Zulip would notify:  outside code and block quotes, and with
 // only whitespace or opening punctuation before the @.  Same rule as cli.py _mentions_missing_from.
 const CODE_BLOCK_RE = /^(```|~~~)[\s\S]*?(?:^\1\s*$|(?![\s\S]))/gm;
