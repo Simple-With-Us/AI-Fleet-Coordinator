@@ -350,8 +350,10 @@ class BridgeTests(unittest.TestCase):
 
 class RuleTests(unittest.TestCase):
     def test_exact_hair_space_header_keeps_all_recipient_tokens(self):
-        header = ("[INSTINCT:\u200a\u200a\u200aAA.1.S\u200a\u200a📁\u200aAFC,\u200aOPS"
-                  " → CODEX EE,\u200a\u200aMC]")
+        header = (
+            "[INSTINCT:\u200a\u200a\u200aAA.1.S\u200a\u200a📁\u200aAFC,\u200aOPS"
+            " → CODEX EE,\u200a\u200aMC]"
+        )
         self.assertTrue(bridge.is_own_post(header, SEAT))
         self.assertTrue(bridge.skim_match(header, "CODEX"))
         self.assertTrue(bridge.skim_match(header, "MC"))
