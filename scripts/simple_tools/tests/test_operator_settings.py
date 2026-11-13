@@ -238,6 +238,28 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(editor.CANONICAL_HOME["key"], settings.KEY)
         self.assertEqual(editor.CANONICAL_HOME["folder"], settings.FOLDER)
 
+    def test_canonical_wire_cannot_widen_the_packaged_schema(self):
+        from simple_tools import config
+        widened = copy.deepcopy(self.allowlist)
+        widened["tables"]["daemon"]["coalesce_seconds"]["max"] = 5000
+        request = {
+            "action": "save", "allowlist": dict(widened, schemaVersion=1),
+            "set": {"daemon.coalesce_seconds": 4000.0},
+            "expectBaseSHA256": settings.revision(self.document),
+        }
+        def checker(candidate, _):
+            parsed = editor._parse(Path(candidate).read_text(), "fixture")
+            return {"ok": not config.from_dict(parsed).errors}
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store):
+            answer, code = editor.run_request(
+                request, path=self.path, checker=checker,
+                reloader=lambda _: {"ok": True, "confirmed": True, "revision": settings.revision(self.store.document)},
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(answer["errorCode"], "value_not_allowed")
+        self.assertEqual(self.store.writes, [])
+        self.assertEqual(self.path.read_text(), self.original)
+
     def runtime_env(self):
         return {
             settings.READ_BINDING: "st." + secrets.token_urlsafe(32),
