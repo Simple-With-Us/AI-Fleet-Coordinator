@@ -78,15 +78,19 @@ class PublicActivityTests(unittest.TestCase):
     def test_current_public_surfaces_keep_visibility_checks(self) -> None:
         def api(request: object, timeout: int) -> Reply:
             repo = request.full_url.rsplit("/", 1)[-1]  # type: ignore[attr-defined]
-            return Reply({
-                "private": repo == "FleetLink",
-                "visibility": "private" if repo == "FleetLink" else "public",
-                "owner": {"login": "Simple-With-Us"},
-            })
+            return Reply(
+                {
+                    "private": repo == "FleetLink",
+                    "visibility": "private" if repo == "FleetLink" else "public",
+                    "owner": {"login": "Simple-With-Us"},
+                }
+            )
 
         with patch("public_activity_repos.urllib.request.urlopen", side_effect=api) as get:
             selected = select_public_repos(
-                "Simple-With-Us", ["FleetLink", "Simple-With-Us", "Fleet-OPS", "fleetlink-legacy"], "fixture"
+                "Simple-With-Us",
+                ["FleetLink", "Simple-With-Us", "Fleet-OPS", "fleetlink-legacy"],
+                "fixture",
             )
         self.assertEqual(selected, ["Simple-With-Us"])
         # Private inventory is rejected before even querying its visibility.
@@ -106,7 +110,9 @@ class PublicActivityTests(unittest.TestCase):
             if seat.get("retired"):
                 continue
             with self.subTest(seat=seat["tag"]):
-                agents, clean = digest.extract_agents_and_clean(f'[{seat["tag"]}] Refresh public feed')
+                agents, clean = digest.extract_agents_and_clean(
+                    f"[{seat['tag']}] Refresh public feed"
+                )
                 self.assertTrue(agents)
                 self.assertEqual(clean, "Refresh public feed")
                 rendered = digest.agent_icons_html(agents)
@@ -119,8 +125,15 @@ class PublicActivityTests(unittest.TestCase):
             "[ECHO/WISE] Refresh public feed": ["instinct"],
             "[BF-ENGINEER/GB-FIXER] Refresh public feed": ["app-bf", "grok-bot"],
             "[JET-CHAT] Refresh public feed": ["chatgpt"],
-            "[MiniMax Code/Muse Code/Kimi Code/Z Code] Refresh public feed": ["minimax", "muse", "kimi", "zcode"],
-            "[OPENCODE:\u200a\u200a\u200aHH.1.S\u200a\u200a📁\u200aAFC] Refresh public feed": ["opencode"],
+            "[MiniMax Code/Muse Code/Kimi Code/Z Code] Refresh public feed": [
+                "minimax",
+                "muse",
+                "kimi",
+                "zcode",
+            ],
+            "[OPENCODE:\u200a\u200a\u200aHH.1.S\u200a\u200a📁\u200aAFC] Refresh public feed": [
+                "opencode"
+            ],
             "👀[CODEX:\u200a\u200a\u200aHH.1.S] Refresh public feed": ["codex"],
             "👀[ECHO\u200a\u200a📁\u200aAFC] Refresh public feed": ["instinct"],
         }
@@ -132,16 +145,27 @@ class PublicActivityTests(unittest.TestCase):
         fallback = digest.agent_icons_html(["opencode"])
         self.assertIn("OpenCode</span>", fallback)
         self.assertNotIn("<img", fallback)
-        for title in ("Fix Clutch connection settings", "Clutch remote sessions", "Support OpenCode and ChatGPT clients"):
+        for title in (
+            "Fix Clutch connection settings",
+            "Clutch remote sessions",
+            "Support OpenCode and ChatGPT clients",
+        ):
             self.assertEqual(digest.extract_agents_and_clean(title), ([], title))
 
     def test_legend_and_favicon_use_current_public_sources(self) -> None:
-        rendered = digest.build_html([], datetime(2026, 11, 13, tzinfo=UTC), ZoneInfo("America/Chicago"), "https://example.com")
+        rendered = digest.build_html(
+            [],
+            datetime(2026, 11, 13, tzinfo=UTC),
+            ZoneInfo("America/Chicago"),
+            "https://example.com",
+        )
         self.assertIn("Muster / AI Fleet Coordinator", rendered)
         self.assertIn("FleetLink", rendered)
         self.assertIn("Simple With Us", rendered)
         self.assertIn('href="agent-logos/app-afc.png"', rendered)
-        self.assertIn('href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)"', rendered)
+        self.assertIn(
+            'href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)"', rendered
+        )
         for filename in re.findall(r'(?:src|href)="agent-logos/([^"<>]+)"', rendered):
             self.assertTrue((digest.LOGO_DIR / filename).is_file(), filename)
 

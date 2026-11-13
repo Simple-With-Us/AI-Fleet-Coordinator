@@ -532,7 +532,8 @@ _AGENT_ENVELOPE = re.compile(
     rf"(?:👀)?\[({_AGENT_ALT})(?:"
     rf":\s*[A-Z]{{2}}\.\d+\.[MSC](?:\s*📁[^\]\n]*)?"
     rf"|\s*📁[^\]\n]*"
-    rf")\]", re.IGNORECASE
+    rf")\]",
+    re.IGNORECASE,
 )
 _AGENT_BARE_PREFIX = re.compile(
     rf"^(?:by\s+)?({_AGENT_IMPLICIT_ALT})\b[,:\s\-–—]*",
@@ -789,7 +790,9 @@ def repo_legend_html() -> str:
             )
         else:
             badge = f'<span class="repo {css}">{html.escape(short)}</span>'
-        items.append(f'<span class="legend-item">{badge}<span class="legend-label">{label}</span></span>')
+        items.append(
+            f'<span class="legend-item">{badge}<span class="legend-label">{label}</span></span>'
+        )
     return "".join(items)
 
 

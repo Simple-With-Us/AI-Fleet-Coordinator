@@ -9,7 +9,9 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-spec = importlib.util.spec_from_file_location("digest", ROOT / "scripts/build-fleet-daily-digest.py")
+spec = importlib.util.spec_from_file_location(
+    "digest", ROOT / "scripts/build-fleet-daily-digest.py"
+)
 assert spec and spec.loader
 digest = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = digest
@@ -49,5 +51,5 @@ days = [
 rendered = digest.build_html(
     days, datetime(2026, 10, 28, 18, tzinfo=UTC), ZoneInfo("America/Chicago"), "https://example.com"
 )
-rendered = rendered.replace('<head>\n', '<head>\n  <base href="/" />\n', 1)
+rendered = rendered.replace("<head>\n", '<head>\n  <base href="/" />\n', 1)
 (ROOT / "visual-tests/tests/fixtures/digest-2day.html").write_text(rendered)
