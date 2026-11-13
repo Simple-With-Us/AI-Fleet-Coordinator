@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import fleet_infisical as core
 import fleet_infisical_cli as cli
+
 from fleet_secrets import sync_cli_login as sync
 
 
@@ -30,8 +31,12 @@ class ProtocolIntegrationTests(unittest.TestCase):
         self.value = secrets.token_urlsafe(40)
         self.token = "st." + secrets.token_urlsafe(32)
         self.path, self.name = "/cli-logins/CODEX", "GH_TOKEN"
-        self.env = {"HOME": str(self.home), core.ENV_PROJECT: self.project,
-                    core.ENV_WRITE_TOKEN: self.token, "GH_TOKEN": self.value}
+        self.env = {
+            "HOME": str(self.home),
+            core.ENV_PROJECT: self.project,
+            core.ENV_WRITE_TOKEN: self.token,
+            "GH_TOKEN": self.value,
+        }
         self.calls, self.mutations = [], []
         self.status, self.read_status = 200, 200
         patch = mock.patch.object(core, "_api_json", self.api)
@@ -42,14 +47,23 @@ class ProtocolIntegrationTests(unittest.TestCase):
         self.assertEqual(token, self.token)
         self.calls.append((method, endpoint))
         if endpoint == "/v2/service-token":
-            return 200, dict(workspace=self.project, permissions=["read", "write"],
-                             scopes=[dict(environment="prod", secretPath=self.path)],
-                             expiresAt="2099-01-01T00:00:00Z")
+            return 200, dict(
+                workspace=self.project,
+                permissions=["read", "write"],
+                scopes=[dict(environment="prod", secretPath=self.path)],
+                expiresAt="2099-01-01T00:00:00Z",
+            )
         if method in ("PATCH", "POST"):
             self.mutations.append(method)
-            self.stored = dict(secretKey=self.name, secretValue=body["secretValue"],
-                               workspace=self.project, environment="prod", secretPath=self.path,
-                               type="shared", secretValueHidden=False)
+            self.stored = dict(
+                secretKey=self.name,
+                secretValue=body["secretValue"],
+                workspace=self.project,
+                environment="prod",
+                secretPath=self.path,
+                type="shared",
+                secretValueHidden=False,
+            )
             if self.status in (200, 201):
                 kwargs["on_status"](self.status)
             return self.status, {}
@@ -59,13 +73,17 @@ class ProtocolIntegrationTests(unittest.TestCase):
         return self.read_status, {"secret": self.stored}
 
     def identity(self, intent):
-        return ["--request-id", intent.request_id, "--request-created-at", str(intent.created_at_ms)]
+        return [
+            "--request-id",
+            intent.request_id,
+            "--request-created-at",
+            str(intent.created_at_ms),
+        ]
 
     def call_cli(self, extra=(), output=None):
         out, err = output if output is not None else io.StringIO(), io.StringIO()
         with mock.patch.object(cli.sys, "stdin", io.StringIO(self.value + "\n")):
-            code = cli.main(["set", self.name, "--path", self.path, *extra],
-                            self.env, out, err)
+            code = cli.main(["set", self.name, "--path", self.path, *extra], self.env, out, err)
         return code, out.getvalue(), err.getvalue()
 
     def call_sync(self, extra=(), output=None):
@@ -73,8 +91,13 @@ class ProtocolIntegrationTests(unittest.TestCase):
         code = sync.main(["--name", self.name, "--path", self.path, *extra], self.env, out, err)
         return code, out.getvalue(), err.getvalue()
 
-    def test_lost_success_receipt_then_same_identity_retry_never_writes_again_for_either_entry(self):
-        for call, purpose in ((self.call_cli, "fleet-infisical-cli"), (self.call_sync, "cli-login-sync")):
+    def test_lost_success_receipt_then_same_identity_retry_never_writes_again_for_either_entry(
+        self,
+    ):
+        for call, purpose in (
+            (self.call_cli, "fleet-infisical-cli"),
+            (self.call_sync, "cli-login-sync"),
+        ):
             with self.subTest(purpose=purpose):
                 intent = cli.write_intent_for_cli(self.env, purpose)
                 before_mutations = len(self.mutations)
@@ -87,7 +110,9 @@ class ProtocolIntegrationTests(unittest.TestCase):
                 self.assertEqual(self.calls, before_calls)
                 self.assertEqual(len(self.mutations), before_mutations + 1)
 
-    def test_fresh_sync_caller_cannot_bypass_cli_unknown_or_obscure_original_recovery_identity(self):
+    def test_fresh_sync_caller_cannot_bypass_cli_unknown_or_obscure_original_recovery_identity(
+        self,
+    ):
         self.status = 0
         code, out, _ = self.call_cli()
         self.assertEqual(code, 4)
@@ -111,11 +136,17 @@ class ProtocolIntegrationTests(unittest.TestCase):
         first = json.loads(out)
         self.assertEqual((code, first["outcome"]), (4, "accepted_unverified"))
         self.read_status = 200
-        intent = cli.write_intent_for_cli(self.env, first["purpose"], first["request_id"], first["created_at_ms"])
+        intent = cli.write_intent_for_cli(
+            self.env, first["purpose"], first["request_id"], first["created_at_ms"]
+        )
         with mock.patch.object(cli.sys, "stdin", None):
             output, error = io.StringIO(), io.StringIO()
-            code = cli.main(["set", self.name, "--path", self.path,
-                             *self.identity(intent), "--reconcile"], self.env, output, error)
+            code = cli.main(
+                ["set", self.name, "--path", self.path, *self.identity(intent), "--reconcile"],
+                self.env,
+                output,
+                error,
+            )
         self.assertEqual((code, error.getvalue()), (0, ""))
         self.assertEqual(json.loads(output.getvalue())["outcome"], "ok")
         self.assertEqual(self.mutations, ["PATCH"])
@@ -128,8 +159,14 @@ class ProtocolIntegrationTests(unittest.TestCase):
         created = int(re.search(r"requestCreatedAt=([0-9]+)", err).group(1))
         intent = cli.write_intent_for_cli(self.env, "cli-login-sync", request_id, created)
         self.read_status = 200
-        with (mock.patch.object(sync, "read_value", side_effect=AssertionError("recovery read source")),
-              mock.patch.object(core, "put_secret", side_effect=AssertionError("recovery dispatched put"))):
+        with (
+            mock.patch.object(
+                sync, "read_value", side_effect=AssertionError("recovery read source")
+            ),
+            mock.patch.object(
+                core, "put_secret", side_effect=AssertionError("recovery dispatched put")
+            ),
+        ):
             code, out, err = self.call_sync([*self.identity(intent), "--reconcile"])
         self.assertEqual((code, err), (0, ""))
         self.assertIn(request_id, out)
