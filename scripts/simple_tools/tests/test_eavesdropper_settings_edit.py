@@ -130,7 +130,10 @@ class AllowlistTests(Case):
         doc = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
         self.assertIs(doc["applyEnabled"], False)
         checked = M.validate_allowlist(doc)
-        self.assertEqual(sorted(checked["seat"]), ["budget", "enabled", "live", "routine", "wake"])
+        self.assertEqual(
+            sorted(checked["seat"]),
+            ["bracket_recipient_wakes", "budget", "enabled", "live", "routine", "wake"],
+        )
         self.assertEqual(
             sorted(checked["tables"]),
             ["daemon", "linear_comments", "linear_projects", "listener_api", "notes_queue"],
