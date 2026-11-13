@@ -2520,6 +2520,74 @@ class UnletteredRepairTests(Base):
         self.assertNotIn("s-0106", json.dumps(out))
 
 
+class RepairCliTests(Base):
+    """`platform-letter repair`:  the verb a host's own schedule ticks, so a chat whose hook never runs (an
+    app-driven chat) still gets its start replayed, throttled by the same stamp the start-hook pass uses."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.unlettered: list[str] = []
+
+        def unlettered_sessions(env):
+            return list(self.unlettered)
+
+        def chat_payload(sid):
+            return {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid}
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=unlettered_sessions,
+            chat_payload=chat_payload,
+        )
+
+    def repair(self, *argv: str, now: float | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": self.spec}):
+            code = PL.repair_main(
+                list(argv), self.server_env(), out, now=now, platform="linux", transport=Calls(self),
+            )
+        return code, out.getvalue()
+
+    def label(self, sid: str) -> str:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)["label"]
+
+    def test_the_verb_replays_and_reports_each_chat(self) -> None:
+        self.unlettered.append("s-0200")
+        code, out = self.repair("--platform", "faux", "--location", "server", now=1000.0)
+        self.assertEqual(code, 0)
+        self.assertIn("s-0200", out)
+        self.assertIn("letter back", out)
+        self.assertRegex(self.label("s-0200"), PAIR)
+
+    def test_the_stamp_throttles_without_force(self) -> None:
+        self.unlettered.append("s-0201")
+        code, out = self.repair("--platform", "faux", "--location", "server", now=1000.0)
+        self.assertEqual(code, 0)
+        code, out = self.repair("--platform", "faux", "--location", "server", now=1001.0)
+        self.assertIn("not due", out)
+        code, out = self.repair("--platform", "faux", "--location", "server", "--force", now=1001.0)
+        self.assertIn("s-0201", out)
+
+    def test_a_platform_with_no_surface_is_a_bad_argument(self) -> None:
+        plain = make_spec(platform="faux", source="faux-hook", display="Faux")
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": plain}):
+            code = PL.repair_main(
+                ["--platform", "faux", "--location", "server"], self.server_env(), out,
+                platform="linux", transport=Calls(self),
+            )
+        self.assertEqual(code, 2)
+
+    def test_with_no_platform_named_every_surface_is_ticked(self) -> None:
+        self.unlettered.append("s-0202")
+        code, out = self.repair("--location", "server", now=1000.0)
+        self.assertEqual(code, 0)
+        self.assertIn("s-0202", out)
+
+
 class GoneReportTests(Base):
     """Chats that are gone for good (a platform's app archived them) release their letters:  a chat's start reports
     them to the assigner in one `report-gone` call per host and platform, at most once a window, and nothing it does
