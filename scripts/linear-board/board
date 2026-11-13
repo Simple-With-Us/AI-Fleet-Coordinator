@@ -1356,12 +1356,15 @@ def seat_tag(seat: str, sessions: list[str] | None) -> str:
     return f"[{seat}·{s8}]" if s8 else f"[{seat}]"
 
 
+def own_intro_lead(text: str) -> str:
+    return re.match(r"\s*(?:(?:👀|:eyes:)\s*)?", text).group(0)
+
+
 def opens_with_own_intro(seat: str, text: str) -> bool:
     """True when `text` already opens with this seat's own intro (`[SEAT]`, `[SEAT·s8 ...]`,
     `[SEAT 📁AFC]`, `[SEAT: HH.1.C 📁AFC]`), optionally after 👀:  the hosted contract.js
     ownIntro rule.  A foreign-seat or malformed bracket is content (AFC-692)."""
-    lead = re.match(r"(?:👀\s*)?\s*", text)
-    start = lead.end() if lead else 0
+    start = len(own_intro_lead(text))
     if not text.startswith("[" + seat, start):
         return False
     after = start + 1 + len(seat)
@@ -1375,11 +1378,12 @@ def opens_with_own_intro(seat: str, text: str) -> bool:
 def strip_own_intro(seat: str, text: str) -> str:
     """`text` with every leading own-seat intro removed (the hosted contract.js stripOwnIntro rule).  A
     foreign-seat or malformed bracket stays;  text that is only an intro is returned unchanged."""
-    rest = text
+    rest, leading = text, ""
     while opens_with_own_intro(seat, rest):
+        leading += own_intro_lead(rest)
         rest = rest[rest.find("]") + 1 :]
         rest = re.sub(r"^[ \t]*(?:\r?\n)*", "", rest)
-    return rest if rest.strip() else text
+    return leading + rest if rest.strip() else text
 
 
 def tagged(seat: str, sessions: list[str] | None, text: str) -> str:
