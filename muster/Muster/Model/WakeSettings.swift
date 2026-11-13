@@ -1033,12 +1033,14 @@ struct WakeSetting: Identifiable, Equatable {
     }
 
     /// What the file's column shows when it is not a field:  a wake cap reads No Limit when the
-    /// file was read and holds none, and Paused at 0.  A file that was not read is never No Limit.
+    /// file was read and holds none, and Paused at 0;  a boolean reads Off (default) only when the
+    /// file was read and holds no value.  A file that was not read is never No Limit and never
+    /// claims the daemon's default.
     var fileWords: String {
         if key.isWakeCap, fileLimit != .notKnown {
             return fileLimit.text
         }
-        if key.isBool {
+        if key.isBool, fileLimit != .notKnown {
             guard case .bool(let on) = configured else { return "Off (default)" }
             return on ? "On" : "Off"
         }
