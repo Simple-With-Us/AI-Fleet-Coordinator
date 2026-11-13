@@ -1089,6 +1089,15 @@ private struct WakeSettingRow: View {
     let moved: Bool
     @Binding var draft: String
 
+    /// The switch for a true/false setting:  On drafts `true`, Off takes the setting out, and
+    /// out is the eavesdropper's default (Off), so the file is never given an explicit `false`.
+    private var boolDraft: Binding<Bool> {
+        Binding(
+            get: { draft.trimmingCharacters(in: .whitespaces).lowercased() == "true" },
+            set: { draft = $0 ? "true" : "" }
+        )
+    }
+
     /// The text field shows nothing for a setting the file does not hold, with a placeholder, and
     /// an emptied field means take the setting out, as the dash does.
     private var fieldText: Binding<String> {
@@ -1126,7 +1135,18 @@ private struct WakeSettingRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if editable {
+                if editable, setting.key.isBool {
+                    HStack(spacing: 6) {
+                        Toggle("On", isOn: boolDraft)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .help(setting.title + ":  the eavesdropper's default is Off.")
+                        Text(boolDraft.wrappedValue ? "On" : "Off")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else if editable {
                     TextField(setting.title, text: fieldText, prompt: Text(fieldPrompt))
                     .labelsHidden()
                     .textFieldStyle(.roundedBorder)
