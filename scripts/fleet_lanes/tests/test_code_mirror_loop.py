@@ -6,6 +6,8 @@ import fcntl
 from pathlib import Path
 import tempfile
 import sys
+import stat
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -123,6 +125,41 @@ class LoopTests(unittest.TestCase):
 
 
 class BindingTests(unittest.TestCase):
+    def test_systemd_acl_credential_accepts_only_protected_root_layout(self):
+        directory = Path("/run/credentials/code-main-sync.service")
+        def metadata(mode, uid=0, gid=0):
+            return SimpleNamespace(st_mode=mode, st_uid=uid, st_gid=gid, st_size=106)
+        file_info = metadata(stat.S_IFREG | 0o440)
+        protected = metadata(stat.S_IFDIR | 0o550)
+        def layout(path):
+            return protected if path == directory else metadata(stat.S_IFDIR | 0o755)
+        with mock.patch.object(Path,"lstat",autospec=True,side_effect=layout):
+            self.assertTrue(credentials._credential_mode_allowed(directory,file_info))
+            self.assertFalse(credentials._credential_mode_allowed(Path("/tmp/credentials/unit"),file_info))
+            for mode in (0o444, 0o460, 0o442, 0o640):
+                self.assertFalse(credentials._credential_mode_allowed(directory,metadata(stat.S_IFREG|mode)))
+            self.assertFalse(credentials._credential_mode_allowed(directory,metadata(stat.S_IFREG|0o440,gid=1)))
+            self.assertFalse(credentials._credential_mode_allowed(directory,metadata(stat.S_IFREG|0o440,uid=12345)))
+        for mode in (0o555, 0o570, 0o552, 0o750):
+            with mock.patch.object(Path,"lstat",return_value=metadata(stat.S_IFDIR|mode)):
+                self.assertFalse(credentials._credential_mode_allowed(directory,file_info))
+        for uid,gid in ((1,0),(0,1)):
+            with mock.patch.object(Path,"lstat",return_value=metadata(stat.S_IFDIR|0o550,uid,gid)):
+                self.assertFalse(credentials._credential_mode_allowed(directory,file_info))
+        with mock.patch.object(Path,"lstat",return_value=metadata(stat.S_IFLNK|0o550)):
+            self.assertFalse(credentials._credential_mode_allowed(directory,file_info))
+
+    def test_linux_loader_accepts_systemd_root_stats_without_reading_a_real_credential(self):
+        directory = Path("/run/credentials/code-main-sync.service")
+        with tempfile.TemporaryFile() as fixture:
+            fixture.write(("st."+"fixture-sensitive-material").encode())
+            fixture.seek(0)
+            fd = os.dup(fixture.fileno())
+            root_file = SimpleNamespace(st_mode=stat.S_IFREG|0o440,st_uid=0,st_gid=0,st_size=106)
+            root_dir = SimpleNamespace(st_mode=stat.S_IFDIR|0o550,st_uid=0,st_gid=0)
+            with mock.patch.dict(os.environ,{"CREDENTIALS_DIRECTORY":str(directory)}), mock.patch.object(credentials.sys,"platform","linux"), mock.patch.object(Path,"is_symlink",return_value=False), mock.patch.object(Path,"is_dir",return_value=True), mock.patch.object(Path,"lstat",return_value=root_dir), mock.patch.object(credentials.os,"open",return_value=fd), mock.patch.object(credentials.os,"fstat",return_value=root_file):
+                self.assertIsInstance(credentials._load_token(),credentials._Credential)
+
     def test_loaded_credential_is_redacted_in_repr_and_str(self):
         material = "st."+"fixture-sensitive-material"
         credential = credentials._Credential(material)

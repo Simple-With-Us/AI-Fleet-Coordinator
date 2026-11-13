@@ -153,24 +153,6 @@ _REGISTRY_KEY = _REGISTRY + (
 )
 
 REGISTRY: tuple[Spec, ...] = (
-    _S(
-        "CODE_MIRROR_INTERVAL_SECONDS",
-        "int",
-        "OPS-1088",
-        default=300,
-        local="deny",
-        narrower="max",
-        minimum=30,
-        maximum=86400,
-        note="time between updates by the existing Mac and server Code mirror jobs",
-        group="Code Mirrors",
-        label="Mirror Update Interval",
-        hosts="both",
-        consumers=(("the shared Code mirror jobs", "scripts/fleet_lanes/code_main_sync.py"),),
-        folder="/code-mirrors",
-        unit="seconds",
-        step=30,
-    ),
     # C1 fleet-autopush
     _S(
         "FLEET_AUTOPUSH_MODE",
@@ -224,6 +206,24 @@ REGISTRY: tuple[Spec, ...] = (
         note="public repos where a draft PR may open;  empty means none",
         group="Autopush",
         label="Public Repositories For Draft PRs",
+    ),
+    _S(
+        "CODE_MIRROR_INTERVAL_SECONDS",
+        "int",
+        "OPS-1088",
+        default=300,
+        local="deny",
+        narrower="max",
+        minimum=30,
+        maximum=86400,
+        note="time between updates by the existing Mac and server Code mirror jobs",
+        group="Code Mirrors",
+        label="Mirror Update Interval",
+        hosts="both",
+        consumers=(("the shared Code mirror jobs", "scripts/fleet_lanes/code_main_sync.py"),),
+        folder="/code-mirrors",
+        unit="seconds",
+        step=30,
     ),
     # F7 fleet-facts publisher
     _S(

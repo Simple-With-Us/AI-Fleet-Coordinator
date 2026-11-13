@@ -1,10 +1,10 @@
 """Bind only the existing read-only Code mirror settings credential during a fetch."""
+from contextlib import contextmanager
 import os
+from pathlib import Path
 import stat
 import subprocess
 import sys
-from contextlib import contextmanager
-from pathlib import Path
 
 NAME = "code-mirrors-settings-read"
 ENV = "FLEET_KNOBS_INFISICAL_TOKEN"
@@ -28,6 +28,28 @@ class _Credential:
         return self.__material
 
 
+def _credential_mode_allowed(directory, info):
+    if not stat.S_ISREG(info.st_mode) or not 1 <= info.st_size <= 8192:
+        return False
+    if not info.st_mode & 0o077 and info.st_uid in (0, os.geteuid()):
+        return True
+    # systemd can expose root-owned encrypted credentials to User= through an ACL.
+    # Accept that one protected layout without permitting arbitrary group-readable files.
+    if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o440:
+        return False
+    if len(directory.parts) != 4 or directory.parts[:3] != ("/", "run", "credentials") or directory.name in (".", ".."):
+        return False
+    try:
+        for parent in (directory, *directory.parents):
+            metadata = parent.lstat()
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+                return False
+        metadata = directory.lstat()
+        return metadata.st_uid == 0 and metadata.st_gid == 0 and stat.S_IMODE(metadata.st_mode) == 0o550
+    except OSError:
+        return False
+
+
 def _load_token():
     if sys.platform == "darwin":
         result = subprocess.run(
@@ -38,13 +60,14 @@ def _load_token():
             raise ValueError("settings-credential-unavailable")
         return _Credential(result.stdout.strip())
     elif sys.platform.startswith("linux"):
-        directory = Path(os.environ.get("CREDENTIALS_DIRECTORY", ""))
+        raw_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+        directory = Path(raw_directory)
         if not directory.is_absolute() or directory.is_symlink() or not directory.is_dir():
             raise ValueError("settings-credential-unavailable")
         fd = os.open(directory / NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid not in (0, os.geteuid()) or not 1 <= info.st_size <= 8192:
+            if (info.st_mode & 0o077 and str(directory) != raw_directory) or not _credential_mode_allowed(directory, info):
                 raise ValueError("settings-credential-unavailable")
             return _Credential(stream.read(8193).decode().strip())
     else:
