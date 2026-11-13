@@ -213,7 +213,7 @@ Hosted only, JET-CHAT (the full Jet login) only, and only while the WhatsApp bri
 
 GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 
-**The route rule.** Every GitHub read or write goes through Fleet Tools under the seat's own GitHub App: the `gr_*` / `gr_wf_*` hosted tools, GR-MCP, or `simple-git`. Do not use personal credentials or direct `gh`/API fallback when a tool is missing or refused. Report the supported-route gap while keeping the affected action paused.
+**The route rule.** Every GitHub read or write goes through Fleet Tools. PR creation uses the owner's scoped PR-only token through `gr_open_pr`; other operations use the seat's own GitHub App: the `gr_*` / `gr_wf_*` hosted tools, GR-MCP, or `simple-git`. Do not use personal credentials or direct `gh`/API fallback when a tool is missing or refused. Report the supported-route gap while keeping the affected action paused.
 
 **git-relay** is the relay: a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`): a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
@@ -221,8 +221,7 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 
 | Tool | Credential | Purpose |
 |---|---|---|
-| `wf_pr_create` | seat's own GitHub App | Open a head-pinned pull request |
-| `open_pr` | legacy owner PR-only token | Do not use; not an own-App route |
+| `open_pr` | owner PR-only token | Normal fleet PR creation through the relay |
 | `edit_pr` | the seat's own GitHub App | Change a pull request's title or body |
 | `reply_thread` | the seat's own GitHub App | Reply inline to a review thread |
 | `comment_pr` | the seat's own GitHub App | Post a top-level pull request comment |
@@ -233,7 +232,7 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 
 `create_repo` (`gr_create_repo` on the hosted front, `create_repo` on GR-MCP) creates one repository under `Simple-With-Us` or `jaywedgeworth22`.  It is denied unless that seat's policy grants `create_repo`.  Visibility is private unless the request says public and the seat's `create_repo_public` flag is true.  An existing repository answers `already_exists`; the relay does not create it again and does not follow a redirect.  `onboard-new-app.sh` calls it through `simple-git` when `SIMPLE_TOOLS_BEARER` is set, and uses `gh` only when that bearer is unset.  A configured relay that fails does not fall back to `gh`.
 
-PR creation uses `wf_pr_create` under the calling seat's own GitHub App. The legacy `open_pr` endpoint still uses an owner token and must not be substituted for this route. Review requirements are not waived by either endpoint. The relay mints and refreshes per-seat App installation tokens; seats do not receive raw credentials. Each token remains bounded by the seat's repository and permission allowlists.
+PR creation uses `gr_open_pr` through the relay under the owner's scoped PR-only token. Other operations use the calling seat's own GitHub App. `wf_pr_create` is a separate own-App capability when live policy grants it, but is not the normal fleet authoring route. Review requirements still apply. No route exposes a raw token to the seat or permits direct GitHub fallback.
 
 Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every denial, failure and write is written to the audit log (a successful read is not), and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
@@ -268,7 +267,7 @@ Use the relay verb in the right column, never `gh`. A missing or refused verb is
 | `gh run rerun --failed` | `gr_wf_run_rerun` for the run; `gr_wf_job_rerun` for one job |
 | `gh pr merge N --squash --auto` | `gr_wf_automerge_enable` with `method` `SQUASH` |
 | `gh pr merge N --squash` | `gr_wf_merge_guarded` with `method` `squash` and `expected_head_sha`, the full head sha read from `gr_wf_pr_get` |
-| `gh pr create` | `gr_wf_pr_create` as the caller's own App, with the current head SHA in `expected_head_sha` |
+| `gh pr create` | `gr_open_pr`, the owner-scoped relay creation route |
 | `gh pr edit` | `gr_edit_pr` for the title and body; `wf_pr_edit` only when granted by live seat policy |
 | `gh pr comment N` | `gr_comment_pr` |
 | `gh pr ready` and `gh pr ready --undo` | `gr_wf_pr_ready` and `gr_wf_pr_draft` |

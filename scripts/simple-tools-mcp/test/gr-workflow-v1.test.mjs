@@ -1160,8 +1160,9 @@ test('v2: custody verb arg validation',()=>{
   {
     const c = WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_create');
     const e = WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_edit');
-    assert.match(c.description, /caller's own GitHub App/);
-    assert.match(c.description, /live seat action allowlist/);
+    assert.match(c.description, /calling seat's own GitHub App/);
+    assert.match(c.description, /normal fleet PR creation use gr_open_pr/);
+    assert.match(c.description, /live seat policy grants it/);
     assert.match(c.description, /expected_head_sha/);
     assert.ok(!c.description.includes('Inactive candidate'));
     assert.match(e.description, /live seat policy grants this verb/);
@@ -1169,7 +1170,7 @@ test('v2: custody verb arg validation',()=>{
     assert.ok(!e.description.includes('Inactive candidate'));
     for (const tool of [c, e]) {
       assert.doesNotMatch(tool.description, /UNGRANTED|owner 2026|2026-11-10|gh fallback|owner's account/);
-      assert.match(tool.description, /not permission to change identity or use a direct GitHub route/);
+      assert.match(tool.description, /direct GitHub/);
     }
     assert.ok(WF_V1_TOOLS.find(t=>t.name==='gr_wf_pr_close').description.includes('Inactive candidate'));
   }

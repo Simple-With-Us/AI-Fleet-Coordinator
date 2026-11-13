@@ -231,7 +231,7 @@ export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_
 // Descriptions explain capability and safe routing, not static permission claims.
 // The live relay seat policy remains the source of truth for action availability.
 const WORKFLOW_GUIDANCE = new Map([
-  ['wf_pr_create', "Create a same-repository pull request through Fleet Tools using the caller's own GitHub App. The head is pinned by expected_head_sha; the relay verifies the resulting PR. Availability is determined by the live seat action allowlist and workflow enablement. A refusal is not permission to change identity or use a direct GitHub route."],
+  ['wf_pr_create', "This workflow capability creates a same-repository PR as the calling seat's own GitHub App when live seat policy grants it; expected_head_sha pins the head preflight. For normal fleet PR creation use gr_open_pr, the owner-scoped relay route, so the intended author and review tooling are preserved. Availability is determined by live policy, not this description. Never substitute direct GitHub access on refusal."],
   ['wf_pr_edit', "Edit a pull request through Fleet Tools using the caller's own GitHub App only when the live seat policy grants this verb. gr_edit_pr is the supported title/body edit route when this workflow verb is not granted. A refusal is not permission to change identity or use a direct GitHub route."],
 ]);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
