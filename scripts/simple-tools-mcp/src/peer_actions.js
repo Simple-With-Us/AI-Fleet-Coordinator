@@ -1,11 +1,11 @@
 // Peer-Actions Registry for hosted ST-MCP (AFC-745).
 // Appends one row through the Google Sheets API using GOOGLE_SHEETS_SA from
-// Infisical Fleet-OPS /google-sheets-sa.  Pure module — fetch and WebCrypto only.
+// Infisical Fleet-OPS /google-sheets-sa (read with INFISICAL_SHEETS_SA_TOKEN only).  Pure module — fetch and WebCrypto only.
 
 import PEER_ACTIONS_JSON from "../../simple_tools/mcp/peer-actions-tools.json" with { type: "json" };
 import { ToolError, okResult } from "./contract.js";
 import { canonicalSeatName } from "./identity-aliases.js";
-import { InfisicalError, resolveSecret } from "./infisical.js";
+import { InfisicalError, resolveSecretIsolated } from "./infisical.js";
 
 export const PEER_ACTIONS_TOOLS = Object.freeze(PEER_ACTIONS_JSON.tools);
 export const PEER_ACTIONS_WRITE_TOOLS = Object.freeze(new Set(["peer_actions_log"]));
@@ -96,32 +96,30 @@ async function googleAccessToken(sa, fetchImpl) {
   return data.access_token;
 }
 
-async function loadServiceAccount(env, fetchImpl) {
-  const direct = String(env.GOOGLE_SHEETS_SA ?? "").trim();
-  if (direct) {
-    return parseServiceAccount(direct);
-  }
-  // Fallback mode answers "" when Infisical refuses (e.g. 403:  the read-tools token is not scoped to
-  // /google-sheets-sa) and no binding is set;  required mode throws InfisicalError.  Name both as
-  // configuration gaps instead of "not valid JSON" or an opaque internal error.
+// GOOGLE_SHEETS_SA comes from Infisical only (owner rule, Nov 12 2026:  no Worker secret holds a real
+// secret).  It is read from Fleet-OPS /google-sheets-sa through its own narrowly scoped service token,
+// bound as SHEETS_SA_TOKEN_BINDING, never through the broad read-tools INFISICAL_SERVICE_TOKEN (not scoped
+// to that folder:  Infisical answers 403) and never from a GOOGLE_SHEETS_SA Worker binding.
+export const SHEETS_SA_TOKEN_BINDING = "INFISICAL_SHEETS_SA_TOKEN";
+const SHEETS_SA_PATH = "/google-sheets-sa";
+
+async function loadServiceAccount(env) {
+  // Fallback and off modes answer "" for an unbound token, a scope refusal or a 404;  required mode
+  // throws InfisicalError.  Name every such gap not_configured instead of "not valid JSON".
   let raw;
   try {
-    raw = await resolveSecret(env, {
-      name: "GOOGLE_SHEETS_SA",
-      path: "/google-sheets-sa",
-      envName: "GOOGLE_SHEETS_SA",
-    });
+    raw = await resolveSecretIsolated(env, { name: "GOOGLE_SHEETS_SA", path: SHEETS_SA_PATH, tokenBinding: SHEETS_SA_TOKEN_BINDING });
   } catch (error) {
     if (!(error instanceof InfisicalError)) throw error;
     if (error.code === "not_found" || error.code === "not_configured" || error.status === 401 || error.status === 403) {
-      throw new ToolError("not_configured", `GOOGLE_SHEETS_SA is unavailable: Infisical /google-sheets-sa was not readable (${error.code})`);
+      throw new ToolError("not_configured", `GOOGLE_SHEETS_SA is unavailable: ${SHEETS_SA_TOKEN_BINDING} could not read Infisical ${SHEETS_SA_PATH} (${error.code})`);
     }
     throw new ToolError("unavailable", "could not read GOOGLE_SHEETS_SA from Infisical", { retryable: true });
   }
   if (!String(raw ?? "").trim()) {
     throw new ToolError(
       "not_configured",
-      "GOOGLE_SHEETS_SA is unavailable: Infisical /google-sheets-sa served no value and no Worker binding is set",
+      `GOOGLE_SHEETS_SA is unavailable: ${SHEETS_SA_TOKEN_BINDING} is not bound or cannot read Infisical ${SHEETS_SA_PATH}`,
     );
   }
   return parseServiceAccount(raw);
@@ -156,7 +154,7 @@ function retryAfterMs(headers, attempt) {
 async function appendRow(env, row, fetchImpl) {
   const spreadsheetId = String(env.PEER_ACTIONS_SPREADSHEET_ID ?? DEFAULT_SPREADSHEET_ID).trim();
   if (!/^[A-Za-z0-9_-]+$/.test(spreadsheetId)) throw new ToolError("invalid_argument", "PEER_ACTIONS_SPREADSHEET_ID is invalid");
-  const sa = await loadServiceAccount(env, fetchImpl);
+  const sa = await loadServiceAccount(env);
   const token = await googleAccessToken(sa, fetchImpl);
   const url =
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/` +
