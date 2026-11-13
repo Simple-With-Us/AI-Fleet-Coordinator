@@ -1408,7 +1408,7 @@ def _build_shared_verifier():
     """The ST-MCP shared-bearer verifier, or None when not configured.
 
     Set GIT_RELAY_VERIFY_URL to resolve admin-minted per-identity bearers
-    through the Worker's verify route.  The route key is a fleet-secrets read
+    through the Worker's verify route.  The route key is a scoped Infisical read
     like every other credential here;  a configured URL with an unreadable or
     short key is a startup error, never silent unauthenticated operation.
 
@@ -1419,8 +1419,6 @@ def _build_shared_verifier():
     verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
     if not verify_url:
         return None
-    if not shutil.which("fleet-secrets"):
-        raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
     from .app_tokens import AppTokenError, FleetSecretsSource
     from .shared_bearer import SharedBearerVerifier
 
@@ -1429,12 +1427,9 @@ def _build_shared_verifier():
         return SharedBearerVerifier(
             url=verify_url,
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
-            # The host plan provisions TWO scoped service tokens:  the
-            # owner-only /git-relay-owner token, and the existing App
-            # reader whose scope already covers /github-apps and /tools.
-            # The verify-key source therefore binds the App credential
-            # file by default;  GIT_RELAY_TOOLS_CREDENTIAL_FILE exists
-            # only for a future split.
+            # Preserve the existing file selector, without claiming its grant covers /tools.
+            # The canonical verifier requires exactly this one folder; the legacy two-folder
+            # grant cannot satisfy it.  Activation needs the verified dedicated tools binding.
             key_source=FleetSecretsSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
@@ -1477,8 +1472,6 @@ def _build_assertion_verifier():
         raise SystemExit(
             "git-relay config: GIT_RELAY_OAUTH_ASSERT=1 needs GIT_RELAY_ASSERT_VERIFY_URL"
         )
-    if not shutil.which("fleet-secrets"):
-        raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
     from .app_tokens import AppTokenError, FleetSecretsSource
     from .assertion import GrAssertionVerifier
 
@@ -1487,9 +1480,8 @@ def _build_assertion_verifier():
         return GrAssertionVerifier(
             url=verify_url,
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
-            # Same source binding rules as the bearer verify key (see
-            # _build_shared_verifier):  the App credential file's scope covers
-            # /tools;  GIT_RELAY_TOOLS_CREDENTIAL_FILE is the future split.
+            # Same existing file selector and dedicated-binding activation gate as the bearer
+            # verify key above; this source change neither widens nor proves a grant.
             key_source=FleetSecretsSource(
                 path=(raw_path or "/tools").strip(),
                 credential_file=(
@@ -1547,11 +1539,7 @@ def from_env() -> Relay:
     outcomes = OutcomeStore(outcomes_path)
     app_minter = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
-        # App-credential reads go through the fleet-secrets CLI only (owner
-        # decision 2026-10-21:  no env secrets, no direct Infisical).  The CLI
-        # must be installed on this host or App actions stay unavailable.
-        if not shutil.which("fleet-secrets"):
-            raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
+        # The existing source uses the canonical bounded reader with its own token file.
         from .app_tokens import AppTokenError, AppTokenMinter, FleetSecretsSource
 
         # The Fleet-OPS prod folder the App keys are read from.  Defaults to
@@ -1593,15 +1581,14 @@ def from_env() -> Relay:
 
 
 def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:
-    """The protected Infisical-token file one fleet-secrets source runs under.
+    """The protected Infisical-token file one scoped source reads.
 
     Production resolves it from systemd's CREDENTIALS_DIRECTORY (the unit's
     LoadCredential keys are the default file names) or an explicit
     GIT_RELAY_*_CREDENTIAL_FILE override;  a set-but-empty override is a
     config error like any other.  With neither, startup REFUSES - the
-    process environment is never a secret source, and a CLI child that
-    inherits it would pick up co-located secrets (seat tokens, another
-    scope's token).  There is no inheritance escape:  tests and local
+    process environment is never a secret source.  No co-located secret
+    (seat tokens or another scope's token) supplies a missing binding.  Tests and local
     runs point the variables at their own files.  Names scopes and
     variables only, never file contents.
     """
@@ -1621,8 +1608,8 @@ def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | N
 
 
 def _owner_token_from_cli() -> str:
-    """The owner PAT for open_pr, read once at startup through `fleet-secrets
-    get-verified` at its fixed folder (/git-relay-owner):  the CLI proves the
+    """Compatibility-named owner PAT factory, read once through the shared named reader
+    at its fixed folder (/git-relay-owner): the canonical reader proves the
     value came from that exact folder before answering.  Never the process
     environment - an ambient GITHUB_TOKEN is IGNORED, and there is no other
     fallback source (owner direction 2026-10-21 + the /git-relay-owner
