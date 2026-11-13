@@ -1271,8 +1271,9 @@ class WorkflowVerbs:
             base_sha = tip_sha
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
-            # The proof input is the immutable base sha from the PR snapshot, not the
-            # mutable ref.  When the compare cannot prove the workflow-touch answer -
+            # The proof input is the live base tip resolved above, pinned as a sha
+            # at proof time rather than the mutable ref.  When the compare cannot
+            # prove the workflow-touch answer -
             # too large to read, no files array, or a possibly-truncated full page
             # without a touch - fall back to a complete two-tree diff.
             try:
