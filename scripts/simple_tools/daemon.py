@@ -2316,9 +2316,9 @@ class Daemon:
         ):
             return
         bracket_ok = runner.cfg.bracket_recipient_wakes
-        if not R.tags_seat(str(event.get("content") or ""), runner.me, bracket_ok=bracket_ok) or R.tags_seat(
-            str(event.get("orig_content") or ""), runner.me, bracket_ok=bracket_ok
-        ):
+        if not R.tags_seat(
+            str(event.get("content") or ""), runner.me, bracket_ok=bracket_ok
+        ) or R.tags_seat(str(event.get("orig_content") or ""), runner.me, bracket_ok=bracket_ok):
             return
         try:
             fetched = runner.client.get("messages/%d" % message_id, {"apply_markdown": "false"})
