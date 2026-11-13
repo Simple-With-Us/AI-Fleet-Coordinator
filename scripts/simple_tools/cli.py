@@ -1695,7 +1695,7 @@ def _compose(
                 )
             return led
     # Same complete-own-intro rule as the hosted composeBody transport.
-    leading = re.match(r"^(?:👀\s*)?\s*", text).group(0)
+    leading = re.match(r"^(?:(?:👀|:eyes:)\s*)?\s*", text).group(0)
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)

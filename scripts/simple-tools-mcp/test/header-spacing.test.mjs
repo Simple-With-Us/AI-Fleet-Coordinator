@@ -5,6 +5,12 @@ import { composeBody, MAX_CONTENT_LENGTH, normalizeHeader, tagPrefix, UsageError
 import { gapGitHubArgs } from "../src/outbound-gap.js";
 
 const fixtures = JSON.parse(readFileSync(new URL("../../simple_tools/tests/header-spacing.json", import.meta.url), "utf8"));
+if (!Array.isArray(fixtures) || fixtures.length === 0 || !fixtures.every((entry) =>
+  entry !== null && typeof entry === "object" && typeof entry.name === "string" &&
+  typeof entry.input === "string" && typeof entry.expected === "string" &&
+  (entry.seat === undefined || entry.seat === null || typeof entry.seat === "string"))) {
+  throw new Error("Invalid header-spacing.json fixture shape");
+}
 
 test("OPS-1086 golden headers survive JSON and UTF-8 without changing body gaps", () => {
   for (const entry of fixtures) {
@@ -37,6 +43,11 @@ test("the hosted content cap applies after header serialization", () => {
   const prefix = "[CODEX: EE.1.S 📁AFC] ";
   const input = prefix + "x".repeat(MAX_CONTENT_LENGTH - Array.from(prefix).length);
   assert.throws(() => composeBody(tagPrefix("CODEX", null), input), UsageError);
+});
+
+test("quiet marker survives hosted composition with the same header bytes", () => {
+  const input = ":eyes: " + fixtures[0].input;
+  assert.equal(composeBody(tagPrefix("CODEX", "deadbeef"), input), ":eyes: " + fixtures[0].expected);
 });
 
 test("GitHub prose verbs preserve all exact header spaces through gap handling and JSON", () => {

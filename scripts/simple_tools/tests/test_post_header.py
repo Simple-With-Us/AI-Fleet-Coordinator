@@ -57,3 +57,12 @@ class HeaderSpacingTests(unittest.TestCase):
         with mock.patch.object(cli, "MAX_CONTENT_LENGTH", len(text)):
             with self.assertRaises(cli.UsageError):
                 cli._compose(agent, text, labels=[], mentions=[], no_tag=False)
+
+    def test_quiet_native_posts_and_edits_keep_canonical_header_bytes(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        expected = router.NO_WAKE_MARKER + " " + FIXTURES[0]["expected"]
+        for prefix in ("", router.NO_WAKE_MARKER + " "):
+            with self.subTest(prefix=prefix):
+                body = cli._compose(agent, prefix + FIXTURES[0]["input"], labels=[],
+                                    mentions=[], no_tag=False, quiet=True)
+                self.assertEqual(body, expected)

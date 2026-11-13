@@ -39,8 +39,8 @@ class FullZulipToolTests(McpHarness):
             ("[CLAUDE 📁AFC] @**Codex** ping", '[CLAUDE·%s\u200a\u200a📁\u200aAFC] @**Codex** ping' % TAG),
             ("[CLAUDE 📁AFC] @**Claude** status", '[CLAUDE·%s\u200a\u200a📁\u200aAFC] @**Claude** status' % TAG),
             (
-                "[CLAUDE 📁AFC] @**Codex** and @**Jay Wedgeworth|1211974**",
-                '[CLAUDE·%s\u200a\u200a📁\u200aAFC] @**Codex** and @**Jay Wedgeworth|1211974**' % TAG,
+                "[CLAUDE 📁AFC] @**Codex** and @**Fixture User|12345**",
+                '[CLAUDE·%s\u200a\u200a📁\u200aAFC] @**Codex** and @**Fixture User|12345**' % TAG,
             ),
         ]
         for text, want in cases:
