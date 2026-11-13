@@ -50,10 +50,14 @@ struct ServerSettingsValidationProblem: Equatable {
     let field: String
     let reason: String
 
-    init(code: String, field: String, reason: String) {
+    init(code: String, field: String, reason: String, verifiedFields: Set<String> = []) {
         self.code = code
         // A rejected object key can itself contain a credential; never echo such a key.
-        self.field = field.split(separator: ".").contains(where: { ServerSettingsBuilder.looksLikeCredential(String($0)) })
+        let parts = field.split(separator: ".").map(String.init)
+        let base = field.components(separatedBy: "[").first ?? field
+        let opaqueSeat = parts.count > 1 && parts[0] == "seat" && ServerSettingsBuilder.looksLikeCredential(parts[1])
+        let verified = verifiedFields.contains(base) && !opaqueSeat
+        self.field = !verified && parts.contains(where: { ServerSettingsBuilder.looksLikeCredential($0) })
             ? "settings field" : field
         self.reason = reason
     }
@@ -70,15 +74,18 @@ struct ServerSettingsSaveRequest: Equatable {
     var remove: [String] = []
     /// Names from the verified rows, never serialized or derived from the process environment.
     var referenceNames: [String: Set<String>] = [:]
+    /// Exact editable paths from the loaded schema's rows, never part of the wire request.
+    var diagnosticFields: Set<String> = []
     var attempt: ServerSettingsAttempt = .fresh()
 
     static func validSet(_ set: [String: ServerSettingValue], references: [String: Set<String>] = [:]) -> Bool {
         setProblem(set, references: references) == nil
     }
 
-    static func setProblem(_ set: [String: ServerSettingValue], references: [String: Set<String>] = [:]) -> ServerSettingsValidationProblem? {
+    static func setProblem(_ set: [String: ServerSettingValue], references: [String: Set<String>] = [:],
+                           diagnosticFields: Set<String> = []) -> ServerSettingsValidationProblem? {
         func invalid(_ field: String, _ reason: String) -> ServerSettingsValidationProblem {
-            ServerSettingsValidationProblem(code: "invalid_settings", field: field, reason: reason)
+            ServerSettingsValidationProblem(code: "invalid_settings", field: field, reason: reason, verifiedFields: diagnosticFields)
         }
         guard !set.isEmpty, set.count <= ServerListenerSettingsRequest.maximumChanges else {
             return invalid("set", "must contain 1 to 32 settings.")
@@ -106,15 +113,16 @@ struct ServerSettingsSaveRequest: Equatable {
                   ServerSettingsAllowlist.mayOffer(table: table, name: name) else {
                 return invalid(unknown, "is not an editable field.")
             }
-            if let problem = valueProblem(value, path: key, references: references) { return problem }
+            if let problem = valueProblem(value, path: key, references: references, diagnosticFields: diagnosticFields) { return problem }
         }
         return nil
     }
 
     private static func valueProblem(_ value: ServerSettingValue, path: String,
-                                     references: [String: Set<String>], depth: Int = 0) -> ServerSettingsValidationProblem? {
+                                     references: [String: Set<String>], diagnosticFields: Set<String>,
+                                     depth: Int = 0) -> ServerSettingsValidationProblem? {
         func invalid(_ reason: String) -> ServerSettingsValidationProblem {
-            ServerSettingsValidationProblem(code: "invalid_settings", field: path, reason: reason)
+            ServerSettingsValidationProblem(code: "invalid_settings", field: path, reason: reason, verifiedFields: diagnosticFields)
         }
         guard depth <= 4 else { return invalid("is nested too deeply.") }
         let canonical = ServerSettingsReferences.names(path: path)
@@ -123,7 +131,7 @@ struct ServerSettingsSaveRequest: Equatable {
             let allowed = Set(canonical).union(references[path] ?? [])
             if ServerSettingsReferences.isName(text) && allowed.contains(text) { return nil }
             return ServerSettingsBuilder.looksLikeCredential(text)
-                ? ServerSettingsValidationProblem(code: "secret_refused", field: path, reason: "looks like a credential; the edit was not sent.")
+                ? ServerSettingsValidationProblem(code: "secret_refused", field: path, reason: "looks like a credential; the edit was not sent.", verifiedFields: diagnosticFields)
                 : invalid("must name this seat's existing or canonical routine variable.")
         }
         switch value {
@@ -131,11 +139,12 @@ struct ServerSettingsSaveRequest: Equatable {
         case .number(let number): return number.isFinite ? nil : invalid("must be finite.")
         case .text(let text):
             return ServerSettingsBuilder.looksLikeCredential(text)
-                ? ServerSettingsValidationProblem(code: "secret_refused", field: path, reason: "looks like a credential; the edit was not sent.") : nil
+                ? ServerSettingsValidationProblem(code: "secret_refused", field: path, reason: "looks like a credential; the edit was not sent.", verifiedFields: diagnosticFields) : nil
         case .list(let values):
             guard values.count <= 32 else { return invalid("contains too many entries.") }
             for (index, value) in values.enumerated() {
-                if let problem = valueProblem(value, path: "\(path)[\(index)]", references: references, depth: depth + 1) { return problem }
+                if let problem = valueProblem(value, path: "\(path)[\(index)]", references: references,
+                                              diagnosticFields: diagnosticFields, depth: depth + 1) { return problem }
             }
             return nil
         case .table(let values):
@@ -147,9 +156,10 @@ struct ServerSettingsSaveRequest: Equatable {
                 let field = path + "." + key
                 let reference = !ServerSettingsReferences.names(path: field).isEmpty
                 guard reference || !ServerSettingsAllowlist.readsAsSecret(key) else {
-                    return ServerSettingsValidationProblem(code: "secret_refused", field: field, reason: "is not a nonsecret settings field.")
+                    return ServerSettingsValidationProblem(code: "secret_refused", field: field, reason: "is not a nonsecret settings field.", verifiedFields: diagnosticFields)
                 }
-                if let value = values[key], let problem = valueProblem(value, path: field, references: references, depth: depth + 1) { return problem }
+                if let value = values[key], let problem = valueProblem(value, path: field, references: references,
+                                                                      diagnosticFields: diagnosticFields, depth: depth + 1) { return problem }
             }
             return nil
         case .null: return invalid("must have a typed value.")
@@ -157,7 +167,7 @@ struct ServerSettingsSaveRequest: Equatable {
     }
 
     var validationProblem: ServerSettingsValidationProblem? {
-        if let problem = Self.setProblem(set, references: referenceNames) { return problem }
+        if let problem = Self.setProblem(set, references: referenceNames, diagnosticFields: diagnosticFields) { return problem }
         if !Self.validRemovals(remove, set: set) {
             return ServerSettingsValidationProblem(code: "invalid_settings", field: "remove", reason: "must explicitly match omitted existing table overrides.")
         }
