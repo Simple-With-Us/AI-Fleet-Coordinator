@@ -7,10 +7,14 @@ CLI login session or credential-file fallback runs.  Values stay in memory.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import ipaddress
 import json
 import math
 import os
 import re
+import selectors
 import shutil
 import subprocess
 import sys
@@ -18,6 +22,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from collections import namedtuple
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -147,12 +153,20 @@ NOT_INJECTED_PREFIXES = ("LD_", "DYLD_")
 class SecretsError(Exception):
     """A failure with a short message that never holds a secret value.  `code` is the exit code."""
 
-    def __init__(self, message: str, code: int = 4) -> None:
+    def __init__(
+        self, message: str, code: int = 4, *, failure_kind=None, provider_status=None
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         # Stable policy reason; exit status remains backwards compatible.
         self.reason = message if message == "token-expired-or-invalid" else None
+        self.failure_kind = failure_kind if failure_kind in ("unavailable", "refused") else None
+        self.provider_status = (
+            provider_status
+            if type(provider_status) is int and 0 <= provider_status <= 599
+            else None
+        )
 
 
 class UsageError(SecretsError):
@@ -231,7 +245,7 @@ def check_path(path: str) -> str:
 
 
 def check_name(name: str) -> str:
-    if not NAME_RE.match(name or ""):
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         raise UsageError("bad key name:  use letters, digits and underscores only")
     return name
 
@@ -417,15 +431,30 @@ def verify_service_token(
 ) -> tuple[str, ...]:
     refusal = environment_refusal(env)
     if refusal:
-        raise SecretsError(refusal, 2)
-    paths = declared_paths(env, path, writer=writer)
-    check_service_token(token)
+        raise SecretsError(refusal, 2, failure_kind="refused")
+    try:
+        paths = declared_paths(env, path, writer=writer)
+        check_service_token(token)
+    except SecretsError as exc:
+        exc.failure_kind = "refused"
+        raise
     status, metadata = _api_json(
         "GET", "/v2/service-token", token, None, env, max_bytes=128 * 1024, deadline=deadline
     )
-    if status != 200:
-        raise SecretsError("token-verification-failed")
-    validate_service_metadata(metadata, project, paths, ("read", "write") if writer else ("read",))
+    if status != 200 or not isinstance(metadata, dict):
+        unavailable = status in (0, 200, 408, 425, 429) or 500 <= status <= 599
+        raise SecretsError(
+            "token-verification-failed",
+            failure_kind="unavailable" if unavailable else "refused",
+            provider_status=status,
+        )
+    try:
+        validate_service_metadata(
+            metadata, project, paths, ("read", "write") if writer else ("read",)
+        )
+    except SecretsError as exc:
+        exc.failure_kind = "refused"
+        raise
     return paths
 
 
@@ -448,6 +477,8 @@ def validate_secret_name_record(
 ) -> str:
     """The shared provenance and name checks for value reads and names-only listing."""
     if not isinstance(record, dict) or record.get("type") != "shared":
+        raise SecretsError("unverified-source")
+    if "secretValueHidden" in record and type(record["secretValueHidden"]) is not bool:
         raise SecretsError("unverified-source")
     for field, expected in (
         ("workspace", project),
@@ -567,6 +598,284 @@ def fetch_project(
             found[key] = value
     reject_unresolved(found)
     return found
+
+
+def _bounded_read_command() -> list[str]:
+    """The same reviewed client in an isolated, disposable read-only process."""
+    return [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--bounded-read-worker"]
+
+
+def _read_worker_pipes(child, request: bytes, limit: int, deadline: float) -> bytes:
+    """Bound both pipe directions without an unbounded communicate buffer or helper thread."""
+    output = bytearray()
+    position = 0
+    with selectors.DefaultSelector() as selected:
+        for stream, event, name in (
+            (child.stdin, selectors.EVENT_WRITE, "input"),
+            (child.stdout, selectors.EVENT_READ, "output"),
+        ):
+            os.set_blocking(stream.fileno(), False)
+            selected.register(stream, event, name)
+        while selected.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("bounded read", 0)
+            ready = selected.select(remaining)
+            if not ready:
+                raise subprocess.TimeoutExpired("bounded read", 0)
+            for key, _event in ready:
+                if key.data == "input":
+                    try:
+                        position += os.write(key.fd, request[position : position + 65536])
+                    except BrokenPipeError:
+                        position = len(request)
+                    if position == len(request):
+                        selected.unregister(key.fileobj)
+                        key.fileobj.close()
+                else:
+                    chunk = os.read(key.fd, min(65536, limit + 1 - len(output)))
+                    output.extend(chunk)
+                    if len(output) > limit:
+                        raise SecretsError("bounded-read-output-refused")
+                    if not chunk:
+                        selected.unregister(key.fileobj)
+                        key.fileobj.close()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("bounded read", 0)
+    child.wait(timeout=remaining)
+    return bytes(output)
+
+
+def _bounded_read_request(request: dict, deadline: float) -> dict:
+    """Bound provider/DNS/executor waits and reap only the child this call created."""
+    encoded = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > 128 * 1024:
+        raise UsageError("bounded-read-invalid")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
+    # Leave time to kill/reap a stuck read before the caller's deadline.
+    cleanup_reserve = min(0.1, remaining / 5)
+    child = None
+    try:
+        child = subprocess.Popen(
+            _bounded_read_command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath},
+            shell=False,
+            close_fds=True,
+        )
+        wait = deadline - time.monotonic() - cleanup_reserve
+        if wait <= 0:
+            raise subprocess.TimeoutExpired("bounded read", 0)
+        output = _read_worker_pipes(
+            child, encoded, request["max_output_bytes"], deadline - cleanup_reserve
+        )
+        if len(output) > request["max_output_bytes"] or time.monotonic() >= deadline:
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+        try:
+            reply = _decode_json(output)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable") from None
+        if (
+            not isinstance(reply, dict)
+            or type(reply.get("ok")) is not bool
+            or type(reply.get("schema")) is not int
+            or reply["schema"] != 1
+        ):
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+        if not reply["ok"] or child.returncode != 0:
+            reason = (
+                "token-expired-or-invalid"
+                if reply.get("reason") == "token-expired-or-invalid"
+                else "bounded-read-failed"
+            )
+            raise SecretsError(reason, failure_kind=reply.get("failure_kind"))
+        if set(reply) != {"schema", "ok", "values"} or not isinstance(reply["values"], dict):
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+        if time.monotonic() >= deadline:
+            raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
+        return reply["values"]
+    except subprocess.TimeoutExpired:
+        raise SecretsError("bounded-read-timeout", failure_kind="unavailable") from None
+    except OSError:
+        raise SecretsError("bounded-read-unavailable", failure_kind="unavailable") from None
+    finally:
+        primary_error = sys.exc_info()[1]
+        encoded = b""
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except (OSError, subprocess.TimeoutExpired):
+                # Never wait indefinitely or hide an OS cleanup failure.
+                failure = SecretsError("bounded-read-cleanup-failed", failure_kind="unavailable")
+                if isinstance(primary_error, (KeyboardInterrupt, SystemExit)):
+                    raise primary_error from failure
+                raise failure from None
+            finally:
+                for stream in (child.stdin, child.stdout):
+                    if stream is not None:
+                        stream.close()
+
+
+def bounded_fetch_project(
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    token: str,
+    names: Iterable[str],
+    timeout: float,
+    writer: bool = False,
+    max_output_bytes: int | None = None,
+) -> dict[str, str]:
+    """A small named read batch with a parent-enforced operation deadline.
+
+    The disposable child runs fetch_project, including the same exact grant and
+    record verifier.  Only this caller's explicit binding enters its private stdin;
+    no credential is put in argv, inherited environment, files or diagnostics.
+    Process launch/OS scheduling must be healthy; provider, DNS, body and worker
+    cleanup waits do not extend the caller's remaining budget.
+    """
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise UsageError("bounded-read-invalid")
+    if max_output_bytes is None:
+        max_output_bytes = MAX_VERIFIED_BYTES
+    if (
+        type(writer) is not bool
+        or type(max_output_bytes) is not int
+        or not 1024 <= max_output_bytes <= MAX_OUTPUT_BYTES
+    ):
+        raise UsageError("bounded-read-invalid")
+    check_path(path)
+    check_service_token(token)
+    if not isinstance(project, str) or not project or len(project) > 256:
+        raise UsageError("bounded-read-invalid")
+    wanted = []
+    for name in names:
+        wanted.append(check_name(name))
+        if len(wanted) > 1024:
+            raise UsageError("bounded-read-invalid")
+    wanted = sorted(set(wanted))
+    if not wanted:
+        raise UsageError("bounded-read-invalid")
+    selected = {key: env[key] for key in (ENV_API, *ENV_NAMES, ENV_READ_PATHS) if key in env}
+    if any(not isinstance(value, str) for value in selected.values()):
+        raise UsageError("bounded-read-invalid")
+    request = dict(
+        schema=1,
+        operation="named-fetch",
+        project=project,
+        path=path,
+        env=selected,
+        token=token,
+        names=wanted,
+        timeout=timeout,
+        writer=writer,
+        max_output_bytes=max_output_bytes,
+    )
+    deadline = time.monotonic() + timeout
+    values = _bounded_read_request(request, deadline)
+    if any(key not in wanted or not isinstance(value, str) for key, value in values.items()):
+        raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+    reject_unresolved(values)
+    if time.monotonic() >= deadline:
+        raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
+    return values
+
+
+def _bounded_read_worker() -> int:
+    """Private stdin/stdout protocol; it performs no provider mutation."""
+    reply = {
+        "schema": 1,
+        "ok": False,
+        "reason": "bounded-read-failed",
+        "failure_kind": "unavailable",
+    }
+    limit = MAX_VERIFIED_BYTES
+    try:
+        raw = sys.stdin.buffer.read(128 * 1024 + 1)
+        if len(raw) > 128 * 1024:
+            raise UsageError("bounded-read-invalid")
+        request = _decode_json(raw)
+        fields = {
+            "schema",
+            "operation",
+            "project",
+            "path",
+            "env",
+            "token",
+            "names",
+            "timeout",
+            "writer",
+            "max_output_bytes",
+        }
+        if (
+            not isinstance(request, dict)
+            or set(request) != fields
+            or type(request["schema"]) is not int
+            or request["schema"] != 1
+        ):
+            raise UsageError("bounded-read-invalid")
+        if request["operation"] != "named-fetch":
+            raise UsageError("bounded-read-invalid")
+        if (
+            not isinstance(request["names"], list)
+            or not 1 <= len(request["names"]) <= 1024
+            or type(request["writer"]) is not bool
+            or type(request["timeout"]) not in (int, float)
+            or not math.isfinite(request["timeout"])
+            or request["timeout"] <= 0
+        ):
+            raise UsageError("bounded-read-invalid")
+        if (
+            not isinstance(request["env"], dict)
+            or set(request["env"]) - {ENV_API, *ENV_NAMES, ENV_READ_PATHS}
+            or any(not isinstance(value, str) for value in request["env"].values())
+        ):
+            raise UsageError("bounded-read-invalid")
+        check_path(request["path"])
+        check_service_token(request["token"])
+        for name in request["names"]:
+            check_name(name)
+        limit = request["max_output_bytes"]
+        if type(limit) is not int or not 1024 <= limit <= MAX_OUTPUT_BYTES:
+            raise UsageError("bounded-read-invalid")
+        values = fetch_project(
+            request["project"],
+            request["path"],
+            request["env"],
+            token=request["token"],
+            names=request["names"],
+            writer=request["writer"],
+            timeout=request["timeout"],
+        )
+        reply = {"schema": 1, "ok": True, "values": values}
+    except SecretsError as exc:
+        reply["reason"] = (
+            "token-expired-or-invalid"
+            if exc.reason == "token-expired-or-invalid"
+            else "bounded-read-failed"
+        )
+        reply["failure_kind"] = exc.failure_kind
+    except Exception:
+        pass
+    output = json.dumps(reply, ensure_ascii=False).encode("utf-8")
+    if len(output) > limit:
+        reply = {
+            "schema": 1,
+            "ok": False,
+            "reason": "bounded-read-failed",
+            "failure_kind": "unavailable",
+        }
+        output = json.dumps(reply).encode("utf-8")
+    sys.stdout.buffer.write(output)
+    return 0 if reply["ok"] else 4
 
 
 def list_project_names(
@@ -812,6 +1121,8 @@ def _api_json(
     env: Mapping[str, str],
     max_bytes: int | None = None,
     deadline: float | None = None,
+    on_status=None,
+    on_unsent=None,
 ) -> tuple[int, object]:
     """One Infisical REST call.  The status and the parsed body,  never a message.
 
@@ -837,17 +1148,30 @@ def _api_json(
     )
     max_bytes = MAX_OUTPUT_BYTES if max_bytes is None else max_bytes
     limit = max_bytes + 1
+    response_seen = False
     try:
         timeout = API_TIMEOUT if deadline is None else min(API_TIMEOUT, deadline - time.monotonic())
         if timeout <= 0:
             return 0, None
         with _opener().open(req, timeout=timeout) as resp:
-            raw = resp.read(limit)
+            response_seen = True
             status = resp.status
+            if on_status is not None:
+                on_status(status)
+            raw = resp.read(limit)
     except urllib.error.HTTPError as exc:
-        raw = exc.read(limit)
+        response_seen = True
         status = exc.code
-    except (urllib.error.URLError, OSError, TimeoutError):
+        if on_status is not None:
+            on_status(status)
+        raw = exc.read(limit)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        if (
+            not response_seen
+            and on_unsent is not None
+            and isinstance(getattr(exc, "reason", exc), ConnectionRefusedError)
+        ):
+            on_unsent()
         return 0, None
     finally:
         data = None
@@ -872,7 +1196,7 @@ def check_writable(name: str, path: str) -> None:
     names one seat's folder and not a prefix of it.
     """
     for folder, pattern in WRITE_ALLOWLIST:
-        if re.fullmatch(folder, path) and re.match(pattern, name):
+        if re.fullmatch(folder, path) and re.fullmatch(pattern, name):
             return
     raise SecretsError(
         "set refused:  {} at {} is not on the built-in write allowlist ({});  widening it needs a code change".format(
@@ -883,17 +1207,10 @@ def check_writable(name: str, path: str) -> None:
 
 
 def ensure_folder(path: str, env: Mapping[str, str], token: str) -> None:
-    """Make sure the folder path exists,  creating the levels that do not.
+    """Verify an existing folder without requesting values; provisioning is separate.
 
-    ``put_secret`` refuses to write into a folder that is not there,  which is the right
-    rule for a secret but not for a path the fleet owns the shape of:  a seat's own
-    folder is not a secret,  and every seat should not need a human to create one
-    before its first sync.  A folder that is already there is not an error,  and the
-    400 that says so is read rather than assumed,  so a rejected request is not
-    mistaken for a folder that is there.
-
-    The request carries the folder name and the parent path,  never a value,  and the
-    token is the one the caller already resolved.
+    This compatibility helper never creates a folder or writes a secret.  The
+    caller supplies its own exact scoped writer, verified before the bounded GET.
     """
     refusal = environment_refusal(env)
     if refusal:
@@ -902,7 +1219,7 @@ def ensure_folder(path: str, env: Mapping[str, str], token: str) -> None:
     verify_service_token(token, project, path, env, writer=True)
     status, _ = _api_json(
         "GET",
-        "/v3/secrets/raw?" + secret_query(project, path),
+        "/v3/secrets/raw?" + secret_query(project, path, values=False),
         token,
         None,
         env,
@@ -938,57 +1255,661 @@ def resolve_token(
     return check_service_token(token)
 
 
-def put_secret(
-    name: str, path: str, value: str, env: Mapping[str, str], token: str | None = None
-) -> str:
-    """Create or update one Fleet-OPS prod secret at `path`, and return "created" or "updated".
+WRITE_INTENT_TTL_MS = 24 * 60 * 60 * 1000
+WRITE_CLOCK_SKEW_MS = 5 * 60 * 1000
+WRITE_CAPACITY = 1000
+_WRITE_FIELDS = frozenset(
+    {
+        "schema",
+        "request_id",
+        "created_at_ms",
+        "purpose",
+        "fingerprint",
+        "provider",
+        "project",
+        "path",
+        "name",
+        "digest",
+        "phase",
+        "result",
+        "ack_status",
+        "provider_status",
+        "retryable",
+        "failure_kind",
+    }
+)
+_WRITE_PHASES = frozenset(
+    {"prepared", "sending", "acknowledged", "verified", "refused", "cancelled"}
+)
 
-    Only names on WRITE_ALLOWLIST are accepted.  A separate scoped writer token is required and its grant metadata is verified before the request.  The value never appears in an argument list, a message or a log."""
+
+class WriteIntent(namedtuple("_WriteIntent", "state_dir purpose request_id created_at_ms")):
+    """Caller-owned durable location and stable identity; no credential or value."""
+
+    __slots__ = ()
+
+    def __new__(cls, state_dir: Path, purpose: str, request_id: str, created_at_ms: int):
+        try:
+            directory = Path(state_dir)
+            valid_id = isinstance(request_id, str) and str(uuid.UUID(request_id)) == request_id
+        except (ValueError, TypeError, AttributeError):
+            raise SecretsError("write-intent-invalid", 2) from None
+        if (
+            not directory.is_absolute()
+            or ".." in directory.parts
+            or not isinstance(purpose, str)
+            or re.fullmatch(r"[a-z][a-z0-9-]{0,79}", purpose) is None
+            or not valid_id
+            or type(created_at_ms) is not int
+            or not 0 < created_at_ms <= (1 << 63) - 1
+        ):
+            raise SecretsError("write-intent-invalid", 2)
+        return super().__new__(cls, directory, purpose, request_id, created_at_ms)
+
+
+class WriteReceipt(
+    namedtuple(
+        "_WriteReceipt", "request_id created_at_ms result replayed outcome", defaults=(False, "ok")
+    )
+):
+    """Immutable nonsecret acknowledgment of one known completed intent."""
+
+    __slots__ = ()
+
+
+class WriteError(SecretsError):
+    """A fixed outcome plus the caller's nonsecret recovery identity."""
+
+    def __init__(
+        self,
+        outcome: str,
+        intent: WriteIntent,
+        *,
+        reason=None,
+        required_binding=None,
+        name=None,
+        retryable=False,
+        failure_kind=None,
+        provider_status=None,
+    ):
+        super().__init__(
+            "write-" + outcome, failure_kind=failure_kind, provider_status=provider_status
+        )
+        self.outcome = outcome
+        self.request_id = intent.request_id
+        self.created_at_ms = intent.created_at_ms
+        self.purpose = intent.purpose
+        self.name = name
+        self.request_may_have_been_sent = outcome in (
+            "outcome_unknown",
+            "accepted_unverified",
+            "readback_conflict",
+            "prior_outcome_unknown",
+            "state_unavailable",
+            "state-invalid",
+        )
+        self.retryable = retryable is True and not self.request_may_have_been_sent
+        self.reason = reason if reason == "token-expired-or-invalid" else None
+        self.required_binding = required_binding if required_binding == ENV_WRITE_TOKEN else None
+        if self.reason:
+            self.message += ": " + self.reason
+        if self.required_binding:
+            self.message += ": " + self.required_binding + " is not set"
+        self.args = (self.message,)
+
+
+def new_write_intent(state_dir: Path, purpose: str) -> WriteIntent:
+    """Allocate once per explicit caller attempt; put_secret durably records it before dispatch."""
+    return WriteIntent(state_dir, purpose, str(uuid.uuid4()), time.time_ns() // 1_000_000)
+
+
+def _write_ledger(directory: Path):
+    # Read-only imports and calls never load a writer's state dependency or create files.
+    expected = Path(__file__).resolve().parent / "simple_tools" / "operator_github_state.py"
+    module_name = "_fleet_infisical_write_ledger"
+    try:
+        loaded = sys.modules.get(module_name)
+        if loaded is not None:
+            if Path(loaded.__file__).resolve() != expected:
+                raise ValueError()
+        else:
+            spec = importlib.util.spec_from_file_location(module_name, expected)
+            if spec is None or spec.loader is None:
+                raise ValueError()
+            loaded = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(loaded)
+            sys.modules[module_name] = loaded
+        return loaded.NonceLedger(directory, retain_unsettled=True)
+    except Exception:
+        raise SecretsError("write-state-unavailable") from None
+
+
+def _write_provider(env):
+    try:
+        provider = (env.get(ENV_API) or API_BASE).rstrip("/")
+        parsed = urllib.parse.urlsplit(provider)
+        if (
+            len(provider) > 2048
+            or parsed.scheme not in ("https", "http")
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or "%" in parsed.path
+            or "\\" in provider
+            or "//" in parsed.path
+            or any(part in (".", "..") for part in parsed.path.split("/"))
+        ):
+            raise ValueError()
+        host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+        loopback = False
+        try:
+            address = ipaddress.ip_address(host)
+            loopback = address.is_loopback
+            host = "[" + address.compressed + "]" if address.version == 6 else address.compressed
+        except ValueError:
+            if not re.fullmatch(r"[a-z0-9.-]+", host) or re.fullmatch(r"[0-9.]+", host):
+                raise ValueError() from None
+        # Plaintext is confined to literal loopback fixtures/local endpoints.
+        # A remote provider must never receive the token or value over HTTP.
+        if parsed.scheme != "https" and not loopback:
+            raise ValueError()
+        port = parsed.port
+        if port is not None and port != (443 if parsed.scheme == "https" else 80):
+            host += ":" + str(port)
+        return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except (ValueError, TypeError, AttributeError, UnicodeError):
+        raise SecretsError("write-provider-invalid", 2) from None
+
+
+def _write_digest(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _write_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _write_namespace(provider, project, path):
+    # Purpose and name do not divide this barrier; fresh intents cannot pass an uncertain write.
+    return "infisical-write:" + _write_digest(_write_json([provider, project, ENVIRONMENT, path]))
+
+
+def _write_record(intent, provider, project, path, name, digest):
+    binding = [
+        "put",
+        provider,
+        project,
+        ENVIRONMENT,
+        path,
+        name,
+        digest,
+        intent.purpose,
+        intent.created_at_ms,
+    ]
+    return dict(
+        schema=1,
+        request_id=intent.request_id,
+        created_at_ms=intent.created_at_ms,
+        purpose=intent.purpose,
+        fingerprint=_write_digest(_write_json(binding)),
+        provider=provider,
+        project=project,
+        path=path,
+        name=name,
+        digest=digest,
+        phase="prepared",
+        result="",
+        ack_status=0,
+        provider_status=0,
+        retryable=False,
+        failure_kind="",
+    )
+
+
+def _write_cached(raw, intent, provider, project, path, name, outcome):
+    try:
+        record = _decode_json(raw.encode("utf-8"))
+        if not isinstance(record, dict) or set(record) != _WRITE_FIELDS:
+            raise ValueError()
+        if (
+            type(record["schema"]) is not int
+            or record["schema"] != 1
+            or record["request_id"] != intent.request_id
+            or record["created_at_ms"] != intent.created_at_ms
+            or record["purpose"] != intent.purpose
+            or record["provider"] != provider
+            or record["project"] != project
+            or record["path"] != path
+            or record["name"] != name
+            or record["phase"] not in _WRITE_PHASES
+            or record["result"] not in ("", "created", "updated")
+            or type(record["ack_status"]) is not int
+            or record["ack_status"] not in (0, 200, 201)
+            or type(record["provider_status"]) is not int
+            or not 0 <= record["provider_status"] <= 599
+            or type(record["retryable"]) is not bool
+            or record["failure_kind"] not in ("", "unavailable", "refused")
+            or not isinstance(record["digest"], str)
+            or re.fullmatch(r"[a-f0-9]{64}", record["digest"]) is None
+        ):
+            raise ValueError()
+        expected = _write_record(intent, provider, project, path, name, record["digest"])
+        if record["fingerprint"] != expected["fingerprint"]:
+            raise ValueError()
+        acknowledged = record["phase"] in ("acknowledged", "verified")
+        if acknowledged != (record["ack_status"] in (200, 201)) or acknowledged != bool(
+            record["result"]
+        ):
+            raise ValueError()
+        if acknowledged and (
+            record["provider_status"] != record["ack_status"]
+            or record["retryable"]
+            or record["failure_kind"]
+        ):
+            raise ValueError()
+        if record["phase"] == "refused":
+            if record["failure_kind"] not in ("unavailable", "refused") or record["retryable"] != (
+                record["failure_kind"] == "unavailable"
+            ):
+                raise ValueError()
+        elif record["retryable"] or record["failure_kind"]:
+            raise ValueError()
+        allowed = {"verified": {"ok"}, "refused": {"refused"}, "cancelled": {"refused"}}
+        if outcome not in allowed.get(record["phase"], {"pending", "outcome_unknown"}):
+            raise ValueError()
+        return record
+    except Exception:
+        raise WriteError("state-invalid", intent) from None
+
+
+def _write_checkpoint(ledger, namespace, intent, record, outcome="pending"):
+    ledger.settle(namespace, intent.request_id, outcome, _write_json(record))
+
+
+def _write_refusal(intent, record):
+    return WriteError(
+        "refused",
+        intent,
+        retryable=record["retryable"],
+        failure_kind=record["failure_kind"],
+        provider_status=record["provider_status"],
+    )
+
+
+def _write_validate_history(ledger, directory):
+    def expected_expiry(namespace, nonce, outcome, raw):
+        record = _decode_json(raw.encode("utf-8"))
+        intent = WriteIntent(
+            directory, record["purpose"], record["request_id"], record["created_at_ms"]
+        )
+        check_name(record["name"])
+        check_path(record["path"])
+        check_writable(record["name"], record["path"])
+        if (
+            not isinstance(record["project"], str)
+            or not _UUID_RE.fullmatch(record["project"])
+            or str(uuid.UUID(record["project"])) != record["project"]
+            or _write_provider({ENV_API: record["provider"]}) != record["provider"]
+            or namespace != _write_namespace(record["provider"], record["project"], record["path"])
+            or nonce != intent.request_id
+        ):
+            raise ValueError()
+        _write_cached(
+            raw,
+            intent,
+            record["provider"],
+            record["project"],
+            record["path"],
+            record["name"],
+            outcome,
+        )
+        return (intent.created_at_ms + WRITE_INTENT_TTL_MS) / 1000
+
+    ledger.validate_retained_rows(expected_expiry)
+
+
+def _write_lookup(ledger, namespace, intent):
+    _write_validate_history(ledger, intent.state_dir)
+    existing = ledger.lookup_identity(intent.request_id)
+    if existing is None:
+        return None
+    if existing[0] != namespace:
+        raise WriteError("intent_conflict", intent)
+    return existing[1:]
+
+
+def _write_blocker(ledger, namespace, intent, provider, project, path):
+    held = ledger.lookup_unsettled(namespace)
+    if held is None:
+        return
+    try:
+        nonce, outcome, raw = held
+        record = _decode_json(raw.encode("utf-8"))
+        original = WriteIntent(
+            intent.state_dir, record["purpose"], record["request_id"], record["created_at_ms"]
+        )
+        name = check_name(record["name"])
+        check_writable(name, path)
+        _write_cached(raw, original, provider, project, path, name, outcome)
+        if nonce != original.request_id:
+            raise ValueError()
+    except Exception:
+        raise WriteError("state-invalid", intent) from None
+    # The blocked new attempt never replaces the original durable recovery identity.
+    raise WriteError("prior_outcome_unknown", original, name=name)
+
+
+def _write_readback(name, path, project, token, env, deadline):
+    status, payload = _api_json(
+        "GET",
+        "/v3/secrets/raw/" + urllib.parse.quote(name, safe="") + "?" + secret_query(project, path),
+        token,
+        None,
+        env,
+        max_bytes=MAX_VERIFIED_BYTES,
+        deadline=deadline,
+    )
+    if status != 200 or not isinstance(payload, dict):
+        raise SecretsError("fetch-failed")
+    key, value = validate_secret_record(payload.get("secret"), project, path)
+    if key != name:
+        raise SecretsError("unverified-source")
+    reject_unresolved({key: value})
+    return _write_digest(value)
+
+
+def _write_finish_readback(ledger, namespace, intent, record, token, env, deadline):
+    try:
+        digest = _write_readback(
+            record["name"], record["path"], record["project"], token, env, deadline
+        )
+    except Exception:
+        _write_checkpoint(ledger, namespace, intent, record, "outcome_unknown")
+        raise WriteError(
+            "accepted_unverified", intent, provider_status=record["provider_status"]
+        ) from None
+    if digest != record["digest"]:
+        _write_checkpoint(ledger, namespace, intent, record, "outcome_unknown")
+        raise WriteError("readback_conflict", intent, provider_status=record["provider_status"])
+    record["phase"] = "verified"
+    _write_checkpoint(ledger, namespace, intent, record, "ok")
+    return WriteReceipt(intent.request_id, intent.created_at_ms, record["result"])
+
+
+def _write_context(name, path, env, intent, timeout):
+    if not isinstance(intent, WriteIntent):
+        raise SecretsError("write-intent-required", 2)
+    WriteIntent(*intent)  # Validate tuple reconstruction helpers at the public boundary too.
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2)
     check_name(name)
     check_path(path)
     check_writable(name, path)
-    if "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
-        raise SecretsError(f"value is empty-unsafe or larger than {MAX_VALUE_BYTES} bytes", 2)
-    project = infisical_project_id(env, home_dir(env))
-    token = token if token is not None else resolve_token(env, writer=True)
-    verify_service_token(token, project, path, env, writer=True)
-    body = {
-        "workspaceId": project,
-        "environment": ENVIRONMENT,
-        "secretPath": path,
-        "secretValue": value,
-        "type": "shared",
-    }
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 120:
+        raise SecretsError("write-timeout-invalid", 2)
+    project = str(uuid.UUID(infisical_project_id(env, home_dir(env))))
+    provider = _write_provider(env)
+    return project, provider, _write_namespace(provider, project, path), time.monotonic() + timeout
+
+
+def put_secret(
+    name: str,
+    path: str,
+    value: str,
+    env: Mapping[str, str],
+    token: str | None = None,
+    *,
+    intent: WriteIntent | None = None,
+    timeout: float = API_TIMEOUT,
+) -> WriteReceipt:
+    """One allowlisted intent, serialized with all writers using its caller-owned state.
+
+    A duplicate never writes; a fresh UUID, changed purpose or no-op cannot bypass an
+    unsettled provider/project/folder operation in the same store.  Unknown attempts
+    stay held across expiry and restart.  This is not cross-host or provider CAS, and
+    another state location or direct external writer is outside this guarantee.
+    """
+    env = dict(env)
+    env[ENV_WRITE_PATHS] = path
+    project, provider, namespace, deadline = _write_context(name, path, env, intent, timeout)
+    env[ENV_API] = provider
+    if not isinstance(value, str) or "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
+        raise SecretsError("write-value-invalid", 2)
+    record = _write_record(intent, provider, project, path, name, _write_digest(value))
+    ledger = _write_ledger(intent.state_dir)
     try:
-        quoted = urllib.request.quote(name, safe="")
-        # `set` never creates folders:  the allowlist names a folder that already exists.  A missing folder
-        # (404 on a listing of it) is an error and nothing is written.
-        probe = _api(
+        with ledger.serialized(timeout=min(5.0, max(0, deadline - time.monotonic()))):
+            old = _write_lookup(ledger, namespace, intent)
+            if old is not None:
+                saved = _write_cached(old[1], intent, provider, project, path, name, old[0])
+                if saved["fingerprint"] != record["fingerprint"]:
+                    raise WriteError("intent_conflict", intent)
+                if old[0] == "ok" and saved["phase"] == "verified":
+                    return WriteReceipt(
+                        intent.request_id, intent.created_at_ms, saved["result"], replayed=True
+                    )
+                if old[0] == "refused":
+                    raise _write_refusal(intent, saved)
+                raise WriteError("outcome_unknown", intent)
+            now_ms = time.time_ns() // 1_000_000
+            if (
+                not now_ms - WRITE_INTENT_TTL_MS
+                <= intent.created_at_ms
+                <= now_ms + WRITE_CLOCK_SKEW_MS
+            ):
+                raise WriteError("intent_expired", intent)
+            _write_blocker(ledger, namespace, intent, provider, project, path)
+            claim = ledger.begin(
+                namespace,
+                intent.request_id,
+                (intent.created_at_ms + WRITE_INTENT_TTL_MS) / 1000,
+                now_ms / 1000,
+                WRITE_CAPACITY,
+                response=_write_json(record),
+            )
+            if claim != "fresh":
+                raise WriteError("state_unavailable", intent)
+            return _write_dispatch(ledger, namespace, intent, record, value, token, env, deadline)
+    except SecretsError:
+        raise
+    except Exception:
+        raise WriteError("state_unavailable", intent) from None
+
+
+def _write_dispatch(ledger, namespace, intent, record, value, token, env, deadline):
+    # Definite preflight refusals have never entered a provider mutation.
+    try:
+        token = token if token is not None else resolve_token(env, writer=True)
+        verify_service_token(
+            token, record["project"], record["path"], env, writer=True, deadline=deadline
+        )
+        probe, _ = _api_json(
             "GET",
-            "/v3/secrets/raw?workspaceId={}&environment={}&secretPath={}&recursive=false&include_imports=false".format(
-                project, ENVIRONMENT, urllib.request.quote(path, safe="/")
-            ),
+            "/v3/secrets/raw?" + secret_query(record["project"], record["path"], values=False),
             token,
             None,
             env,
+            max_bytes=MAX_VERIFIED_BYTES,
+            deadline=deadline,
         )
-        if probe == 404:
-            raise SecretsError(
-                f"folder-missing:  {path} does not exist in Fleet-OPS;  nothing was written", 4
+        if probe != 200 or time.monotonic() >= deadline:
+            unavailable = (
+                probe in (0, 408, 425, 429) or 500 <= probe <= 599 or time.monotonic() >= deadline
             )
-        if probe != 200:
-            raise SecretsError(f"write-failed:  folder-check http-{probe}", 4)
-        status = _api("PATCH", "/v3/secrets/raw/" + quoted, token, body, env)
-        if status in (200, 201):
-            return "updated"
-        if status == 404:
-            status = _api("POST", "/v3/secrets/raw/" + quoted, token, body, env)
-            if status in (200, 201):
-                return "created"
-        raise SecretsError(f"write-failed:  http-{status}")
+            raise SecretsError(
+                "folder-missing-or-inaccessible",
+                failure_kind="unavailable" if unavailable else "refused",
+                provider_status=probe,
+            )
+    except SecretsError as exc:
+        kind = exc.failure_kind or "refused"
+        record.update(
+            phase="refused",
+            failure_kind=kind,
+            retryable=kind == "unavailable",
+            provider_status=exc.provider_status or 0,
+        )
+        _write_checkpoint(ledger, namespace, intent, record, "refused")
+        missing = ENV_WRITE_TOKEN if token is None and not env.get(ENV_WRITE_TOKEN) else None
+        raise WriteError(
+            "refused",
+            intent,
+            reason=exc.reason,
+            required_binding=missing,
+            retryable=record["retryable"],
+            failure_kind=kind,
+            provider_status=record["provider_status"],
+        ) from None
+    endpoint = "/v3/secrets/raw/" + urllib.parse.quote(record["name"], safe="")
+    body = dict(
+        workspaceId=record["project"],
+        environment=ENVIRONMENT,
+        secretPath=record["path"],
+        secretValue=value,
+        type="shared",
+    )
+    try:
+        for method, result in (("PATCH", "updated"), ("POST", "created")):
+            if time.monotonic() >= deadline:
+                record.update(phase="refused", failure_kind="unavailable", retryable=True)
+                _write_checkpoint(ledger, namespace, intent, record, "refused")
+                raise _write_refusal(intent, record)
+            record["phase"] = "sending"
+            _write_checkpoint(ledger, namespace, intent, record)
+
+            def acknowledge(status):
+                if status in (200, 201):
+                    record.update(
+                        phase="acknowledged",
+                        result=result,
+                        ack_status=status,
+                        provider_status=status,
+                    )
+                    _write_checkpoint(ledger, namespace, intent, record)
+
+            def unsent():
+                record.update(phase="refused", failure_kind="unavailable", retryable=True)
+                _write_checkpoint(ledger, namespace, intent, record, "refused")
+
+            try:
+                status, _ = _api_json(
+                    method,
+                    endpoint,
+                    token,
+                    body,
+                    env,
+                    max_bytes=MAX_VERIFIED_BYTES,
+                    deadline=deadline,
+                    on_status=acknowledge,
+                    on_unsent=unsent,
+                )
+            except Exception:
+                if record["phase"] == "refused":
+                    _write_checkpoint(ledger, namespace, intent, record, "refused")
+                    raise _write_refusal(intent, record) from None
+                _write_checkpoint(ledger, namespace, intent, record, "outcome_unknown")
+                raise WriteError(
+                    "accepted_unverified"
+                    if record["phase"] == "acknowledged"
+                    else "outcome_unknown",
+                    intent,
+                    provider_status=record["provider_status"],
+                ) from None
+            if record["phase"] == "acknowledged":
+                return _write_finish_readback(
+                    ledger, namespace, intent, record, token, env, deadline
+                )
+            if record["phase"] == "refused":
+                raise _write_refusal(intent, record)
+            if status == 404 and method == "PATCH":
+                record["phase"] = "prepared"
+                _write_checkpoint(ledger, namespace, intent, record)
+                continue
+            if status in (400, 401, 403, 404, 405, 409, 422, 429):
+                record.update(
+                    phase="refused",
+                    failure_kind="unavailable" if status == 429 else "refused",
+                    retryable=status == 429,
+                    provider_status=status,
+                )
+                _write_checkpoint(ledger, namespace, intent, record, "refused")
+                raise _write_refusal(intent, record)
+            record["provider_status"] = status if type(status) is int and 0 <= status <= 599 else 0
+            _write_checkpoint(ledger, namespace, intent, record, "outcome_unknown")
+            raise WriteError("outcome_unknown", intent, provider_status=record["provider_status"])
     finally:
-        body = {}
-        token = ""
+        body.clear()
+
+
+def reconcile_secret(
+    name: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    intent: WriteIntent,
+    token: str | None = None,
+    timeout: float = API_TIMEOUT,
+) -> WriteReceipt:
+    """Read-only recovery; equality alone never settles an attempt without a recorded causal ACK."""
+    env = dict(env)
+    env[ENV_WRITE_PATHS] = path
+    project, provider, namespace, deadline = _write_context(name, path, env, intent, timeout)
+    env[ENV_API] = provider
+    ledger = _write_ledger(intent.state_dir)
+    try:
+        with ledger.serialized(timeout=min(5.0, max(0, deadline - time.monotonic()))):
+            old = _write_lookup(ledger, namespace, intent)
+            if old is None:
+                _write_blocker(ledger, namespace, intent, provider, project, path)
+                # A retained cancellation fences an original arriving after this recovery.
+                now_ms = time.time_ns() // 1_000_000
+                if (
+                    not now_ms - WRITE_INTENT_TTL_MS
+                    <= intent.created_at_ms
+                    <= now_ms + WRITE_CLOCK_SKEW_MS
+                ):
+                    raise WriteError("intent_expired", intent)
+                cancelled = _write_record(intent, provider, project, path, name, "0" * 64)
+                cancelled["phase"] = "cancelled"
+                claim = ledger.begin(
+                    namespace,
+                    intent.request_id,
+                    (intent.created_at_ms + WRITE_INTENT_TTL_MS) / 1000,
+                    now_ms / 1000,
+                    WRITE_CAPACITY,
+                    response=_write_json(cancelled),
+                )
+                if claim != "fresh":
+                    raise WriteError("state_unavailable", intent)
+                _write_checkpoint(ledger, namespace, intent, cancelled, "refused")
+                raise WriteError("cancelled", intent)
+            record = _write_cached(old[1], intent, provider, project, path, name, old[0])
+            if old[0] == "ok" and record["phase"] == "verified":
+                return WriteReceipt(
+                    intent.request_id, intent.created_at_ms, record["result"], replayed=True
+                )
+            if old[0] == "refused":
+                if record["phase"] == "cancelled":
+                    raise WriteError("cancelled", intent)
+                raise _write_refusal(intent, record)
+            if record["phase"] == "prepared":
+                # Sending is fsynced BEFORE dispatch, under this same lock.
+                record["phase"] = "cancelled"
+                _write_checkpoint(ledger, namespace, intent, record, "refused")
+                raise WriteError("cancelled", intent)
+            if record["phase"] != "acknowledged":
+                raise WriteError("outcome_unknown", intent)
+            token = token if token is not None else resolve_token(env, writer=True)
+            verify_service_token(token, project, path, env, writer=True, deadline=deadline)
+            return _write_finish_readback(ledger, namespace, intent, record, token, env, deadline)
+    except SecretsError:
+        raise
+    except Exception:
+        raise WriteError("state_unavailable", intent) from None
+
+
+if __name__ == "__main__":
+    raise SystemExit(_bounded_read_worker() if sys.argv[1:] == ["--bounded-read-worker"] else 2)
