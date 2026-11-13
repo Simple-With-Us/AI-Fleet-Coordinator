@@ -1338,7 +1338,8 @@ enum OperatorPanelPresentation {
         now: Date,
         limit: Int = wakeRowLimit,
         filter: OperatorWakeFilter = .all,
-        search: String = ""
+        search: String = "",
+        grouping: OperatorWakeGrouping = .bySeat
     ) -> OperatorWakesTable {
         struct Item { let seat: String; let wake: OperatorWake; let order: Int }
         var items: [Item] = []
@@ -1390,20 +1391,25 @@ enum OperatorPanelPresentation {
             )
         }
 
-        var seatOrder: [String] = []
-        var seatBuckets: [String: [OperatorWakeLine]] = [:]
-        for row in rows {
-            if seatBuckets[row.seat] == nil { seatOrder.append(row.seat) }
-            seatBuckets[row.seat, default: []].append(row)
-        }
-        let seatGroups = seatOrder.compactMap { seat -> OperatorWakeSeatGroup? in
-            guard let groupRows = seatBuckets[seat] else { return nil }
-            return OperatorWakeSeatGroup(
-                id: seat,
-                seat: seat,
-                problemCount: groupRows.filter(\.isProblem).count,
-                rows: groupRows
-            )
+        let seatGroups: [OperatorWakeSeatGroup]
+        if grouping == .newestFirst {
+            seatGroups = []
+        } else {
+            var seatOrder: [String] = []
+            var seatBuckets: [String: [OperatorWakeLine]] = [:]
+            for row in rows {
+                if seatBuckets[row.seat] == nil { seatOrder.append(row.seat) }
+                seatBuckets[row.seat, default: []].append(row)
+            }
+            seatGroups = seatOrder.compactMap { seat -> OperatorWakeSeatGroup? in
+                guard let groupRows = seatBuckets[seat] else { return nil }
+                return OperatorWakeSeatGroup(
+                    id: seat,
+                    seat: seat,
+                    problemCount: groupRows.filter(\.isProblem).count,
+                    rows: groupRows
+                )
+            }
         }
 
         // The server counts every wake and lists at most a few per seat, so the count is the
@@ -1434,7 +1440,7 @@ enum OperatorPanelPresentation {
             moreCount: more,
             summary: summaryParts.isEmpty ? nil : summaryParts.joined(separator: ", ") + ".",
             notes: notes,
-            totalLoadedCount: matching.count,
+            totalLoadedCount: matchingItems.count,
             loadedMoreCount: loadedMore,
             unloadedServerCount: unloaded,
             seatGroups: seatGroups

@@ -301,7 +301,8 @@ struct OperatorPanelView: View {
                     now: now,
                     limit: showAllWakes ? Int.max : OperatorPanelPresentation.wakeRowLimit,
                     filter: wakeFilter,
-                    search: wakeSearch
+                    search: wakeSearch,
+                    grouping: wakeGrouping
                 )
                 VStack(alignment: .leading, spacing: 8) {
                     wakesToolbar(table: table)
