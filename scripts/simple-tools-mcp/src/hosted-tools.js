@@ -384,6 +384,19 @@ const LINEAR_WORKSPACE_CACHE = new Map();
  * flat inputs, <=32 keys, scalar values only, <=1024 chars per string, no
  * unknown fields.  The relay re-checks the same caps;  an over-limit call
  * refuses here instead of spending a parse, a stringify and an upstream call. */
+// Keep in step with git_relay.github_client.intent_branch_ref.  A tag whose
+// name passes the shape is not distinguishable without the contents read
+// that an intent-only call skips.
+const INTENT_BRANCH_REF = /^[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}$/;
+const COMMIT_SHA_REF = /^[0-9a-f]{40}$/;
+
+function intentBranchRef(ref) {
+  return typeof ref === "string"
+    && INTENT_BRANCH_REF.test(ref)
+    && !ref.includes("..")
+    && !COMMIT_SHA_REF.test(ref);
+}
+
 const GR_DISPATCH_ARGS = z
   .object({
     repo: z.string().min(3).max(200),
@@ -1709,7 +1722,12 @@ export class HostedTools {
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
-    if ((parsed.intent_id === undefined) !== (parsed.expected_head_sha === undefined)) throw new ToolError("invalid_argument", "intent_id and expected_head_sha must be supplied together");
+    if (parsed.expected_head_sha !== undefined && parsed.intent_id === undefined) {
+      throw new ToolError("invalid_argument", "expected_head_sha requires intent_id");
+    }
+    if (parsed.intent_id !== undefined && !intentBranchRef(parsed.ref)) {
+      throw new ToolError("invalid_argument", "intent dispatch requires a canonical branch name");
+    }
     return this.grCall("workflow_dispatch", parsed);
   }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
