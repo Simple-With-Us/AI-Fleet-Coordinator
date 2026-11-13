@@ -34,8 +34,8 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -62,12 +62,8 @@ INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> n
 INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
-FETCH_TIMEOUT_S = (
-    60.0  # one scoped direct read: token metadata and the named secret
-)
-KEY_ABSENT_EXIT = (
-    3  # the shared reader's definite missing-key outcome
-)
+FETCH_TIMEOUT_S = 60.0  # one scoped direct read: token metadata and the named secret
+KEY_ABSENT_EXIT = 3  # the shared reader's definite missing-key outcome
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
     8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
@@ -198,7 +194,9 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
         binding = FI.resolve_token(scoped, project_name=INFISICAL_PROJECT)
     except FI.SecretsError:
         return None
-    route = hashlib.sha256((scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()).hexdigest()
+    route = hashlib.sha256(
+        (scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()
+    ).hexdigest()
     cache_key = (project, route, name)
     now = time.monotonic()
     held = _token_cache.get(cache_key)
@@ -207,8 +205,9 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
     value: str | None = None
     definitive = True
     try:
-        values = FI.fetch_project(project, INFISICAL_PATH, scoped, token=binding,
-                                  names=(name,), timeout=FETCH_TIMEOUT_S)
+        values = FI.fetch_project(
+            project, INFISICAL_PATH, scoped, token=binding, names=(name,), timeout=FETCH_TIMEOUT_S
+        )
         value = values.get(name, "").strip() or None
     except FI.SecretsError as exc:
         definitive = exc.code == KEY_ABSENT_EXIT

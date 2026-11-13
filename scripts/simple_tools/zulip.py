@@ -35,7 +35,6 @@ import os
 import re
 import shutil
 import stat
-import sys
 import threading
 import time
 import urllib.error
@@ -604,8 +603,12 @@ def fleet_secrets_bin(env: Mapping[str, str], home: Path) -> str | None:
 
 
 _cache_lock = threading.Lock()
-_value_cache: dict[tuple[str, str, str, str], tuple[float, str]] = {}  # (binding route, project, path, name)
-_names_cache: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}  # (binding route, project) -> names
+_value_cache: dict[
+    tuple[str, str, str, str], tuple[float, str]
+] = {}  # (binding route, project, path, name)
+_names_cache: dict[
+    tuple[str, str], tuple[float, frozenset[str]]
+] = {}  # (binding route, project) -> names
 _failures: dict[
     tuple[str, ...], tuple[float, str]
 ] = {}  # (binding route, project, what...) -> (failed at, reason), memory only
@@ -628,7 +631,9 @@ def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
     return None
 
 
-def _infisical_context(env: Mapping[str, str], home: Path, path: str) -> tuple[str, str, dict[str, str]]:
+def _infisical_context(
+    env: Mapping[str, str], home: Path, path: str
+) -> tuple[str, str, dict[str, str]]:
     """The caller's explicit project binding and exact folder; no CLI or credential-store fallback."""
     import fleet_infisical as FI
 
@@ -638,8 +643,12 @@ def _infisical_context(env: Mapping[str, str], home: Path, path: str) -> tuple[s
     try:
         binding = FI.resolve_token(scoped)
     except FI.SecretsError:
-        raise CredentialError("Infisical service-token-required: INFISICAL_TOKEN is not usable") from None
-    route = hashlib.sha256((scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()).hexdigest()
+        raise CredentialError(
+            "Infisical service-token-required: INFISICAL_TOKEN is not usable"
+        ) from None
+    route = hashlib.sha256(
+        (scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()
+    ).hexdigest()
     return project, route, scoped
 
 
@@ -652,8 +661,9 @@ def _direct_infisical_values(
     project, _route, scoped = _infisical_context(env, home, path)
     try:
         binding = FI.resolve_token(scoped)
-        values = FI.fetch_project(project, path, scoped, token=binding,
-                                  names=wanted, timeout=FLEET_SECRETS_TIMEOUT)
+        values = FI.fetch_project(
+            project, path, scoped, token=binding, names=wanted, timeout=FLEET_SECRETS_TIMEOUT
+        )
     except TimeoutError:
         raise CredentialError("Infisical timeout") from None
     except FI.SecretsError as exc:
@@ -732,8 +742,9 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
             import fleet_infisical as FI
 
             binding = FI.resolve_token(scoped)
-            names = FI.list_project_names(project, INFISICAL_PATH, scoped,
-                                          token=binding, timeout=FLEET_SECRETS_TIMEOUT)
+            names = FI.list_project_names(
+                project, INFISICAL_PATH, scoped, token=binding, timeout=FLEET_SECRETS_TIMEOUT
+            )
         except TimeoutError:
             reason = "Infisical timeout"
             _failures[failure_key] = (now, reason)
@@ -1307,9 +1318,9 @@ class ZulipClient:
             self.owner_user_id = int(owner_user_id)
         except (TypeError, ValueError):
             self.owner_user_id = 0
-        encoded_auth = base64.b64encode(("%s:%s" % (creds.email, creds.key)).encode("utf-8")).decode(
-            "ascii"
-        )
+        encoded_auth = base64.b64encode(
+            ("%s:%s" % (creds.email, creds.key)).encode("utf-8")
+        ).decode("ascii")
         self._auth = "Basic " + encoded_auth
         self._hidden = [value for value in (creds.key, encoded_auth) if value]
         # Set only by mark_operator_verified, after `users/me` was checked against the pinned

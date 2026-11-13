@@ -15,9 +15,7 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
 import socket
 import subprocess
 import threading
