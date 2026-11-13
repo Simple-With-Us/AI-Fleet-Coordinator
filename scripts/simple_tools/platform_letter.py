@@ -304,6 +304,29 @@ def payload_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = No
     return one_line(payload.get("session_title") or payload.get("title"))
 
 
+# Registry credentials belong to the letter client, never a platform's title or inspection process.
+_OPERATOR_CHILD_SECRETS = frozenset(
+    {
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN",
+        "FLEET_KNOBS_INFISICAL_TOKEN",
+        "FLEET_KNOBS_WRITE_TOKEN",
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "FLEET_RECALL_INFISICAL_TOKEN",
+    }
+)
+
+
+def child_process_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Keep the platform's launcher environment while removing the Operator's private credentials.
+
+    The parent mapping stays intact for registry calls.  All adapters share this boundary, including
+    direct RPC callers that do not enter through a TitleRequest."""
+    source = os.environ if env is None else env
+    return {name: value for name, value in source.items() if name not in _OPERATOR_CHILD_SECRETS}
+
+
 @dataclass(frozen=True)
 class TitleRequest:
     """One title for an adapter's `title_writer` to put on the chat natively.  `title` is the whole "XX: Words",
@@ -324,6 +347,10 @@ class TitleRequest:
     env: Mapping[str, str]
     shown: str = ""
     held: tuple[str, ...] = ()
+    # Parent-only registry capability; no credential mapping is part of the request.
+    record_thread_link: Callable[[str], dict[str, Any]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 TitleWriter = Callable[[TitleRequest], bool]
@@ -1514,6 +1541,35 @@ def _join(*parts: str) -> str:
     return "  ".join(part for part in parts if part)
 
 
+def _thread_link_recorder(chat: Chat) -> Callable[[str], dict[str, Any]]:
+    """Keep the parent's registry credentials behind one identity-bound in-process update."""
+
+    def record(link: str) -> dict[str, Any]:
+        from . import registry_api
+
+        if not isinstance(link, str):
+            return {"code": "thread_link_invalid", "error": "thread_link_invalid"}
+        known = tuple(chat.env.get(name, "") for name in _OPERATOR_CHILD_SECRETS)
+        if secretscan.scan(link, known):
+            return {"code": "thread_link_secret_detected", "error": "thread_link_secret_detected"}
+        if not registry_api.base_url(chat.env):
+            return {}
+        return registry_api.call(
+            chat.env,
+            "update",
+            {
+                "platform": chat.spec.platform,
+                "location": chat.location,
+                "scope": SCOPE,
+                "session_id": chat.session_id,
+                "thread_link": link,
+            },
+            timeout=2,
+        )
+
+    return record
+
+
 def advice(
     chat: Chat, note: dict[str, Any], current: str, data: Mapping[str, Any], reason: str
 ) -> str:
@@ -1541,7 +1597,8 @@ def advice(
         current=current,
         reason=reason,
         data=data,
-        env=chat.env,
+        env=child_process_env(chat.env),
+        record_thread_link=_thread_link_recorder(chat),
         shown=str(note.get("shown") or ""),
         held=held(note),
     )
@@ -2283,7 +2340,8 @@ def _write_title(
         current=current,
         reason=reason,
         data=data,
-        env=chat.env,
+        env=child_process_env(chat.env),
+        record_thread_link=_thread_link_recorder(chat),
         shown=str(note.get("shown") or ""),
         held=held(note),
     )
