@@ -108,7 +108,7 @@ class FakeRegistry:
         from types import SimpleNamespace
 
         from fleet_knobs.source import PROJECT_ID
-        from simple_tools.platform_letter_bootstrap import TOKEN_ENV
+        from simple_tools.letter_registry_bootstrap import TOKEN_ENV
 
         token = "st." + secrets.token_hex(24)
         values = {

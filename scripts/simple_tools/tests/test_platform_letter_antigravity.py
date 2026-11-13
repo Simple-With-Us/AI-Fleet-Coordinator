@@ -567,7 +567,7 @@ class QuickAnswerTests(Base):
         os.chmod(self.entry, 0o755)
         Path(package, "__init__.py").write_text("")
         Path(package, "platform_letter.py").write_text(STUB_LIBRARY)
-        shutil.copy(SCRIPTS / "simple_tools" / "platform_letter_bootstrap.py", package)
+        shutil.copy(SCRIPTS / "simple_tools" / "letter_registry_bootstrap.py", package)
         shutil.copy(SCRIPTS / "fleet_infisical_bootstrap.py", self.checkout)
         self.imported = os.path.join(self.checkout, "imported")
 

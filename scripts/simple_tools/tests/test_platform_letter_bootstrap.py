@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 
-from simple_tools.platform_letter_bootstrap import TOKEN_ENV, bind, report
+from simple_tools.letter_registry_bootstrap import TOKEN_ENV, bind, report
 from unittest import mock
 
 
@@ -122,8 +122,8 @@ class BootstrapTests(unittest.TestCase):
         package = self.home / "simple_tools"
         package.mkdir()
         (package / "__init__.py").touch()
-        shutil.copyfile(scripts / "simple_tools/platform_letter_bootstrap.py",
-                        package / "platform_letter_bootstrap.py")
+        shutil.copyfile(scripts / "simple_tools/letter_registry_bootstrap.py",
+                        package / "letter_registry_bootstrap.py")
         shutil.copyfile(scripts / "fleet_infisical_bootstrap.py", self.home / "fleet_infisical_bootstrap.py")
         for name, args in (("simple-chat", ["letter", "hook"]),
                            ("platform-letter", ["hook", "--platform", "codex"])):
