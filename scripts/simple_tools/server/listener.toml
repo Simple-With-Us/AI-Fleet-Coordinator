@@ -192,7 +192,7 @@ instance = "server"
 creds = "env"                     # ZULIP_CURSOR_EMAIL, ZULIP_CURSOR_API_KEY
 wake = "inbox"
 
-# GROK uses the canonical seat's Infisical pair, like every other server seat.
+# GROK expects canonical names; verify them before enabling the deployed seat.
 # The retired GROK-BUILD credential stem is never loaded.
 [seat.GROK]
 instance = "server"
