@@ -3,7 +3,7 @@
 // Infisical Fleet-OPS /google-sheets-sa (read with INFISICAL_SHEETS_SA_TOKEN only).  Pure module — fetch and WebCrypto only.
 
 import PEER_ACTIONS_JSON from "../../simple_tools/mcp/peer-actions-tools.json" with { type: "json" };
-import { ToolError, okResult } from "./contract.js";
+import { ToolError, okResult, scanSecret } from "./contract.js";
 import { canonicalSeatName } from "./identity-aliases.js";
 import { InfisicalError, resolveSecretIsolated } from "./infisical.js";
 
@@ -23,6 +23,7 @@ function cleanLine(name, value, max = TEXT_MAX) {
   if (!text) throw new ToolError("invalid_argument", `${name} is required`);
   if (text.length > max) throw new ToolError("invalid_argument", `${name} must be at most ${max} characters`);
   if (text.includes("\n")) throw new ToolError("invalid_argument", `${name} must be a single line`);
+  if (scanSecret(text)) throw new ToolError("refused_secret", `${name} contains credential-shaped text`);
   return text;
 }
 
