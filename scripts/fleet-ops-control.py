@@ -1866,6 +1866,8 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
             fields["detail"] = (
                 "canonical settings initialized and read back; runtime source is not activated"
             )
+        elif result == "saved":
+            fields["detail"] = "saved to Infisical and verified by the listener"
         else:
             reload = document.get("reload") if isinstance(document.get("reload"), dict) else {}
             fields["detail"] = "%d setting(s) changed; %s" % (
