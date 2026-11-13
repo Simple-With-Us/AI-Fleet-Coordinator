@@ -1511,7 +1511,11 @@ def collect_repository(
     if previous_private_opt_in is not None and previous_private_opt_in != private_docs_opt_in:
         previous_owner_repo = previous.get("owner_repo")
         current_owner_repo = f"{repo.owner}/{repo.name}"
-        if isinstance(previous_owner_repo, str) and previous_owner_repo != current_owner_repo:
+        if (
+            private_docs_opt_in is not None
+            and isinstance(previous_owner_repo, str)
+            and previous_owner_repo.casefold() != current_owner_repo.casefold()
+        ):
             raise CollectionError(
                 f"Private-document consent for {previous_owner_repo} cannot transfer to "
                 f"{current_owner_repo}. The existing private collection remains unchanged; "

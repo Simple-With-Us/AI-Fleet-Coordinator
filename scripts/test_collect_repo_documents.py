@@ -1389,6 +1389,119 @@ class CollectorTests(unittest.TestCase):
             }
             self.assertEqual(after_public_collection, before)
 
+    def test_public_collection_after_private_owner_transfer_uses_generic_opt_in_error(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Old owner README.\n")
+        repo.write("docs/private-audits/evidence.md", "Old owner private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-transfer-public-central"
+        verified_identities = {"old-owner/private-repo", "new-owner/private-repo"}
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+            mirror = output / "Private-Repo"
+            before = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/new-owner/Private-Repo.git",
+            )
+            repo.write("README.md", "New owner README.\n")
+            repo.write("docs/private-audits/evidence.md", "New owner private evidence.\n")
+            repo.commit_published()
+
+            with self.assertRaisesRegex(
+                collector.CollectionError,
+                "An existing private-document collection requires the same explicit opt-in",
+            ):
+                collector.collect(self.code, output, repo_paths=[repo.path])
+
+            after = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after, before)
+
+    def test_case_only_private_owner_change_uses_generic_opt_in_error(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Original README.\n")
+        repo.write("docs/private-audits/evidence.md", "Original private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-case-central"
+        verified_identities = {"old-owner/private-repo"}
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+            mirror = output / "Private-Repo"
+            before = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/OLD-OWNER/Private-Repo.git",
+            )
+            repo.write("README.md", "Case-varied README.\n")
+            repo.write("docs/private-audits/evidence.md", "Case-varied private evidence.\n")
+            repo.commit_published()
+
+            with self.assertRaisesRegex(
+                collector.CollectionError,
+                "An existing private-document collection requires the same explicit opt-in",
+            ):
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="OLD-OWNER/Private-Repo",
+                )
+
+            after = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after, before)
+
     def test_indexes_only_cli_writes_only_to_preview_root(self) -> None:
         repo = self.make_repo()
         repo.write("docs/rollouts/rollout.md", "canonical")
