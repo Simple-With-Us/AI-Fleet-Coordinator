@@ -5,9 +5,9 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
 Canonical reference: `~/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`~/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
@@ -113,7 +113,7 @@ Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (the MCP tool `linear_claim`):**
    - `linear_list --team <app>`, then the MCP tool `linear_claim` with `id` = the issue id and `comment` = "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>".  If nothing exists, `linear_file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label; the hosted server refuses an issue another seat holds, and the `simple-board` CLI fallback still takes `--steal --reason` when a takeover is intended on purpose.    - The CLI fallback is `simple-board list --app <app>`, then `simple-board claim <id> --by <SEAT> --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.
-   - Branch `<seat>/<id>-<slug>` (`zcode/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
+   - Branch `<seat>/<id>-<slug>` (`zc/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
    - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#Work-In-Progress`, work topic (`<ID> <subject>`, at most 58 characters):**
    Post a standardized claim block.  One topic per unit of work; a reply is a post to the same channel and topic.
