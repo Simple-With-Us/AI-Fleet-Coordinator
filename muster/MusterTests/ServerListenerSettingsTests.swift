@@ -1140,7 +1140,7 @@ final class ServerListenerSettingsStoreTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1)
         guard case .read(let answer)? = store.reading else { return XCTFail("\(String(describing: store.reading))") }
         XCTAssertEqual(reads.count, 2)
-        let expected = ServerSettingsBuilder.groups(settings: answer.settings, allowlist: list)
+        let expected = ServerSettingsBuilder.groups(settings: answer.settings, allowlist: list, editable: true)
         XCTAssertFalse(expected.isEmpty)
         XCTAssertEqual(store.groups, expected)
         XCTAssertTrue(store.groups.flatMap(\.rows).contains { $0.id == "seat.CLAUDE.enabled" && $0.isEditable })
