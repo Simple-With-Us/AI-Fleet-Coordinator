@@ -361,7 +361,7 @@ class CopiedReaderTests(unittest.TestCase):
                         prefix = "/api/v3/secrets/raw/"
                         if not parsed.path.startswith(prefix):
                             return super().do_GET()
-                        name = urllib.parse.unquote(parsed.path[len(prefix):])
+                        name = urllib.parse.unquote(parsed.path[len(prefix) :])
                         if name not in fake.values:
                             return super().do_GET()
                         fake.requests.append(self.path)
