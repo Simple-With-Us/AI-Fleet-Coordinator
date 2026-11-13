@@ -402,6 +402,7 @@ def _base_answer(action, current, path):
         "ok": False,
         "result": "failed",
         "source": "infisical",
+        "autosaveEnabled": action in ("get", "save"),
         "persisted": False,
         "readback": False,
         "runtimeApplied": False,
