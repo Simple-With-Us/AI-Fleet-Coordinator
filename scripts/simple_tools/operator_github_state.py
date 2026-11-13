@@ -110,8 +110,10 @@ class NonceLedger:
                 sticky_root = not final and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
                 if (
                     info.st_uid not in (0, os.getuid())
-                    or info.st_mode & 0o022 and not sticky_root
-                    or final and (info.st_uid != os.getuid() or info.st_mode & 0o077)
+                    or info.st_mode & 0o022
+                    and not sticky_root
+                    or final
+                    and (info.st_uid != os.getuid() or info.st_mode & 0o077)
                 ):
                     raise LedgerError("private replay directory required")
             return fd
@@ -178,7 +180,9 @@ class NonceLedger:
             "OR typeof(response) NOT IN ('null','text') OR length(CAST(response AS BLOB))>? LIMIT 1",
             (self.MAX_RESPONSE_BYTES,),
         ).fetchone()
-        if invalid or any(not math.isfinite(row[0]) for row in db.execute("SELECT expires FROM nonces")):
+        if invalid or any(
+            not math.isfinite(row[0]) for row in db.execute("SELECT expires FROM nonces")
+        ):
             raise LedgerError("replay storage unavailable")
         if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise LedgerError("replay storage unavailable")
@@ -265,7 +269,8 @@ class NonceLedger:
                 if db.execute("SELECT count(*) FROM nonces").fetchone()[0] >= capacity:
                     return "capacity"
                 db.execute(
-                    "INSERT INTO nonces VALUES (?,?,?,'pending',?)", (seat, nonce, expires, response)
+                    "INSERT INTO nonces VALUES (?,?,?,'pending',?)",
+                    (seat, nonce, expires, response),
                 )
             return "fresh"
         except (sqlite3.Error, OSError):

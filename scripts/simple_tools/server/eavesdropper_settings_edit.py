@@ -1097,8 +1097,9 @@ def daemon_reload(
     if status != 0:
         return {"ok": False, "confirmed": False, "code": "reload_not_sent"}
     path = _status_path(environ)
-    deadline = started + (RELOAD_READBACK_SECONDS if timeout is None else
-                          min(RELOAD_READBACK_SECONDS, timeout))
+    deadline = started + (
+        RELOAD_READBACK_SECONDS if timeout is None else min(RELOAD_READBACK_SECONDS, timeout)
+    )
     while True:
         try:
             with open(path, "rb") as handle:
@@ -1127,8 +1128,11 @@ def daemon_reload(
                 "confirmed": False,
                 "code": "reload_revision_mismatch" if expected_revision else "reload_unconfirmed",
             }
-        sleep(RELOAD_POLL_SECONDS if timeout is None else
-              min(RELOAD_POLL_SECONDS, max(0, deadline - clock())))
+        sleep(
+            RELOAD_POLL_SECONDS
+            if timeout is None
+            else min(RELOAD_POLL_SECONDS, max(0, deadline - clock()))
+        )
 
 
 # MARK: - The three verbs
@@ -1363,15 +1367,26 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
             raise Refusal("usage", "the settings action is not supported")
         unknown = sorted(
             set(request)
-            - {"action", "allowlist", "set", "remove", "expectPlanSHA256", "expectBaseSHA256",
-               "requestID", "requestCreatedAt"}
+            - {
+                "action",
+                "allowlist",
+                "set",
+                "remove",
+                "expectPlanSHA256",
+                "expectBaseSHA256",
+                "requestID",
+                "requestCreatedAt",
+            }
         )
         if unknown:
             raise Refusal("usage", "unknown request fields are not accepted")
         allowlist = validate_allowlist(request.get("allowlist"))
         if action not in ("save", "initialize") and "expectBaseSHA256" in request:
             raise Refusal("usage", "expectBaseSHA256 belongs to save or initialize")
-        if action not in ("save", "initialize", "reconcile") and set(request) & {"requestID", "requestCreatedAt"}:
+        if action not in ("save", "initialize", "reconcile") and set(request) & {
+            "requestID",
+            "requestCreatedAt",
+        }:
             raise Refusal("usage", "request identity belongs to a canonical settings operation")
         if action in ("save", "initialize", "reconcile") or (
             action == "get" and os.environ.get("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN")
@@ -1390,9 +1405,14 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                     answer = operator_settings.get(live, allowlist)
                 elif action == "reconcile":
                     if set(request) - {"action", "allowlist", "requestID", "requestCreatedAt"}:
-                        raise Refusal("usage", "reconcile accepts the original request identity only")
+                        raise Refusal(
+                            "usage", "reconcile accepts the original request identity only"
+                        )
                     answer = operator_settings.reconcile(
-                        live, allowlist, request.get("requestID"), request.get("requestCreatedAt"),
+                        live,
+                        allowlist,
+                        request.get("requestID"),
+                        request.get("requestCreatedAt"),
                     )
                 elif action == "initialize":
                     if (

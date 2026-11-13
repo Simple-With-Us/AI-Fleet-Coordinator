@@ -87,15 +87,21 @@ class _Budget:
 
     def check(self, checker, candidate, path):
         timeout = self.remaining(editor.CHECK_TIMEOUT)
-        result = (checker(candidate, path) if checker is not None else
-                  editor.daemon_check(candidate, path, timeout=timeout))
+        result = (
+            checker(candidate, path)
+            if checker is not None
+            else editor.daemon_check(candidate, path, timeout=timeout)
+        )
         self.remaining(1)
         return result
 
     def reload(self, reloader, path, wanted):
         timeout = self.remaining(editor.RELOAD_TIMEOUT)
-        result = (reloader(path) if reloader is not None else
-                  editor.daemon_reload(path, expected_revision=wanted, timeout=timeout))
+        result = (
+            reloader(path)
+            if reloader is not None
+            else editor.daemon_reload(path, expected_revision=wanted, timeout=timeout)
+        )
         self.remaining(1)
         return result
 
@@ -149,8 +155,18 @@ class _Intent:
     The creation-time fence prevents an evicted old request from being rearmed.
     """
 
-    def __init__(self, path, action, request_id, created_at, payload=None, *, ledger=None,
-                 now=None, reconcile=False):
+    def __init__(
+        self,
+        path,
+        action,
+        request_id,
+        created_at,
+        payload=None,
+        *,
+        ledger=None,
+        now=None,
+        reconcile=False,
+    ):
         self.now = time.time() if now is None else now
         self.id = _identity(request_id, created_at, now=self.now, expired_ok=reconcile)
         self.created = created_at
@@ -158,9 +174,19 @@ class _Intent:
         self.metadata = None
         self.claimed = False
         self.action = action
-        self.fingerprint = (hashlib.sha256(encode({
-            "action": action, "payload": payload, "requestCreatedAt": created_at,
-        }).encode()).hexdigest() if not reconcile else None)
+        self.fingerprint = (
+            hashlib.sha256(
+                encode(
+                    {
+                        "action": action,
+                        "payload": payload,
+                        "requestCreatedAt": created_at,
+                    }
+                ).encode()
+            ).hexdigest()
+            if not reconcile
+            else None
+        )
 
     def prior(self):
         row = self.ledger.lookup(REQUEST_NAMESPACE, self.id)
@@ -172,20 +198,33 @@ class _Intent:
             if (
                 outcome not in ("pending", "outcome_unknown", "replay", "ok", "refused")
                 or not isinstance(value, dict)
-                or set(value) != {"schemaVersion", "operation", "fingerprint", "createdAt",
-                                  "baseRevision", "targetRevision", "phase"}
-                or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+                or set(value)
+                != {
+                    "schemaVersion",
+                    "operation",
+                    "fingerprint",
+                    "createdAt",
+                    "baseRevision",
+                    "targetRevision",
+                    "phase",
+                }
+                or type(value["schemaVersion"]) is not int
+                or value["schemaVersion"] != 1
                 or value["operation"] not in ("save", "initialize", "cancelled")
                 or type(value["createdAt"]) is not int
-                or value["phase"] not in ("prepared", "sending", "persisted", "complete", "refused", "cancelled")
-                or any(not isinstance(value[key], str) or not editor.SHA256_RE.fullmatch(value[key])
-                       for key in ("fingerprint", "baseRevision", "targetRevision"))
+                or value["phase"]
+                not in ("prepared", "sending", "persisted", "complete", "refused", "cancelled")
+                or any(
+                    not isinstance(value[key], str) or not editor.SHA256_RE.fullmatch(value[key])
+                    for key in ("fingerprint", "baseRevision", "targetRevision")
+                )
             ):
                 raise ValueError()
         except (ValueError, TypeError, RecursionError, SettingsError):
             raise SettingsError("request_record_invalid") from None
         if value["createdAt"] != self.created or (
-            self.fingerprint is not None and value["fingerprint"] != self.fingerprint
+            self.fingerprint is not None
+            and value["fingerprint"] != self.fingerprint
             and value["operation"] != "cancelled"
         ):
             raise SettingsError("request_id_conflict")
@@ -194,13 +233,21 @@ class _Intent:
 
     def cancel_absent(self):
         self.metadata = {
-            "schemaVersion": 1, "operation": "cancelled", "fingerprint": "0" * 64,
-            "createdAt": self.created, "baseRevision": "0" * 64,
-            "targetRevision": "0" * 64, "phase": "cancelled",
+            "schemaVersion": 1,
+            "operation": "cancelled",
+            "fingerprint": "0" * 64,
+            "createdAt": self.created,
+            "baseRevision": "0" * 64,
+            "targetRevision": "0" * 64,
+            "phase": "cancelled",
         }
         result = self.ledger.begin(
-            REQUEST_NAMESPACE, self.id, self.created / 1000 + REQUEST_TTL_SECONDS,
-            self.now, REQUEST_CAPACITY, response=encode(self.metadata),
+            REQUEST_NAMESPACE,
+            self.id,
+            self.created / 1000 + REQUEST_TTL_SECONDS,
+            self.now,
+            REQUEST_CAPACITY,
+            response=encode(self.metadata),
         )
         if result != "fresh":
             raise SettingsError("request_capacity" if result == "capacity" else "request_conflict")
@@ -215,13 +262,21 @@ class _Intent:
 
     def begin(self, base, target):
         self.metadata = {
-            "schemaVersion": 1, "operation": self.action, "fingerprint": self.fingerprint,
-            "createdAt": self.created, "baseRevision": base, "targetRevision": target,
+            "schemaVersion": 1,
+            "operation": self.action,
+            "fingerprint": self.fingerprint,
+            "createdAt": self.created,
+            "baseRevision": base,
+            "targetRevision": target,
             "phase": "prepared",
         }
         result = self.ledger.begin(
-            REQUEST_NAMESPACE, self.id, self.created / 1000 + REQUEST_TTL_SECONDS,
-            self.now, REQUEST_CAPACITY, response=encode(self.metadata),
+            REQUEST_NAMESPACE,
+            self.id,
+            self.created / 1000 + REQUEST_TTL_SECONDS,
+            self.now,
+            REQUEST_CAPACITY,
+            response=encode(self.metadata),
         )
         if result == "capacity":
             raise SettingsError("request_capacity")
@@ -245,10 +300,14 @@ class _Intent:
         ok = bool(answer and answer.get("ok"))
         unknown = self.metadata["phase"] in ("sending", "persisted")
         state = "ok" if ok else "outcome_unknown" if unknown else "refused"
-        self.metadata["phase"] = "complete" if ok else self.metadata["phase"] if unknown else "refused"
+        self.metadata["phase"] = (
+            "complete" if ok else self.metadata["phase"] if unknown else "refused"
+        )
         self.ledger.settle(REQUEST_NAMESPACE, self.id, state, encode(self.metadata))
         if answer is not None:
-            answer.update(requestID=self.id, outcome="ok" if ok else "unknown" if unknown else "refused")
+            answer.update(
+                requestID=self.id, outcome="ok" if ok else "unknown" if unknown else "refused"
+            )
         return answer
 
 
@@ -604,12 +663,12 @@ class InfisicalStore:
         except (self.client.SecretsError, TimeoutError):
             raise MutationError() from None
         body = {
-                "workspaceId": self.project,
-                "environment": "prod",
-                "secretPath": FOLDER,
-                "type": "shared",
-                "secretValue": raw,
-            }
+            "workspaceId": self.project,
+            "environment": "prod",
+            "secretPath": FOLDER,
+            "type": "shared",
+            "secretValue": raw,
+        }
         path = "/v3/secrets/raw/" + quote(KEY, safe="")
         try:
             self._remaining()
@@ -629,7 +688,9 @@ class InfisicalStore:
         if status not in (200, 201):
             # Each method has one purpose: PATCH an existing document or POST
             # one absent document, with no upsert or alternate-grant fallback.
-            uncertain = not (type(status) is int and 400 <= status < 500 and status not in (408, 429))
+            uncertain = not (
+                type(status) is int and 400 <= status < 500 and status not in (408, 429)
+            )
             raise MutationError(status=status, sent=uncertain, retryable=uncertain)
 
 
@@ -663,8 +724,11 @@ def _accepted_revision(wanted):
         updated = status.get("updated")
         age = time.time() - updated
         return (
-            type(updated) in (int, float) and math.isfinite(age) and -300 <= age <= 120
-            and status.get("instance") == "server" and status.get("config_errors") == []
+            type(updated) in (int, float)
+            and math.isfinite(age)
+            and -300 <= age <= 120
+            and status.get("instance") == "server"
+            and status.get("config_errors") == []
             and status.get("operator_settings_revision") == wanted
         )
     except (OSError, ValueError, TypeError, AttributeError):
@@ -677,63 +741,99 @@ def _repeat(path, allowlist, store, intent, prior, action):
     operation = metadata["operation"]
     known_ok = prior == "ok" or prior == "replay" and metadata["phase"] == "complete"
     answer = {
-        "tool": "eavesdropper-settings", "action": action, "operation": operation,
-        "requestID": intent.id, "outcome": "ok" if known_ok else "refused" if prior == "refused" else "unknown",
-        "ok": False, "result": "failed", "source": "infisical",
-        "autosaveEnabled": operation == "save", "persisted": False, "readback": False,
-        "runtimeApplied": False, "errorCode": "prior_result_unavailable" if known_ok else "outcome_unknown",
+        "tool": "eavesdropper-settings",
+        "action": action,
+        "operation": operation,
+        "requestID": intent.id,
+        "outcome": "ok" if known_ok else "refused" if prior == "refused" else "unknown",
+        "ok": False,
+        "result": "failed",
+        "source": "infisical",
+        "autosaveEnabled": operation == "save",
+        "persisted": False,
+        "readback": False,
+        "runtimeApplied": False,
+        "errorCode": "prior_result_unavailable" if known_ok else "outcome_unknown",
         "detail": "The previous outcome has no current verified runtime receipt; no write was repeated",
     }
     if operation == "cancelled":
         intent.ledger.settle(REQUEST_NAMESPACE, intent.id, "refused", encode(metadata))
-        answer.update(outcome="refused", cancelled=True, errorCode="request_cancelled",
-                      detail="This absent request was durably cancelled; its ID cannot write")
+        answer.update(
+            outcome="refused",
+            cancelled=True,
+            errorCode="request_cancelled",
+            detail="This absent request was durably cancelled; its ID cannot write",
+        )
         return answer
     if prior == "refused":
-        answer.update(errorCode="request_refused", detail="This request was definitively refused; no write was repeated")
+        answer.update(
+            errorCode="request_refused",
+            detail="This request was definitively refused; no write was repeated",
+        )
         return answer
     if known_ok:
         claimed = intent.ledger.begin(
-            REQUEST_NAMESPACE, intent.id, intent.created / 1000 + REQUEST_TTL_SECONDS,
-            min(intent.now, intent.created / 1000 + REQUEST_TTL_SECONDS), REQUEST_CAPACITY,
+            REQUEST_NAMESPACE,
+            intent.id,
+            intent.created / 1000 + REQUEST_TTL_SECONDS,
+            min(intent.now, intent.created / 1000 + REQUEST_TTL_SECONDS),
+            REQUEST_CAPACITY,
         )
-        if claimed not in (("repeat-claimed", "ok", encode(metadata)), ("repeat", "replay", encode(metadata))):
+        if claimed not in (
+            ("repeat-claimed", "ok", encode(metadata)),
+            ("repeat", "replay", encode(metadata)),
+        ):
             raise SettingsError("request_record_invalid")
     try:
         current = store.read()
         raw, _ = editor.read_live(path)
-        text = _validated_overlay(editor._decode(raw), allowlist, current, known=(getattr(store, "token", None),))
+        text = _validated_overlay(
+            editor._decode(raw), allowlist, current, known=(getattr(store, "token", None),)
+        )
         answer.update(_base_answer(action, current, path, known=(getattr(store, "token", None),)))
-        answer.update(operation=operation, requestID=intent.id,
-                      outcome="ok" if known_ok else "refused" if prior == "refused" else "unknown",
-                      autosaveEnabled=operation == "save")
+        answer.update(
+            operation=operation,
+            requestID=intent.id,
+            outcome="ok" if known_ok else "refused" if prior == "refused" else "unknown",
+            autosaveEnabled=operation == "save",
+        )
         if prior == "refused":
-            answer.update(errorCode="request_refused", detail="This request was definitively refused; no write was repeated")
+            answer.update(
+                errorCode="request_refused",
+                detail="This request was definitively refused; no write was repeated",
+            )
             return answer
         target = metadata["targetRevision"]
         if revision(current) != target:
-            answer.update(errorCode="request_superseded" if known_ok else "outcome_unknown",
-                          detail="Current settings differ from this request; no write was repeated")
+            answer.update(
+                errorCode="request_superseded" if known_ok else "outcome_unknown",
+                detail="Current settings differ from this request; no write was repeated",
+            )
             return answer
         answer.update(persisted=True, readback=True)
         if operation == "initialize":
-            accepted = (
-                revision(accepted_snapshot(editor._parse(editor._decode(raw), "runtime file"), allowlist)) == target
-                and _accepted_by_daemon(target)
-            )
+            accepted = revision(
+                accepted_snapshot(editor._parse(editor._decode(raw), "runtime file"), allowlist)
+            ) == target and _accepted_by_daemon(target)
         else:
             accepted = text.encode("utf-8") == raw and _accepted_revision(target)
         if accepted:
             metadata["phase"] = "complete"
             intent.ledger.settle(REQUEST_NAMESPACE, intent.id, "ok", encode(metadata))
             known_ok = True
-            answer.update(ok=True, result="saved" if operation == "save" else "initialized",
-                          outcome="ok", runtimeApplied=operation == "save",
-                          detail="The prior request was verified without repeating its write")
+            answer.update(
+                ok=True,
+                result="saved" if operation == "save" else "initialized",
+                outcome="ok",
+                runtimeApplied=operation == "save",
+                detail="The prior request was verified without repeating its write",
+            )
             answer.pop("errorCode", None)
         else:
-            answer.update(errorCode="prior_result_unavailable" if known_ok else "outcome_unknown",
-                          detail="Canonical persistence is verified; prior runtime acceptance remains unconfirmed")
+            answer.update(
+                errorCode="prior_result_unavailable" if known_ok else "outcome_unknown",
+                detail="Canonical persistence is verified; prior runtime acceptance remains unconfirmed",
+            )
         return answer
     except (SettingsError, editor.Refusal, OSError):
         # A failed current read never erases a definite earlier success.
@@ -748,8 +848,9 @@ def reconcile(path, allowlist, request_id, created_at, *, store=None, ledger=Non
     budget = _Budget()
     try:
         with editor._FolderLock(path.parent):
-            intent = _Intent(path, "reconcile", request_id, created_at, ledger=ledger,
-                             now=now, reconcile=True)
+            intent = _Intent(
+                path, "reconcile", request_id, created_at, ledger=ledger, now=now, reconcile=True
+            )
             prior = intent.prior()
             if prior is None:
                 intent.cancel_absent()
@@ -802,8 +903,9 @@ def _accepted_by_daemon(wanted, *, now=None):
         return False
 
 
-def _initialize_core(path, allowlist, expected, *, store=None, checker=None, accepted=None,
-                     intent=None, budget=None):
+def _initialize_core(
+    path, allowlist, expected, *, store=None, checker=None, accepted=None, intent=None, budget=None
+):
     """Explicit one-time migration, never an autosave or an overwrite/upsert."""
     if not isinstance(expected, str) or not editor.SHA256_RE.fullmatch(expected):
         raise editor.Refusal(
@@ -815,9 +917,7 @@ def _initialize_core(path, allowlist, expected, *, store=None, checker=None, acc
     accepted = accepted or _accepted_by_daemon
     raw, _ = editor.read_live(path)
     if editor.sha256(raw) != expected:
-        raise editor.Refusal(
-            "version_conflict", "the runtime file changed before initialization"
-        )
+        raise editor.Refusal("version_conflict", "the runtime file changed before initialization")
     initial = accepted_snapshot(editor._parse(editor._decode(raw), "runtime file"), allowlist)
     known = (getattr(store, "token", None),)
     _scan_nonsecret(initial["settings"], known)
@@ -864,9 +964,13 @@ def _initialize_core(path, allowlist, expected, *, store=None, checker=None, acc
     except MutationError as exc:
         if not exc.sent:
             intent.mark("refused")
-        answer.update(errorCode=exc.code, writeOutcome="unknown" if exc.sent else "refused",
-                      requestMayHaveBeenSent=exc.sent, retryable=exc.retryable,
-                      detail="Canonical initialization has no verified create receipt; no create was repeated")
+        answer.update(
+            errorCode=exc.code,
+            writeOutcome="unknown" if exc.sent else "refused",
+            requestMayHaveBeenSent=exc.sent,
+            retryable=exc.retryable,
+            detail="Canonical initialization has no verified create receipt; no create was repeated",
+        )
         if exc.status is not None:
             answer["providerStatus"] = exc.status
         return answer
@@ -903,57 +1007,159 @@ def _initialize_core(path, allowlist, expected, *, store=None, checker=None, acc
     return answer
 
 
-def initialize(path, allowlist, expected, *, store=None, checker=None, accepted=None,
-               request_id=None, created_at=None, ledger=None, now=None):
-    return _execute("initialize", path, allowlist, expected, None, None, store=store,
-                    checker=checker, accepted=accepted, request_id=request_id,
-                    created_at=created_at, ledger=ledger, now=now)
+def initialize(
+    path,
+    allowlist,
+    expected,
+    *,
+    store=None,
+    checker=None,
+    accepted=None,
+    request_id=None,
+    created_at=None,
+    ledger=None,
+    now=None,
+):
+    return _execute(
+        "initialize",
+        path,
+        allowlist,
+        expected,
+        None,
+        None,
+        store=store,
+        checker=checker,
+        accepted=accepted,
+        request_id=request_id,
+        created_at=created_at,
+        ledger=ledger,
+        now=now,
+    )
 
 
-def save(path, allowlist, requested, expected, *, remove=None, store=None, checker=None,
-         reloader=None, request_id=None, created_at=None, ledger=None, now=None):
-    return _execute("save", path, allowlist, expected, requested, remove, store=store,
-                    checker=checker, reloader=reloader, request_id=request_id,
-                    created_at=created_at, ledger=ledger, now=now)
+def save(
+    path,
+    allowlist,
+    requested,
+    expected,
+    *,
+    remove=None,
+    store=None,
+    checker=None,
+    reloader=None,
+    request_id=None,
+    created_at=None,
+    ledger=None,
+    now=None,
+):
+    return _execute(
+        "save",
+        path,
+        allowlist,
+        expected,
+        requested,
+        remove,
+        store=store,
+        checker=checker,
+        reloader=reloader,
+        request_id=request_id,
+        created_at=created_at,
+        ledger=ledger,
+        now=now,
+    )
 
 
-def _execute(action, path, allowlist, expected, requested, remove, *, store=None, checker=None,
-             reloader=None, accepted=None, request_id=None, created_at=None, ledger=None, now=None):
+def _execute(
+    action,
+    path,
+    allowlist,
+    expected,
+    requested,
+    remove,
+    *,
+    store=None,
+    checker=None,
+    reloader=None,
+    accepted=None,
+    request_id=None,
+    created_at=None,
+    ledger=None,
+    now=None,
+):
     budget = _Budget()
     try:
         with editor._FolderLock(path.parent):
-            intent = _Intent(path, action, request_id, created_at,
-                             {"set": requested, "remove": sorted(remove or []), "base": expected},
-                             ledger=ledger, now=now)
+            intent = _Intent(
+                path,
+                action,
+                request_id,
+                created_at,
+                {"set": requested, "remove": sorted(remove or []), "base": expected},
+                ledger=ledger,
+                now=now,
+            )
             prior = intent.prior()
             if prior is not None:
                 if intent.metadata["operation"] != "cancelled":
                     store = store or InfisicalStore(writer=True)
                     budget.phase(store)
                 return _repeat(path, allowlist, store, intent, prior, action)
-            base = expected if isinstance(expected, str) and editor.SHA256_RE.fullmatch(expected) else "0" * 64
+            base = (
+                expected
+                if isinstance(expected, str) and editor.SHA256_RE.fullmatch(expected)
+                else "0" * 64
+            )
             intent.begin(base, "0" * 64)
             try:
                 if intent.ledger.has_unsettled(REQUEST_NAMESPACE, intent.id):
-                    return intent.finish({
-                        "tool": "eavesdropper-settings", "action": action,
-                        "ok": False, "result": "failed", "source": "infisical",
-                        "autosaveEnabled": action == "save", "persisted": False,
-                        "readback": False, "runtimeApplied": False,
-                        "errorCode": "prior_outcome_unknown",
-                        "detail": "A prior settings request remains unsettled; reconcile it before a new edit",
-                    })
+                    return intent.finish(
+                        {
+                            "tool": "eavesdropper-settings",
+                            "action": action,
+                            "ok": False,
+                            "result": "failed",
+                            "source": "infisical",
+                            "autosaveEnabled": action == "save",
+                            "persisted": False,
+                            "readback": False,
+                            "runtimeApplied": False,
+                            "errorCode": "prior_outcome_unknown",
+                            "detail": "A prior settings request remains unsettled; reconcile it before a new edit",
+                        }
+                    )
                 if action == "save":
-                    answer = _save_core(path, allowlist, requested, expected, remove=remove,
-                                        store=store, checker=checker, reloader=reloader, intent=intent, budget=budget)
+                    answer = _save_core(
+                        path,
+                        allowlist,
+                        requested,
+                        expected,
+                        remove=remove,
+                        store=store,
+                        checker=checker,
+                        reloader=reloader,
+                        intent=intent,
+                        budget=budget,
+                    )
                 else:
-                    answer = _initialize_core(path, allowlist, expected, store=store,
-                                              checker=checker, accepted=accepted, intent=intent, budget=budget)
+                    answer = _initialize_core(
+                        path,
+                        allowlist,
+                        expected,
+                        store=store,
+                        checker=checker,
+                        accepted=accepted,
+                        intent=intent,
+                        budget=budget,
+                    )
             except BaseException as exc:
                 intent.finish(None)
                 if isinstance(exc, SettingsError):
                     exc.request_id = intent.id
-                    exc.outcome = "unknown" if intent.metadata["phase"] in ("sending", "persisted") else "refused"
+                    exc.outcome = (
+                        "unknown"
+                        if intent.metadata["phase"] in ("sending", "persisted")
+                        else "refused"
+                    )
                 raise
             if not intent.claimed:
                 answer.update(requestID=intent.id, outcome="refused")
@@ -972,10 +1178,15 @@ def channel_names(known=()):
         value = json.loads(raw).get("channel_names")
         if not isinstance(value, list) or len(value) > 500:
             return []
-        return sorted({
-            name for name in value
-            if isinstance(name, str) and 0 < len(name) <= 60 and not secretscan.scan(name, known)
-        })
+        return sorted(
+            {
+                name
+                for name in value
+                if isinstance(name, str)
+                and 0 < len(name) <= 60
+                and not secretscan.scan(name, known)
+            }
+        )
     except (OSError, ValueError, AttributeError):
         return []
 
@@ -984,15 +1195,26 @@ def get(path, allowlist, *, store=None):
     store = store or InfisicalStore()
     current = store.read()
     raw, _ = editor.read_live(path)
-    _validated_overlay(editor._decode(raw), allowlist, current, known=(getattr(store, "token", None),))
+    _validated_overlay(
+        editor._decode(raw), allowlist, current, known=(getattr(store, "token", None),)
+    )
     answer = _base_answer("get", current, path, known=(getattr(store, "token", None),))
     answer.update(ok=True, result="read", persisted=True, readback=True, autosaveEnabled=True)
     return answer
 
 
 def _save_core(
-    path, allowlist, requested, expected, *, remove=None, store=None, checker=None, reloader=None,
-    intent=None, budget=None,
+    path,
+    allowlist,
+    requested,
+    expected,
+    *,
+    remove=None,
+    store=None,
+    checker=None,
+    reloader=None,
+    intent=None,
+    budget=None,
 ):
     """Persist canonically, reread exactly, then synchronize the runtime copy.
 
