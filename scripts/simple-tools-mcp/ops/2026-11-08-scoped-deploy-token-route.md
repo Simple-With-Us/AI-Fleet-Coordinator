@@ -9,7 +9,7 @@ Record of the AFC #1524 recall search-timeout deploy and the route the scoped pe
 
 ## Credential route used
 
-- `CLOUDFLARE_ST_MCP_DEPLOY` read from Infisical Fleet-OPS `prod` `/cloudflare` with the scoped reader `st-mcp-deploy-read-scoped` (read-only; registered on the Fleet Reference sheet, "Infisical Service Tokens" tab).  That reader was revoked Infisical-side on 2026-11-11 (value 403); the current live /cloudflare reader is `echo-st-mcp-cloudflare-read-20261110` (same tab, row 125 as of 2026-11-12 - the tab is hand-maintained and row numbers shift, so look the token up by name).  Deployers: use the current registered /cloudflare reader, never a revoked one.
+- `CLOUDFLARE_ECHO_ST_MCP_DEPLOY` (renamed `CLOUDFLARE_ST_MCP_DEPLOY` on 2026-11-12, value unchanged) read from Infisical Fleet-OPS `prod` `/cloudflare` with the scoped reader `st-mcp-deploy-read-scoped` (read-only; registered on the Fleet Reference sheet, "Infisical Service Tokens" tab).  That reader was revoked Infisical-side on 2026-11-11 (value 403); the current live /cloudflare reader is `echo-st-mcp-cloudflare-read-20261110` (same tab, row 125 as of 2026-11-12 - the tab is hand-maintained and row numbers shift, so look the token up by name).  Deployers: use the current registered /cloudflare reader, never a revoked one.
 - The reader was loaded as `INFISICAL_TOKEN` from a mode-600 file on the deploy host; the deploy token was read into `CLOUDFLARE_API_TOKEN` in-process. No secret was printed, logged, or passed in argv.
 
 ## What failed (verbatim)
