@@ -58,7 +58,8 @@ export const GITHUB_GAP_FIELDS = Object.freeze({
   wf_merge_guarded: ["commit_message"],
   // Commit messages, check-run summaries and milestone descriptions are prose too (AFC-722 review).  Label,
   // deployment and commit-status descriptions are not listed:  they are short machine-facing metadata under a
-  // 100- or 140-byte cap, and titles, names, branches and file content are never touched.
+  // 100- or 140-byte cap.  Title prose, names, branches and file content are not gapped;
+  // explicit PR title headers still use the separate compact-context map above.
   wf_git_commit_create: ["message"],
   wf_file_put: ["message"],
   wf_files_put: ["message"],
@@ -121,8 +122,7 @@ export function outboundGap(text) {
 }
 
 /**
- * A copy of `args` with the house gap written into `action`'s text fields (unless the call opted out).  With
- * `byteCap`, a field that fit the cap as typed and would not once gapped keeps its typed text, with a notice.
+ * Compact only explicit PR headers; the byte-for-byte opt-out keeps supplied text unchanged.
  */
 export function compactGitHubArgs(action, args, { seat = null } = {}) {
   const fields = GITHUB_PR_HEADER_FIELDS[action];
@@ -139,6 +139,7 @@ export function compactGitHubArgs(action, args, { seat = null } = {}) {
   return out;
 }
 
+/** Add prose gaps after PR context, preserving compact headers when only the added gaps exceed a cap. */
 export function gapGitHubArgs(action, args, { byteCap = null, seat = null } = {}) {
   args = compactGitHubArgs(action, args, { seat });
   const fields = GITHUB_GAP_FIELDS[action];
