@@ -538,7 +538,7 @@ test("read_topic:  stateless since_id, own posts hidden unless include_self, own
   assert.deepEqual(items.map((i) => i.owner), [true, false]);
   assert.equal(items[0].sender_id, OWNER_ID);
   assert.equal(items[0].is_bot, false);
-  assert.match(items[0].time, /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}(am|pm)$/);
+  assert.match(items[0].time, /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} (AM|PM)$/);
   assert.deepEqual(structured(await tools.call("zulip_read_topic", { topic: "work", include_self: true, since_id: b.id }), "zulip_read_topic"), { count: 1, ids: [c.id], next_since_id: c.id });
   assert.deepEqual(structured(await tools.call("zulip_read_topic", { topic: "work", since_id: c.id }), "zulip_read_topic"), { count: 0, ids: [], next_since_id: c.id });
   // The narrow uses the pinned stream id, never a name lookup.

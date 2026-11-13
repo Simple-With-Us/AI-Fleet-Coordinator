@@ -9,11 +9,12 @@ minimal container), the United States rule is applied by hand:  daylight time ru
 of March at 2:00am standard time to the first Sunday of November at 2:00am daylight time, so the change
 instants are 08:00 UTC and 07:00 UTC.  A test compares the two across the whole of 2026.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
-__all__ = ["CENTRAL", "central", "stamp", "clock", "id_stamp", "age_text"]
+__all__ = ["CENTRAL", "age_text", "central", "clock", "id_stamp", "stamp"]
 
 CENTRAL = "America/Chicago"
 _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -27,8 +28,8 @@ def _nth_sunday(year: int, month: int, n: int) -> int:
 
 def _manual_offset_hours(utc: datetime) -> int:
     year = utc.year
-    start = datetime(year, 3, _nth_sunday(year, 3, 2), 8, tzinfo=timezone.utc)
-    end = datetime(year, 11, _nth_sunday(year, 11, 1), 7, tzinfo=timezone.utc)
+    start = datetime(year, 3, _nth_sunday(year, 3, 2), 8, tzinfo=UTC)
+    end = datetime(year, 11, _nth_sunday(year, 11, 1), 7, tzinfo=UTC)
     return -5 if start <= utc < end else -6
 
 
@@ -36,10 +37,11 @@ def central(value: datetime, *, use_zoneinfo: bool = True) -> datetime:
     """`value` (an aware datetime) as Central wall-clock time, in a datetime that carries that time's offset."""
     if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
         raise ValueError("a time with no zone could be any hour")
-    utc = value.astimezone(timezone.utc)
+    utc = value.astimezone(UTC)
     if use_zoneinfo:
         try:
             from zoneinfo import ZoneInfo
+
             return utc.astimezone(ZoneInfo(CENTRAL))
         except Exception:  # no tz database
             pass
@@ -54,7 +56,12 @@ def clock(value: datetime, *, use_zoneinfo: bool = True) -> str:
 
 def stamp(value: datetime, *, use_zoneinfo: bool = True) -> str:
     local = central(value, use_zoneinfo=use_zoneinfo)
-    return "%s, %s %d, %s" % (_DAYS[local.weekday()], _MONTHS[local.month - 1], local.day, clock(value, use_zoneinfo=use_zoneinfo))
+    return "%s, %s %d, %s" % (
+        _DAYS[local.weekday()],
+        _MONTHS[local.month - 1],
+        local.day,
+        clock(value, use_zoneinfo=use_zoneinfo),
+    )
 
 
 def id_stamp(value: datetime, *, use_zoneinfo: bool = True) -> tuple[str, str]:
