@@ -507,9 +507,11 @@ class RequestCommand(Base):
 
     def test_the_title_writer_is_given_the_chats_own_payload(self) -> None:
         seen = []
+        title_envs = []
 
         def writer(request):
             seen.append(dict(request.data))
+            title_envs.append(dict(request.env))
             return True
 
         spec = make_spec(platform="faux", seat="CODEX", title_in_output=False, title_writer=writer,
@@ -522,10 +524,19 @@ class RequestCommand(Base):
                                                     "source": "startup"})), io.StringIO(), platform="linux")
         seen.clear()
         out = io.StringIO()
-        code = PL.request_main(["--session-id", "f-0001"], self.env(SESSION_LETTER_LOCATION="server"), out,
+        env = self.env(SESSION_LETTER_LOCATION="server", AGENT_LAUNCHER="platform-launcher",
+                       SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN="fake.bootstrap",
+                       FLEET_KNOBS_INFISICAL_TOKEN="fake.old", FLEET_KNOBS_WRITE_TOKEN="fake.writer")
+        original = dict(env)
+        code = PL.request_main(["--session-id", "f-0001"], env, out,
                                platform="linux")
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(seen[-1], {"session_id": "f-0001", "source": "startup"})
+        self.assertEqual(title_envs[-1]["AGENT_LAUNCHER"], "platform-launcher")
+        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN", "FLEET_KNOBS_INFISICAL_TOKEN",
+                     "FLEET_KNOBS_WRITE_TOKEN", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+            self.assertNotIn(name, title_envs[-1])
+        self.assertEqual(env, original)  # The registry successfully used the parent's own signing key.
 
     def test_simple_chat_letter_is_the_same_command(self) -> None:
         out = io.StringIO()
