@@ -3796,6 +3796,85 @@ def _repair_unlettered_after_start(chat: Chat, stdout: TextIO) -> None:
         pass
 
 
+def repair_main(
+    argv: list[str],
+    env: Mapping[str, str] | None = None,
+    stdout: TextIO | None = None,
+    *,
+    now: float | None = None,
+    platform: str = sys.platform,
+    transport: Transport | None = None,
+) -> int:
+    """`repair [--platform P] [--location L] [--force]`:  replay the start of this host's chats still showing
+    "??: ", for the platform named or for every platform whose adapter names them.  This is the verb a host's
+    own schedule ticks:  an app-driven chat's hook never runs, so only a scheduled tick reaches it.  One line
+    per chat names the first 8 characters of its session id and whether its letter is back, never a title.  The
+    stamp beside the notes throttles the pass to once per REPAIR_SWEEP_SECONDS unless --force.  Exit 0, 2 for
+    bad arguments."""
+    env = os.environ if env is None else env
+    stdout = stdout or sys.stdout
+    force = "--force" in argv
+    try:
+        flags = _flags([word for word in argv if word != "--force"], ("--platform", "--location"))
+    except ValueError:
+        stdout.write(REPAIR_USAGE)
+        return 2
+    where = location(env, platform, flags.get("location", ""))
+    if where is None:
+        stdout.write("unlettered repair:  %s\n" % NO_LOCATION)
+        return 2
+    specs: list[PlatformSpec] = []
+    if "platform" in flags:
+        name = flags["platform"]
+        spec = load_spec(name) if valid_platform(name) else None
+        if spec is None:
+            stdout.write("unlettered repair:  no adapter for the platform %r\n" % name)
+            return 2
+        if spec.unlettered_sessions is None:
+            stdout.write("unlettered repair:  the %s adapter names no unlettered chats\n" % name)
+            return 2
+        specs.append(spec)
+    else:
+        for name in adapter_platforms():
+            try:
+                spec = load_spec(name)
+            except Exception:  # noqa: BLE001 - an adapter that cannot load has nothing to repair
+                continue
+            if spec is None or spec.unlettered_sessions is None:
+                continue
+            specs.append(spec)
+    if not specs:
+        stdout.write("unlettered repair:  no platform here names its unlettered chats\n")
+        return 0
+    stamp = time.time() if now is None else now
+    for spec in specs:
+        seat = spec.seat_for({}, env)
+        if not seat:
+            continue
+        try:
+            done = repair_unlettered(
+                spec, env, seat, where, now=stamp, transport=transport, force=force
+            )
+        except Exception as exc:  # noqa: BLE001 - the verb reports, it never fails the caller's job
+            stdout.write(
+                "%s unlettered repair, %s:  could not run (%s)\n"
+                % (spec.display, where, type(exc).__name__)
+            )
+            continue
+        head = "%s unlettered repair, %s:  " % (spec.display, where)
+        if "skipped" in done:
+            stdout.write(head + "skipped (%s)\n" % done["skipped"])
+            continue
+        asked = done.get("asked") or []
+        fixed = set(done.get("repaired") or [])
+        for sid in asked:
+            stdout.write(
+                head + "%s %s\n" % (sid[:8], "letter back" if sid in fixed else "still unlettered")
+            )
+        stdout.write(head + "%d replayed, %d lettered\n" % (len(asked), len(fixed)))
+    return 0
+
+
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
     """The gone reports a chat's start makes, after the chat's own answer is out:  this host's own chats, then the
     chats the platform's app runs at each other location.  Nothing here reaches the chat:  whatever goes wrong is
@@ -3827,6 +3906,7 @@ def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
 
 
 GONE_USAGE = "usage: platform-letter gone [--platform P] [--location L] [--apply]\n"
+REPAIR_USAGE = "usage: platform-letter repair [--platform P] [--location L] [--force]\n"
 
 
 def gone_main(
@@ -4546,6 +4626,7 @@ USAGE = (
     "                        | install --platform P [--location L] [--mac-ssh DEST] [--check | --remove]\n"
     "                        | request [--session-id S]\n"
     "                        | gone [--platform P] [--location L] [--apply]\n"
+    "                        | repair [--platform P] [--location L] [--force]\n"
     "                        | parent --platform P --session-id S [--app-id A] [--source SRC]\n"
     "                        | parent-ssh-gate\n"
     "                        | parent-key-line [--from SOURCE]}\n"
@@ -4680,6 +4761,8 @@ def main(
         return parent_ssh_gate_main(env, stdout, stderr)
     if argv[0] in ("gone", "sweep-archived"):  # the second is the verb's name before this client
         return gone_main(argv[1:], env, stdout, transport=transport)
+    if argv[0] == "repair":
+        return repair_main(argv[1:], env, stdout, transport=transport)
     stderr.write(USAGE)
     return 2
 
