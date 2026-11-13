@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
@@ -113,7 +114,7 @@ class PeerActionScanTests(unittest.TestCase):
         self.assertNotIn(self.unsafe.encode(), result.stdout + result.stderr)
 
     def test_neutral_cli_safe_text_and_invalid_input_are_bounded(self):
-        for value, expected in ((b"message 123", 0), (b"\xff", 2), (b"x" * (256 * 1024 + 1), 2)):
+        for value, expected in ((b"message 123", 0), (b"", 2), (b"\xff", 2), (b"x" * (256 * 1024 + 1), 2)):
             with self.subTest(expected=expected):
                 out = io.StringIO()
                 self.assertEqual(secretscan.main([], stdin=io.BytesIO(value), stdout=out), expected)
@@ -123,6 +124,76 @@ class PeerActionScanTests(unittest.TestCase):
         out = io.StringIO()
         self.assertEqual(secretscan.main(["--field", self.unsafe], stdin=io.BytesIO(), stdout=out), 2)
         self.assertNotIn(self.unsafe, out.getvalue())
+
+    def test_transport_without_known_credentials_refuses_before_registry_work(self):
+        from simple_tools.mcp.tools import Tools, ToolError
+
+        context = SimpleNamespace(seat="CODEX")
+        with mock.patch.object(peer_actions, "log_row") as append:
+            with self.assertRaises(ToolError) as caught:
+                Tools._tool_peer_actions_log(context, {})
+        append.assert_not_called()
+        self.assertEqual(caught.exception.code, "not_configured")
+
+    def test_offline_dry_run_needs_no_alternative_auth_configuration(self):
+        entry = peer_actions.build_entry(**self.fields)
+        with mock.patch.object(peer_actions, "_http_opener") as network:
+            result = peer_actions.log_row(entry, dry_run=True, env={})
+        network.assert_not_called()
+        self.assertTrue(result["dry_run"])
+
+    def test_file_resolved_token_is_scanned_without_fetching_for_dry_run(self):
+        known = "synthetic resolved bootstrap"
+        entry = peer_actions.build_entry(**dict(self.fields, request_source=known))
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "reader.token"
+            token_file.write_text(known)
+            token_file.chmod(0o600)
+            with mock.patch.object(peer_actions, "_http_opener") as network:
+                with self.assertRaises(peer_actions.PeerActionsError) as caught:
+                    peer_actions.log_row(entry, dry_run=True, env={peer_actions.ENV_INFISICAL_TOKEN_FILE: str(token_file)})
+        network.assert_not_called()
+        self.assertEqual(caught.exception.code, "refused_secret")
+        self.assertNotIn(known, caught.exception.message)
+
+    def test_direct_service_account_sensitive_fields_are_scanned_but_metadata_is_not(self):
+        known = "synthetic private value"
+        env = {peer_actions.ENV_SA_JSON: json.dumps({"type": "service_account", "private_key": known})}
+        entry = peer_actions.build_entry(**dict(self.fields, request_source=known))
+        with self.assertRaises(peer_actions.PeerActionsError) as caught:
+            peer_actions.log_row(entry, dry_run=True, env=env)
+        self.assertEqual(caught.exception.code, "refused_secret")
+        metadata = peer_actions.build_entry(**dict(self.fields, request_source="reviewed service_account metadata"))
+        with mock.patch.object(peer_actions, "_http_opener") as network:
+            self.assertTrue(peer_actions.log_row(metadata, dry_run=True, env=env)["dry_run"])
+        network.assert_not_called()
+
+    def test_fetched_service_account_refuses_before_oauth_or_append(self):
+        known = "synthetic fetched private value"
+        env = {peer_actions.ENV_INFISICAL_TOKEN: "synthetic operation bootstrap", peer_actions.ENV_INFISICAL_PROJECT: "project-test"}
+        entry = peer_actions.build_entry(**dict(self.fields, request_source=known))
+        with mock.patch.object(peer_actions, "_infisical_get_secret", return_value=json.dumps({"private_key": known})):
+            with mock.patch.object(peer_actions, "_google_access_token") as oauth:
+                with mock.patch.object(peer_actions, "SheetsClient") as sheets:
+                    with self.assertRaises(peer_actions.PeerActionsError) as caught:
+                        peer_actions.log_row(entry, env=env)
+        oauth.assert_not_called()
+        sheets.assert_not_called()
+        self.assertEqual(caught.exception.code, "refused_secret")
+        self.assertNotIn(known, caught.exception.message)
+
+    def test_derived_oauth_credential_refuses_before_the_row_network_sink(self):
+        known = "synthetic oauth credential"
+        env = {peer_actions.ENV_SA_JSON: json.dumps({"private_key": "synthetic private value", "client_email": "example@example.test"})}
+        entry = peer_actions.build_entry(**dict(self.fields, request_source=known))
+        opener = mock.Mock()
+        with mock.patch.object(peer_actions, "_google_access_token", return_value=known):
+            with mock.patch.object(peer_actions, "_http_opener", return_value=opener):
+                with self.assertRaises(peer_actions.PeerActionsError) as caught:
+                    peer_actions.log_row(entry, env=env)
+        opener.open.assert_not_called()
+        self.assertEqual(caught.exception.code, "refused_secret")
+        self.assertNotIn(known, caught.exception.message)
 
     def test_neutral_cli_argument_errors_do_not_echo_credentials(self):
         out, err = io.StringIO(), io.StringIO()

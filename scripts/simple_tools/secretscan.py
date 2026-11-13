@@ -325,6 +325,9 @@ def main(argv=None, *, stdin=None, stdout=None) -> int:
         output.write(json.dumps({"ok": False, "field": args.field, "code": "invalid_input"}) + "\n")
         return 2
     reason = None
+    if not raw:
+        output.write(json.dumps({"ok": False, "field": args.field, "code": "invalid_input"}) + "\n")
+        return 2
     if len(raw) > 256 * 1024:
         reason = "input_too_large"
     else:

@@ -2584,6 +2584,8 @@ class Tools:
         return self.ok(self._notes_fenced(header, info), info)
 
     def _tool_peer_actions_log(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        if getattr(self, "known", None) is None:
+            raise ToolError("not_configured", "peer-actions logging requires known credentials")
         acting = args.get("acting_seat") or self.seat
         entry = PEER_ACTIONS.build_entry(
             acting_seat=acting,
