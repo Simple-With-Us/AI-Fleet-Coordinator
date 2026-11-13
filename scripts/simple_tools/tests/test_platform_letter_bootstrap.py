@@ -124,6 +124,7 @@ class BootstrapTests(unittest.TestCase):
         (package / "__init__.py").touch()
         shutil.copyfile(scripts / "simple_tools/platform_letter_bootstrap.py",
                         package / "platform_letter_bootstrap.py")
+        shutil.copyfile(scripts / "fleet_infisical_bootstrap.py", self.home / "fleet_infisical_bootstrap.py")
         for name, args in (("simple-chat", ["letter", "hook"]),
                            ("platform-letter", ["hook", "--platform", "codex"])):
             entry = self.home / name

@@ -34,6 +34,7 @@ RUN groupadd --system --gid 10001 simpletools \
 WORKDIR /app
 # The entry script and the package must be siblings:  the script puts its own directory on sys.path.
 COPY scripts/simple-chat /app/scripts/simple-chat
+COPY scripts/fleet_infisical_bootstrap.py /app/scripts/
 COPY scripts/simple_tools /app/scripts/simple_tools
 # The Operator's Linear project webhook (AFC-565) runs these two with the listener.
 COPY scripts/linear_project_linkifiers.py scripts/zulip_linkifiers.py /app/scripts/

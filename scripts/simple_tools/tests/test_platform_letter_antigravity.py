@@ -562,6 +562,7 @@ class QuickAnswerTests(Base):
         Path(package, "__init__.py").write_text("")
         Path(package, "platform_letter.py").write_text(STUB_LIBRARY)
         shutil.copy(SCRIPTS / "simple_tools" / "platform_letter_bootstrap.py", package)
+        shutil.copy(SCRIPTS / "fleet_infisical_bootstrap.py", self.checkout)
         self.imported = os.path.join(self.checkout, "imported")
 
     def child_env(self) -> dict[str, str]:
