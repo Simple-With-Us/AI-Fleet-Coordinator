@@ -636,7 +636,11 @@ def codex_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
             rows = conn.execute(
                 "SELECT id FROM threads WHERE name LIKE '??: %' AND created_at >= ? AND created_at <= ?"
                 " ORDER BY created_at DESC LIMIT ?",
-                (now - UNLETTERED_MAX_AGE_SECONDS, now - UNLETTERED_MIN_AGE_SECONDS, UNLETTERED_SCAN),
+                (
+                    now - UNLETTERED_MAX_AGE_SECONDS,
+                    now - UNLETTERED_MIN_AGE_SECONDS,
+                    UNLETTERED_SCAN,
+                ),
             ).fetchall()
         except sqlite3.OperationalError as exc:
             if "no such column" in str(exc):
