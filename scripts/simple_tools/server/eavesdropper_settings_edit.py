@@ -1377,6 +1377,9 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
             from simple_tools.server import operator_settings
 
             try:
+                # The canonical writer and daemon reader share this installed
+                # schema; a stale caller cannot widen its keys or bounds.
+                allowlist = operator_settings._manifest()
                 if action == "get":
                     answer = operator_settings.get(live, allowlist)
                 elif action == "initialize":
