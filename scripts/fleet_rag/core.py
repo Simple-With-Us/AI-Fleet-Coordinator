@@ -48,7 +48,9 @@ NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
 TOKEN_ENV = "FLEET_RECALL_INFISICAL_TOKEN"
-INFISICAL_READ_TOKEN = TOKEN_ENV  # Public compatibility name; this is an environment name, never a value.
+INFISICAL_READ_TOKEN = (
+    TOKEN_ENV  # Public compatibility name; this is an environment name, never a value.
+)
 # The same binding kept in a file of the caller's own, so every caller of recall (the CLI, the MCP servers, the
 # nightly) gets it without the value sitting in a config file or a shell profile.  FLEET_RECALL_INFISICAL_TOKEN_FILE
 # names it;  otherwise ~/.secrets/fleet-recall-infisical.env is used when it exists.  The variable always wins.
