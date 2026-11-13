@@ -110,6 +110,14 @@ async function loadServiceAccount(env, fetchImpl) {
     path: "/google-sheets-sa",
     envName: "GOOGLE_SHEETS_SA",
   });
+  // An Infisical refusal (e.g. 403: the read-tools token is not scoped to /google-sheets-sa) with no
+  // GOOGLE_SHEETS_SA binding to fall back to resolves to "".  Say so, instead of "not valid JSON".
+  if (!String(raw ?? "").trim()) {
+    throw new ToolError(
+      "not_configured",
+      "GOOGLE_SHEETS_SA is unavailable: Infisical /google-sheets-sa was not readable and no Worker binding is set",
+    );
+  }
   try {
     return JSON.parse(raw);
   } catch {
