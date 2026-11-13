@@ -2584,6 +2584,10 @@ class Tools:
         return self.ok(self._notes_fenced(header, info), info)
 
     def _tool_peer_actions_log(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        if getattr(self, "known", None) is None:
+            raise ToolError(
+                "not_configured", "peer-actions credential scan list Tools.known is not configured"
+            )
         acting = args.get("acting_seat") or self.seat
         entry = PEER_ACTIONS.build_entry(
             acting_seat=acting,
@@ -2591,6 +2595,7 @@ class Tools:
             request_source=args["request"],
             action_taken=args["action_taken"],
             result=args["result"],
+            known=self.known,
         )
         structured = PEER_ACTIONS.log_row(entry, dry_run=bool(args.get("dry_run")))
         header = "peer_actions_log:  %s" % (
