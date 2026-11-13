@@ -5,7 +5,7 @@
 import PEER_ACTIONS_JSON from "../../simple_tools/mcp/peer-actions-tools.json" with { type: "json" };
 import { ToolError, okResult } from "./contract.js";
 import { canonicalSeatName } from "./identity-aliases.js";
-import { resolveSecret } from "./infisical.js";
+import { InfisicalError, resolveSecret } from "./infisical.js";
 
 export const PEER_ACTIONS_TOOLS = Object.freeze(PEER_ACTIONS_JSON.tools);
 export const PEER_ACTIONS_WRITE_TOOLS = Object.freeze(new Set(["peer_actions_log"]));
@@ -105,17 +105,27 @@ async function loadServiceAccount(env, fetchImpl) {
       throw new ToolError("invalid_secret", "GOOGLE_SHEETS_SA is not valid JSON");
     }
   }
-  const raw = await resolveSecret(env, {
-    name: "GOOGLE_SHEETS_SA",
-    path: "/google-sheets-sa",
-    envName: "GOOGLE_SHEETS_SA",
-  });
-  // An Infisical refusal (e.g. 403: the read-tools token is not scoped to /google-sheets-sa) with no
-  // GOOGLE_SHEETS_SA binding to fall back to resolves to "".  Say so, instead of "not valid JSON".
+  // Fallback mode answers "" when Infisical refuses (e.g. 403:  the read-tools token is not scoped to
+  // /google-sheets-sa) and no binding is set;  required mode throws InfisicalError.  Name both as
+  // configuration gaps instead of "not valid JSON" or an opaque internal error.
+  let raw;
+  try {
+    raw = await resolveSecret(env, {
+      name: "GOOGLE_SHEETS_SA",
+      path: "/google-sheets-sa",
+      envName: "GOOGLE_SHEETS_SA",
+    });
+  } catch (error) {
+    if (!(error instanceof InfisicalError)) throw error;
+    if (error.code === "not_found" || error.code === "not_configured" || error.status === 401 || error.status === 403) {
+      throw new ToolError("not_configured", `GOOGLE_SHEETS_SA is unavailable: Infisical /google-sheets-sa was not readable (${error.code})`);
+    }
+    throw new ToolError("unavailable", "could not read GOOGLE_SHEETS_SA from Infisical", { retryable: true });
+  }
   if (!String(raw ?? "").trim()) {
     throw new ToolError(
       "not_configured",
-      "GOOGLE_SHEETS_SA is unavailable: Infisical /google-sheets-sa was not readable and no Worker binding is set",
+      "GOOGLE_SHEETS_SA is unavailable: Infisical /google-sheets-sa served no value and no Worker binding is set",
     );
   }
   try {

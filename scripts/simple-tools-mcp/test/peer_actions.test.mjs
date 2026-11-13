@@ -24,8 +24,8 @@ test("buildPeerActionsRow uses identity seat and central CT label", () => {
 });
 
 test("an unreadable or unbound GOOGLE_SHEETS_SA answers not_configured, not invalid JSON", async () => {
-  const ctx = { seat: "GB-PLUMBER", workerEnv: { INFISICAL_MODE: "off" }, reserve: async () => {} };
-  const args = { requesting_seat: "GB-PLUMBER", request: "r", action_taken: "a", result: "x" };
+  const ctx = { seat: "TEST-SEAT", workerEnv: { INFISICAL_MODE: "off" }, reserve: async () => {} };
+  const args = { requesting_seat: "TEST-SEAT", request: "r", action_taken: "a", result: "x" };
   await assert.rejects(PEER_ACTIONS_METHODS.tool_peer_actions_log.call(ctx, args, {}), (error) => {
     assert.equal(error.code, "not_configured");
     assert.match(error.message, /no Worker binding/);
@@ -34,7 +34,23 @@ test("an unreadable or unbound GOOGLE_SHEETS_SA answers not_configured, not inva
 });
 
 test("a malformed GOOGLE_SHEETS_SA binding still answers invalid_secret", async () => {
-  const ctx = { seat: "GB-PLUMBER", workerEnv: { INFISICAL_MODE: "off", GOOGLE_SHEETS_SA: "'{\"type\":1}'" }, reserve: async () => {} };
-  const args = { requesting_seat: "GB-PLUMBER", request: "r", action_taken: "a", result: "x" };
+  const ctx = { seat: "TEST-SEAT", workerEnv: { INFISICAL_MODE: "off", GOOGLE_SHEETS_SA: "'{\"type\":1}'" }, reserve: async () => {} };
+  const args = { requesting_seat: "TEST-SEAT", request: "r", action_taken: "a", result: "x" };
   await assert.rejects(PEER_ACTIONS_METHODS.tool_peer_actions_log.call(ctx, args, {}), (error) => error.code === "invalid_secret");
+});
+
+test("a required-mode Infisical refusal answers not_configured, not internal", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("{}", { status: 403 });
+  try {
+    const ctx = {
+      seat: "TEST-SEAT",
+      workerEnv: { INFISICAL_MODE: "required", INFISICAL_SERVICE_TOKEN: "st.test", INFISICAL_WORKSPACE_ID: "ws-test" },
+      reserve: async () => {},
+    };
+    const args = { requesting_seat: "TEST-SEAT", request: "r", action_taken: "a", result: "x" };
+    await assert.rejects(PEER_ACTIONS_METHODS.tool_peer_actions_log.call(ctx, args, {}), (error) => error.code === "not_configured");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

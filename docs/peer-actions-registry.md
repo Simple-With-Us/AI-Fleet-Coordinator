@@ -21,7 +21,7 @@ Every fleet agent logs peer-request work to the **Peer-Actions Registry** Google
   - Optional: `PEER_ACTIONS_INFISICAL_PROJECT_ID` or `INFISICAL_FLEET_OPS_PROJECT_ID`; otherwise `.simple-tools/fleet-ops-project-id` on the checkout.
 - **Local override for tests:** `GOOGLE_SHEETS_SA` in the environment (JSON string).  The value is kept in memory only and is never logged.
 
-**Hosted Worker (ST-MCP).**  The Worker reads `/google-sheets-sa` with its read-tools `INFISICAL_SERVICE_TOKEN`.  That token was not scoped to `/google-sheets-sa` (Infisical answers 403), so in `INFISICAL_MODE=fallback` the Worker uses its `GOOGLE_SHEETS_SA` secret binding, set on 2026-11-12 with `wrangler secret put GOOGLE_SHEETS_SA` (raw JSON on stdin).  With neither source the tool answers `not_configured`; `invalid_secret` means a value was found but is not JSON.  Before `required` mode, a read-tools token that covers `/google-sheets-sa` is needed.
+**Hosted Worker (ST-MCP).**  The Worker reads a `GOOGLE_SHEETS_SA` Worker secret binding first, then `/google-sheets-sa` with its read-tools `INFISICAL_SERVICE_TOKEN`.  That token is not scoped to `/google-sheets-sa` (Infisical answers 403), so the binding was set on 2026-11-12 with `wrangler secret put GOOGLE_SHEETS_SA` (raw JSON on stdin).  With neither source serving a value the tool answers `not_configured`;  `invalid_secret` means a value was served but is not JSON.  The shared resolver treats a whitespace-only value as absent.  Before `required` mode can drop the binding, a read-tools token that covers `/google-sheets-sa` is needed.
 
 Never print, commit, or paste the service account JSON.
 
