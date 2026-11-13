@@ -444,6 +444,95 @@ struct ServerSettingsAllowlist: Equatable {
     }
 }
 
+// MARK: - Where the allowlist copy comes from
+
+/// The result of looking for the allowlist copy:  the copy and where it came from, or why there is
+/// none, in words that name what was tried.
+struct ServerSettingsAllowlistLoad: Equatable {
+    enum Source: Equatable {
+        /// The copy built into this app (`Contents/Resources`).
+        case bundled
+        /// The copy in the fleet checkout, used when the app holds none of its own.
+        case checkout
+    }
+
+    var allowlist: ServerSettingsAllowlist?
+    var source: Source?
+    /// Why there is no copy, or nil when there is one.  It names both places tried.
+    var problem: String?
+}
+
+enum ServerSettingsAllowlistLoader {
+    static let resourceName = "fleet-ops-eavesdropper-settings"
+    static let resourceExtension = "json"
+
+    /// The copy built into the app, or nil when this build holds none.  A build run from Xcode's
+    /// test host, or one made before the copy was bundled, holds none.
+    static func bundledURL(in bundle: Bundle = .main) -> URL? {
+        bundle.url(forResource: resourceName, withExtension: resourceExtension)
+    }
+
+    /// The parsed copy, or why the file's text is not one.  The words say what is wrong, and never
+    /// quote a value.  The file is parsed once.
+    static func parse(_ data: Data) -> (list: ServerSettingsAllowlist?, problem: String?) {
+        guard let object = try? JSONSerialization.jsonObject(with: data) else { return (nil, "it is not valid JSON") }
+        guard let dictionary = object as? [String: Any] else { return (nil, "it is not a JSON object") }
+        if !(dictionary["seat"] is [String: Any]) { return (nil, "it has no seat table") }
+        if !(dictionary["tables"] is [String: Any]) { return (nil, "it has no tables") }
+        guard let list = ServerSettingsAllowlist.parse(data) else { return (nil, "it could not be read") }
+        return (list, nil)
+    }
+
+    /// Why a file's text is not an allowlist copy, or nil when it is one.
+    static func parseProblem(_ data: Data) -> String? {
+        parse(data).problem
+    }
+
+    private enum Attempt {
+        case found(ServerSettingsAllowlist)
+        case failed(String)
+    }
+
+    private static func attempt(at url: URL, fileManager: FileManager) -> Attempt {
+        guard fileManager.fileExists(atPath: url.path) else { return .failed("missing at \(url.path)") }
+        guard let data = try? Data(contentsOf: url) else { return .failed("could not be opened at \(url.path)") }
+        let parsed = parse(data)
+        if let list = parsed.list { return .found(list) }
+        return .failed("parse failed: \(parsed.problem ?? "it could not be read")")
+    }
+
+    /// The bundled copy first, then the checkout's.  Both failing is one sentence naming both.
+    static func load(bundled: URL?, checkout: URL?, fileManager: FileManager = .default) -> ServerSettingsAllowlistLoad {
+        let gap = ServerStatusCopy.sentenceGap
+        var bundledWhy = "not bundled"
+        if let bundled {
+            switch attempt(at: bundled, fileManager: fileManager) {
+            case .found(let list): return ServerSettingsAllowlistLoad(allowlist: list, source: .bundled, problem: nil)
+            case .failed(let why): bundledWhy = "bundled file \(why)"
+            }
+        }
+        var checkoutWhy = "no checkout to look in"
+        if let checkout {
+            switch attempt(at: checkout, fileManager: fileManager) {
+            case .found(let list): return ServerSettingsAllowlistLoad(allowlist: list, source: .checkout, problem: nil)
+            case .failed(let why): checkoutWhy = "checkout file \(why)"
+            }
+        }
+        return ServerSettingsAllowlistLoad(
+            allowlist: nil, source: nil,
+            problem: "The allowlist that says what each setting may take could not be read, so Muster offers nothing to change.\(gap)Update Muster, or open it from the checkout.\(gap)In the app: \(bundledWhy).\(gap)In the checkout: \(checkoutWhy)."
+        )
+    }
+
+    /// The copy as the app finds it:  its own, then the fleet checkout's.
+    static func standard() -> ServerSettingsAllowlistLoad {
+        load(
+            bundled: bundledURL(),
+            checkout: ServerSettingsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
+        )
+    }
+}
+
 // MARK: - The editor's answer
 
 /// The `eavesdropperSettings` document of one answer:  a get's settings, or a plan's or an
@@ -813,7 +902,8 @@ enum ServerSettingsCopy {
     /// the server's settings editor.
     static let knobHome = "A knob, and a knob's home is Infisical.\(gap)Muster shows the value the server holds and does not write it into the server's listener file.\(gap)It becomes editable in Controls once it is a registered knob."
 
-    static let applyOff = "The server's allowlist has applyEnabled off, which is the owner's switch.\(gap)Show Plan still works, and every apply is refused until the owner turns it on."
+    static let applyOff = "Applying changes is switched off on the server.\(gap)Show Plan still works, and an apply is refused until the owner switches it on."
+    static let applyUnknown = "The server did not say whether applying is switched on."
     static let applyOn = "Each change goes Show Plan, then Touch ID, then the server plans again and applies only the plan you approved."
 
     static func groupTitle(table: String) -> String {
@@ -1145,32 +1235,51 @@ final class ServerListenerSettingsStore: ObservableObject {
     @Published var drafts: [String: String] = [:]
 
     private let reader: ServerListenerSettingsReader
-    private let readAllowlist: () -> ServerSettingsAllowlist?
+    private let loadAllowlist: () -> ServerSettingsAllowlistLoad
     private let controller: OpsController
 
+    /// - Parameters:
+    ///   - readAllowlist: a stand-in that answers with the copy alone, for a test.  It wins over
+    ///     `loadAllowlist` when both are given.
+    ///   - loadAllowlist: where the copy comes from.  The default is the app's own bundled copy,
+    ///     then the fleet checkout's (`ServerSettingsAllowlistLoader.standard`).
     init(
         reader: ServerListenerSettingsReader = ServerListenerSettingsReader(),
-        readAllowlist: @escaping () -> ServerSettingsAllowlist? = {
-            ServerSettingsAllowlist.read(at: ServerSettingsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot))
-        },
+        readAllowlist: (() -> ServerSettingsAllowlist?)? = nil,
+        loadAllowlist: @escaping () -> ServerSettingsAllowlistLoad = { ServerSettingsAllowlistLoader.standard() },
         controller: OpsController = .shared
     ) {
         self.reader = reader
-        self.readAllowlist = readAllowlist
+        if let readAllowlist {
+            self.loadAllowlist = {
+                let list = readAllowlist()
+                return ServerSettingsAllowlistLoad(
+                    allowlist: list, source: nil,
+                    problem: list == nil ? "The allowlist that says what each setting may take could not be read, so Muster offers nothing to change." : nil
+                )
+            }
+        } else {
+            self.loadAllowlist = loadAllowlist
+        }
         self.controller = controller
         rebuild()
     }
 
-    /// This checkout's allowlist copy, or nil when it could not be read:  then nothing is offered.
-    /// Read at init and again with every new reading, never on a draw.
+    /// The allowlist copy, or nil when it could not be read:  then nothing is offered.  Read at
+    /// init and again with every new reading, never on a draw.
     private(set) var allowlist: ServerSettingsAllowlist?
 
-    /// The rows of the last read, built once per reading.  An edit changes `drafts` only, never these.
+    /// Why there is no allowlist copy, in words that name what was tried, or nil when there is one.
+    private(set) var allowlistProblem: String?
+
+    /// The rows of the last read, built once per reading.  An edit changes `drafts` only, never these.
     private(set) var groups: [ServerSettingsGroup] = []
 
     /// Reads the allowlist copy again and builds the rows for the current reading.
     private func rebuild() {
-        allowlist = readAllowlist()
+        let load = loadAllowlist()
+        allowlist = load.allowlist
+        allowlistProblem = load.problem
         guard case .read(let answer)? = reading, let allowlist else {
             groups = []
             return

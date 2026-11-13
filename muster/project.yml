@@ -30,6 +30,12 @@ targets:
     platform: macOS
     sources:
       - Muster
+      # The server editor's allowlist, copied into Contents/Resources so the Settings section
+      # knows each key's type and range wherever the app was launched from.  It is the same file
+      # the server reads (scripts/fleet-ops-eavesdropper-settings.json), so a change to it ships
+      # with the next build of the app.
+      - path: ../scripts/fleet-ops-eavesdropper-settings.json
+        buildPhase: resources
     dependencies:
       # Xcode embeds the framework in Contents/Frameworks;  script/release_build.sh checks it.
       - package: Sparkle
@@ -152,6 +158,9 @@ targets:
       # The server eavesdropper's reduced status, read over `server eavesdropper-status`
       # (ServerEavesdropperStatusTests).
       - path: Muster/Model/ServerEavesdropperStatus.swift
+      # The Operator panel's reads (the letter registry and the wake record), its store and every
+      # word and cell it shows (OperatorPanelTests).
+      - path: Muster/Model/OperatorPanel.swift
       - path: Muster/Model/OperatorOptions.swift
       - path: Muster/Model/SeatActivity.swift
       - path: Muster/Model/SeatActivityReader.swift

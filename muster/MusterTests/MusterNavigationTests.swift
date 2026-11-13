@@ -25,7 +25,7 @@ final class MusterNavigationTests: XCTestCase {
     // MARK: Destinations
 
     /// Every panel is named once:  the overview and sixteen panels, each under exactly one
-    /// section, with Operations split into three.
+    /// section, with Operations split into three and Wake & Listener replaced by Operator.
     func test_sidebar_names_every_place_once() {
         let named = [MusterDestination.overview]
             + MusterDestination.sidebarPlaces.flatMap { MusterDestination.listed(under: $0) }
@@ -43,9 +43,9 @@ final class MusterNavigationTests: XCTestCase {
             .macAgents: .machine(.mac),
             .complianceGrid: .machine(.mac),
             .driftHistory: .machine(.mac),
-            .wakeAndListener: .machine(.mac),
             .seatDetail: .machine(.mac),
             .serverStatus: .machine(.server),
+            .operator: .machine(.server),
             .serverResourceLimits: .machine(.server),
             .serverUpdates: .machine(.server),
             .appsAndWork: .acrossFleet,
@@ -67,9 +67,9 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.sidebarPlaces.map(\.sectionHeading),
                        ["The Mac", "The Server", "Across The Fleet"])
         XCTAssertEqual(MusterDestination.listed(under: .machine(.mac)),
-                       [.services, .macAgents, .complianceGrid, .driftHistory, .wakeAndListener, .seatDetail])
+                       [.services, .macAgents, .complianceGrid, .driftHistory, .seatDetail])
         XCTAssertEqual(MusterDestination.listed(under: .machine(.server)),
-                       [.serverStatus, .serverResourceLimits, .serverUpdates])
+                       [.serverStatus, .operator, .serverResourceLimits, .serverUpdates])
         XCTAssertEqual(MusterDestination.listed(under: .acrossFleet),
                        [.appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory])
     }
@@ -83,6 +83,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.actionHistory.title, "Action History")
         XCTAssertEqual(MusterDestination.hosts.title, "Tools And Worker Health")
         XCTAssertEqual(MusterDestination.seatDetail.title, "Seat Setup")
+        XCTAssertEqual(MusterDestination.operator.title, "Operator")
     }
 
     /// The window's subtitle is the badge's own words, so the two cannot disagree.
@@ -111,6 +112,15 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.restored(from: "operations"), .serverUpdates)
     }
 
+    /// Wake & Listener read the Mac's retired listener and was replaced by Operator:  its saved
+    /// spelling opens Operator, and the app no longer names it.
+    func test_saved_wake_and_listener_restores_to_the_operator() {
+        XCTAssertNil(MusterDestination(rawValue: "wakeAndListener"))
+        XCTAssertEqual(MusterDestination.restored(from: "wakeAndListener"), .operator)
+        XCTAssertEqual(MusterDestination.operator.place, .machine(.server))
+        XCTAssertEqual(MusterDestination.operator.subtitle, "On The Server")
+    }
+
     func test_unsaved_or_unnamed_place_restores_the_overview() {
         XCTAssertEqual(MusterDestination.restored(from: nil), .overview)
         XCTAssertEqual(MusterDestination.restored(from: ""), .overview)
@@ -125,6 +135,7 @@ final class MusterNavigationTests: XCTestCase {
         XCTAssertEqual(MusterDestination.services.rawValue, "services")
         XCTAssertEqual(MusterDestination.seatDetail.rawValue, "seatDetail")
         XCTAssertEqual(MusterDestination.serverStatus.rawValue, "serverStatus")
+        XCTAssertEqual(MusterDestination.operator.rawValue, "operator")
         XCTAssertEqual(MusterDestination.hosts.rawValue, "hosts")
         XCTAssertEqual(MusterDestination.virtualMachines.rawValue, "virtualMachines")
         XCTAssertEqual(MusterDestination.appProcesses.rawValue, "appProcesses")
@@ -164,6 +175,14 @@ final class MusterNavigationTests: XCTestCase {
             XCTAssertFalse(text.contains(".  "), "\(destination)")
             XCTAssertFalse(text.contains("this Mac"), "\(destination)")
         }
+    }
+
+    /// The Operator panel reads the server and says nothing about the Mac's retired listener.
+    func test_operator_source_line_names_the_server_and_not_the_listener() throws {
+        let line = try XCTUnwrap(MusterDestination.operator.sourceLine(PlaceSourceInputs()))
+        XCTAssertTrue(line.contains("server"))
+        XCTAssertFalse(line.lowercased().contains("listener"))
+        XCTAssertFalse(line.contains("Mac"))
     }
 
     /// A time is said only when the window holds one, on the owner's clock.
