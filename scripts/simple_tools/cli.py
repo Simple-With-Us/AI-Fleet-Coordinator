@@ -1695,7 +1695,7 @@ def _compose(
                 )
             return led
     # Same complete-own-intro rule as the hosted composeBody transport.
-    leading = re.match(r"^(?:👀\s*)?\s*", text).group(0)
+    leading = re.match(r"^\s*(?:(?:👀|:eyes:)\s*)?", text).group(0)
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)
@@ -1712,7 +1712,7 @@ def _compose(
     if own:
         intro = text[:end]
         if "·" in agent.tag_prefix:
-            suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
+            suffix = re.sub(r"^·(?:(?!->)[^\s:→\]])*", "", intro[seat_end:])
             intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
         arrow = re.search(r"→|->", intro)
         existing = [] if arrow is None else [v.strip() for v in intro[arrow.end() :].split(",")]
@@ -1724,7 +1724,7 @@ def _compose(
             tail = " " + tail
         added = _mentions_missing_from(tail, mentions)
         body = intro + "]" + (" " + " ".join(added) if added else "") + tail
-        if quiet and not leading.startswith(ROUTER.NO_WAKE_MARKER):
+        if quiet and not leading.lstrip().startswith(ROUTER.NO_WAKE_MARKERS):
             body = ROUTER.NO_WAKE_MARKER + " " + body
     else:
         parts: list[str] = []
