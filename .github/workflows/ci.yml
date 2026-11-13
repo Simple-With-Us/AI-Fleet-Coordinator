@@ -313,6 +313,11 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
+    # ci-red-report (AFC-737): fixture-backed unit tests; no live GitHub API.
+    - name: ci-red-report tests
+      timeout-minutes: 5
+      run: |
+        cd scripts/ci-red-report && python3 -m unittest discover -s tests -t . -v
     # fleet_view (AFC-394):  the Fleet View collectors for lanes, open PRs and Linear claims, the
     # request budget, the blocker mapping and the pinned envelope.  Fake runners only;  no network.
     - name: fleet_view tests

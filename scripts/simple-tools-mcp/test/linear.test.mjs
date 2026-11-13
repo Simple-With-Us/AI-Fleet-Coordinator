@@ -771,6 +771,44 @@ test("linear_comment never prepends a seat tag, even when the body has no intro 
   }
 });
 
+test("a single-thread seat's own intro is dropped from a Linear comment;  a multi-threaded seat keeps it (Jay 2026-11-12)", async () => {
+  const jetViewer = { id: "user-jet", name: "Jet", app: true };
+  const cases = [
+    ["[JET 📁ST] PR opened", "PR opened"],
+    ["👀 [JET 📁ST, CTS] PR opened", "PR opened"],
+    ["[JET] [JET 📁CC]\n\nPR opened", "PR opened"],
+    ["[GB-PLUMBER 📁AFC] foreign intro stays", "[GB-PLUMBER 📁AFC] foreign intro stays"],
+    ["[JETX] malformed stays", "[JETX] malformed stays"],
+    ["[JET 📁ST]", "[JET 📁ST]"],
+    ["plain update", "plain update"],
+  ];
+  for (const [i, [body, want]] of cases.entries()) {
+    const { tools, fake } = harness({ seat: "JET", viewer: jetViewer });
+    fake.addIssue({ id: `issue-st-${i}`, identifier: `AFC-67${i}` });
+    ok(await tools.call("linear_comment", { id: `AFC-67${i}`, body }), "linear_comment");
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, want, body);
+  }
+  for (const [i, body] of ["[CURSOR: AB.1.C 📁AFC] status", "[CURSOR 📁AFC] status"].entries()) {
+    const { tools, fake } = harness({ seat: "CURSOR", viewer: { id: "user-cursor", name: "Cursor", app: true } });
+    fake.addIssue({ id: `issue-mt-${i}`, identifier: `AFC-66${i}` });
+    ok(await tools.call("linear_comment", { id: `AFC-66${i}`, body }), "linear_comment");
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, body, body);
+  }
+});
+
+test("linear_file leaves the Reported by line off a single-thread seat's issue and strips its intro (Jay 2026-11-12)", async () => {
+  const single = harness({ seat: "JET", viewer: { id: "user-jet", name: "Jet", app: true } });
+  ok(await single.tools.call("linear_file", { title: "Single", app: "wombat", description: "[JET 📁ST] Steps here" }), "linear_file");
+  const desc = single.fake.mutations().at(-1).body.variables.input.description;
+  assert.ok(desc.startsWith("Steps here"), desc);
+  assert.ok(!/Reported by/.test(desc), desc);
+  const multi = harness({ seat: "CURSOR", viewer: { id: "user-cursor", name: "Cursor", app: true } });
+  ok(await multi.tools.call("linear_file", { title: "Multi", app: "wombat", description: "[CURSOR: AB.1.C 📁AFC] Steps" }), "linear_file");
+  const mdesc = multi.fake.mutations().at(-1).body.variables.input.description;
+  assert.ok(mdesc.startsWith("[CURSOR: AB.1.C 📁AFC] Steps"), mdesc);
+  assert.match(mdesc, /- Reported by CURSOR/);
+});
+
 test("linear_comment leaves a supplied session out of the body (AFC-692)", async () => {
   for (const [i, body] of ["[GROK-WEB 📁AFC] status", "[GROK-WEB·stale999 📁AFC] status", "plain status"].entries()) {
     const { tools, fake } = harness();

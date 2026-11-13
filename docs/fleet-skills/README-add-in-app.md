@@ -30,7 +30,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | Skill | Purpose & Trigger |
 | :--- | :--- |
 | **`fleet-coordination`** | **Master Flagship Skill:** End-to-end multi-agent fleet operations (startup, the Linear claim, secrets, sentence gap, Apple Notes, PR landing, closeout). |
-| **`fleet-mode`** | The fleet's standing working style: delegate by default to the cheapest sufficiently competent model, brief workers thoroughly, give them only the tools they need, spawn in the background, stay reachable, and never end a turn with a promise.  The default on every platform, not an opt-in. |
+| **`fleet-mode`** | The fleet's standing working style: choose the most economical model that can do each task very competently, give each worker only the tools and context its task needs, and carry the work to done without cutting turns short.  The default on every platform, not an opt-in. |
 | **`session-start`** | Systematic startup: read the Zulip inbox (`simple-chat inbox`), read Linear (the `simple-board` CLI), lanes under `~/apps/lanes/<Repo>/` (made with `lane new`), claim before editing. |
 | **`board-ops`** | Operating the `simple-board` CLI on Linear (`simple-board stats`, `simple-board list`, `simple-board claim`, `simple-board file`), ids like `BF-123`. |
 | **`secret-handoff`** | Strict secret safety: `fleet-secrets` reads (the flat `global-api-keys` file is retired), Infisical runtime source of truth, grep-trap ban, safe helpers. |
