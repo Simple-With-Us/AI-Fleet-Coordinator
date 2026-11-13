@@ -11,6 +11,7 @@ import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
+import { decideLinearWake } from "../src/linear-wake.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { FakeLinear, TOKEN_URL, GRAPHQL_URL, opOf } from "./fake-linear.mjs";
 import { testEnv } from "./helpers.mjs";
@@ -775,7 +776,9 @@ test("a single-thread seat's own intro is dropped from a Linear comment;  a mult
   const jetViewer = { id: "user-jet", name: "Jet", app: true };
   const cases = [
     ["[JET 📁ST] PR opened", "PR opened"],
-    ["👀 [JET 📁ST, CTS] PR opened", "PR opened"],
+    ["👀 [JET 📁ST, CTS] PR opened", "👀 PR opened"],
+    [":eyes: [JET] [JET 📁ST, CTS] PR opened", ":eyes: PR opened"],
+    [":eyes: [JET 📁ST]", ":eyes: [JET\u200a\u200a📁\u200aST]"],
     ["[JET] [JET 📁CC]\n\nPR opened", "PR opened"],
     ["[GB-PLUMBER 📁AFC] foreign intro stays", "[GB-PLUMBER 📁AFC] foreign intro stays"],
     ["[JETX] malformed stays", "[JETX] malformed stays"],
@@ -796,6 +799,21 @@ test("a single-thread seat's own intro is dropped from a Linear comment;  a mult
     fake.addIssue({ id: `issue-mt-${i}`, identifier: `AFC-66${i}` });
     ok(await tools.call("linear_comment", { id: `AFC-66${i}`, body }), "linear_comment");
     assert.equal(fake.mutations().at(-1).body.variables.input.body, want, body);
+  }
+});
+
+test("single-thread Linear intro removal preserves the actual stored no-wake decision", async () => {
+  const seats = new Map([["GB-FIXER", { seat: "GB-FIXER", userId: "fixture-target", urlKey: "gb-fixer", name: "GB-Fixer", displayName: "GB-Fixer" }]]);
+  for (const marker of [":eyes:", "👀"]) {
+    const { tools, fake } = harness({ seat: "JET", viewer: { id: "user-jet", name: "Jet", app: true } });
+    fake.addIssue({ id: "issue-quiet", identifier: "AFC-676" });
+    ok(await tools.call("linear_comment", { id: "AFC-676", body: `${marker} [JET] [JET 📁AFC] @GB-FIXER please review` }), "linear_comment");
+    const stored = fake.mutations().at(-1).body.variables.input.body;
+    assert.equal(stored, `${marker} @GB-FIXER please review`);
+    const payload = { type: "Comment", action: "create", actor: { id: "fixture-writer", name: "Fixture Writer", type: "user" }, data: { body: stored } };
+    assert.equal(decideLinearWake(payload, seats).skip, "no_wake_marker");
+    payload.data.body = "@GB-FIXER please review";
+    assert.deepEqual(decideLinearWake(payload, seats).seats.map((entry) => entry.seat), ["GB-FIXER"]);
   }
 });
 
