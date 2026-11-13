@@ -66,8 +66,13 @@ def _read_from_fleet_secrets(name: str, path: str, env: dict) -> str:
     """Compatibility source spelling; one named direct read through its own scoped reader."""
     project = core.infisical_project_id(env, core.home_dir(env))
     reader = core.resolve_token(env)
-    return core.fetch_project(project, path, env, token=reader, names=(name,),
-                              timeout=core.EXPORT_TIMEOUT).get(name, "").strip()
+    return (
+        core.fetch_project(
+            project, path, env, token=reader, names=(name,), timeout=core.EXPORT_TIMEOUT
+        )
+        .get(name, "")
+        .strip()
+    )
 
 
 def _read_from_file(path: str) -> str:
@@ -127,10 +132,20 @@ def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=N
         "--from-path", default="/", help="the folder the fleet-secrets read looks in"
     )
     parser.add_argument("--file", default="", help="the file the owner handed over")
-    parser.add_argument("--state-dir", default=None, help="explicit shared protected writer state directory")
-    parser.add_argument("--request-id", default=None, help="reuse this original UUID for an automated retry")
-    parser.add_argument("--request-created-at", type=int, default=None, help="original epoch milliseconds")
-    parser.add_argument("--reconcile", action="store_true", help="read-only recovery of an original intent; no source is read")
+    parser.add_argument(
+        "--state-dir", default=None, help="explicit shared protected writer state directory"
+    )
+    parser.add_argument(
+        "--request-id", default=None, help="reuse this original UUID for an automated retry"
+    )
+    parser.add_argument(
+        "--request-created-at", type=int, default=None, help="original epoch milliseconds"
+    )
+    parser.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="read-only recovery of an original intent; no source is read",
+    )
     args = parser.parse_args(argv)
     env = dict(os.environ) if env is None else dict(env)
     out = sys.stdout if out is None else out
@@ -147,27 +162,42 @@ def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=N
         core.check_path(args.path)
         core.check_writable(args.name, args.path)
         if args.reconcile and (args.request_id is None or args.request_created_at is None):
-            raise core.UsageError("reconcile requires the original request-id and request-created-at")
-        intent = caller.write_intent_for_cli(env, "cli-login-sync", request_id=args.request_id,
-                                            created_at_ms=args.request_created_at, state_dir=args.state_dir)
+            raise core.UsageError(
+                "reconcile requires the original request-id and request-created-at"
+            )
+        intent = caller.write_intent_for_cli(
+            env,
+            "cli-login-sync",
+            request_id=args.request_id,
+            created_at_ms=args.request_created_at,
+            state_dir=args.state_dir,
+        )
         if args.reconcile:
             result = core.reconcile_secret(args.name, args.path, env, intent=intent)
         else:
             value = read_value(args.name, args.source, args.from_path, args.file, env)
             result = sync(args.name, args.path, value, env, intent=intent)
-        if (not isinstance(result, core.WriteReceipt) or result.outcome != "ok"
-            or result.request_id != intent.request_id or result.created_at_ms != intent.created_at_ms):
+        if (
+            not isinstance(result, core.WriteReceipt)
+            or result.outcome != "ok"
+            or result.request_id != intent.request_id
+            or result.created_at_ms != intent.created_at_ms
+        ):
             raise core.SecretsError("write-receipt-invalid")
     except core.WriteError as exc:
-        err.write(f"sync-cli-login: {exc.message}; outcome={exc.outcome} requestID={exc.request_id} "
-                  f"requestCreatedAt={exc.created_at_ms} purpose={exc.purpose} name={exc.name or args.name}\n")
+        err.write(
+            f"sync-cli-login: {exc.message}; outcome={exc.outcome} requestID={exc.request_id} "
+            f"requestCreatedAt={exc.created_at_ms} purpose={exc.purpose} name={exc.name or args.name}\n"
+        )
         return exc.code
     except core.SecretsError as exc:
         err.write(f"sync-cli-login: {exc.message}\n")
         return exc.code
     finally:
         value = ""
-    out.write(f"requestID={result.request_id} requestCreatedAt={result.created_at_ms} purpose={intent.purpose}\n")
+    out.write(
+        f"requestID={result.request_id} requestCreatedAt={result.created_at_ms} purpose={intent.purpose}\n"
+    )
     out.write(f"synced {args.name} at {args.path}\n")
     out.flush()
     return 0

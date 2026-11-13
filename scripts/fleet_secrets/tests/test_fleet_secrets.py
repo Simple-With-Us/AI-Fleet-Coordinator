@@ -757,9 +757,16 @@ class SetTests(Base):
                 self.stored[path.rsplit("/", 1)[-1]] = body["secretValue"]
         if method == "GET" and "/v3/secrets/raw/" in path:
             name = path.split("/v3/secrets/raw/", 1)[1].split("?", 1)[0]
-            return status, {"secret": dict(secretKey=name, secretValue=self.stored[name],
-                                           type="shared", workspace=PROJECT,
-                                           environment="prod", secretPath="/linear")}
+            return status, {
+                "secret": dict(
+                    secretKey=name,
+                    secretValue=self.stored[name],
+                    type="shared",
+                    workspace=PROJECT,
+                    environment="prod",
+                    secretPath="/linear",
+                )
+            }
         return status, self.bodies.get((method, path), None)
 
     def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
@@ -776,8 +783,10 @@ class SetTests(Base):
         code, out, err = self.run_set("CACHE_MY_APP", "--path", "/linear")
         self.assertEqual((code, err), (0, ""))
         receipt = json.loads(out)
-        self.assertEqual((receipt["result"], receipt["name"], receipt["outcome"]),
-                         ("updated", "CACHE_MY_APP", "ok"))
+        self.assertEqual(
+            (receipt["result"], receipt["name"], receipt["outcome"]),
+            ("updated", "CACHE_MY_APP", "ok"),
+        )
         method, path, token, body = next(row for row in self.api if row[0] == "PATCH")
         self.assertEqual(
             (method, path, token),
@@ -794,8 +803,9 @@ class SetTests(Base):
         self.statuses["PATCH"] = 404
         code, out, _ = self.run_set("CACHE_NEW_APP", "--path", "/linear")
         self.assertEqual(code, 0)
-        self.assertEqual((json.loads(out)["result"], json.loads(out)["name"]),
-                         ("created", "CACHE_NEW_APP"))
+        self.assertEqual(
+            (json.loads(out)["result"], json.loads(out)["name"]), ("created", "CACHE_NEW_APP")
+        )
         self.assertEqual([a[0] for a in self.api if a[0] in ("PATCH", "POST")], ["PATCH", "POST"])
 
     def test_set_never_creates_a_folder_and_checks_it_exists_first(self):
@@ -808,8 +818,15 @@ class SetTests(Base):
     def test_same_identity_replays_known_receipt_and_never_rewrites(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         intent = cli.write_intent_for_cli(self.env, "fleet-infisical-cli")
-        args = ("CACHE_K", "--path", "/linear", "--request-id", intent.request_id,
-                "--request-created-at", str(intent.created_at_ms))
+        args = (
+            "CACHE_K",
+            "--path",
+            "/linear",
+            "--request-id",
+            intent.request_id,
+            "--request-created-at",
+            str(intent.created_at_ms),
+        )
         self.assertEqual(self.run_set(*args)[0], 0)
         count = len(self.api)
         code, out, err = self.run_set(*args)
@@ -827,12 +844,22 @@ class SetTests(Base):
         original = json.loads(out)
         self.assertEqual(original["outcome"], "outcome_unknown")
         count = len(self.api)
-        for suffix in (("--request-id", original["request_id"], "--request-created-at", str(original["created_at_ms"])), ()):
+        for suffix in (
+            (
+                "--request-id",
+                original["request_id"],
+                "--request-created-at",
+                str(original["created_at_ms"]),
+            ),
+            (),
+        ):
             code, out, err = self.run_set("CACHE_K", "--path", "/linear", *suffix)
             self.assertEqual((code, len(self.api)), (4, count))
             held = json.loads(out)
-            self.assertEqual((held["request_id"], held["created_at_ms"]),
-                             (original["request_id"], original["created_at_ms"]))
+            self.assertEqual(
+                (held["request_id"], held["created_at_ms"]),
+                (original["request_id"], original["created_at_ms"]),
+            )
             self.assertTrue(held["request_may_have_been_sent"])
 
     def test_a_missing_folder_fails_with_folder_missing_and_writes_nothing(self):

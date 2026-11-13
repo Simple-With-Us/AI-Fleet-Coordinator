@@ -484,8 +484,11 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
     opts = _write_options(args)
     name, path = opts["name"], opts["path"]
     intent = write_intent_for_cli(
-        env, opts["purpose"], request_id=opts.get("request-id"),
-        created_at_ms=opts.get("request-created-at"), state_dir=opts.get("state-dir"),
+        env,
+        opts["purpose"],
+        request_id=opts.get("request-id"),
+        created_at_ms=opts.get("request-created-at"),
+        state_dir=opts.get("state-dir"),
     )
     if opts["reconcile"]:
         try:
