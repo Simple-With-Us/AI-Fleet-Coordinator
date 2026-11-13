@@ -82,7 +82,7 @@ test("a seat with the read scope reads wake rows newest first, plus the recent r
   assert.deepEqual(out.wake.map((r) => [r.reason, r.seat, r.count, r.status]), [["wake_key_missing", "TESTBETA", 2, 404], ["payload_too_large", "TESTGAMMA", 1, 413]]);
   assert.equal(out.recent.length, 3);
   assert.deepEqual(out.recent.map((r) => r.kind), ["wake", "wake", "token"]);
-  for (const row of out.wake) assert.match(row.time, /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}[ap]m$/);
+  for (const row of out.wake) assert.match(row.time, /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} (AM|PM)$/);
 });
 
 test("the seat argument filters the wake rows;  an unknown seat is an empty list, not an error", async () => {

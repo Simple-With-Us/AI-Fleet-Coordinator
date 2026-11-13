@@ -175,15 +175,14 @@ class TemplateTests(unittest.TestCase):
         out.update({ph: (IR.RULES_DIR / f).read_text(encoding="utf-8") for ph, f in IR.PART_FILES.items()})
         return out
 
-    def test_templates_exist_and_are_ascii_apart_from_the_gap(self) -> None:
-        # The house gap is a real U+00A0 (owner 2026-10-23), and these templates are
-        # prose every seat reads in its own AGENTS.md, so the gap character is allowed.
-        # Everything else stays ASCII: no smart quotes, no em dash, no other stray
-        # unicode in a file the installer writes into every seat home.
+    def test_templates_allow_only_the_gap_and_required_header_characters(self) -> None:
+        # Owner headers require hair spaces, a folder and an arrow in worked examples.
         for variant, text in self.texts().items():
             with self.subTest(variant=variant):
                 self.assertTrue(text.strip())
-                text.replace("\u00a0", "").encode("ascii")
+                for char in ("\u00a0", "\u200a", "\U0001f4c1", "\u2192"):
+                    text = text.replace(char, "")
+                text.encode("ascii")
 
     def test_block_is_wrapped_in_the_markers(self) -> None:
         for variant in IR.TEMPLATE_FILES:
@@ -1212,7 +1211,8 @@ class FleetBasicsTests(HomeCase):
                 code, out, err = self.run_cli("apply", name, "--create")
                 self.assertEqual(code, IR.EXIT_OK, out + err)
                 self.assertIn(f"{name}: CREATED", out)
-                self.assertTrue(self.read(rel).startswith(IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->\n## Fleet Basics\n"))
+                self.assertTrue(self.read(rel).startswith(IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->\n"))
+                self.assertIn("## Fleet Basics\n", self.read(rel))
                 self.assertEqual(self.run_cli("verify", name)[0], IR.EXIT_OK)
                 before = snapshot(self.home)
                 code, out, _ = self.run_cli("apply", name, "--create")
