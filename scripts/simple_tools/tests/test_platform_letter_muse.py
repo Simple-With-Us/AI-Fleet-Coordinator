@@ -23,6 +23,7 @@ from simple_tools import muse_session_rename as MR
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_muse as PLM
+from simple_tools.tests.registry_fake import FakeRegistry
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 SID = "01a18a33-a850-7e22-82f5-a9ce847c65af"
@@ -92,10 +93,10 @@ class Tree(unittest.TestCase):
 class ProcessTests(Tree):
     def test_read_proc_keeps_only_the_identity_variables(self) -> None:
         fake_proc(self.proc, 7, ppid=3, argv=(MUSE_EXE, "exec"), exe=MUSE_EXE,
-                  env={"AGENT_LAUNCHER": "botfleet", "GITHUB_TOKEN": "x" * 12, "MUSE_LETTER": "0", "PATH": "/bin"})
+                  env={"AGENT_LAUNCHER": "botfleet", "GITHUB_TOKEN": "x" * 12, "SESSION_LETTER": "0", "PATH": "/bin"})
         proc = MR.read_proc(7, self.proc)
         self.assertEqual((proc.pid, proc.ppid, proc.exe), (7, 3, MUSE_EXE))
-        self.assertEqual(dict(proc.env), {"AGENT_LAUNCHER": "botfleet", "MUSE_LETTER": "0"})
+        self.assertEqual(dict(proc.env), {"AGENT_LAUNCHER": "botfleet", "SESSION_LETTER": "0"})
         self.assertNotIn("x" * 12, repr(proc))
 
     def test_a_missing_process_a_zombie_and_pid_one_are_none(self) -> None:
@@ -136,22 +137,22 @@ class ProcessTests(Tree):
                 return SimpleNamespace(stdout="  4242 /opt/homebrew/bin/muse\n")
             if argv[:3] == ["ps", "-o", "command="]:
                 return SimpleNamespace(stdout=flat + "\n")
-            return SimpleNamespace(stdout=flat + " MUSE_LETTER=0 GITHUB_TOKEN=" + "x" * 12 + "\n")  # ps eww
+            return SimpleNamespace(stdout=flat + " SESSION_LETTER=0 GITHUB_TOKEN=" + "x" * 12 + "\n")  # ps eww
 
         kernel = ("/opt/homebrew/bin/muse", ("/opt/homebrew/bin/muse", "login page redirects to the wrong host"),
-                  ["PATH=/bin", "MUSE_LETTER=0", "GITHUB_TOKEN=" + "x" * 12])
+                  ["PATH=/bin", "SESSION_LETTER=0", "GITHUB_TOKEN=" + "x" * 12])
         with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: kernel):
             proc = MR.read_proc(9999, None, runner)
         self.assertEqual((proc.pid, proc.ppid, proc.exe), (9999, 4242, "/opt/homebrew/bin/muse"))
         self.assertEqual(proc.argv, kernel[1])
         self.assertEqual(MR.subcommand(proc.argv), "")
-        self.assertEqual(dict(proc.env), {"MUSE_LETTER": "0"})
+        self.assertEqual(dict(proc.env), {"SESSION_LETTER": "0"})
         self.assertNotIn("x" * 12, repr(proc))
         # Where the kernel will not say, `ps` alone answers, with the words flattened as before.
         with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: None):
             flat = MR.read_proc(9999, None, runner)
         self.assertEqual(flat.argv[:2], ("/opt/homebrew/bin/muse", "login"))
-        self.assertEqual(dict(flat.env), {"MUSE_LETTER": "0"})
+        self.assertEqual(dict(flat.env), {"SESSION_LETTER": "0"})
         # A process that is gone is None, whichever way it is read.
         gone = lambda argv, **kw: SimpleNamespace(stdout="")
         with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: kernel):
@@ -161,8 +162,8 @@ class ProcessTests(Tree):
         def buffer(argc: int, path: bytes, args: list, env: list, pad: int = 3) -> bytes:
             return argc.to_bytes(4, sys.byteorder) + path + b"\0" * pad + b"".join(a + b"\0" for a in args) + b"".join(e + b"\0" for e in env)
 
-        raw = buffer(2, b"/opt/muse", [b"muse", b"login page"], [b"PATH=/bin", b"MUSE_LETTER=0"])
-        self.assertEqual(MR.parse_procargs(raw), ("/opt/muse", ("muse", "login page"), ["PATH=/bin", "MUSE_LETTER=0"]))
+        raw = buffer(2, b"/opt/muse", [b"muse", b"login page"], [b"PATH=/bin", b"SESSION_LETTER=0"])
+        self.assertEqual(MR.parse_procargs(raw), ("/opt/muse", ("muse", "login page"), ["PATH=/bin", "SESSION_LETTER=0"]))
         # An empty argument stays, and a process with no environment is fine.
         self.assertEqual(MR.parse_procargs(buffer(3, b"/opt/muse", [b"muse", b"", b"x"], [])), ("/opt/muse", ("muse", "", "x"), []))
         for bad in (b"", b"\0\0\0\0", buffer(0, b"/x", [], []), buffer(9, b"/x", [b"a"], []), b"\2\0\0\0/no-nul"):
@@ -201,7 +202,7 @@ class KindTests(Tree):
 
     def test_a_launcher_the_opt_outs_and_the_helper_mark_take_no_letter(self) -> None:
         for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "CODEX"}, {"AGENT_LAUNCHER": "simple-tools-wake"},
-                    {"SESSION_LETTER": "0"}, {"MUSE_LETTER": "0"}, {MR.HELPER_MARK: "1"}):
+                    {"SESSION_LETTER": "0"}, {"SESSION_LETTER": "0"}, {MR.HELPER_MARK: "1"}):
             self.muse(env=env)
             self.assertEqual(self.kind(), "headless", env)
         self.muse(env={"SESSION_LETTER": "1", "AGENT_SEAT": "MC"})
@@ -247,7 +248,6 @@ class SpecTests(unittest.TestCase):
         spec = PL.load_spec("muse")
         self.assertIs(spec, PLM.SPEC)
         self.assertEqual((spec.platform, spec.seat, spec.source, spec.display), ("muse", "MC", "muse-letter-hook", "Muse Code"))
-        self.assertEqual(spec.off_variable, "MUSE_LETTER")
         self.assertEqual(spec.close_reasons, ())
         self.assertFalse(spec.title_in_output)
         self.assertEqual(spec.events["SessionStart"], "start")
@@ -1103,7 +1103,7 @@ class HookFlowTests(Tree):
 
     def hook(self, payload: dict, *, env: dict | None = None) -> dict | None:
         out = io.StringIO()
-        base = dict(self.env(), SESSION_LETTER_LOCATION="server", SESSION_LETTER_REMOTE="mac")
+        base = dict(self.env(), SESSION_LETTER_LOCATION="server")
         code = PL.hook(PLM.SPEC, env or base, io.StringIO(json.dumps(payload)), out, transport=self.transport, platform="linux")
         self.assertEqual(code, 0)
         text = out.getvalue().strip()
@@ -1149,7 +1149,7 @@ class HookFlowTests(Tree):
         self.assertEqual(self.note()["ended"]["reason"], "other")
 
     def test_a_headless_run_a_launcher_run_and_an_opt_out_leave_no_trace(self) -> None:
-        for words, env in ((("exec", "hi"), {}), (("serve",), {}), ((), {"AGENT_LAUNCHER": "botfleet"}), ((), {"MUSE_LETTER": "0"}),
+        for words, env in ((("exec", "hi"), {}), (("serve",), {}), ((), {"AGENT_LAUNCHER": "botfleet"}), ((), {"SESSION_LETTER": "0"}),
                            ((), {MR.HELPER_MARK: "1"})):
             self.muse(*words, env=env)
             self.assertIsNone(self.start())
@@ -1195,14 +1195,14 @@ class HookFlowTests(Tree):
 
 
 class RegistryTests(Tree):
-    """The hook against a real temporary registry (the Mac's in process), main's or the pair-aware one."""
+    """The hook against the one assigner, its registry API served in process over a temporary store."""
 
     def test_a_chat_and_its_fork_are_registered_as_muse_chats_of_seat_mc(self) -> None:
-        db = OR.registry_db_path(self.state, {})
-        os.makedirs(os.path.dirname(db))
-        OR.SessionRegistry(db).close_db()
+        assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner")).install()
+        self.addCleanup(assigner.uninstall)
+        db = assigner.db
         self.muse("--provider", "echo")
-        env = self.env()
+        env = self.env(**assigner.env())
         started = []
         with mock.patch.object(MR, "start_worker", lambda *a, **k: started.append(a) or 4242), \
                 mock.patch.object(MR, "worker_alive", lambda rec, root=None: rec.get("worker_pid") == 4242):
@@ -1269,19 +1269,19 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(answer["steps"], ["muse plugins install %s --scope user" % PLM.bundle_dir(self.home), "muse plugins approve session-letter"])
         self.assertEqual(os.listdir(os.path.dirname(self.manifest)), ["plugin.json"])  # nothing else ships in the bundle
 
-    def test_it_is_idempotent_and_keeps_the_location_flags(self) -> None:
-        self.install(location="server", remote="mac")
+    def test_it_is_idempotent_and_keeps_the_location_flag(self) -> None:
+        self.install(location="server")
         before = Path(self.manifest).read_bytes()
         code, answer = self.install()
         self.assertEqual((code, answer["changed"]), (0, []))
         self.assertEqual(Path(self.manifest).read_bytes(), before)
         command = self.doc()["capabilities"]["hooks"][0]["command"]
-        self.assertEqual(command[-4:], ["--location", "server", "--remote", "mac"])
+        self.assertEqual(command[-2:], ["--location", "server"])
         self.assertEqual(os.listdir(self.tmp.name + "/home/.local/share/platform-letter/muse"), ["session-letter"])  # no backup yet
 
     def test_a_changed_bundle_is_backed_up_beside_it(self) -> None:
         self.install()
-        code, answer = self.install(location="server", remote="mac")
+        code, answer = self.install(location="server")
         self.assertEqual((code, answer["changed"]), (0, ["bundle"]))
         backup = answer["backup"]
         self.assertTrue(os.path.basename(backup).startswith("session-letter.bak-letter-"))
@@ -1291,7 +1291,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.dirname(self.manifest)), ["plugin.json"])
 
     def test_bad_flags_are_refused_before_anything_is_written(self) -> None:
-        for kw in ({"remote": "-oProxyCommand=x"}, {"location": "cloud"}):
+        for kw in ({"location": "cloud"},):
             code, answer = self.install(**kw)
             self.assertEqual(code, 2, kw)
             self.assertIn("error", answer)
@@ -1347,11 +1347,12 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((rc, answer["muse"]["approved"]), (1, False))
 
     def test_check_reads_the_copy_muse_runs_and_not_only_the_bundle(self) -> None:
-        # `muse plugins install` copies the bundle into a cache package.  A bundle changed afterwards (a new --remote,
-        # a new timeout) stays unapplied there, with every hook still trusted_enabled, until `muse plugins update`.
-        self.install(location="server", remote="mac")
+        # `muse plugins install` copies the bundle into a cache package.  A bundle changed afterwards (a new
+        # --location, a new timeout) stays unapplied there, with every hook still trusted_enabled, until `muse plugins
+        # update`.
+        self.install(location="mac")
         cache = self.cache_copy()
-        self.install(location="server", remote="mac2")
+        self.install(location="server")
         rc, answer = self.check(self.inspect_output(cache=cache))
         self.assertEqual((rc, answer["current"], answer["cached"], answer["muse"]["approved"]), (1, True, False, True))
         self.assertEqual(answer["steps"], ["muse plugins update session-letter", "muse plugins approve session-letter"])
@@ -1395,19 +1396,16 @@ class InstallTests(unittest.TestCase):
         for argv in calls:
             self.assertEqual(argv[1:3], ["plugins", "inspect"], argv)
 
-    def test_off_the_mac_install_refuses_flags_the_hook_cannot_do_without(self) -> None:
-        # The hook runs with a cleared environment, so a server hook with no --location and --remote never registers.
+    def test_off_the_mac_install_refuses_a_hook_with_no_location(self) -> None:
+        # The hook runs with a cleared environment, so a server hook with no --location never registers.
         with mock.patch.object(PLM, "_on_mac", lambda: False):
             code, answer = self.install()
             self.assertEqual(code, 2)
-            self.assertIn("--location server --remote", answer["error"])
-            code, answer = self.install(location="server")
-            self.assertEqual(code, 2)
-            self.assertIn("needs --remote", answer["error"])
+            self.assertIn("--location server", answer["error"])
             self.assertFalse(os.path.exists(self.manifest))
-            code, answer = self.install(location="server", remote="mac")
+            code, answer = self.install(location="server")
             self.assertEqual((code, answer["changed"]), (0, ["bundle"]))
-            self.assertEqual(self.install()[1]["changed"], [])  # the flags of the bundle already there count
+            self.assertEqual(self.install()[1]["changed"], [])  # the flag of the bundle already there counts
 
     def test_check_off_the_mac_fails_for_a_bundle_that_never_registers(self) -> None:
         self.install()  # written on the Mac: no location in it
@@ -1424,11 +1422,11 @@ class InstallTests(unittest.TestCase):
     def test_the_hook_runs_under_sh_so_that_no_failure_of_the_entry_point_blocks_a_prompt(self) -> None:
         # Muse reads exit 2 of a UserPromptSubmit plugin hook as "block this prompt".  The server wrapper exits 2 when the
         # current fleet-cli release has no scripts/platform-letter (a rollback target), so the manifest guards the command.
-        self.install(location="server", remote="mac")
+        self.install(location="server")
         argv = self.doc()["capabilities"]["hooks"][1]["command"]
         self.assertEqual(argv[: len(PLM.GUARD)], PLM.GUARD)
         entry = argv[len(PLM.GUARD)]
-        self.assertEqual(argv[len(PLM.GUARD) + 1 :], ["hook", "--platform", "muse", "--location", "server", "--remote", "mac"])
+        self.assertEqual(argv[len(PLM.GUARD) + 1 :], ["hook", "--platform", "muse", "--location", "server"])
         os.makedirs(os.path.dirname(entry))
 
         def run(command: list, script: str | None) -> subprocess.CompletedProcess:
@@ -1459,14 +1457,14 @@ class InstallTests(unittest.TestCase):
     def test_the_entry_point_dispatches_to_this_installer(self) -> None:
         out = io.StringIO()
         with mock.patch.object(PLM, "find_muse", lambda home, env: ""):
-            code = PL.install_main(["--platform", "muse", "--location", "server", "--remote", "mac"], self.env, out)
+            code = PL.install_main(["--platform", "muse", "--location", "server"], self.env, out)
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue())["changed"], ["bundle"])
-        self.assertEqual(self.doc()["capabilities"]["hooks"][2]["command"][-1], "mac")
+        self.assertEqual(self.doc()["capabilities"]["hooks"][2]["command"][-1], "server")
 
     @unittest.skipUnless(os.environ.get("PLATFORM_LETTER_LIVE_MUSE") == "1", "set PLATFORM_LETTER_LIVE_MUSE=1 to run the real muse")
     def test_muse_validates_the_bundle(self) -> None:
-        self.install(location="server", remote="mac")
+        self.install(location="server")
         proc = subprocess.run(["muse", "plugins", "validate", PLM.bundle_dir(self.home)], capture_output=True, text=True, timeout=60,
                               env=dict(os.environ, HOME=self.home), cwd=self.home)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)

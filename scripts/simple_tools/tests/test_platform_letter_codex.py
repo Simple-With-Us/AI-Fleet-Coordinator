@@ -25,6 +25,7 @@ from unittest import mock
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_codex as C
+from simple_tools.tests.registry_fake import FakeRegistry
 
 PAIR = r"^[A-Z]{2}$"
 HAS_PARENT = PL._accepts(OR.register_session, "parent_session_id")
@@ -66,11 +67,15 @@ class Base(unittest.TestCase):
             conn.execute(THREADS_DDL)
             conn.execute(EDGES_DDL)
         conn.close()
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "CODEX_HOME": self.codex, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        env = {"HOME": self.home, "CODEX_HOME": self.codex, "SIMPLE_TOOLS_STATE_DIR": self.state, **self.assigner.env()}
         env.update(extra)
         return env
 
@@ -936,7 +941,7 @@ class ChatTests(HookBase):
             PL.registry_main(argv, env=self.env(), stdout=out)
             return json.loads(out.getvalue())
 
-        out = self.start(sid, platform="linux", transport=to_the_mac, location_flag="server", remote_flag="mac")
+        out = self.start(sid, platform="linux", transport=to_the_mac, location_flag="server")
         self.assertEqual(calls, ["register"])
         self.assertRegex(self.lookup(sid, "server")["label"], PAIR)
         self.assertEqual(self.stored_name(sid), "%s: New Chat" % self.note(sid)["label"])
@@ -946,7 +951,8 @@ class ChatTests(HookBase):
         sid = self.add(1)
         out = self.start(sid, platform="linux")
         self.assertIn("No Operator letter", out["additionalContext"])
-        self.assertEqual((self.renames, self.registered()), ([], 0))
+        self.assertEqual(self.registered(), 0)
+        self.assertEqual(self.stored_name(sid), "??: New Chat")  # a chat with no letter carries the mark
 
 
 class ScopeTests(HookBase):
@@ -1002,7 +1008,7 @@ class ScopeTests(HookBase):
 
     def test_the_hook_can_be_turned_off(self) -> None:
         sid = self.add(1)
-        for off in ("SESSION_LETTER", "CODEX_LETTER"):
+        for off in ("SESSION_LETTER",):
             self.assertIsNone(self.start(sid, env=self.env(**{off: "0"})))
             self.nothing_happened(sid)
 
@@ -1153,8 +1159,8 @@ class SubagentTests(HookBase):
         t0 = time.time()
         out = self.sub_start(parent, child, now=t0, transport=lambda argv: {"error": "the registry host did not answer"})
         self.assertEqual(self.note(child)["state"], "failed")
-        self.assertIn("end of its next turn", out["additionalContext"])  # the line that says when it is tried again
-        self.assertIsNone(self.stored_name(child))
+        self.assertIn("A later hook run asks again", out["additionalContext"])  # the line that says when it is tried again
+        self.assertTrue(self.stored_name(child).startswith("??: "))  # no letter yet:  the mark
         self.assertIsNone(self.sub_stop(parent, child, now=t0 + 30))  # inside the ten minutes: left alone
         self.assertEqual(self.note(child)["state"], "failed")
         self.assertIsNone(self.sub_stop(parent, child, now=t0 + PL.RETRY_SECONDS + 5))
@@ -1246,29 +1252,6 @@ class SubagentTests(HookBase):
         self.assertEqual(labels, sorted(labels))
         self.assertEqual(len(set(labels)), 3)
 
-    def test_a_silent_registry_host_is_asked_once_for_a_fan_out_of_subagents(self) -> None:
-        # Server side: every SubagentStart carries a new agent id with no note of its own, so the ten minutes a failed
-        # chat waits cannot spare it the ssh timeout.  The host-wide mark does.
-        parent = self.add(1)
-        env = self.env(SESSION_LETTER_LOCATION="server", SESSION_LETTER_REMOTE="mac")
-        calls: list = []
-
-        def ssh(cmd, **kwargs):
-            calls.append(cmd)
-            raise subprocess.TimeoutExpired("ssh", 8)
-
-        t0 = time.time()
-        self.start(parent, env=env, platform="linux", now=t0, runner=ssh)
-        for n in range(2, 8):
-            child = self.add_child(n, parent, path="/root/task_%d" % n)
-            out = self.sub_start(parent, child, env=env, platform="linux", now=t0 + n, runner=ssh)
-            self.assertIn("No Operator letter yet", out["additionalContext"])
-            self.assertEqual(self.note(child)["state"], "failed")
-        self.assertEqual(len(calls), 1)  # one timeout for the parent's start, none for the six sub-agents
-        later = t0 + PL.RETRY_SECONDS + 10
-        self.assertIsNone(self.sub_stop(parent, tid(2), env=env, platform="linux", now=later, runner=ssh))
-        self.assertEqual(len(calls), 2)  # after the wait the host is asked again
-
     def test_a_subagent_of_a_botfleet_chat_takes_no_letter(self) -> None:
         parent = self.add(1, originator="botfleet")
         child = self.add_child(2, parent, originator="botfleet")
@@ -1357,7 +1340,7 @@ class InstallTests(Base):
         return any(PL.installed_command(h.get("command"), "codex") for h in group["hooks"])
 
     def test_it_adds_the_events_and_never_session_end(self) -> None:
-        code, answer = self.install("--location", "server", "--remote", "mac")
+        code, answer = self.install("--location", "server")
         self.assertEqual(code, 0)
         self.assertEqual(set(answer["changed"]), {"SessionStart", "UserPromptSubmit", "SubagentStart", "SubagentStop"})
         hooks = self.hooks()
@@ -1368,12 +1351,12 @@ class InstallTests(Base):
             self.assertEqual((hook["type"], hook["timeout"]), ("command", timeout))
             self.assertEqual(
                 hook["command"],
-                "%s/.local/bin/platform-letter hook --platform codex --location server --remote mac || true" % self.home,
+                "%s/.local/bin/platform-letter hook --platform codex --location server || true" % self.home,
             )
         self.assertIn("trust", answer)
         self.assertIn("simple_tools.platform_letter_codex trust", answer["trust"])
 
-    def test_the_mac_install_carries_no_location_or_remote(self) -> None:
+    def test_the_mac_install_carries_no_location(self) -> None:
         self.install()
         self.assertEqual(self.hooks()["SessionStart"][0]["hooks"][0]["command"],
                          "%s/.local/bin/platform-letter hook --platform codex || true" % self.home)
@@ -1382,16 +1365,16 @@ class InstallTests(Base):
         return [hook["command"] for groups in self.hooks().values() for group in groups for hook in group["hooks"]]
 
     def test_every_command_ends_in_or_true_and_is_still_found_and_current(self) -> None:
-        self.install("--location", "server", "--remote", "mac")
+        self.install("--location", "server")
         self.assertEqual(len(self.commands()), 4)
         for command in self.commands():
             self.assertTrue(command.endswith(" || true"), command)
             words = PL.installed_command(command, "codex")
-            self.assertEqual((PL._flag(words, "--location"), PL._flag(words, "--remote")), ("server", "mac"))
+            self.assertEqual((PL._flag(words, "--location"), PL._flag(words, "--remote")), ("server", ""))
         self.states = self.entries("trusted")
         code, answer = self.install("--check")
         self.assertEqual((code, set(answer["current"].values())), (0, {True}))
-        code, answer = self.install("--location", "server", "--remote", "mac")  # a re-run changes nothing
+        code, answer = self.install("--location", "server")  # a re-run changes nothing
         self.assertEqual((code, answer["changed"]), (0, []))
 
     def test_the_installed_command_never_hands_codex_an_exit_status(self) -> None:
@@ -1414,8 +1397,9 @@ class InstallTests(Base):
         os.remove(wrapper)  # and with no wrapper at all (sh answers 127)
         self.assertEqual(run(command).returncode, 0)
 
-    def test_every_entry_budgets_for_the_ssh_hop(self) -> None:
-        self.assertGreaterEqual(min(C.HOOK_TIMEOUTS.values()), int(PL.REMOTE_TIMEOUT) + 2)
+    def test_every_entry_budgets_for_a_register(self) -> None:
+        # A register chains at most two registry API calls.
+        self.assertGreaterEqual(min(C.HOOK_TIMEOUTS.values()), 2 * PL._API_TIMEOUT + 2)
 
     def test_it_appends_after_the_owners_hooks_so_their_trust_stays_valid(self) -> None:
         mine = {"hooks": [{"type": "command", "command": "/bin/true", "timeout": 5}]}
@@ -1467,7 +1451,7 @@ class InstallTests(Base):
         self.assertEqual(set(answer["trust_status"].values()), {"untrusted"})
         self.assertEqual(len(answer["trust_status"]), 4)
         self.states = self.entries("modified")  # a changed command (a new --location) makes every entry modified
-        self.assertFalse(self.install("--location", "server", "--remote", "mac")[1]["trusted"])
+        self.assertFalse(self.install("--location", "server")[1]["trusted"])
         self.states = self.entries("trusted")
         code, answer = self.install()
         self.assertEqual((code, answer["trusted"]), (0, True))
@@ -1562,7 +1546,7 @@ class InstallTests(Base):
     def test_the_installed_command_is_one_the_spec_loads(self) -> None:
         self.assertIs(PL.load_spec("codex"), C.SPEC)
         self.assertIs(PL.load_adapter("codex"), C)
-        words = PL.installed_command(PL.command_for(self.home, "codex", "server", "mac"), "codex")
+        words = PL.installed_command(PL.command_for(self.home, "codex", "server"), "codex")
         self.assertEqual(words[1:3], ["hook", "--platform"])
         self.assertEqual(set(C.SPEC.events), set(C.HOOK_TIMEOUTS))
 
@@ -1757,237 +1741,3 @@ class SpecTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["letter"]), (1, None))
 
 
-class ReleaseTests(HookBase):
-    """`release`:  a Codex archive frees the letter of a chat the registry holds, and nothing else."""
-
-    def chat(self, n: int) -> str:
-        sid = self.add(n)
-        self.start(sid)
-        return sid
-
-    def archive(self, sid: str) -> None:
-        conn = sqlite3.connect(self.store)
-        with conn:
-            conn.execute("UPDATE threads SET archived = 1 WHERE id = ?", (sid,))
-        conn.close()
-
-    def release(self, *args: str, env: dict | None = None) -> tuple[int, dict]:
-        out = io.StringIO()
-        code = C.main(["release", "--location", "mac", *args], env=env or self.env(), stdout=out)
-        return code, json.loads(out.getvalue().strip().splitlines()[-1])
-
-    def reg_state(self, sid: str) -> str:
-        return self.lookup(sid)["state"]
-
-    def test_an_archived_chat_is_released_and_a_live_one_keeps_its_letter(self) -> None:
-        done, live = self.chat(1), self.chat(2)
-        self.archive(done)
-        code, dry = self.release()
-        self.assertEqual(code, 0)
-        self.assertEqual(dry["registered"], 2)
-        self.assertEqual(dry["released"], [{"session_id": done, "reason": "archived", "would_release": True}])
-        self.assertNotEqual(self.reg_state(done), "closed")  # a dry run writes nothing
-        code, out = self.release("--apply")
-        self.assertEqual(code, 0)
-        self.assertEqual([r["session_id"] for r in out["released"]], [done])
-        self.assertEqual(self.reg_state(done), "closed")
-        self.assertNotEqual(self.reg_state(live), "closed")
-        self.assertEqual(self.note(done)["state"], "released")
-        self.assertEqual(self.note(done)["released"]["reason"], "archived")
-        self.assertEqual(self.note(live)["state"], "open")
-        self.assertFalse(out["truncated"])
-
-    def test_a_released_chat_that_is_unarchived_and_used_again_registers_again(self) -> None:
-        sid = self.chat(1)
-        self.archive(sid)
-        self.release("--apply")
-        self.assertEqual(self.reg_state(sid), "closed")
-        conn = sqlite3.connect(self.store)
-        with conn:
-            conn.execute("UPDATE threads SET archived = 0 WHERE id = ?", (sid,))
-        conn.close()
-        self.prompt(sid, "back to work")
-        self.assertNotEqual(self.reg_state(sid), "closed")
-        self.assertEqual(self.note(sid)["state"], "open")
-        self.assertRegex(self.note(sid)["label"], PAIR)
-
-    def test_a_full_history_page_is_reported_as_truncated(self) -> None:
-        sid = self.chat(1)
-        with mock.patch.object(C, "HISTORY_LIMIT", 1):
-            code, out = self.release()
-        self.assertEqual((code, out["registered"], out["truncated"]), (0, 1, True))
-        self.assertNotEqual(self.reg_state(sid), "closed")
-
-    def test_a_rerun_is_a_no_op(self) -> None:
-        done = self.chat(1)
-        self.archive(done)
-        self.release("--apply")
-        code, out = self.release("--apply")
-        self.assertEqual(code, 0)
-        self.assertEqual((out["registered"], out["released"], out["failed"]), (0, [], []))
-
-    def test_an_archived_thread_the_registry_does_not_hold_is_never_touched(self) -> None:
-        live = self.chat(1)
-        stranger = self.add(2)
-        self.archive(stranger)
-        with mock.patch.object(PL, "registry_main", wraps=PL.registry_main) as closes:
-            code, out = self.release("--apply")
-        self.assertEqual(code, 0)
-        self.assertEqual((out["registered"], out["released"]), (1, []))
-        closes.assert_not_called()
-        self.assertIsNone(self.lookup(stranger))
-        self.assertNotEqual(self.reg_state(live), "closed")
-
-    def test_a_registration_the_store_does_not_show_is_kept(self) -> None:
-        sid = self.chat(1)
-        conn = sqlite3.connect(self.store)
-        with conn:
-            conn.execute("DELETE FROM threads WHERE id = ?", (sid,))
-        conn.close()
-        code, out = self.release("--apply")
-        self.assertEqual((code, out["released"]), (0, []))
-        self.assertNotEqual(self.reg_state(sid), "closed")
-
-    def test_a_chat_unarchived_before_its_close_keeps_its_letter(self) -> None:
-        sid = self.chat(1)
-        self.archive(sid)
-        with mock.patch.object(C, "archive_reason", side_effect=["archived", ""]):
-            code, out = self.release("--apply")
-        self.assertEqual((code, out["kept"], out["released"]), (0, [sid], []))
-        self.assertNotEqual(self.reg_state(sid), "closed")
-
-    def test_a_chat_still_archived_for_another_reason_is_released_with_the_current_one(self) -> None:
-        sid = self.chat(1)
-        self.archive(sid)
-        with mock.patch.object(C, "archive_reason", side_effect=["archived", "parent archived"]):
-            code, out = self.release("--apply")
-        self.assertEqual(code, 0)
-        self.assertEqual(out["kept"], [])
-        self.assertEqual([(r["session_id"], r["reason"]) for r in out["released"]], [(sid, "parent archived")])
-        self.assertEqual(self.reg_state(sid), "closed")
-
-    def test_a_registry_error_closes_the_store(self) -> None:
-        self.chat(1)
-        opened: list = []
-        real = C.open_store
-
-        def spy(path):
-            conn = real(path)
-            opened.append(conn)
-            return conn
-
-        with mock.patch.object(C, "open_store", side_effect=spy), \
-                mock.patch.object(C, "live_registrations", return_value=([], "the registry could not be read (x)")):
-            code, out = self.release("--apply")
-        self.assertEqual((code, out["error"]), (2, "the registry could not be read (x)"))
-        with self.assertRaises(sqlite3.ProgrammingError):  # closed
-            opened[0].execute("SELECT 1")
-
-    def test_a_store_that_fails_its_first_query_is_closed(self) -> None:
-        conns: list = []
-
-        class Broken:
-            def execute(self, *a):
-                raise sqlite3.DatabaseError("file is not a database")
-
-            def close(self):
-                conns.append("closed")
-
-        with mock.patch.object(C.sqlite3, "connect", return_value=Broken()):
-            with self.assertRaises(C.StoreUnreadable):
-                C.open_store(self.store)
-        self.assertEqual(conns, ["closed"])
-
-    def test_sub_threads_go_with_their_archived_parent(self) -> None:
-        parent = self.chat(1)
-        self.prompt(parent, "spawn a helper")
-        child = self.add_child(2, parent)
-        self.sub_start(parent, child)
-        other = self.chat(3)
-        self.archive(parent)
-        code, out = self.release("--apply")
-        self.assertEqual(code, 0)
-        self.assertEqual(sorted((r["session_id"], r["reason"]) for r in out["released"]),
-                         sorted([(parent, "archived"), (child, "parent archived")]))
-        self.assertEqual((self.reg_state(parent), self.reg_state(child)), ("closed", "closed"))
-        self.assertNotEqual(self.reg_state(other), "closed")
-
-    def test_another_hosts_registration_is_not_this_stores_to_release(self) -> None:
-        sid = self.add(1)
-        out = io.StringIO()
-        PL.registry_main(["register", "--platform", "codex", "--location", "server", "--session-id", sid,
-                          "--seat", "CODEX", "--source", C.SOURCE], env=self.env(), stdout=out)
-        self.archive(sid)
-        code, answer = self.release("--apply")
-        self.assertEqual((code, answer["registered"], answer["released"]), (0, 0, []))
-        self.assertNotEqual(self.lookup(sid, "server")["state"], "closed")
-
-    def test_a_store_without_the_archived_column_releases_nothing(self) -> None:
-        sid = self.chat(1)
-        old = os.path.join(self.tmp.name, "old.sqlite")
-        conn = sqlite3.connect(old)
-        with conn:
-            conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT)")
-            conn.execute("INSERT INTO threads VALUES (?, 'vscode')", (sid,))
-        conn.close()
-        code, out = self.release("--apply", "--store", old)
-        self.assertEqual(code, 2)
-        self.assertIn("archived", out["error"])
-        self.assertNotEqual(self.reg_state(sid), "closed")
-
-    def test_no_registry_is_an_error_not_a_release(self) -> None:
-        sid = self.add(1)
-        self.archive(sid)
-        code, out = self.release("--apply", "--db", os.path.join(self.tmp.name, "missing.sqlite3"))
-        self.assertEqual(code, 2)
-        self.assertIn("registry", out["error"])
-
-    def test_over_the_registry_api_only_live_registrations_of_this_host_are_closed(self) -> None:
-        done, live, gone, server = self.add(1), self.add(2), self.add(3), self.add(4)
-        for sid in (done, gone, server):
-            self.archive(sid)
-        history = [
-            {"native_session_id": done, "verified_host": "mac", "state": "active", "live": True, "closed_at": None},
-            {"native_session_id": live, "verified_host": "mac", "state": "active", "live": True, "closed_at": None},
-            {"native_session_id": gone, "verified_host": "mac", "state": "closed", "live": False,
-             "closed_at": "2026-11-10T00:00:00Z"},
-            {"native_session_id": server, "verified_host": "server", "state": "active", "live": True,
-             "closed_at": None},
-        ]
-        calls: list = []
-
-        def fake(env, op, params=None, **kw):
-            calls.append((op, dict(params or {})))
-            if op == "history":
-                return {"items": history}
-            if op == "close":
-                return {"closed": True, "label": "AA"}
-            return {"error": "unexpected", "code": "bad_op"}
-
-        env = self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://registry.invalid")
-        with mock.patch("simple_tools.registry_api.call", side_effect=fake):
-            code, out = self.release("--apply", env=env)
-        self.assertEqual(code, 0)
-        closes = [p for op, p in calls if op == "close"]
-        self.assertEqual([(p["session_id"], p["location"], p["source"]) for p in closes],
-                         [(done, "mac", C.RELEASE_SOURCE)])
-        self.assertEqual(out["registered"], 2)
-
-    def test_a_failed_close_is_reported_and_exits_1(self) -> None:
-        done = self.add(1)
-        self.archive(done)
-        history = [{"native_session_id": done, "verified_host": "mac", "state": "active", "live": True}]
-
-        def fake(env, op, params=None, **kw):
-            if op == "history":
-                return {"items": history}
-            return {"error": "the registry did not answer in time", "code": "timeout"}
-
-        env = self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://registry.invalid")
-        with mock.patch("simple_tools.registry_api.call", side_effect=fake):
-            code, out = self.release("--apply", env=env)
-        self.assertEqual((code, out["failed"]), (1, [done]))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -2,9 +2,7 @@
 registry's 12 ops through the HTTP adapter against a temporary registry, the HMAC
 discipline (bad signature 401, wrong method 405, unknown route 404), the Operator-only
 register path, cross-seat refusal, the one-writer pieces (operator_register, report-gone, the
-in-process reopen and the one Sweeper, AFC-721), and the client transport selection in
-mm_session_letter.registry_call (URL unset falls back to the existing behaviour;  URL set
-uses HTTPS;  an explicit transport wins over a local file).
+in-process reopen and the one Sweeper, AFC-721).
 
 RegistryService.handle is driven directly with a temporary registry file and a fake
 clock, so no socket is involved except in the two tests that run the service behind a
@@ -547,6 +545,7 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(self.rows(), before)
         # ... and a host may still report such a chat gone.
         self.legacy("claude", "ZC", "session-gone-0001")
+        self.service.gone_report_live_minutes = 0  # a row seen this lately is otherwise kept as in use
         status, answer = self.call(
             "OPERATOR",
             "POST",
@@ -670,157 +669,30 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 405)
 
 
-class RegistryTransportTest(unittest.TestCase):
-    """mm_session_letter.registry_call:  transport selection."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.db = os.path.join(self.tmp.name, "operator", "registry.sqlite3")
-        self.clock = FakeClock()
-        self.service = RG.RegistryService(self.db, KEYS, clock=self.clock)
-        import mm_session_letter as M
-
-        self.M = M
-
-    def _env(self, **overrides: str) -> Any:
-        env = {
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": "",
-            "MM_OPERATOR_REGISTRY_CMD": "",
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL": "",
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV": "",
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "",
-            "SIMPLE_TOOLS_OPERATOR_REGISTRY": self.db,
-            "SIMPLE_TOOLS_STATE_DIR": os.path.join(self.tmp.name, "state"),
-        }
-        env.update(overrides)
-        return mock.patch.dict(os.environ, env)
-
-    def _serve(self) -> API.ListenerReadApi:
-        server = API.ListenerReadApi(
-            "127.0.0.1", 0, self.tmp.name, {}, clock=self.clock, registry=self.service
-        )
-        server.start()
-        self.addCleanup(server.close)
-        return server
-
-    def test_url_unset_falls_back_to_the_local_file(self) -> None:
-        OR.register_session(
-            self.db,
-            platform="minimax",
-            verified_host="mac",
-            profile_scope="default",
-            native_session_id=SID_CLAUDE,
-            seat="MM",
-            source="transport test",
-            issuer=OR.ISSUER_OPERATOR,
-        )
-        with self._env():
-            answer = self.M.registry_call(
-                ["resolve", "--platform=minimax", "--letter=AA"]
-            )
-        self.assertTrue(answer.get("found"), answer)
-        self.assertEqual(answer.get("seat"), "MM")
-
-    def test_command_transport_wins_over_a_missing_local_file(self) -> None:
-        # This host keeps no registry (its SIMPLE_TOOLS_OPERATOR_REGISTRY names a file
-        # that does not exist), so the call goes over the transport command (the hop
-        # main's remote_registry_call makes, a plain command name the host
-        # configuration supplies) to the host that holds the one registry.  The far
-        # side's store already exists there:  the registry CLI never brings a store
-        # into being, so the shim carries the far side's own path, the way the real
-        # transport command carries its host's configuration.
-        OR.register_session(
-            self.db,
-            platform="minimax",
-            verified_host="mac",
-            profile_scope="default",
-            native_session_id=SID_SEED,
-            seat="MM",
-            source="transport test seed",
-            issuer=OR.ISSUER_OPERATOR,
-        )
-        self.assertTrue(os.path.isfile(self.db))
-        scripts = os.path.dirname(os.path.abspath(self.M.__file__))
-        bin_dir = os.path.join(self.tmp.name, "bin")
-        os.makedirs(bin_dir)
-        shim = os.path.join(bin_dir, "mm-operator-registry")
-        with open(shim, "w", encoding="utf-8") as fh:
-            fh.write(
-                "#!/bin/sh\nSIMPLE_TOOLS_OPERATOR_REGISTRY=%s PYTHONPATH=%s exec %s "
-                "-m simple_tools.operator_registry \"$@\"\n"
-                % (self.db, scripts, sys.executable)
-            )
-        os.chmod(shim, 0o755)
-        with self._env(
-            SIMPLE_TOOLS_OPERATOR_REGISTRY=os.path.join(self.tmp.name, "missing.sqlite3"),
-            MM_OPERATOR_REGISTRY_CMD="mm-operator-registry",
-            PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""),
-        ):
-            answer = self.M.registry_call(
-                [
-                    "register",
-                    "--platform=minimax",
-                    "--location=mac",
-                    "--scope=default",
-                    "--session-id=" + SID_CLAUDE,
-                    "--seat=MM",
-                    "--source=transport test",
-                ]
-            )
-        self.assertIn("label", answer, answer)
-        self.assertTrue(os.path.isfile(self.db))
-
-    def test_url_set_uses_https_transport(self) -> None:
-        # The far side's store exists (a local act on that host, as always).
-        registry = OR.SessionRegistry(self.db)
-        registry.close_db()
-        server = self._serve()
-        host, port = server.address
-        url = "http://%s:%d" % (host, port)  # loopback stub:  http is allowed there only
-        with self._env(
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=url,
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=OPERATOR_KEY,
-            MM_OPERATOR_REGISTRY_CMD="false",  # the URL transport wins over the command
-        ):
-            answer = self.M.registry_call(
-                [
-                    "register",
-                    "--platform=minimax",
-                    "--location=mac",
-                    "--scope=default",
-                    "--session-id=" + SID_CLAUDE,
-                    "--seat=MM",
-                    "--source=transport test",
-                    "--letter-space=double",
-                    "--letter-pick=primary",
-                ]
-            )
-        self.assertEqual(answer.get("label"), "AA", answer)
-        # The same call as the owning seat reads its own session back.
-        with self._env(
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=url,
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="MM",
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=MM_KEY,
-        ):
-            answer = self.M.registry_call(
-                ["resolve", "--platform=minimax", "--letter=AA"]
-            )
-        self.assertTrue(answer.get("found"), answer)
-        self.assertEqual(answer.get("seat"), "MM")
-
-    def test_url_set_without_a_key_is_not_configured(self) -> None:
-        with self._env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://operator.example.test"):
-            answer = self.M.registry_call(["resolve", "--platform=minimax", "--letter=A"])
-        self.assertEqual(answer.get("code"), "not_configured", answer)
-
-
 class OneWriterTest(RegistryApiTest):
     """AFC-721:  the Eavesdropper is the only registry writer.  Its register path refuses a
     missing store, report-gone closes only what a host names (within the share guard), the
     reopen no longer imports a client module, and the one Sweeper ends stale replaced letters
     for every platform."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The share tests below report rows the moment they are registered.  A row seen that lately is one the
+        # handler keeps (its chat is in use), so that rule is off here;  the tests of the rule turn it on.
+        self.service.gone_report_live_minutes = 0
+
+    def seen(self, sid: str, minutes_ago: float) -> None:
+        """Set when a row was last seen (its chat's hook last touched it)."""
+        when = (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat(timespec="milliseconds")
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE sessions SET last_seen_at = ? WHERE native_session_id = ?",
+                    (when.replace("+00:00", "Z"), sid),
+                )
+        finally:
+            conn.close()
 
     def gone(self, sids: list[str], **extra: Any) -> tuple[int, dict[str, Any]]:
         return self.call(
@@ -948,6 +820,76 @@ class OneWriterTest(RegistryApiTest):
         # Half is allowed at the default share.
         status, answer = self.gone(["sess-1", "sess-2"])
         self.assertEqual((status, answer["count"]), (200, 2), answer)
+
+    def test_report_gone_keeps_a_row_its_chat_touched_lately(self) -> None:
+        # A chat in use is not gone, whoever says so:  the reporting host is often not the host the chat runs on.
+        del self.service.gone_report_live_minutes  # the service's own rule:  45 minutes
+        self.assertEqual(RG.DEFAULT_GONE_REPORT_LIVE_MINUTES, 45)
+        self.create_store()
+        others = ["other-%d" % n for n in range(1, 5)]
+        for sid in ("busy-1", "busy-2", "quiet-1", "quiet-2", *others):
+            self.register("CLAUDE", sid)
+        self.seen("busy-2", 44)  # inside the window
+        self.seen("quiet-1", 46)  # just outside it
+        self.seen("quiet-2", 600)
+        status, answer = self.gone(["busy-1", "busy-2", "quiet-1", "quiet-2", "never-registered"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(sorted(row["native_session_id"] for row in answer["closed"]), ["quiet-1", "quiet-2"])
+        self.assertEqual((answer["kept"], answer["kept_count"]), (["busy-1", "busy-2"], 2))
+        # The keys a caller from before this rule reads are as they were.
+        self.assertEqual((answer["count"], answer["live"]), (2, 8))
+        self.assertEqual(self.open_sids(), {"busy-1", "busy-2", *others})
+        # Once its hook has been quiet for longer than the window, the same report closes it.
+        self.seen("busy-1", 50)
+        status, answer = self.gone(["busy-1", "busy-2"])
+        self.assertEqual((status, answer["count"], answer["kept"]), (200, 1, ["busy-2"]), answer)
+
+    def test_the_window_is_the_services_own_clock_and_kept_is_a_sorted_list_of_ids_once(self) -> None:
+        self.create_store()
+        for sid in ("busy-1", "busy-2", *("other-%d" % n for n in range(1, 9))):
+            self.register("CLAUDE", sid)
+        # The same chat id held by two rows (two profile scopes) is one id in the answer, and both rows stay open.
+        for scope in ("one", "two"):
+            OR.register_session(
+                self.db, platform="testbed", verified_host="mac", profile_scope=scope, native_session_id="twice-1",
+                seat="CLAUDE", source="test", issuer=OR.ISSUER_OPERATOR,
+            )
+        for sid in ("busy-2", "busy-1", "twice-1"):
+            self.seen(sid, 1)
+        del self.service.gone_report_live_minutes
+        self.service.gone_report_live_minutes = 2  # a window of two minutes
+        status, answer = self.gone(["busy-2", "twice-1", "busy-1"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual((answer["kept"], answer["kept_count"], answer["count"]), (["busy-1", "busy-2", "twice-1"], 3, 0))
+        # With the service's own clock four minutes on (inside the signature skew), the same rows were last seen five
+        # minutes ago:  outside the window, so the report closes them.  The wall clock would have kept them.
+        self.service.clock = lambda: time.time() + 4 * 60
+        status, answer = self.gone(["busy-2", "twice-1", "busy-1"])
+        self.assertEqual(status, 200, answer)
+        self.assertEqual((answer["kept"], answer["kept_count"]), ([], 0))
+        self.assertEqual(sorted({row["native_session_id"] for row in answer["closed"]}), ["busy-1", "busy-2", "twice-1"])
+
+    def test_report_gone_counts_no_kept_row_against_the_share(self) -> None:
+        del self.service.gone_report_live_minutes
+        self.create_store()
+        for sid in ("sess-1", "sess-2", "sess-3", "sess-4"):
+            self.register("CLAUDE", sid)
+        self.seen("sess-1", 120)
+        # Three of four live rows are named, which the share would refuse:  two are in use, so one is asked of it.
+        status, answer = self.gone(["sess-1", "sess-2", "sess-3"])
+        self.assertEqual((status, answer["count"], answer["kept"]), (200, 1, ["sess-2", "sess-3"]), answer)
+        # A report that names only rows in use closes nothing and is not a refusal.
+        status, answer = self.gone(["sess-2", "sess-3", "sess-4"])
+        self.assertEqual((status, answer["closed"], answer["kept_count"]), (200, [], 3), answer)
+        # A row with no time at all is not known to be in use:  it is closed as before.
+        conn = sqlite3.connect(self.db)
+        try:
+            with conn:
+                conn.execute("UPDATE sessions SET last_seen_at = '' WHERE native_session_id = 'sess-4'")
+        finally:
+            conn.close()
+        status, answer = self.gone(["sess-4"])
+        self.assertEqual((status, answer["count"], answer["kept"]), (200, 1, []), answer)
 
     def test_report_gone_may_close_a_hosts_last_chat(self) -> None:
         self.create_store()

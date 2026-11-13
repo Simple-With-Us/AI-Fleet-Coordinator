@@ -1,7 +1,7 @@
 """Operator session letters for Cursor Cloud agents, and the letter in each chat's title (owner request,
 Nov 7, 2026; titles set by the sweep, Nov 9, 2026).
 
-    python3 -m simple_tools.cursor_cloud_letters sweep [--dry-run] [--remote DEST | --api-only] [--no-dm]
+    python3 -m simple_tools.cursor_cloud_letters sweep [--dry-run] [--api-only] [--no-dm]
     python3 -m simple_tools.cursor_cloud_letters check < tokens
 
 A Cloud agent runs its hooks on Cursor's own workers, which cannot reach the Operator's registry and drop the context a
@@ -22,8 +22,7 @@ instead.  Each run:
     When the account refuses a steer, a title that names a Grok Bot still gets the Zulip DM (owner, Nov 7, 2026).
     A DM whose outcome is unknown counts as sent, so a bot is never told twice.
 
-The registry is reached the way the hooks reach it:  in process where the registry is (the Mac, or wherever the
-registry API URL is configured), else over ssh to the destination in SESSION_LETTER_REMOTE or --remote.  The DM goes
+The registry is reached the way the hooks reach it:  one registry API call per op (`platform_letter.Chat`).  The DM goes
 out from the seat this runs as (AGENT_SEAT), through `simple-chat dm`.  What it told each bot is kept in
 `<state>/CURSOR/cloud-letters.json`.
 
@@ -48,7 +47,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import io
 import json
 import os
 import re
@@ -88,6 +86,9 @@ STEER_RETRY = 30 * 60
 STEER_DONE = ("sent", "unknown")
 STEER_RETRY_NOW = ("busy", "not-started")
 STEER_STOP = ("unavailable", "refused")
+# A DM the chat tool refused sent nothing (an unknown bot name, say), so a later run asks again;  after this many
+# refusals for one letter it is final.
+MAX_DM_REFUSALS = 3
 # Cursor keeps a finished Cloud agent IDLE until it is archived, so the open list holds agents untouched for weeks.  Only
 # one updated within the registry's own stale window takes a letter (and wakes its bot);  an older one would hold a
 # letter it never uses and wake a bot about a dead chat.  An agent with no readable updated_at is skipped too.
@@ -108,10 +109,37 @@ Runner = Callable[..., Any]
 Transport = Callable[[list[str]], Mapping[str, Any]]
 
 
+def agent_problem(agent: object) -> str:
+    """What is wrong with one discovered agent's shape, or "" when every field the sweep reads has its type.  The
+    list comes from Cursor's API, so it is checked here, before the registry, the steer or a DM reads a field."""
+    if not isinstance(agent, Mapping):
+        return "the agent must be an object"
+    sid = agent.get("session_id")
+    if not isinstance(sid, str) or not sid.strip():
+        return "session_id must be a non-empty string"
+    for name in ("title", "state", "url"):
+        value = agent.get(name)
+        if value is not None and not isinstance(value, str):
+            return "%s must be a string" % name
+    when = agent.get("updated_at")
+    if when is not None and (isinstance(when, bool) or not isinstance(when, (int, float, str))):
+        return "updated_at must be a number or a string"
+    return ""
+
+
 def bot_of(title: str) -> tuple[str, str]:
-    """(the GB bot a title names, the words after its name), or ("", "") for a title that names none."""
+    """(the GB bot a title names, the words after its name), or ("", "") for a title that names none, or whose
+    name is shaped like a secret (a title can carry a pasted key where the name goes)."""
     match = BOT_TITLE.match(PL.one_line(title))
-    return (match.group(1), match.group(2).strip()) if match else ("", "")
+    if not match or PL.secretscan.scan(match.group(1)):
+        # A name that reads as a secret is no bot's name:  it goes in no DM, no `--to` and no printed row.
+        return "", ""
+    return match.group(1), match.group(2).strip()
+
+
+class StateUnsaved(RuntimeError):
+    """The sweep's state could not be saved before a DM, so the run stops:  a DM or a steer it cannot remember
+    would be sent again.  It carries the type of what failed, never a message (a message can hold a path)."""
 
 
 def state_path(env: Mapping[str, str]) -> str:
@@ -153,22 +181,6 @@ def write_state(env: Mapping[str, str], state: Mapping[str, Any]) -> None:
         raise
 
 
-def local_registry(env: Mapping[str, str]) -> bool:
-    """Whether the registry answers in process here:  the Mac keeps the file, and a configured API URL is the store."""
-    from . import registry_api
-
-    return sys.platform == "darwin" or bool(registry_api.base_url(env))
-
-
-def in_process(env: Mapping[str, str]) -> Transport:
-    def call(argv: list[str]) -> dict[str, Any]:
-        out = io.StringIO()
-        PL.registry_main(list(argv), env=env, stdout=out)
-        return PL._last_json(out.getvalue()) or {"error": "the registry gave no answer"}
-
-    return call
-
-
 def api_unconfigured(env: Mapping[str, str]) -> dict[str, Any] | None:
     """The answer for a registry API this process cannot reach (no URL), or None when it has one.  The reason names
     the setting and the knob's reason code only, never a value."""
@@ -187,32 +199,26 @@ def register(
     env: Mapping[str, str],
     agent: Mapping[str, Any],
     *,
-    runner: Runner,
     now: float,
-    remote: str,
     transport: Transport | None,
     api_only: bool = False,
 ) -> dict[str, Any]:
     """Register one Cloud agent and answer with the registry's JSON (an `error` key when it failed).
 
-    With `api_only` the registry is reached only through its HTTPS API:  no ssh hop and no shared registry env file,
-    and a process with no API URL answers not_configured instead of looking for another route."""
-    if transport is None and api_only:
+    The registry is reached only through its HTTPS API, one call per op (`platform_letter.Chat`):  no ssh hop, no local
+    registry file and no shared registry env file.  A process with no API URL answers not_configured, naming the
+    setting and the knob's reason code, instead of looking for another route.  `api_only` is the shared unit's mode and
+    changes nothing here:  the route is the same for every caller."""
+    if transport is None:
         unconfigured = api_unconfigured(env)
         if unconfigured is not None:
             return unconfigured
-        transport = in_process(env)
-        remote = ""
-    if transport is None and local_registry(env):
-        transport = in_process(env)
     chat = PL.Chat(
         SPEC,
         env,
         LOCATION,
         str(agent["session_id"]),
-        runner=runner,
         now=now,
-        remote=remote,
         transport=transport,
         seat=PC.SEAT,
     )
@@ -233,14 +239,31 @@ def message(bot: str, agent: Mapping[str, Any], label: str, generation: int, wor
 
 
 def plain(text: object) -> str:
-    """A chat title as plain words for a Zulip DM:  one line with the marks Zulip reads as markup or a mention taken
-    out, so a title can neither format the message nor @-mention anyone."""
-    return PL.one_line(MARKUP.sub("", PL.one_line(text)))[:200]
+    """A chat title as plain words for a Zulip DM:  one line, with any secret-shaped word dropped (a title can carry a
+    pasted key, and a DM leaves this host) and the marks Zulip reads as markup or a mention taken out, so a title can
+    neither leak a credential, format the message nor @-mention anyone.  The words are scanned before the marks
+    come out and again after."""
+    words = [w for w in PL.one_line(text).split(" ") if w and not PL.secretscan.scan(w)]
+    line = " ".join(words)
+    if PL.secretscan.scan(line):
+        return ""
+    # Taking the marks out can join the two halves of a key that one mark had split, so what is left is scanned
+    # again:  a word that reads as a secret now is dropped, and a line that still reads as one sends nothing.
+    line = PL.one_line(MARKUP.sub("", line))
+    line = " ".join(w for w in line.split(" ") if w and not PL.secretscan.scan(w))
+    if PL.secretscan.scan(line):
+        return ""
+    return line[:200]
 
 
 def wanted_title(label: str, current: object) -> str:
     """The title the chat should carry: its letter, then its words, cut to what rename-chat accepts."""
-    title = PL.compose(label, PL.bare(current))
+    words = PL.bare(current)
+    # The title goes into an instruction to the agent and on to the app:  a title that reads as a secret (as a line or in
+    # any one word) contributes nothing, so the chat is titled with its letter and the placeholder and no text of it.
+    if PL.secretscan.scan(words) or any(PL.secretscan.scan(word) for word in words.split(" ")):
+        words = ""
+    title = PL.compose(label, words)
     if len(title) <= TITLE_LIMIT:
         return title
     prefix = "%s: " % label
@@ -292,6 +315,9 @@ def dm_already(told: Mapping[str, Any], label: str, generation: int) -> bool:
         return False
     if told.get("dm") in STEER_DONE:
         return True
+    if told.get("dm") == "refused":
+        # A refusal sent nothing, so it is retryable, but not for ever:  after MAX_DM_REFUSALS it is final.
+        return int(told.get("dm_refusals") or 1) >= MAX_DM_REFUSALS
     return "steer" not in told and told.get("outcome") in STEER_DONE
 
 
@@ -486,7 +512,6 @@ def sweep(
     runner: Runner = subprocess.run,
     transport: Transport | None = None,
     steer: Callable[[str, str], str] | None = None,
-    remote: str = "",
     dry_run: bool = False,
     now: float | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -525,61 +550,59 @@ def sweep(
     found = discover()
     # Whether the discovery saw every open agent:  only then is an agent missing from it gone.
     whole = complete() if complete is not None else True
-    agents = [a for a in found if recent(a, now)]
     state = read_state(env)
-    rows = []
-    for agent in agents:
-        sid = str(agent.get("session_id") or "")
-        if not sid:
+    rows: list[dict[str, Any]] = []
+    # Each discovered agent is checked before anything reads it:  one of the wrong shape gets a row naming the field
+    # and takes no part, and the others go on.
+    usable: list[Mapping[str, Any]] = []
+    for item in found:
+        problem = agent_problem(item)
+        if not problem:
+            usable.append(item)
             continue
-        row: dict[str, Any] = {"session_id": sid}
+        bad: dict[str, Any] = {"error": "invalid agent: " + problem}
+        named = item.get("session_id") if isinstance(item, Mapping) else None
+        if isinstance(named, str) and named.strip():
+            bad["session_id"] = named[:80]
+        rows.append(bad)
+    agents = [a for a in usable if recent(a, now)]
+
+    def visit(agent: Mapping[str, Any], row: dict[str, Any]) -> None:
+        sid = str(agent["session_id"])
         bot, words = bot_of(str(agent.get("title") or ""))
         if bot:
             row["bot"] = bot
         if dry_run:
-            rows.append(row)
-            continue
-        answer = register(
-            env,
-            agent,
-            runner=runner,
-            now=now,
-            remote=remote,
-            transport=transport,
-            api_only=api_only,
-        )
+            return
+        answer = register(env, agent, now=now, transport=transport, api_only=api_only)
         label = str(answer.get("label") or "")
         if answer.get("code") in REFUSAL_CODES:
             # Jay's rule:  when every main-chat pair is live the letter is refused and the chat carries on.  A closed
             # chat that cannot have a pair again yet (space_lost) waits the same way.  Both are the registry working as
             # designed, so each is a refused row, not an error, and neither fails the run.
             row["refused"] = str(answer.get("error") or answer.get("code"))[:200]
-            rows.append(row)
-            continue
+            return
         if "error" in answer or not label:
             row["error"] = str(answer.get("error") or "no letter")[:200]
-            rows.append(row)
-            continue
+            return
         generation = int(answer.get("generation") or 1)
         row["label"] = label
         told = state.get(sid) if isinstance(state.get(sid), dict) else {}
         current = PL.one_line(agent.get("title"))
         if current.startswith(label + ": "):
             row["title"] = "set"
-            rows.append(row)
-            continue
+            return
         just_steered = False
         if steer_due(told, label, generation, now):
             if clock() - started > budget:
                 row["steer"] = "deferred"  # the next run sends it
-                rows.append(row)
-                continue
+                return
             outcome = steer(
                 sid, rename_prompt(wanted_title(label, current), agent.get("state") == "busy")
             )
             row["steer"] = outcome
             # A sent steer is done for this pass, and so is one whose outcome is unknown: it may have reached the
-            # agent.  A refusal is not asked again.  A steer that sent nothing is retried next run, so it is not
+            # agent.  A refusal is not asked again.  A steer that sent nothing is retried next run, so it is not
             # recorded.
             if outcome in STEER_DONE or outcome in STEER_STOP:
                 told = _remember(
@@ -594,32 +617,75 @@ def sweep(
                 )
                 just_steered = True
             else:
-                rows.append(row)
-                continue
-        # The title is still bare on a later pass.  Ask the Grok Bot only when steering cannot do it, or both
-        # steers have already been spent.  The pass that spends the second steer waits, so that steer can land.
+                return
+        # The title is still bare on a later pass.  Ask the Grok Bot only when steering cannot do it, or both
+        # steers have already been spent.  The pass that spends the second steer waits, so that steer can land.
         # A bot is never told twice for one letter.
         spent = told.get("steer") in STEER_STOP or (
             told.get("steer") in STEER_DONE and int(told.get("attempts") or 0) >= MAX_STEERS
         )
-        # A steer that was just sent still has this pass to land.  A refusal will not land, so the bot is asked now.
+        # A steer that was just sent still has this pass to land.  A refusal will not land, so the bot is asked now.
         wait_for_steer = just_steered and told.get("steer") in STEER_DONE
         if bot and spent and not wait_for_steer and not dm_already(told, label, generation):
             if not send_dms:
                 row["dm"] = (
                     "off"  # the Operator sends no messages;  nothing is recorded, nothing goes out
                 )
-            elif clock() - started > budget:
+                return
+            if clock() - started > budget:
                 row["dm"] = "deferred"
-            else:
-                dm = send_dm(bot, message(bot, agent, label, generation, words), env, runner)
-                row["dm"] = dm
-                if dm in ("sent", "unknown"):
-                    record = dict(state.get(sid) or {})
-                    record.update(
-                        bot=bot, label=label, generation=generation, dm=dm, outcome=dm, at=now
-                    )
-                    state[sid] = record
+                return
+            text = message(bot, agent, label, generation, words)
+            # The DM's row is on disk before the DM is sent:  a run that dies between the send and the next write
+            # finds "unknown" and never sends the same letter's DM twice.
+            before = dict(state.get(sid) or {})
+            refusals = (
+                int(before.get("dm_refusals") or 0)
+                if _same_letter(before, label, generation)
+                else 0
+            )
+            pending = dict(before)
+            pending.update(
+                bot=bot, label=label, generation=generation, dm="unknown", outcome="unknown", at=now
+            )
+            state[sid] = pending
+            try:
+                write_state(env, state)
+            except Exception as exc:
+                # Nothing was sent, so nothing is remembered:  the row goes back as it was.  And a state that
+                # cannot be saved ends the run here, before any more steers or DMs it could not remember.
+                if before:
+                    state[sid] = before
+                else:
+                    state.pop(sid, None)
+                raise StateUnsaved(type(exc).__name__) from None
+            dm = send_dm(bot, text, env, runner)
+            row["dm"] = dm
+            if dm == "sent":
+                state[sid] = dict(pending, dm="sent", outcome="sent")
+            elif dm == "refused":
+                # Nothing went out.  It is asked again on a later run, MAX_DM_REFUSALS times in all (`dm_already`).
+                state[sid] = dict(
+                    pending, dm="refused", outcome="refused", dm_refusals=refusals + 1
+                )
+            elif dm == "not-started":
+                # It could not run, so nothing went out and nothing is remembered:  the next run tries.
+                if before:
+                    state[sid] = before
+                else:
+                    state.pop(sid, None)
+            write_state(env, state)
+
+    for agent in agents:
+        row: dict[str, Any] = {"session_id": str(agent["session_id"])}
+        try:
+            visit(agent, row)
+        except StateUnsaved:
+            raise  # not one agent's failure:  the sweep cannot remember what it sends
+        except Exception as exc:  # noqa: BLE001 - one agent's failure never stops the others
+            row["error"] = (
+                "failed (%s)" % type(exc).__name__
+            )  # the type only:  a message can carry a title
         rows.append(row)
     if not dry_run:
         if whole:
@@ -627,13 +693,18 @@ def sweep(
             # more agents than the cap) would forget what a bot was told, and tell it again next time.
             # Every open agent counts, the stale ones too:  an agent past the window still holds its letter until the
             # registry frees it, so forgetting the DM now would tell its bot again if it woke before then.
-            open_ids = {str(a.get("session_id") or "") for a in found}
+            open_ids = {
+                a["session_id"]
+                for a in found
+                if isinstance(a, Mapping) and isinstance(a.get("session_id"), str)
+            }
             for sid in [k for k in state if k not in open_ids]:
                 del state[sid]  # the agent is gone; its letter is the registry's to free
         write_state(env, state)
     return {
         "agents": len(agents),
-        "stale": len(found) - len(agents),
+        "stale": len(usable) - len(agents),
+        "invalid": len(found) - len(usable),
         "complete": whole,
         "rows": rows,
     }
@@ -648,12 +719,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument(
         "--dry-run", action="store_true", help="read the agents and print what it would do"
     )
-    route = s.add_mutually_exclusive_group()
-    route.add_argument("--remote", default="", help="the ssh destination that holds the registry")
-    route.add_argument(
+    s.add_argument(
         "--api-only",
         action="store_true",
-        help="reach the registry only through its HTTPS API (no ssh, no shared registry env file)",
+        help="the shared unit's mode:  the Cursor key is read only with its own service token and no other source is tried",
     )
     s.add_argument(
         "--no-dm",
@@ -670,12 +739,9 @@ def main(argv: list[str] | None = None) -> int:
         report = check(sys.stdin)
         print(json.dumps(report, sort_keys=True))
         return 0 if all(value == "present" for value in report.values()) else 1
-    # The shared unit names no ssh destination:  SESSION_LETTER_REMOTE is not read under --api-only.
-    remote = "" if args.api_only else (args.remote or PL.remote_destination(env))
     try:
         out = sweep(
             env,
-            remote=remote,
             dry_run=args.dry_run,
             send_dms=not args.no_dm,
             api_only=args.api_only,
