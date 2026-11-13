@@ -166,6 +166,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet-ops-eavesdropper-settings.json",
         "scripts/simple_tools/server/eavesdropper_settings_edit.py",
         "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",
