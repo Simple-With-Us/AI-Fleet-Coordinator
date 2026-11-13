@@ -196,7 +196,10 @@ def read_proc(
         # Process inspection needs no caller credentials; use the same allowlist as the title host.
         child_env = host_env({}, os.environ)
         listing = runner(
-            ["ps", "-o", "ppid=,comm=", "-p", str(pid)], capture_output=True, text=True, timeout=5,
+            ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
             env=child_env,
         ).stdout.strip()
         head, _, exe = listing.partition(" ")
@@ -207,7 +210,10 @@ def read_proc(
             path, argv, strings = kernel
             return Proc(pid, int(head), argv, exe.strip() or path, _identity_env(strings))
         command = runner(
-            ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5,
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
             env=child_env,
         ).stdout.strip()
         full = runner(
