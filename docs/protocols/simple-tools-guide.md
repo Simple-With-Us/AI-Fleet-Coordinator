@@ -221,7 +221,8 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 
 | Tool | Credential | Purpose |
 |---|---|---|
-| `open_pr` | owner PR-only token | Open a pull request |
+| `wf_pr_create` | seat's own GitHub App | Open a head-pinned pull request |
+| `open_pr` | legacy owner PR-only token | Do not use; not an own-App route |
 | `edit_pr` | the seat's own GitHub App | Change a pull request's title or body |
 | `reply_thread` | the seat's own GitHub App | Reply inline to a review thread |
 | `comment_pr` | the seat's own GitHub App | Post a top-level pull request comment |
@@ -232,7 +233,7 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same b
 
 `create_repo` (`gr_create_repo` on the hosted front, `create_repo` on GR-MCP) creates one repository under `Simple-With-Us` or `jaywedgeworth22`.  It is denied unless that seat's policy grants `create_repo`.  Visibility is private unless the request says public and the seat's `create_repo_public` flag is true.  An existing repository answers `already_exists`; the relay does not create it again and does not follow a redirect.  `onboard-new-app.sh` calls it through `simple-git` when `SIMPLE_TOOLS_BEARER` is set, and uses `gh` only when that bearer is unset.  A configured relay that fails does not fall back to `gh`.
 
-PR-write authoring runs under the owner's scoped PR-only token on purpose: a pull request is authored as the owner, so the review bots read it the way they expect.  Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.  git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so the GR-MCP tool surface never hands a seat an App id, a private key or a token with an expiry to manage.  What a minted token can do is the seat's own policy: the mint is capped at that seat's allowed repos and at its mint-permission ceiling (`contents`, `pull_requests`, `issues`, `actions` or `metadata`, each read or write as the policy says), so a seat pushes only where its own policy gives that ceiling `contents: write`.
+PR creation uses `wf_pr_create` under the calling seat's own GitHub App. The legacy `open_pr` endpoint still uses an owner token and must not be substituted for this route. Review requirements are not waived by either endpoint. The relay mints and refreshes per-seat App installation tokens; seats do not receive raw credentials. Each token remains bounded by the seat's repository and permission allowlists.
 
 Per-seat policy is an allowlist layer over that credential: allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every denial, failure and write is written to the audit log (a successful read is not), and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 

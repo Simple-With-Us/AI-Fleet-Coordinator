@@ -382,7 +382,7 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_open_pr",
     title: "Open Pull Request",
-    description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
+    description: "Legacy owner-token PR creation route. Do not use: it does not run as the calling seat's own GitHub App. Use gr_wf_pr_create through Fleet Tools with expected_head_sha instead. A missing capability or refusal does not authorize this legacy route or a direct GitHub fallback.",
     inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" }, draft: { type: "boolean" } }),
   },
   {

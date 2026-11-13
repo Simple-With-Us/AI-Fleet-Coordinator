@@ -1,3 +1,5 @@
+> Current route: use `wf_pr_create` / `gr_wf_pr_create` under the calling seat's own App. The legacy `open_pr` owner-token endpoint described below is not an authorized substitute. Existing runtime implementation notes do not grant permission to use it.
+
 # git-relay - the GitHub relay CLI, and GR-MCP
 
 git-relay knows each seat from its bearer token and picks the credential by task:  Opening a PR
