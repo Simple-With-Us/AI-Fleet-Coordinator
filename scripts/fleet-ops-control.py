@@ -238,14 +238,15 @@ DOCKER_NOT_RUNNING_PHRASES = ("is not running", "no such container", "is restart
 # cannot hold this helper forever.
 KILL_WAIT_SECONDS = 5
 # The reducer module sits beside the helper, in the helper's own folder: `scripts/` in a source
-# checkout, the root-owned /usr/local/lib/fleet-resource-control on the server.  It is opened
-# without following a symlink and judged by fstat on the open descriptor, never by a path
-# check.  The layout is read from who owns that folder.  A folder owned by TRUSTED_MODULE_UID (root)
-# is the installed layout: the file must be root's too, and neither may be writable by group or
-# others.  Any other folder is a checkout: the file may also be owned by the calling account,
-# the folder must be that account's too, and still no group or other write bit is allowed.  A
-# checkout owned by another account is refused.  Nothing in the request or the environment
-# selects a place.
+# checkout, and on the server ~/.local/lib/fleet-resource-control of the account that runs the
+# helper (jay), which scripts/hetzner/install-resource-control.sh installs as that account's own
+# code.  It is opened without following a symlink and judged by fstat on the open descriptor,
+# never by a path check.  The layout is read from who owns that folder.  A folder owned by
+# TRUSTED_MODULE_UID (root) is the earlier root-owned layout: the file must be root's too, and
+# neither may be writable by group or others.  Any other folder must be the calling account's own
+# (the server install and a checkout alike):  the file may be that account's or root's, and still
+# no group or other write bit is allowed.  A folder owned by another account is refused.  Nothing
+# in the request or the environment selects a place.
 HELPER_DIR = Path(__file__).resolve().parent
 TRUSTED_MODULE_UID = 0
 REDUCED_STATUS_NAME = "reduced_status.py"
