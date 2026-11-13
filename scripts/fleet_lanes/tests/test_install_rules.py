@@ -176,11 +176,11 @@ class TemplateTests(unittest.TestCase):
         return out
 
     def test_templates_allow_only_the_gap_and_required_header_characters(self) -> None:
-        # Owner headers require hair spaces, a folder and an arrow in worked examples.
+        # Owner headers use hair spaces, a folder, an arrow and optional quiet-post eyes.
         for variant, text in self.texts().items():
             with self.subTest(variant=variant):
                 self.assertTrue(text.strip())
-                for char in ("\u00a0", "\u200a", "\U0001f4c1", "\u2192"):
+                for char in ("\u00a0", "\u200a", "\U0001f4c1", "\u2192", "\U0001f440"):
                     text = text.replace(char, "")
                 text.encode("ascii")
 
