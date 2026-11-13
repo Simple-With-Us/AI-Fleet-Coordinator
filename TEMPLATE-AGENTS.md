@@ -35,7 +35,7 @@ No seat or platform gets its own copy of a fleet tool.  There is one shared too
 
 Kodus runs in manual mode, so a push does not start a review.  Source: Zulip #Policy, topic "Kody reviews: manual when ready".
 
-- **Request it.**  When a PR's changes are ready, whoever owns the PR posts a top-level trigger comment: line 1 is `@kody start-review`; line 2 is the required fleet header, optionally prefixed with `👀`; the full head SHA and review context follow.  Every PR gets at least one Kody review.
+- **Request it.**  When a PR's changes are ready, whoever owns the PR posts a top-level trigger comment: line 1 is `@kody start-review`; line 2 is the compact PR-comment header, optionally prefixed with `👀`; the full head SHA and review context follow.  Every PR gets at least one Kody review.
 - **Review again when it is warranted.**  Bigger or riskier changes get 2 or 3 reviews, or more, after fixes land.  Use your judgment.
 - **Review the code that will merge.**  Final-code review and evidence for each finding still apply, and a request is neither a waiver nor merge clearance.
 - **One request per ready head.**  Read the PR's comments first and coordinate with its owner and reviewers, so no head gets a duplicate request.  Never bulk-retrigger every PR.  Through `gr_comment_pr`, the same seat repeating identical text within 24 hours gets the existing comment back and nothing posts, so a real repeat needs different text.  That guard does not cover another seat or an older request, so the comment read is what prevents a duplicate.
@@ -371,9 +371,9 @@ Source: Jay, Zulip #Policy, topic "Peer Requests (notify, act, log)", November 1
 
 ### Fleet post headers (owner ruling)
 
-GitHub PR titles, descriptions and comments use a compact header without the folder symbol or repository names: `[CODEX:   EE.1.S]` for that actual assigned session, or `[JET]` for an unlettered session.  Preserve the writing session and any addressed recipients; never infer a letter from the GitHub author or repository.  Keep title and description attribution consistent when editing them; a new comment names its actual writing session.  Kody requests retain `@kody start-review` on line 1, this compact header on line 2, and the full reviewed head SHA and context afterward.  Ordinary GitHub issue, Zulip and Linear headers retain their repository context and the spacing below.
+GitHub PR titles and comments use a compact header without the folder symbol or repository names: `[CODEX:   GG.1.S]` for the actual assigned session, or `[JET]` for an unlettered session.  PR descriptions keep the full fleet header.  When editing a title and description together, use the same actual writing session; each comment names its own actual writing session.  Preserve addressed recipients and supported mention syntax; never infer a letter from GitHub metadata or reuse another session's letter.  Kody requests retain `@kody start-review` on line 1, this compact header on line 2, and the full reviewed head SHA and context afterward.  Ordinary GitHub issue, Zulip and Linear headers retain their repository context and the spacing below.
 
-Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  The standing Kody trigger format puts `@kody start-review` on line 1 and the required fleet header on line 2.  A Codex chat-pane reply does not require a bracketed intro; external fleet posts keep the required header.
+Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  Kody trigger comments use the compact PR-comment header on line 2; PR descriptions keep full headers.  A Codex chat-pane reply does not require a bracketed intro; external fleet posts keep the required header.
 
 Every external fleet post on every platform, including Linear, Zulip and GitHub, begins with the required header.  Kody trigger comments use the two-line format above.  A Codex chat-pane reply need not include a bracketed intro; that exception applies only to chat-pane replies, while external fleet posts retain the required header.  The form turns on the session, not the seat (owner directive, November 10, 2026).  A session with no Operator session letter uses `[<seat-tag>  📁 <repo, repo…>]`, for example `[JET  📁 ST, CTS, CT]`;  Jet, Rob, Grok Bots (`GB-*`) and BotFleet bots (`BF-*`) normally hold no letters.
 
@@ -414,7 +414,7 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 3. **Title:** `[TEAM_KEY, Agent] Topic` — team key + agent **first**.  Multi-team:
    `[CT1, CT2, Grok] …`.  Acronyms: `CT` `ST` `UM` `CTS` `FLEET`.  Seat Title Case
    (`Grok` / `Claude` / `Codex` / `AG` / `Cursor` / `MM` / `Wise` / …).  **No "session"** in title; **no date** in title.
-4. **Second body line:** local create/update stamp + optional PR #, e.g.  `Sun, Aug 9, 3:52pm · PR #18`
+4. **Second body line:** local create/update stamp + optional PR #, e.g.  `Sun, Aug 9, 3:52 PM · PR #18`
    (refresh on every material update; pass `--pr "18"` to helper).  Helper auto-injects/preserves this.
 5. **Helper:** `/Users/jay/apps/apple-notes-coding.sh "Title" "body"`  
    (supports `--html path`, `--update`, `--pr "18"`, `--notify` for instant Pushover alerts, `--needs-owner` for amber review banners, and `--summary "text"` for an optional, readable `Summary:` block at the top - long notes only, up to 4-5 sentences of real context beyond the title, never a restatement of it; the helper drops a summary on a note under 800 characters of body text (`APPLE_NOTES_SUMMARY_MIN_BODY_CHARS` adjusts the floor) or one over 20% of the note length (`APPLE_NOTES_SUMMARY_MAX_PCT` adjusts it)).  
@@ -438,7 +438,7 @@ Skip Notes on headless/cloud agents without Notes.app.  Full rule:
 **Owner binding 2026-09-08 (Jay):** ASC What to Test is mandatory on every TestFlight upload — briefly name 1–2 change/fix/upgrade types, or the other reason for the build if not a product change.  Publish with `IOS_TF_RELEASE_NOTES=1`.  Canonical detail: `~/apps/FLEET-PROTOCOL.md`.  No `--force-ship`.
 
   1. Title header: `[1.0.N] <Build Title>`
-  2. Release timestamp on the owner's clock, 12-hour, am or pm, with no timezone abbreviation, and the PR #: `Released: Mon, Aug 12, 2026 at 1:15am · PR #1065`
+  2. Release timestamp on the owner's clock, 12-hour, with a space before uppercase AM or PM, with no timezone abbreviation, and the PR #: `Released: Wed, Aug 12, 2026 at 1:15 AM · PR #1065`
   3. **STRICT RULE — NO AGENT NAMES:** Public / TestFlight release notes **MUST NOT** include internal agent names (`Agent: Grok`, etc.).
   4. Change summary: Concise bulleted list of what changed/fixed in this build.
 
@@ -454,7 +454,7 @@ Owner ruling 2026-08-13. Canonical: `~/apps/FLEET-PROTOCOL.md` § iOS agent buil
 - **Do not hand-edit** `.pbxproj`, `.xcodeproj/`, `.xcworkspace/`, `.xib`, `.storyboard`, `.entitlements`.  New `.swift` files: create the file and report target membership.  XcodeGen apps: edit `project.yml` then `xcodegen generate`.
 - Claude seats: copy `scripts/block-xcode-project-writes.py` to `.claude/hooks/` and the PreToolUse snippet from `github-workflows-template/claude-ios-settings.json`.
 - Per-app annotated tree: `ios/CLAUDE.md` (or `clients/ios/CLAUDE.md` / `native/ios/CLAUDE.md`).
-- `@Observable` + `@MainActor`; `NavigationStack`; system theme default (follow the OS, owner ruling 2026-09-19).
+- `@Observable` + `@MainActor`; `NavigationStack`; Light theme default for a first visit with no stored preference, preserving existing user choices.
 - **Debug vs TestFlight (owner 2026-08-21):** do Xcode-console debug autonomously via `bash ~/apps/ios-fleet/ios-debug.sh <app>`.  Simulator `--console` is the default.  Device `--logs-only` keeps TestFlight.  `--target device --install-debug` replaces TestFlight for that bundle — say so.  Ask the owner to press Run in Xcode only for LLDB / a paste of the IDE console.  Canonical: `~/apps/FLEET-PROTOCOL.md` § iOS agent build loop.
 
 ## Fleet UI copy (web + iOS)
@@ -533,17 +533,17 @@ and `docs/fleet-skills/sentence-gap/SKILL.md`.
 - Code, identifiers and machine-readable config never get a U+00A0. If any other surface strips U+00A0, leave the text as it is rather than switching to the entity, and report that surface in #Work-In-Progress so it can be given a working mechanism.
 - This supersedes the earlier per-surface rules (the entity in every Markdown chat pane, the entity on GitHub, and two plain ASCII spaces in files, commits and terminals).
 
-## Times: owner's clock, 12-hour, am or pm (owner 2026-08-22, amended 2026-10-05, amended 2026-11-03)
+## Times: Owner's Clock, 12-Hour AM/PM (Owner 2026-11-13)
 
-Say every time on the owner's clock, 12-hour, with am or pm.  That clock is
-**America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15am`, or
-`Sun, Oct 5, 2026 at 3:15am` when the day matters).  The zone is assumed and
-never named either:  `Central` is as wrong as `CST`, and `America/Chicago`
+Say every time on the owner's clock, 12-hour, with a space before uppercase AM or PM.  That clock is
+**America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15 AM`, or
+`Mon, Oct 5, 2026 at 3:15 AM` when the day matters).  The zone is assumed and
+never named either: `Central` is as wrong as `CST`, and `America/Chicago`
 does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).
 Never lead with Zulu
 in chat, Notes, Zulip, Linear, or PRs.  Give only the Central time: convert UTC
-first, with no stamp beside it (owner 2026-10-18).  A log line at `11:42Z` is `6:42am` on a summer day and `5:42am` in winter.  `00:00 UTC` is 7:00pm the previous calendar day during
-daylight saving (6:00pm after the fall-back).  Binding for every agent, bot,
+first, with no stamp beside it (owner 2026-10-18).  A log line at `11:42Z` is `6:42 AM` on a summer day and `5:42 AM` in winter.  `00:00 UTC` is 7:00 PM the previous calendar day during
+daylight saving (6:00 PM after the fall-back).  Binding for every agent, bot,
 and platform.  Product UI stays the viewer's timezone.  A market bell stays as the market writes it (`9:30 AM ET`), and a machine-readable field keeps its own format, so a build number or a commit stamp is build provenance and not an owner-facing sentence.  Quote a field you repeat verbatim as it is;  convert only when you write the time in prose.  Canonical:
 `~/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
 
