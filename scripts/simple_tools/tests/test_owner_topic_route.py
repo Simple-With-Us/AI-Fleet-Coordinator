@@ -32,7 +32,7 @@ class OwnerTopicEndToEndTests(OwnerHarness):
     def test_the_real_note_wakes_the_filer(self) -> None:
         note = self.post_note()
         stored = self.fake.messages[-1]
-        self.assertTrue(stored["content"].startswith("[CLAUDE·needsown→CODEX] "), stored["content"][:60])
+        self.assertTrue(stored["content"].startswith('[CLAUDE·needsown → CODEX] '), stored["content"][:60])
         self.assertEqual(stored["sender_email"], "claude-bot@zulip.test")
         classes, decision = self.route(note, "Codex", "CODEX")
         self.assertTrue(classes.owner_note and classes.eligible and classes.owner_topic and not classes.owner_topic_peer, classes.labels())
