@@ -215,7 +215,7 @@ def _service_account_known(sa: Mapping[str, Any]) -> list[str]:
 
 def local_known_credentials(env: Mapping[str, str] | None = None) -> list[str]:
     """Only this operation's declared local route; never fetch for an offline dry-run."""
-    source = os.environ if env is None else env
+    source = dict(os.environ if env is None else env)
     direct = (source.get(ENV_SA_JSON) or "").strip()
     if direct:
         return _service_account_known(_service_account(direct))
@@ -231,7 +231,7 @@ def load_service_account_json(
     *,
     known: list[str] | None = None,
 ) -> dict[str, Any]:
-    source = os.environ if env is None else env
+    source = dict(os.environ if env is None else env)
     direct = (source.get(ENV_SA_JSON) or "").strip()
     if direct:
         sa = _service_account(direct)
@@ -488,7 +488,7 @@ def log_row(
     sheets: SheetsClient | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    source = os.environ if env is None else env
+    source = dict(os.environ if env is None else env)
     spreadsheet_id = (source.get(ENV_SPREADSHEET_ID) or DEFAULT_SPREADSHEET_ID).strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", spreadsheet_id):
         raise PeerActionsError("invalid_argument", f"{ENV_SPREADSHEET_ID} is invalid")
