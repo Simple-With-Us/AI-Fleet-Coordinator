@@ -436,7 +436,7 @@ Skip Notes on headless/cloud agents without Notes.app.  Full rule:
 **Owner binding 2026-09-08 (Jay):** ASC What to Test is mandatory on every TestFlight upload — briefly name 1–2 change/fix/upgrade types, or the other reason for the build if not a product change.  Publish with `IOS_TF_RELEASE_NOTES=1`.  Canonical detail: `~/apps/FLEET-PROTOCOL.md`.  No `--force-ship`.
 
   1. Title header: `[1.0.N] <Build Title>`
-  2. Release timestamp on the owner's clock, 12-hour, with a space before uppercase AM or PM, with no timezone abbreviation, and the PR #: `Released: Mon, Aug 12, 2026 at 1:15 AM · PR #1065`
+  2. Release timestamp on the owner's clock, 12-hour, with a space before uppercase AM or PM, with no timezone abbreviation, and the PR #: `Released: Wed, Aug 12, 2026 at 1:15 AM · PR #1065`
   3. **STRICT RULE — NO AGENT NAMES:** Public / TestFlight release notes **MUST NOT** include internal agent names (`Agent: Grok`, etc.).
   4. Change summary: Concise bulleted list of what changed/fixed in this build.
 
@@ -535,7 +535,7 @@ and `docs/fleet-skills/sentence-gap/SKILL.md`.
 
 Say every time on the owner's clock, 12-hour, with a space before uppercase AM or PM.  That clock is
 **America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15 AM`, or
-`Sun, Oct 5, 2026 at 3:15 AM` when the day matters).  The zone is assumed and
+`Mon, Oct 5, 2026 at 3:15 AM` when the day matters).  The zone is assumed and
 never named either: `Central` is as wrong as `CST`, and `America/Chicago`
 does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).
 Never lead with Zulu
