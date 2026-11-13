@@ -2,23 +2,23 @@
 
 Claim substantial Linear work first; post in `<ID> <subject>` Zulip topic, start status with `repo:`, link issue in PR/closeout.  Effort logs archived; search recall.
 
-Use a verified seat and approved route.  Never borrow identities/credentials, expose or persist tokens, or substitute a chat tag/letter for a native session ID.
+Use a verified seat/approved route.  Never borrow identities/credentials, expose/persist tokens or use chat tags/letters as native session IDs.
 
 For Board/Notes writes use native ID: `--session <id>`/MCP `session`; else `AGENT_SESSION`, then `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CURSOR_CONVERSATION_ID` (fallback `CURSOR_AGENT_CHAT_ID`), `GROK_SESSION_ID`, `OPENCODE_SESSION_ID`, `__MAVIS_RUNTIME_SESSION_ID`.  Cloud seats pass `session`; no-env seats pass the shown chat ID.  Exempt: Grok bots (`GB-*`), MA, JET, WISE, ECHO.  Notes put `Session: <id>` below timestamp.
 
 ### Operator Sessions And Posts
 
-One Operator owns the registry, assigner, client, sweeper and wake router.  Share platform data; vary only last-mile wake.  No per-seat/per-platform copies.
+One Operator owns the registry, assigner, client, sweeper and wake router.  Share platform data; vary only last-mile wake.  No seat/platform copies.
 
 Doubled pairs AA to ZZ: issue each seat its least-used free pair; alphabetical tie-break.  Generation is per pair/seat.  Skip live pairs; refuse if all 26 are live.  Children keep the first letter and advance/wrap the second.  No pair: title `??: Title`, retry or run `simple-chat letter request`; never invent one.
 
-Every Zulip/Linear/GitHub post starts with seat/session/repo header: 3 U+200A after seat colon, 2 before folder marker, 1 after it and repo commas, 2 after recipient commas.  Keep ASCII spaces around arrow and inside recipient names; use supported mentions.  Quiet posts keep supported inbox delivery.  Header spacing is not a prose gap.
+Ordinary external posts start with the fleet header: 3 U+200A after seat colon, 2 before folder, 1 after folder and each repo comma, 2 after recipient commas.  Use supported mentions and ASCII spaces around arrows/inside names.  Optional `👀` before `[` suppresses peer wakes, keeps inbox delivery.  Codex chat replies need no intro.  Hair spaces are not prose gaps.
 
 ### Land Your Work
 
-For authorized work, commit/push each finished unit and open its PR through the relay.  Drive through merge/follow-up; log approved fallbacks.  Holds and required checks bind.
+Commit/push finished authorized units; open PRs through the relay.  Drive merge/follow-up; log approved fallbacks.  Holds and required checks bind.
 
-Kody is manual: read comments; request `@kody start-review` on ready head.  Receipt: successful check `Kody Code Review`, title `Code Review Complete`, summary starts `Review finished successfully`, run begins no earlier than request.  Don't duplicate queued/running; retry finished runs without receipt using distinct text.  After every push and before readiness, paginate all reviewers' inline findings, review bodies and issue comments.  Fix each finding or post a code-based reason before resolving; checks alone don't suffice.
+Manual Kody: read requests; one per ready head: `@kody start-review` line 1, fleet header (optional `👀`) line 2, then full SHA/context (owner Nov 13, 2026).  Receipt: success `Kody Code Review`, title `Code Review Complete`, summary starts `Review finished successfully`, started no earlier than request.  No queued/running duplicates; retry finished runs without receipt with distinct text.  Paginate all reviewers' inline findings, review bodies and issue comments after pushes/before readiness.  Fix or decline from code before resolving; checks alone never suffice.
 
 ### Peer Requests
 
@@ -34,4 +34,4 @@ Use `fleet-secrets names`; capture `fleet-secrets get NAME` silently for its con
 
 Use U+00A0 plus normal space everywhere, including Notes (readback may show two spaces).  The only exception: Claude Code, MiniMax Code and Z Code chat replies use `&nbsp;` plus normal space.  Never use the entity elsewhere or prose gaps in code/IDs/config.  See `sentence-gap`.
 
-Owner-facing times: America/Chicago 12-hour AM/PM, no zone or adjacent UTC.  Titles/headings/buttons use Title Case; light theme is default; release copy never names agents.
+Owner-facing times: America/Chicago 12-hour AM/PM, no zone or adjacent UTC.  Titles/headings/buttons: Title Case; default light theme; no agents in release copy.

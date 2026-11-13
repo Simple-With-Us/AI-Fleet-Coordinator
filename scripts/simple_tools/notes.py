@@ -733,13 +733,13 @@ _TEXT_FOOTER_RE = re.compile(r"(?:\n[ \t￼]*)*\n?" + _FOOTER_TEXT + r"[^\n]*\s*
 _SPACER_TAIL_RE = re.compile(r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)+\s*$", re.IGNORECASE)
 _STAMP_RE = re.compile(
     r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
-    r"\d{1,2}:\d{2}[ ]?[ap]m(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
+    r"\d{1,2}:\d{2}(?:[ap]m|(?-i: [AP]M))(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
     re.IGNORECASE,
 )
 # Looser than _STAMP_RE:  HTML blocks are joined without spaces, so the stamp may be followed by more text.
 _STAMP_FRAGMENT_RE = re.compile(
     r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
-    r"\d{1,2}:\d{2}[ ]?[ap]m",
+    r"\d{1,2}:\d{2}(?:[ap]m|(?-i: [AP]M))",
     re.IGNORECASE,
 )
 _SESSION_ROW_RE = re.compile(r"^Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\s+-\s+.{0,40})?$")

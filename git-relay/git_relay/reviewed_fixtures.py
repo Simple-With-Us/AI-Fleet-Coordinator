@@ -36,10 +36,10 @@ from .secret_scan import find_secret
 # The gr-workflow-v1.test.mjs row was refreshed 2026-11-10 to the exact bytes under
 # review in PR #1707 (source blob 804d547cb96bba4cade20a058e76ec32c1fa7022), not the
 # 81d8bb0c checkpoint bytes, which never landed on main; provenance in the README.
-# The gr-front.test.mjs row was refreshed 2026-11-12 to the merged AFC-734 and
-# AFC-632 bytes on PR #1826 (source blob 8b5c00c94f3bd0635335226e607bc0a94a3a8660).
-# Added lines introduce no new dedicated secret pattern. The file still matches
-# bearer_credential from the synthetic bearer fixtures the prior row covered.
+# The gr-front.test.mjs row was refreshed 2026-11-12 after merging main (AFC-734,
+# PR #1826) into AFC-727 (source blob 3a7c6b485d91a7f2dfee5922b3d026450d087fb1).  The bytes combine the
+# gr_create_repo name list (AFC-632), AFC-734 not_configured reasons and intent-only
+# gr_workflow_dispatch checks.  Added lines introduce no new dedicated secret pattern.
 _REVIEWED_FIXTURES = frozenset(
     {
         (
@@ -60,8 +60,8 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-front.test.mjs",
-            # AFC-734 not_configured reasons plus gr_create_repo name list (AFC-632).
-            "dc79d7b078aa35816ffc5ce35ee3c9c2dbaff5d4fdf47499f46f8480f6d478db",
+            # AFC-727 intent-only dispatch + AFC-734 reasons + gr_create_repo names (AFC-632).
+            "2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",

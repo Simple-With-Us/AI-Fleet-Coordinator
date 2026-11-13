@@ -1024,7 +1024,7 @@ class DirectOnceTests(unittest.TestCase):
 
 
 class ProvenanceTests(unittest.TestCase):
-    NOW = datetime(2026, 10, 22, 22, 3, tzinfo=timezone.utc)  # Thu, Oct 22, 5:03pm in Chicago
+    NOW = datetime(2026, 10, 22, 22, 3, tzinfo=timezone.utc)  # Thu, Oct 22, 5:03 PM in Chicago
     LINE = "Written for MM through the Operator on Thu, Oct 22, 2026 (request requestid-0001)."
 
     def update(self, markdown, html=False):
@@ -1090,6 +1090,8 @@ class ContentTests(unittest.TestCase):
         for stamp, title, expected in (
             ("3:52pm", STORED_TITLE, 0),
             ("3:52 PM", STORED_TITLE, 0),
+            ("3:52 pm", STORED_TITLE, 5),
+            ("3:52 pM", STORED_TITLE, 5),
             ("3:52 PM", "Hand Made", 5),
             ("3:52 XM", STORED_TITLE, 5),
         ):

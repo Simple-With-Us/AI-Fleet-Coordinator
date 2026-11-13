@@ -298,7 +298,7 @@ test("dm_send:  the tag with the recipient, the sentence gap, ids only in the an
   assert.equal(post.params.type, "direct");
   assert.equal(post.params.to, JSON.stringify([jay.user_id]));
   // Tag with the recipient's label, the gap as U+00A0 plus a space, typed mentions kept real, wildcards too.
-  assert.equal(post.params.content, `[GROK-WEB·sessionf→JAY] First.${NBSP} Second @**Jay Wedgeworth** and @**all**.`);
+  assert.equal(post.params.content, `[GROK-WEB·sessionf → JAY] First.${NBSP} Second @**Jay Wedgeworth** and @**all**.`);
   const message = fake.messages.at(-1);
   assert.equal(message.id, data.id);
   assert.equal(message.type, "private");
@@ -314,7 +314,7 @@ test("dm_send:  by email, and a group of several people with a label for each", 
   assert.deepEqual(data.user_ids, [jay.user_id, codex.user_id, ana.user_id].sort((a, b) => a - b));
   const [post] = dmPosts(fake);
   assert.deepEqual(JSON.parse(post.params.to), data.user_ids);
-  assert.match(post.params.content, /^\[GROK-WEB→[A-Z,]+\] Group note$/);
+  assert.equal(post.params.content, "[GROK-WEB → JAY,\u200a\u200aCODEX,\u200a\u200aANA] Group note");
   assert.ok(post.params.content.includes("JAY") && post.params.content.includes("CODEX") && post.params.content.includes("ANA"));
   // The group is now one conversation that dm_read finds.
   assert.equal(ok(await tools.call("zulip_dm_read", { user_ids: data.user_ids }), "zulip_dm_read").count, 1);

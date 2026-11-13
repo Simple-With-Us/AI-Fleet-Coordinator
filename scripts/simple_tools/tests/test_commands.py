@@ -10,7 +10,7 @@ import unittest
 from simple_tools.tests.fake_zulip import BOT_EMAIL, EPOCH
 from simple_tools.tests.harness import TAG, Harness
 
-# 2026-10-07 23:41 UTC is 6:41pm Central (daylight time), a Wednesday.
+# 2026-10-07 23:41 UTC is 6:41 PM Central (daylight time), a Wednesday.
 OCT_7_2026_2341_UTC = 1_791_416_460
 
 
@@ -114,7 +114,7 @@ class PostTests(Harness):
         )
         self.assertEqual(result.code, 0, result.err)
         content = self.last_post().form["content"]
-        self.assertTrue(content.startswith("[GB-PLUMBER 📁AFC →CODEX] "), content)
+        self.assertTrue(content.startswith('[GB-PLUMBER\u200a\u200a📁\u200aAFC → CODEX] '), content)
         self.assertIn("@**Codex** please look", content)
         self.assertNotIn("[CLAUDE", content)
         multi = self.run_cli(
@@ -122,7 +122,7 @@ class PostTests(Harness):
         )
         self.assertEqual(multi.code, 0, multi.err)
         self.assertTrue(
-            self.last_post().form["content"].startswith("[MM: HH.1.M 📁AFC,OPS →CODEX] "),
+            self.last_post().form["content"].startswith('[MM:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX] '),
             self.last_post().form["content"],
         )
         kept = self.run_cli(
@@ -130,18 +130,18 @@ class PostTests(Harness):
         )
         self.assertEqual(kept.code, 0, kept.err)
         self.assertTrue(
-            self.last_post().form["content"].startswith("[GB-PLUMBER 📁AFC →CODEX,CURSOR] "),
+            self.last_post().form["content"].startswith('[GB-PLUMBER\u200a\u200a📁\u200aAFC → CODEX,\u200a\u200aCURSOR] '),
             self.last_post().form["content"],
         )
         quiet = self.run_cli("post", "--topic", "t", "--quiet", "[JET 📁ST,CTS] hello")
         self.assertEqual(quiet.code, 0, quiet.err)
         quiet_body = self.last_post().form["content"]
-        self.assertTrue(quiet_body.startswith(":eyes: [JET 📁ST,CTS] "), quiet_body)
+        self.assertTrue(quiet_body.startswith(":eyes: [JET\u200a\u200a📁\u200aST,\u200aCTS] "), quiet_body)
         self.assertNotIn("[CLAUDE", quiet_body)
         already = self.run_cli("post", "--topic", "t", "--quiet", "👀 [GB-DIRECTOR 📁AFC] hello")
         self.assertEqual(already.code, 0, already.err)
         eyes = self.last_post().form["content"]
-        self.assertTrue(eyes.startswith("👀 [GB-DIRECTOR 📁AFC] "), eyes)
+        self.assertTrue(eyes.startswith('👀 [GB-DIRECTOR\u200a\u200a📁\u200aAFC] '), eyes)
         self.assertNotIn(":eyes:", eyes)
         self.assertEqual(eyes.count("👀"), 1)
         raw = self.run_cli("post", "--topic", "t", "--no-tag", "[JET 📁AFC] hello")
@@ -163,11 +163,11 @@ class PostTests(Harness):
     def test_to_adds_the_peer_to_the_tag_and_the_mention(self) -> None:
         result = self.run_cli("post", "--topic", "t", "--to", "codex", "please look")
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192CODEX] @**Codex** please look" % TAG)
+        self.assertEqual(self.last_post().form["content"], '[CLAUDE·%s → CODEX] @**Codex** please look' % TAG)
 
     def test_to_resolves_by_email_and_for_names_with_spaces(self) -> None:
         self.run_cli("post", "--topic", "t", "--to", "jay@zulip.test", "hi")
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192JAY] @**Jay Wedgeworth** hi" % TAG)
+        self.assertEqual(self.last_post().form["content"], '[CLAUDE·%s → JAY] @**Jay Wedgeworth** hi' % TAG)
 
     def test_to_takes_the_grok_seat_tag_the_display_name_the_email_and_every_grok_build_spelling(self) -> None:
         # The roster once told seats to mention @**GROK-BUILD**, which names nobody.  The bot is grok-build-bot@
@@ -181,7 +181,7 @@ class PostTests(Harness):
                 with self.subTest(display=display, raw=raw):
                     result = self.run_cli("post", "--topic", "t", "--to", raw, "hi")
                     self.assertEqual(result.code, 0, result.err)
-                    self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192GROK] %s hi" % (TAG, mention))
+                    self.assertEqual(self.last_post().form["content"], '[CLAUDE·%s → GROK] %s hi' % (TAG, mention))
         before = len(self.fake.requests_to("POST", "messages"))
         for raw in ("GROKBUILDER", "grok2build", "grok-build-bot", "NOSUCHSEAT"):
             with self.subTest(refused=raw):
@@ -213,7 +213,7 @@ class PostTests(Harness):
     def test_two_recipients(self) -> None:
         self.run_cli("post", "--topic", "t", "--to", "Codex", "--to", "Cursor", "both")
         self.assertEqual(self.last_post().form["content"],
-                         "[CLAUDE·%s\u2192CODEX,CURSOR] @**Codex** @**Cursor** both" % TAG)
+                         '[CLAUDE·%s → CODEX,\u200a\u200aCURSOR] @**Codex** @**Cursor** both' % TAG)
 
     def test_unknown_recipient_lists_the_five_closest_names(self) -> None:
         result = self.run_cli("post", "--topic", "t", "--to", "Codx", "hi")
@@ -234,7 +234,7 @@ class PostTests(Harness):
         result = self.run_cli("post", "--topic", "fleet", "--channel", "work-in-progress",
                               "--fleet", "--to", "Codex", "HALT")
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192CODEX] @**Codex** @**all** HALT" % TAG)
+        self.assertEqual(self.last_post().form["content"], '[CLAUDE·%s → CODEX] @**Codex** @**all** HALT' % TAG)
 
     def test_fleet_topic_and_channel_match_without_case(self) -> None:
         self.assertEqual(self.run_cli("post", "--topic", "Fleet", "--channel", "Work-In-Progress", "--fleet", "x").code, 0)
@@ -317,7 +317,7 @@ class DmTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         form = self.last_post().form
         self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [self.OWNER_ID]))
-        self.assertEqual(form["content"], "[CLAUDE·%s→OWNER] Codex asked for the key.\u00a0 I declined." % TAG)
+        self.assertEqual(form["content"], '[CLAUDE·%s → OWNER] Codex asked for the key.\xa0 I declined.' % TAG)
         sent = [m for m in self.fake.messages if m["type"] == "private"]
         self.assertEqual(len(sent), 1)
         self.assertEqual(sorted(r["id"] for r in sent[0]["display_recipient"]), [10, self.OWNER_ID])
@@ -362,8 +362,8 @@ class DmTests(Harness):
                 form = self.fake.requests_to("POST", "messages")[-1].form
                 self.assertEqual(len(self.fake.requests_to("POST", "messages")), before + 1)
                 self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [self.OWNER_ID, uid]))
-                label = "OWNER,CODEX" if uid == 11 else "OWNER,CURSOR"
-                self.assertEqual(form["content"], "[CLAUDE\u00b7%s\u2192%s] Review is up.\u00a0 Please look." % (TAG, label))
+                label = "OWNER,\u200a\u200aCODEX" if uid == 11 else "OWNER,\u200a\u200aCURSOR"
+                self.assertEqual(form["content"], '[CLAUDE·%s → %s] Review is up.\xa0 Please look.' % (TAG, label))
                 self.assertIn("sent id", result.out)
 
     def test_dm_to_a_peer_alone_is_refused_because_the_owner_is_not_in_it(self) -> None:
@@ -409,7 +409,7 @@ class DmTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         out = json.loads(result.out)
         self.assertEqual(out["to"], [self.OWNER_ID, 11, 14], "a repeated recipient is sent once")
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE\u00b7%s\u2192OWNER,CODEX,GROK] sync up" % TAG)
+        self.assertEqual(self.last_post().form["content"], '[CLAUDE·%s → OWNER,\u200a\u200aCODEX,\u200a\u200aGROK] sync up' % TAG)
         self.assertEqual(len([m for m in self.fake.messages if m["type"] == "private"]), 1)
 
     def test_dm_owner_plus_peers_makes_a_group_with_the_owner_label(self) -> None:
@@ -419,7 +419,7 @@ class DmTests(Harness):
         self.assertEqual(json.loads(self.last_post().form["to"]), [self.OWNER_ID, 11])
         self.assertEqual(self.last_post().form["content"], "hello")
         self.assertEqual(self.run_cli("dm", "--to", "Jay Wedgeworth", "hello").code, 0)
-        self.assertIn("\u2192OWNER]", self.last_post().form["content"])
+        self.assertIn(" → OWNER]", self.last_post().form["content"])
 
     def test_dm_refuses_webhook_bots_deactivated_users_self_and_unknowns_before_sending(self) -> None:
         self.users_with_extras()
@@ -591,7 +591,7 @@ class ReplyTests(Harness):
         original = self.fake.add_message("Codex", "simple-tools", "t", "q")
         self.run_cli("reply", "--id", str(original), "--to", "Codex", "a")
         self.assertEqual(self.fake.requests_to("POST", "messages")[-1].form["content"],
-                         "[CLAUDE·%s\u2192CODEX] @**Codex** a" % TAG)
+                         '[CLAUDE·%s → CODEX] @**Codex** a' % TAG)
 
     def test_the_check_hint_after_a_timeout_cannot_smuggle_a_command_in_through_a_topic(self) -> None:
         topic = "x' ; touch /tmp/simple-tools-pwned ; echo '"  # a topic any member of the realm can set
@@ -642,7 +642,7 @@ class ReadTests(Harness):
         message_id = self.fake.add_message("Codex", "simple-tools", "my topic", "the body\nsecond line",
                                            timestamp=OCT_7_2026_2341_UTC)
         result = self.run_cli("read", "--topic", "my topic")
-        self.assertEqual(result.out, "#simple-tools › my topic · id %d\nCodex [bot] · Wed, Oct 7, 6:41pm\n"
+        self.assertEqual(result.out, "#simple-tools › my topic · id %d\nCodex [bot] · Wed, Oct 7, 6:41 PM\n"
                                      "the body\nsecond line\n\n" % message_id)
         for abbreviation in ("CDT", "CST", " CT"):
             self.assertNotIn(abbreviation, result.out)
@@ -650,7 +650,7 @@ class ReadTests(Harness):
     def test_human_sender_and_mention_marker(self) -> None:
         self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "hey @**Claude** look", timestamp=OCT_7_2026_2341_UTC)
         out = self.run_cli("read", "--topic", "t").out
-        self.assertIn("Jay Wedgeworth [human] · Wed, Oct 7, 6:41pm · @you", out)
+        self.assertIn("Jay Wedgeworth [human] · Wed, Oct 7, 6:41 PM · @you", out)
 
     def test_control_characters_are_shown_not_sent_to_the_terminal(self) -> None:
         self.fake.add_message("Codex", "simple-tools", "t", "before \x1b[31mred\x1b[0m after\tkeep")

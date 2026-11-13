@@ -1,7 +1,7 @@
-"""Central time, the owner's clock:  12-hour, am or pm in lower case, and never a zone name.
+"""Central time, the owner's clock: 12-hour, spaced AM/PM, and never a zone name.
 
-    stamp(utc)   "Sun, Oct 11, 7:00am"
-    clock(utc)   "7:00am"
+    stamp(utc)   "Sun, Oct 11, 7:00 AM"
+    clock(utc)   "7:00 AM"
     id_stamp(utc)   ("20261011", "0700")
 
 Daylight saving comes from the system time zone database (zoneinfo).  If that database is missing (a
@@ -49,7 +49,7 @@ def central(value: datetime, *, use_zoneinfo: bool = True) -> datetime:
 def clock(value: datetime, *, use_zoneinfo: bool = True) -> str:
     local = central(value, use_zoneinfo=use_zoneinfo)
     hour = local.hour % 12 or 12
-    return "%d:%02d%s" % (hour, local.minute, "am" if local.hour < 12 else "pm")
+    return "%d:%02d%s" % (hour, local.minute, " AM" if local.hour < 12 else " PM")
 
 
 def stamp(value: datetime, *, use_zoneinfo: bool = True) -> str:

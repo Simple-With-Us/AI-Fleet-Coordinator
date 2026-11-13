@@ -28,11 +28,11 @@ class CentralTime(unittest.TestCase):
                         moment = datetime(year, month, day, hour, 30, tzinfo=timezone.utc)
                         self.assertEqual(central.clock(moment), central.clock(moment, use_zoneinfo=False), moment)
 
-    def test_twelve_hour_clock_with_lower_case_am_and_pm_and_no_zone(self):
-        cases = {(5, 0): "12:00am", (5, 5): "12:05am", (11, 0): "6:00am", (17, 0): "12:00pm", (18, 59): "1:59pm", (4, 59): "11:59pm"}
+    def test_twelve_hour_clock_with_spaced_uppercase_am_and_pm_and_no_zone(self):
+        cases = {(5, 0): "12:00 AM", (5, 5): "12:05 AM", (11, 0): "6:00 AM", (17, 0): "12:00 PM", (18, 59): "1:59 PM", (4, 59): "11:59 PM"}
         for (hour, minute), want in cases.items():
             self.assertEqual(central.clock(datetime(2026, 7, 1, hour, minute, tzinfo=timezone.utc)), want)     # July:  UTC-5
-        self.assertEqual(central.stamp(datetime(2026, 8, 9, 20, 52, tzinfo=timezone.utc)), "Sun, Aug 9, 3:52pm")
+        self.assertEqual(central.stamp(datetime(2026, 8, 9, 20, 52, tzinfo=timezone.utc)), "Sun, Aug 9, 3:52 PM")
         for text in (central.stamp(NOW), central.clock(NOW)):
             for zone in ("CDT", "CST", "CT", "UTC", "Z"):
                 self.assertNotIn(zone, text)

@@ -17,9 +17,9 @@ test("escaping covers markup and attribute breakouts", () => {
   assert.equal(escapeHtml(`<script>"x"&'y'\``), "&#60;script&#62;&#34;x&#34;&#38;&#39;y&#39;&#96;");
 });
 
-test("owner clock:  12-hour, am or pm, Central, no zone abbreviation", () => {
-  assert.equal(ownerTime(Date.parse("2026-10-09T08:15:00Z")), "Fri, Oct 9, 3:15am");
-  assert.equal(ownerTime(Date.parse("2026-10-09T20:05:00Z")), "Fri, Oct 9, 3:05pm");
+test("owner clock:  12-hour, spaced uppercase AM/PM, Central, no zone abbreviation", () => {
+  assert.equal(ownerTime(Date.parse("2026-10-09T08:15:00Z")), "Fri, Oct 9, 3:15 AM");
+  assert.equal(ownerTime(Date.parse("2026-10-09T20:05:00Z")), "Fri, Oct 9, 3:05 PM");
   assert.equal(ownerTime(NaN), "");
 });
 
@@ -39,7 +39,7 @@ test("consent page escapes client-controlled strings and has no script", async (
   assert.ok(!html.includes("<img"));
   assert.ok(!html.includes("<script"));
   assert.ok(!html.includes(`h"><b>`));
-  assert.match(html, /This replaces the grant from Old &#60;Client&#62;, created Thu, Oct 8, 3:00pm\./);
+  assert.match(html, /This replaces the grant from Old &#60;Client&#62;, created Thu, Oct 8, 3:00 PM\./);
   assert.match(html, /name="seat" value="JET"/);
   assert.ok(html.includes(SENTENCE_GAP), "sentences keep the U+00A0 gap in HTML");
   assert.equal(res.headers.get("Content-Security-Policy"), PAGE_CSP);
@@ -84,7 +84,7 @@ test("admin page renders state and escapes refusal-log values", async () => {
     { "Set-Cookie": "__Host-simple-tools-csrf=x; Path=/; Secure; HttpOnly; SameSite=Strict" },
   );
   const html = await res.text();
-  assert.match(html, /Armed until Fri, Oct 9, 3:25am/);
+  assert.match(html, /Armed until Fri, Oct 9, 3:25 AM/);
   assert.ok(html.includes("&#60;x&#62;"));
   assert.ok(html.includes("https://grok.com/cb"));
   assert.ok(!html.includes("<script"));
@@ -216,10 +216,10 @@ test("admin status distinguishes no traffic, mixed outcomes, readiness, and reta
   // recorded, and longer labels squeeze the card's value column at desktop width.
   assert.match(mixed, /Last Success/);
   assert.match(mixed, /Last Call/);
-  assert.match(mixed, /Fri, Oct 9, 3:00pm/);
+  assert.match(mixed, /Fri, Oct 9, 3:00 PM/);
   assert.match(mixed, /Wait until the displayed reset time/);
   assert.match(mixed, /Retryable/);
-  assert.match(mixed, /Reset Fri, Oct 9, 4:00pm/);
+  assert.match(mixed, /Reset Fri, Oct 9, 4:00 PM/);
   assert.match(mixed, /Upstream HTTP 429/);
   assert.ok(mixed.includes('Check {&#34;name&#34;:&#34;query-budget&#34;,&#34;params&#34;:{&#34;limit&#34;:3}}'));
   assert.match(mixed, /Authorize Refusal/);
