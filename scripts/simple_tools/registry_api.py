@@ -53,6 +53,8 @@ PRINCIPAL_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
 KEY_VAR = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
 TOKEN_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN"
 REGISTRY_PATH = "/operator-registry"
+# Public project identifier; the listener payload deliberately omits fleet_knobs.
+REGISTRY_PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 REGISTRY_FETCH_TIMEOUT = 3.0
 
 #: The fleet_knobs names this module falls back to for the process environment.  They are
@@ -122,12 +124,11 @@ def _direct_values(env: Mapping[str, str]) -> dict[str, str]:
     if token.startswith("st.") and len(token) >= 20:
         try:
             import fleet_infisical as FI
-            from fleet_knobs.source import PROJECT_ID
 
             scoped_env = dict(env)
             scoped_env[FI.ENV_READ_PATHS] = REGISTRY_PATH
             values = FI.fetch_project(
-                PROJECT_ID,
+                REGISTRY_PROJECT_ID,
                 REGISTRY_PATH,
                 scoped_env,
                 token=token,
@@ -135,6 +136,11 @@ def _direct_values(env: Mapping[str, str]) -> dict[str, str]:
                 timeout=REGISTRY_FETCH_TIMEOUT,
             )
             url, key = values.get(URL_ENV, ""), values.get(KEY_VAR, "")
+            missing = [name for name in (URL_ENV, KEY_VAR) if not values.get(name)]
+            if missing:
+                _DIRECT_REASON = "required registry setting missing (%s)" % ", ".join(missing)
+                _DIRECT_MISS_UNTIL = time.monotonic() + KNOB_MISS_RETRY_S
+                return _DIRECT_CACHE
             parsed = urllib.parse.urlsplit(url)
             loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
             valid_url = (

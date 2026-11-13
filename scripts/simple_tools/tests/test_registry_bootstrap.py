@@ -1,7 +1,11 @@
 """The interactive registry reader cannot inherit a different consumer's grant."""
 
 import os
+from pathlib import Path
+import shutil
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -24,9 +28,8 @@ class DirectRegistryTests(unittest.TestCase):
         self.fetch = mock.Mock(return_value={API.URL_ENV: "https://registry.example.test",
                                             API.KEY_VAR: "synthetic-signing-key-" * 3})
         provider = types.SimpleNamespace(ENV_READ_PATHS="INFISICAL_READ_PATHS", fetch_project=self.fetch)
-        source = types.SimpleNamespace(PROJECT_ID="synthetic-project")
         self.modules = mock.patch.dict(sys.modules, {"fleet_infisical": provider,
-                                                     "fleet_knobs.source": source})
+                                                     "fleet_knobs": None, "fleet_knobs.source": None})
         self.modules.start()
         self.addCleanup(self.modules.stop)
         self.knob = mock.patch.object(API, "_knob_value", side_effect=AssertionError("wrong consumer"))
@@ -38,7 +41,7 @@ class DirectRegistryTests(unittest.TestCase):
         self.assertTrue(API.signing_key().startswith("synthetic-signing-key"))
         self.fetch.assert_called_once()
         args, kwargs = self.fetch.call_args
-        self.assertEqual(args[:2], ("synthetic-project", "/operator-registry"))
+        self.assertEqual(args[:2], (API.REGISTRY_PROJECT_ID, "/operator-registry"))
         self.assertEqual(args[2]["INFISICAL_READ_PATHS"], "/operator-registry")
         self.assertEqual(kwargs["token"], os.environ[API.TOKEN_ENV])
         self.assertEqual(set(kwargs["names"]), {API.URL_ENV, API.KEY_VAR})
@@ -51,6 +54,43 @@ class DirectRegistryTests(unittest.TestCase):
         self.assertIn(API.TOKEN_ENV, result["error"])
         self.fetch.assert_not_called()
 
+    def test_listener_payload_reads_registry_without_the_knob_package(self):
+        source = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "simple_tools"
+            package.mkdir()
+            (package / "__init__.py").write_text("")
+            shutil.copyfile(source / "simple_tools/registry_api.py", package / "registry_api.py")
+            shutil.copyfile(source / "fleet_infisical.py", root / "fleet_infisical.py")
+            program = r'''
+import secrets, sys
+sys.path.insert(0, sys.argv[1])
+sys.modules['fleet_knobs'] = None
+sys.modules['fleet_knobs.source'] = None
+import fleet_infisical as FI
+from simple_tools import registry_api as API
+seen = []
+def read(method, path, token, body, env, **options):
+    seen.append(path)
+    if path == '/v2/service-token':
+        return 200, dict(workspace=API.REGISTRY_PROJECT_ID, permissions=['read'],
+            scopes=[dict(environment='prod', secretPath=API.REGISTRY_PATH)], expiresAt='2099-01-01T00:00:00Z')
+    name = API.URL_ENV if '/raw/' + API.URL_ENV + '?' in path else API.KEY_VAR
+    value = 'https://registry.example.test' if name == API.URL_ENV else 'synthetic-key-' * 4
+    return 200, dict(secret=dict(secretKey=name, secretValue=value, type='shared',
+        workspace=API.REGISTRY_PROJECT_ID, environment='prod', secretPath=API.REGISTRY_PATH))
+FI._api_json = read
+answer = API._direct_values({API.TOKEN_ENV: 'st.' + secrets.token_urlsafe(32)})
+assert answer[API.URL_ENV] == 'https://registry.example.test'
+assert len(seen) == 3
+assert all(any('/raw/' + name + '?' in path for path in seen[1:]) for name in (API.URL_ENV, API.KEY_VAR))
+print('listener-reader-ok')
+'''
+            result = subprocess.run([sys.executable, "-I", "-B", "-c", program, str(root)],
+                                    capture_output=True, text=True, timeout=10, env={"PATH": os.defpath})
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "listener-reader-ok"), result.stderr)
+
     def test_provider_failure_is_cached_and_payload_is_not_reported(self):
         self.fetch.side_effect = RuntimeError("provider-secret-must-not-appear")
         for _ in range(2):
@@ -58,6 +98,18 @@ class DirectRegistryTests(unittest.TestCase):
             self.assertEqual(result["code"], "not_configured")
             self.assertNotIn("provider-secret", result["error"])
         self.fetch.assert_called_once()
+
+    def test_missing_required_registry_name_refuses_before_signed_transport(self):
+        complete = dict(self.fetch.return_value)
+        for name in (API.URL_ENV, API.KEY_VAR):
+            with self.subTest(name=name):
+                API.reset_knob_cache()
+                self.fetch.return_value = {key: value for key, value in complete.items() if key != name}
+                with mock.patch.object(API, "_open") as opened:
+                    answer = API.call(None, "assign", {})
+                self.assertEqual(answer["code"], "not_configured")
+                self.assertIn(name, answer["error"])
+                opened.assert_not_called()
 
     def test_failed_dedicated_route_never_uses_inherited_url_and_signing_key(self):
         os.environ[API.URL_ENV] = "https://inherited.example.test"

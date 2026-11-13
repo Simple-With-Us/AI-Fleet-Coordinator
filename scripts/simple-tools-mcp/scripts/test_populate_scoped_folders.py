@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 import urllib.error
 import urllib.request
 from unittest import mock
@@ -33,7 +34,7 @@ with (
     tempfile.TemporaryDirectory() as fixture_home,
     mock.patch.object(pathlib.Path, "home", return_value=pathlib.Path(fixture_home)),
     mock.patch.dict(
-        os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+        os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())}
     ),
 ):
     spec.loader.exec_module(psf)

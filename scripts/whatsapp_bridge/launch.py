@@ -165,7 +165,7 @@ def main(argv=None, environment=None):
     prepared = prepare(environment, service_token)
     service_token = ""
     sys.path.insert(0, str(release / "lib"))
-    from fleet_secrets.cli import cmd_run
+    from fleet_infisical_cli import cmd_run
 
     if mode == "poll":
         return run_poll_with_optional_send(command, prepared)
