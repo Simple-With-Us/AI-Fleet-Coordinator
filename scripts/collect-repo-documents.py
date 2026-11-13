@@ -82,12 +82,15 @@ class Blob:
     size_bytes: int | None = None
 
 
-def _fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
+def _fsync_directory(path: Path, *, fd: int | None = None) -> None:
+    owned = fd is None
+    if owned:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         os.fsync(fd)
     finally:
-        os.close(fd)
+        if owned:
+            os.close(fd)
 
 
 @contextmanager
@@ -146,6 +149,17 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
             os.close(fd)
 
 
+def _git_read_environment() -> dict[str, str]:
+    """Preserve normal host trust while refusing caller source/config injection."""
+    excluded = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+    env = {key: value for key, value in os.environ.items() if key not in excluded and
+           not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
+    return env
+
+
 def _run_git(
     repo: Path,
     *args: str,
@@ -160,14 +174,7 @@ def _run_git(
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=60,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "GIT_OPTIONAL_LOCKS": "0",
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_NO_LAZY_FETCH": "1",
-            },
+            env=_git_read_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         raise CollectionError("Git operation timed out after 60 seconds") from exc
@@ -677,6 +684,11 @@ def _load_previous_manifest(path: Path, repo_name: str) -> dict[str, Any]:
     raw = _read_existing(path)
     if raw is None:
         return {}
+    return parse_existing_manifest(raw, repo_name)
+
+
+def parse_existing_manifest(raw: bytes, repo_name: str) -> dict[str, Any]:
+    """Validate manifest bytes already read through a caller's anchored file descriptor."""
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

@@ -8,6 +8,9 @@ import importlib.util
 import json
 import os
 import resource
+import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,6 +20,60 @@ import remote_git_source as remote
 
 MAX_RELAY_RESPONSE_BYTES = 4_000_000
 RELAY_READ_TIMEOUT_SECONDS = 310
+_MANAGED_ROUTE_VERIFIED = False
+_MANAGED_ROUTE_ACTOR = None
+_MANAGED_ROUTE_KEY = None
+
+
+def verify_managed_route(environ: dict[str, str] | None = None) -> str:
+    """Accept only the installed managed wrapper and its already assigned authenticated seat."""
+    global _MANAGED_ROUTE_VERIFIED, _MANAGED_ROUTE_ACTOR, _MANAGED_ROUTE_KEY
+    environ = os.environ if environ is None else environ
+    launcher = (environ.get("AGENT_LAUNCHER") or "").strip()
+    launch_seat = (environ.get("AGENT_LAUNCH_SEAT") or "").strip().upper()
+    seats = [(environ.get(key) or "").strip().upper() for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG")]
+    seats = [seat for seat in seats if seat]
+    if bool(launcher) != bool(launch_seat) or not seats or len(set(seats)) != 1 or not re.fullmatch(r"[A-Z][A-Z0-9_-]{0,63}", seats[0]):
+        raise remote.SourceError("Managed exporter requires one existing assigned seat")
+    command = shutil.which("simple-git", path=environ.get("PATH"))
+    managed = Path.home() / ".local/bin/simple-git"
+    if command is None or Path(command).resolve() != managed.resolve() or not managed.is_file():
+        raise remote.SourceError("Assigned managed Git wrapper is unavailable")
+    info = managed.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+        raise remote.SourceError("Assigned managed Git wrapper permissions are unsafe")
+    for parent in managed.parents:
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+            raise remote.SourceError("Assigned managed Git wrapper parent is unsafe")
+    with managed.open("rb") as source:
+        marker = source.read(2048)
+    if b"# fleet-cli managed wrapper v1" not in marker:
+        raise remote.SourceError("Assigned Git entrypoint is not the installed managed wrapper")
+    cache_key = (launcher, launch_seat, tuple(seats), command, environ.get("HOME"), environ.get("PATH"))
+    if _MANAGED_ROUTE_VERIFIED and _MANAGED_ROUTE_KEY == cache_key:
+        return _MANAGED_ROUTE_ACTOR
+    try:
+        with tempfile.TemporaryFile() as output:
+            result = subprocess.run([command, "whoami", "--json"], stdin=subprocess.DEVNULL,
+                                    stdout=output, stderr=subprocess.DEVNULL, timeout=60,
+                                    start_new_session=True, preexec_fn=_limit_relay_output, env=environ, check=False)
+            if result.returncode != 0 or os.fstat(output.fileno()).st_size > 65536:
+                raise remote.SourceError("Assigned managed Git identity verification failed")
+            output.seek(0)
+            identity = json.loads(output.read(65537))["structured"]
+        fields = [identity.get(key) for key in ("authenticated_seat", "default_identity")]
+        advertised = identity.get("identities")
+        if any(not isinstance(value, str) or value != seats[0] for value in fields) or not isinstance(advertised, list) or not any(
+            isinstance(item, dict) and item.get("identity") == seats[0] for item in advertised
+        ):
+            raise remote.SourceError("Assigned managed Git identity does not match this process")
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        raise remote.SourceError("Assigned managed Git identity verification failed") from exc
+    _MANAGED_ROUTE_VERIFIED = True
+    _MANAGED_ROUTE_ACTOR = seats[0]
+    _MANAGED_ROUTE_KEY = cache_key
+    return _MANAGED_ROUTE_ACTOR
 
 
 def _limit_relay_output() -> None:
@@ -28,11 +85,12 @@ def _limit_relay_output() -> None:
     resource.setrlimit(resource.RLIMIT_FSIZE, (ceiling, ceiling))
 
 
-def relay_read(tool: str, arguments: dict) -> dict:
+def relay_read(tool: str, arguments: dict, *, environ: dict[str, str] | None = None) -> dict:
     if tool not in {"gr_wf_repo_get", "gr_wf_branch_get", "gr_wf_git_tree_get", "gr_wf_file_get"}:
         raise remote.SourceError("Exporter attempted an unsupported relay operation")
-    if not os.environ.get("SIMPLE_TOOLS_BEARER"):
-        raise remote.SourceError("Exporter requires an existing process SIMPLE_TOOLS_BEARER")
+    bound = os.environ if environ is None else environ
+    if not bound.get("SIMPLE_TOOLS_BEARER"):
+        verify_managed_route(bound)
     # The installed CLI verifies the authenticated seat; no credential locator is read here.
     try:
         with tempfile.TemporaryFile() as output:
@@ -44,6 +102,7 @@ def relay_read(tool: str, arguments: dict) -> dict:
                 timeout=RELAY_READ_TIMEOUT_SECONDS,
                 check=False,
                 preexec_fn=_limit_relay_output,
+                env=environ,
             )
             if os.fstat(output.fileno()).st_size > MAX_RELAY_RESPONSE_BYTES:
                 raise remote.SourceError("Assigned Git relay response exceeded its byte bound")
