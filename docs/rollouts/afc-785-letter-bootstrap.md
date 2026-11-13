@@ -14,4 +14,6 @@ A refused file leaves an empty binding marker in the process environment so regi
 
 Deploy the reviewed source through the normal fleet CLI release path.  Run the shared letter request in the intended interactive session and verify the registry's assignment and persisted title.  A loader test or a successful health check alone does not prove assignment.
 
+The managed `platform-letter` wrapper uses the ordinary isolated Python launch and no longer sources either legacy registry-env helper.  Its routine managed-wrapper refresh removes the old sourcing path.  Before activating the new source on any host, verify that host's own narrow consumer bootstrap is installed and usable; preserve a working host wrapper until its replacement route passes.  The server acceptance alone does not establish Mac readiness.
+
 Rollback the source through the fleet CLI release path if needed.  Preserve the consumer token until the replacement path is live and verified; remove obsolete helpers and signing-key caches only after auditing their remaining callers.

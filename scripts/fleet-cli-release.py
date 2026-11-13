@@ -640,57 +640,15 @@ def root_exports(home: Path) -> str:
     )
 
 
-#: The tool whose wrapper carries the registry settings into the process it runs.  A session-letter hook is launched with no
-#: profile, so its environment holds neither the registry URL nor its key, and the host's own env script is what sets them.
-#: The settings are read in SHELL before the script is exec'd:  no Python of this repository reads that file.
-REGISTRY_ENV_SCRIPT = "scripts/platform-letter"
-#: The env scripts, under the home folder, in the order they are looked for:  the first one that is a file is the one used.
-REGISTRY_ENV_FILES = (".local/bin/platform-letter-registry-env", ".local/bin/operator-registry-env")
-REGISTRY_ENV_NAMES = (
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL",
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
-)
-#: Managed wrappers a routine update REWRITES when the host has an older managed one (it carries MARKER, it is a regular
-#: file and no link):  the registry settings of a server's hooks arrive through the wrapper, so a wrapper without them
-#: would drop them at the update.  Every other wrapper is only ever written when it is missing.
+#: Managed wrappers a routine update refreshes when an older owned regular file carries MARKER.
+#: Refresh removes legacy registry-env sourcing; the shared client owns its private bootstrap.
+#: Every other wrapper is only ever written when it is missing.
 REFRESHED_WRAPPERS = frozenset({"platform-letter"})
-
-
-def registry_env_wrapper(home: Path, script: str) -> bytes:
-    """The wrapper of REGISTRY_ENV_SCRIPT:  a bash script that sources the host's registry env script, when there is
-    one, and then runs the release's script as every other managed Python tool is run (isolated, the arguments and the
-    standard input as they came).
-
-    The first of REGISTRY_ENV_FILES that is a file is used.  It is run once in a subshell with its output thrown away,
-    and is sourced into the wrapper only when that run got to its end, so a script that exits cannot stop the hook from
-    running:  the hook runs without the settings.  A script that fails, or does not parse, is sourced as far as bash
-    goes and the hook runs all the same.  Nothing it prints is shown, and its status is not the wrapper's.  The names
-    it may set are exported, whether or not it exported them."""
-    names = " ".join(REGISTRY_ENV_NAMES)
-    files = " ".join('"$HOME/%s"' % name for name in REGISTRY_ENV_FILES)
-    target = str(home / ".local/share/fleet-cli/current" / script)
-    return (
-        f"#!/bin/bash\n{MARKER}\n"
-        "# The registry settings of a session-letter hook come from the host's env script, sourced here in shell.\n"
-        f"for f in {files}; do\n"
-        '  if [ -f "$f" ]; then\n'
-        '    if [ "$( . "$f" >/dev/null 2>&1 </dev/null; echo ok )" = ok ]; then\n'
-        '      . "$f" >/dev/null 2>&1 </dev/null\n'
-        f"      export {names}\n"
-        "    fi\n"
-        "    break\n"
-        "  fi\n"
-        "done\n"
-        f'exec /usr/bin/python3 -I -B {shlex.quote(target)} "$@"\n'
-    ).encode()
 
 
 def wrapper(
     home: Path, script: str, extra: list[str] | None = None, codex_only: bool = False
 ) -> bytes:
-    if script == REGISTRY_ENV_SCRIPT and not extra and not codex_only:
-        return registry_env_wrapper(home, script)
     guard = ""
     if codex_only:
         guard = """

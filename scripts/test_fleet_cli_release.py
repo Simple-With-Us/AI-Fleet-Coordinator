@@ -1252,8 +1252,7 @@ class ShippedDataFilesTests(unittest.TestCase):
 
 
 class RegistryEnvWrapperTests(unittest.TestCase):
-    """The managed `platform-letter` wrapper carries the registry settings into a session-letter hook, in shell:  a hook
-    is launched with no profile, and no Python of this repository reads the host's env script."""
+    """The managed letter wrapper launches the shared client without legacy credential helpers."""
 
     URL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
 
@@ -1298,17 +1297,18 @@ class RegistryEnvWrapperTests(unittest.TestCase):
         self.assertEqual(len(lines), 1, "the env script printed into the hook's output")
         return json.loads(lines[0])
 
-    def test_the_platform_letter_env_script_is_sourced_and_beats_the_operator_one(self):
+    def test_neither_legacy_registry_env_script_is_executed(self):
         self.env_script("platform-letter-registry-env", "export %s=fake-from-platform\n" % self.URL)
         self.env_script("operator-registry-env", "export %s=fake-from-operator\n" % self.URL)
         got = self.answer()
-        self.assertEqual((got["url_set"], got["tag"]), (True, "fake-from-platform"))
+        self.assertEqual((got["url_set"], got["tag"]), (False, ""))
 
-    def test_only_the_operator_env_script_is_used_when_that_is_all_there_is(self):
-        # It need not have exported the name (the retired Python read it unexported):  the wrapper exports it.
-        self.env_script("operator-registry-env", "%s=fake-from-operator\n" % self.URL)
+    def test_a_legacy_helper_cannot_run_a_side_effect(self):
+        marker = self.home / "legacy-helper-ran"
+        self.env_script("operator-registry-env", "touch \"$HOME/legacy-helper-ran\"\n")
         got = self.answer()
-        self.assertEqual((got["url_set"], got["tag"]), (True, "fake-from-operator"))
+        self.assertFalse(got["url_set"])
+        self.assertFalse(marker.exists())
 
     def test_neither_env_script_still_runs_the_hook_without_the_settings(self):
         got = self.answer()
@@ -1342,9 +1342,9 @@ class RegistryEnvWrapperTests(unittest.TestCase):
 
     def test_the_text_names_no_credential_and_no_python_reads_the_env_file(self):
         text = self.path.read_text()
-        self.assertIn("platform-letter-registry-env", text)
-        self.assertIn("operator-registry-env", text)
-        self.assertEqual(text.count("exec "), 1)
+        self.assertNotIn("platform-letter-registry-env", text)
+        self.assertNotIn("operator-registry-env", text)
+        self.assertEqual(text.count("os.execv("), 1)
 
     def test_a_routine_refresh_rewrites_only_an_older_managed_platform_letter_wrapper(self):
         bin_dir = self.home / ".local/bin"
