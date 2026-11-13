@@ -1509,6 +1509,15 @@ def collect_repository(
     previous = _load_previous_manifest(manifest_path, repo.name)
     previous_private_opt_in = previous.get("private_docs_opt_in")
     if previous_private_opt_in is not None and previous_private_opt_in != private_docs_opt_in:
+        previous_owner_repo = previous.get("owner_repo")
+        current_owner_repo = f"{repo.owner}/{repo.name}"
+        if isinstance(previous_owner_repo, str) and previous_owner_repo != current_owner_repo:
+            raise CollectionError(
+                f"Private-document consent for {previous_owner_repo} cannot transfer to "
+                f"{current_owner_repo}. The existing private collection remains unchanged; "
+                "continue only after a separately reviewed migration explicitly re-authorizes "
+                f"private-document collection for {current_owner_repo}."
+            )
         raise CollectionError(
             "An existing private-document collection requires the same explicit opt-in"
         )

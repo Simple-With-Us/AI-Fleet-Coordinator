@@ -1284,6 +1284,74 @@ class CollectorTests(unittest.TestCase):
         manifest = json.loads((mirror / "manifest.json").read_text())
         self.assertEqual(manifest["private_docs_opt_in"], "Simple-With-Us/Kodus-Config")
 
+    def test_private_owner_transfer_refuses_new_opt_in_without_mutating_private_history(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Old owner README.\n")
+        repo.write("docs/private-audits/evidence.md", "Old owner private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-transfer-central"
+        verified_identities = {
+            "old-owner/private-repo",
+            "new-owner/private-repo",
+        }
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+
+            mirror = output / "Private-Repo"
+            before = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertTrue(
+                any(path.startswith("documents/docs/private-audits/") for path in before)
+            )
+            self.assertTrue(any(path.startswith("reports/") for path in before))
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/new-owner/Private-Repo.git",
+            )
+            repo.write("README.md", "New owner README.\n")
+            repo.write("docs/private-audits/evidence.md", "New owner private evidence.\n")
+            repo.commit_published()
+
+            with self.assertRaisesRegex(
+                collector.CollectionError,
+                "Private-document consent for old-owner/Private-Repo cannot transfer to "
+                "new-owner/Private-Repo",
+            ):
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="new-owner/Private-Repo",
+                )
+
+            after = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after, before)
+
     def test_indexes_only_cli_writes_only_to_preview_root(self) -> None:
         repo = self.make_repo()
         repo.write("docs/rollouts/rollout.md", "canonical")
