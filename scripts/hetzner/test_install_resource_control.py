@@ -12,6 +12,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Standalone discovery also needs the resolved repo-only fixture package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
+
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 SETTINGS = json.dumps({"applyEnabled": False})
@@ -69,6 +74,8 @@ class InstallerTests(unittest.TestCase):
             "hetzner/__init__.py",
             "hetzner/fleet_coding_memory.py",
             "hetzner/coding_resources.py",
+            "simple_tools/__init__.py",
+            "simple_tools/operator_github_state.py",
         }
         expected.update(
             "fleet_secrets/" + path.name for path in (SCRIPTS / "fleet_secrets").glob("*.py")
@@ -83,6 +90,7 @@ class InstallerTests(unittest.TestCase):
             self.destination,
             self.destination / "fleet_secrets",
             self.destination / "hetzner",
+            self.destination / "simple_tools",
         ):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
         for relative in expected:
@@ -126,6 +134,12 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "imports-ok")
+        for name in ("__init__.py", "operator_github_state.py"):
+            self.assertEqual(
+                (self.destination / "simple_tools" / name).read_bytes(),
+                (SCRIPTS / "simple_tools" / name).read_bytes(),
+            )
+        assert_installed_writer(self, self.destination, self.home)
         self.install()  # Existing protected installation can be refreshed without state changes.
         self.assertEqual(credential.read_text(), "untouched-test-credential")
         if not has_cryptography:
@@ -241,6 +255,7 @@ class InstallerTests(unittest.TestCase):
         for package, names in (
             ("fleet_secrets", ("__init__.py", "core.py")),
             ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
+            ("simple_tools", ("__init__.py", "operator_github_state.py")),
         ):
             (source / package).mkdir()
             for name in names:
@@ -261,6 +276,22 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((SCRIPTS / "reduced_status.py").is_file())
         self.assertTrue((SCRIPTS / "fleet-ops-control.py").is_file())
         self.assertFalse((SCRIPTS / "simple_tools" / "reduced_status.py").exists())
+
+    def test_missing_writer_ledger_is_refused_before_destination_created(self):
+        source = self.minimal_source()
+        (source / "simple_tools/operator_github_state.py").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
+
+    def test_symlinked_writer_ledger_is_refused_before_destination_created(self):
+        source = self.minimal_source()
+        ledger = source / "simple_tools/operator_github_state.py"
+        ledger.unlink()
+        ledger.symlink_to(SCRIPTS / "simple_tools/operator_github_state.py")
+        with self.assertRaises(OSError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
 
     def minimal_source(self, trust_text="pass\n"):
         """A small valid source tree.  `trust_text` None leaves out the `muster_agent` folder."""
@@ -284,6 +315,7 @@ class InstallerTests(unittest.TestCase):
         for package, names in (
             ("fleet_secrets", ("__init__.py", "core.py")),
             ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
+            ("simple_tools", ("__init__.py", "operator_github_state.py")),
         ):
             (source / package).mkdir()
             for name in names:
