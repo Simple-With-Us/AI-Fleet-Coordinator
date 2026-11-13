@@ -50,6 +50,7 @@ else:
 
 wanted = ("fleet_rag/", "fleet-recall-service/")
 verifier_files = ("fleet_secrets/__init__.py", "fleet_secrets/core.py")
+scanner_files = ("simple_tools/secretscan.py",)
 n = 0
 os.makedirs(app, exist_ok=True)
 with tarfile.open(tarball, "r:gz") as t:
@@ -58,7 +59,7 @@ with tarfile.open(tarball, "r:gz") as t:
         parts = m.name.split("/", 2)          # <repo-ref>/scripts/<rest>
         if len(parts) != 3 or parts[1] != "scripts":
             continue
-        if not (parts[2].startswith(wanted) or parts[2] in verifier_files):
+        if not (parts[2].startswith(wanted) or parts[2] in verifier_files + scanner_files):
             continue
         if not (m.isfile() or m.isdir()):
             continue
@@ -66,6 +67,9 @@ with tarfile.open(tarball, "r:gz") as t:
         members.append(m)
     if not set(verifier_files) <= {m.name for m in members if m.isfile()}:
         print("bootstrap: scoped verifier library missing from source; aborting", flush=True)
+        sys.exit(1)
+    if not set(scanner_files) <= {m.name for m in members if m.isfile()}:
+        print("bootstrap: credential scanner missing from source; aborting", flush=True)
         sys.exit(1)
     kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
     t.extractall(app, members=members, **kwargs)

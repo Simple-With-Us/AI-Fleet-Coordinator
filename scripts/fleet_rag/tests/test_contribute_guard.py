@@ -146,10 +146,14 @@ class NearDuplicateTests(GuardBase):
             seen.extend(texts)
             return [[0.0] * 4 for _ in texts]
 
-        contribute_guard.near_duplicate(self.cfg, self.q, "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd leaked",
-                                        embed=spy_embed)
+        candidate = 'token ghp_' + 'A' * 36 + ' leaked'
+        with self.assertRaisesRegex(FleetRagError, '^refused_secret:text$'):
+            contribute_guard.near_duplicate(self.cfg, self.q, candidate, embed=spy_embed)
+        self.assertEqual(seen, [])
+        contribute_guard.near_duplicate(self.cfg, self.q, 'Keep https://fixture:demo@example.invalid out of operational transcripts.', embed=spy_embed)
         self.assertEqual(len(seen), 1)
-        self.assertNotIn("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd", seen[0])
+        self.assertNotIn('fixture:demo@', seen[0])
+        self.assertIn('[REDACTED:password]', seen[0])
 
     def test_empty_text_rejected_and_threshold_override(self):
         for bad in ("", "   ", None, 5):

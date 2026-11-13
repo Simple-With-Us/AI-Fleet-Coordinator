@@ -73,6 +73,7 @@ from typing import Any
 
 from . import __version__, core, recall_api
 from .core import FleetRagError
+from .credential_gate import require_safe_fields
 
 TAILSCALE_BIN = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 TAILSCALE_STATUS_TIMEOUT = 3.0
@@ -450,6 +451,10 @@ def call_public(name: str, kwargs: dict) -> dict:
     `call_with_fallback` prefixes it with why the local path was skipped."""
     if name not in REST_PATH:
         raise FleetRagError(f"no public REST route for {name!r}")
+    if name == 'recall_search':
+        require_safe_fields(query=kwargs.get('query'))
+    elif name == 'recall_contribute':
+        require_safe_fields(text=kwargs.get('text'), title=kwargs.get('title'), url=kwargs.get('url'))
     creds = public_credentials()
     if creds is None:
         resolved = _resolve_public_env()

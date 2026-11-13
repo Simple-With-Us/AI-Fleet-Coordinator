@@ -20,6 +20,7 @@ WORKDIR /app
 COPY fleet_rag /app/fleet_rag
 COPY fleet-recall-service /app/fleet-recall-service
 COPY fleet_secrets/__init__.py fleet_secrets/core.py /app/fleet_secrets/
+COPY simple_tools/secretscan.py /app/simple_tools/secretscan.py
 
 # Same installer as the Coolify bootstrap path (RECALL_GITLEAKS_ONLY=1 runs only that step):
 # pinned release tarball for `uname -m`, size check, `gitleaks version` must print the pin,

@@ -17,6 +17,7 @@ from typing import Any
 
 from .core import FleetRagError
 from .scrub import scrub
+from .credential_gate import require_safe_fields
 
 THRESHOLD = 0.92
 LIMIT = 3
@@ -58,6 +59,7 @@ def near_duplicate(
     """
     if not isinstance(text, str) or not text.strip():
         raise FleetRagError("near_duplicate needs a non-empty text")
+    require_safe_fields(text=text)
     clean, _ = scrub(text.strip())
     vector = (embed or _default_embed)(cfg, [clean])[0]
     raw = qdrant.search_dense(vector, LIMIT, contribution_filter())

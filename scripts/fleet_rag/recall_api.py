@@ -37,6 +37,7 @@ from .core import (
 )
 from .scrub import gitleaks_flagged as _real_gitleaks_flagged
 from .scrub import scrub
+from .credential_gate import require_safe_fields
 
 # Seams (monkeypatch these in tests; install_fake_backend() swaps them all at once).
 load_config = core.load_config
@@ -427,6 +428,7 @@ def recall_search(
     """
     if not isinstance(query, str) or not query.strip():
         raise FleetRagError("query must be a non-empty string")
+    require_safe_fields(query=query)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise FleetRagError(f"limit must be an integer between 1 and {MAX_LIMIT}")
     if isinstance(per_doc, bool) or not isinstance(per_doc, int) or not 1 <= per_doc <= PER_DOC_MAX:
@@ -613,6 +615,7 @@ def recall_contribute(
     """
     if not isinstance(text, str):
         raise FleetRagError("text must be a string")
+    require_safe_fields(text=text, title=title, url=url)
     text = text.strip()
     if len(text) < CONTRIB_MIN:
         raise FleetRagError(f"text too short: {len(text)} chars (minimum {CONTRIB_MIN})")

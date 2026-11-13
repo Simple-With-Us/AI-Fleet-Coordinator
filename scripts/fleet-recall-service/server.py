@@ -370,6 +370,7 @@ def call_tool(name: str, args: JsonDict) -> JsonDict:
     if missing:
         raise FleetRagError("missing required argument(s): " + ", ".join(missing))
     if name == "recall_search":
+        recall_api.require_safe_fields(query=args.get('query'))
         ensure_retracted_index()
         search_args, presentation = recall_presentation.split_search_arguments(args)
         _int(search_args, "limit")

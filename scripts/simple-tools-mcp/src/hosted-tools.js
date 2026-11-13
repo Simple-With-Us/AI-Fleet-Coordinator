@@ -1744,6 +1744,13 @@ export class HostedTools {
 
   async tool_recall_search(args, audit) {
     const recall = this.requireRecall();
+    let credential;
+    try {
+      credential = scanSecret(args.query, this.known);
+    } catch {
+      throw new ToolError("unavailable", "credential_scan_unavailable:query");
+    }
+    if (credential) throw new ToolError("refused_secret", "refused_secret:query");
     const query = args.query.trim();
     if (!query) throw new ToolError("invalid_argument", "argument 'query' must not be blank");
     await this.reserve("read");
