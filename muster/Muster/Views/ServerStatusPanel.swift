@@ -591,7 +591,8 @@ struct ServerStatusPanel: View {
 
     private func coolifySection(_ reading: ServerStatusReading) -> some View {
         let containers = reading.coolifyProblemsFirst.filter { resource in
-            (!problemsOnly || resource.signalText() != nil)
+            (!problemsOnly || resource.resourceStatus != .running
+                || (resource.restartCount ?? 0) > 0 || resource.oomKilled == true)
                 && matchesSearch(resource.name, resource.container)
         }
         return VStack(alignment: .leading, spacing: 8) {
