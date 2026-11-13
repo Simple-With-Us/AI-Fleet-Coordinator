@@ -172,6 +172,7 @@ import time
 import types
 import urllib.error
 import urllib.parse
+import uuid
 from pathlib import Path
 
 TOOL = "fleet-ops-control"
@@ -256,7 +257,7 @@ REDUCED_STATUS_MAX_BYTES = 256 * 1024
 # container the module is at its image path.  Every word of the docker argv is a constant here.
 EAVESDROPPER_SETTINGS_VERB = "eavesdropper-settings"
 EAVESDROPPER_SETTINGS_TARGET = "server"
-EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply", "save", "initialize")
+EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply", "save", "initialize", "reconcile")
 EAVESDROPPER_SETTINGS_ALLOWLIST_NAME = "fleet-ops-eavesdropper-settings.json"
 EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES = 64 * 1024
 EAVESDROPPER_SETTINGS_EDITOR_PARTS = ("simple_tools", "server", "eavesdropper_settings_edit.py")
@@ -1805,7 +1806,8 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
     return document, (status if status in (0, 1, 2) else 1)
 
 
-def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=None):
+def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=None,
+                         request_id=None, created_at=None):
     """(answer fields, exit status) of one eavesdropper-settings request, or Refused / Failed.
 
     `file` runs the editor in this process on that file;  without it the editor runs in the
@@ -1814,7 +1816,9 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
     if action not in EAVESDROPPER_SETTINGS_ACTIONS:
         raise Refused("the eavesdropper settings action is get, plan or apply")
     request = {"action": action, "allowlist": load_eavesdropper_settings_allowlist(ctx)}
-    if action not in ("get", "initialize"):
+    if action in ("save", "initialize", "reconcile"):
+        request.update(requestID=request_id, requestCreatedAt=created_at)
+    if action not in ("get", "initialize", "reconcile"):
         if not isinstance(changes, dict) or not changes:
             raise Refused("name at least one setting to change", error_code="usage")
         request["set"] = changes
@@ -1920,13 +1924,27 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
     if not raw.strip():
         if mode != "plan":
             raise Refused("an apply needs the changes on standard input", error_code="usage")
-        return "get", None, None, None
+        return "get", None, None, None, None, None
     try:
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         request = None
+    request_id = created_at = None
+    if isinstance(request, dict) and request.get("action") in ("save", "initialize", "reconcile"):
+        request_id, created_at = request.get("requestID"), request.get("requestCreatedAt")
+        try:
+            if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
+                raise ValueError()
+        except (ValueError, AttributeError):
+            raise Refused("a canonical requestID is required", error_code="request_id_required") from None
+        if type(created_at) is not int or created_at <= 0:
+            raise Refused("requestCreatedAt is required", error_code="request_time_required")
+    if isinstance(request, dict) and request.get("action") == "reconcile":
+        if set(request) != {"action", "requestID", "requestCreatedAt"} or mode != "yes":
+            raise Refused("reconcile requires --yes and the original request identity only", error_code="usage")
+        return "reconcile", None, None, None, request_id, created_at
     if isinstance(request, dict) and request.get("action") == "initialize":
-        if set(request) != {"action", "expectBaseSHA256"} or mode != "yes":
+        if set(request) != {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"} or mode != "yes":
             raise Refused(
                 "initialize requires --yes and the runtime-file revision only", error_code="usage"
             )
@@ -1935,10 +1953,10 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             expected
         ):
             raise Refused("initialize requires expectBaseSHA256", error_code="version_required")
-        return "initialize", None, None, expected
+        return "initialize", None, None, expected, request_id, created_at
     if (
         not isinstance(request, dict)
-        or set(request) - {"action", "set", "remove", "expectPlanSHA256", "expectBaseSHA256"}
+        or set(request) - {"action", "set", "remove", "expectPlanSHA256", "expectBaseSHA256", "requestID", "requestCreatedAt"}
         or not isinstance(request.get("set"), dict)
         or not request["set"]
         or not isinstance(request.get("remove", []), list)
@@ -1954,8 +1972,8 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             expected
         ):
             raise Refused("save requires expectBaseSHA256", error_code="version_required")
-        return "save", request["set"], request.get("remove"), expected
-    if "action" in request or "expectBaseSHA256" in request:
+        return "save", request["set"], request.get("remove"), expected, request_id, created_at
+    if set(request) & {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"}:
         raise Refused("unknown settings action or revision field", error_code="usage")
     expect = request.get("expectPlanSHA256")
     if mode != "yes":
@@ -1972,7 +1990,7 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             error_code="plan_hash_invalid",
         )
     action = "plan" if mode == "plan" else "apply"
-    return action, request["set"], request.get("remove"), expect
+    return action, request["set"], request.get("remove"), expect, None, None
 
 
 # MARK: - The server Operator's sessions and wakes (read only)
@@ -3600,14 +3618,15 @@ def handle(
             _server_only(ctx)
             if target != EAVESDROPPER_SETTINGS_TARGET:
                 raise Refused("only the server's Eavesdropper has settings here")
-            edit_action, changes, remove, expect = eavesdropper_settings_request_from_stdin(
+            edit_action, changes, remove, expect, request_id, created_at = eavesdropper_settings_request_from_stdin(
                 ctx, mode
             )
             with contextlib.ExitStack() as held:
                 if mode == "yes" and not lock_held:
                     held.enter_context(action_lock(ctx))
                 fields, code = eavesdropper_settings(
-                    ctx, edit_action, changes, expect, remove=remove
+                    ctx, edit_action, changes, expect, remove=remove,
+                    request_id=request_id, created_at=created_at,
                 )
             answer.update(fields)
             if mode == "yes":
@@ -4216,7 +4235,9 @@ def run_eavesdropper_settings(argv, ctx, out):
     code = 2
     try:
         parser = _QuietParser(prog=TOOL, add_help=False)
-        parser.add_argument("action", choices=EAVESDROPPER_SETTINGS_ACTIONS)
+        # Canonical writes use only the owner-authenticated server route, which
+        # requires --yes and owns the action lock and audit row.
+        parser.add_argument("action", choices=("get", "plan", "apply"))
         parser.add_argument("--set", action="append", default=[], dest="changes")
         parser.add_argument("--remove", action="append", default=[])
         parser.add_argument("--file")
