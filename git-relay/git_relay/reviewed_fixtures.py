@@ -122,8 +122,10 @@ def unreviewed_file_secret(
     Legacy attestations keep their full-byte contract for the dedicated fake
     shapes they reviewed.  Bytes no legacy review attested also pass through
     the owning generic-fixture scanner: its exact (repo, path, sha256)
-    admission waives assigned credential and assigned secret labels only,
-    while dedicated shapes and Zulip-shaped keys stay absolute on that path.
+    generic admission waives assigned credential and assigned secret labels
+    only.  Its separate public-integrity admission waives only the Zulip-shape
+    result for exact reviewed files; other dedicated shapes and all loaded
+    values remain absolute, including the find_secret check below.
     """
     text = raw.decode("utf-8", "replace")
     for value in known:
