@@ -383,7 +383,7 @@ class Rpc:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=dict(env),
+            env=PL.child_process_env(env),
         )
 
     def __enter__(self) -> Rpc:

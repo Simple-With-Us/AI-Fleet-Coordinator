@@ -409,3 +409,22 @@ cd scripts && python3 -m unittest simple_tools.tests.test_platform_letter_antigr
 ```
 cd scripts && python3 -m unittest simple_tools.tests.test_platform_letter_cursor simple_tools.tests.test_cursor_cloud_letters simple_tools.tests.test_cursor_cloud_letters_unit
 ```
+
+
+### Hosted Peer-Actions logging from a local bot
+
+Use `simple-peer-actions log --hosted` (or `PEER_ACTIONS_REMOTE=1`) with the
+usual `--requesting`, `--request`, `--action`, and `--result` fields. The process
+must declare its own seat (`AGENT_LAUNCH_SEAT` / `AGENT_SEAT`, or `--acting`)
+and receive its own existing `SIMPLE_TOOLS_BEARER` through its authorized launcher.
+No Google service-account JSON or Infisical reader is needed on that computer.
+The server's authenticated identity must match the acting seat. Launcher seat
+restrictions apply even to an explicit `--acting`. Never copy another seat's bearer.
+
+`--dry-run --hosted` verifies identity and returns the server-built row without
+appending it. The hosted path uses the existing fixed Fleet Tools endpoint,
+scanner and no-redirect transport. It never falls back to local credentials or
+retries a failed or ambiguous append. Check the registry before repeating an
+uncertain write. The existing direct mode remains unchanged when hosted mode
+is not selected. This source change does not provision a bearer, install a
+launcher, change the hosted logger's credential scope, or deploy a runtime.
