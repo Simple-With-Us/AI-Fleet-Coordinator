@@ -73,7 +73,7 @@ class NamesOnlyTests(unittest.TestCase):
             "workspace": self.project,
             "scopes": [{"environment": "prod", "secretPath": self.path}],
             "permissions": ["read"],
-            "expiresAt": None,
+            "expiresAt": "2099-01-01T00:00:00Z",
         }
         self.records = [self.record("B_KEY"), self.record("A_KEY")]
 
@@ -175,6 +175,48 @@ class NamesOnlyTests(unittest.TestCase):
                             self.project, self.path, env, token=token
                         )
                 api.assert_not_called()
+
+    def test_every_route_requires_future_timezone_aware_expiry_before_values(self):
+        invalid = (
+            None,
+            "",
+            False,
+            1,
+            "invalid-expiry",
+            "Infinity",
+            "2000-01-01T00:00:00Z",
+            "2099-01-01T00:00:00",
+        )
+        for route in ("names", "reader", "writer"):
+            for expiry in (*invalid, "missing"):
+                with self.subTest(route=route, expiry=expiry):
+                    metadata = dict(self.metadata, expiresAt=expiry)
+                    if expiry == "missing":
+                        metadata.pop("expiresAt")
+                    if route == "writer":
+                        metadata["permissions"] = ["read", "write"]
+                    with (
+                        mock.patch.object(
+                            fleet_infisical, "_api_json", return_value=(200, metadata)
+                        ) as api,
+                        self.assertRaisesRegex(
+                            fleet_infisical.SecretsError, "token-expired-or-invalid"
+                        ),
+                    ):
+                        if route == "names":
+                            fleet_infisical.list_project_names(
+                                self.project, self.path, self.env, token=self.token
+                            )
+                        else:
+                            fleet_infisical.fetch_project(
+                                self.project,
+                                self.path,
+                                self.env,
+                                token=self.token,
+                                writer=route == "writer",
+                                names=("A_KEY",),
+                            )
+                    self.assertEqual(api.call_count, 1)
 
 
 if __name__ == "__main__":
