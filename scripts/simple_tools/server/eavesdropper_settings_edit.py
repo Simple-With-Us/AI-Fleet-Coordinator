@@ -1458,12 +1458,17 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                     diagnostic["field"] = exc.field
                 if exc.request_id:
                     diagnostic.update(requestID=exc.request_id, outcome=exc.outcome)
+                terminal = bool(exc.request_id and exc.outcome == "refused")
+                if terminal:
+                    diagnostic["refusalCode"] = exc.code
+                # Only the journal's identity-bound terminal verdict releases an
+                # uncertain UI attempt.  No canonical snapshot was verified here.
                 return _answer(
                     action,
                     live,
                     ok=False,
                     result="failed",
-                    errorCode=exc.code,
+                    errorCode="request_refused" if terminal else exc.code,
                     persisted=False,
                     readback=False,
                     runtimeApplied=False,

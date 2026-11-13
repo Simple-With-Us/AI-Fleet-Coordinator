@@ -660,8 +660,14 @@ class InfisicalStore:
                 writer=True,
                 deadline=self.deadline,
             )
-        except (self.client.SecretsError, TimeoutError):
-            raise MutationError() from None
+        except TimeoutError:
+            raise MutationError(retryable=True) from None
+        except self.client.SecretsError as exc:
+            # The shared verifier owns the body-free cause classification.
+            # No mutation was entered, including when verification is unavailable.
+            raise MutationError(
+                retryable=getattr(exc, "failure_kind", None) != "refused"
+            ) from None
         body = {
             "workspaceId": self.project,
             "environment": "prod",
@@ -688,8 +694,10 @@ class InfisicalStore:
         if status not in (200, 201):
             # Each method has one purpose: PATCH an existing document or POST
             # one absent document, with no upsert or alternate-grant fallback.
+            if status == 429:
+                raise MutationError(status=status, retryable=True)
             uncertain = not (
-                type(status) is int and 400 <= status < 500 and status not in (408, 429)
+                type(status) is int and 400 <= status < 500 and status != 408
             )
             raise MutationError(status=status, sent=uncertain, retryable=uncertain)
 

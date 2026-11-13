@@ -83,7 +83,7 @@ class AutosaveTests(unittest.TestCase):
         })
         self.store = Store(self.document)
 
-    def canonical_wire(self, request=None, *, reloader=None, reader_enabled=True):
+    def canonical_wire(self, request=None, *, reloader=None, reader_enabled=True, store_error=None):
         """Real helper/editor JSON envelopes; only external effects are faked."""
         from simple_tools.tests.test_eavesdropper_settings_edit import load_control
         control = load_control()
@@ -109,7 +109,7 @@ class AutosaveTests(unittest.TestCase):
         )
         out = io.StringIO()
         env = {settings.READ_BINDING: "st." + secrets.token_urlsafe(32)} if reader_enabled else {}
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store):
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store, side_effect=store_error):
             code = control.main(
                 ["server", "eavesdropper-settings", "server", "--plan" if request is None else "--yes", "--json"],
                 ctx=ctx, out=out,
@@ -145,6 +145,73 @@ class AutosaveTests(unittest.TestCase):
         self.assertTrue(answer["persisted"] and answer["readback"])
         self.assertFalse(answer["ok"] or answer["runtimeApplied"])
         self.assertEqual(answer["errorCode"], "runtime_pending")
+
+    def test_actual_early_refusal_keeps_unknown_metadata_absent_and_recovers_after_fresh_get(self):
+        baseline, _ = self.canonical_wire()
+        baseline = baseline["eavesdropperSettings"]
+        request = dict(self.identity(), action="save", set={"daemon.coalesce_seconds": 2.0},
+                       expectBaseSHA256=baseline["revision"])
+        with mock.patch.object(self.store, "read", side_effect=AssertionError("no read after early refusal")) as read:
+            envelope, code = self.canonical_wire(
+                request, store_error=settings.SettingsError(
+                    "writer_not_configured", required_binding=settings.WRITE_BINDING))
+            answer = envelope["eavesdropperSettings"]
+            self.assertEqual(code, 1)
+            self.assertEqual((answer["errorCode"], answer["refusalCode"], answer["outcome"]),
+                             ("request_refused", "writer_not_configured", "refused"))
+            self.assertEqual(answer["requestID"], request["requestID"])
+            self.assertEqual(answer["requiredBinding"], settings.WRITE_BINDING)
+            self.assertFalse(answer["persisted"] or answer["readback"] or answer["runtimeApplied"])
+            self.assertTrue({"autosaveEnabled", "source", "revision", "baseSHA256"}.isdisjoint(answer))
+            read.assert_not_called()
+            repeated, code = self.canonical_wire(request)
+            self.assertEqual(repeated["eavesdropperSettings"]["errorCode"], "request_refused")
+            self.assertEqual(code, 1)
+            read.assert_not_called()
+        self.assertEqual(self.store.writes, [])
+        refreshed, code = self.canonical_wire()
+        self.assertEqual(code, 0)
+        refreshed = refreshed["eavesdropperSettings"]
+        self.assertIs(refreshed["autosaveEnabled"], True)
+        self.assertEqual(refreshed["revision"], baseline["revision"])
+        fresh = dict(self.identity(), action="save", set=request["set"],
+                     expectBaseSHA256=refreshed["revision"])
+        saved, code = self.canonical_wire(fresh)
+        self.assertEqual(code, 0)
+        self.assertEqual(saved["eavesdropperSettings"]["result"], "saved")
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_prejournal_failure_does_not_claim_a_terminal_identity_or_canonical_metadata(self):
+        request = dict(self.identity(), action="save", set={"daemon.coalesce_seconds": 2.0},
+                       expectBaseSHA256=settings.revision(self.document))
+        request["requestCreatedAt"] -= int((settings.REQUEST_TTL_SECONDS + 10) * 1000)
+        with mock.patch.object(self.store, "read", side_effect=AssertionError("no failure metadata read")) as read:
+            envelope, code = self.canonical_wire(request)
+        answer = envelope["eavesdropperSettings"]
+        self.assertEqual((code, answer["errorCode"]), (1, "request_expired"))
+        self.assertTrue({"requestID", "outcome", "refusalCode", "autosaveEnabled", "source", "revision", "baseSHA256"}.isdisjoint(answer))
+        self.assertEqual(self.store.writes, [])
+        read.assert_not_called()
+
+    def test_retryable_unsent_failure_fences_original_id_and_allows_only_fresh_intent(self):
+        for status in (None, 429):
+            with self.subTest(status=status):
+                identity = self.identity_args()
+                with mock.patch.object(self.store, "write", side_effect=settings.MutationError(status=status, retryable=True)) as write:
+                    answer = self.save(**identity)
+                    self.assertEqual((answer["outcome"], answer["errorCode"]), ("refused", "provider_write_refused"))
+                    self.assertTrue(answer["retryable"])
+                    self.assertFalse(answer["requestMayHaveBeenSent"])
+                    self.assertFalse(answer["persisted"] or answer["runtimeApplied"] or answer["ok"])
+                    repeated = self.save(**identity)
+                    self.assertEqual(repeated["errorCode"], "request_refused")
+                    self.assertEqual(write.call_count, 1)
+                fresh = settings.get(self.path, self.allowlist, store=self.store)
+                self.assertTrue(fresh["autosaveEnabled"])
+                self.assertTrue(self.save()["ok"])
+                # Reset only the synthetic current state for the next independent case.
+                self.path.write_text(self.original)
+                self.store.document = copy.deepcopy(self.document)
 
     def test_actual_runtime_copy_get_keeps_autosave_disabled(self):
         envelope, code = self.canonical_wire(reader_enabled=False)
@@ -243,7 +310,8 @@ class AutosaveTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store):
                     answer, code = editor.run_request(request, path=self.path)
                 self.assertEqual(code, 1)
-                self.assertEqual(answer["errorCode"], "canonical_document_invalid")
+                self.assertEqual(answer["errorCode"], "request_refused")
+                self.assertEqual(answer["refusalCode"], "canonical_document_invalid")
                 self.assertNotIn(private, json.dumps(answer))
                 self.assertNotIn("settings", answer)
                 self.assertEqual(self.store.writes, [])
@@ -374,7 +442,7 @@ class AutosaveTests(unittest.TestCase):
     def runtime_env(self):
         return {
             settings.READ_BINDING: "st." + secrets.token_urlsafe(32),
-            settings.PROJECT: "00000000-0000-4000-8000-000000000042",
+            settings.PROJECT: str(uuid.uuid4()),
             editor.ENV_CONFIG: str(self.path),
         }
 
@@ -428,7 +496,7 @@ class AutosaveTests(unittest.TestCase):
     def test_verified_copy_from_another_project_is_not_reused(self):
         env = self.runtime_env()
         settings.remember_verified(self.path, self.document, env)
-        env[settings.PROJECT] = "00000000-0000-4000-8000-000000000043"
+        env[settings.PROJECT] = str(uuid.uuid4())
         failing = mock.Mock()
         failing.read.side_effect = settings.SettingsError("provider_read_failed")
         with self.assertRaises(settings.SettingsError):
@@ -859,7 +927,7 @@ class TransportTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.env = {
-            settings.PROJECT: "00000000-0000-4000-8000-000000000042",
+            settings.PROJECT: str(uuid.uuid4()),
             settings.WRITE_BINDING: "st." + secrets.token_urlsafe(32),
             settings.READ_BINDING: "st." + secrets.token_urlsafe(32),
             "INFISICAL_TOKEN": "st." + secrets.token_urlsafe(32),
@@ -918,7 +986,7 @@ class TransportTests(unittest.TestCase):
     def test_mutation_statuses_distinguish_refusal_from_possible_persistence(self):
         private = "private provider diagnostic fixture"
         for status, unknown, retryable in ((401, False, False), (403, False, False), (409, False, False),
-                                           (408, True, True), (429, True, True), (503, True, True), (0, True, True)):
+                                           (408, True, True), (429, False, True), (503, True, True), (0, True, True)):
             with self.subTest(status=status):
                 self.core._api_json.return_value = (status, {"message": private})
                 store = settings.InfisicalStore(self.env, writer=True)
@@ -935,6 +1003,26 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(settings.MutationError) as caught:
             store.write(settings.document({"daemon.coalesce_seconds": 1.0}))
         self.assertFalse(caught.exception.sent)
+        self.assertTrue(caught.exception.retryable)
+        self.core._api_json.assert_not_called()
+
+    def test_shared_verifier_cause_distinguishes_outage_from_definite_refusal(self):
+        for kind, retryable in (("unavailable", True), ("refused", False), (None, True)):
+            with self.subTest(kind=kind):
+                error = self.core.SecretsError("private verification diagnostic")
+                error.failure_kind = kind
+                self.core.verify_service_token.side_effect = error
+                store = settings.InfisicalStore(self.env, writer=True)
+                with self.assertRaises(settings.MutationError) as caught:
+                    store.write(settings.document({"daemon.coalesce_seconds": 1.0}))
+                self.assertEqual((caught.exception.sent, caught.exception.retryable), (False, retryable))
+                self.assertNotIn("private verification diagnostic", str(caught.exception))
+                self.core._api_json.assert_not_called()
+        self.core.verify_service_token.side_effect = TimeoutError("private timeout diagnostic")
+        with self.assertRaises(settings.MutationError) as caught:
+            settings.InfisicalStore(self.env, writer=True).create(
+                settings.document({"daemon.coalesce_seconds": 1.0}))
+        self.assertEqual((caught.exception.sent, caught.exception.retryable), (False, True))
         self.core._api_json.assert_not_called()
 
     def test_slow_local_check_gets_fresh_io_phase_under_one_total_deadline(self):
@@ -960,9 +1048,26 @@ class TransportTests(unittest.TestCase):
 
 
 class SharedClientIntegrationTests(unittest.TestCase):
+    def test_real_shared_verifier_preserves_unavailable_and_definite_refusal_causes(self):
+        import fleet_infisical
+        env = {settings.PROJECT: str(uuid.uuid4()),
+               settings.WRITE_BINDING: "st." + secrets.token_urlsafe(32)}
+        proposed = settings.document({"daemon.coalesce_seconds": 2.0})
+        for status, payload, retryable in (
+            (0, None, True), (408, None, True), (425, None, True), (429, None, True),
+            (503, None, True), (200, None, True), (401, {}, False), (403, {}, False),
+        ):
+            with self.subTest(status=status):
+                with mock.patch.object(fleet_infisical, "_api_json", return_value=(status, payload)) as api:
+                    with self.assertRaises(settings.MutationError) as caught:
+                        settings.InfisicalStore(env, writer=True).write(proposed)
+                self.assertEqual((caught.exception.sent, caught.exception.retryable), (False, retryable))
+                self.assertEqual(api.call_count, 1)
+                self.assertEqual(api.call_args.args[:2], ("GET", "/v2/service-token"))
+
     def test_real_shared_verifier_and_named_reader_enforce_the_settings_writer_grant(self):
         import fleet_infisical
-        project = "00000000-0000-4000-8000-000000000042"
+        project = str(uuid.uuid4())
         own_binding = "st." + secrets.token_urlsafe(32)
         env = {settings.PROJECT: project, settings.WRITE_BINDING: own_binding}
         value = settings.document({"daemon.coalesce_seconds": 1.0})
@@ -998,6 +1103,7 @@ class SharedClientIntegrationTests(unittest.TestCase):
             with self.assertRaises(settings.MutationError) as caught:
                 store.write(proposed)
             self.assertFalse(caught.exception.sent)
+            self.assertFalse(caught.exception.retryable)
             self.assertEqual(calls, [("GET", "/v2/service-token")])
 
 
