@@ -41,4 +41,11 @@ class HostedTests(unittest.TestCase):
     def test_multiline_refused_before_identity(self):
         rc,calls,_,identity=self.run_cli(["--request","bad\nline"]);self.assertEqual(rc,2);identity.assert_not_called()
 
+    def test_bom_trim_matches_server_before_write(self):
+        rc,calls,_,_=self.run_cli(["--request","\ufeff source \ufeff"])
+        self.assertEqual(rc,0);self.assertEqual(calls[0][1]["request"],"source")
+    def test_bom_only_field_refused_before_identity(self):
+        rc,calls,_,identity=self.run_cli(["--request","\ufeff \ufeff"])
+        self.assertEqual(rc,2);identity.assert_not_called()
+
 if __name__=="__main__": unittest.main()

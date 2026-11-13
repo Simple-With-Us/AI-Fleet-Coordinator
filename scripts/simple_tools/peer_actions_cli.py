@@ -63,6 +63,17 @@ def _hosted_log(entry: P.LogEntry, *, dry_run: bool) -> dict:
     # unknown-outcome handling of the existing supported hosted transport.
     from .cli import RemoteError, _remote_call, _remote_write_identity
 
+    # Match ECMAScript trim() at the hosted boundary, including BOM.  Python
+    # strip() alone keeps U+FEFF, which otherwise makes a successful receipt
+    # look different from the request.  Revalidate before any identity/network call.
+    trim_chars = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+    entry = P.build_entry(
+        acting_seat=entry.acting_seat,
+        requesting_seat=entry.requesting_seat,
+        request_source=entry.request_source.strip(trim_chars),
+        action_taken=entry.action_taken.strip(trim_chars),
+        result=entry.result.strip(trim_chars),
+    )
     try:
         who = _remote_write_identity(os.environ)
         if I.canonical_seat(who) != entry.acting_seat:
