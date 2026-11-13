@@ -2526,7 +2526,8 @@ class UnletteredRepairTests(Base):
         self.unlettered.extend(["s-0110", "s-0111"])
         self.start("s-0001")
         self.assertEqual(
-            self.stamp()["outcome"], {"found": 2, "asked": 2, "repaired": 2, "failed": 0}
+            self.stamp()["outcome"],
+            {"found": 2, "asked": 2, "repaired": 2, "failed": 0, "failures": []},
         )
 
     def test_a_listing_failure_leaves_its_error_in_the_stamp(self) -> None:
@@ -2565,10 +2566,59 @@ class UnletteredRepairTests(Base):
             spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
         )
         self.assertEqual(done["asked"], ["s-0112"])
+        self.assertEqual(done["failures"], [{"sid": "s-0113", "error": "RuntimeError"}])
         self.assertEqual(
             self.stamp(platform="faux3")["outcome"],
-            {"found": 2, "asked": 1, "repaired": 1, "failed": 1},
+            {
+                "found": 2,
+                "asked": 1,
+                "repaired": 1,
+                "failed": 1,
+                "failures": [{"sid": "s-0113", "error": "RuntimeError"}],
+            },
         )
+
+    def test_a_chat_the_hook_would_refuse_is_left_alone(self) -> None:
+        # SESSION_LETTER=0 turns the hook off:  the repair must not enroll what the hook would refuse.
+        self.unlettered.append("s-0114")
+        done = PL.repair_unlettered(
+            self.spec,
+            self.server_env(SESSION_LETTER="0"),
+            "CODEX",
+            "server",
+            now=time.time(),
+            transport=Calls(self),
+        )
+        self.assertEqual(done["asked"], [])
+        self.assertFalse(os.path.exists(self.note_path("s-0114")))
+
+    def test_a_closed_chat_is_not_replayed(self) -> None:
+        os.makedirs(os.path.dirname(self.note_path("s-0115")), exist_ok=True)
+        with open(self.note_path("s-0115"), "w", encoding="utf-8") as fh:
+            json.dump({"state": "closed"}, fh)
+        self.unlettered.append("s-0115")
+        done = PL.repair_unlettered(
+            self.spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+        )
+        self.assertEqual(done["asked"], [])
+        with open(self.note_path("s-0115"), encoding="utf-8") as fh:
+            note = json.load(fh)
+        self.assertEqual(note["state"], "closed")
+        self.assertNotIn("label", note)
+
+    def test_the_pass_starts_no_new_replay_after_its_time_budget(self) -> None:
+        self.unlettered.extend(["s-0116", "s-0117"])
+        ticks = [0]
+
+        def fake_monotonic() -> float:
+            ticks[0] += 1
+            return 0.0 if ticks[0] <= 2 else PL.REPAIR_PASS_SECONDS + 1.0
+
+        with mock.patch("time.monotonic", fake_monotonic):
+            done = PL.repair_unlettered(
+                self.spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+            )
+        self.assertEqual(done["asked"], ["s-0116"])
 
 
 class RepairCliTests(Base):
@@ -2612,6 +2662,30 @@ class RepairCliTests(Base):
         self.assertIn("s-0200", out)
         self.assertIn("letter back", out)
         self.assertRegex(self.label("s-0200"), PAIR)
+
+    def test_the_verb_names_each_failed_chat(self) -> None:
+        def payload(sid):
+            raise RuntimeError("payload boom")
+
+        spec = make_spec(
+            platform="faux9",
+            source="faux9-hook",
+            display="Faux9",
+            unlettered_sessions=lambda env: ["s-0203"],
+            chat_payload=payload,
+        )
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux9": spec}):
+            code = PL.repair_main(
+                ["--platform", "faux9", "--location", "server"],
+                self.server_env(),
+                out,
+                platform="linux",
+                transport=Calls(self),
+                now=1000.0,
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("s-0203 failed (RuntimeError)", out.getvalue())
 
     def test_the_stamp_throttles_without_force(self) -> None:
         self.unlettered.append("s-0201")
