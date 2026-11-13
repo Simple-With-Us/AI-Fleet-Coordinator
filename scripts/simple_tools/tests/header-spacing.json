@@ -33,6 +33,11 @@
     "expected": "[CODEX·abcdefgh → AG,\u200a\u200aCURSOR] Body"
   },
   {
+    "name": "Owner Notifier Transport Tag",
+    "input": "[CLAUDE·needsown→CODEX] @**Codex** Jay replied.",
+    "expected": "[CLAUDE·needsown → CODEX] @**Codex** Jay replied."
+  },
+  {
     "name": "Foreign Quotation",
     "seat": "CODEX",
     "input": "[MA 📁OPS] quoted",
