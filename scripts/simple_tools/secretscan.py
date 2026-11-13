@@ -314,12 +314,14 @@ def main(argv=None, *, stdin=None, stdout=None) -> int:
     if args.field not in fields:
         output.write(json.dumps({"ok": False, "code": "invalid_field"}) + "\n")
         return 2
-    stream = sys.stdin.buffer if stdin is None else stdin
     try:
+        stream = getattr(sys.stdin, "buffer", sys.stdin) if stdin is None else stdin
         raw = stream.read(256 * 1024 + 1)
         if isinstance(raw, str):
             raw = raw.encode("utf-8")
-    except (OSError, UnicodeError):
+        if not isinstance(raw, bytes):
+            raise TypeError("invalid_input")
+    except (OSError, UnicodeError, ValueError, AttributeError, TypeError):
         output.write(json.dumps({"ok": False, "field": args.field, "code": "invalid_input"}) + "\n")
         return 2
     reason = None
