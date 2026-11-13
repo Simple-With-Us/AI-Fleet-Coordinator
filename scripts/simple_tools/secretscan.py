@@ -287,7 +287,9 @@ def main(argv=None, *, stdin=None, stdout=None) -> int:
     parser = ScanParser(
         prog="python3 -I secretscan.py", description="Scan stdin without echoing its text"
     )
-    parser.add_argument("--field", default="text", help="allow-listed field identifier for the result")
+    parser.add_argument(
+        "--field", default="text", help="allow-listed field identifier for the result"
+    )
     output = sys.stdout if stdout is None else stdout
     try:
         args = parser.parse_args(argv)
