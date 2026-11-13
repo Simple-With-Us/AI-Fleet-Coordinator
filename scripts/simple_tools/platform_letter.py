@@ -348,7 +348,9 @@ class TitleRequest:
     shown: str = ""
     held: tuple[str, ...] = ()
     # Parent-only registry capability; no credential mapping is part of the request.
-    record_thread_link: Callable[[str], dict[str, Any]] | None = field(default=None, repr=False, compare=False)
+    record_thread_link: Callable[[str], dict[str, Any]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 TitleWriter = Callable[[TitleRequest], bool]
