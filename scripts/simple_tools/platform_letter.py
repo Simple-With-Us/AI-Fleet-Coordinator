@@ -3732,7 +3732,9 @@ def repair_unlettered(
     """Replay the start of each of this host's chats that still shows the "??: " placeholder, at most once per
     REPAIR_SWEEP_SECONDS (the stamp beside the notes;  `force` repairs whatever the stamp says).  The stamp is
     written before anything else, so a pass that fails, or a hook killed inside it, is tried again after the
-    window and never on every start.
+    window and never on every start.  A finished pass also leaves its outcome beside the time (chats found,
+    replayed and lettered, the replays that failed, or the listing's error):  a stamp with no outcome is a
+    pass that never finished, which a host check can tell from a healthy quiet window.
 
     A repair is the chat's own start flow on the resume payload the adapter makes for it:  a chat the assigner
     still knows resumes the letter it holds (nothing re-allocates), one it does not know registers again, and a
@@ -3758,10 +3760,12 @@ def repair_unlettered(
             sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid
         ]
     except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
+        _save_json(path, {"at": now, "outcome": {"error": "the adapter could not list them"}})
         return {"skipped": "the adapter could not list them"}
     home = str(env.get("HOME") or os.path.expanduser("~"))
     asked: list[str] = []
     repaired: list[str] = []
+    failed = 0
     for sid in found:
         if sid == exclude or len(asked) >= REPAIR_MAX_CHATS:
             continue
@@ -3771,6 +3775,7 @@ def repair_unlettered(
             chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
             on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
         except Exception:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
+            failed += 1
             continue
         asked.append(sid)
         try:
@@ -3778,6 +3783,18 @@ def repair_unlettered(
                 repaired.append(sid)
         except Exception:  # noqa: BLE001 - the note read is a report detail only
             pass
+    _save_json(
+        path,
+        {
+            "at": now,
+            "outcome": {
+                "found": len(found),
+                "asked": len(asked),
+                "repaired": len(repaired),
+                "failed": failed,
+            },
+        },
+    )
     return {"asked": asked, "repaired": repaired}
 
 
@@ -3821,8 +3838,9 @@ def repair_main(
     "??: ", for the platform named or for every platform whose adapter names them.  This is the verb a host's
     own schedule ticks:  an app-driven chat's hook never runs, so only a scheduled tick reaches it.  One line
     per chat names the first 8 characters of its session id and whether its letter is back, never a title.  The
-    stamp beside the notes throttles the pass to once per REPAIR_SWEEP_SECONDS unless --force.  Exit 0, 2 for
-    bad arguments."""
+    stamp beside the notes throttles the pass to once per REPAIR_SWEEP_SECONDS unless --force, and keeps the
+    last pass's outcome (see repair_unlettered), so a scheduled tick's work stays visible after the fact.
+    Exit 0, 2 for bad arguments."""
     env = os.environ if env is None else env
     stdout = stdout or sys.stdout
     force = "--force" in argv
