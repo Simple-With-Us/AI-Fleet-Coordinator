@@ -69,8 +69,8 @@ def id_stamp(value: datetime, *, use_zoneinfo: bool = True) -> tuple[str, str]:
     return local.strftime("%Y%m%d"), local.strftime("%H%M")
 
 
-def age_text(hours: float | int | None) -> str:
-    """"under an hour", "5 hours", "3 days" (a day is 24 hours;  from 48 hours on it is days)."""
+def age_text(hours: float | None) -> str:
+    """ "under an hour", "5 hours", "3 days" (a day is 24 hours;  from 48 hours on it is days)."""
     if hours is None:
         return "age unknown"
     if hours < 1:
