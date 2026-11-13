@@ -288,6 +288,39 @@ class ApiTransport(Base):
 
 
 class TitleWriter(Base):
+    def test_hook_records_thread_link_with_parent_registry_context_after_child_scrub(self) -> None:
+        sid = sess(27)
+        self.add_session(sid, title="Words")
+        env = self.env(SESSION_LETTER_LOCATION="server",
+                       SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN="fake.bootstrap",
+                       INFISICAL_TOKEN="fake.project", INFISICAL_AI_FLEET_COORDINATOR_TOKEN="fake.afc",
+                       FLEET_RECALL_INFISICAL_TOKEN="fake.recall")
+        original = dict(env)
+        from dataclasses import replace
+
+        seen = []
+        original_rename = Z.SPEC.title_writer
+
+        def capture(request):
+            seen.append(request)
+            return original_rename(request)
+
+        spec = replace(Z.SPEC, title_writer=capture)
+        code = PL.hook(spec, env,
+                       io.StringIO(json.dumps({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"})),
+                       io.StringIO(), location_flag="server")
+        self.assertEqual(code, 0)
+        self.assertTrue(seen)
+        request = seen[-1]
+        self.assertEqual(request.env["HOME"], self.home)
+        for name in PL._OPERATOR_CHILD_SECRETS:
+            self.assertNotIn(name, request.env)
+        self.assertTrue(callable(request.record_thread_link))
+        self.assertEqual(env, original)
+        with sqlite3.connect(self.db) as connection:
+            row = connection.execute("SELECT thread_link FROM sessions WHERE native_session_id = ?", (sid,)).fetchone()
+        self.assertEqual(row[0], "zcode://session/%s" % sid)
+
     def test_rename_writes_generated_title(self) -> None:
         sid = sess(20)
         self.add_session(sid, title="Words the prompt gave")
