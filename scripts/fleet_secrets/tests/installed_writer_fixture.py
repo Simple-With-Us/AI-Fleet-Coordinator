@@ -6,7 +6,7 @@ import sys
 
 
 def assert_installed_writer(test, installed, root):
-    code = r'''
+    code = r"""
 import io, json, secrets, sys, uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -52,7 +52,7 @@ assert calls == before
 assert [method for method, _ in calls].count('PATCH') == 1
 assert Path(core._write_ledger(intent.state_dir).path).is_file()
 print('installed-writer-ok')
-'''
+"""
     result = subprocess.run(
         [sys.executable, "-I", "-c", code, str(installed), str(root)],
         cwd=root,
@@ -68,7 +68,7 @@ print('installed-writer-ok')
     saved = ledger.with_suffix(".held")
     ledger.rename(saved)
     try:
-        code = r'''
+        code = r"""
 import io, secrets, sys, uuid
 sys.path.insert(0, sys.argv[1])
 import fleet_infisical as core
@@ -84,7 +84,7 @@ assert cli.main(['set','CACHE_FIXTURE','--path','/linear'],env,out,err) == 4
 assert not out.getvalue()
 assert err.getvalue().strip() == 'fleet-secrets: write-state-unavailable'
 print('missing-ledger-refused')
-'''
+"""
         result = subprocess.run(
             [sys.executable, "-I", "-c", code, str(installed), str(root)],
             cwd=root,
