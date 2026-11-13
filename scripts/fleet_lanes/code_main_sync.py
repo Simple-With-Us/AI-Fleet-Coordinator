@@ -147,7 +147,8 @@ def git_full(repo: Path, *args: str, timeout: int = TIMEOUT, extra_env: Mapping[
     try:
         result = subprocess.run([GIT, "-C", str(repo), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, errors="replace", timeout=timeout, check=False,
-                                env={**os.environ, **extra_env} if extra_env else None)
+                                # Background reads must not refresh the index; required write locks still apply.
+                                env={**os.environ, **(extra_env or {}), "GIT_OPTIONAL_LOCKS": "0"})
         return result.returncode, result.stdout.strip(), result.stderr
     except subprocess.TimeoutExpired:
         return 124, "", "timed out"
