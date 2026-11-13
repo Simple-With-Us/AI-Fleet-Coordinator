@@ -580,7 +580,7 @@ export const Q_COMMENTS = `query BoardComments($id: String!, $first: Int!, $afte
   issue(id: $id) {
     comments(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id body createdAt user { id name app } }
+      nodes { id body createdAt user { id name displayName app } }
     }
   }
 }`;
@@ -963,6 +963,9 @@ export function linearGraphqlErrorMeta(errorEntry, known = []) {
   };
 }
 
+/** Non-enumerable notes on a partial GraphQL payload:  codes and paths, never messages. */
+export const linearFieldErrors = Symbol("linearFieldErrors");
+
 /** A failed Linear call.  `kind` is mint, timeout, network, redirect, too_large, rate_limited, status, unauthorized or unexpected. */
 export class LinearError extends Error {
   constructor(kind, { status = null, message = null, retryAfterS = null, graphql = null, resetAt = null } = {}) {
@@ -1304,7 +1307,7 @@ export class LinearClient {
    * and `organization.urlKey` (Q_WHOAMI always does):  it is allowed before the identity is known, and the user
    * it proves is debited for it.
    */
-  async call(query, variables = {}, { failed = null, retryOn401 = true, proveIdentity = false } = {}) {
+  async call(query, variables = {}, { failed = null, retryOn401 = true, proveIdentity = false, allowPartial = false } = {}) {
     let token = await this.token(failed);
     const proving = proveIdentity === true || query === Q_WHOAMI;
     let fp = await this.#tokenFingerprint(token);
@@ -1333,7 +1336,7 @@ export class LinearClient {
     }
     // A 401 may mean the app user behind this token changed:  forget the identity, so the next request proves it again.
     if (response.status === 401) await this.#forgetIdentity();
-    if (response.status === 401 && retryOn401) return this.call(query, variables, { failed: token, retryOn401: false, proveIdentity });
+    if (response.status === 401 && retryOn401) return this.call(query, variables, { failed: token, retryOn401: false, proveIdentity, allowPartial });
     if (response.status === 401) throw new LinearError("unauthorized", { status: 401 });
     if (response.status === 429) {
       const after = Number(response.headers?.get?.("retry-after"));
@@ -1342,10 +1345,19 @@ export class LinearClient {
     }
     const data = await this.#json(response);
     if (response.status < 200 || response.status >= 300) throw new LinearError("status", { status: response.status });
-    if (Array.isArray(data.errors) && data.errors.length) {
+    const errors = Array.isArray(data.errors) ? data.errors.filter((entry) => entry && typeof entry === "object") : [];
+    // GraphQL answers `{"data": {...}}`.  Callers read the payload itself
+    // (`data.issue`, `data.viewer`), so the envelope is unwrapped once, here.
+    // Null or `{}` is not a successful read:  coercing it used to fence an
+    // empty object.  Field errors beside a real payload are kept only when
+    // the caller asked for a partial read.
+    const raw = data?.data;
+    const payload = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : null;
+    const usable = payload !== null && Object.keys(payload).length > 0;
+    if (errors.length) {
       // Linear's own message is attacker-reachable (it can quote an issue
       // title), so it is only ever shown after a secret scan, in mapLinearError.
-      const first = data.errors[0];
+      const first = errors[0];
       const graphql = linearGraphqlErrorMeta(first, this.#secrets);
       try {
         this.#log({
@@ -1360,16 +1372,25 @@ export class LinearClient {
       } catch {
         //  logging must never fail the tool call
       }
-      throw new LinearError("unexpected", {
-        status: response.status,
-        message: typeof first?.message === "string" ? first.message : null,
-        graphql,
+      if (!(allowPartial && usable)) {
+        throw new LinearError("unexpected", {
+          status: response.status,
+          message: typeof first?.message === "string" ? first.message : null,
+          graphql,
+        });
+      }
+      const notes = errors.slice(0, 8).map((entry) => {
+        const meta = linearGraphqlErrorMeta(entry, this.#secrets);
+        const note = { code: meta?.code || "GRAPHQL_ERROR" };
+        if (meta?.path?.length) note.path = meta.path;
+        return note;
       });
+      Object.defineProperty(payload, linearFieldErrors, { value: notes, enumerable: false });
+    } else if (!usable && !proving) {
+      // A proof with no payload falls through to #identityOf, which refuses it
+      // as quota.  Any other read must not succeed as {}.
+      throw new LinearError("unexpected", { status: response.status, message: "Linear returned no data" });
     }
-    // GraphQL answers `{"data": {...}}`;  every caller here reads the payload
-    // itself (`data.issue`, `data.viewer`), so the envelope is unwrapped once,
-    // here.  Returning the envelope would make every read look empty.
-    const payload = data?.data ?? {};
     if (proving) {
       const learned = await this.#identityOf(payload);
       if (!learned) throw new LinearError("quota");
@@ -1444,6 +1465,9 @@ export function mapLinearError(error, { write = false, known = [] } = {}) {
       break;
   }
   if (error.status === 401) return new ToolError("not_authorized", "Linear refused this seat's app credentials (HTTP 401)", { extra: { status: error.status } });
+  if (error.kind === "unexpected" && error.upstreamMessage === "Linear returned no data") {
+    return new ToolError("upstream_error", "Linear returned no data", { extra: { status: error.status } });
+  }
   if (error.kind === "unexpected") {
     const extra = {
       status: error.status,

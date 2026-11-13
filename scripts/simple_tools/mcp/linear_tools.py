@@ -465,12 +465,34 @@ def run_board(
     )
 
 
+def empty_stdout(stdout: str) -> bool:
+    """True when board exited 0 but printed no Linear payload.
+
+    A JSON wrapper from `board run --json` / `board api --json` is empty when its `data` is null or `{}`.
+    Any other non-empty object, including a payload whose fields are null, is real data.
+    """
+    text = (stdout or "").strip()
+    if not text:
+        return True
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return False
+    if isinstance(parsed, dict) and "command" in parsed and "data" in parsed:
+        parsed = parsed.get("data")
+    if parsed is None:
+        return True
+    return isinstance(parsed, dict) and len(parsed) == 0
+
+
 def error_for(result: BoardResult) -> tuple[str, str, bool]:
     """(code, message, retryable) for a non-zero board exit.  board's own words, one line, are the message
     (they name the rule, never a credential)."""
-    code, retryable = EXIT_CODES.get(result.code, ("linear_error", False))
     lines = [line.strip() for line in (result.stderr or result.stdout).splitlines() if line.strip()]
     text = " ".join(lines[-1:])[:300] or "board exited with code %d" % result.code
+    if "exceeds --max-chars" in text or "exceeds max_chars" in text:
+        return "response_too_large", text, False
+    code, retryable = EXIT_CODES.get(result.code, ("linear_error", False))
     return code, text, retryable
 
 

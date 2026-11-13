@@ -1,0 +1,64 @@
+name: CI red streak report
+
+# AFC-737: daily read-only scan of default-branch workflow failure streaks.
+# Uses the workflow GITHUB_TOKEN (contents + actions read).  In this repository
+# that token typically sees only this repo unless a wider org read token is
+# configured later; the report records that in visibility_note.
+
+on:
+  schedule:
+    - cron: "35 6 * * *"
+  workflow_dispatch:
+  # GitHub only registers workflow_dispatch against the default branch; on a PR
+  # branch this path trigger runs the same job so the artifact can be verified
+  # before merge (AFC-737).
+  pull_request:
+    paths:
+      - ".github/workflows/ci-red-report.yml"
+      - "scripts/ci-red-report/**"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ci-red-report-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run CI red report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VISIBILITY="Workflow GITHUB_TOKEN is scoped to ${{ github.repository }}; org-wide listing uses only repos this token can read."
+          python3 scripts/ci-red-report/__main__.py \
+            --org Simple-With-Us \
+            --repo "${{ github.event.repository.name }}" \
+            --visibility-note "$VISIBILITY" \
+            --json-out ci-red-report.json \
+            --markdown-out ci-red-report.md
+
+      - name: Job summary
+        run: |
+          {
+            echo "## CI red streak report"
+            echo ""
+            cat ci-red-report.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-red-report-${{ github.run_id }}
+          path: |
+            ci-red-report.json
+            ci-red-report.md
+          if-no-files-found: error
