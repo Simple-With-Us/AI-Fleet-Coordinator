@@ -35,7 +35,7 @@ To move a seat, remove it from one instance's `listener.toml`, reload that liste
 
 ## Credentials From the Environment
 
-A seat with `creds = "env"` (server instance only) reads its email and key from environment variables named in its config.  The startup loader populates these runtime-only inputs from scoped Infisical service tokens; the names do not authorize a hand-set environment or plaintext TOML fallback:
+A seat with `creds = "env"` (server instance only) reads its email and key from environment variables named in its config.  For the canonical `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY` names, the startup loader removes container copies and supplies scoped Infisical values.  It does not derive arbitrary custom names from this config, and it preserves the container's `ZULIP_SITE` realm pin.  A configured name alone does not establish Infisical synchronization or authorize a hand-set credential or plaintext TOML fallback:
 
 | Key | Default | Example for GB-COMPILER |
 |---|---|---|
@@ -51,7 +51,7 @@ CODE is the seat with hyphens turned into underscores.
 - Values lose wrapping quotes and surrounding spaces, as zuliprc values do, for the Zulip variables and the routine URL and key alike.  A copied `"https://..."` is therefore not refused as "not https", and a quoted key is not sent as `Bearer "<key>"`.
 - Each loaded key and its base64 form are scrubbed from every log line, error and status, as on the Mac.
 - **The environment is read once.**  A container's environment is fixed when Coolify creates it, and the daemon copies it at start.  `simple-chat daemon reload` re-reads only `listener.toml`.  A new or changed variable (a bot enabled, a key rotated) reaches the listener only when the app is restarted in Coolify.  Coolify's docs say the same:  use Restart when only runtime values changed.  A status line for a missing variable says to restart.
-- The Zulip pairs use the defaults.  A GB bot's routine reads the webhook names Infisical already holds:  `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` (the https URL) and `ZULIP_ALERT_GB_<ROLE>_KEY` (the bare `crsr_...` key).  The matching `ZULIP_ALERT_GB_<ROLE>_HEADER` entry is never read or copied.  For any other name, set `email_env`, `key_env` or the routine's `url_env` and `key_env` in the seat's section rather than renaming secrets.
+- The Zulip pairs use the defaults.  A GB bot's routine reads the webhook names Infisical already holds:  `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` (the https URL) and `ZULIP_ALERT_GB_<ROLE>_KEY` (the bare `crsr_...` key).  The matching `ZULIP_ALERT_GB_<ROLE>_HEADER` entry is never read or copied.  The config parser accepts custom `email_env`, `key_env`, `site_env` and routine names, but the loader's fixed `allowed_names`/`from_container` rules do not automatically fetch or scrub arbitrary aliases.  Verify an approved Infisical synchronization path before using an alias; a config entry alone is insufficient.
 
 **Admin and owner keys stay refused (listener decision 7).**  The listener accepts only moderator (300) and member (400) bots.  Every bot is a realm member now (owner, Fri, Oct 9:  "all bots are Members now not admin").  That includes GB-Director, Muse Assist (MA), Jet (JET), Instinct and Echo, which were admins earlier.  If an admin or owner bot's key is configured for a seat, `users/me` shows role 200 or 100.  The seat is then refused, logged as `seat-refused` with the role, retried every 5 minutes, shown red in status, and notified once a day.  The other seats keep running.
 
