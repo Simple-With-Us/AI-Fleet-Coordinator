@@ -42,6 +42,9 @@ if __name__ == "__main__":
 import fleet_infisical as core
 from fleet_infisical import SecretsError, UsageError
 
+# The total named-response budget must not exceed the existing folder-response budget.
+MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
+
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
@@ -101,9 +104,11 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
 def _only_names(raw: object | None) -> list[str] | None:
     if raw is None:
         return None
-    names = [core.check_name(n.strip()) for n in str(raw).split(",") if n.strip()]
+    names = list(dict.fromkeys(core.check_name(n.strip()) for n in str(raw).split(",") if n.strip()))
     if not names:
         raise UsageError("--only needs at least one key name")
+    if len(names) > MAX_RUN_NAMES:
+        raise UsageError(f"--only accepts at most {MAX_RUN_NAMES} distinct key names")
     return names
 
 

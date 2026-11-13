@@ -124,6 +124,23 @@ class RunNamedReadTests(unittest.TestCase):
         self.assertEqual(self.requests, ["/v2/service-token", "/v3/secrets/raw"])
         self.assertFalse(self.executions)
 
+    def test_selection_limit_refuses_before_auth_or_any_value_read(self):
+        names = [f"SELECTED_{i}" for i in range(cli.MAX_RUN_NAMES + 1)]
+        code, out, err = self.run_cli("--only", ",".join(names))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn(f"at most {cli.MAX_RUN_NAMES} distinct key names", err)
+        self.assertFalse(self.requests)
+        self.assertFalse(self.executions)
+
+    def test_selection_limit_accepts_exact_bound_and_deduplicates_before_counting(self):
+        names = [f"SELECTED_{i}" for i in range(cli.MAX_RUN_NAMES)]
+        self.values.update({name: secrets.token_urlsafe(24) for name in names})
+        self.assertEqual(self.run_cli("--only", ",".join(names * 2)), (0, "", ""))
+        self.assertEqual(self.requests[0], "/v2/service-token")
+        self.assertCountEqual(self.requests[1:], ["/v3/secrets/raw/" + n for n in names])
+        self.assertNotIn("/v3/secrets/raw", self.requests)
+        self.assertEqual(len(self.executions), 1)
+
     def test_only_missing_name_fails_before_exec(self):
         code, out, err = self.run_cli("--only", "ALPHA,MISSING")
         self.assertEqual((code, out), (3, ""))

@@ -5,6 +5,18 @@ import subprocess
 import sys
 
 
+def run_fixture(args, *, cwd, env, timeout=10):
+    """Keep fixture failures distinct without exposing partial child output."""
+    try:
+        return subprocess.run(
+            args, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, "", "fixture-timeout")
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(args, 127, "", "fixture-executable-missing")
+
+
 def assert_installed_writer(test, installed, root):
     code = r"""
 import io, json, secrets, sys, uuid
@@ -53,13 +65,10 @@ assert [method for method, _ in calls].count('PATCH') == 1
 assert Path(core._write_ledger(intent.state_dir).path).is_file()
 print('installed-writer-ok')
 """
-    result = subprocess.run(
+    result = run_fixture(
         [sys.executable, "-I", "-c", code, str(installed), str(root)],
         cwd=root,
         env={"HOME": str(root), "PATH": os.defpath},
-        capture_output=True,
-        text=True,
-        timeout=10,
     )
     test.assertEqual(
         (result.returncode, result.stdout.strip()), (0, "installed-writer-ok"), result.stderr
@@ -85,13 +94,10 @@ assert not out.getvalue()
 assert err.getvalue().strip() == 'fleet-secrets: write-state-unavailable'
 print('missing-ledger-refused')
 """
-        result = subprocess.run(
+        result = run_fixture(
             [sys.executable, "-I", "-c", code, str(installed), str(root)],
             cwd=root,
             env={"HOME": str(root), "PATH": os.defpath},
-            capture_output=True,
-            text=True,
-            timeout=10,
         )
         test.assertEqual(
             (result.returncode, result.stdout.strip()), (0, "missing-ledger-refused"), result.stderr
