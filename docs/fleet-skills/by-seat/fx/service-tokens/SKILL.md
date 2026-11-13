@@ -13,7 +13,7 @@ Give each consumer its own token scoped to exactly the project, environment and 
 
 ## Inventory before issuance
 
-Establish the exact consumer and runtime location, Infisical project and project ID, environment, folder path(s), read/write need, expiry, purpose, owner and secure-storage destination.  Check the Fleet Reference registry for an exact existing entry before minting.  Folder scope is exact: do not assume a parent grants descendants or `/` means every folder.  Never widen a token shared by another consumer.
+Establish the exact consumer and runtime location, Infisical project and project ID, environment, folder path(s), read/write need, expiry, purpose, owner and secure-storage destination.  Check the Fleet Reference registry for an exact existing entry before minting.  Folder scope is exact: do not assume a parent grants descendants or `/` means every folder.  Never widen a token shared by another consumer.  Review the names already in the proposed folder: an exact folder grant may still expose credentials this consumer does not need.  Use named reads in the consumer, rather than exporting the folder.  If unrelated credentials share that folder, obtain the required authority for a coordinated narrower folder migration; preserve existing consumers and values until replacement acceptance.
 
 ## Issue with the authorized Infisical user session
 
@@ -152,7 +152,7 @@ After verifying the sheet row, the Fleet-OPS metadata mirror may be synchronized
 
 ## Rotate, revoke and close out
 
-Rotation is not a metadata edit.  Issue a replacement with the intended scope and fresh expiry, install it, verify the grant and consumer store, update the registry with the new token metadata and mark the old row revoked, then revoke the old token through the authorized user session.  Never revoke or broaden a token based on a metadata row alone; verify actual token metadata and consumer state first.
+Rotation is not a metadata edit.  Issue the replacement with the intended scope and fresh expiry, install it, verify its grant and store, and register the new metadata row.  Keep the old grant live until the actual consumer successfully reads through the replacement; source edits or a stored file alone are insufficient.  After the required owner authorization and consumer acceptance, revoke the old grant through the authorized user session, verify the result, then mark its registry row revoked.  An uncertain revoke result must be reconciled before any retry or revoked-status claim.  Never revoke or broaden a token based on a metadata row alone.
 
 A missing item, locked keychain, unreadable store, refused API call or uncertain write means stop and report the observed boundary.  Do not retry as another identity or silently change stores.  A token is complete when the consumer can read its own store entry without printing it, its exact metadata is verified, the sheet row is confirmed by readback, and any mirror sync is verified.  Record outside-scope uncertainty accurately rather than describing it as a denial.
 
