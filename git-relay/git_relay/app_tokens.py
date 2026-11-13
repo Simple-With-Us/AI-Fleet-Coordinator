@@ -87,6 +87,12 @@ class InstallationReadError(Exception):
 class AppTokenError(Exception):
     """A mint or credential lookup failed;  never carries secret material."""
 
+    def __init__(self, message, *, reason=None, failure_kind=None):
+        self.reason = reason if reason == "token-expired-or-invalid" else None
+        self.failure_kind = failure_kind if failure_kind in ("refused", "unavailable") else None
+        detail = [item for item in (self.reason, self.failure_kind) if item is not None]
+        super().__init__(message + (": " + " / ".join(detail) if detail else ""))
+
 
 # Messages that mean this seat's App material is missing or unusable, not a
 # transient lookup or an upstream mint glitch.  Matched on the fixed prefixes
@@ -311,9 +317,18 @@ class FleetSecretsSource:
                 names=tuple(wanted),
                 timeout=TIMEOUT_SECONDS,
                 max_output_bytes=_MAX_BATCH_BYTES,
+                strict_records=True,
             )
         except TimeoutError:
-            raise AppTokenError(f"Infisical lookup timed out for {wanted[0]}") from None
+            raise AppTokenError(
+                f"Infisical lookup timed out for {wanted[0]}", failure_kind="unavailable"
+            ) from None
+        except client.SecretsError as exc:
+            raise AppTokenError(
+                f"Infisical lookup failed for {wanted[0]}",
+                reason=exc.reason,
+                failure_kind=exc.failure_kind,
+            ) from None
         except Exception:
             raise AppTokenError(f"Infisical lookup failed for {wanted[0]}") from None
         finally:
