@@ -98,7 +98,16 @@ export async function api(path, init = {}) {
   if (method !== 'GET') throw new Error('unexpected fixture method');
   if (state.mode === 'read_failure') throw privateError();
   const range = decodeURIComponent(path.slice('/values/'.length).split('?')[0]);
-  if (range === 'Infisical Service Tokens') return { values: [state.headers, ...state.rows] };
+  if (range === 'Infisical Service Tokens') {
+    if (state.readbackSeen && state.mode === 'final_read_failure') throw privateError();
+    if (state.readbackSeen && state.mode === 'final_header_drift') {
+      return { values: [['Changed fixture header', ...state.headers.slice(1)], ...state.rows] };
+    }
+    if (state.readbackSeen && state.mode === 'final_malformed_row') {
+      return { values: [state.headers, ...state.rows, null] };
+    }
+    return { values: [state.headers, ...state.rows] };
+  }
   const match = /^'Infisical Service Tokens'!A([0-9]+):S\1$/.exec(range);
   if (!match) throw new Error('unexpected fixture read range');
   const row = [...state.rows[Number(match[1]) - 2]];
@@ -106,6 +115,13 @@ export async function api(path, init = {}) {
   if (state.mode === 'trim_readback') {
     while (row[row.length - 1] === '') row.pop();
   }
+  state.readbackSeen = true;
+  if (state.mode === 'duplicate_after_readback' && !state.duplicateInjected) {
+    state.rows.push([...state.rows[Number(match[1]) - 2]]);
+    state.duplicateInjected = true;
+  }
+  if (state.mode === 'final_row_drift') state.rows[Number(match[1]) - 2][7] = 'Changed fixture purpose';
+  await save(state);
   return { values: [row] };
 }
 """
@@ -306,6 +322,36 @@ class ServiceTokenRecipeTests(unittest.TestCase):
         fixture.change_state(mode="normal")
         self.assertEqual(fixture.run().returncode, 0)
         self.assertEqual(fixture.state()["appendCount"], 1)
+
+    def test_duplicate_after_range_readback_is_unknown_and_rerun_never_appends(self) -> None:
+        fixture = self.fixture()
+        fixture.change_state(mode="duplicate_after_readback")
+        first = fixture.run()
+        self.assertEqual(first.returncode, 3)
+        self.assertIn("source=Infisical Service Tokens/final-readback", first.stderr)
+        self.assertEqual([call["method"] for call in fixture.state()["calls"]], ["GET", "POST", "GET", "GET"])
+        self.assertEqual(len(fixture.state()["rows"]), 2)
+        self.assertEqual(json.loads(fixture.marker.read_text())["outcome"], "unknown")
+        self.assertNotIn("appended and read back exactly", first.stdout)
+        second = fixture.run()
+        self.assertEqual(second.returncode, 3)
+        self.assertIn("outcome_unknown", second.stderr)
+        self.assertEqual(fixture.state()["appendCount"], 1)
+        self.assertEqual(len(fixture.state()["rows"]), 2)
+        self.assertEqual(json.loads(fixture.marker.read_text())["outcome"], "unknown")
+
+    def test_final_tab_failure_or_drift_preserves_unknown(self) -> None:
+        for mode in ("final_read_failure", "final_header_drift", "final_malformed_row", "final_row_drift"):
+            with self.subTest(mode=mode):
+                fixture = self.fixture()
+                fixture.change_state(mode=mode)
+                result = fixture.run()
+                self.assertEqual(result.returncode, 3)
+                self.assertIn("source=Infisical Service Tokens/final-readback", result.stderr)
+                self.assertNotIn("fixture-provider-private-body", result.stdout + result.stderr)
+                self.assertEqual(fixture.state()["appendCount"], 1)
+                self.assertEqual(json.loads(fixture.marker.read_text())["outcome"], "unknown")
+                self.assertNotIn("appended and read back exactly", result.stdout)
 
     def test_missing_bindings_name_only_the_missing_source(self) -> None:
         for name in ("FLEET_OPS_ROOT", "INFISICAL_TOKEN", "INFISICAL_FLEET_OPS_PROJECT_ID"):
