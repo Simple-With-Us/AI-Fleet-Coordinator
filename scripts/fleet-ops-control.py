@@ -256,7 +256,7 @@ REDUCED_STATUS_MAX_BYTES = 256 * 1024
 # container the module is at its image path.  Every word of the docker argv is a constant here.
 EAVESDROPPER_SETTINGS_VERB = "eavesdropper-settings"
 EAVESDROPPER_SETTINGS_TARGET = "server"
-EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply")
+EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply", "save", "initialize")
 EAVESDROPPER_SETTINGS_ALLOWLIST_NAME = "fleet-ops-eavesdropper-settings.json"
 EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES = 64 * 1024
 EAVESDROPPER_SETTINGS_EDITOR_PARTS = ("simple_tools", "server", "eavesdropper_settings_edit.py")
@@ -271,7 +271,7 @@ EAVESDROPPER_SETTINGS_AUDIT_TARGET = "eavesdropper settings"
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 # The shape of a plan's `planSHA256`, which the server `--yes` form must carry as `expectPlanSHA256`.
 EAVESDROPPER_SETTINGS_PLAN_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "refused", "failed")
+EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "saved", "initialized", "refused", "failed")
 
 EAVESDROPPER_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
@@ -1805,13 +1805,15 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
     if action not in EAVESDROPPER_SETTINGS_ACTIONS:
         raise Refused("the eavesdropper settings action is get, plan or apply")
     request = {"action": action, "allowlist": load_eavesdropper_settings_allowlist(ctx)}
-    if action != "get":
+    if action not in ("get", "initialize"):
         if not isinstance(changes, dict) or not changes:
             raise Refused("name at least one setting to change", error_code="usage")
         request["set"] = changes
         if remove:
             request["remove"] = list(remove)
-    if action == "apply" and expect is not None:
+    if action in ("save", "initialize") and expect is not None:
+        request["expectBaseSHA256"] = expect
+    elif action == "apply" and expect is not None:
         request["expectPlanSHA256"] = expect
     if file is not None:
         module = _load_eavesdropper_settings_editor(ctx)
@@ -1851,6 +1853,8 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
                     "take" if check.get("ok") else "NOT take",
                 )
             )
+        elif result == "initialized":
+            fields["detail"] = "canonical settings initialized and read back; runtime source is not activated"
         else:
             reload = document.get("reload") if isinstance(document.get("reload"), dict) else {}
             fields["detail"] = "%d setting(s) changed; %s" % (
@@ -1908,9 +1912,16 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         request = None
+    if isinstance(request, dict) and request.get("action") == "initialize":
+        if set(request) != {"action", "expectBaseSHA256"} or mode != "yes":
+            raise Refused("initialize requires --yes and the runtime-file revision only", error_code="usage")
+        expected = request["expectBaseSHA256"]
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(expected):
+            raise Refused("initialize requires expectBaseSHA256", error_code="version_required")
+        return "initialize", None, None, expected
     if (
         not isinstance(request, dict)
-        or set(request) - {"set", "remove", "expectPlanSHA256"}
+        or set(request) - {"action", "set", "remove", "expectPlanSHA256", "expectBaseSHA256"}
         or not isinstance(request.get("set"), dict)
         or not request["set"]
         or not isinstance(request.get("remove", []), list)
@@ -1918,6 +1929,15 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
         raise Refused(
             "standard input must be one JSON object with a non-empty set", error_code="usage"
         )
+    if request.get("action") == "save":
+        expected = request.get("expectBaseSHA256")
+        if mode != "yes" or request.get("expectPlanSHA256") is not None:
+            raise Refused("save requires --yes and a canonical revision", error_code="usage")
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(expected):
+            raise Refused("save requires expectBaseSHA256", error_code="version_required")
+        return "save", request["set"], request.get("remove"), expected
+    if "action" in request or "expectBaseSHA256" in request:
+        raise Refused("unknown settings action or revision field", error_code="usage")
     expect = request.get("expectPlanSHA256")
     if mode != "yes":
         if expect is not None:
