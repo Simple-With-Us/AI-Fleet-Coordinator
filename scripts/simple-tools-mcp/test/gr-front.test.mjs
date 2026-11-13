@@ -5,8 +5,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { HostedTools } from "../src/hosted-tools.js";
-import { grUpstreamUrl, grClientFromResolved, GrRelayClient, GR_SECRETS, GR_TOOLS } from "../src/gr-tools.js";
+import {
+  grUpstreamUrl,
+  grClientFromResolved,
+  GrRelayClient,
+  GR_SECRETS,
+  GR_TOOLS,
+  GR_UNAVAILABLE_REASON,
+  grUnavailableWhenNoClient,
+  grFrontMissing,
+  grNotConfiguredMessage,
+} from "../src/gr-tools.js";
 import { resolveGrSecrets } from "../src/gr-tools.js";
+import { MESSAGE_LIMIT } from "../src/contract.js";
 import { resolveGrVerifyKey, GR_VERIFY_KEY_VAR } from "../src/gr-verify.js";
 import { INFISICAL_EXPECT_DEFAULT } from "../src/infisical-manifest.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
@@ -156,8 +167,20 @@ function memoryGate(clock) {
   return g;
 }
 
-function grHarness(gr) {
+function grHarness(gr, { grUnavailableReason = null, grMissingEnv = null } = {}) {
   const clock = { now: Date.parse("2026-10-25T14:00:00Z") };
+  const env = { GR_UPSTREAM_URL: "https://git-relay.example.test" };
+  const pair = { accessId: "id", accessSecret: "secret" };
+  const unavailable = gr
+    ? { grUnavailableReason: null, grMissingEnv: [] }
+    : (() => {
+      const relayAuthAvailable = grUnavailableReason !== GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH;
+      const resolved = grUnavailableWhenNoClient(pair, env, { relayAuthAvailable });
+      return {
+        grUnavailableReason: grUnavailableReason ?? resolved.reason,
+        grMissingEnv: grMissingEnv ?? resolved.missing,
+      };
+    })();
   return new HostedTools({
     seat: "JET-CHAT",
     scopes: ["zulip:read", "zulip:write"],
@@ -170,6 +193,8 @@ function grHarness(gr) {
     gate: memoryGate(clock),
     cf: {},
     gr,
+    grUnavailableReason: unavailable.grUnavailableReason,
+    grMissingEnv: unavailable.grMissingEnv,
     now: () => clock.now,
     sleep: async () => {},
     log: () => {},
@@ -192,9 +217,12 @@ test("a local not_configured 503 keeps its provenance:  nothing was sent, never 
   );
   const res = await tools.call("gr_open_pr", { repo: "a/b", base: "main", head: "f", title: "t", body: "b" });
   assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /not configured/);
-  assert.match(res.content[0].text, /Nothing was sent/);
-  assert.doesNotMatch(res.content[0].text, /outcome is unknown/);
+  const err = JSON.parse(res.content[0].text);
+  assert.equal(err.code, "not_configured");
+  assert.equal(err.reason, GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE);
+  assert.match(err.message, /not configured/i);
+  assert.match(err.message, /Nothing was sent/);
+  assert.doesNotMatch(err.message, /outcome is unknown/);
   assert.equal(fetches, 0);
 });
 
@@ -259,13 +287,63 @@ test("omitted and false draft requests retain exact old-backend wire and signed 
   assert.equal(signed.length, 3);
 });
 
-test("gr tools answer not_configured when the front is absent, and a relay 4xx surfaces as relay_refused", async () => {
-  const bare = grHarness(null);
+test("grUnavailableWhenNoClient distinguishes relay env missing from no seat relay auth", () => {
+  const env = { GR_UPSTREAM_URL: "https://git-relay.example.test" };
+  const pair = { accessId: "id", accessSecret: "secret" };
+  assert.deepEqual(grFrontMissing({ accessId: "", accessSecret: "" }, env), ["GR_ACCESS_CLIENT_ID", "GR_ACCESS_CLIENT_SECRET"]);
+  assert.deepEqual(grUnavailableWhenNoClient({ accessId: "", accessSecret: "" }, {}, { relayAuthAvailable: true }).reason, GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING);
+  assert.deepEqual(
+    grUnavailableWhenNoClient(pair, env, { relayAuthAvailable: false }).reason,
+    GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH,
+  );
+});
+
+test("gr tools answer not_configured when the relay env is missing", async () => {
+  const bare = grHarness(null, { grMissingEnv: ["GR_UPSTREAM_URL", "GR_ACCESS_CLIENT_ID"] });
   const missing = await bare.call("gr_merge_pr", { repo: "a/b", number: 1 });
   assert.equal(missing.isError, true);
-  assert.match(missing.content[0].text, /not configured/i);
-  assert.match(missing.content[0].text, /GR_UPSTREAM_URL/);
+  const err = JSON.parse(missing.content[0].text);
+  assert.equal(err.code, "not_configured");
+  assert.equal(err.reason, GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING);
+  assert.match(err.message, /Missing:.*GR_UPSTREAM_URL/);
+});
 
+test("gr not_configured messages fit the delivered tool-error cap", () => {
+  const cases = [
+    { reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] },
+    { reason: GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE, missing: [] },
+    { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing: ["GR_UPSTREAM_URL", "GR_ACCESS_CLIENT_ID", "GR_ACCESS_CLIENT_SECRET"] },
+    { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing: [] },
+  ];
+  for (const item of cases) {
+    const message = grNotConfiguredMessage(item);
+    assert.ok(
+      [...message].length <= MESSAGE_LIMIT,
+      `${item.reason} is ${[...message].length} code points`,
+    );
+  }
+  const auth = grNotConfiguredMessage({ reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] });
+  assert.match(auth, /sbt_\*/);
+  assert.match(auth, /gbb_\*/);
+  assert.match(auth, /not the cause/);
+  assert.match(auth, /other tools still work/);
+  assert.doesNotMatch(auth, /GR_UPSTREAM_URL/);
+});
+
+test("gr tools on a connection with no seat relay auth never blame GR_UPSTREAM_URL", async () => {
+  const bare = grHarness(null, { grUnavailableReason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, grMissingEnv: [] });
+  const missing = await bare.call("gr_merge_pr", { repo: "a/b", number: 1 });
+  assert.equal(missing.isError, true);
+  const err = JSON.parse(missing.content[0].text);
+  const full = grNotConfiguredMessage({ reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] });
+  assert.equal(err.reason, GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH);
+  assert.equal(err.message, full);
+  assert.equal([...err.message].length, [...full].length);
+  assert.match(err.message, /seat bearer|sbt_\*|gbb_\*/i);
+  assert.doesNotMatch(err.message, /GR_UPSTREAM_URL/);
+});
+
+test("a relay 4xx surfaces as relay_refused", async () => {
   const refusing = new GrRelayClient({ baseUrl: "https://git-relay.example.test", accessId: "access-id-0123456789abcdef", accessSecret: "access-secret-0123456789abcdef", bearer: "sbt_jet-chat_" + "a".repeat(43), fetch: async () => new Response(JSON.stringify({ error: "seat ceiling does not cover permission 'issues'" }), { status: 403 }) });
   const tools = grHarness(refusing);
   const denied = await tools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "x" });

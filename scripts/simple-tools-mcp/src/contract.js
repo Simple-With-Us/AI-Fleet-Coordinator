@@ -342,7 +342,9 @@ export function errorResult(error, scrub = (s) => s) {
   return { content: [{ type: "text", text: JSON.stringify(obj) }], isError: true, _meta: { [ERROR_META_KEY]: obj, ...error.meta } };
 }
 
+/** A successful tool result.  `structuredContent` is set only when the caller passes one.  Omitting it must not become `{}`. */
 export function okResult(text, structured) {
+  if (structured === undefined) return { content: [{ type: "text", text }] };
   return { content: [{ type: "text", text }], structuredContent: { ...structured } };
 }
 
@@ -514,6 +516,16 @@ export function ownIntro(prefix, text) {
   // Exactly one ASCII space before 📁, the Policy shape the router parses.
   if (folder) intro = intro.slice(0, after) + " " + intro.slice(after).replace(/^\s*/u, "");
   return { end, intro, rest: text.slice(end + 1) };
+}
+
+/** The text with every leading own-seat intro removed (`[SEAT]`, `[SEAT 📁AFC]`, a legacy `[SEAT] [SEAT 📁AFC]`
+ * pair, each optionally after 👀).  A foreign-seat or malformed bracket is content and stays.  Text that is only an
+ * intro is returned unchanged, so a write never goes out empty. */
+export function stripOwnIntro(seat, text) {
+  const original = String(text ?? "");
+  let rest = original;
+  for (let own = ownIntro(`[${seat}`, rest); own; own = ownIntro(`[${seat}`, rest)) rest = own.rest.replace(/^[ \t]*(?:\r?\n)*/u, "");
+  return rest.trim() ? rest : original;
 }
 
 // A body mention counts only where Zulip would notify:  outside code and block quotes, and with

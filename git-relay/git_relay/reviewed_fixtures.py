@@ -14,9 +14,10 @@ from .secret_scan import find_secret
 # Source of truth: the corrected rename checkpoint
 # 81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3 (tree
 # b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf, built on main
-# ac6d5d44500937274aeddfc794a05fb427158f8c); 12 of the 13 triples verify
-# byte-exact against that tree. The thirteenth, gr-workflow-v1.test.mjs, is the
-# PR #1707 exception recorded below and is not part of that tree. The first checkpoint
+# ac6d5d44500937274aeddfc794a05fb427158f8c); 11 of the 13 triples verify
+# byte-exact against that tree. gr-workflow-v1.test.mjs (PR #1707) and
+# gr-front.test.mjs (PR #1826) are the two exceptions recorded below and are
+# not the checkpoint bytes. The first checkpoint
 # 4977e6a7970dc0a25638181600137fe06167dcec is retained as original evidence
 # only, never as a shipping target. Ten rows are unchanged from that first
 # re-attestation; three rows (test_install_mcp.py, integration.workerd.mjs,
@@ -35,9 +36,10 @@ from .secret_scan import find_secret
 # The gr-workflow-v1.test.mjs row was refreshed 2026-11-10 to the exact bytes under
 # review in PR #1707 (source blob 804d547cb96bba4cade20a058e76ec32c1fa7022), not the
 # 81d8bb0c checkpoint bytes, which never landed on main; provenance in the README.
-# The gr-front.test.mjs row was refreshed 2026-11-12 after merging main into AFC-727
-# (source blob 2f45cad9ab7fcd713a5c842ca54ffe22b587aa1b).  The bytes combine the
-# gr_create_repo name list (AFC-632) with intent-only gr_workflow_dispatch checks.
+# The gr-front.test.mjs row was refreshed 2026-11-12 after merging main (AFC-734,
+# PR #1826) into AFC-727 (source blob 3a7c6b485d91a7f2dfee5922b3d026450d087fb1).  The bytes combine the
+# gr_create_repo name list (AFC-632), AFC-734 not_configured reasons and intent-only
+# gr_workflow_dispatch checks.  Added lines introduce no new dedicated secret pattern.
 _REVIEWED_FIXTURES = frozenset(
     {
         (
@@ -58,7 +60,8 @@ _REVIEWED_FIXTURES = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "scripts/simple-tools-mcp/test/gr-front.test.mjs",
-            "76f5f4f7940c580239219561b51c644805c47bb75e8c0870100b8bc56494e284",
+            # AFC-727 intent-only dispatch + AFC-734 reasons + gr_create_repo names (AFC-632).
+            "2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394",
         ),
         (
             "Simple-With-Us/AI-Fleet-Coordinator",

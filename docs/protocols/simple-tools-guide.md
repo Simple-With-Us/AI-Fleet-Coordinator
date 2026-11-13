@@ -4,7 +4,7 @@ The one guide to the simple-tools on every transport: the stdio server (`simple-
 
 The collection is **simple-tools**.  The hosted server is **ST-MCP** and its admin is **ST-MCP + GR-MCP Admin**.  Use `simple-chat` for Zulip, `simple-board` for Linear, `simple-notes` for Apple Notes, and the FleetLink CLI for shares.  Fleet coordination is in **#Work-In-Progress**.  Use these component names in instructions and tool descriptions.
 
-At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 281 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 282 (Tools by Family).
+At a glance: every tool is `<family>_<verb>`; every call may carry `identity`; a write must.  The stdio server serves 274 tools and the hosted server 282 (counted from the release source, which adds the seven `gr_*` tools and the hosted-only `catalog` and `worker_diagnostics`; the deployed server lists 272 until that release ships): `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 283 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -58,6 +58,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Wher
 | (none) `whoami`, `identities`, `guide`, `catalog` | 3 stdio, 4 hosted | both | Identity, this guide and the paged tool catalog (above; `catalog` is hosted only) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
 | `eavesdropper_*` | 7 stdio, 6 hosted | both | This seat's eavesdropper records |
+| `worker_diagnostics` | 1 | hosted | The Worker's wake and runtime diagnostics (read-only; the eavesdropper section) |
 | `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -127,6 +128,7 @@ The local eavesdropper's records for the identity.  Stdio reads them from this 
 | `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
 | `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
 | `eavesdropper_ack` | W | stdio only | Move the inbox cursor or surfaced mark forward, or clear one held-back entry |
+| `worker_diagnostics` | R | hosted only | The Worker's own wake and runtime diagnostics (reason, seat, count, status, time; no keys or bodies), newest first: `wake` rows, filtered by `seat` and `limit` (default 50, max 100), plus the newest `recent` rows of every kind; the same rows the owner's admin page shows, so a seat can see why a wake route answered 404.  Hosted only:  no CLI command or stdio tool serves it (CLI Equivalents) |
 
 ### notes
 
@@ -250,6 +252,37 @@ Per-seat policy is an allowlist layer over that credential: allowed actions, all
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below: 401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
 
+### gh Command To Relay Verb, And Paging
+
+Use the relay verb in the right column, never `gh`.  `gh` is the logged fallback only, for an operation no verb covers.  Hosted names are the `gr_*` and `gr_wf_*` tools; GR-MCP uses the same names without the `gr_` prefix, so `gr_wf_checks` is `wf_checks` there.
+
+| gh command (retired) | Relay verb |
+|---|---|
+| `gh pr view N --json commits,updatedAt` | `gr_wf_pr_get`; the commits page is `gr_wf_pr_commits_page`, which needs `expected_head_sha` |
+| `gh api graphql` reviewThreads | `gr_wf_review_threads`, with `number` and an optional `cursor` |
+| `gh api` call that replies to a review thread | `gr_reply_thread`, or `gr_wf_review_comment_reply` for a single review comment |
+| `gh api` call that resolves a review thread | `gr_resolve_thread`, or `gr_wf_review_thread_resolve` |
+| `gh api -X PUT repos/O/R/pulls/N/reviews/ID/dismissals` | `gr_wf_review_dismiss` |
+| `gh pr checks N` and `gh pr checks N --watch` | `gr_wf_checks` with the full 40-character head sha as `ref`; `gr_wf_check_runs_page` pages the runs of one check and needs that sha as `head_sha` plus the exact `check_name` |
+| `gh run rerun --failed` | `gr_wf_run_rerun` for the run; `gr_wf_job_rerun` for one job |
+| `gh pr merge N --squash --auto` | `gr_wf_automerge_enable` with `method` `SQUASH` |
+| `gh pr merge N --squash` | `gr_wf_merge_guarded` with `method` `squash` and `expected_head_sha`, the full head sha read from `gr_wf_pr_get` |
+| `gh pr create` | `gr_open_pr`, which is owner-authored by design |
+| `gh pr edit` | `gr_edit_pr` for the title and body; `wf_pr_edit` is ungranted |
+| `gh pr comment N` | `gr_comment_pr` |
+| `gh pr ready` and `gh pr ready --undo` | `gr_wf_pr_ready` and `gr_wf_pr_draft` |
+| `gh pr list` | `gr_wf_pr_list` |
+
+### Paging And Pins
+
+List reads default to 30 per page and cap `per_page` at 50, and a larger value is refused.  Not every list read pages:  `gr_wf_pr_reviews_page`, `gr_wf_pr_comments_page`, `gr_wf_pr_comments`, `gr_wf_workflows_page`, `gr_wf_pr_list_page`, `gr_wf_repo_hooks` and `gr_wf_branches` take `page` as well as `per_page`, while `gr_wf_pr_reviews`, `gr_wf_labels` and `gr_wf_workflows` take `per_page` only, refuse `page`, and stop at 50 rows.  To read past 50 reviews or workflows, use the `_page` verb.
+
+`gr_wf_branches` lists one page of branches and takes the same `page` and `per_page` (30 by default, 50 at most).  Its result carries `page`, `has_more` and `complete`: `has_more` is true when the page came back full, so read the next `page` until a page comes back short, and `complete` is true only when page 1 itself came back short and so holds every branch.  A repository with more than 50 branches needs more than one call.
+
+`gr_wf_review_threads` pages five threads at a time.  Pass the returned end cursor back as `cursor` until the page reports no next page.  The relay binds only the first 100 threads of a pull request before it allows a fixed mutation, so a thread outside that bound is refused rather than changed.
+
+`gr_wf_checks` needs the full 40-character commit sha as `ref`, and `gr_wf_check_runs_page` needs it as `head_sha` together with the exact `check_name`;  a short sha is refused.  Read the sha from `gr_wf_pr_get` rather than retyping it.
+
 ## Old Names and New Names
 
 Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/simple_tools/mcp/renamed-tools.json`.
@@ -324,7 +357,7 @@ Title rule for a create: `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic`
 
 ## CLI Equivalents
 
-Every MCP tool has a command except the hosted-only `whatsapp_read`, which has none (the WhatsApp row below).  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3); the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
+Every MCP tool has a command except the hosted-only `whatsapp_read`, `catalog` and `worker_diagnostics`, which have none (their rows below).  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3); the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
 
 | Group | Commands |
 |---|---|
@@ -339,6 +372,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool; stdio runs it that way) |
 | WhatsApp | None: `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
 | Catalog | None: `catalog` is hosted only (paged names and descriptions;  full schemas come from `tools/list` with the same cursor), so no CLI command or stdio tool serves it |
+| Worker diagnostics | None: `worker_diagnostics` is hosted only (the eavesdropper section above;  it reads the Worker's own store), so no CLI command or stdio tool serves it |
 | GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio); the relay is deployed and is the fleet's GitHub route (verified live 2026-11-07) |
 
 Long text stays out of `argv`: `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
@@ -354,7 +388,7 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `unknown_tool` | A removed name.  Use `replacement` |
 | `invalid_argument` | The arguments broke the schema or a rule (the message names the field) |
 | `not_authorized` | Zulip or Linear refused the credential, a missing OAuth scope on hosted (reconnect and approve `zulip:read` or `zulip:write`), or a Linear write by the wrong app |
-| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
+| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here.  Hosted `gr_*` refusals that never reach git-relay also carry a stable `reason` (see below) |
 | `paused` | Hosted only: the owner paused this seat |
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying; never replay blindly |
@@ -365,6 +399,18 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
 | `relay_refused` | The hosted `gr_*` tools: git-relay refused the call (definite, nothing written).  The answer carries a `reason` when the cause is known; see "Why a `gr_*` Call Was Refused" below.  No `reason` means the relay's verdict was not one it recognises: read `message` |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above: a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
+
+### When `gr_*` Answers `not_configured` Before git-relay
+
+A hosted `gr_*` call that never reaches git-relay still uses `code: "not_configured"` and adds a stable `reason` so operators are not sent to fix the wrong layer.
+
+| `reason` | What it means and what to do |
+|---|---|
+| `gr_relay_env_missing` | The Worker relay front is missing `GR_UPSTREAM_URL` and/or the Cloudflare Access pair (`GR_ACCESS_CLIENT_ID`, `GR_ACCESS_CLIENT_SECRET`).  `missing` lists the unset names.  Fix in Fleet-OPS `/gr-front` and redeploy the Worker (DEPLOY.md) |
+| `gr_connection_no_seat_relay_auth` | The server relay front may be fine;  this MCP connection has no seat bearer (`sbt_*` / `gbb_*`) and no OAuth assertion path for gr_* (for example a web OAuth connector without a working grant path, or a paused or wake-only seat).  Use a seat-bearer MCP connection minted with ST-MCP/GR-MCP acceptance, or GR-MCP over stdio (`git-relay mcp`).  Setting relay env vars will not help |
+| `gr_relay_signer_unavailable` | OAuth assertion minting failed (signing key or isolated Infisical binding).  Nothing was sent to git-relay;  fix `/gr-assert-signing` and redeploy |
+
+The read-only git route at `/git/…` uses the same `gr_relay_env_missing` reason in its JSON body when the relay front is unset.
 
 ### Why a `gr_*` Call Was Refused
 

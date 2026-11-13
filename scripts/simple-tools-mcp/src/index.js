@@ -71,7 +71,13 @@ import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } f
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
-import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
+import { resolveGrSecrets, grClientFromResolved, grUnavailableWhenNoClient } from "./gr-tools.js";
+
+function wireGrFront({ grSecrets, env, grClient, relayAuthAvailable }) {
+  if (grClient) return { gr: grClient, grUnavailableReason: null, grMissingEnv: [] };
+  const { reason, missing } = grUnavailableWhenNoClient(grSecrets, env, { relayAuthAvailable });
+  return { gr: null, grUnavailableReason: reason, grMissingEnv: missing };
+}
 import { isGitPath, serveGit } from "./git-route.js";
 import { HostedTools, HOSTED_READ_TOOLS } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
@@ -445,6 +451,12 @@ async function serveMcp(request, env, ctx) {
   const grMinter = result.code === "paused" || config.eventsOnlySeats.includes(seat)
     ? null
     : grAssertionMinter(env, { seat, scopes, epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase, grantRef });
+  const grWire = wireGrFront({
+    grSecrets,
+    env,
+    grClient: grMinter ? grClientFromResolved(grSecrets, env, { minter: grMinter }) : null,
+    relayAuthAvailable: !!grMinter,
+  });
 
   // The eavesdropper key resolves through Infisical too (optional:  no wake key
   // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
@@ -475,7 +487,9 @@ async function serveMcp(request, env, ctx) {
     // is unconfigured:  the gr_* tools then answer not_configured and every
     // other tool works as before.  The signer key itself resolves lazily
     // per Git call and fails only that call closed when unavailable.
-    gr: grMinter ? grClientFromResolved(grSecrets, env, { minter: grMinter }) : null,
+    gr: grWire.gr,
+    grUnavailableReason: grWire.grUnavailableReason,
+    grMissingEnv: grWire.grMissingEnv,
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
@@ -490,6 +504,7 @@ async function serveMcp(request, env, ctx) {
     // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
     // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
     workerEnv: env,
   });
   // The authenticated grant assigns the acting principal. No per-call peer or
@@ -609,6 +624,12 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
   const recallSecrets = await resolveRecallSecrets(env);
   const grSecrets = await resolveGrSecrets(env);
+  const grWire = wireGrFront({
+    grSecrets,
+    env,
+    grClient: grClientFromResolved(grSecrets, env, { bearer: token }),
+    relayAuthAvailable: true,
+  });
   const tools = new HostedTools({
     seat: identity,
     callerSeat: identity,
@@ -625,11 +646,14 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
     identityEntry,
     // The GR front authenticates to the relay with this same bearer:  the
     // relay resolves it to the identity and applies its own allowlist.
-    gr: grClientFromResolved(grSecrets, env, { bearer: token }),
+    gr: grWire.gr,
+    grUnavailableReason: grWire.grUnavailableReason,
+    grMissingEnv: grWire.grMissingEnv,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
     workerEnv: env,
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
@@ -732,6 +756,12 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     ? await resolveSecret(env, { name: listenerSecret, path: "/wake", envName: listenerSecret, optional: true })
     : "";
   const grSecrets = await resolveGrSecrets(env);
+  const grWire = wireGrFront({
+    grSecrets,
+    env,
+    grClient: grClientFromResolved(grSecrets, env, { bearer: token }),
+    relayAuthAvailable: true,
+  });
   const tools = new HostedTools({
     seat,
     callerSeat: seat,
@@ -744,7 +774,9 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     config: { ...config, botEmails: { ...config.botEmails, [seat]: email } },
     // Same pass-through as the bot path:  the relay authenticates this
     // bearer and enforces the seat's own allowlist.
-    gr: grClientFromResolved(grSecrets, env, { bearer: token }),
+    gr: grWire.gr,
+    grUnavailableReason: grWire.grUnavailableReason,
+    grMissingEnv: grWire.grMissingEnv,
     zulip: new ZulipClient({ email, key, ownerUserId: config.ownerUserId }),
     key,
     gate: seatGate,
@@ -760,6 +792,7 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     fleetlink: fleetlinkClientFromSecret(Object.hasOwn(ADDITIONAL_BEARER_SEATS, seat) ? "" : fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
     workerEnv: env,
   });
   const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });

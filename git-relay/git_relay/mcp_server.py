@@ -92,7 +92,20 @@ TIMEOUT_SECONDS = 30
 TOOLS = [
     {
         "name": "open_pr",
-        "description": "Open a pull request as the relay's GitHub identity",
+        "description": (
+            "Open a pull request as the relay's GitHub identity.  The new pull request is "
+            "read back from GitHub before the answer:  a success carries number, url and "
+            "verified true.  If the create answered but the read back fails or does not "
+            "match repo, base, head and url (and draft when requested), the answer is "
+            "outcome unknown with no number, github_code names the cause "
+            "(open_pr_readback_failed, open_pr_readback_mismatch, open_pr_readback_skipped "
+            "when the caller's time ran out before the read back, open_pr_receipt_mismatch "
+            "or open_pr_receipt_invalid for a create answer that did not verify), "
+            "readback_status says what the read back answered (0 for a transport failure "
+            "or a skipped read back) and readback_retry_after_seconds a wait GitHub named:  "
+            "check the repository for the pull request before any retry, because an "
+            "identical call is refused until the outcome is reconciled."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -578,7 +591,9 @@ class RelayMcp:
             if payload.get("outcome") in ("unknown", "pending"):
                 if is_read:
                     return _tool_failure(message, "unavailable", retryable=True)
-                return _tool_failure(message, "outcome_unknown")
+                return _tool_failure(
+                    message, "outcome_unknown", extra=_readback_detail(name, payload)
+                )
         except urllib.error.HTTPError as exc:
             # The original seven tools all write, and so do the wf write
             # verbs:  a server error or replay hold can follow an accepted
@@ -604,7 +619,12 @@ class RelayMcp:
                     return _tool_failure(message, "relay_refused", exc.code)
                 return _tool_failure(message, "unavailable", exc.code)
             if isinstance(error, dict) and error.get("outcome") in ("unknown", "pending"):
-                return _tool_failure(message, "outcome_unknown", exc.code)
+                return _tool_failure(
+                    message,
+                    "outcome_unknown",
+                    exc.code,
+                    extra=_readback_detail(name, error),
+                )
             if (
                 isinstance(error, dict)
                 and type(error.get("retryable")) is bool
@@ -627,7 +647,27 @@ class RelayMcp:
         return _result(message, {"content": [{"type": "text", "text": json.dumps(payload)}]})
 
 
-def _tool_failure(message, code, status=None, retryable=False, retry_after=None):
+def _readback_detail(name, body) -> dict:
+    """What open_pr's unknown-outcome answer says about the read-back, as numbers and a code.
+
+    Only github_code, readback_status and readback_retry_after_seconds, each validated.  The
+    pull request number the create named stays in the relay's audit row:  it is unconfirmed
+    and is never copied here, and neither is any url or other upstream text.
+    """
+    if name != "open_pr" or not isinstance(body, dict):
+        return {}
+    detail = {}
+    code = body.get("github_code")
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,64}", code):
+        detail["github_code"] = code
+    for key, ceiling in (("readback_status", 599), ("readback_retry_after_seconds", 86400)):
+        value = body.get(key)
+        if type(value) is int and 0 <= value <= ceiling:
+            detail[key] = value
+    return detail
+
+
+def _tool_failure(message, code, status=None, retryable=False, retry_after=None, extra=None):
     # Provider prose can contain private details.  Return only stable local
     # guidance and the HTTP status, never the response body or credentials.
     if code == "outcome_unknown":
@@ -648,6 +688,8 @@ def _tool_failure(message, code, status=None, retryable=False, retry_after=None)
         error["retry_after_seconds"] = retry_after
     if status is not None:
         error["http_status"] = status
+    if extra:
+        error.update(extra)
     return _result(
         message,
         {"isError": True, "content": [{"type": "text", "text": json.dumps(error)}]},

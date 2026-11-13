@@ -1,4 +1,5 @@
 import { withServiceTitle } from "./tool-titles.js";
+import { isSingleThread } from "./session-ids.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
@@ -42,6 +43,7 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
+  stripOwnIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
   formatTime,
@@ -76,7 +78,14 @@ import {
   RECALL_MARKER_END,
 } from "./recall.js";
 import { PEER_ACTIONS_TOOLS, PEER_ACTIONS_WRITE_TOOLS, PEER_ACTIONS_METHODS } from "./peer_actions.js";
-import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
+import {
+  GR_SECRETS,
+  GR_TOOLS,
+  GR_TOOL_NAMES,
+  GRAPHQL_ERROR_CODES,
+  GR_UNAVAILABLE_REASON,
+  grNotConfiguredMessage,
+} from "./gr-tools.js";
 import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
@@ -150,6 +159,7 @@ import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LE
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
 import { NOTES_TOOLS, NOTES_READ_TOOLS, NOTES_WRITE_TOOLS, NOTES_METHODS } from "./notes.js";
+import { WORKER_DIAGNOSTICS_NAME, WORKER_DIAGNOSTICS_TOOLS, WORKER_DIAGNOSTICS_READ_TOOLS, WORKER_DIAGNOSTICS_METHODS, boundedDiagnosticsInput } from "./worker-diagnostics.js";
 import { REALM } from "./zulip.js";
 import { PINNED_OPERATOR_USER_ID } from "./config.js";
 
@@ -183,7 +193,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // after those, so every earlier tool keeps its place.
 // AFC-722:  every hosted tool that persists GitHub or Linear prose takes `sentence_gap` (src/outbound-gap.js).
 export const GAP_OPTION_TOOLS = Object.freeze(new Set([...Object.keys(GITHUB_GAP_FIELDS).map(githubToolName), ...LINEAR_WRITE_TOOLS]));
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...PEER_ACTIONS_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS].map(withServiceTitle).map((tool) => (GAP_OPTION_TOOLS.has(tool.name) ? withGapOption(tool) : tool)));
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...WORKER_DIAGNOSTICS_TOOLS, ...NOTES_TOOLS, ...PEER_ACTIONS_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS].map(withServiceTitle).map((tool) => (GAP_OPTION_TOOLS.has(tool.name) ? withGapOption(tool) : tool)));
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -196,7 +206,7 @@ const ZULIP_WRITE_NAMES = [...WRITE_TOOLS, ...DM_WRITE_TOOLS].map(publicZulip);
 const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
-export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", "catalog", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", "catalog", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...WORKER_DIAGNOSTICS_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...PEER_ACTIONS_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 /**
  * Whether a finished call writes a spec-3.9 audit row (owner ruling
@@ -421,12 +431,14 @@ export class HostedTools {
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
    * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
+   * @param {string|null} [o.grUnavailableReason]  GR_UNAVAILABLE_REASON when gr is null (src/gr-tools.js)
+   * @param {string[]} [o.grMissingEnv]    missing relay-front setting names when gr is null
    * @param {function|null} [o.audit]      the Worker's isolate audit buffer sink (src/audit-batch.js):  (key, gate, row);  null writes each row to the gate at once
    * @param {object|null} [o.identityCache]  the Worker's isolate verified-identity cache (src/identity-cache.js), or null
    * @param {string|null} [o.identityKey]    this credential's cache key (the SHA-256 of the presented credential)
    * @param {object|null} [o.identityEntry]  the route's fresh cache entry for this credential, or null when the route verified live for this request (the first call always pays the full gate price)
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, workerEnv = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, diagnosticsGate = null, gr = null, grUnavailableReason = null, grMissingEnv = [], workerEnv = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -445,6 +457,8 @@ export class HostedTools {
     // The recall secrets join the scrub list, so no error text can carry them.
     if (this.recall) this.known.push(...this.recall.secrets().filter(Boolean));
     this.gr = gr ?? null;
+    this.grUnavailableReason = this.gr ? null : (grUnavailableReason ?? GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING);
+    this.grMissingEnv = this.gr ? [] : (Array.isArray(grMissingEnv) ? grMissingEnv : []);
     // The GR front's Access pair and the caller's bearer join the scrub list too.
     if (this.gr) this.known.push(...this.gr.secrets().filter(Boolean));
     this.linear = linear ?? null;
@@ -459,6 +473,8 @@ export class HostedTools {
     if (this.listener) this.known.push(...this.listener.secrets().filter(Boolean));
     // The Operator notes key (OPERATOR_NOTES_KEY) joins the scrub list too.
     this.notes = notes ?? null;
+    // The refusal-log gate worker_diagnostics reads (src/worker-diagnostics.js):  null answers not_configured.
+    this.diagnosticsGate = diagnosticsGate ?? null;
     if (this.notes) this.known.push(...this.notes.secrets().filter(Boolean));
     this.workerEnv = workerEnv;
     this.gate = gate;
@@ -585,6 +601,7 @@ export class HostedTools {
         throw new ToolError("invalid_argument", "Recall arguments exceed structural limits.");
       }
       if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, {maxBytes:workflowInputLimit(publicName.slice(3)),maxString:workflowInputLimit(publicName.slice(3))})) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
+      if (publicName === WORKER_DIAGNOSTICS_NAME && !boundedDiagnosticsInput(args)) throw new ToolError("invalid_argument", "worker_diagnostics arguments exceed structural limits:  at most seat and limit, each a short scalar.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);
@@ -1421,8 +1438,8 @@ export class HostedTools {
   // The DM rule (owner decision, Oct 22 2026).  Mirrors scripts/simple_tools/dm_policy.py
   // so both transports refuse the same calls with the same guidance.  A seat may not open a new
   // direct message;  a reply inside a conversation Operator already opened is allowed, because that
-  // conversation is Operator's and the seat is answering rather than opening.  Operator itself may
-  // open one DM per ambiguous wake, to ask the sender a clarifying question.
+  // conversation is Operator's and the seat is answering rather than opening.  Operator asks nobody
+  // anything (owner ruling, Nov 10, 2026), so no call here opens a DM for a question either.
   async dmRuleCheck(args, { userIds, users }) {
     if (this.config?.dmRule === false) return;
     const selfId = this.me.user_id;
@@ -1437,7 +1454,6 @@ export class HostedTools {
     }
     // Oldest message in this exact conversation:  if Operator sent it, this seat may reply inside.
     if (opener && Number(opener.sender_id) === Number(operatorId)) return;
-    if (this.seat === "OPERATOR" && args.clarifying_question) return;
 
     const bots = users.filter((u) => u.is_bot);
     const ownerId = this.config?.ownerUserId ?? null;
@@ -1447,11 +1463,11 @@ export class HostedTools {
       ? `Seat-to-seat work happens in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}):  one topic per discussion, mentioning only the participants, never a direct message.`
       : kind === "owner"
         ? `Jay is reached through the Pending-for-Jay post in #Side-Chats (stream ${SIDE_CHATS_STREAM_ID}) or a topic there, not a new direct message.`
-        : `Direct messages are Operator's to open.  Put this in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}) instead, or let Operator ask one clarifying question if a wake could not be routed.`;
+        : `Direct messages are Operator's to open.  Put this in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}) instead.`;
     if (this.seat === "OPERATOR") {
       throw new ToolError(
         "dm_not_allowed",
-        `OPERATOR may open a direct message only to ask the sender one clarifying question when a wake could not be routed.  Bot-to-bot work goes to a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}).`,
+        `OPERATOR opens no direct message here.  Bot-to-bot work goes to a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}).`,
       );
     }
     throw new ToolError("dm_not_allowed", `this seat may not open a new direct message (${kind}).  ${guidance}`);
@@ -1545,9 +1561,11 @@ export class HostedTools {
 
   requireGr() {
     if (this.gr) return this.gr;
+    const reason = this.grUnavailableReason ?? GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING;
     throw new ToolError(
       "not_configured",
-      `GR-MCP is not configured on this server.  The owner sets GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")} (scripts/simple-tools-mcp/DEPLOY.md).  The other tools still work.`,
+      grNotConfiguredMessage({ reason, missing: this.grMissingEnv }),
+      { extra: { reason, ...(this.grMissingEnv.length ? { missing: this.grMissingEnv } : {}) } },
     );
   }
 
@@ -1587,7 +1605,12 @@ export class HostedTools {
     // Only the transport's own root marker proves this failed before send.
     // Upstream status/body content can never supply that marker.
     if (localFailure === true && status === 503 && body?.error === "not_configured") {
-      throw new ToolError("not_configured", "GR-MCP is not configured on this server right now (the relay front or the hosted-OAuth signer is unavailable).  Nothing was sent to git-relay;  the other tools still work.");
+      const reason = GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE;
+      throw new ToolError(
+        "not_configured",
+        grNotConfiguredMessage({ reason, missing: [] }),
+        { extra: { reason } },
+      );
     }
     // Every other 5xx is outcome_unknown (kody discussion_r4372747157):  a
     // relay crash or edge error can follow an ACCEPTED mutation, so calling
@@ -2028,10 +2051,13 @@ export class HostedTools {
   }
 
   /** The caller's Linear body as posted:  no seat tag is prepended and a supplied session is not
-   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  `session` stays on
-   * the signature because callers and idempotency keys still pass it. */
+   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  A single-thread seat's
+   * own typed intro is dropped too (Jay 2026-11-12):  its app already names it, while a multi-threaded
+   * seat keeps its intro because it names the thread.  `session` stays on the signature because callers
+   * and idempotency keys still pass it. */
   linearBody(text, session) {
     void session;
+    if (isSingleThread(this.seat)) text = stripOwnIntro(seatTagForSeat(this.seat), text);
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
     // AFC-722:  the full house gap (one or more spaces), unless the call passed sentence_gap: false.
@@ -2308,7 +2334,8 @@ export class HostedTools {
   linearFileBody(args, slug, team) {
     const seat = seatTagForSeat(this.seat);
     const text = args.description?.trim() || "_No description given._";
-    const footer = [`---`, "", "**Filed from simple-tools**", "", `- Reported by ${seat}`, `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
+    // A single-thread seat's Linear app is the reporter, so it gets no Reported by line (Jay 2026-11-12).
+    const footer = [`---`, "", "**Filed from simple-tools**", "", ...(isSingleThread(this.seat) ? [] : [`- Reported by ${seat}`]), `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
     if (args.kind) footer.push(`- Kind: ${args.kind}`);
     if (args.severity) footer.push(`- Severity: ${args.severity}`);
     if (args.env) footer.push(`- Env: ${ENVS[args.env]}`);
@@ -2463,7 +2490,7 @@ export class HostedTools {
 }
 
 // AFC-330:  the rest of Zulip (src/zulip-full.js) and the eavesdropper's records (src/listener.js).
-Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, NOTES_METHODS, PEER_ACTIONS_METHODS);
+Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, WORKER_DIAGNOSTICS_METHODS, NOTES_METHODS, PEER_ACTIONS_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */
 export function seatProblem(me, { seat, email, ownerUserId = null }) {

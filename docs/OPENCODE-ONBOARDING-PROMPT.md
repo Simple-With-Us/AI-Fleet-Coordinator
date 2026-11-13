@@ -121,8 +121,8 @@ SECRETS
 WRITING FOR THE OWNER
 - Between sentences, a real U+00A0 plus a normal space in everything a human reads:  chat, commits, PR bodies, Zulip,
   Notes, docs, UI copy.  Never two plain ASCII spaces (owner ruling 2026-10-23; see the sentence-gap skill), and never
-  the `&nbsp;` entity except in the one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the
-  MiniMax Code pane) take the entity plus a normal space.  Title Case headings
+  the `&nbsp;` entity except in the one exception:  the chat panes of Claude Code (the Code tab), MiniMax Code (the
+  MiniMax Code pane) and Z Code take the entity plus a normal space.  Title Case headings
   and buttons;  sentence case values.  Tell the owner times in 12-hour form with am or pm, no zone abbreviation.
 - Plans, reviews, handoffs and completion notes also go to Apple Notes folder Coding:
   ~/apps/apple-notes-coding.sh "[TEAM_KEY, OpenCode] short topic" "body" (--update to revise in place).
@@ -133,8 +133,8 @@ FLEET RECALL AND DELEGATION
 - recall "query" before re-deriving a lesson, before debugging anything familiar, and before asking the owner a
   question a past ruling probably answers.  A hit is a lead, not a verdict.  Contribute one reusable lesson at
   closeout.
-- Fleet mode (~/apps/FLEET-MODE.md):  delegate mechanical work to subagents with a thorough brief, keep turns short,
-  stay reachable.  A subagent inherits your seat and posts, if at all, through your bot.
+- Fleet mode (~/apps/FLEET-MODE.md):  delegate mechanical work to subagents with a thorough brief and only the tools and context each needs,
+  and carry the work to done without stopping early.  A subagent inherits your seat and posts, if at all, through your bot.
 
 YOUR FIRST UNIT, NOW
 1. Prove the surfaces and report each result:  simple-chat whoami --as OPENCODE;  simple-board stats;

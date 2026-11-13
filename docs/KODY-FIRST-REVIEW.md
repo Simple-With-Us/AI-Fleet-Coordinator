@@ -59,3 +59,15 @@ The posted comment is the dedup record; no separate marker or state branch exist
 
 Caller template: `docs/kody-first-review.caller.yml`, copied per repo; this repo's own
 caller is `.github/workflows/kody-first-review.yml`.
+
+## Manual requests
+
+When a person or agent requests a review by hand, prefer command-first: put
+`@kody start-review` as the literal first line of the comment, ahead of any seat
+header or other text. The established contract is still own-line anywhere
+(`lib.mjs`, `AUTO-MERGE.md`); command-first is a precaution, not a proven
+requirement. In the 2026-11-11 traces (AFC #1766 and #1781), header-first
+requests (a seat header line before the command) produced no Kody check or
+review receipts, while the one command-first request produced the completed
+review. Causation is unverified until webhook delivery evidence confirms it, so
+do not treat an own-line request that is not first-line as invalid.
