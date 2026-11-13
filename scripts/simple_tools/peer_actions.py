@@ -101,11 +101,14 @@ def read_secret_file(path: str) -> str:
         return ""
 
 
-def _secret_from_file_or_env(file_env: str, value_env: str) -> str:
-    path = _env(file_env)
+def _secret_from_file_or_env(
+    file_env: str, value_env: str, env: Mapping[str, str] | None = None
+) -> str:
+    source = os.environ if env is None else env
+    path = (source.get(file_env) or "").strip()
     if path:
         return read_secret_file(path)
-    return _env(value_env)
+    return (source.get(value_env) or "").strip()
 
 
 def _project_id(env: Mapping[str, str] | None = None) -> str:
@@ -192,29 +195,66 @@ def _infisical_get_secret(
     return value.strip()
 
 
-def load_service_account_json(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+SA_SECRET_FIELDS = ("private_key", "private_key_id", "client_secret", "access_token", "refresh_token")
+
+
+def _service_account(raw: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise PeerActionsError("invalid_secret", "GOOGLE_SHEETS_SA is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise PeerActionsError("invalid_secret", "GOOGLE_SHEETS_SA is not a JSON object")
+    return parsed
+
+
+def _service_account_known(sa: Mapping[str, Any]) -> list[str]:
+    # Metadata such as type and public URLs is not a credential denylist.
+    return [sa[name] for name in SA_SECRET_FIELDS if isinstance(sa.get(name), str) and sa[name]]
+
+
+def local_known_credentials(env: Mapping[str, str] | None = None) -> list[str]:
+    """Only this operation's declared local route; never fetch for an offline dry-run."""
     source = os.environ if env is None else env
     direct = (source.get(ENV_SA_JSON) or "").strip()
     if direct:
-        try:
-            return json.loads(direct)
-        except json.JSONDecodeError as exc:
-            raise PeerActionsError("invalid_secret", "GOOGLE_SHEETS_SA is not valid JSON") from exc
-    token = _secret_from_file_or_env(ENV_INFISICAL_TOKEN_FILE, ENV_INFISICAL_TOKEN)
-    if not token:
+        return _service_account_known(_service_account(direct))
+    return [
+        value
+        for value in [_secret_from_file_or_env(ENV_INFISICAL_TOKEN_FILE, ENV_INFISICAL_TOKEN, env=source)]
+        if value
+    ]
+
+
+def load_service_account_json(
+    env: Mapping[str, str] | None = None,
+    *,
+    known: list[str] | None = None,
+) -> dict[str, Any]:
+    source = os.environ if env is None else env
+    direct = (source.get(ENV_SA_JSON) or "").strip()
+    if direct:
+        sa = _service_account(direct)
+        if known is not None:
+            known.extend(_service_account_known(sa))
+        return sa
+    bindings = local_known_credentials(source)
+    if not bindings:
         raise PeerActionsError(
             "not_configured",
             f"set {ENV_SA_JSON}, or {ENV_INFISICAL_TOKEN_FILE} / {ENV_INFISICAL_TOKEN} for Infisical",
         )
+    if known is not None:
+        known.extend(bindings)
     project = _project_id(source)
-    api = _env(ENV_INFISICAL_API) if env is None else (source.get(ENV_INFISICAL_API) or "").strip()
+    api = (source.get(ENV_INFISICAL_API) or "").strip()
     raw = _infisical_get_secret(
-        token, project, api_base=api or "https://app.infisical.com", env=source
+        bindings[0], project, api_base=api or "https://app.infisical.com", env=source
     )
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise PeerActionsError("invalid_secret", "GOOGLE_SHEETS_SA is not valid JSON") from exc
+    sa = _service_account(raw)
+    if known is not None:
+        known.extend(_service_account_known(sa))
+    return sa
 
 
 def _clean_field(
@@ -433,6 +473,13 @@ class SheetsClient:
                 ) from exc
 
 
+def _scan_entry(entry: LogEntry, known: Iterable[str]) -> None:
+    fields = ("when", "acting_seat", "requesting_seat", "request", "action_taken", "result")
+    for field, value in zip(fields, entry.row()):
+        if secretscan.scan(value, known):
+            raise PeerActionsError("refused_secret", f"{field} contains credential-shaped text")
+
+
 def log_row(
     entry: LogEntry,
     *,
@@ -451,17 +498,21 @@ def log_row(
         "tab": TAB_TITLE,
         "row": entry.row(),
     }
+    known = local_known_credentials(source)
+    _scan_entry(entry, known)
     if dry_run:
         return result
     client = sheets
     if client is None:
-        sa = load_service_account_json(source)
+        sa = load_service_account_json(source, known=known)
+        _scan_entry(entry, known)
         token_cache: dict[str, Any] = {}
 
         def token() -> str:
             if "value" not in token_cache or token_cache.get("exp", 0) <= int(time.time()):
                 token_cache["value"] = _google_access_token(sa)
                 token_cache["exp"] = int(time.time()) + 3000
+            _scan_entry(entry, [*known, token_cache["value"]])
             return token_cache["value"]
 
         client = SheetsClient(spreadsheet_id=spreadsheet_id, token_provider=token)
