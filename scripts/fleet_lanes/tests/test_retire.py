@@ -438,6 +438,7 @@ class LegacySuffixTests(WorldCase):
         self.assertTrue(self.legacy.exists())
 
     def test_prune_cleans_a_stale_legacy_entry_only_for_its_owner(self) -> None:
+        self.w.new_lane("modern", seat="ZC")
         shutil.rmtree(self.legacy)
         result = self.w.run("prune", "--apply", "--json", env={"AGENT_SEAT": "CODEX"}, clock=MUCH_LATER)
         self.assertEqual(result.rc, 0, result.err)
