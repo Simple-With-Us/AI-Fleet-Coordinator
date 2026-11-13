@@ -53,6 +53,7 @@ ACCOUNT_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
 MINUTE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z")
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
+MAX_CREDENTIAL_BYTES = 8192
 ROW_LIMIT = 2000
 STORAGE_ROW_LIMIT = 500
 
@@ -627,19 +628,24 @@ class Connections:
             # The isolated unit and manual re-arm both load only the managed sibling code.
             sys.path.insert(0, str(HERE.parent))
             import fleet_infisical
+
+            expected_reader = (HERE.parent / "fleet_infisical.py").resolve()
+            if Path(getattr(fleet_infisical, "__file__", "")).resolve() != expected_reader:
+                raise ImportError("foreign shared reader")
             from fleet_knobs.source import PROJECT_ID
-        except ImportError:
+        except (ImportError, TypeError, ValueError, OSError):
             raise PollError("credential-fetch-reader-unavailable") from None
         try:
             # This is the unit's documented own bootstrap, never the independent knob reader.
             token = (self.env.get("INFISICAL_TOKEN") or "").strip()
-            values = fleet_infisical.fetch_project(
+            values = fleet_infisical.bounded_fetch_project(
                 PROJECT_ID,
                 conf["path"],
                 {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": conf["path"]},
                 token=token,
                 names=(name,),
                 timeout=30,
+                max_output_bytes=MAX_CREDENTIAL_BYTES,
             )
             value = values.get(name)
             if value is None:

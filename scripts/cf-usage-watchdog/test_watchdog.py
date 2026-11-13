@@ -989,8 +989,8 @@ class RearmTests(Base):
 def fake_named_reader(test, values, codes=None):
     test.secret_reads = []
 
-    def fetch(project, path, env, *, token, names, timeout):
-        test.secret_reads.append((project, path, dict(env), token, names, timeout))
+    def fetch(project, path, env, *, token, names, timeout, max_output_bytes):
+        test.secret_reads.append((project, path, dict(env), token, names, timeout, max_output_bytes))
         (name,) = names
         code = (codes or {}).get(name, 0 if name in values else 3)
         if code == 3:
@@ -999,7 +999,11 @@ def fake_named_reader(test, values, codes=None):
             raise RuntimeError("synthetic provider refusal")
         return {name: values[name]}
 
-    patch = mock.patch.dict(sys.modules, {"fleet_infisical": SimpleNamespace(fetch_project=fetch)})
+    patch = mock.patch.dict(
+        sys.modules,
+        {"fleet_infisical": SimpleNamespace(
+            __file__=str(HERE.parent / "fleet_infisical.py"), bounded_fetch_project=fetch)},
+    )
     patch.start()
     test.addCleanup(patch.stop)
 
@@ -1069,6 +1073,7 @@ class ConnectionTests(Base):
                     conn.env["INFISICAL_TOKEN"],
                     ("CF_USAGE_WATCHDOG_API_TOKEN",),
                     30,
+                    8192,
                 )
             ],
         )
@@ -1254,13 +1259,30 @@ class DirectCredentialTests(unittest.TestCase):
     def setUp(self):
         import fleet_infisical
         from fleet_knobs.source import PROJECT_ID
+        from fleet_knobs.tests._fake import ScopedReadAPI
 
         self.core, self.project = fleet_infisical, PROJECT_ID
         self.cfg = json.loads(wd.CONFIG_PATH.read_text())
-        self.binding = "st." + secrets.token_urlsafe(32)
         self.value = secrets.token_urlsafe(32)
-        self.calls = []
-        self.absent = False
+        self.api = ScopedReadAPI(
+            {"CF_USAGE_WATCHDOG_API_TOKEN": self.value, "EXAMPLE": self.value},
+            project=self.project,
+            path="/cf-usage-watchdog",
+        )
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.binding = self.api.token
+        self.calls = self.api.requests
+        self.reads = []
+        self.actual_bounded = self.core.bounded_fetch_project
+        wrapper = mock.patch.object(self.core, "bounded_fetch_project", self.loopback_fetch)
+        wrapper.start()
+        self.addCleanup(wrapper.stop)
+        direct = mock.patch.object(
+            self.core, "fetch_project", side_effect=AssertionError("unbounded parent read")
+        )
+        direct.start()
+        self.addCleanup(direct.stop)
         self.metadata = {
             "workspace": self.project,
             "permissions": ["read"],
@@ -1280,47 +1302,46 @@ class DirectCredentialTests(unittest.TestCase):
             },
         )
 
-    def api(self, method, path, token, body, env, **options):
-        self.calls.append((method, path))
-        self.assertEqual(token, self.binding)
+    def loopback_fetch(self, project, path, env, *, token, names, timeout, max_output_bytes):
+        self.assertEqual(project, self.project)
+        self.assertEqual(path, "/cf-usage-watchdog")
+        self.assertEqual(token, self.conn.env.get("INFISICAL_TOKEN", ""))
         self.assertEqual(
             env, {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/cf-usage-watchdog"}
         )
-        self.assertIsNone(body)
-        if path == "/v2/service-token":
-            return 200, self.metadata
-        self.assertTrue(path.startswith("/v3/secrets/raw/"))
-        self.assertIn("recursive=false", path)
-        self.assertIn("include_imports=false", path)
-        self.assertIn("expandSecretReferences=false", path)
-        if self.absent:
-            return 404, {}
-        name = urllib.parse.unquote(path.split("/raw/", 1)[1].split("?", 1)[0])
-        return 200, {
-            "secret": {
-                "secretKey": name,
-                "secretValue": self.value,
-                "type": "shared",
-                "workspace": self.project,
-                "environment": "prod",
-                "secretPath": "/cf-usage-watchdog",
-            }
-        }
+        self.assertEqual(timeout, 30)
+        self.assertEqual(max_output_bytes, 8192)
+        self.reads.append((token, names, timeout, max_output_bytes))
+        self.api.metadata_override = self.metadata
+        # The adapter receives no API override; this test adds loopback only after that assertion.
+        return self.actual_bounded(
+            project, path, {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]},
+            token=token, names=names, timeout=timeout, max_output_bytes=max_output_bytes,
+        )
 
     def test_real_exact_scope_named_read_uses_only_own_token_and_preserves_cache(self):
-        with mock.patch.object(self.core, "_api_json", side_effect=self.api):
-            self.assertEqual(self.conn.token(), self.value)
-            self.assertEqual(self.conn.token(), self.value)
+        self.assertEqual(self.conn.token(), self.value)
+        self.assertEqual(self.conn.token(), self.value)
         self.assertEqual(len(self.calls), 2)
-        self.assertIn("/raw/CF_USAGE_WATCHDOG_API_TOKEN?", self.calls[1][1])
+        self.assertIn("/raw/CF_USAGE_WATCHDOG_API_TOKEN?", self.calls[1])
+        self.assertEqual(len(self.reads), 1)
+        self.assertIn("recursive=false", self.calls[1])
+        self.assertIn("include_imports=false", self.calls[1])
+        self.assertIn("expandSecretReferences=false", self.calls[1])
         self.runner.assert_not_called()
 
     def test_absence_and_empty_values_remain_none_without_an_application(self):
-        with mock.patch.object(self.core, "_api_json", side_effect=self.api):
-            self.absent = True
-            self.assertIsNone(self.conn._secret("EXAMPLE"))
-            self.absent, self.value = False, "  "
-            self.assertIsNone(self.conn._secret("EXAMPLE"))
+        del self.api.values["EXAMPLE"]
+        self.assertIsNone(self.conn._secret("EXAMPLE"))
+        self.api.values["EXAMPLE"] = "  "
+        self.assertIsNone(self.conn._secret("EXAMPLE"))
+        self.runner.assert_not_called()
+
+    def test_real_worker_rejects_an_oversized_single_value(self):
+        self.api.values["EXAMPLE"] = secrets.token_urlsafe(7000)
+        with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
+            self.conn._secret("EXAMPLE")
+        self.assertEqual(len(self.calls), 2)
         self.runner.assert_not_called()
 
     def test_wrong_scope_project_permissions_and_expiry_stop_before_values(self):
@@ -1343,19 +1364,18 @@ class DirectCredentialTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.metadata = dict(original, **{field: value})
                 self.calls.clear()
-                with mock.patch.object(self.core, "_api_json", side_effect=self.api):
-                    with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
-                        self.conn._secret("EXAMPLE")
-                self.assertEqual(self.calls, [("GET", "/v2/service-token")])
+                with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
+                    self.conn._secret("EXAMPLE")
+                self.assertEqual(self.calls, ["/api/v2/service-token"])
         self.runner.assert_not_called()
 
     def test_missing_own_binding_never_uses_another_token_or_raw_secret_environment(self):
         self.conn.env.pop("INFISICAL_TOKEN")
         self.conn.env["CF_USAGE_WATCHDOG_API_TOKEN"] = self.value
-        with mock.patch.object(self.core, "_api_json") as api:
-            with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
-                self.conn._secret("CF_USAGE_WATCHDOG_API_TOKEN")
-        api.assert_not_called()
+        with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
+            self.conn._secret("CF_USAGE_WATCHDOG_API_TOKEN")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.reads[0][0], "")
         self.runner.assert_not_called()
 
     def test_provider_failures_are_fixed_and_never_reflect_diagnostics(self):
@@ -1365,7 +1385,7 @@ class DirectCredentialTests(unittest.TestCase):
             (TimeoutError(marker), "credential-fetch-timeout"),
         ):
             with self.subTest(expected=expected):
-                with mock.patch.object(self.core, "_api_json", side_effect=failure):
+                with mock.patch.object(self.core, "bounded_fetch_project", side_effect=failure):
                     with self.assertRaises(wd.PollError) as caught:
                         self.conn._secret("EXAMPLE")
                 self.assertEqual(str(caught.exception), expected)
@@ -1374,10 +1394,10 @@ class DirectCredentialTests(unittest.TestCase):
 
     def test_another_configured_project_never_reaches_the_reader(self):
         self.cfg["infisical"]["project"] = "fleet-ops"
-        with mock.patch.object(self.core, "_api_json") as api:
+        with mock.patch.object(self.core, "bounded_fetch_project") as reader:
             with self.assertRaisesRegex(wd.PollError, "^credential-fetch-project-refused$"):
                 self.conn._secret("EXAMPLE")
-        api.assert_not_called()
+        reader.assert_not_called()
         self.runner.assert_not_called()
 
     def test_missing_shared_module_never_starts_the_retired_application(self):
@@ -1385,6 +1405,52 @@ class DirectCredentialTests(unittest.TestCase):
             with self.assertRaisesRegex(wd.PollError, "^credential-fetch-reader-unavailable$"):
                 self.conn._secret("EXAMPLE")
         self.runner.assert_not_called()
+
+    def test_preloaded_foreign_or_missing_origin_never_receives_own_binding(self):
+        fetch = mock.Mock(side_effect=AssertionError("foreign reader received binding"))
+        for origin in ("/untrusted/fleet_infisical.py", "", None):
+            with self.subTest(origin=origin):
+                foreign = SimpleNamespace(__file__=origin, bounded_fetch_project=fetch)
+                with mock.patch.dict(sys.modules, {"fleet_infisical": foreign}):
+                    with self.assertRaisesRegex(
+                        wd.PollError, "^credential-fetch-reader-unavailable$"
+                    ):
+                        self.conn._secret("EXAMPLE")
+        fetch.assert_not_called()
+        self.runner.assert_not_called()
+
+    def test_isolated_entry_refuses_preloaded_foreign_module_before_credentials(self):
+        program = r"""
+import runpy, secrets, sys, types
+called = []
+foreign = types.ModuleType('fleet_infisical')
+foreign.__file__ = '/untrusted/fleet_infisical.py'
+foreign.bounded_fetch_project = lambda *args, **kwargs: called.append((args, kwargs))
+sys.modules['fleet_infisical'] = foreign
+loaded = runpy.run_path(sys.argv[1])
+cfg = dict(infisical=dict(project='ai-fleet-coordinator', path='/cf-usage-watchdog'), limits=dict(http_timeout_seconds=20))
+conn = loaded['Connections'](cfg, env={'INFISICAL_TOKEN': 'st.' + secrets.token_urlsafe(32)})
+try:
+    conn._secret('EXAMPLE')
+except loaded['PollError'] as exc:
+    assert str(exc) == 'credential-fetch-reader-unavailable'
+else:
+    raise AssertionError('foreign module accepted')
+assert called == []
+print('preloaded-reader-refused')
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", program, str(Path(wd.__file__).resolve())],
+                cwd=directory,
+                env={"HOME": directory, "PATH": os.defpath},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()), (0, "preloaded-reader-refused"), result.stderr
+        )
 
     def test_isolated_managed_payload_ignores_hostile_import_paths(self):
         policy = runpy.run_path(str(HERE.parent / "fleet-cli-release.py"))
@@ -1411,33 +1477,45 @@ class DirectCredentialTests(unittest.TestCase):
                 "raise AssertionError('foreign knobs')\n"
             )
             program = r"""
-import builtins, runpy, secrets, sys
+import builtins, os, runpy, sys
 from pathlib import Path
 original = builtins.__import__
-def api(method, path, token, body, env, **options):
-    from fleet_knobs.source import PROJECT_ID
-    if path == '/v2/service-token':
-        return 200, dict(workspace=PROJECT_ID, permissions=['read'], scopes=[dict(environment='prod', secretPath='/cf-usage-watchdog')], expiresAt='2099-01-01T00:00:00Z')
-    return 200, dict(secret=dict(secretKey='EXAMPLE', secretValue='synthetic', type='shared', workspace=PROJECT_ID, environment='prod', secretPath='/cf-usage-watchdog'))
 def imported(name, *args, **kwargs):
     module = original(name, *args, **kwargs)
     if name == 'fleet_infisical':
         assert Path(module.__file__).parent == Path(sys.argv[1]).parents[1]
-        module._api_json = api
+        actual = module.bounded_fetch_project
+        def no_direct(*args, **kwargs):
+            raise AssertionError('unbounded parent read')
+        module.fetch_project = no_direct
+        def fixture(project, path, env, *, token, names, timeout, max_output_bytes):
+            assert env == dict(INFISICAL_ENVIRONMENT='prod', INFISICAL_READ_PATHS='/cf-usage-watchdog')
+            assert token == os.environ['TEST_READER_TOKEN']
+            assert names == ('EXAMPLE',) and timeout == 30 and max_output_bytes == 8192
+            return actual(project, path, {**env, 'FLEET_SECRETS_API': os.environ['TEST_READER_API']},
+                          token=token, names=names, timeout=timeout, max_output_bytes=max_output_bytes)
+        module.bounded_fetch_project = fixture
     return module
 builtins.__import__ = imported
 loaded = runpy.run_path(sys.argv[1])
 cfg = dict(infisical=dict(project='ai-fleet-coordinator', path='/cf-usage-watchdog'), limits=dict(http_timeout_seconds=20))
 def no_app(*args, **kwargs):
     raise AssertionError('application fallback')
-conn = loaded['Connections'](cfg, runner=no_app, env={'INFISICAL_TOKEN':'st.'+secrets.token_urlsafe(32)})
-assert conn._secret('EXAMPLE') == 'synthetic'
+conn = loaded['Connections'](cfg, runner=no_app, env={'INFISICAL_TOKEN':os.environ['TEST_READER_TOKEN']})
+assert conn._secret('EXAMPLE') == os.environ['TEST_READER_VALUE']
 print('isolated-reader-ok')
 """
             result = subprocess.run(
                 [sys.executable, "-I", "-B", "-c", program, str(entry)],
                 cwd=hostile,
-                env={"HOME": directory, "PATH": os.defpath, "PYTHONPATH": str(hostile)},
+                env={
+                    "HOME": directory,
+                    "PATH": os.defpath,
+                    "PYTHONPATH": str(hostile),
+                    "TEST_READER_API": self.api.env["FLEET_SECRETS_API"],
+                    "TEST_READER_TOKEN": self.binding,
+                    "TEST_READER_VALUE": self.value,
+                },
                 capture_output=True,
                 text=True,
                 timeout=10,
