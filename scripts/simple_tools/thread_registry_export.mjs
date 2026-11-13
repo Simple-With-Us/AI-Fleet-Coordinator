@@ -89,7 +89,7 @@ async function getGoogleAccessToken() {
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(`Google OAuth error: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Google OAuth error: HTTP ${res.status}: ${JSON.stringify(data).slice(0, 500)}`);
   // Shape-check before use, the way operator_sheets_google.mjs validates its
   // token response:  an unexpected body must fail here, not downstream as an
   // auth header.  (This drain runs under bare node with no zod available.)
@@ -110,7 +110,10 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
   const base = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
   async function call(path, init = {}) {
     const res = await fetch(`${base}${path}`, { ...init, headers: { ...auth, ...(init.headers || {}) } });
-    if (!res.ok) throw new Error(`Sheets API ${init.method || "GET"} ${path} -> ${res.status}`);
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`Sheets API ${init.method || "GET"} ${path} -> ${res.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`);
+    }
     return res.json();
   }
   return {
