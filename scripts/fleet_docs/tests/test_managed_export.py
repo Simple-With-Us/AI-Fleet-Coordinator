@@ -1,11 +1,12 @@
 """The exporter accepts only the existing managed route and matching assigned actor."""
+
 import importlib.util
 import json
 import os
-from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 source = Path(__file__).resolve().parents[2] / "export-repo-git-source.py"
@@ -27,22 +28,34 @@ class ManagedExportTests(unittest.TestCase):
 
     def invoke(self, actor="CODEX", seat="CODEX", identity=None):
         def run(argv, **kwargs):
-            value = identity if identity is not None else {"authenticated_seat": actor,
-                "default_identity": actor, "identities": [{"identity": actor}]}
+            value = (
+                identity
+                if identity is not None
+                else {
+                    "authenticated_seat": actor,
+                    "default_identity": actor,
+                    "identities": [{"identity": actor}],
+                }
+            )
             kwargs["stdout"].write(json.dumps({"structured": value}).encode())
             return SimpleNamespace(returncode=0)
+
         # The fixture's system temp ancestor is world-writable; production still checks every parent.
         original = Path.lstat
+
         def metadata(path):
             value = original(path)
             if path in self.home.parents:
                 return SimpleNamespace(st_mode=0o40755, st_uid=0)
             return value
-        with patch.dict(os.environ, {"AGENT_SEAT": seat} if seat else {}, clear=True), \
-             patch.object(Path, "home", return_value=self.home), \
-             patch.object(exporter.shutil, "which", return_value=str(self.wrapper)), \
-             patch.object(Path, "lstat", autospec=True, side_effect=metadata), \
-             patch.object(exporter.subprocess, "run", side_effect=run) as process:
+
+        with (
+            patch.dict(os.environ, {"AGENT_SEAT": seat} if seat else {}, clear=True),
+            patch.object(Path, "home", return_value=self.home),
+            patch.object(exporter.shutil, "which", return_value=str(self.wrapper)),
+            patch.object(Path, "lstat", autospec=True, side_effect=metadata),
+            patch.object(exporter.subprocess, "run", side_effect=run) as process,
+        ):
             exporter.verify_managed_route()
             self.assertTrue(process.call_args.kwargs["start_new_session"])
             self.assertEqual(process.call_args.args[0], [str(self.wrapper), "whoami", "--json"])
@@ -53,7 +66,10 @@ class ManagedExportTests(unittest.TestCase):
 
     def test_missing_or_mismatched_actor_is_refused(self):
         for actor, seat in (("CODEX", ""), ("OTHER", "CODEX")):
-            with self.subTest(actor=actor, seat=seat), self.assertRaises(exporter.remote.SourceError):
+            with (
+                self.subTest(actor=actor, seat=seat),
+                self.assertRaises(exporter.remote.SourceError),
+            ):
                 self.invoke(actor, seat)
 
     def test_group_writable_or_unmanaged_entrypoint_is_refused(self):
@@ -66,24 +82,37 @@ class ManagedExportTests(unittest.TestCase):
             self.invoke()
 
     def test_both_authenticated_and_default_identity_are_required_and_match(self):
-        complete = {"authenticated_seat": "CODEX", "default_identity": "CODEX",
-                    "identities": [{"identity": "CODEX"}]}
+        complete = {
+            "authenticated_seat": "CODEX",
+            "default_identity": "CODEX",
+            "identities": [{"identity": "CODEX"}],
+        }
         for field in ("authenticated_seat", "default_identity"):
             for invalid in (None, "OTHER", 1):
-                with self.subTest(field=field, invalid=invalid), self.assertRaises(exporter.remote.SourceError):
+                with (
+                    self.subTest(field=field, invalid=invalid),
+                    self.assertRaises(exporter.remote.SourceError),
+                ):
                     self.invoke(identity=dict(complete, **{field: invalid}))
             missing = dict(complete)
             missing.pop(field)
             with self.subTest(missing=field), self.assertRaises(exporter.remote.SourceError):
                 self.invoke(identity=missing)
+
     def test_explicit_process_bearer_keeps_existing_transport_without_fallback(self):
         def run(argv, **kwargs):
             kwargs["stdout"].write(b'{"structured":{"expected":"fixture"}}')
             return SimpleNamespace(returncode=0)
-        with patch.dict(os.environ, {"SIMPLE_TOOLS_BEARER": "synthetic-fixture"}, clear=True), \
-             patch.object(exporter, "verify_managed_route") as fallback, \
-             patch.object(exporter.subprocess, "run", side_effect=run):
-            self.assertEqual(exporter.relay_read("gr_wf_repo_get", {"repo": "fixture/repo"}), {"expected": "fixture"})
+
+        with (
+            patch.dict(os.environ, {"SIMPLE_TOOLS_BEARER": "synthetic-fixture"}, clear=True),
+            patch.object(exporter, "verify_managed_route") as fallback,
+            patch.object(exporter.subprocess, "run", side_effect=run),
+        ):
+            self.assertEqual(
+                exporter.relay_read("gr_wf_repo_get", {"repo": "fixture/repo"}),
+                {"expected": "fixture"},
+            )
         fallback.assert_not_called()
 
 

@@ -11,7 +11,9 @@ class CodeMirrorIntervalTests(unittest.TestCase):
         spec = spec_for("CODE_MIRROR_INTERVAL_SECONDS")
         self.assertEqual(spec.default, 300)
         self.assertEqual(spec.folder, "/code-mirrors")
-        self.assertEqual(names_in("/code-mirrors"), [spec.name, "DOCS_SYNC_ENABLED", "DOCS_SYNC_CONFIGURATION"])
+        self.assertEqual(
+            names_in("/code-mirrors"), [spec.name, "DOCS_SYNC_ENABLED", "DOCS_SYNC_CONFIGURATION"]
+        )
         self.assertEqual(spec.hosts, "both")
         self.assertFalse(spec.secret)
         self.assertEqual(spec.local, "deny")

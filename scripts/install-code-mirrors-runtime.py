@@ -82,7 +82,10 @@ def install(source, destination, source_commit):
         if not (destination / "manifest.json").is_file():
             raise ValueError("Existing bundle has no source manifest")
         previous = json.loads((destination / "manifest.json").read_text())
-        if previous.get("schema") != 1 or set(previous.get("files", {})) not in (set(FILES), set(LEGACY_FILES)):
+        if previous.get("schema") != 1 or set(previous.get("files", {})) not in (
+            set(FILES),
+            set(LEGACY_FILES),
+        ):
             raise ValueError("Existing bundle manifest is not recognized")
         for name, digest in previous["files"].items():
             target = destination / "scripts" / name

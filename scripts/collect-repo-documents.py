@@ -151,11 +151,22 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
 
 def _git_read_environment() -> dict[str, str]:
     """Preserve normal host trust while refusing caller source/config injection."""
-    excluded = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
-                "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
-    env = {key: value for key, value in os.environ.items() if key not in excluded and
-           not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+    excluded = {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    }
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in excluded and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
     return env
 

@@ -1,13 +1,13 @@
 """Real collector output through the production snapshot and promotion paths."""
+
 import io
-import json
 import os
-from pathlib import Path
-import subprocess
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fleet_docs import snapshot
@@ -24,7 +24,15 @@ class SnapshotTests(unittest.TestCase):
         self.git("remote", "add", "origin", "https://github.com/Simple-With-Us/Example.git")
         (self.repo / "README.md").write_text("# Example\n\nPublished documentation.\n")
         self.git("add", "README.md")
-        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+        self.git(
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        )
         self.git("update-ref", "refs/remotes/origin/main", self.git("rev-parse", "HEAD"))
         self.source = self.root / "source"
         snapshot.collector().collect(None, self.source, repo_paths=[self.repo])
@@ -35,16 +43,24 @@ class SnapshotTests(unittest.TestCase):
         self.legacy.write_text("preserve legacy document")
 
     def git(self, *args):
-        return subprocess.check_output(["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL, text=True).strip()
+        return subprocess.check_output(
+            ["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL, text=True
+        ).strip()
 
     def payload(self, before=None):
         stream = io.BytesIO()
-        snapshot.write_snapshot(self.source, snapshot.validate_generated(self.source), stream, before)
+        snapshot.write_snapshot(
+            self.source, snapshot.validate_generated(self.source), stream, before
+        )
         stream.seek(0)
         return stream
 
     def apply(self):
-        before = snapshot.validate_generated(self.destination)["sha256"] if self.destination.exists() else None
+        before = (
+            snapshot.validate_generated(self.destination)["sha256"]
+            if self.destination.exists()
+            else None
+        )
         with snapshot.receiver_lock(self.destination):
             return snapshot.receive(self.destination, self.payload(before))
 
@@ -67,11 +83,22 @@ class SnapshotTests(unittest.TestCase):
         self.apply()
         (self.repo / "README.md").write_text("# Example\n\nNew published document.\n")
         self.git("add", "README.md")
-        self.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "new document")
+        self.git(
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "new document",
+        )
         self.git("update-ref", "refs/remotes/origin/main", self.git("rev-parse", "HEAD"))
         snapshot.collector().collect(None, self.destination, repo_paths=[self.repo])
         before = snapshot.validate_generated(self.destination)
-        with snapshot.receiver_lock(self.destination), self.assertRaisesRegex(snapshot.Refused, "immutable-history"):
+        with (
+            snapshot.receiver_lock(self.destination),
+            self.assertRaisesRegex(snapshot.Refused, "immutable-history"),
+        ):
             snapshot.receive(self.destination, self.payload(before["sha256"]))
         self.assertEqual(snapshot.inventory(self.destination), before)
         self.assertFalse(list(self.parent.glob(".generated-docs-stage-*")))
@@ -89,13 +116,17 @@ class SnapshotTests(unittest.TestCase):
         self.apply()
         before = snapshot.inventory(self.destination)
         rename = os.rename
+
         def fail_stage(source, destination):
             if Path(source).name.startswith(".generated-docs-stage-"):
                 raise PermissionError("fixture promotion failure")
             return rename(source, destination)
+
         with snapshot.receiver_lock(self.destination):
             with self.assertRaises(PermissionError):
-                snapshot.receive(self.destination, self.payload(before["sha256"]), rename=fail_stage)
+                snapshot.receive(
+                    self.destination, self.payload(before["sha256"]), rename=fail_stage
+                )
             self.assertEqual(snapshot.inventory(self.destination), before)
             snapshot.recover(self.destination)
         self.assertFalse(snapshot.transaction_path(self.destination).exists())
@@ -104,12 +135,15 @@ class SnapshotTests(unittest.TestCase):
     def test_crash_after_backup_rename_recovers_exact_previous_tree(self):
         self.apply()
         before = snapshot.inventory(self.destination)
+
         class Crash(BaseException):
             pass
+
         def crash(source, destination):
             if Path(source).name.startswith(".generated-docs-stage-"):
                 raise Crash()
             return os.rename(source, destination)
+
         with snapshot.receiver_lock(self.destination):
             with self.assertRaises(Crash):
                 snapshot.receive(self.destination, self.payload(before["sha256"]), rename=crash)
@@ -118,10 +152,9 @@ class SnapshotTests(unittest.TestCase):
             snapshot.recover(self.destination)
 
     def test_second_receiver_is_refused_for_lifetime_of_first(self):
-        with snapshot.receiver_lock(self.destination):
-            with self.assertRaises(snapshot.Refused):
-                with snapshot.receiver_lock(self.destination):
-                    self.fail("second receiver acquired the lock")
+        with snapshot.receiver_lock(self.destination), self.assertRaises(snapshot.Refused):
+            with snapshot.receiver_lock(self.destination):
+                self.fail("second receiver acquired the lock")
 
     def test_archive_symlink_member_is_refused_without_touching_legacy(self):
         manifest = snapshot.validate_generated(self.source)
@@ -154,7 +187,9 @@ class SnapshotTests(unittest.TestCase):
         shutil.copytree(self.source, stage)
         backup = self.parent / ".generated-docs-backup-fixture"
         with snapshot.receiver_lock(self.destination):
-            snapshot.save_transaction(self.destination, stage, backup, before["sha256"], before["sha256"])
+            snapshot.save_transaction(
+                self.destination, stage, backup, before["sha256"], before["sha256"]
+            )
             os.rename(self.destination, backup)
             # This is the on-disk state left when a process is killed between renames.
             self.assertFalse(self.destination.exists())
@@ -165,12 +200,18 @@ class SnapshotTests(unittest.TestCase):
 
     def test_collector_lock_spans_snapshot_transfer(self):
         from fleet_docs import pipeline
+
         def transfer(root, desired, configuration):
             with self.assertRaises(snapshot.collector().CollectionError):
                 snapshot.collector().collect(None, root, repo_paths=[self.repo])
             return {"state": "current", "sha256": desired["sha256"]}
-        result = pipeline.refresh(self.root / "Code", self.root / "state", {"peer": "mac", "private_docs": [], "remote_sources": []},
-                                  transfer=transfer)
+
+        result = pipeline.refresh(
+            self.root / "Code",
+            self.root / "state",
+            {"peer": "mac", "private_docs": [], "remote_sources": []},
+            transfer=transfer,
+        )
         self.assertEqual(result["state"], "current")
 
     def test_directory_symlink_swap_before_anchor_is_refused(self):
@@ -181,6 +222,7 @@ class SnapshotTests(unittest.TestCase):
         (foreign / "README.md").chmod(0o600)
         original = os.open
         swapped = False
+
         def swap(path, flags, *args, **kwargs):
             nonlocal swapped
             if path == "documents" and "dir_fd" in kwargs and not swapped:
@@ -188,7 +230,11 @@ class SnapshotTests(unittest.TestCase):
                 documents.rename(documents.with_name("original-documents"))
                 documents.symlink_to(foreign, target_is_directory=True)
             return original(path, flags, *args, **kwargs)
-        with patch.object(snapshot.os, "open", side_effect=swap), self.assertRaises(snapshot.Refused):
+
+        with (
+            patch.object(snapshot.os, "open", side_effect=swap),
+            self.assertRaises(snapshot.Refused),
+        ):
             snapshot.read_file(documents / "README.md")
         self.assertTrue(swapped)
 
@@ -201,6 +247,7 @@ class SnapshotTests(unittest.TestCase):
         (foreign / "README.md").chmod(0o600)
         original = os.open
         swapped = False
+
         def swap(path, flags, *args, **kwargs):
             nonlocal swapped
             if path == "README.md" and "dir_fd" in kwargs and not swapped:
@@ -208,6 +255,7 @@ class SnapshotTests(unittest.TestCase):
                 documents.rename(documents.with_name("original-documents"))
                 documents.symlink_to(foreign, target_is_directory=True)
             return original(path, flags, *args, **kwargs)
+
         with patch.object(snapshot.os, "open", side_effect=swap):
             self.assertEqual(snapshot.read_file(documents / "README.md"), expected)
         self.assertTrue(swapped)
@@ -225,17 +273,28 @@ class SnapshotTests(unittest.TestCase):
         before = snapshot.inventory(self.destination)
         events = []
         original = snapshot.fsync_directory
+
         def sync(path):
             events.append("parent-fsync" if path == self.parent else "stage-fsync")
             original(path)
+
         def rename(source, destination):
             events.append("rename")
             return os.rename(source, destination)
-        with snapshot.receiver_lock(self.destination), patch.object(snapshot, "fsync_directory", side_effect=sync):
+
+        with (
+            snapshot.receiver_lock(self.destination),
+            patch.object(snapshot, "fsync_directory", side_effect=sync),
+        ):
             snapshot.receive(self.destination, self.payload(before["sha256"]), rename=rename)
         renames = [index for index, value in enumerate(events) if value == "rename"]
         self.assertEqual(len(renames), 2)
-        self.assertTrue(all(events[index - 1] == "parent-fsync" and events[index + 1] == "parent-fsync" for index in renames))
+        self.assertTrue(
+            all(
+                events[index - 1] == "parent-fsync" and events[index + 1] == "parent-fsync"
+                for index in renames
+            )
+        )
         self.assertEqual(events[-1], "parent-fsync")
 
 

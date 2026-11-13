@@ -1,4 +1,5 @@
 """Private generated-library snapshots with explicit ownership and atomic promotion."""
+
 from __future__ import annotations
 
 import fcntl
@@ -7,7 +8,6 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import uuid
 from contextlib import contextmanager
+from pathlib import Path, PurePosixPath
 
 MAX_FILES = 100_000
 MAX_BYTES = 2 * 1024**3
@@ -49,11 +50,18 @@ def collector():
 
 
 def relative(value):
-    require(isinstance(value, str) and value and "\0" not in value and "\\" not in value,
-            "unsafe-snapshot-path")
+    require(
+        isinstance(value, str) and value and "\0" not in value and "\\" not in value,
+        "unsafe-snapshot-path",
+    )
     path = PurePosixPath(value)
-    require(path.parts and not path.is_absolute() and path.as_posix() == value and
-            all(part not in ("", ".", "..") for part in path.parts), "unsafe-snapshot-path")
+    require(
+        path.parts
+        and not path.is_absolute()
+        and path.as_posix() == value
+        and all(part not in ("", ".", "..") for part in path.parts),
+        "unsafe-snapshot-path",
+    )
     return path
 
 
@@ -72,8 +80,11 @@ def anchored(path, *, directory=False):
         if len(path.parts) == 1:
             leaf = os.dup(current)
         else:
-            leaf = os.open(path.name, flags if directory else os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                           dir_fd=current)
+            leaf = os.open(
+                path.name,
+                flags if directory else os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=current,
+            )
         yield leaf
     except OSError:
         raise Refused("unsafe-library-path") from None
@@ -97,8 +108,16 @@ def create_file(root, name):
                 os.close(current)
                 current = child
                 info = os.fstat(current)
-                require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, "unsafe-stage-directory")
-            return os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=current)
+                require(
+                    info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+                    "unsafe-stage-directory",
+                )
+            return os.open(
+                parts[-1],
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=current,
+            )
         finally:
             os.close(current)
 
@@ -111,22 +130,33 @@ def fsync_directory(path):
 def private(path, directory=False):
     with anchored(path, directory=directory) as fd:
         info = os.fstat(fd)
-    require((stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)) and
-            info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == (0o700 if directory else 0o600),
-            "unsafe-library-entry")
+    require(
+        (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+        and info.st_uid == os.getuid()
+        and stat.S_IMODE(info.st_mode) == (0o700 if directory else 0o600),
+        "unsafe-library-entry",
+    )
     return info
 
 
 def read_file(path):
     with anchored(path) as fd, os.fdopen(os.dup(fd), "rb") as source:
         before = os.fstat(source.fileno())
-        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and
-                stat.S_IMODE(before.st_mode) == 0o600 and before.st_size <= MAX_FILE_BYTES,
-                "unsafe-library-entry")
+        require(
+            stat.S_ISREG(before.st_mode)
+            and before.st_uid == os.getuid()
+            and stat.S_IMODE(before.st_mode) == 0o600
+            and before.st_size <= MAX_FILE_BYTES,
+            "unsafe-library-entry",
+        )
         data = source.read(MAX_FILE_BYTES + 1)
         after = os.fstat(source.fileno())
-    require(len(data) == before.st_size and (before.st_ino, before.st_size, before.st_mtime_ns) ==
-            (after.st_ino, after.st_size, after.st_mtime_ns), "library-changed-during-read")
+    require(
+        len(data) == before.st_size
+        and (before.st_ino, before.st_size, before.st_mtime_ns)
+        == (after.st_ino, after.st_size, after.st_mtime_ns),
+        "library-changed-during-read",
+    )
     return data
 
 
@@ -145,7 +175,12 @@ def inventory(root):
             files[key] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
             total += len(data)
             require(len(files) <= MAX_FILES and total <= MAX_BYTES, "snapshot-size-bound")
-    return {"schema": 1, "files": files, "sha256": hashlib.sha256(canonical(files)).hexdigest(), "bytes": total}
+    return {
+        "schema": 1,
+        "files": files,
+        "sha256": hashlib.sha256(canonical(files)).hexdigest(),
+        "bytes": total,
+    }
 
 
 def validate_generated(root):
@@ -168,20 +203,36 @@ def validate_generated(root):
         expected.add(repo_root.name + "/manifest.json")
         for key, record in manifest.get("files", {}).items():
             relative(key)
-            require(key.startswith("documents/") and isinstance(record, dict) and
-                    HEX.fullmatch(record.get("sha256", "")), "unrecognized-document-record")
-            require(hashlib.sha256(read_file(repo_root / key)).hexdigest() == record["sha256"],
-                    "generated-document-edited")
+            require(
+                key.startswith("documents/")
+                and isinstance(record, dict)
+                and HEX.fullmatch(record.get("sha256", "")),
+                "unrecognized-document-record",
+            )
+            require(
+                hashlib.sha256(read_file(repo_root / key)).hexdigest() == record["sha256"],
+                "generated-document-edited",
+            )
             expected.add(repo_root.name + "/" + key)
         catalog = None
         if manifest.get("collection_policy_id"):
             data = read_file(repo_root / "catalog.json")
-            require(hashlib.sha256(data).hexdigest() == manifest.get("catalog_sha256"), "generated-catalog-edited")
+            require(
+                hashlib.sha256(data).hexdigest() == manifest.get("catalog_sha256"),
+                "generated-catalog-edited",
+            )
             catalog = json.loads(data)
-            require(catalog.get("source_commit") == manifest["source_commit"] and
-                    catalog.get("owner_repo") == manifest["owner_repo"], "catalog-provenance-mismatch")
+            require(
+                catalog.get("source_commit") == manifest["source_commit"]
+                and catalog.get("owner_repo") == manifest["owner_repo"],
+                "catalog-provenance-mismatch",
+            )
             expected.add(repo_root.name + "/catalog.json")
-        readme = c._repo_readme(info, manifest, catalog) if catalog is not None else c._legacy_repo_readme(info, manifest)
+        readme = (
+            c._repo_readme(info, manifest, catalog)
+            if catalog is not None
+            else c._legacy_repo_readme(info, manifest)
+        )
         require(read_file(repo_root / "README.md") == readme, "generated-readme-edited")
         expected.add(repo_root.name + "/README.md")
         reports = repo_root / "reports"
@@ -189,22 +240,40 @@ def validate_generated(root):
         for version in reports.iterdir():
             require(version.is_dir(), "unknown-version-entry")
             past = c.parse_existing_manifest(read_file(version / "manifest.json"), repo_root.name)
-            require(past and c._manifest_version_key(past) == version.name, "version-provenance-mismatch")
+            require(
+                past and c._manifest_version_key(past) == version.name,
+                "version-provenance-mismatch",
+            )
             prefix = repo_root.name + "/reports/" + version.name + "/"
             expected.add(prefix + "manifest.json")
             past_owner, past_name = past["owner_repo"].split("/", 1)
-            past_info = c.RepoInfo(Path("."), past_owner, past_name, past["source_ref"], past["source_commit"])
-            readme = c._version_readme(past_info, past) if past.get("collection_policy_id") else c._legacy_version_readme(past_info, past)
+            past_info = c.RepoInfo(
+                Path("."), past_owner, past_name, past["source_ref"], past["source_commit"]
+            )
+            readme = (
+                c._version_readme(past_info, past)
+                if past.get("collection_policy_id")
+                else c._legacy_version_readme(past_info, past)
+            )
             require(read_file(version / "README.md") == readme, "version-readme-edited")
             expected.add(prefix + "README.md")
             if past.get("collection_policy_id"):
                 data = read_file(version / "catalog.json")
-                require(hashlib.sha256(data).hexdigest() == past.get("catalog_sha256"), "version-catalog-edited")
+                require(
+                    hashlib.sha256(data).hexdigest() == past.get("catalog_sha256"),
+                    "version-catalog-edited",
+                )
                 expected.add(prefix + "catalog.json")
         version = reports / c._manifest_version_key(manifest)
-        require(read_file(version / "manifest.json") == read_file(repo_root / "manifest.json"), "current-version-mismatch")
+        require(
+            read_file(version / "manifest.json") == read_file(repo_root / "manifest.json"),
+            "current-version-mismatch",
+        )
     require(repositories, "empty-or-unrecognized-library")
-    require(read_file(root / "README.md") == c._root_readme(repositories), "generated-root-readme-edited")
+    require(
+        read_file(root / "README.md") == c._root_readme(repositories),
+        "generated-root-readme-edited",
+    )
     expected.add("README.md")
     require(expected == set(current["files"]), "unknown-or-missing-library-files")
     return current
@@ -212,15 +281,22 @@ def validate_generated(root):
 
 @contextmanager
 def receiver_lock(root):
-    require(root.name == "Generated" and root.parent.is_dir() and not root.parent.is_symlink(), "unsafe-generated-root")
+    require(
+        root.name == "Generated" and root.parent.is_dir() and not root.parent.is_symlink(),
+        "unsafe-generated-root",
+    )
     parent = root.parent.lstat()
     require(parent.st_uid == os.getuid() and not parent.st_mode & 0o022, "unsafe-generated-parent")
     path = root.parent / ".generated-docs-sync.lock"
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(fd)
-        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600,
-                "unsafe-receiver-lock")
+        require(
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o600,
+            "unsafe-receiver-lock",
+        )
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -231,17 +307,32 @@ def receiver_lock(root):
 
 
 def validate_manifest(value):
-    require(isinstance(value, dict) and value.get("schema") == 1 and isinstance(value.get("files"), dict), "invalid-snapshot-manifest")
+    require(
+        isinstance(value, dict)
+        and value.get("schema") == 1
+        and isinstance(value.get("files"), dict),
+        "invalid-snapshot-manifest",
+    )
     require(0 < len(value["files"]) <= MAX_FILES, "snapshot-size-bound")
     total = 0
     for name, record in value["files"].items():
         relative(name)
-        require(isinstance(record, dict) and set(record) == {"sha256", "size"} and
-                isinstance(record["sha256"], str) and HEX.fullmatch(record["sha256"]) and
-                type(record["size"]) is int and 0 <= record["size"] <= MAX_FILE_BYTES, "invalid-snapshot-record")
+        require(
+            isinstance(record, dict)
+            and set(record) == {"sha256", "size"}
+            and isinstance(record["sha256"], str)
+            and HEX.fullmatch(record["sha256"])
+            and type(record["size"]) is int
+            and 0 <= record["size"] <= MAX_FILE_BYTES,
+            "invalid-snapshot-record",
+        )
         total += record["size"]
-    require(total <= MAX_BYTES and value.get("bytes") == total and
-            value.get("sha256") == hashlib.sha256(canonical(value["files"])).hexdigest(), "snapshot-digest-mismatch")
+    require(
+        total <= MAX_BYTES
+        and value.get("bytes") == total
+        and value.get("sha256") == hashlib.sha256(canonical(value["files"])).hexdigest(),
+        "snapshot-digest-mismatch",
+    )
     return value
 
 
@@ -250,8 +341,13 @@ def transaction_path(root):
 
 
 def save_transaction(root, stage, backup, before, after):
-    document = {"schema": 1, "stage": stage.name, "backup": backup.name,
-                "before": before, "after": after}
+    document = {
+        "schema": 1,
+        "stage": stage.name,
+        "backup": backup.name,
+        "before": before,
+        "after": after,
+    }
     fd = create_file(root.parent, transaction_path(root).name)
     with os.fdopen(fd, "wb") as output:
         output.write(canonical(document))
@@ -266,28 +362,48 @@ def recover(root, *, rename=os.rename):
     if not path.exists() and not path.is_symlink():
         return
     document = json.loads(read_file(path))
-    require(document.get("schema") == 1 and isinstance(document.get("after"), str) and
-            HEX.fullmatch(document["after"]) and
-            (document.get("before") is None or isinstance(document["before"], str) and HEX.fullmatch(document["before"])),
-            "unrecognized-receiver-transaction")
+    require(
+        document.get("schema") == 1
+        and isinstance(document.get("after"), str)
+        and HEX.fullmatch(document["after"])
+        and (
+            document.get("before") is None
+            or isinstance(document["before"], str)
+            and HEX.fullmatch(document["before"])
+        ),
+        "unrecognized-receiver-transaction",
+    )
     for key, prefix in (("stage", ".generated-docs-stage-"), ("backup", ".generated-docs-backup-")):
         name = document.get(key)
-        require(isinstance(name, str) and name.startswith(prefix) and re.fullmatch(r"[A-Za-z0-9._-]+", name),
-                "unsafe-transaction-path")
+        require(
+            isinstance(name, str)
+            and name.startswith(prefix)
+            and re.fullmatch(r"[A-Za-z0-9._-]+", name),
+            "unsafe-transaction-path",
+        )
     stage, backup = root.parent / document["stage"], root.parent / document["backup"]
     if not root.exists() and backup.exists():
-        require(validate_generated(backup)["sha256"] == document["before"], "backup-edited-preserve-transaction")
+        require(
+            validate_generated(backup)["sha256"] == document["before"],
+            "backup-edited-preserve-transaction",
+        )
         rename(backup, root)
         fsync_directory(root.parent)
     actual = validate_generated(root)["sha256"] if root.exists() else None
     require(actual in (document["before"], document["after"]), "output-edited-preserve-transaction")
     if backup.exists():
-        require(actual == document["after"] and validate_generated(backup)["sha256"] == document["before"],
-                "ambiguous-backup-preserve-transaction")
+        require(
+            actual == document["after"]
+            and validate_generated(backup)["sha256"] == document["before"],
+            "ambiguous-backup-preserve-transaction",
+        )
         shutil.rmtree(backup)
         fsync_directory(root.parent)
     if stage.exists():
-        require(validate_generated(stage)["sha256"] == document["after"], "stage-edited-preserve-transaction")
+        require(
+            validate_generated(stage)["sha256"] == document["after"],
+            "stage-edited-preserve-transaction",
+        )
         shutil.rmtree(stage)
         fsync_directory(root.parent)
     path.unlink()
@@ -299,7 +415,11 @@ def write_snapshot(root, manifest, output, base_sha256):
     with tarfile.open(fileobj=output, mode="w|") as archive:
         for name, record in sorted(manifest["files"].items()):
             data = read_file(root / name)
-            require(len(data) == record["size"] and hashlib.sha256(data).hexdigest() == record["sha256"], "source-snapshot-changed")
+            require(
+                len(data) == record["size"]
+                and hashlib.sha256(data).hexdigest() == record["sha256"],
+                "source-snapshot-changed",
+            )
             member = tarfile.TarInfo(name)
             member.size = len(data)
             member.mode = 0o600
@@ -314,11 +434,18 @@ def receive(root, source, *, rename=os.rename):
     envelope = json.loads(header)
     desired = validate_manifest(envelope.get("manifest"))
     before = validate_generated(root) if root.exists() else None
-    require(envelope.get("base_sha256") == (before["sha256"] if before else None), "destination-changed")
+    require(
+        envelope.get("base_sha256") == (before["sha256"] if before else None), "destination-changed"
+    )
     if before:
-        require(all(desired["files"].get(name) == record for name, record in before["files"].items()
-                    if len(Path(name).parts) >= 4 and Path(name).parts[1] == "reports"),
-                "immutable-history-missing-or-changed")
+        require(
+            all(
+                desired["files"].get(name) == record
+                for name, record in before["files"].items()
+                if len(Path(name).parts) >= 4 and Path(name).parts[1] == "reports"
+            ),
+            "immutable-history-missing-or-changed",
+        )
     stage = Path(tempfile.mkdtemp(prefix=".generated-docs-stage-", dir=root.parent))
     backup = root.with_name(".generated-docs-backup-" + uuid.uuid4().hex)
     moved = False
@@ -327,8 +454,13 @@ def receive(root, source, *, rename=os.rename):
         with tarfile.open(fileobj=source, mode="r|") as archive:
             for member in archive:
                 relative(member.name)
-                require(member.isfile() and not member.issparse() and member.name not in seen and
-                        member.name in desired["files"], "unsafe-archive-member")
+                require(
+                    member.isfile()
+                    and not member.issparse()
+                    and member.name not in seen
+                    and member.name in desired["files"],
+                    "unsafe-archive-member",
+                )
                 record = desired["files"][member.name]
                 require(member.size == record["size"], "archive-size-mismatch")
                 fd = create_file(stage, member.name)
@@ -349,9 +481,14 @@ def receive(root, source, *, rename=os.rename):
             fsync_directory(Path(directory))
         fsync_directory(root.parent)
         require(validate_generated(stage)["sha256"] == desired["sha256"], "staged-library-invalid")
-        require((validate_generated(root)["sha256"] if root.exists() else None) ==
-                (before["sha256"] if before else None), "destination-changed-during-transfer")
-        save_transaction(root, stage, backup, before["sha256"] if before else None, desired["sha256"])
+        require(
+            (validate_generated(root)["sha256"] if root.exists() else None)
+            == (before["sha256"] if before else None),
+            "destination-changed-during-transfer",
+        )
+        save_transaction(
+            root, stage, backup, before["sha256"] if before else None, desired["sha256"]
+        )
         if root.exists():
             rename(root, backup)
             fsync_directory(root.parent)
@@ -367,12 +504,20 @@ def receive(root, source, *, rename=os.rename):
         result = inventory(root)
         require(result["sha256"] == desired["sha256"], "promoted-snapshot-mismatch")
         if moved:
-            require(validate_generated(backup)["sha256"] == before["sha256"], "backup-changed-preserve-it")
+            require(
+                validate_generated(backup)["sha256"] == before["sha256"],
+                "backup-changed-preserve-it",
+            )
             shutil.rmtree(backup)
             fsync_directory(root.parent)
         transaction_path(root).unlink()
         fsync_directory(root.parent)
-        return {"state": "synced", "sha256": result["sha256"], "files": len(result["files"]), "bytes": result["bytes"]}
+        return {
+            "state": "synced",
+            "sha256": result["sha256"],
+            "files": len(result["files"]),
+            "bytes": result["bytes"],
+        }
     finally:
         if stage.exists() and not transaction_path(root).exists():
             shutil.rmtree(stage)
