@@ -305,12 +305,14 @@ def payload_title(payload: Mapping[str, Any], env: Mapping[str, str] | None = No
 
 
 # Registry credentials belong to the letter client, never a platform's title or inspection process.
-_OPERATOR_CHILD_SECRETS = frozenset({
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN",
-    "FLEET_KNOBS_INFISICAL_TOKEN",
-    "FLEET_KNOBS_WRITE_TOKEN",
-    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
-})
+_OPERATOR_CHILD_SECRETS = frozenset(
+    {
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN",
+        "FLEET_KNOBS_INFISICAL_TOKEN",
+        "FLEET_KNOBS_WRITE_TOKEN",
+        "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+    }
+)
 
 
 def child_process_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
