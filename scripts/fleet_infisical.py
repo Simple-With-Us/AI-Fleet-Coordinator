@@ -1124,12 +1124,18 @@ def _write_provider(env):
         ):
             raise ValueError()
         host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+        loopback = False
         try:
             address = ipaddress.ip_address(host)
+            loopback = address.is_loopback
             host = "[" + address.compressed + "]" if address.version == 6 else address.compressed
         except ValueError:
             if not re.fullmatch(r"[a-z0-9.-]+", host) or re.fullmatch(r"[0-9.]+", host):
                 raise ValueError() from None
+        # Plaintext is confined to literal loopback fixtures/local endpoints.
+        # A remote provider must never receive the token or value over HTTP.
+        if parsed.scheme != "https" and not loopback:
+            raise ValueError()
         port = parsed.port
         if port is not None and port != (443 if parsed.scheme == "https" else 80):
             host += ":" + str(port)
