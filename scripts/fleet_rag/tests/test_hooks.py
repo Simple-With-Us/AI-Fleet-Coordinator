@@ -162,6 +162,14 @@ class StopHookTests(HookBase):
         out, _ = self.stop(tr, session_id="s3")
         self.assertIsNone(out)
 
+    def test_echoing_current_shared_policy_does_not_satisfy_legacy_acknowledgment(self):
+        policy = (HOOKS.parent / "fleet_lanes" / "rules" / "fleet-recall.md").read_text(encoding="utf-8")
+        self.assertNotIn("no lesson", policy.lower())
+        transcript = make_transcript(self.home / "policy.jsonl", 30, [assistant_line([text(policy)])])
+        out, _ = self.stop(transcript)
+        self.assertEqual(out["decision"], "block")
+        self.assertIsNone(self.stop(transcript)[0])
+
     def test_missing_transcript_bad_json_and_garbage_lines_never_fail(self):
         out, _ = self.stop(self.home / "does-not-exist.jsonl")
         self.assertIsNone(out)
