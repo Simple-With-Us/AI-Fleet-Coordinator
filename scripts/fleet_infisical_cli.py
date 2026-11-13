@@ -34,8 +34,8 @@ if __name__ == "__main__":
     # Isolated absolute-path callers import only this reviewed scripts directory.
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-import fleet_infisical as core  # noqa: E402
-from fleet_infisical import SecretsError, UsageError  # noqa: E402
+import fleet_infisical as core
+from fleet_infisical import SecretsError, UsageError
 
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
