@@ -9,6 +9,7 @@ import os
 import secrets
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -58,6 +59,10 @@ class AutosaveTests(unittest.TestCase):
             '[seat.GROK]\ninstance = "server"\ncreds = "env"\nwake = "inbox"\n'
         )
         self.path.write_text(self.original)
+        self.status_path = self.path.with_name("status.json")
+        status = mock.patch.object(editor, "_status_path", return_value=str(self.status_path))
+        status.start()
+        self.addCleanup(status.stop)
         source = Path(__file__).resolve().parents[2] / "fleet-ops-eavesdropper-settings.json"
         self.allowlist = editor.validate_allowlist(json.loads(source.read_text()))
         self.document = settings.document({
@@ -66,6 +71,92 @@ class AutosaveTests(unittest.TestCase):
             "seat.GROK.wake": "inbox",
         })
         self.store = Store(self.document)
+
+    def canonical_wire(self, request=None, *, reloader=None, reader_enabled=True):
+        """Real helper/editor JSON envelopes; only external effects are faked."""
+        from simple_tools.tests.test_eavesdropper_settings_edit import load_control
+        control = load_control()
+        home = self.path.parent / "helper-home"
+        home.mkdir(mode=0o700, exist_ok=True)
+
+        def reader(_argv, *, data, **_kwargs):
+            proposed = json.loads(data)
+            answer, code = editor.run_request(
+                proposed, path=self.path, checker=lambda *_: {"ok": True},
+                reloader=reloader or (lambda _: {
+                    "ok": True, "confirmed": True, "code": "reloaded", "revision": settings.revision(self.store.document),
+                }),
+            )
+            return code, json.dumps(answer).encode(), b"", False
+
+        stdin = b"" if request is None else json.dumps(request).encode()
+        ctx = control.Context(
+            platform="linux", uid=os.getuid(), home=home, environ={"PATH": "/usr/bin:/bin"},
+            reader=reader, stdin=lambda: stdin,
+        )
+        out = io.StringIO()
+        env = {settings.READ_BINDING: "st." + secrets.token_urlsafe(32)} if reader_enabled else {}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store):
+            code = control.main(
+                ["server", "eavesdropper-settings", "server", "--plan" if request is None else "--yes", "--json"],
+                ctx=ctx, out=out,
+            )
+        return json.loads(out.getvalue()), code
+
+    def test_actual_wire_receipt_supports_two_consecutive_autosaves(self):
+        baseline, code = self.canonical_wire()
+        self.assertEqual(code, 0)
+        baseline = baseline["eavesdropperSettings"]
+        self.assertIs(baseline["autosaveEnabled"], True)
+        for value in (2.0, 3.0):
+            envelope, code = self.canonical_wire({
+                "action": "save", "set": {"daemon.coalesce_seconds": value},
+                "expectBaseSHA256": baseline["revision"],
+            })
+            self.assertEqual(code, 0)
+            baseline = envelope["eavesdropperSettings"]
+            self.assertIs(baseline["autosaveEnabled"], True)
+            self.assertTrue(all(baseline[key] for key in ("persisted", "readback", "runtimeApplied")))
+            self.assertEqual(baseline["settings"]["daemon.coalesce_seconds"], value)
+        self.assertEqual(len(self.store.writes), 2)
+        self.assertIn("coalesce_seconds = 3.0", self.path.read_text())
+
+    def test_actual_partial_receipt_preserves_availability_without_claiming_saved(self):
+        envelope, code = self.canonical_wire({
+            "action": "save", "set": {"daemon.coalesce_seconds": 2.0},
+            "expectBaseSHA256": settings.revision(self.document),
+        }, reloader=lambda _: {"ok": True, "confirmed": False, "code": "reload_unconfirmed"})
+        answer = envelope["eavesdropperSettings"]
+        self.assertEqual(code, 1)
+        self.assertIs(answer["autosaveEnabled"], True)
+        self.assertTrue(answer["persisted"] and answer["readback"])
+        self.assertFalse(answer["ok"] or answer["runtimeApplied"])
+        self.assertEqual(answer["errorCode"], "runtime_pending")
+
+    def test_actual_runtime_copy_get_keeps_autosave_disabled(self):
+        envelope, code = self.canonical_wire(reader_enabled=False)
+        answer = envelope["eavesdropperSettings"]
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["source"], "runtime-copy")
+        self.assertIs(answer["autosaveEnabled"], False)
+        self.assertFalse(answer["persisted"] or answer["readback"] or answer["runtimeApplied"])
+
+    def test_actual_initialization_receipt_does_not_enable_autosave(self):
+        self.store = Store(None)
+        snapshot = settings.accepted_snapshot(editor._parse(self.original, "fixture"), self.allowlist)
+        self.status_path.write_text(json.dumps({
+            "updated": time.time(), "instance": "server", "config_errors": [],
+            "operator_settings_snapshot_revision": settings.revision(snapshot),
+        }))
+        envelope, code = self.canonical_wire({
+            "action": "initialize", "expectBaseSHA256": editor.sha256(self.path.read_bytes()),
+        }, reader_enabled=False)
+        answer = envelope["eavesdropperSettings"]
+        self.assertEqual(code, 0)
+        self.assertEqual(answer["result"], "initialized")
+        self.assertIs(answer["autosaveEnabled"], False)
+        self.assertTrue(answer["persisted"] and answer["readback"])
+        self.assertFalse(answer["runtimeApplied"])
 
     def save(self, patch=None, **kwargs):
         return settings.save(
@@ -186,6 +277,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertTrue(answer["persisted"])
         self.assertTrue(answer["readback"])
         self.assertFalse(answer["runtimeApplied"])
+        self.assertIs(answer["autosaveEnabled"], True)
         self.assertEqual(answer["errorCode"], "runtime_pending")
         self.assertEqual(answer["revision"], settings.revision(self.store.document))
         self.assertEqual(self.path.read_text(), self.original)
@@ -428,7 +520,7 @@ class AutosaveTests(unittest.TestCase):
                     "reload_at": 1001.0, "reload_refused": [], "operator_settings_revision": actual,
                 }))
                 clock = iter(range(1000, 1200))
-                with mock.patch.object(editor, "_cli", return_value=(0, "")):
+                with mock.patch.object(editor, "_cli", return_value=(0, "")), mock.patch.object(editor, "_status_path", return_value=str(status)):
                     receipt = editor.daemon_reload(
                         self.path, environ={editor.ENV_STATE_DIR: str(state)},
                         expected_revision=wanted, clock=lambda: next(clock), sleep=lambda _: None,
