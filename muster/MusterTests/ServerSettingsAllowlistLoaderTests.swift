@@ -129,7 +129,6 @@ final class ServerSettingsAllowlistLoaderTests: XCTestCase {
         XCTAssertEqual(load.source, .bundled)
         XCTAssertNotNil(load.allowlist?.seat["enabled"])
         XCTAssertNotNil(load.allowlist?.seat["wake"])
-        XCTAssertEqual(load.allowlist?.seat["bracket_recipient_wakes"], .bool)
         XCTAssertEqual(ServerSettingsAllowlistLoader.resourceName + "." + ServerSettingsAllowlistLoader.resourceExtension,
                        real.lastPathComponent)
     }

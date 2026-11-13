@@ -15,7 +15,7 @@ struct ServerListenerSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("A seat's on or off switch, its wake type, and its bracket-recipient wake switch change only through the server's allowlisted editor.\(ServerStatusCopy.sentenceGap)Every other setting here is read only, and each row says why.")
+                Text("A seat's on or off switch and wake type change only through the server's allowlisted editor.\(ServerStatusCopy.sentenceGap)Every other setting here is read only, and each row says why.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
