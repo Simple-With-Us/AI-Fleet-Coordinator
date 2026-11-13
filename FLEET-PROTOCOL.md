@@ -396,7 +396,7 @@ The Apple Notes CLI.  Only the Mac can touch the notes, so every command that r
 
 | Command | What it does |
 | --- | --- |
-| `simple-notes create TITLE [BODY\|-]` | New note, pinned unless `--no-pin`.  Takes `--body-file P`, `--html P`, `--notify`, `--needs-owner`, `--summary T` and `--pr N`. `--summary T` is optional and only for long notes: a readable `Summary:` paragraph of at most 4-5 sentences that adds context beyond the title, never a restatement of it; the helper skips it on a note under 800 characters of body text (`APPLE_NOTES_SUMMARY_MIN_BODY_CHARS` adjusts the floor) or when it would exceed 20% of the note length (`APPLE_NOTES_SUMMARY_MAX_PCT` adjusts the share). |
+| `simple-notes create TITLE [BODY\|-]` | New note, pinned unless `--no-pin`.  Takes `--body-file P`, `--html P`, `--notify`, `--needs-owner`, `--summary T` and `--pr N`. |
 | `simple-notes update TITLE [BODY\|-]` | Replace the body of a note whose title carries your name.  A missing one answers `not_found`. |
 | `simple-notes pin TITLE` | Pin a Coding note by exact title. |
 | `simple-notes unpin TITLE` | Unpin a Coding note by exact title. |

@@ -588,7 +588,7 @@ class TitleSecretScanTests(unittest.TestCase):
             "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
             "AKIAIOSFODNN7" + "EXAMPLE",
             "sk-" + "abcdefghijklmnopqrstuvwxyz0123",
-            "api_key: " + "Z" * 22,
+            "api_key: " + "Z" * 20,
         ):
             with self.subTest(secret[:6]):
                 out = self.run_script(f"[AFC, MM] rollout {secret}")
