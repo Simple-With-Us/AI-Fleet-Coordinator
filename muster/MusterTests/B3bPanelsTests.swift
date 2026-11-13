@@ -55,6 +55,44 @@ private final class B3bCommands: CommandRunning {
 }
 
 final class SecretNamesTests: XCTestCase {
+    func test_missing_reader_entry_is_not_installed_for_get_names_and_doctor() {
+        let marker = UUID().uuidString
+        let fake = B3bCommands()
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
+        let operations: [() throws -> Void] = [
+            { _ = try secrets.secret(named: "A_KEY") },
+            { _ = try secrets.secretNames(path: "/") },
+            { _ = try secrets.doctorReport() },
+        ]
+        for quote in ["'", "\""] {
+            fake.failure = CommandExitError(output: "", status: 2,
+                errorOutput: "python3: can't open file \(quote)/tmp/example-repo/scripts/fleet_infisical_cli.py\(quote): [Errno 2] No such file or directory\n" + marker)
+            for operation in operations {
+                XCTAssertThrowsError(try operation()) { error in
+                    XCTAssertEqual(error as? FleetSecretError, .notInstalled)
+                    XCTAssertFalse(error.localizedDescription.contains(marker))
+                }
+            }
+        }
+        XCTAssertEqual(fake.calls.count, 6)
+    }
+
+    func test_unrelated_exit_two_diagnostics_remain_refusals() {
+        for diagnostic in ["usage: reader; configuration refused",
+                           "python3: can't open file '/unrelated.py': [Errno 2] No such file or directory",
+                           "python3: can't open file '/unrelated.py': [Errno 2]; configured reader /tmp/example-repo/scripts/fleet_infisical_cli.py",
+                           "python3: can't open file '/tmp/example-repo/scripts/fleet_infisical_cli.py.extra': [Errno 2] No such file or directory",
+                           "python3: can't open file '/prefix/tmp/example-repo/scripts/fleet_infisical_cli.py': [Errno 2] No such file or directory",
+                           "python3: can't open file '/tmp/example-repo/scripts/fleet_infisical_cli.py': [Errno 13] Permission denied"] {
+            let fake = B3bCommands()
+            fake.failure = CommandExitError(output: "", status: 2, errorOutput: diagnostic)
+            let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
+            XCTAssertThrowsError(try secrets.secret(named: "A_KEY")) { error in
+                XCTAssertEqual(error as? FleetSecretError, .refused("A_KEY"))
+            }
+        }
+    }
+
     func test_managed_reader_selects_one_declaration_without_a_shell_token() throws {
         let fake = B3bCommands()
         fake.replies = ["get": "fixture-value", "names": "A_KEY\n", "doctor": #"{"ok":true}"#]

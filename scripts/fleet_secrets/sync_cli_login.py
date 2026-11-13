@@ -7,18 +7,20 @@ VM)  needs the same login there,  and copying a credential file between hosts is
 thing the fleet does not do.  So the login is written under ``/cli-logins/<seat>``,
 which is where the consumers read it from:
 
-    fleet-secrets run --path /cli-logins/OPENCODE --only GH_TOKEN -- gh api user
+    python3 scripts/fleet_infisical_cli.py run --path /cli-logins/OPENCODE --only GH_TOKEN -- gh api user
 
 The value never appears in an argument list,  a message or a log.  This script reads it
-from an approved source,  writes it,  reads it back,  compares the digests,  and prints
-the name and the path and nothing else.
+from an approved source and delegates the write plus exact named verification to the
+shared client.  Output contains the name, path and safe recovery UUID/time/purpose;
+no value, value digest, token or provider payload is printed.
 
 Where the value comes from,  in the order the fleet reads credentials:
 
   --from env          the environment variable NAME.  This is what ``fleet-secrets run
                       --only`` injects,  and it is what the Mac's own shell already
                       exports for the GitHub CLI.
-  --from fleet-secrets  read it with ``fleet-secrets get NAME --path <from-path>``.
+  --from fleet-secrets  compatibility spelling for one direct shared-client named read
+                      through the explicitly bound reader, not an app subprocess.
   --from file PATH    a 0600 file the owner handed over,  which is how the owner
                       hands a secret to a seat at all.
 
@@ -26,21 +28,26 @@ The GitHub CLI's own keychain entry and a generic keychain lookup are deliberate
 sources here.  This helper reads only the explicitly selected environment, fleet-secrets
 folder, or owner-provided file.
 
+An automated retry supplies the same --request-id and --request-created-at values.
+An explicit --reconcile with that identity reads no source and never retries a write.
+The shared CLI caller declares the same protected state root for both entry points;
+an uncertain original operation blocks a new invocation and reports its original
+recovery identity.  This is not a cross-host or external-writer exactly-once promise.
+
     python3 scripts/fleet_secrets/sync_cli_login.py --name GH_TOKEN --path /cli-logins/OPENCODE
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import fleet_infisical as core
+import fleet_infisical_cli as caller
 
 # The names a CLI reads out of its environment.  The write allowlist is the gate,  and
 # this is the same list,  so the two cannot drift.
@@ -48,13 +55,6 @@ CLI_LOGIN_NAMES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "COPILOT_G
 
 EXIT_USAGE = 2
 EXIT_FAILED = 4
-EXIT_MISSING_BINARY = 127
-EXIT_TIMEOUT = 124
-
-
-def _digest(value: str) -> str:
-    """A digest of a value,  for the read-back comparison.  The value is never stored."""
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _read_from_env(name: str, env: dict) -> str:
@@ -63,28 +63,11 @@ def _read_from_env(name: str, env: dict) -> str:
 
 
 def _read_from_fleet_secrets(name: str, path: str, env: dict) -> str:
-    """The value,  read through the fleet's own read path."""
-    argv = [sys.executable, "-m", "fleet_secrets", "get", name, "--path", path]
-    try:
-        run = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=core.EXPORT_TIMEOUT,
-            env=env,
-            check=False,
-        )
-    except FileNotFoundError:
-        raise core.SecretsError("cli-missing:  fleet-secrets is not installed", EXIT_MISSING_BINARY)
-    except subprocess.TimeoutExpired:
-        raise core.SecretsError("the read timed out", EXIT_TIMEOUT)
-    except OSError as exc:
-        raise core.SecretsError(f"the read failed: {exc}", EXIT_FAILED)
-    if run.returncode:
-        raise core.SecretsError(
-            "the read failed: {}".format((run.stderr or "").strip()[:200]), EXIT_FAILED
-        )
-    return (run.stdout or "").strip()
+    """Compatibility source spelling; one named direct read through its own scoped reader."""
+    project = core.infisical_project_id(env, core.home_dir(env))
+    reader = core.resolve_token(env)
+    return core.fetch_project(project, path, env, token=reader, names=(name,),
+                              timeout=core.EXPORT_TIMEOUT).get(name, "").strip()
 
 
 def _read_from_file(path: str) -> str:
@@ -117,29 +100,14 @@ def read_value(name: str, source: str, from_path: str, file_path: str, env: dict
     return value
 
 
-def sync(name: str, path: str, value: str, env: dict) -> str:
-    """Write the value,  prove it landed,  and say what happened.
-
-    The policy is checked before the value is read and before any request,  so a name or
-    a path outside the allowlist never reaches a child process or the network.  The
-    write grant creates the secret.  A separate read grant verifies the result.
-    """
+def sync(name: str, path: str, value: str, env: dict, *, intent=None) -> core.WriteReceipt:
+    """The shared writer proves its causal ACK and exact named readback using the scoped writer."""
     core.check_name(name)
     core.check_path(path)
     core.check_writable(name, path)
-    writer_token = core.resolve_token(env, writer=True)
-    reader_token = core.resolve_token(env, writer=False)
-    core.ensure_folder(path, env, writer_token)
-    result = core.put_secret(name, path, value, env, token=writer_token)
-    stored = core.fetch_all(path, env, token=reader_token).get(name, "")
-    if not stored:
-        raise core.SecretsError(
-            f"the write reported {name} but the read back found nothing", EXIT_FAILED
-        )
-    if _digest(stored) != _digest(value):
-        raise core.SecretsError("the read back does not match what was written", EXIT_FAILED)
-    writer_token = reader_token = ""
-    return result
+    if intent is None:
+        intent = caller.write_intent_for_cli(env, "cli-login-sync")
+    return core.put_secret(name, path, value, env, intent=intent)
 
 
 def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=None) -> int:
@@ -159,6 +127,10 @@ def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=N
         "--from-path", default="/", help="the folder the fleet-secrets read looks in"
     )
     parser.add_argument("--file", default="", help="the file the owner handed over")
+    parser.add_argument("--state-dir", default=None, help="explicit shared protected writer state directory")
+    parser.add_argument("--request-id", default=None, help="reuse this original UUID for an automated retry")
+    parser.add_argument("--request-created-at", type=int, default=None, help="original epoch milliseconds")
+    parser.add_argument("--reconcile", action="store_true", help="read-only recovery of an original intent; no source is read")
     args = parser.parse_args(argv)
     env = dict(os.environ) if env is None else dict(env)
     out = sys.stdout if out is None else out
@@ -174,13 +146,28 @@ def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=N
         core.check_name(args.name)
         core.check_path(args.path)
         core.check_writable(args.name, args.path)
-        value = read_value(args.name, args.source, args.from_path, args.file, env)
-        result = sync(args.name, args.path, value, env)
+        if args.reconcile and (args.request_id is None or args.request_created_at is None):
+            raise core.UsageError("reconcile requires the original request-id and request-created-at")
+        intent = caller.write_intent_for_cli(env, "cli-login-sync", request_id=args.request_id,
+                                            created_at_ms=args.request_created_at, state_dir=args.state_dir)
+        if args.reconcile:
+            result = core.reconcile_secret(args.name, args.path, env, intent=intent)
+        else:
+            value = read_value(args.name, args.source, args.from_path, args.file, env)
+            result = sync(args.name, args.path, value, env, intent=intent)
+        if (not isinstance(result, core.WriteReceipt) or result.outcome != "ok"
+            or result.request_id != intent.request_id or result.created_at_ms != intent.created_at_ms):
+            raise core.SecretsError("write-receipt-invalid")
+    except core.WriteError as exc:
+        err.write(f"sync-cli-login: {exc.message}; outcome={exc.outcome} requestID={exc.request_id} "
+                  f"requestCreatedAt={exc.created_at_ms} purpose={exc.purpose} name={exc.name or args.name}\n")
+        return exc.code
     except core.SecretsError as exc:
         err.write(f"sync-cli-login: {exc.message}\n")
         return exc.code
     finally:
         value = ""
+    out.write(f"requestID={result.request_id} requestCreatedAt={result.created_at_ms} purpose={intent.purpose}\n")
     out.write(f"synced {args.name} at {args.path}\n")
     out.flush()
     return 0

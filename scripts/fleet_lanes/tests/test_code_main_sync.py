@@ -79,6 +79,32 @@ class SyncCase(unittest.TestCase):
 
 
 class Basics(SyncCase):
+    def test_status_does_not_refresh_the_index_even_if_the_host_enables_optional_locks(self) -> None:
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        tracked = self.repo / "new.txt"
+        info = tracked.stat()
+        os.utime(tracked, ns=(info.st_atime_ns, info.st_mtime_ns + 2_000_000_000))
+        index = self.repo / ".git" / "index"
+        before = index.read_bytes()
+        with mock.patch.dict(os.environ, {"GIT_OPTIONAL_LOCKS": "1"}):
+            code, out, err = S.git_full(self.repo, "status", "--porcelain=v1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "")
+        self.assertEqual(index.read_bytes(), before, "a background status must not rewrite the index")
+
+    def test_fast_forward_runs_the_existing_post_merge_hook(self) -> None:
+        marker = self.home / "post-merge-ran"
+        hook = self.repo / ".git" / "hooks" / "post-merge"
+        hook.write_text('#!/bin/sh\nprintf "ran\\n" > "' + str(marker) + '"\n', encoding="utf-8")
+        hook.chmod(0o755)
+        config_before = (self.repo / ".git" / "config").read_bytes()
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.head(), self.origin())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "ran\n")
+        self.assertEqual((self.repo / ".git" / "config").read_bytes(), config_before)
+
     def test_a_clean_clone_moves(self) -> None:
         code, out = self.sync()
         self.assertEqual(code, 0, out)
@@ -306,7 +332,7 @@ class RelayRoute(SyncCase):
         seen: list[dict] = []
 
         def fake(repo, *args, **kwargs):
-            if args[0] in ("fetch", "-c"):
+            if args[0] in ("fetch", "merge"):
                 seen.append(dict(kwargs.pop("extra_env", None) or {}))  # the local bare origin needs no relay
             return real(repo, *args, **kwargs)
 

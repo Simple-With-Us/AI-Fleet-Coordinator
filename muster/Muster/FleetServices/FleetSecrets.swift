@@ -227,9 +227,17 @@ public extension FleetSecrets {
             throw FleetSecretError.refused("consumer binding")
         }
         let selector = consumerBinding.map { ["--consumer-binding", $0.path] } ?? []
-        return try commands.run(location.interpreter.path,
-                                ["-I", location.packageDirectory.appendingPathComponent("fleet_infisical_cli.py").path] + arguments + selector,
-                                environment: secretsEnvironment, timeout: 20)
+        let reader = location.packageDirectory.appendingPathComponent("fleet_infisical_cli.py").path
+        let missingEntryDiagnostics = ["can't open file '\(reader)': [Errno 2]",
+                                       "can't open file \"\(reader)\": [Errno 2]"]
+        do {
+            return try commands.run(location.interpreter.path, ["-I", reader] + arguments + selector,
+                                    environment: secretsEnvironment, timeout: 20)
+        } catch let exit as CommandExitError where exit.status == 2
+            && missingEntryDiagnostics.contains(where: { exit.errorOutput.contains($0) }) {
+            // Python started, but its reviewed entry is absent; raw diagnostics stay private.
+            throw FleetSecretError.notInstalled
+        }
     }
 
     /// Names at one path, through the `names` verb only.  This path never calls `get`.
