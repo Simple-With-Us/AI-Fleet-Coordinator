@@ -42,7 +42,7 @@ class PrivateTokenTests(unittest.TestCase):
         for value in ("", "invalid", self.value):
             self.env[self.token_env] = value
             with mock.patch("fleet_infisical_bootstrap.os.open") as opened:
-                self.assertEqual(self.bind(), "explicit-binding")
+                self.assertEqual(self.bind(), "explicit-binding-empty" if not value else "explicit-binding")
             opened.assert_not_called()
             self.assertEqual(self.env[self.token_env], value)
 

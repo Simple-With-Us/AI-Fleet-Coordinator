@@ -36,7 +36,7 @@ class BootstrapTests(unittest.TestCase):
         self.write()
         for explicit in ("", "invalid", self.value):
             self.env[TOKEN_ENV] = explicit
-            self.assertEqual(bind(self.env), "explicit-binding")
+            self.assertEqual(bind(self.env), "explicit-binding-empty" if not explicit else "explicit-binding")
             self.assertEqual(self.env[TOKEN_ENV], explicit)
 
     def test_missing_token_does_not_create_a_store(self):

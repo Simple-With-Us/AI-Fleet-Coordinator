@@ -59,6 +59,10 @@ install_fleet_secrets_main() {
   done
   install -m 0644 "$here/fleet_infisical.py" "$dest/fleet_infisical.py"
   install -m 0644 "$here/fleet_infisical_cli.py" "$dest/fleet_infisical_cli.py"
+  # The shared writer loads this one retained ledger lazily; readers remain independent.
+  mkdir -p "$dest/simple_tools"
+  install -m 0644 "$here/simple_tools/__init__.py" "$dest/simple_tools/__init__.py"
+  install -m 0644 "$here/simple_tools/operator_github_state.py" "$dest/simple_tools/operator_github_state.py"
   install -m 0755 "$here/fleet-secrets" "$dest/fleet-secrets"
   launcher="$dest/fleet-secrets"
   if [ "$linux_bootstrap" -eq 1 ]; then
