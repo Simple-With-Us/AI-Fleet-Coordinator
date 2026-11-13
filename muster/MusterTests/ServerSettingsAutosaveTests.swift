@@ -235,6 +235,8 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
                                                expectedKeys: Set(settingsBaseline.keys))
         var applied = settingsBaseline
         applied["linear_projects.enabled"] = .bool(true)
+        XCTAssertNil(generatedSettingsCase("save1").response["eavesdropperSettings"]?.tableEntries?["schemaVersion"],
+                     "The current shared receipt intentionally has no required schemaVersion field")
         let good = OpsProcessResult(exitCode: 0, stdout: settingsEnvelope(applied, revision: settingsRevisionB, result: "saved"), stderr: "")
         guard case .saved = ServerListenerSettingsSaver.receipt(good, request: request) else { return XCTFail("No saved receipt") }
         let bad: [[String: ServerSettingValue]] = [
@@ -242,6 +244,7 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
             ["autosaveEnabled": .bool(false)],
             ["persisted": .int(1)], ["revision": .text("invalid")], ["baseSHA256": .text(settingsRevisionC)],
             ["source": .text("runtime-copy")], ["action": .text("get")], ["schemaVersion": .int(2)],
+            ["schemaVersion": .text("1")], ["schemaVersion": .bool(true)],
             ["requestID": .text(settingsAttempt(2).requestID)], ["outcome": .text("unknown")],
             ["operation": .text("initialize")],
             ["settings": .table(settingsBaseline)],
