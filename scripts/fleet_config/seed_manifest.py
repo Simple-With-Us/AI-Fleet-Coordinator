@@ -359,10 +359,12 @@ def _planned_command_rule(
 def _compliance_rules() -> list[dict[str, object]]:
     """The fleet-wide compliance family,  in registry order.
 
-    The starter set is AFC-400's nine rules.  Two of them have a check the engine can
-    run on this Mac today:  the secrets hygiene rule (OPS-818,  with Kody rules 37 and
-    60) and the Apple certificate expiry rule.  The other seven are registry rows that
-    say they are not implemented yet,  so the gap is visible without pretending.
+    Includes AFC-400's nine starter rules plus AFC-441's ``compliance-cloud-seat-api-observer``
+    rule (ten rules total).  Two of them have a check the engine can run on this Mac today:
+    the secrets hygiene rule (OPS-818,  with Kody rules 37 and 60) and the Apple certificate
+    expiry rule.  The other eight are registry rows that say they are not implemented yet
+    (the cloud-seat observer awaits AFC-398's runtime),  so the gap is visible without
+    pretending.
     """
     return [
         _compliance_rule(
