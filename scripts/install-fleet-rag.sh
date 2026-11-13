@@ -155,12 +155,12 @@ install_files() {
 
 uninstall_files() {
   if [[ "$DRY" -eq 1 ]]; then
-    say "plan: remove $DST/fleet_rag/, fleet_secrets/, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py (keep state/ cache/ logs/)"
+    say "plan: remove $DST/fleet_rag/, fleet_secrets/, fleet_infisical.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py (keep state/ cache/ logs/)"
     note "$DST" "planned-remove"
     return 0
   fi
   if [[ -d "$DST" ]]; then
-    rm -rf "$DST/fleet_rag" "$DST/fleet_secrets" "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
+    rm -rf "$DST/fleet_rag" "$DST/fleet_secrets" "$DST/fleet_infisical.py" "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
     say "removed code from $DST (state/ cache/ logs/ kept; delete by hand if unwanted)"
     note "$DST" "removed"
   else
