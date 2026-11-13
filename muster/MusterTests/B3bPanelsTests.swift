@@ -36,16 +36,48 @@ final class KnobUnsetBuilderTests: XCTestCase {
 
 private final class B3bCommands: CommandRunning {
     var calls: [(String, [String])] = []
+    var environments: [[String: String]] = []
+    var timeouts: [TimeInterval] = []
     var replies: [String: String] = [:]
     var failure: Error?
     func run(_ executable: String, _ arguments: [String]) throws -> String {
         calls.append((executable, arguments))
         if let failure { throw failure }
-        return replies[arguments.first ?? ""] ?? ""
+        let verb = arguments.first == "-I" ? arguments.dropFirst(2).first : arguments.first
+        return replies[verb ?? ""] ?? ""
+    }
+    func run(_ executable: String, _ arguments: [String], environment: [String: String], timeout: TimeInterval) throws -> String {
+        environments.append(environment)
+        timeouts.append(timeout)
+        return try run(executable, arguments)
     }
 }
 
 final class SecretNamesTests: XCTestCase {
+    func test_direct_reader_uses_engine_and_only_explicit_read_bindings() throws {
+        let fake = B3bCommands(); fake.replies["get"] = "synthetic-return-value"
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot,
+                                   interpreter: URL(fileURLWithPath: "/test/python3"),
+                                   infisicalBindings: ["INFISICAL_TOKEN": "explicit-test-binding",
+                                                       "INFISICAL_WRITE_TOKEN": "must-not-pass",
+                                                       "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "must-not-borrow"])
+        XCTAssertEqual(try secrets.secret(named: "A_KEY"), "synthetic-return-value")
+        XCTAssertEqual(fake.calls.first?.0, "/test/python3")
+        XCTAssertEqual(fake.calls.first?.1, ["-I", "/tmp/example-repo/scripts/fleet_infisical_cli.py", "get", "A_KEY"])
+        XCTAssertNil(fake.environments.first?["PYTHONPATH"])
+        XCTAssertEqual(fake.environments.first?["INFISICAL_TOKEN"], "explicit-test-binding")
+        XCTAssertNil(fake.environments.first?["INFISICAL_WRITE_TOKEN"])
+        XCTAssertNil(fake.environments.first?["SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN"])
+        XCTAssertEqual(fake.timeouts, [20])
+    }
+
+    func test_unbound_reader_does_not_borrow_or_create_a_token_binding() throws {
+        let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
+        _ = try FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
+            .secretNames(path: "/")
+        XCTAssertNil(fake.environments.first?["INFISICAL_TOKEN"])
+        XCTAssertNil(fake.environments.first?["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"])
+    }
     func test_names_parse_grouped_and_fail_closed_on_value_shaped_line() throws {
         let grouped = try FleetSecrets.parseNamesByPath([("/", "B_KEY\nA_KEY\n"), ("/linear", "CACHE_X\n")])
         XCTAssertEqual(grouped.map(\.path), ["/", "/linear"])
@@ -70,16 +102,16 @@ final class SecretNamesTests: XCTestCase {
     }
     func test_names_uses_names_verb_only_never_get() throws {
         let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
-        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
         XCTAssertEqual(try secrets.secretNames(path: "/"), ["A_KEY"])
-        XCTAssertEqual(fake.calls.first?.1.first, "names")
+        XCTAssertEqual(fake.calls.first?.1, ["-I", "/tmp/example-repo/scripts/fleet_infisical_cli.py", "names", "--path", "/"])
         XCTAssertFalse(fake.calls.flatMap(\.1).contains("get"))
     }
     func test_names_exit_failure_is_refused_not_a_timeout() {
         // AFC-592: a non-zero exit (here 5, an unexpanded reference elsewhere
         // at the path) is not a timeout and must not be reported as one.
         let fake = B3bCommands(); fake.failure = CommandExitError(output: "", status: 5)
-        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
         XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("/"))
             XCTAssertFalse(FleetSecretError.refused("/").localizedDescription.contains("in time"))
@@ -87,18 +119,18 @@ final class SecretNamesTests: XCTestCase {
     }
     func test_names_timeout_stays_unavailable() {
         let fake = B3bCommands(); fake.failure = StartupPolicyError.commandFailed
-        let secrets = FleetSecrets(commands: fake, home: b3bHome)
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
         XCTAssertThrowsError(try secrets.secretNames(path: "/")) { error in
             XCTAssertEqual(error as? FleetSecretError, .unavailable("/"))
         }
     }
     func test_get_exit_3_is_missing_and_other_exits_are_refused() {
         let absent = B3bCommands(); absent.failure = CommandExitError(output: "", status: 3)
-        XCTAssertThrowsError(try FleetSecrets(commands: absent, home: b3bHome).secret(named: "A_KEY")) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: absent, home: b3bHome, engineRoot: b3bRoot).secret(named: "A_KEY")) { error in
             XCTAssertEqual(error as? FleetSecretError, .missing("A_KEY"))
         }
         let refused = B3bCommands(); refused.failure = CommandExitError(output: "", status: 5)
-        XCTAssertThrowsError(try FleetSecrets(commands: refused, home: b3bHome).secret(named: "A_KEY")) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: refused, home: b3bHome, engineRoot: b3bRoot).secret(named: "A_KEY")) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("A_KEY"))
         }
     }
@@ -106,11 +138,11 @@ final class SecretNamesTests: XCTestCase {
         // Names and doctor have no key of their own, so even exit 3 is a
         // refusal, never "absent" (Kody finding on PR 1249).
         let names = B3bCommands(); names.failure = CommandExitError(output: "", status: 3)
-        XCTAssertThrowsError(try FleetSecrets(commands: names, home: b3bHome).secretNames(path: "/")) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: names, home: b3bHome, engineRoot: b3bRoot).secretNames(path: "/")) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("/"))
         }
         let doctor = B3bCommands(); doctor.failure = CommandExitError(output: "", status: 3)
-        XCTAssertThrowsError(try FleetSecrets(commands: doctor, home: b3bHome).doctorReport()) { error in
+        XCTAssertThrowsError(try FleetSecrets(commands: doctor, home: b3bHome, engineRoot: b3bRoot).doctorReport()) { error in
             XCTAssertEqual(error as? FleetSecretError, .refused("doctor"))
         }
     }
@@ -126,10 +158,12 @@ final class SecretNamesTests: XCTestCase {
 final class RecallSettingsTests: XCTestCase {
     func test_request_builder_uses_bearer_without_embedding_token_in_url() throws {
         let config = RecallSettingsConfig(baseURLString: "https://recall.example.test", tokenKeyName: "RECALL_ADMIN_TOKEN")
-        let request = try RecallSettingsClient.buildRequest(config: config, token: "fake-token-for-test")
+        // A fresh synthetic token exercises the real bearer header contract.
+        let token = UUID().uuidString
+        let request = try RecallSettingsClient.buildRequest(config: config, token: token)
         XCTAssertEqual(request.url?.absoluteString, "https://recall.example.test/admin/settings")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fake-token-for-test")
-        XCTAssertFalse(request.url?.absoluteString.contains("fake-token-for-test") ?? true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(token)")
+        XCTAssertFalse(request.url?.absoluteString.contains(token) ?? true)
     }
     func test_request_builder_rejects_bad_config() {
         XCTAssertThrowsError(try RecallSettingsClient.buildRequest(

@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Infisical is the fleet's only source of secrets, so no token is kept in a
 /// settings file:  a server host or a VM provider names its secret, and the
-/// value is read through `fleet-secrets get NAME` when a request needs it.
+/// value is read through the shared direct Infisical Python module when a request needs it.
 /// The value is never written anywhere and never shown.
 public protocol SecretResolving {
     func secret(named name: String) throws -> String
@@ -20,7 +20,7 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// calling a refusal "in time" sent the owner hunting a slow read that
     /// never happened (AFC-592).
     case refused(String)
-    /// The `fleet-secrets` command is not where Muster looks for it.  Kept apart from
+    /// The shared reader cannot be found in the configured engine checkout.  Kept apart from
     /// `unavailable`, so a missing command never reads as a slow one.
     case notInstalled
 
@@ -31,11 +31,11 @@ public enum FleetSecretError: LocalizedError, Equatable {
         case .missing(let name):
             return "\(name) is not in Infisical.\u{00A0} Add it there:  Muster keeps no copy of it."
         case .unavailable(let name):
-            return "fleet-secrets could not read \(name) in time."
+            return "Infisical could not read \(name) in time."
         case .refused(let name):
-            return "fleet-secrets stopped with an error while reading \(name), so nothing is shown.\u{00A0} That can be a refusal or no network;  the doctor below says which when it can."
+            return "The Infisical reader stopped with an error while reading \(name), so nothing is shown.\u{00A0} That can be a refusal or no network;  the doctor below says which when it can."
         case .notInstalled:
-            return "fleet-secrets is not installed on this Mac:  Muster looks for it in ~/.local/bin."
+            return "The shared Infisical reader is unavailable in the configured engine checkout."
         }
     }
 
@@ -52,6 +52,7 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// exit is a refusal, a command that is not there is not installed, and
     /// anything else is the no-answer case.
     static func from(_ error: Error, name: String) -> FleetSecretError {
+        if let error = error as? FleetSecretError { return error }
         if let exit = error as? CommandExitError {
             return exit.status == 3 ? .missing(name) : .refused(name)
         }
@@ -62,21 +63,34 @@ public enum FleetSecretError: LocalizedError, Equatable {
     /// Map a failure of a read that has no key of its own (names, doctor):
     /// an exit is a refusal, never "absent" — there is no key to be absent.
     static func fromNonKeyRead(_ error: Error, name: String) -> FleetSecretError {
+        if let error = error as? FleetSecretError { return error }
         if error is CommandExitError { return .refused(name) }
         if isMissingCommand(error) { return .notInstalled }
         return .unavailable(name)
     }
 }
 
-/// The secrets the owner keeps in Infisical, read through `fleet-secrets`.
+/// The secrets the owner keeps in Infisical, read through the shared direct Python reader.
 public struct FleetSecrets: SecretResolving {
     private let commands: CommandRunning
     private let home: URL
+    private let location: EngineLocation?
+    private let infisicalBindings: [String: String]
 
     public init(commands: CommandRunning = ProcessCommandRunner(),
-                home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                engineRoot: URL? = nil, interpreter: URL? = nil,
+                infisicalBindings: [String: String] = [:]) {
         self.commands = commands
         self.home = home
+        self.infisicalBindings = infisicalBindings
+        if let engineRoot {
+            self.location = EngineLocation(
+                root: engineRoot,
+                interpreter: interpreter ?? URL(fileURLWithPath: EngineLocator.defaultInterpreter))
+        } else {
+            self.location = EngineLocator.locate(home: home)
+        }
     }
 
     /// True when the name is one a secret can have.
@@ -92,17 +106,9 @@ public struct FleetSecrets: SecretResolving {
 
     public func secret(named name: String) throws -> String {
         guard Self.isValidName(name) else { throw FleetSecretError.invalidName(name) }
-        // A menu bar app inherits no shell PATH, so `fleet-secrets` (which
-        // lives in `~/.local/bin`) is named by its full path.
-        let bin = home.appendingPathComponent(".local/bin")
-        let environment = [
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:\(bin.path)",
-            "HOME": home.path,
-        ]
         let value: String
         do {
-            value = try commands.run(bin.appendingPathComponent("fleet-secrets").path, ["get", name],
-                                     environment: environment, timeout: 20)
+            value = try runReader(["get", name])
         } catch {
             // Exit 3 is "absent";  any other failure is not (AFC-592).
             throw FleetSecretError.from(error, name: name)
@@ -114,7 +120,7 @@ public struct FleetSecrets: SecretResolving {
 
 /// Runs blocking work on a dispatch queue and awaits its result.
 ///
-/// `fleet-secrets get` can take up to its 20-second timeout.  Run inline, it
+/// A direct Infisical read can take up to its 20-second timeout.  Run inline, it
 /// would hold one of the cooperative pool's few threads for that long and
 /// stall every other fleet read;  a global queue thread is the one that
 /// waits instead.
@@ -151,7 +157,7 @@ public struct SecretNameGroup: Equatable {
 }
 
 public extension FleetSecrets {
-    /// True when a path is one `fleet-secrets names --path` may be asked for.
+    /// True when a path is one `fleet_infisical_cli names --path` may be asked for.
     static func isValidPath(_ path: String) -> Bool {
         guard path.hasPrefix("/"), path.count <= 128 else { return false }
         return path.unicodeScalars.allSatisfy {
@@ -185,12 +191,29 @@ public extension FleetSecrets {
         }
     }
 
+    /// Only explicit bindings for this consumer reach the shared reader.
+    /// No ambient credential, another consumer's store or writer token is consulted.
+    static let readerBindingNames: Set<String> = [
+        "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
+        "INFISICAL_ENVIRONMENT", "INFISICAL_ENV", "INFISICAL_READ_PATHS", "INFISICAL_API_URL",
+    ]
+
     private var secretsEnvironment: [String: String] {
-        let bin = home.appendingPathComponent(".local/bin")
-        return ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin:\(bin.path)", "HOME": home.path]
+        guard let location else { return [:] }
+        var environment = EngineRunner.childEnvironment(location: location, home: home)
+        environment.removeValue(forKey: "PYTHONPATH")
+        for (name, value) in infisicalBindings where Self.readerBindingNames.contains(name) {
+            environment[name] = value
+        }
+        return environment
     }
-    private var secretsExecutable: String {
-        home.appendingPathComponent(".local/bin/fleet-secrets").path
+
+    private func runReader(_ arguments: [String]) throws -> String {
+        guard let location else { throw FleetSecretError.notInstalled }
+        return try commands.run(location.interpreter.path,
+                                ["-I", location.packageDirectory.appendingPathComponent("fleet_infisical_cli.py").path] + arguments,
+                                environment: secretsEnvironment, timeout: 20)
     }
 
     /// Names at one path, through the `names` verb only.  This path never calls `get`.
@@ -198,24 +221,23 @@ public extension FleetSecrets {
         guard Self.isValidPath(path) else { throw FleetSecretError.invalidName(path) }
         let text: String
         do {
-            text = try commands.run(secretsExecutable, ["names", "--path", path],
-                                    environment: secretsEnvironment, timeout: 20)
+            text = try runReader(["names", "--path", path])
         } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
         return try Self.parseNamesByPath([(path, text)]).first?.names ?? []
     }
 
-    /// The Infisical project the fleet's knobs live in,  by the name `fleet-secrets --project`
+    /// The Infisical project the fleet's knobs live in,  by the name `fleet_infisical_cli --project`
     /// takes.  It is `PROJECT_ID` in `scripts/fleet_knobs/source.py`,  AI Fleet Coordinator,
     /// not the fleet-ops project `names` lists by default.
     static let knobProject = "ai-fleet-coordinator"
 
-    /// The projects `fleet-secrets names --project` takes.  Anything else is refused here
+    /// The projects `fleet_infisical_cli names --project` takes.  Anything else is refused here
     /// before a command runs.
     static let listableProjects: Set<String> = ["fleet-ops", "ai-fleet-coordinator"]
 
     /// Names grouped by path, for the Controls panel.
     ///
-    /// With no project,  `fleet-secrets` lists its default project,  fleet-ops.
+    /// With no project, the shared reader lists its default project,  fleet-ops.
     func secretNamesGrouped(paths: [String] = ["/"], project: String? = nil) throws -> [SecretNameGroup] {
         try Self.parseNamesByPath(paths.map { ($0, try secretNamesText(path: $0, project: project)) })
     }
@@ -231,8 +253,7 @@ public extension FleetSecrets {
     private func secretNamesText(path: String, project: String? = nil) throws -> String {
         let arguments = try Self.namesArguments(path: path, project: project)
         do {
-            return try commands.run(secretsExecutable, arguments,
-                                    environment: secretsEnvironment, timeout: 20)
+            return try runReader(arguments)
         } catch { throw FleetSecretError.fromNonKeyRead(error, name: path) }
     }
 
@@ -328,8 +349,7 @@ public extension FleetSecrets {
     func doctorReport() throws -> [String: String] {
         let text: String
         do {
-            text = try commands.run(secretsExecutable, ["doctor", "--json"],
-                                    environment: secretsEnvironment, timeout: 20)
+            text = try runReader(["doctor", "--json"])
         } catch let exit as CommandExitError {
             if let report = try? Self.parseDoctor(exit.output), !report.isEmpty { return report }
             throw FleetSecretError.fromNonKeyRead(exit, name: "doctor")
