@@ -459,7 +459,9 @@ class TestApply(Base):
         with mock.patch.object(
             psf.FI, "fetch_project", return_value={"OTHER_NAME": "VALUE-other"}
         ) as read:
-            self.assertIsNone(psf.read_secret_opt(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED"))
+            self.assertIsNone(
+                psf.read_secret_opt(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED")
+            )
             with self.assertRaises(psf.ReadError) as caught:
                 psf.read_secret(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED")
         self.assertEqual(caught.exception.code, 3)
