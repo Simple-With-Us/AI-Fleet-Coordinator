@@ -41,7 +41,8 @@ struct ServerListenerSettingsSection: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(group.rows) { row in
                             ServerSettingRowView(row: row, draft: draftBinding(row), state: store.saveStates[row.id],
-                                removing: store.removalDrafts.contains(row.id), remove: { store.removeOverride(row.id) })
+                                removing: store.removalDrafts.contains(row.id), remove: { store.removeOverride(row.id) },
+                                cancelRemoval: { store.cancelRemoval(row.id) })
                         }
                     }.padding(.leading, 4)
                 } label: {
@@ -73,6 +74,7 @@ private struct ServerSettingRowView: View {
     let state: ServerSettingsSaveState?
     let removing: Bool
     let remove: () -> Void
+    let cancelRemoval: () -> Void
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -84,6 +86,7 @@ private struct ServerSettingRowView: View {
                 }
                 if removing {
                     Text("Limit will be unset.").font(.caption).foregroundStyle(.secondary)
+                    Button("Keep Limit", action: cancelRemoval).buttonStyle(.link).font(.caption)
                 }
                 if let state { saveStatus(state) }
                 if let information = row.information {
