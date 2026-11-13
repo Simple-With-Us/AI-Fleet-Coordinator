@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import selectors
 import shutil
 import subprocess
 import sys
@@ -614,6 +615,284 @@ def fetch_project(
             found[key] = value
     reject_unresolved(found)
     return found
+
+
+def _bounded_read_command() -> list[str]:
+    """The same reviewed client in an isolated, disposable read-only process."""
+    return [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--bounded-read-worker"]
+
+
+def _read_worker_pipes(child, request: bytes, limit: int, deadline: float) -> bytes:
+    """Bound both pipe directions without an unbounded communicate buffer or helper thread."""
+    output = bytearray()
+    position = 0
+    with selectors.DefaultSelector() as selected:
+        for stream, event, name in (
+            (child.stdin, selectors.EVENT_WRITE, "input"),
+            (child.stdout, selectors.EVENT_READ, "output"),
+        ):
+            os.set_blocking(stream.fileno(), False)
+            selected.register(stream, event, name)
+        while selected.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("bounded read", 0)
+            ready = selected.select(remaining)
+            if not ready:
+                raise subprocess.TimeoutExpired("bounded read", 0)
+            for key, _event in ready:
+                if key.data == "input":
+                    try:
+                        position += os.write(key.fd, request[position : position + 65536])
+                    except BrokenPipeError:
+                        position = len(request)
+                    if position == len(request):
+                        selected.unregister(key.fileobj)
+                        key.fileobj.close()
+                else:
+                    chunk = os.read(key.fd, min(65536, limit + 1 - len(output)))
+                    output.extend(chunk)
+                    if len(output) > limit:
+                        raise SecretsError("bounded-read-output-refused")
+                    if not chunk:
+                        selected.unregister(key.fileobj)
+                        key.fileobj.close()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("bounded read", 0)
+    child.wait(timeout=remaining)
+    return bytes(output)
+
+
+def _bounded_read_request(request: dict, deadline: float) -> dict:
+    """Bound provider/DNS/executor waits and reap only the child this call created."""
+    encoded = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > 128 * 1024:
+        raise UsageError("bounded-read-invalid")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
+    # Leave time to kill/reap a stuck read before the caller's deadline.
+    cleanup_reserve = min(0.1, remaining / 5)
+    child = None
+    try:
+        child = subprocess.Popen(
+            _bounded_read_command(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": os.defpath},
+            shell=False,
+            close_fds=True,
+        )
+        wait = deadline - time.monotonic() - cleanup_reserve
+        if wait <= 0:
+            raise subprocess.TimeoutExpired("bounded read", 0)
+        output = _read_worker_pipes(
+            child, encoded, request["max_output_bytes"], deadline - cleanup_reserve
+        )
+        if len(output) > request["max_output_bytes"] or time.monotonic() >= deadline:
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+        try:
+            reply = _decode_json(output)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable") from None
+        if (
+            not isinstance(reply, dict)
+            or type(reply.get("ok")) is not bool
+            or type(reply.get("schema")) is not int
+            or reply["schema"] != 1
+        ):
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+        if not reply["ok"] or child.returncode != 0:
+            reason = (
+                "token-expired-or-invalid"
+                if reply.get("reason") == "token-expired-or-invalid"
+                else "bounded-read-failed"
+            )
+            raise SecretsError(reason, failure_kind=reply.get("failure_kind"))
+        if set(reply) != {"schema", "ok", "values"} or not isinstance(reply["values"], dict):
+            raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+        if time.monotonic() >= deadline:
+            raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
+        return reply["values"]
+    except subprocess.TimeoutExpired:
+        raise SecretsError("bounded-read-timeout", failure_kind="unavailable") from None
+    except OSError:
+        raise SecretsError("bounded-read-unavailable", failure_kind="unavailable") from None
+    finally:
+        primary_error = sys.exc_info()[1]
+        encoded = b""
+        if child is not None:
+            try:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except (OSError, subprocess.TimeoutExpired):
+                # Never wait indefinitely or hide an OS cleanup failure.
+                failure = SecretsError("bounded-read-cleanup-failed", failure_kind="unavailable")
+                if isinstance(primary_error, (KeyboardInterrupt, SystemExit)):
+                    raise primary_error from failure
+                raise failure from None
+            finally:
+                for stream in (child.stdin, child.stdout):
+                    if stream is not None:
+                        stream.close()
+
+
+def bounded_fetch_project(
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    token: str,
+    names: Iterable[str],
+    timeout: float,
+    writer: bool = False,
+    max_output_bytes: int | None = None,
+) -> dict[str, str]:
+    """A small named read batch with a parent-enforced operation deadline.
+
+    The disposable child runs fetch_project, including the same exact grant and
+    record verifier.  Only this caller's explicit binding enters its private stdin;
+    no credential is put in argv, inherited environment, files or diagnostics.
+    Process launch/OS scheduling must be healthy; provider, DNS, body and worker
+    cleanup waits do not extend the caller's remaining budget.
+    """
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise UsageError("bounded-read-invalid")
+    if max_output_bytes is None:
+        max_output_bytes = MAX_VERIFIED_BYTES
+    if (
+        type(writer) is not bool
+        or type(max_output_bytes) is not int
+        or not 1024 <= max_output_bytes <= MAX_OUTPUT_BYTES
+    ):
+        raise UsageError("bounded-read-invalid")
+    check_path(path)
+    check_service_token(token)
+    if not isinstance(project, str) or not project or len(project) > 256:
+        raise UsageError("bounded-read-invalid")
+    wanted = []
+    for name in names:
+        wanted.append(check_name(name))
+        if len(wanted) > 1024:
+            raise UsageError("bounded-read-invalid")
+    wanted = sorted(set(wanted))
+    if not wanted:
+        raise UsageError("bounded-read-invalid")
+    selected = {key: env[key] for key in (ENV_API, *ENV_NAMES, ENV_READ_PATHS) if key in env}
+    if any(not isinstance(value, str) for value in selected.values()):
+        raise UsageError("bounded-read-invalid")
+    request = dict(
+        schema=1,
+        operation="named-fetch",
+        project=project,
+        path=path,
+        env=selected,
+        token=token,
+        names=wanted,
+        timeout=timeout,
+        writer=writer,
+        max_output_bytes=max_output_bytes,
+    )
+    deadline = time.monotonic() + timeout
+    values = _bounded_read_request(request, deadline)
+    if any(key not in wanted or not isinstance(value, str) for key, value in values.items()):
+        raise SecretsError("bounded-read-failed", failure_kind="unavailable")
+    reject_unresolved(values)
+    if time.monotonic() >= deadline:
+        raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
+    return values
+
+
+def _bounded_read_worker() -> int:
+    """Private stdin/stdout protocol; it performs no provider mutation."""
+    reply = {
+        "schema": 1,
+        "ok": False,
+        "reason": "bounded-read-failed",
+        "failure_kind": "unavailable",
+    }
+    limit = MAX_VERIFIED_BYTES
+    try:
+        raw = sys.stdin.buffer.read(128 * 1024 + 1)
+        if len(raw) > 128 * 1024:
+            raise UsageError("bounded-read-invalid")
+        request = _decode_json(raw)
+        fields = {
+            "schema",
+            "operation",
+            "project",
+            "path",
+            "env",
+            "token",
+            "names",
+            "timeout",
+            "writer",
+            "max_output_bytes",
+        }
+        if (
+            not isinstance(request, dict)
+            or set(request) != fields
+            or type(request["schema"]) is not int
+            or request["schema"] != 1
+        ):
+            raise UsageError("bounded-read-invalid")
+        if request["operation"] != "named-fetch":
+            raise UsageError("bounded-read-invalid")
+        if (
+            not isinstance(request["names"], list)
+            or not 1 <= len(request["names"]) <= 1024
+            or type(request["writer"]) is not bool
+            or type(request["timeout"]) not in (int, float)
+            or not math.isfinite(request["timeout"])
+            or request["timeout"] <= 0
+        ):
+            raise UsageError("bounded-read-invalid")
+        if (
+            not isinstance(request["env"], dict)
+            or set(request["env"]) - {ENV_API, *ENV_NAMES, ENV_READ_PATHS}
+            or any(not isinstance(value, str) for value in request["env"].values())
+        ):
+            raise UsageError("bounded-read-invalid")
+        check_path(request["path"])
+        check_service_token(request["token"])
+        for name in request["names"]:
+            check_name(name)
+        limit = request["max_output_bytes"]
+        if type(limit) is not int or not 1024 <= limit <= MAX_OUTPUT_BYTES:
+            raise UsageError("bounded-read-invalid")
+        values = fetch_project(
+            request["project"],
+            request["path"],
+            request["env"],
+            token=request["token"],
+            names=request["names"],
+            writer=request["writer"],
+            timeout=request["timeout"],
+        )
+        reply = {"schema": 1, "ok": True, "values": values}
+    except SecretsError as exc:
+        reply["reason"] = (
+            "token-expired-or-invalid"
+            if exc.reason == "token-expired-or-invalid"
+            else "bounded-read-failed"
+        )
+        reply["failure_kind"] = exc.failure_kind
+    except Exception:
+        pass
+    output = json.dumps(reply, ensure_ascii=False).encode("utf-8")
+    if len(output) > limit:
+        reply = {
+            "schema": 1,
+            "ok": False,
+            "reason": "bounded-read-failed",
+            "failure_kind": "unavailable",
+        }
+        output = json.dumps(reply).encode("utf-8")
+    sys.stdout.buffer.write(output)
+    return 0 if reply["ok"] else 4
 
 
 def list_project_names(
@@ -1648,3 +1927,7 @@ def reconcile_secret(
         raise
     except Exception:
         raise WriteError("state_unavailable", intent) from None
+
+
+if __name__ == "__main__":
+    raise SystemExit(_bounded_read_worker() if sys.argv[1:] == ["--bounded-read-worker"] else 2)
