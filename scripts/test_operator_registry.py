@@ -26,6 +26,7 @@ def setUpModule():
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
 
+
 # A synthetic credential for the positive scan cases:  32 mixed-case characters with no
 # provider prefix, so the scanner still trips on it while the file carries no real token's
 # shape.  A prefixed value would be caught by a secret scanner on the repository itself.
@@ -2305,7 +2306,6 @@ class SessionIssuesTest(unittest.TestCase):
             code = R.main(argv + ["--issues", "CT-7"], env={})
         self.assertEqual(code, 2)
         self.assertIn("must be a list", json.loads(out.getvalue())["error"])
-
 
 
 class ReopenCommandTest(unittest.TestCase):
