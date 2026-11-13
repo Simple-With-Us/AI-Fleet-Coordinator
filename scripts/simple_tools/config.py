@@ -1824,6 +1824,7 @@ def load(root: str, path: str | None = None, *, environ=None) -> Config:
     env = os.environ if environ is None else environ
     if not error and env.get("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"):
         from .server import operator_settings
+
         try:
             raw, settings_metadata = operator_settings.load_runtime(raw, path, environ=env)
         except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
@@ -1836,7 +1837,9 @@ def load(root: str, path: str | None = None, *, environ=None) -> Config:
         cfg.operator_settings_document = settings_metadata["document"]
         cfg.operator_settings_source = settings_metadata["source"]
     if cfg.operator_settings_source == "verified-copy":
-        cfg.warnings.append("Operator settings refresh failed; using the verified last-known-good copy")
+        cfg.warnings.append(
+            "Operator settings refresh failed; using the verified last-known-good copy"
+        )
     if error:
         cfg.errors.insert(0, error)
     elif not raw:
@@ -1848,6 +1851,7 @@ def load(root: str, path: str | None = None, *, environ=None) -> Config:
         )
     if cfg.instance == "server" and not cfg.errors:
         from .server import operator_settings
+
         try:
             snapshot = operator_settings.accepted_snapshot(raw, operator_settings._manifest())
             cfg.operator_settings_snapshot_revision = operator_settings.revision(snapshot)
