@@ -157,7 +157,7 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         m = re.search(
-            r"<p>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m</p>"
+            r"<p>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2} [AP]M</p>"
             r'<p><span style="font-size: 11px;">Session: abc12345-def6</span></p>',
             p.stdout,
         )
@@ -271,7 +271,7 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(
-            f"Merged {OCT_19}, deployed {OCT_19}, 9:03pm, filed Fri, Mar 7, 2025.", p.stdout
+            f"Merged {OCT_19}, deployed {OCT_19}, 9:03 PM, filed Fri, Mar 7, 2025.", p.stdout
         )
         self.assertIn("log 2026-10-19", p.stdout)
         self.assertIn("https://x.test/2026-10-19", p.stdout)
@@ -313,9 +313,9 @@ class SessionIdTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         #  the space form keeps its range end instead of shifting 10:30 to 4:30pm on the -11:00, and both
         #  ends read in the fleet form rather than on a 24-hour clock
-        self.assertIn(f"Standup {OCT_19}, 10:30am-11:00am Central", p.stdout)
+        self.assertIn(f"Standup {OCT_19}, 10:30 AM-11:00 AM Central", p.stdout)
         #  the ISO T form really is an offset, and still converts
-        self.assertIn(f"and {OCT_19}, 4:30pm", p.stdout)
+        self.assertIn(f"and {OCT_19}, 4:30 PM", p.stdout)
 
     def test_prose_that_starts_with_session_is_not_mistaken_for_a_row(self):
         """`Session:` opening a paragraph of prose is content:  an id-shaped word after it is still prose."""
@@ -409,7 +409,7 @@ class SessionIdTests(unittest.TestCase):
             body=body,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn(f"Window {OCT_19}, 10:30am-11:00am for the deploy.", p.stdout)
+        self.assertIn(f"Window {OCT_19}, 10:30 AM-11:00 AM for the deploy.", p.stdout)
         self.assertIn("Session: claude-code resumed after the restart.", p.stdout)
 
     def test_an_old_session_row_with_a_year_is_replaced_not_kept(self):
