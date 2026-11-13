@@ -271,7 +271,16 @@ EAVESDROPPER_SETTINGS_AUDIT_TARGET = "eavesdropper settings"
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 # The shape of a plan's `planSHA256`, which the server `--yes` form must carry as `expectPlanSHA256`.
 EAVESDROPPER_SETTINGS_PLAN_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "saved", "initialized", "refused", "failed")
+EAVESDROPPER_SETTINGS_RESULTS = (
+    "read",
+    "planned",
+    "unchanged",
+    "applied",
+    "saved",
+    "initialized",
+    "refused",
+    "failed",
+)
 
 EAVESDROPPER_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
@@ -1854,7 +1863,9 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
                 )
             )
         elif result == "initialized":
-            fields["detail"] = "canonical settings initialized and read back; runtime source is not activated"
+            fields["detail"] = (
+                "canonical settings initialized and read back; runtime source is not activated"
+            )
         else:
             reload = document.get("reload") if isinstance(document.get("reload"), dict) else {}
             fields["detail"] = "%d setting(s) changed; %s" % (
@@ -1914,9 +1925,13 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
         request = None
     if isinstance(request, dict) and request.get("action") == "initialize":
         if set(request) != {"action", "expectBaseSHA256"} or mode != "yes":
-            raise Refused("initialize requires --yes and the runtime-file revision only", error_code="usage")
+            raise Refused(
+                "initialize requires --yes and the runtime-file revision only", error_code="usage"
+            )
         expected = request["expectBaseSHA256"]
-        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(expected):
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(
+            expected
+        ):
             raise Refused("initialize requires expectBaseSHA256", error_code="version_required")
         return "initialize", None, None, expected
     if (
@@ -1933,7 +1948,9 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
         expected = request.get("expectBaseSHA256")
         if mode != "yes" or request.get("expectPlanSHA256") is not None:
             raise Refused("save requires --yes and a canonical revision", error_code="usage")
-        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(expected):
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(
+            expected
+        ):
             raise Refused("save requires expectBaseSHA256", error_code="version_required")
         return "save", request["set"], request.get("remove"), expected
     if "action" in request or "expectBaseSHA256" in request:
