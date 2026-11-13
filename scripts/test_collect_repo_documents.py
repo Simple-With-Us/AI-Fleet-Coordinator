@@ -1352,6 +1352,43 @@ class CollectorTests(unittest.TestCase):
             }
             self.assertEqual(after, before)
 
+            public_repo = self.make_repo(
+                folder="Selected-Public-Repo",
+                name="Selected-Public-Repo",
+                owner="public-owner",
+            )
+            public_repo.write("README.md", "Selected public README.\n")
+            public_repo.write("docs/public-guide.md", "Selected public documentation.\n")
+            public_repo.commit_published()
+
+            with redirect_stdout(StringIO()):
+                status = collector.main(
+                    [
+                        "--code-root",
+                        str(self.code),
+                        "--output-root",
+                        str(output),
+                        "--repo",
+                        "Selected-Public-Repo",
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            public_mirror = output / "Selected-Public-Repo"
+            self.assertEqual(
+                (public_mirror / "documents/docs/public-guide.md").read_text(),
+                "Selected public documentation.\n",
+            )
+            after_public_collection = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after_public_collection, before)
+
     def test_indexes_only_cli_writes_only_to_preview_root(self) -> None:
         repo = self.make_repo()
         repo.write("docs/rollouts/rollout.md", "canonical")
