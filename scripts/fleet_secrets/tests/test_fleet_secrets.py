@@ -347,6 +347,7 @@ class RunTests(Base):
         self.assertIn(core.ENV_TOKEN, err)
         self.assertEqual(world.fetches, [])
         self.assertEqual(world.calls, [])
+        self.assertEqual(self.exec_calls, [])
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
