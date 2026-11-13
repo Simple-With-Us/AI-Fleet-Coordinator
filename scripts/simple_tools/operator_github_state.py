@@ -43,11 +43,15 @@ class NonceLedger:
                         if initialized or os.listdir(parent):
                             raise LedgerError("replay storage unavailable") from None
                         self._retained_marker(parent, create=True)
-                        fd = os.open(self.path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+                        fd = os.open(
+                            self.path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent
+                        )
                         created = True
                 else:
                     try:
-                        fd = os.open(self.path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+                        fd = os.open(
+                            self.path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent
+                        )
                         created = True
                     except FileExistsError:
                         fd = os.open(self.path.name, flags, dir_fd=parent)
@@ -98,13 +102,18 @@ class NonceLedger:
 
     def _retained_marker(self, parent, *, create=False):
         try:
-            fd = os.open(self.INITIALIZED_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            fd = os.open(
+                self.INITIALIZED_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+            )
         except FileNotFoundError:
             if not create:
                 return False
-            fd = os.open(self.INITIALIZED_NAME,
-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
-                         0o600, dir_fd=parent)
+            fd = os.open(
+                self.INITIALIZED_NAME,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o600,
+                dir_fd=parent,
+            )
             try:
                 if os.write(fd, self.INITIALIZED_BYTES) != len(self.INITIALIZED_BYTES):
                     raise LedgerError("replay storage unavailable")
@@ -115,8 +124,11 @@ class NonceLedger:
             return True
         try:
             info = os.fstat(fd)
-            if (not self._private_file(info) or info.st_size != len(self.INITIALIZED_BYTES)
-                or os.read(fd, len(self.INITIALIZED_BYTES) + 1) != self.INITIALIZED_BYTES):
+            if (
+                not self._private_file(info)
+                or info.st_size != len(self.INITIALIZED_BYTES)
+                or os.read(fd, len(self.INITIALIZED_BYTES) + 1) != self.INITIALIZED_BYTES
+            ):
                 raise LedgerError("replay storage unavailable")
             return True
         finally:
@@ -160,7 +172,11 @@ class NonceLedger:
     def _check_custody(self):
         parent = self._private_parent()
         try:
-            if self.retain_unsettled and not self._initializing and not self._retained_marker(parent):
+            if (
+                self.retain_unsettled
+                and not self._initializing
+                and not self._retained_marker(parent)
+            ):
                 raise LedgerError("replay storage unavailable")
             for name in (
                 self.path.name,
@@ -227,10 +243,15 @@ class NonceLedger:
                         raise LedgerError("private replay lock unavailable") from None
                     time.sleep(min(0.025, remaining))
             # Refuse replacement of the lock name while this descriptor was waiting.
-            named = os.open("journal.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            named = os.open(
+                "journal.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+            )
             try:
                 current, held = os.fstat(named), os.fstat(fd)
-                if not self._private_file(current) or (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+                if not self._private_file(current) or (current.st_dev, current.st_ino) != (
+                    held.st_dev,
+                    held.st_ino,
+                ):
                     raise LedgerError("private replay lock unavailable")
             finally:
                 os.close(named)
@@ -454,7 +475,9 @@ class NonceLedger:
         self._check_input("identity", nonce, None)
         try:
             with contextlib.closing(self.connect()) as db:
-                rows = db.execute("SELECT seat,outcome,response FROM nonces WHERE nonce=? LIMIT 2", (nonce,)).fetchall()
+                rows = db.execute(
+                    "SELECT seat,outcome,response FROM nonces WHERE nonce=? LIMIT 2", (nonce,)
+                ).fetchall()
                 if len(rows) > 1:
                     raise LedgerError("replay storage unavailable")
                 return rows[0] if rows else None
@@ -468,10 +491,15 @@ class NonceLedger:
         try:
             with contextlib.closing(self.connect()) as db:
                 for namespace, nonce, expires, outcome, response in db.execute(
-                    "SELECT seat,nonce,expires,outcome,response FROM nonces LIMIT ?", (self.MAX_RETAINED_ROWS,)
+                    "SELECT seat,nonce,expires,outcome,response FROM nonces LIMIT ?",
+                    (self.MAX_RETAINED_ROWS,),
                 ):
                     expected = expected_expiry(namespace, nonce, outcome, response)
-                    if type(expected) not in (int, float) or not math.isfinite(expected) or expires != expected:
+                    if (
+                        type(expected) not in (int, float)
+                        or not math.isfinite(expected)
+                        or expires != expected
+                    ):
                         raise LedgerError("replay storage unavailable")
         except Exception:
             raise LedgerError("replay storage unavailable") from None

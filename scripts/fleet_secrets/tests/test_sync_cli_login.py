@@ -23,8 +23,13 @@ class SyncTests(unittest.TestCase):
         self.value = secrets.token_urlsafe(40)
         self.reader = "st." + secrets.token_urlsafe(32)
         self.writer = "st." + secrets.token_urlsafe(32)
-        self.env = {"HOME": str(self.root), "GH_TOKEN": self.value, core.ENV_PROJECT: PROJECT,
-                    core.ENV_TOKEN: self.reader, core.ENV_WRITE_TOKEN: self.writer}
+        self.env = {
+            "HOME": str(self.root),
+            "GH_TOKEN": self.value,
+            core.ENV_PROJECT: PROJECT,
+            core.ENV_TOKEN: self.reader,
+            core.ENV_WRITE_TOKEN: self.writer,
+        }
         self.intents, self.puts = [], []
         self.failure = None
         self.invalid_receipt = False
@@ -32,8 +37,11 @@ class SyncTests(unittest.TestCase):
 
     def factory(self, env, purpose, request_id=None, created_at_ms=None, state_dir=None):
         directory = Path(state_dir) if state_dir else self.root / "writer"
-        intent = (core.new_write_intent(directory, purpose) if request_id is None else
-                  core.WriteIntent(directory, purpose, request_id, created_at_ms))
+        intent = (
+            core.new_write_intent(directory, purpose)
+            if request_id is None
+            else core.WriteIntent(directory, purpose, request_id, created_at_ms)
+        )
         self.intents.append(intent)
         return intent
 
@@ -44,15 +52,24 @@ class SyncTests(unittest.TestCase):
             raise core.WriteError(self.failure, intent)
         if self.invalid_receipt:
             return "updated"
-        return core.WriteReceipt(self.receipt_id or intent.request_id,
-                                 self.receipt_time or intent.created_at_ms, "updated")
+        return core.WriteReceipt(
+            self.receipt_id or intent.request_id,
+            self.receipt_time or intent.created_at_ms,
+            "updated",
+        )
 
     def run_sync(self, args=None):
         out, err = io.StringIO(), io.StringIO()
-        with (mock.patch.object(sync.caller, "write_intent_for_cli", self.factory, create=True),
-              mock.patch.object(core, "put_secret", self.put),
-              mock.patch.object(core, "fetch_all", side_effect=AssertionError("no whole-folder target read")),
-              mock.patch.object(core.subprocess, "run", side_effect=AssertionError("no application subprocess"))):
+        with (
+            mock.patch.object(sync.caller, "write_intent_for_cli", self.factory, create=True),
+            mock.patch.object(core, "put_secret", self.put),
+            mock.patch.object(
+                core, "fetch_all", side_effect=AssertionError("no whole-folder target read")
+            ),
+            mock.patch.object(
+                core.subprocess, "run", side_effect=AssertionError("no application subprocess")
+            ),
+        ):
             code = sync.main(args or ["--name", "GH_TOKEN", "--path", PATH], self.env, out, err)
         for private in (self.value, self.reader, self.writer):
             self.assertNotIn(private, out.getvalue() + err.getvalue())
@@ -67,7 +84,10 @@ class SyncTests(unittest.TestCase):
 
     def test_allowlist_precedes_value_read_or_writer_factory(self):
         for name, path in (("SOMETHING_ELSE", PATH), ("GH_TOKEN", "/linear")):
-            with self.subTest(name=name), mock.patch.object(sync, "read_value", side_effect=AssertionError("read anyway")):
+            with (
+                self.subTest(name=name),
+                mock.patch.object(sync, "read_value", side_effect=AssertionError("read anyway")),
+            ):
                 code, out, err = self.run_sync(["--name", name, "--path", path])
                 self.assertEqual(code, 2)
                 self.assertFalse(out)
@@ -96,8 +116,7 @@ class SyncTests(unittest.TestCase):
         self.assertIn("write-receipt-invalid", err)
 
     def test_wrong_receipt_uuid_or_creation_time_is_not_reported_as_synced(self):
-        for field, value in (("receipt_id", str(uuid.uuid4())),
-                             ("receipt_time", 1)):
+        for field, value in (("receipt_id", str(uuid.uuid4())), ("receipt_time", 1)):
             with self.subTest(field=field):
                 setattr(self, field, value)
                 code, out, err = self.run_sync()
@@ -106,18 +125,36 @@ class SyncTests(unittest.TestCase):
                 setattr(self, field, None)
 
     def test_source_compatibility_spelling_is_one_named_direct_read(self):
-        with mock.patch.object(core, "fetch_project", return_value={"GH_TOKEN": self.value}) as read:
-            code, out, err = self.run_sync(["--name", "GH_TOKEN", "--path", PATH,
-                                            "--from", "fleet-secrets", "--from-path", "/source"])
+        with mock.patch.object(
+            core, "fetch_project", return_value={"GH_TOKEN": self.value}
+        ) as read:
+            code, out, err = self.run_sync(
+                [
+                    "--name",
+                    "GH_TOKEN",
+                    "--path",
+                    PATH,
+                    "--from",
+                    "fleet-secrets",
+                    "--from-path",
+                    "/source",
+                ]
+            )
         self.assertEqual((code, err), (0, ""))
         args, kwargs = read.call_args
-        self.assertEqual((args[0], args[1], kwargs["token"], kwargs["names"]),
-                         (PROJECT, "/source", self.reader, ("GH_TOKEN",)))
+        self.assertEqual(
+            (args[0], args[1], kwargs["token"], kwargs["names"]),
+            (PROJECT, "/source", self.reader, ("GH_TOKEN",)),
+        )
         self.assertEqual(kwargs["timeout"], core.EXPORT_TIMEOUT)
 
     def test_source_failure_does_not_dispatch_a_write(self):
-        with mock.patch.object(core, "fetch_project", side_effect=core.SecretsError("fetch-failed")):
-            code, out, err = self.run_sync(["--name", "GH_TOKEN", "--path", PATH, "--from", "fleet-secrets"])
+        with mock.patch.object(
+            core, "fetch_project", side_effect=core.SecretsError("fetch-failed")
+        ):
+            code, out, err = self.run_sync(
+                ["--name", "GH_TOKEN", "--path", PATH, "--from", "fleet-secrets"]
+            )
         self.assertEqual((code, out), (4, ""))
         self.assertIn("fetch-failed", err)
         self.assertEqual(self.puts, [])
@@ -135,8 +172,18 @@ class SyncTests(unittest.TestCase):
 
     def test_automated_retry_reuses_original_uuid_time_and_explicit_state(self):
         original = core.new_write_intent(self.root / "explicit", "cli-login-sync")
-        args = ["--name", "GH_TOKEN", "--path", PATH, "--request-id", original.request_id,
-                "--request-created-at", str(original.created_at_ms), "--state-dir", str(original.state_dir)]
+        args = [
+            "--name",
+            "GH_TOKEN",
+            "--path",
+            PATH,
+            "--request-id",
+            original.request_id,
+            "--request-created-at",
+            str(original.created_at_ms),
+            "--state-dir",
+            str(original.state_dir),
+        ]
         self.assertEqual(self.run_sync(args)[0], 0)
         self.assertEqual(self.run_sync(args)[0], 0)
         self.assertEqual(self.puts, [original, original])
@@ -144,18 +191,34 @@ class SyncTests(unittest.TestCase):
     def test_recovery_reads_no_source_and_never_dispatches_put(self):
         original = core.new_write_intent(self.root / "writer", "cli-login-sync")
         receipt = core.WriteReceipt(original.request_id, original.created_at_ms, "updated")
-        with (mock.patch.object(sync, "read_value", side_effect=AssertionError("recovery read input")),
-              mock.patch.object(core, "reconcile_secret", return_value=receipt) as reconcile):
-            code, out, err = self.run_sync(["--name", "GH_TOKEN", "--path", PATH, "--reconcile",
-                                          "--request-id", original.request_id,
-                                          "--request-created-at", str(original.created_at_ms)])
+        with (
+            mock.patch.object(
+                sync, "read_value", side_effect=AssertionError("recovery read input")
+            ),
+            mock.patch.object(core, "reconcile_secret", return_value=receipt) as reconcile,
+        ):
+            code, out, err = self.run_sync(
+                [
+                    "--name",
+                    "GH_TOKEN",
+                    "--path",
+                    PATH,
+                    "--reconcile",
+                    "--request-id",
+                    original.request_id,
+                    "--request-created-at",
+                    str(original.created_at_ms),
+                ]
+            )
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(self.puts, [])
         self.assertEqual(reconcile.call_args.kwargs["intent"], original)
         self.assertIn("synced", out)
 
     def test_recovery_requires_original_identity_before_any_value_read(self):
-        with mock.patch.object(sync, "read_value", side_effect=AssertionError("recovery read input")):
+        with mock.patch.object(
+            sync, "read_value", side_effect=AssertionError("recovery read input")
+        ):
             code, out, err = self.run_sync(["--name", "GH_TOKEN", "--path", PATH, "--reconcile"])
         self.assertEqual((code, out), (2, ""))
         self.assertIn("original request-id", err)

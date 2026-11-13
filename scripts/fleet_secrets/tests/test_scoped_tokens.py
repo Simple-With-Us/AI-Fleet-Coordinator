@@ -1,7 +1,7 @@
 """Offline routing tests; all network, subprocesses and credential stores are faked."""
 
-import io
 import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -75,9 +75,14 @@ class ScopedTokens(unittest.TestCase):
             return 200, self.metadata[token]
         if method in ("PATCH", "POST"):
             name = urlparse(path).path.rsplit("/", 1)[-1]
-            record = dict(secretKey=name, secretValue=body["secretValue"], type="shared",
-                          workspace=body["workspaceId"], environment=body["environment"],
-                          secretPath=body["secretPath"])
+            record = dict(
+                secretKey=name,
+                secretValue=body["secretValue"],
+                type="shared",
+                workspace=body["workspaceId"],
+                environment=body["environment"],
+                secretPath=body["secretPath"],
+            )
             self.records = [row for row in self.records if row["secretKey"] != name] + [record]
             kwargs["on_status"](200)
             return 200, {"secret": record}
@@ -90,7 +95,10 @@ class ScopedTokens(unittest.TestCase):
     @contextlib.contextmanager
     def writer_journal(self):
         # Reader credential-store guards remain intact; this writer owns only a temporary journal.
-        with mock.patch.object(core.os, "open", self.original_open), tempfile.TemporaryDirectory() as root:
+        with (
+            mock.patch.object(core.os, "open", self.original_open),
+            tempfile.TemporaryDirectory() as root,
+        ):
             yield lambda: core.new_write_intent(Path(root) / "writer", "routing-test")
 
     def test_reader_metadata_precedes_bounded_v3_request_without_expansion(self):
@@ -152,17 +160,28 @@ class ScopedTokens(unittest.TestCase):
     def test_writer_is_distinct_and_allowlist_precedes_metadata_or_values(self):
         self.metadata[WRITE] = grant(paths=("/linear",), permissions=("read", "write"))
         with self.writer_journal() as intent:
-            self.assertEqual(core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent()).result, "updated")
+            self.assertEqual(
+                core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent()).result,
+                "updated",
+            )
         self.assertTrue(all(call[2] == WRITE for call in self.calls))
         self.calls.clear()
         with self.assertRaises(core.SecretsError):
-            core.put_secret("ARBITRARY_SECRET", "/linear", VALUE, self.env,
-                            intent=core.new_write_intent(Path("/unused"), "routing-test"))
+            core.put_secret(
+                "ARBITRARY_SECRET",
+                "/linear",
+                VALUE,
+                self.env,
+                intent=core.new_write_intent(Path("/unused"), "routing-test"),
+            )
         self.assertEqual(self.calls, [])
 
     def test_writer_never_borrows_reader_and_readonly_writer_is_rejected(self):
         self.env.pop(core.ENV_WRITE_TOKEN)
-        with self.writer_journal() as intent, self.assertRaisesRegex(core.SecretsError, "INFISICAL_WRITE_TOKEN"):
+        with (
+            self.writer_journal() as intent,
+            self.assertRaisesRegex(core.SecretsError, "INFISICAL_WRITE_TOKEN"),
+        ):
             core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent())
         self.assertEqual(self.calls, [])
         self.env[core.ENV_WRITE_TOKEN] = READ
