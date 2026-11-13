@@ -1812,6 +1812,16 @@ class UnletteredSessionsTests(Base):
             [tid(1), tid(5)],  # newest first
         )
 
+    def test_an_archived_chat_is_not_a_candidate(self) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO threads (id, name, created_at, archived) VALUES (?, ?, ?, 1)",
+                (tid(6), "??: Put Away", time.time() - 3600),
+            )
+        conn.close()
+        self.assertEqual(C.codex_unlettered_sessions(self.env()), [])
+
     def test_no_store_is_doubt_and_doubt_answers_none(self) -> None:
         os.unlink(self.store)
         self.assertIsNone(C.codex_unlettered_sessions(self.env()))
