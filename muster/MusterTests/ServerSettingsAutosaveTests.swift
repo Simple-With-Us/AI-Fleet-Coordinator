@@ -12,9 +12,10 @@ private func settingsAttempt(_ number: Int = 1) -> ServerSettingsAttempt {
 private func settingsRequest(set: [String: ServerSettingValue], expectBaseSHA256: String,
                             expectedKeys: Set<String> = [], remove: [String] = [],
                             referenceNames: [String: Set<String>] = [:],
+                            diagnosticFields: Set<String> = [],
                             attempt: ServerSettingsAttempt = settingsAttempt()) -> ServerSettingsSaveRequest {
     ServerSettingsSaveRequest(set: set, expectBaseSHA256: expectBaseSHA256, expectedKeys: expectedKeys,
-                              remove: remove, referenceNames: referenceNames, attempt: attempt)
+                              remove: remove, referenceNames: referenceNames, diagnosticFields: diagnosticFields, attempt: attempt)
 }
 private let settingsBaseline: [String: ServerSettingValue] = [
     "daemon.coalesce_seconds": .int(20),
@@ -434,6 +435,49 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
         let malformed = settingsEnvelope(overrides: ["revision": .int(1)])
         XCTAssertEqual(ServerListenerSettingsReader.reading(OpsProcessResult(exitCode: 0, stdout: malformed, stderr: "")),
                        .unavailable("invalid_receipt: revision has an invalid shape."))
+    }
+
+    func test_verified_long_schema_diagnostics_preserve_names_and_mask_hostile_keys() throws {
+        let schema = try settingsSchema()
+        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: schema, editable: true).flatMap(\.rows)
+        let field = "daemon.peer_broadcast_reminder_minutes"
+        let row = try XCTUnwrap(rows.first { $0.id == field })
+        let verified = ServerSettingsBuilder.diagnosticFields(rows: rows)
+        XCTAssertTrue(verified.contains(field))
+        guard case .failure(let range) = ServerSettingsBuilder.value("999999", for: row) else {
+            return XCTFail("The long schema field escaped its range")
+        }
+        XCTAssertTrue(range.sentence.hasPrefix("invalid_settings: " + field))
+        let credential = String(repeating: "x9Y", count: 12)
+        guard case .failure(let scan) = ServerSettingsBuilder.value(credential, for: row) else {
+            return XCTFail("The long schema field accepted a credential")
+        }
+        XCTAssertTrue(scan.sentence.hasPrefix("secret_refused: " + field))
+        XCTAssertFalse(scan.sentence.contains(credential))
+        let invalid = settingsRequest(set: [field: .null], expectBaseSHA256: settingsRevisionA, diagnosticFields: verified)
+        XCTAssertEqual(invalid.validationProblem?.field, field)
+
+        let hostile = String(repeating: "z", count: 32)
+        let fakeSeat = String(repeating: "A", count: 32)
+        let invalidInputs: [([String: ServerSettingValue], String)] = [
+            (["daemon." + hostile: .null], "settings field"),
+            (["daemon.token_" + hostile: .null], "set[0]"),
+            (["seat.CODEX.routine": .table([hostile: .null])], "settings field"),
+            (["seat." + fakeSeat + ".routine": .table(["header": .null])], "settings field"),
+        ]
+        for (set, expectedField) in invalidInputs {
+            let request = settingsRequest(set: set, expectBaseSHA256: settingsRevisionA, diagnosticFields: verified)
+            let problem = try XCTUnwrap(request.validationProblem)
+            XCTAssertEqual(problem.field, expectedField)
+            XCTAssertFalse(problem.sentence.contains(hostile))
+            XCTAssertFalse(problem.sentence.contains(fakeSeat))
+        }
+        let untrusted = ServerSettingsBuilder.groups(settings: ["seat." + fakeSeat + ".routine": .table(["header": .text("Authorization")]),
+                                                               "daemon." + hostile: .text("value")],
+                                                     allowlist: schema, editable: true).flatMap(\.rows)
+        let filtered = ServerSettingsBuilder.diagnosticFields(rows: untrusted)
+        XCTAssertFalse(filtered.contains("daemon." + hostile))
+        XCTAssertFalse(filtered.contains("seat." + fakeSeat + ".routine.header"))
     }
 
     @MainActor
