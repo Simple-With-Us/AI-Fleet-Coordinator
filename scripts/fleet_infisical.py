@@ -59,6 +59,9 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+# Infisical's public wire marker from backend/src/services/secret/secret-fns.ts.
+# https://github.com/Infisical/infisical/blob/main/backend/src/services/secret/secret-fns.ts
+HIDDEN_VALUE_MASK = "<hidden-by-infisical>"
 
 ENV_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 PROJECT_FILE = ".simple-tools/fleet-ops-project-id"
@@ -635,7 +638,8 @@ def list_project_names(
     for record in records:
         key = validate_secret_name_record(record, project, path)
         value = record.get("secretValue")
-        if key in found or (value is not None and value != ""):
+        hidden_mask = record.get("secretValueHidden") is True and value == HIDDEN_VALUE_MASK
+        if key in found or (value is not None and value != "" and not hidden_mask):
             raise SecretsError("unverified-source")
         found.add(key)
     return tuple(sorted(found))
