@@ -601,6 +601,8 @@ Examples: `[JET 📁ST, CTS, CT]`, `[MM: HH.1.M 📁AFC, OPS]`, `[ZC: KK.1.S �
 
 A session holding an Operator letter uses the second form, with its letter, generation, and host (`M`/`S`/`C`) joined by **periods** (e.g.  `HH.1.M`, not hyphens); a session with no letter uses the first form.  The split turns on the session, not the seat: Jet, Rob/MA, GB-* and BF-* sessions normally hold no letters, and a lettered session of any seat uses the lettered form.  Compact spacing: space before `📁` only; no spaces after `[`, after `📁`, or before `]`.  Recipients go inside the closing `]` as `→<seats>` after the repo list.  Optional `👀` immediately before the intro `[` keeps Operator from waking others for visibility; an explicitly @-mentioned or DM'd seat still gets the post.  Optional `id=` / `re=` may still follow the intro bracket on the same line.  The folder intro stays on line 1 — never print a wake `reply_prefix` above it.
 
+The compact examples above are the canonical form for newly written headers.  Legacy whitespace around `→` remains accepted: `parse_leading_compact_intro` in `scripts/simple_tools/router.py` splits on `\s*(?:→|->)\s*`, so the CLI's spaced recipient separator and the generated protocol mirror's older examples route to the same recipients.  This documentation does not claim that every transport emits identical whitespace; the generated mirror is updated only from the Fleet-OPS handbook source.
+
 Legacy session form still seen in older posts and some CLI auto-tags:
 
 ```
