@@ -216,7 +216,14 @@ def _service_account(raw: str) -> dict[str, Any]:
 
 def _service_account_known(sa: Mapping[str, Any]) -> list[str]:
     # Metadata such as type and public URLs is not a credential denylist.
-    return [sa[name] for name in SA_SECRET_FIELDS if isinstance(sa.get(name), str) and sa[name]]
+    known = [sa[name] for name in SA_SECRET_FIELDS if isinstance(sa.get(name), str) and sa[name]]
+    key = sa.get("private_key")
+    if isinstance(key, str) and "-----BEGIN " in key and "-----END " in key:
+        body = re.sub(r"-----[^-]+-----", "", key)
+        compact = "".join(body.split())
+        if compact:
+            known.append(compact)
+    return known
 
 
 def local_known_credentials(env: Mapping[str, str] | None = None) -> list[str]:
