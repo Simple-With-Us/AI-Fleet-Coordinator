@@ -5,10 +5,13 @@ The REST helper verifies grant metadata and exact project, prod environment, and
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import shutil
+import sys
 from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 from types import ModuleType
 
 PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
@@ -158,10 +161,22 @@ def _scoped_fetch(
 def _load_helper() -> ModuleType | None:
     """The packaged shared REST client; no application install or path override is consulted."""
     try:
-        import fleet_infisical
+        expected = Path(__file__).resolve().parents[1] / "fleet_infisical.py"
+        spec = importlib.util.spec_from_file_location("_fleet_knobs_fleet_infisical", expected)
+        if spec is None or spec.loader is None:
+            return None
+        helper = importlib.util.module_from_spec(spec)
+        # Never reuse a sys.path/sys.modules candidate that could receive the binding.
+        sys.modules[spec.name] = helper
+        try:
+            spec.loader.exec_module(helper)
+        except BaseException:
+            if sys.modules.get(spec.name) is helper:
+                del sys.modules[spec.name]
+            raise
     except Exception:
         return None
-    return fleet_infisical
+    return helper
 
 
 # Tests replace this with a callable that returns a fake helper, or None for "no helper".
