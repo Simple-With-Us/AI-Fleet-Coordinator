@@ -182,6 +182,20 @@ class PeerActionScanTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "refused_secret")
         self.assertNotIn(known, caught.exception.message)
 
+    def test_loader_snapshots_source_before_collecting_the_selected_binding(self):
+        bootstrap = "synthetic original binding"
+        source = {peer_actions.ENV_INFISICAL_TOKEN: bootstrap, peer_actions.ENV_INFISICAL_PROJECT: "project-test"}
+        resolve = peer_actions.local_known_credentials
+
+        def change_source_then_resolve(snapshot):
+            source[peer_actions.ENV_SA_JSON] = json.dumps({"private_key": "synthetic other credential"})
+            return resolve(snapshot)
+
+        with mock.patch.object(peer_actions, "local_known_credentials", side_effect=change_source_then_resolve):
+            with mock.patch.object(peer_actions, "_infisical_get_secret", return_value="{}") as fetch:
+                self.assertEqual(peer_actions.load_service_account_json(source), {})
+        self.assertEqual(fetch.call_args.args[0], bootstrap)
+
     def test_derived_oauth_credential_refuses_before_the_row_network_sink(self):
         known = "synthetic oauth credential"
         env = {peer_actions.ENV_SA_JSON: json.dumps({"private_key": "synthetic private value", "client_email": "example@example.test"})}
