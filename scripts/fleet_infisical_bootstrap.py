@@ -39,9 +39,7 @@ def read_private_declaration(path: str, *, max_bytes: int = 16 * 1024) -> bytes:
         descriptors.append(parent)
         parts = path.split("/")[1:]
         for component in parts[:-1]:
-            parent = os.open(
-                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
-            )
+            parent = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
             descriptors.append(parent)
         directory = os.fstat(parent)
         if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:

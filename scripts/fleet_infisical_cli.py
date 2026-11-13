@@ -245,8 +245,13 @@ def _consumer_environment(path: str, env: Mapping[str, str], deadline: float) ->
     # The sidecar is an explicit selection, not live proof of account identity or grant.
     core.check_service_token(private[core.ENV_TOKEN])
     status, live = core._api_json(
-        "GET", "/v2/service-token", private[core.ENV_TOKEN], None, private,
-        max_bytes=128 * 1024, deadline=deadline,
+        "GET",
+        "/v2/service-token",
+        private[core.ENV_TOKEN],
+        None,
+        private,
+        max_bytes=128 * 1024,
+        deadline=deadline,
     )
     if (
         status != 200
