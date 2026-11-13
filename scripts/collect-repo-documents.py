@@ -249,12 +249,7 @@ def _github_owner_repo(remote: str) -> tuple[str, str] | None:
 
 
 def _private_opt_in_identity(value: Any) -> tuple[str, str] | None:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or value.count("/") != 1
-    ):
+    if not isinstance(value, str) or not value or value != value.strip() or value.count("/") != 1:
         return None
     owner, repo = value.split("/", 1)
     if (

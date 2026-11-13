@@ -1460,9 +1460,14 @@ class CollectorTests(unittest.TestCase):
             )
             mirror = output / "Private-Repo"
             report_history = {
-                path.relative_to(mirror).as_posix(): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
                 for path in mirror.rglob("*")
-                if path.is_file() and not path.is_symlink() and "reports/" in path.relative_to(mirror).as_posix()
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
             }
             self.assertTrue(report_history)
             initial_manifest = json.loads((mirror / "manifest.json").read_text())
@@ -1502,9 +1507,14 @@ class CollectorTests(unittest.TestCase):
                 "Case-varied private evidence.\n",
             )
             current_report_history = {
-                path.relative_to(mirror).as_posix(): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
                 for path in mirror.rglob("*")
-                if path.is_file() and not path.is_symlink() and "reports/" in path.relative_to(mirror).as_posix()
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
             }
             for name, snapshot in report_history.items():
                 self.assertEqual(current_report_history[name], snapshot)
