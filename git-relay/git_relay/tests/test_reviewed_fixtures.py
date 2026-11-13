@@ -217,9 +217,9 @@ class RepoTreeConsistencyTests(TestCase):
     @classmethod
     def _exact_scanner_clean_drift(cls, path, raw):
         return (
-            (path, sha256(raw).hexdigest()) in cls.EXACT_SCANNER_CLEAN_DRIFT
-            and unreviewed_file_secret(REPO, path, raw) is None
-        )
+            path,
+            sha256(raw).hexdigest(),
+        ) in cls.EXACT_SCANNER_CLEAN_DRIFT and unreviewed_file_secret(REPO, path, raw) is None
 
     def test_existing_attested_paths_carry_exactly_the_attested_bytes(self):
         for _repo, path, digest in sorted(_REVIEWED_FIXTURES):
