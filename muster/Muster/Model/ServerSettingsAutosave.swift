@@ -6,6 +6,7 @@ struct ServerSettingsSaveRequest: Equatable {
     var expectBaseSHA256: String
     /// A full canonical response must not silently remove fields the owner was editing.
     var expectedKeys: Set<String> = []
+    var remove: [String] = []
 
     static func validSet(_ set: [String: ServerSettingValue]) -> Bool {
         guard !set.isEmpty, set.count <= ServerListenerSettingsRequest.maximumChanges else { return false }
@@ -45,12 +46,25 @@ struct ServerSettingsSaveRequest: Equatable {
     }
 
     var standardInput: Data? {
-        guard Self.validSet(set), ServerSettingsAnswer.isHash(expectBaseSHA256),
-              let json = ServerSettingValue.table([
-                "action": .text("save"), "set": .table(set), "expectBaseSHA256": .text(expectBaseSHA256),
-              ]).json else { return nil }
+        guard Self.validSet(set), Self.validRemovals(remove, set: set), ServerSettingsAnswer.isHash(expectBaseSHA256) else { return nil }
+        var document: [String: ServerSettingValue] = [
+            "action": .text("save"), "set": .table(set), "expectBaseSHA256": .text(expectBaseSHA256),
+        ]
+        if !remove.isEmpty { document["remove"] = .list(remove.sorted().map(ServerSettingValue.text)) }
+        guard let json = ServerSettingValue.table(document).json else { return nil }
         let data = Data(json.utf8)
         return data.count <= ServerListenerSettingsRequest.maximumBytes ? data : nil
+    }
+
+    static func validRemovals(_ remove: [String], set: [String: ServerSettingValue]) -> Bool {
+        guard Set(remove).count == remove.count, set.count + remove.count <= ServerListenerSettingsRequest.maximumChanges else { return false }
+        return remove.allSatisfy { key in
+            let parts = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 4, parts[0] == "seat", ["budget", "routine", "live"].contains(parts[2]),
+                  parts[3].range(of: "^[a-z][a-z0-9_]{0,47}$", options: .regularExpression) != nil,
+                  let table = set[parts.prefix(3).joined(separator: ".")]?.tableEntries else { return false }
+            return table[parts[3]] == nil
+        }
     }
 }
 
@@ -119,6 +133,11 @@ struct ServerListenerSettingsSaver {
               answer.action == "save", answer.ok, answer.result == "saved", canonical,
               answer.runtimeApplied == true,
               answer.baseSHA256 == nil || answer.baseSHA256 == answer.revision,
+              request.remove.allSatisfy({ key in
+                  let parts = key.split(separator: ".").map(String.init)
+                  guard parts.count == 4, let table = answer.settings[parts.prefix(3).joined(separator: ".")]?.tableEntries else { return false }
+                  return table[parts[3]] == nil
+              }),
               request.set.allSatisfy({ answer.settings[$0.key] == $0.value }) else {
             let detail = answer.detail ?? answer.errorCode ?? uncertain
             return .failed(OpsResultParser.sanitizedForDisplay(detail), readback)
