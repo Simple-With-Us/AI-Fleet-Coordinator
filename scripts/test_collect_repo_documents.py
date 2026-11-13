@@ -1443,9 +1443,7 @@ class CollectorTests(unittest.TestCase):
             }
             self.assertEqual(after, before)
 
-    def test_case_only_private_owner_change_uses_generic_opt_in_error(
-        self,
-    ) -> None:
+    def test_case_only_private_owner_casing_refresh_preserves_private_report_history(self) -> None:
         repo = self.make_repo(name="Private-Repo", owner="old-owner")
         repo.write("README.md", "Original README.\n")
         repo.write("docs/private-audits/evidence.md", "Original private evidence.\n")
@@ -1461,14 +1459,19 @@ class CollectorTests(unittest.TestCase):
                 private_docs_repo="old-owner/Private-Repo",
             )
             mirror = output / "Private-Repo"
-            before = {
+            report_history = {
                 path.relative_to(mirror).as_posix(): (
                     path.read_bytes(),
                     stat.S_IMODE(path.stat().st_mode),
                 )
                 for path in mirror.rglob("*")
-                if path.is_file() and not path.is_symlink()
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
             }
+            self.assertTrue(report_history)
+            initial_manifest = json.loads((mirror / "manifest.json").read_text())
+            initial_commit = initial_manifest["source_commit"]
 
             git(
                 repo.path,
@@ -1477,30 +1480,133 @@ class CollectorTests(unittest.TestCase):
                 "origin",
                 "https://github.com/OLD-OWNER/Private-Repo.git",
             )
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="OLD-OWNER/Private-Repo",
+            )
+            case_only_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(case_only_manifest["source_commit"], initial_commit)
+            self.assertEqual(case_only_manifest["private_docs_opt_in"], "OLD-OWNER/Private-Repo")
+
             repo.write("README.md", "Case-varied README.\n")
             repo.write("docs/private-audits/evidence.md", "Case-varied private evidence.\n")
-            repo.commit_published()
+            updated_commit = repo.commit_published()
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="OLD-OWNER/Private-Repo",
+            )
 
-            with self.assertRaisesRegex(
-                collector.CollectionError,
-                "An existing private-document collection requires the same explicit opt-in",
-            ):
-                collector.collect(
-                    self.code,
-                    output,
-                    repo_paths=[repo.path],
-                    private_docs_repo="OLD-OWNER/Private-Repo",
-                )
-
-            after = {
+            updated_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(updated_manifest["source_commit"], updated_commit)
+            self.assertEqual(
+                (mirror / "documents/docs/private-audits/evidence.md").read_text(),
+                "Case-varied private evidence.\n",
+            )
+            current_report_history = {
                 path.relative_to(mirror).as_posix(): (
                     path.read_bytes(),
                     stat.S_IMODE(path.stat().st_mode),
                 )
                 for path in mirror.rglob("*")
-                if path.is_file() and not path.is_symlink()
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
             }
-            self.assertEqual(after, before)
+            for name, snapshot in report_history.items():
+                self.assertEqual(current_report_history[name], snapshot)
+
+    def test_malformed_persisted_or_current_private_consent_fails_without_mutating_storage(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Private README.\n")
+        repo.write("docs/private-audits/evidence.md", "Private evidence.\n")
+        repo.commit_published()
+        verified_identities = {"old-owner/private-repo", "different-owner/private-repo"}
+
+        def snapshot(path: Path) -> dict[str, tuple[str, bytes | int, int]]:
+            entries = [path, *path.rglob("*")]
+            result: dict[str, tuple[str, bytes | int, int]] = {}
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                relative = entry.relative_to(path).as_posix() or "."
+                mode = stat.S_IMODE(entry.stat().st_mode)
+                if entry.is_dir():
+                    result[relative] = ("directory", mode, 0)
+                elif entry.is_file():
+                    result[relative] = ("file", entry.read_bytes(), mode)
+            return result
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            malformed_persisted_values = (
+                None,
+                17,
+                "",
+                " ",
+                "old-owner/Private-Repo/extra",
+                "different-owner/Private-Repo",
+            )
+            for index, malformed_value in enumerate(malformed_persisted_values):
+                output = self.base / f"private-bad-persisted-consent-{index}"
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="old-owner/Private-Repo",
+                )
+                mirror = output / "Private-Repo"
+                manifest_path = mirror / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                manifest["private_docs_opt_in"] = malformed_value
+                manifest_path.write_bytes(collector._json_bytes(manifest))
+                before = snapshot(output)
+                repo_info = collector._repo_info(repo.path)
+                self.assertIsNotNone(repo_info)
+
+                with self.subTest(kind="persisted", value=repr(malformed_value)):
+                    with self.assertRaisesRegex(
+                        collector.CollectionError,
+                        "same explicit opt-in",
+                    ):
+                        collector.collect_repository(
+                            repo_info,
+                            output,
+                            private_docs_opt_in="old-owner/Private-Repo",
+                        )
+                    self.assertEqual(snapshot(output), before)
+
+            invalid_current_values = (
+                None,
+                17,
+                "",
+                " ",
+                "old-owner/Private-Repo/extra",
+                "different-owner/Private-Repo",
+            )
+            for index, invalid_value in enumerate(invalid_current_values):
+                output = self.base / f"private-bad-current-consent-{index}"
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="old-owner/Private-Repo",
+                )
+                before = snapshot(output)
+
+                with self.subTest(kind="current", value=repr(invalid_value)):
+                    with self.assertRaises(collector.CollectionError):
+                        collector.collect(
+                            self.code,
+                            output,
+                            repo_paths=[repo.path],
+                            private_docs_repo=invalid_value,
+                        )
+                    self.assertEqual(snapshot(output), before)
 
     def test_indexes_only_cli_writes_only_to_preview_root(self) -> None:
         repo = self.make_repo()
