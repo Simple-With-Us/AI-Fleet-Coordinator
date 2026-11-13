@@ -410,9 +410,9 @@ def _run_check(
     what went wrong.
     """
     if rule.collector is Collector.API:
-        from . import api_collector
-
         try:
+            from . import api_collector
+
             return api_collector.api_collect(rule, platform, ctx)
         except CheckError as exc:
             return _unknown(rule, platform, str(exc), exc.reason_code, ctx)
