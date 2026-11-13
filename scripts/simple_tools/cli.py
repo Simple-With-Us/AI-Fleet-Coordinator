@@ -50,6 +50,7 @@ from . import (
     bodyfile,
     listener_cli,
     notes_cli,
+    post_header,
     secretscan,
     textfmt,
     zulip_cli,
@@ -1654,7 +1655,9 @@ def _compose_intro_lead(
         if label not in peers:
             peers.append(label)
     arrow = (" \u2192" + ",".join(peers)) if peers else ""
-    bracket = "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    bracket = post_header.normalize_header(
+        "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    )
     marker = intro["marker"]
     if quiet and not marker:
         marker = ROUTER.NO_WAKE_MARKER + " "
@@ -1708,17 +1711,14 @@ def _compose(
     )
     if own:
         intro = text[:end]
-        if folder:
-            # Exactly one ASCII space before 📁, the Policy shape the router parses.
-            intro = intro[:seat_end] + " " + intro[seat_end:].lstrip()
         if "·" in agent.tag_prefix:
             suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
             intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
-        arrow = intro.find("→")
-        existing = [] if arrow < 0 else [v.strip() for v in intro[arrow + 1 :].split(",")]
+        arrow = re.search(r"→|->", intro)
+        existing = [] if arrow is None else [v.strip() for v in intro[arrow.end() :].split(",")]
         added = list(dict.fromkeys(label for label in labels if label not in existing))
         if added:
-            intro += (" →" if arrow < 0 else ",") + ",".join(added)
+            intro += (" →" if arrow is None else ",") + ",".join(added)
         tail = text[end + 1 :]
         if tail and not tail[0].isspace():
             tail = " " + tail
@@ -1735,6 +1735,8 @@ def _compose(
         parts.extend(_mentions_missing_from(text, mentions))
         parts.append(text)
         body = " ".join(parts)
+    if not no_tag:
+        body = post_header.normalize_header(body)
     if len(body) > MAX_CONTENT_LENGTH:
         raise UsageError(
             "the message is %d characters; Zulip allows at most %d"
