@@ -252,7 +252,17 @@ try {
       if (actual.length !== 1 || !Array.isArray(actual[0]) || actual[0].length > row.length) throw new Error();
       const normalized = Array.from({ length: row.length }, (_, index) => actual[0][index] ?? '');
       if (JSON.stringify([normalized]) !== JSON.stringify([row])) throw new Error();
-      await saveAttempt('ok'); // Only exact readback commits success.
+      source = 'Infisical Service Tokens/final-readback';
+      const finalTab = await read(sheet);
+      const finalValues = finalTab.values;
+      if (!Array.isArray(finalValues) || !Array.isArray(finalValues[0]) || JSON.stringify(finalValues[0]) !== JSON.stringify(headers)) throw new Error();
+      const finalRows = finalValues.slice(1);
+      if (finalRows.some(entry => !Array.isArray(entry) || entry.length > row.length)) throw new Error();
+      const finalMatches = finalRows.filter(entry => entry[idColumn] === input.id);
+      if (finalMatches.length !== 1) throw new Error();
+      const confirmed = Array.from({ length: row.length }, (_, index) => finalMatches[0][index] ?? '');
+      if (JSON.stringify(confirmed) !== JSON.stringify(row)) throw new Error();
+      await saveAttempt('ok'); // Exact range and unique full-tab readback commit success.
       process.stdout.write('Registry row appended and read back exactly.\n');
     }
   }
@@ -271,7 +281,7 @@ try {
 JS
 ```
 
-The local lock and fsynced attempt marker serialize this host and prevent its crash/retry from blindly appending.  They do not coordinate other hosts or replace the designated registrar.  Google Sheets has no token-ID uniqueness constraint; this recipe is not a shared transactional idempotency service.  Do not run another host's registrar or delete its markers to retry.  An existing `unknown` or `ok` marker with no exact matching row blocks mutation; a full exact row match can reconcile it to `ok` using reads only.  After a crash, retain the lock and marker until the designated registrar establishes that the original invocation has ended and reconciles the live rows; no age-based unlocking or automatic unknown replay.
+The local lock and fsynced attempt marker serialize this host and prevent its crash/retry from blindly appending.  They do not coordinate other hosts or replace the designated registrar.  Google Sheets has no token-ID uniqueness constraint; this recipe is not a shared transactional idempotency service.  The final full-tab read checks unchanged headers, one exact ID match and all 19 cells before recording success; it detects observed duplicates without making the read atomic with another host’s writes.  Do not run another host's registrar or delete its markers to retry.  An existing `unknown` or `ok` marker with no exact matching row blocks mutation; a full exact row match can reconcile it to `ok` using reads only.  After a crash, retain the lock and marker until the designated registrar establishes that the original invocation has ended and reconciles the live rows; no age-based unlocking or automatic unknown replay.
 
 Every exception after mutation starts, including authentication, timeout, response parsing, readback or local completion-record failure, is conservatively `outcome_unknown` with exit 3.  The shared client supplies no trustworthy structured status or sent flag, so do not infer a definite refusal from its error text or release the attempt for a blind retry.  Pre-append failures exit 1; an existing ID with different metadata exits 2.  No provider body is printed.  The exact headers are checked on every run; metadata only is allowed, never token value, value hash, `encryptedKey`, `iv`, `tag` or service-account JSON.  Pattern scanning supplements allowlisted metadata and private review; it cannot prove arbitrary text secret-free.
 
