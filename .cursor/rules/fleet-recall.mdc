@@ -1,5 +1,5 @@
 ---
-description: Fleet recall — search the shared agent memory before re-deriving a lesson or asking the owner, and contribute one paragraph after you learn something reusable.
+description: Search Fleet Recall at the start of every turn and consider a useful contribution at the end of every turn.
 alwaysApply: true
 ---
 
@@ -10,22 +10,11 @@ the Apple Notes archive, every effort log, the protocol docs, the skills, and ea
 files, refreshed nightly.  Cursor has the `fleet-recall` MCP server registered and the `recall`
 CLI on PATH.
 
-## Search first (start of turn triage)
+## Every Turn
 
-At the start of **every** turn, evaluate whether the request, error, or next planned action
-matches any of the **4 Mandatory Search Triggers**:
-1. **Error / Stack Trace**: An error message, build failure, test failure, crash, exception, or non-zero exit code.
-2. **Infrastructure / Deployment**: Coolify, Hetzner, Docker, Caddy, Cloudflare, Infisical, Tailscale, pm2, ports, domains, or certificates.
-3. **Cross-App / Protocol Decisions**: Inter-agent coordination conventions, the archived effort log format, the Linear and `board` protocol, seat tag policies, or owner preferences.
-4. **Smells Familiar**: A problem, warning, or task that feels like it has been solved before or might have an established fleet pattern.
+At the start of every turn, run one targeted Fleet Recall search (`recall "<topic>"` or MCP `recall_search`) before substantive action or reply, including continuations and mechanical tasks.  A hit is a lead, not authority: open its source before relying on it.  Use only the configured own-seat route; if retrieval is unavailable, record that limitation once and continue independent work without changing credentials, trust or services.
 
-**Action**: If ANY trigger fires, you MUST execute `recall "<query>"` or call MCP `recall_search(query=...)`
-BEFORE diagnosing, proposing code, or writing a fix.  Do not guess or re-derive from first principles
-what the fleet has already solved.
-
-**Permitted Bypass**: You may skip retrieval ONLY when:
-- The task is purely local boilerplate (e.g. formatting, renaming a local variable, adding an import in a known file).
-- The exact query was already searched earlier in the current turn/conversation and the results are still in context.
+At the end of every turn, consider whether newly learned durable knowledge would help the fleet.  If appropriate, search for duplicates and contribute one useful paragraph with `recall contribute` or MCP `recall_contribute`; otherwise add nothing.  Do not force filler, require a public “no lesson” reply, duplicate existing knowledge, or dump transcripts or secrets.  Keep source facts in their existing home and contribute only the reusable lesson.
 
 ```bash
 recall "pm2 orphan holds port"
@@ -41,7 +30,7 @@ the top 5 and never act on rank 1 alone.  Open the source for its date — a hit
 the file's, not the section's.  Found a hit that supersedes another?  Contribute the correction
 with `--force`; a one-detail fix often reads as a near-duplicate and is refused otherwise.
 
-## Contribute at closeout
+## Contributions
 
 After you learn something reusable — a gotcha, a measured number, an owner preference, a runbook
 step — store one paragraph:

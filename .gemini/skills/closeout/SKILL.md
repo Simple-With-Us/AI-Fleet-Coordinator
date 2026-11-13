@@ -89,9 +89,11 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 If you stop without merge: the issue stays accurate (`linear_status` with `id` and `status` = `open` to release it, or `parked`, plus a `linear_comment` "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
-## Fleet recall (every closeout)
+## Fleet Recall At Every Turn
 
-If you learned a reusable lesson (gotcha, measured number, owner preference, runbook step), contribute it **now**.  Search first so you corroborate rather than duplicate.
+At the start of every turn, run one targeted Fleet Recall search (`recall "<topic>"` or MCP `recall_search`) before substantive action or reply, including continuations and mechanical tasks.  A hit is a lead, not authority: open its source before relying on it.  Use only the configured own-seat route; if retrieval is unavailable, record that limitation once and continue independent work without changing credentials, trust or services.
+
+At the end of every turn, consider whether newly learned durable knowledge would help the fleet.  If appropriate, search for duplicates and contribute one useful paragraph with `recall contribute` or MCP `recall_contribute`; otherwise add nothing.  Do not force filler, require a public “no lesson” reply, duplicate existing knowledge, or dump transcripts or secrets.  Keep source facts in their existing home and contribute only the reusable lesson.
 
 ```bash
 recall contribute "<one paragraph>" --category lesson --app <slug>
