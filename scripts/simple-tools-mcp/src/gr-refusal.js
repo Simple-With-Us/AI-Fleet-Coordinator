@@ -47,6 +47,7 @@ const BAD_REQUEST_REASONS = new Map([
   ["auto-merge is not armed", "bad_request_auto_merge_not_armed"],
   ["auto-merge enable was refused", "bad_request_auto_merge_refused"],
   ["auto-merge is armed with a different method", "bad_request_auto_merge_method_mismatch"],
+  ["PR base tip unverifiable", "bad_request_pr_base_tip_unverifiable"],
 ]);
 
 /** The relay's fixed head, ref and identity fences:  the caller's expected
