@@ -233,13 +233,9 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual((mirror / "manifest.json").read_bytes(), old_manifest_bytes)
         self.assertEqual((mirror / "README.md").read_bytes(), old_repo_readme_bytes)
         self.assertEqual((mirror / "catalog.json").read_bytes(), old_catalog_bytes)
-        self.assertEqual(
-            (old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes
-        )
+        self.assertEqual((old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes)
         self.assertEqual((old_report / "README.md").read_bytes(), old_versioned_readme_bytes)
-        self.assertEqual(
-            (old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes
-        )
+        self.assertEqual((old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes)
 
         collector.collect(self.code, self.output)
         new_manifest = json.loads((mirror / "manifest.json").read_bytes())
@@ -318,13 +314,13 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(collector.collect(self.code, self.output), [])
 
         for invalid in (None, True, 0, 2, "1"):
-            with self.subTest(identity_version=invalid):
-                with self.assertRaisesRegex(
+            with (
+                self.subTest(identity_version=invalid),
+                self.assertRaisesRegex(
                     collector.CollectionError, "unsupported collection identity version"
-                ):
-                    collector._manifest_version_key(
-                        {**current, "collection_identity_version": invalid}
-                    )
+                ),
+            ):
+                collector._manifest_version_key({**current, "collection_identity_version": invalid})
 
         (mirror / "README.md").write_bytes(b"tampered generated README\n")
         with self.assertRaisesRegex(
