@@ -128,6 +128,22 @@ class WriteCallerTests(unittest.TestCase):
         )
         self.assertNotIn(value, out + err)
 
+    def test_stdin_byte_cap_refuses_ascii_and_multibyte_before_writer_or_state(self):
+        for value in ("x" * (core.MAX_VALUE_BYTES + 1), "é" * (core.MAX_VALUE_BYTES // 2 + 1)):
+            with self.subTest(multibyte=value[0] == "é"), mock.patch.object(core, "put_secret") as put:
+                code, out, err = self.call([], io.StringIO(value + "\n"))
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("maximum size", err)
+                put.assert_not_called()
+                self.assertFalse(self.intent.state_dir.exists())
+
+    def test_invalid_utf8_value_has_a_fixed_refusal_before_writer(self):
+        with mock.patch.object(core, "put_secret") as put:
+            code, out, err = self.call([], io.StringIO("\ud800"))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("must be UTF-8", err)
+        put.assert_not_called()
+
     def test_blocking_original_identity_and_typed_refusal_fields_survive(self):
         original = cli.write_intent_for_cli(self.env, "cli-login-sync")
         for outcome, kwargs in (

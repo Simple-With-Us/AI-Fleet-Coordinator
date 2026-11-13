@@ -494,6 +494,17 @@ class WriteIntentTests(unittest.TestCase):
             self.assertFalse(database.exists())
         self.assertEqual(self.calls, before)
 
+    def test_remote_plaintext_provider_refuses_before_state_or_network(self):
+        for provider in ("http://provider.invalid/api", "http://192.0.2.1/api", "http://[2001:db8::1]/api"):
+            with self.subTest(provider=provider):
+                self.env[core.ENV_API] = provider
+                with self.assertRaisesRegex(core.SecretsError, "write-provider-invalid"):
+                    self.put()
+                self.assertEqual(self.calls, [])
+                self.assertFalse(self.directory.exists())
+        for provider in ("http://127.0.0.1:43210/api", "http://[::1]:43210/api"):
+            self.assertEqual(core._write_provider({core.ENV_API: provider}), provider)
+
     def test_provider_case_default_port_and_trailing_dot_do_not_bypass_unknown_barrier(self):
         self.statuses, self.no_ack = [0], True
         self.assert_outcome("outcome_unknown", self.put)
