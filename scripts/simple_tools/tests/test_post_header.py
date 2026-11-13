@@ -67,6 +67,15 @@ class HeaderSpacingTests(unittest.TestCase):
             with self.assertRaises(cli.UsageError):
                 cli._compose(agent, text, labels=[], mentions=[], no_tag=False)
 
+    def test_quiet_native_posts_and_edits_keep_canonical_header_bytes(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        expected = router.NO_WAKE_MARKER + " " + FIXTURES[0]["expected"]
+        for prefix in ("", router.NO_WAKE_MARKER + " "):
+            with self.subTest(prefix=prefix):
+                body = cli._compose(agent, prefix + FIXTURES[0]["input"], labels=[],
+                                    mentions=[], no_tag=False, quiet=True)
+                self.assertEqual(body, expected)
+
     def test_quiet_own_headers_and_ascii_transport_arrows_keep_recipients(self):
         agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
         text = "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] Body.\u00a0 Next."
