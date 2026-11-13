@@ -562,9 +562,7 @@ class PythonBlockTests(unittest.TestCase):
         path_before = list(sys.path)
         try:
             with (
-                mock.patch.dict(
-                    sys.modules, {"fleet_infisical": core}
-                ),
+                mock.patch.dict(sys.modules, {"fleet_infisical": core}),
                 redirect_stdout(out),
             ):
                 self.block.main(
