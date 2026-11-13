@@ -32,6 +32,18 @@ APPROVED_OWNERS = frozenset({"simple-with-us", "jaywedgeworth22"})
 TEXT_SUFFIXES = frozenset({".md", ".txt", ".html", ".htm"})
 HUMAN_SUFFIXES = TEXT_SUFFIXES | {".pdf"}
 MAX_PDF_BYTES = 4 * 1024 * 1024
+MAX_HTML_BYTES = 4 * 1024 * 1024
+
+
+def input_cap(suffix):
+    suffix = suffix.casefold()
+    if suffix == ".pdf":
+        return MAX_PDF_BYTES
+    if suffix in (".html", ".htm"):
+        return MAX_HTML_BYTES
+    return MAX_BYTES
+
+
 BLOCKED = frozenset(
     {
         ".git",
@@ -144,7 +156,7 @@ def _tracked_tree(root, commit):
             and (not size.isdigit() or not re.fullmatch(rb"[0-9a-f]{40,64}", oid))
         ):
             raise GitInventoryError("tracked-git-inventory-malformed")
-        cap = MAX_PDF_BYTES if Path(relative).suffix.casefold() == ".pdf" else MAX_BYTES
+        cap = input_cap(Path(relative).suffix)
         if (
             mode in (b"100644", b"100755")
             and kind == b"blob"
@@ -271,16 +283,20 @@ def text_from_bytes(data, suffix):
     if b"\x00" in data:
         raise ValueError("binary-document-refused")
     text = data.decode("utf-8")
+    if suffix.casefold() in (".html", ".htm"):
+        if len(data) > MAX_HTML_BYTES:
+            raise DocumentTooLarge("html-input-too-large")
+        parser = _HTMLText()
+        parser.feed(text)
+        text = "".join(parser.parts)
+        if len(text.encode("utf-8")) > MAX_BYTES:
+            raise DocumentTooLarge("html-visible-text-too-large")
     if (
         any(len(line) >= 8000 for line in text.splitlines())
         and text
         and sum(c.isspace() for c in text) / len(text) < 0.05
     ):
         raise ValueError("minified-document-refused")
-    if suffix.casefold() in (".html", ".htm"):
-        parser = _HTMLText()
-        parser.feed(text)
-        text = "".join(parser.parts)
     return text
 
 
@@ -359,9 +375,7 @@ def library_documents(
                         data = safe_file(
                             child,
                             output,
-                            maximum=MAX_PDF_BYTES
-                            if Path(source).suffix.casefold() == ".pdf"
-                            else MAX_BYTES,
+                            maximum=input_cap(Path(source).suffix),
                         )
                     except DocumentTooLarge:
                         warn(
@@ -384,6 +398,9 @@ def library_documents(
                     if not exact_alias:
                         try:
                             rendered = text_from_bytes(data, Path(source).suffix)
+                        except DocumentTooLarge:
+                            warn("doc: unreadable-or-excluded generated visible text above bounded size cap")
+                            continue
                         except ValueError:
                             if Path(source).suffix.casefold() == ".pdf":
                                 warn(
@@ -479,7 +496,7 @@ def library_documents(
                 data = safe_file(
                     root,
                     relative,
-                    maximum=MAX_PDF_BYTES if path.suffix.casefold() == ".pdf" else MAX_BYTES,
+                    maximum=input_cap(path.suffix),
                 )
                 text = text_from_bytes(data, path.suffix)
             except (OSError, ValueError, UnicodeError) as exc:

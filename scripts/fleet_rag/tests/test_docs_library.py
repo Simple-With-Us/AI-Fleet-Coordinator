@@ -47,6 +47,39 @@ class LibraryTests(unittest.TestCase):
     def read(self):
         return list(library.library_documents(self.docs,self.repositories,self.canonical,self.make_doc,lambda p:False,self.warnings.append))
 
+    def test_bounded_html_extracts_visible_text_and_preserves_raw_provenance(self):
+        raw = b'<html><style>' + b'x' * (1024 * 1024) + b'</style><img src="' + b'a' * 100000 + b'"><p>Meaningful visible human knowledge.</p></html>'
+        (self.repo / 'docs/shortlist.html').write_bytes(raw)
+        self.run_git('add', '.')
+        self.run_git('commit', '-q', '-m', 'bounded HTML')
+        self.repositories = library.discover_repositories(self.code)
+        child, manifest = self.collection()
+        records = {
+            'shortlist.html': raw,
+            'input-overcap.html': b'x' * (library.MAX_HTML_BYTES + 1),
+            'output-overcap.html': b'<p>' + b'human text ' * 110000 + b'</p>',
+        }
+        for name, data in records.items():
+            (child / 'documents/docs' / name).write_bytes(data)
+            manifest['files']['documents/docs/' + name] = {
+                'source_path': 'docs/' + name,
+                'sha256': hashlib.sha256(data).hexdigest(),
+            }
+        (child / 'manifest.json').write_text(json.dumps(manifest))
+        self.read()
+        document, original = self.canonical['doc/Clutch/docs/shortlist.html']
+        self.assertEqual(original, raw)
+        self.assertEqual(document.text_markdown.strip(), 'Meaningful visible human knowledge.')
+        self.assertEqual(document.extra['source_sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(document.extra['source_aliases'], [str(child / 'documents/docs/shortlist.html')])
+        self.assertIn('source_aliases', self.document.extra)
+        self.assertEqual(sum('above bounded size cap' in item for item in self.warnings), 2)
+        self.assertFalse(any('no aliases trusted' in item for item in self.warnings))
+        with mock.patch.object(sources.mirror, 'configured_root', return_value=None):
+            documents = list(sources.iter_docs(fleet_repo=self.root/'absent', fleet_ops=self.root/'absent-ops', extra=[], code_dir=self.code, apps_dir=None, grok_home=None))
+        self.assertEqual(sum(doc.doc_id == document.doc_id for doc in documents), 1)
+        self.assertFalse(sources.take_source_read_receipt('doc')['source_complete'])
+
     def test_exact_generated_and_legacy_copies_are_aliases_only(self):
         child,_=self.collection()
         (self.docs/'legacy.md').write_bytes(self.raw)
