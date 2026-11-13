@@ -241,6 +241,8 @@ TOOL_REQUIRED = frozenset(
         # Shared scoped client and direct command used by knobs, recall and other consumers.
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
+        # Shared protected-custody helper for declared readers and interactive launchers.
+        "scripts/fleet_infisical_bootstrap.py",
         # The direct command's writer requires the same retained intent ledger.
         "scripts/simple_tools/operator_github_state.py",
         *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),

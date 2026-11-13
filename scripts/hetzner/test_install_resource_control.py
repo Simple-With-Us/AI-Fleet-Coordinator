@@ -12,6 +12,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Standalone discovery also needs the resolved repo-only fixture package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
 
 HERE = Path(__file__).resolve().parent
