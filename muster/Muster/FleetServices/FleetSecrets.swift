@@ -349,7 +349,7 @@ public extension FleetSecrets {
     func doctorReport() throws -> [String: String] {
         let text: String
         do {
-            text = try runReader(["doctor", "--json"])
+            text = try runReader(["doctor", "--json", "--project", "fleet-ops", "--path", "/"])
         } catch let exit as CommandExitError {
             if let report = try? Self.parseDoctor(exit.output), !report.isEmpty { return report }
             throw FleetSecretError.fromNonKeyRead(exit, name: "doctor")

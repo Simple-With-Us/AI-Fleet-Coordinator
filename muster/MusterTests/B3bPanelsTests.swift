@@ -174,6 +174,20 @@ final class SecretNamesTests: XCTestCase {
         XCTAssertEqual(report["names_count"], "3")
         XCTAssertNil(report["secret_value"])
     }
+    func test_doctor_selects_only_the_existing_fleet_ops_root_reader() throws {
+        let fake = B3bCommands()
+        fake.replies["doctor"] = #"{"ok":true,"reader_configured":true,"names_count":2}"#
+        let binding = UUID().uuidString
+        let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot,
+                                   infisicalBindings: ["INFISICAL_TOKEN": binding])
+        XCTAssertEqual(try secrets.doctorReport()["ok"], "true")
+        XCTAssertEqual(fake.calls.first?.1,
+                       ["-I", "/tmp/example-repo/scripts/fleet_infisical_cli.py", "doctor", "--json",
+                        "--project", "fleet-ops", "--path", "/"])
+        XCTAssertEqual(fake.environments.first?["INFISICAL_TOKEN"], binding)
+        XCTAssertNil(fake.environments.first?["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"])
+        XCTAssertEqual(fake.timeouts, [20])
+    }
 }
 
 final class RecallSettingsTests: XCTestCase {
