@@ -1776,7 +1776,6 @@ class OwnIntroTagTests(unittest.TestCase):
                 self.assertTrue(cli.single_thread(seat))
                 for text in (
                     f"[{seat} 📁AFC] PR opened",
-                    f"👀 [{seat} 📁AFC, OPS] PR opened",
                     f"[{seat}] PR opened",
                     f"[{seat}] [{seat} 📁CC]\n\nPR opened",
                     f"[{seat}📁AFC]\nPR opened",
@@ -1784,6 +1783,12 @@ class OwnIntroTagTests(unittest.TestCase):
                 ):
                     self.assertEqual(cli.tagged(seat, None, text), "PR opened", text)
                     self.assertTrue(cli.comment_body(seat, None, text).startswith("PR opened"))
+                for marker in ("👀", ":eyes:"):
+                    text = f"{marker} [{seat}] [{seat} 📁AFC, OPS] PR opened"
+                    self.assertEqual(cli.tagged(seat, None, text), f"{marker} PR opened")
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith(f"{marker} PR opened"))
+                    self.assertEqual(cli.tagged(seat, None, f"{marker} [{seat} 📁AFC]"),
+                                     f"{marker} [{seat}\u200a\u200a📁\u200aAFC]")
                 # Foreign or malformed brackets are content;  an intro-only body is left whole.
                 self.assertEqual(
                     cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof"
