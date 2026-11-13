@@ -24,8 +24,12 @@ relay refusal keeps its real code - it is never reclassified as an uncertain wri
 
 clone, fetch, pull, ls-remote, bundle and archive run the local git program against the hosted read-only route, on the
 same host as the MCP endpoint.  The server reads the repo as this bearer's own GitHub App and keeps the GitHub token, so
-this client never holds one.  That route has no push.  publish reads local files and sends them through the same write
-tool as `call`, so a caller need not pass a large file as an inline argument.
+this client never holds one.  That route has no push, and there is no receive-pack anywhere.  publish reads local files
+and sends them through the same write tool as `call`, so a caller need not pass a large file as an inline argument.
+
+push replays local commits through the same tool calls (owner ruling Nov 12, 2026):  it builds each commit's tree and
+commit with the relay's unattached git-data verbs as this bot's own GitHub App, then creates the branch or moves it
+with the expected old sha.  It never forces, never writes the default branch and never runs `git push`.
 
 This file is standard library only.  The command environment prefix is _ENV_STEM below;
 everything user-visible takes the installed name from argv[0].  Python 3.10+.
@@ -130,6 +134,8 @@ INPUT_LIMITS = {
     "gr_wf_release_asset_upload_binary": 253952,
     "gr_wf_file_put": 6 * 1024 * 1024,
     "gr_wf_files_put": 6 * 1024 * 1024,
+    "gr_wf_git_blob_create": 212992,
+    "gr_wf_git_tree_create": 245760,
 }
 DEFAULT_INPUT_LIMIT = 65536
 
@@ -190,9 +196,10 @@ def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
 class HostedToolExit(SystemExit):
     """A hosted tool error that still exits, and keeps a closed refusal reason."""
 
-    def __init__(self, status: int, tool_code: str, reason: str | None):
+    def __init__(self, status: int, tool_code: str, reason: str | None, github_status: int | None = None):
         self.tool_code = tool_code
         self.reason = reason
+        self.github_status = github_status  # GitHub's own 4xx for a github_refused refusal, else None
         super().__init__(status)
 
 
@@ -832,7 +839,8 @@ def remote_call(tool: str, arguments: dict, write: bool, bearer: str, deadline: 
         sys.stderr.write(
             f"{prog()}: {tool} failed on the hosted server: {shown}{detail}{after}{note}\n"
         )
-        raise HostedToolExit(EXIT_ERROR, shown, reason)
+        status = re.search(r", github_status=([0-9]{3})\)\Z", detail)
+        raise HostedToolExit(EXIT_ERROR, shown, reason, int(status.group(1)) if status else None)
     parts = [
         c.get("text")
         for c in content or []
@@ -2263,6 +2271,971 @@ def _remote_tree_shas(tools: dict, repo: str, head: str, bearer: str, seat: str,
     }
 
 
+# ----------------------------------------------------------------- push:  replay local commits through the git-data verbs
+#
+# Owner ruling, Thu Nov 12 2026, asked "May simple-git push replay local commits through the relay under each
+# seat's own App token?":  "Yes, build it".  There is still no receive-pack and no `git push`:  every object is
+# built by a relay tool call as this bot's own GitHub App, and this client holds no GitHub credential.
+#
+# What the verbs allow decides what a push can carry (git-relay/GIT-OBJECT-WRITES.md):
+#   - gr_wf_git_tree_create takes a base tree and regular UTF-8 text files (mode 100644 or 100755), as text or
+#     as the sha of a blob the remote already has.  It cannot delete a path and carries no binary content, no
+#     symlink and no submodule, so a commit that needs one of those is refused BY NAME before anything is sent.
+#   - gr_wf_git_commit_create takes a tree, one or two parents and a message.  It takes no author, committer,
+#     date or signature:  GitHub sets them to this bot's App.  So the remote commit ids always differ from the
+#     local ones, and this machine remembers each pair (the replay map) so that a later push continues from them.
+#   - gr_wf_branch_create / gr_wf_branch_update move the ref once, at the end, the update with the expected old
+#     sha and never with force.
+# Nothing is retried:  a refusal or an unknown outcome stops the push, and a rerun continues from the replay map.
+
+PUSH_MAX_COMMITS = 100  # one push
+PUSH_DEADLINE_S = 1800  # the whole push, in place of OVERALL_DEADLINE_S
+PUSH_TEXT_BYTES = 40000  # gr_wf_git_tree_create:  text per call (workflow_verbs.py MAX_WORKFLOW_TEXT)
+PUSH_LARGE_TEXT_BYTES = 100000  # with allow_large_text exactly true (MAX_WORKFLOW_TEXT_LARGE):  one file's ceiling
+PUSH_REF_BLOB_BYTES = 700 * 1024  # an existing blob named by sha (MAX_REF_BLOB_RAW)
+PUSH_REF_TOTAL_BYTES = 4 * 1024 * 1024  # all blobs named by sha in one call (MAX_FILES_RAW)
+PUSH_TREE_FILES = 20  # files in one call (MAX_FILES)
+PUSH_TREE_WIRE_BYTES = 200000  # serialized text in one call, under the 245760-byte request allowance
+PUSH_MESSAGE_BYTES = 32768
+_PUSH_BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,200}")
+_PUSH_REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+_PUSH_SHA = re.compile(r"[0-9a-f]{40}")
+_PUSH_URL = re.compile(
+    r"(?:https://github\.com/|ssh://git@github\.com/|git@github\.com:|"
+    + re.escape(GIT_ROUTE_BASE)
+    + r"/git/)([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100}?)(?:\.git)?/?"
+)
+
+
+PUSH_HELP = f"""\
+Replay the local commits a remote branch lacks through the relay's git-data tools, as this bot's own GitHub
+App, then create the branch or move it forward from the sha it was read at.  There is no git push and no
+force, and the default branch is refused.  Each commit keeps its tree, its parents (a merge keeps both, in
+order) and its message.
+
+What push cannot carry.  Every commit is checked first, and one that needs any of these is refused by name
+before anything is written, so a push that cannot finish does not start:
+  - a deletion, and so a rename or a move (a rename is a deletion plus a new file)
+  - a binary file, or any file that is not UTF-8 text
+  - a symlink or a submodule;  any mode other than 100644 and 100755
+  - a workflow path (.github/workflows/...)
+  - a file over {PUSH_LARGE_TEXT_BYTES} bytes
+  - a root commit (one with no parent) and an octopus merge (more than two parents)
+  - a commit message that is blank, not UTF-8 or over {PUSH_MESSAGE_BYTES} bytes
+  - content or a commit message the secret scan flags (the path or the short commit id is named, never the text)
+  - more than {PUSH_MAX_COMMITS} commits in one push
+
+Commit ids differ on the remote.  The relay's commit verb sets the author, the committer and the dates to this
+bot's GitHub App, and drops signatures, so each replayed commit has a new id.  This machine remembers each
+pair (push-replay-map.json in ~/.simple-tools, or in SIMPLE_GIT_STATE_DIR) and the next push continues from
+them.  To put the local branch on the pushed commits, with files and index left as they are:
+    simple-git fetch REMOTE BRANCH
+    git reset --soft NEW_SHA                         (when BRANCH is checked out)
+    git update-ref refs/heads/BRANCH NEW_SHA OLD_SHA   (when it is not)
+A successful push prints these commands with the real ids.
+
+A branch name is letters, digits and . _ / - only:  not HEAD, no leading dash, no "..", nothing under "refs/"
+beyond one leading "refs/heads/", and no part that is empty, starts with "." or ends with "." or ".lock".
+"""
+
+
+def _push_branch_ok(name: str) -> bool:
+    """Is `name` a branch name in the one spelling git itself would keep?
+
+    This is `git check-ref-format --branch` narrowed to the relay's character set, decided here so that the
+    name is never handed to git as an argument:  no leading dash, no "..", and no path segment that is empty,
+    is ".", begins with "." or ends with "." or ".lock".  It also refuses HEAD and anything that still begins
+    with "refs/" after the one "refs/heads/" the caller strips, because "refs/heads/refs/heads/main" is not
+    the branch "main" to a string compare and may be exactly that to whatever resolves it later.  The default
+    branch guard compares names, so two spellings of one branch must not both get this far."""
+    if _PUSH_BRANCH.fullmatch(name) is None or name == "HEAD" or name.startswith(("-", "refs/")) or ".." in name:
+        return False
+    return not any(
+        not part or part.startswith(".") or part.endswith((".", ".lock")) for part in name.split("/")
+    )
+
+
+# What a local git child may inherit.  Everything else in this process's environment stays here:  the bearer,
+# and any other token the caller's shell happens to hold, never reach a program a repository can name.
+_LOCAL_GIT_ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+# GIT_NO_LAZY_FETCH:  in a partial clone a missing object is an error here, never a fetch with some other
+# credential.
+_LOCAL_GIT_ENV_SET = {"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1", "LC_ALL": "C"}
+_LOCAL_GIT_ENV_ALLOWED = frozenset(_LOCAL_GIT_ENV_KEEP) | frozenset(_LOCAL_GIT_ENV_SET)
+# A repository's own configuration can name a program:  core.fsmonitor is run by any command that reads the
+# index (diff-tree does), and hooks live wherever core.hooksPath says.  Neither is honoured here.  None of the
+# plumbing commands push uses runs a hook;  the second setting keeps that true if one is ever added.
+_LOCAL_GIT_CONFIG = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull)
+_LOCAL_GIT_END_OF_OPTIONS: list | None = None
+
+
+def _local_git_env() -> dict:
+    env = {key: os.environ[key] for key in _LOCAL_GIT_ENV_KEEP if key in os.environ}
+    env.update(_LOCAL_GIT_ENV_SET)
+    return env
+
+
+def _local_git_end_of_options() -> list:
+    """["--end-of-options"] when the installed git takes it in every command push uses (rev-parse learned it
+    last, in 2.30), else [].  Without it nothing is lost:  an operand that begins with a dash is refused by
+    _local_git itself, on every version."""
+    global _LOCAL_GIT_END_OF_OPTIONS
+    if _LOCAL_GIT_END_OF_OPTIONS is None:
+        try:
+            out = subprocess.run(
+                [_git_binary(), "--version"],
+                env=_local_git_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            ).stdout.decode("ascii", "replace")
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
+        found = re.match(r"git version ([0-9]{1,4})\.([0-9]{1,4})(?![0-9])", out)
+        new_enough = found is not None and (int(found.group(1)), int(found.group(2))) >= (2, 30)
+        _LOCAL_GIT_END_OF_OPTIONS = ["--end-of-options"] if new_enough else []
+    return _LOCAL_GIT_END_OF_OPTIONS
+
+
+def _local_git(repo_dir: str, args: list[str], ok: tuple = (0,), operands: tuple = ()) -> tuple[int, bytes]:
+    """One LOCAL git plumbing command (rev-list, cat-file, diff-tree ...):  it reads this clone and never talks
+    to a remote, not even to fetch a missing object.
+
+    `args` are the options this client wrote itself;  `operands` are the revisions and object names, which can
+    come from the caller or from the server.  They go after --end-of-options where git has it, and one that
+    begins with a dash is refused outright, so none is ever read as an option.  The child gets a short
+    allow-listed environment (no bearer, no other token), no fsmonitor program and no hooks, and its stderr
+    is not shown."""
+    if any(not isinstance(item, str) or not item or item.startswith("-") or "\0" in item for item in operands):
+        die(f"local git {args[0]} was given a name that is empty or starts with a dash;  refusing", EXIT_USAGE)
+    try:
+        proc = subprocess.run(
+            [
+                _git_binary(),
+                "-C",
+                repo_dir,
+                *_LOCAL_GIT_CONFIG,
+                *args,
+                *(_local_git_end_of_options() if operands else ()),
+                *operands,
+            ],
+            env=_local_git_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        die(f"local git {args[0]} could not run ({type(exc).__name__})", EXIT_ERROR)
+    if proc.returncode not in ok:
+        die(f"local git {args[0]} failed with status {proc.returncode} in {repo_dir!r}", EXIT_ERROR)
+    return proc.returncode, proc.stdout
+
+
+def _push_spec(spec: str | None) -> tuple[str | None, str | None]:
+    """(local source, remote branch) from [SRC:]BRANCH;  (None, None) means the checked-out branch.  A forced,
+    deleting or non-branch refspec is refused here, before any credential is read."""
+    if spec is None:
+        return None, None
+    if spec.startswith("+"):
+        die("push never forces:  a refspec with a leading + is refused", EXIT_USAGE)
+    src, sep, dst = spec.partition(":")
+    if not sep:
+        src, dst = spec, spec
+    if not src:
+        die("push never deletes a remote branch", EXIT_USAGE)
+    if dst.startswith("refs/"):
+        if not dst.startswith("refs/heads/"):
+            die(f"{dst!r} is not a branch:  push only moves branches (refs/heads/...)", EXIT_USAGE)
+        dst = dst[len("refs/heads/") :]  # once:  what is left must be a plain branch name
+    if not _push_branch_ok(dst):
+        die(
+            f"{_visible(dst)!r} is not a branch name push accepts:  letters, digits and . _ / - only, not HEAD, "
+            'no leading dash or "refs/", no "..", and no part that is empty, starts with "." or ends with '
+            '"." or ".lock"',
+            EXIT_USAGE,
+        )
+    return _plain_arg(src, "the source"), dst
+
+
+def _push_refuse_early(a) -> None:
+    """The refusals that need no network and no credential:  force in any spelling, and a bad refspec."""
+    if a.force or a.force_with_lease is not None or a.force_if_includes:
+        die(
+            "push never forces:  it only creates a branch or moves it forward from the sha it read.  "
+            "Fetch, integrate the remote commits and push again",
+            EXIT_USAGE,
+        )
+    if _PUSH_REMOTE.fullmatch(a.remote) is None:
+        die("the remote must be a plain remote name such as origin", EXIT_USAGE)
+    _push_spec(a.branch)
+
+
+def _push_repo(a) -> str:
+    """owner/name:  --repo, else read from the remote's stored URL (never rewritten, never contacted)."""
+    if a.repo:
+        repo = a.repo
+    else:
+        _, out = _local_git(a.dir, ["config", "--get", f"remote.{a.remote}.url"], ok=(0, 1))
+        match = _PUSH_URL.fullmatch(out.decode("utf-8", "replace").strip())
+        if match is None:
+            die(
+                f"the remote {a.remote!r} has no GitHub URL this client can read a repository from;  "
+                "pass --repo OWNER/NAME",
+                EXIT_USAGE,
+            )
+        repo = f"{match.group(1)}/{match.group(2)}"
+    _repo_url(repo)
+    return repo
+
+
+def _push_rev(repo_dir: str, rev: str) -> str | None:
+    """The full sha of a local commit-ish, or None."""
+    code, out = _local_git(
+        repo_dir, ["rev-parse", "--verify", "--quiet"], ok=(0, 1, 128), operands=(rev + "^{commit}",)
+    )
+    # The last line:  some git versions print the --end-of-options marker back before the sha.
+    sha = (out.decode("ascii", "replace").split() or [""])[-1]
+    return sha if code == 0 and _PUSH_SHA.fullmatch(sha) else None
+
+
+def _push_read_commit(repo_dir: str, sha: str) -> dict:
+    """One local commit object, from its raw bytes:  tree, parents, the message exactly as stored, and whether
+    it carries what the commit verb cannot keep (a signature, a non-UTF-8 encoding)."""
+    _, raw = _local_git(repo_dir, ["cat-file"], operands=("commit", sha))
+    head, _sep, body = raw.partition(b"\n\n")
+    info = {"sha": sha, "tree": "", "parents": [], "encoding": "", "signed": False, "raw_message": body}
+    for line in head.split(b"\n"):
+        if line.startswith(b" "):
+            continue  # a continuation line of a multi-line header (gpgsig, mergetag)
+        key, _, value = line.partition(b" ")
+        text = value.decode("utf-8", "replace")
+        if key == b"tree":
+            info["tree"] = text
+        elif key == b"parent":
+            info["parents"].append(text)
+        elif key == b"encoding":
+            info["encoding"] = text
+        elif key in (b"gpgsig", b"gpgsig-sha256"):
+            info["signed"] = True
+    if _PUSH_SHA.fullmatch(info["tree"]) is None or any(_PUSH_SHA.fullmatch(p) is None for p in info["parents"]):
+        die(f"local commit {sha} could not be read", EXIT_ERROR)
+    try:
+        info["message"] = body.decode("utf-8")
+    except UnicodeDecodeError:
+        info["message"] = None
+    first = (info["message"] or "").strip().split("\n", 1)[0]
+    info["subject"] = _visible(first[:72]).replace("\t", " ")
+    return info
+
+
+def _push_diff(repo_dir: str, base_tree: str, tree: str) -> list[tuple[str, str, str, bytes]]:
+    """(status, new mode, new blob sha, path bytes) for every path that differs between two local trees."""
+    _, raw = _local_git(
+        repo_dir,
+        ["diff-tree", "-r", "-z", "--raw", "--no-renames", "--no-abbrev", "--no-ext-diff"],
+        operands=(base_tree, tree),
+    )
+    parts = raw.split(b"\0")
+    rows = []
+    for index in range(0, len(parts) - 1, 2):
+        meta = parts[index].decode("ascii", "replace").split(" ")
+        if len(meta) != 5 or not meta[0].startswith(":"):
+            die("local git diff-tree printed a line this client cannot read", EXIT_ERROR)
+        rows.append((meta[4][:1], meta[1], meta[3], parts[index + 1]))
+    return rows
+
+
+def _push_tree_blobs(repo_dir: str, tree: str, cache: dict) -> frozenset:
+    """Every blob sha in one local tree.  A tree the remote has holds blobs the remote has."""
+    if tree not in cache:
+        _, raw = _local_git(repo_dir, ["ls-tree", "-r", "-z"], operands=(tree,))
+        found = set()
+        for row in raw.split(b"\0"):
+            meta = row.split(b"\t", 1)[0].split(b" ")
+            if len(meta) == 3 and meta[1] == b"blob":
+                found.add(meta[2].decode("ascii", "replace"))
+        cache[tree] = frozenset(found)
+    return cache[tree]
+
+
+def _push_tree_files(repo_dir: str, base_tree: str, tree: str, remote_blobs, bearer: str) -> tuple[list, list]:
+    """What gr_wf_git_tree_create must add to `base_tree` to make `tree`, and every reason it cannot.
+
+    A file whose blob the remote already has (it is in the base tree, or an earlier commit of this push sent
+    it) is named by sha and its content is not sent again.  Nothing here is sent:  the reasons are collected
+    for every commit first, so a push that cannot finish does not start."""
+    files, reasons = [], []
+    for status, mode, blob, raw_path in _push_diff(repo_dir, base_tree, tree):
+        try:
+            path = raw_path.decode("utf-8")
+        except UnicodeDecodeError:
+            reasons.append("it touches a path that is not UTF-8;  the relay takes no such path")
+            continue
+        shown = repr(_visible(path))
+        if status == "D":
+            reasons.append(f"it deletes {shown};  the relay's tree verb (gr_wf_git_tree_create) cannot delete a path")
+            continue
+        if mode == "120000":
+            reasons.append(f"{shown} is a symlink (mode 120000);  the relay's tree verb takes regular files only")
+            continue
+        if mode == "160000":
+            reasons.append(f"{shown} is a submodule (mode 160000);  push does not send submodules")
+            continue
+        if mode not in ("100644", "100755"):
+            reasons.append(f"{shown} has mode {mode};  the relay's tree verb takes modes 100644 and 100755 only")
+            continue
+        if _PUBLISH_PATH.fullmatch(path) is None:
+            reasons.append(f"{shown} is not a path the relay accepts (letters, digits and . _ / + @ ~ - only)")
+            continue
+        if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
+            reasons.append(f"{shown} is a workflow path;  the relay refuses workflow files")
+            continue
+        _, out = _local_git(repo_dir, ["cat-file", "-s"], operands=(blob,))
+        size = int(out.decode("ascii", "replace").strip() or -1)
+        known = blob in remote_blobs
+        limit = PUSH_REF_BLOB_BYTES if known else PUSH_LARGE_TEXT_BYTES
+        if size > limit:
+            reasons.append(
+                f"{shown} is {size} bytes;  one file may be {limit} bytes at most through the relay's tree verb "
+                "(larger files are AFC-623)"
+            )
+            continue
+        _, data = _local_git(repo_dir, ["cat-file"], operands=("blob", blob))
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+        if text is None or "\x00" in text:
+            reasons.append(f"{shown} is a binary file;  the relay's git-data verbs carry UTF-8 text only")
+            continue
+        if known:
+            files.append({"path": path, "mode": mode, "sha": blob, "size": size, "wire": 0})
+            continue
+        if _scanner().scan(text, known=[bearer] if bearer else []) is not None:
+            # The path only:  never the content, the match or the kind of secret.
+            reasons.append(f"{shown} was flagged by the secret scan (content not shown)")
+            continue
+        wire = len(json.dumps(text))
+        if wire > PUSH_TREE_WIRE_BYTES:
+            reasons.append(f"{shown} is too large for one relay request once it is encoded ({wire} bytes)")
+            continue
+        files.append({"path": path, "mode": mode, "text": text, "size": size, "wire": wire, "blob": blob})
+    return files, reasons
+
+
+def _push_batches(files: list) -> list[tuple[list, bool]]:
+    """Groups that each fit one gr_wf_git_tree_create call, as (files, allow_large_text).  A text over the
+    ordinary 40000-byte class travels alone in the larger class;  the rest are packed in order."""
+    batches: list[tuple[list, bool]] = []
+    current: list = []
+    text_bytes = wire = ref_bytes = 0
+    for item in files:
+        sent = "text" in item
+        if sent and item["size"] > PUSH_TEXT_BYTES:
+            batches.append(([item], True))
+            continue
+        if current and (
+            len(current) >= PUSH_TREE_FILES
+            or (sent and text_bytes + item["size"] > PUSH_TEXT_BYTES)
+            or wire + item["wire"] > PUSH_TREE_WIRE_BYTES
+            or (not sent and ref_bytes + item["size"] > PUSH_REF_TOTAL_BYTES)
+        ):
+            batches.append((current, False))
+            current, text_bytes, wire, ref_bytes = [], 0, 0, 0
+        current.append(item)
+        wire += item["wire"]
+        if sent:
+            text_bytes += item["size"]
+        else:
+            ref_bytes += item["size"]
+    if current:
+        batches.append((current, False))
+    return batches
+
+
+def _push_plan_commit(repo_dir: str, info: dict, parent_trees: list, remote_trees: set, sent_blobs: set, bearer: str, cache: dict) -> dict:
+    """How one local commit is rebuilt, or why it cannot be.  Nothing is sent here."""
+    reasons = []
+    if not info["parents"]:
+        reasons.append("it has no parent;  the relay's commit verb cannot create a root commit (fetch first if this clone is missing the remote's history)")
+    elif len(info["parents"]) > 2:
+        reasons.append(f"it merges {len(info['parents'])} parents;  the relay's commit verb takes one or two")
+    if info["encoding"] and info["encoding"].lower().replace("-", "") != "utf8":
+        reasons.append(f"its message is stored as {_visible(info['encoding'])!r};  the relay's commit verb takes UTF-8 only")
+    elif info["message"] is None:
+        reasons.append("its message is not valid UTF-8")
+    elif not info["message"].strip():
+        reasons.append("its message is blank;  the relay's commit verb needs a message")
+    elif len(info["raw_message"]) > PUSH_MESSAGE_BYTES:
+        reasons.append(f"its message is {len(info['raw_message'])} bytes;  the relay's commit verb takes {PUSH_MESSAGE_BYTES} at most")
+    elif _scanner().scan(info["message"], known=[bearer] if bearer else []) is not None:
+        reasons.append("its message was flagged by the secret scan (message not shown)")
+    plan = {"reasons": reasons, "base": None, "batches": [], "files": []}
+    if info["tree"] in remote_trees or not parent_trees:
+        return plan  # the remote already has this exact tree (an empty commit, a revert, a clean merge)
+    best = None
+    for base in dict.fromkeys(parent_trees):
+        remote_blobs = _push_tree_blobs(repo_dir, base, cache) | sent_blobs
+        files, why = _push_tree_files(repo_dir, base, info["tree"], remote_blobs, bearer)
+        rank = (len(why), len(files))
+        if best is None or rank < best[0]:
+            best = (rank, base, files, why)
+    _rank, base, files, why = best
+    reasons.extend(why)
+    plan.update(base=base, files=files, batches=_push_batches(files))
+    return plan
+
+
+def _push_quiet_read(tools: dict, name: str, args: dict, bearer: str, seat: str, deadline: float, absent: tuple):
+    """One read whose "GitHub has no such object" answer is an ordinary result (None), not an error line."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return _tool_call(tools, name, args, bearer, seat, deadline)
+    except HostedToolExit as exc:
+        if exc.tool_code == "relay_refused" and exc.reason == "github_refused" and exc.github_status in absent:
+            return None
+        sys.stderr.write(err.getvalue())
+        raise
+    except SystemExit:
+        sys.stderr.write(err.getvalue())
+        raise
+
+
+def _push_remote_head(tools: dict, repo: str, branch: str, bearer: str, seat: str, deadline: float) -> str | None:
+    """The remote branch's head sha, or None when the branch does not exist."""
+    out = _push_quiet_read(tools, "gr_wf_branch_get", {"repo": repo, "branch": branch}, bearer, seat, deadline, (404,))
+    return None if out is None else _branch_head(out)
+
+
+def _push_remote_commit(tools: dict, repo: str, sha: str, bearer: str, seat: str, deadline: float) -> dict | None:
+    """The remote's commit object (tree, parents, message), or None when the remote has no such commit."""
+    out = _push_quiet_read(tools, "gr_wf_git_commit_get", {"repo": repo, "sha": sha}, bearer, seat, deadline, (404, 422))
+    if out is None:
+        return None
+    structured = out.get("structured") if isinstance(out, dict) else None
+    commit = structured.get("commit") if isinstance(structured, dict) else None
+    if (
+        not isinstance(commit, dict)
+        or not isinstance(commit.get("tree_sha"), str)
+        or _PUSH_SHA.fullmatch(commit["tree_sha"]) is None
+        or not isinstance(commit.get("parents"), list)
+        or not all(isinstance(p, str) and _PUSH_SHA.fullmatch(p) for p in commit["parents"])
+        or not isinstance(commit.get("message"), str)
+    ):
+        die("the server sent a commit this client cannot read", EXIT_ERROR)
+    return commit
+
+
+def _push_same_message(local: str | None, read: str) -> bool:
+    """Is a message the relay READ the local commit's message?  The commit object keeps every byte it was
+    given, but GitHub's commit read returns the message without its trailing newline (seen live, Nov 12
+    2026), so trailing whitespace is not compared."""
+    return isinstance(local, str) and local.rstrip() == read.rstrip()
+
+
+# The replay map:  local commit sha -> the sha the relay created for it, per repository, beside the publish
+# outcome store (SIMPLE_GIT_STATE_DIR, else ~/.simple-tools), so every clone and worktree on this machine shares
+# it and nothing is written into a repository.  It is a shortcut, never an authority:  a pair is used only after
+# the remote commit was read back and its tree, its message and its parents are the local commit's.
+
+
+def _push_map_path() -> Path:
+    return _publish_store_path().with_name("push-replay-map.json")
+
+
+def _push_map_load(path: Path) -> dict:
+    try:
+        store = strict_loads(path.read_text())
+    except FileNotFoundError:
+        return {"version": 1, "replayed": {}}
+    except (OSError, ValueError, RecursionError):
+        store = None
+    replayed = store.get("replayed") if isinstance(store, dict) and store.get("version") == 1 else None
+    if not isinstance(replayed, dict) or not all(
+        isinstance(pairs, dict)
+        and all(
+            isinstance(k, str) and isinstance(v, str) and _PUSH_SHA.fullmatch(k) and _PUSH_SHA.fullmatch(v)
+            for k, v in pairs.items()
+        )
+        for pairs in replayed.values()
+    ):
+        die(
+            f"the replay map at {path} cannot be read;  move it aside to push without it (each pair is checked "
+            "against the remote before use, so only the shortcut is lost:  commits it listed are replayed again)",
+            EXIT_ERROR,
+        )
+    return store
+
+
+def _push_map_save(path: Path, store: dict) -> None:
+    _publish_state_dir()  # created 0700, a symlink refused
+    try:
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as handle:
+            json.dump(store, handle, indent=1, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    except OSError as exc:
+        die(f"the replay map at {path} cannot be written ({type(exc).__name__})", EXIT_ERROR)
+
+
+def _push_map_record(path: Path, repo: str, added: dict, dropped: dict) -> None:
+    """Write one push's changes into the replay map.  The caller holds the push lock.
+
+    The map is read again here, never written from the copy this push loaded:  every seat and every repository
+    on this machine shares the file, and this push read it before it held the lock, so another push may have
+    added pairs since.  Only this push's own pairs are added, and a pair it found stale is removed only while
+    it is still that stale pair."""
+    store = _push_map_load(path)
+    pairs = store["replayed"].setdefault(repo, {})
+    for local, remote in dropped.items():
+        if pairs.get(local) == remote:
+            del pairs[local]
+    pairs.update(added)
+    _push_map_save(path, store)
+
+
+def _push_lock(path: Path, deadline_s: float = 30.0):
+    """One push on this machine at a time, so two runs cannot lose each other's replay-map pairs."""
+    _publish_state_dir()
+    try:
+        handle = open(path.with_suffix(".lock"), "w")
+    except OSError as exc:
+        die(f"the push state folder {path.parent} cannot be used ({type(exc).__name__})", EXIT_ERROR)
+    deadline = time.monotonic() + deadline_s
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except OSError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                die("another push on this machine is running;  try again shortly", EXIT_ERROR)
+            time.sleep(0.1)
+
+
+def _push_step(what: str, fn, paths: list | None = None, ref: str | None = None):
+    """One relay write of a push.  A failure keeps the transport's own verdict line and adds ONE line saying
+    what it means here:  where the push stopped, the cause, and whether the branch moved.  A secret-scan
+    refusal names the path only, never the content or what matched."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return fn()
+    except SystemExit as exc:
+        text = err.getvalue()
+        sys.stderr.write(text)
+        code = getattr(exc, "tool_code", None)
+        reason = getattr(exc, "reason", None)
+        status = getattr(exc, "github_status", None)
+        where = ", ".join(repr(_visible(p)) for p in paths) if paths else ""
+        unknown = _REMOTE_UNKNOWN in text or code == "outcome_unknown"
+        if unknown:
+            cause = "the outcome of that call is unknown;  check before running push again"
+        elif code == "refused_secret" or reason == "credential_scan":
+            cause = (
+                f"the relay's secret scan refused the content of {'one of ' if len(paths) > 1 else ''}{where} (content not shown)"
+                if paths
+                else "the relay's secret scan refused the commit message (message not shown)"
+            )
+        elif reason in ("seat_policy", "seat_not_in_policy"):
+            cause = "this seat's relay policy does not allow that call on this repository;  the policy has to change, a retry will not help"
+        elif reason == "seat_rate_limit" or code in ("rate_limited", "budget_exhausted"):
+            cause = "this seat reached its relay quota;  run push again later"
+        elif reason == "bad_request_content_too_large":
+            cause = f"the relay's size limit refused {where or 'the content'}"
+        elif reason in ("bad_request_workflow_path_permission", "bad_request_invalid_files"):
+            cause = f"the relay refused a path or a file among {where or 'the files'} (it takes no workflow file and no credential-shaped path)"
+        elif reason == "bad_request_default_branch_protected":
+            cause = "the relay refuses to write the default branch"
+        elif reason == "fence_mismatch":
+            cause = "the remote branch moved while this push ran, so it is no longer at the sha this push read;  fetch, integrate and push again"
+        elif reason == "github_refused" and ref is not None:
+            cause = f"GitHub refused the ref change (HTTP {status}):  it is not a fast-forward, the branch appeared meanwhile, or a branch rule forbids it"
+        elif reason == "github_refused":
+            cause = f"GitHub refused it (HTTP {status});  a parent commit or tree may no longer be on the remote (fetch with --prune and push again)"
+        else:
+            cause = "the call did not succeed (see the line above)"
+        if ref is None:
+            moved = "the branch was not moved"
+        elif unknown:
+            moved = f"the branch {ref} may or may not have moved"
+        else:
+            moved = f"the branch {ref} was not moved"
+        sys.stderr.write(f"{prog()}: push stopped at {what}:  {cause};  {moved}\n")
+        raise SystemExit(exc.code if isinstance(exc.code, int) and exc.code else EXIT_ERROR) from None
+
+
+def _push_result_sha(out: dict, *keys: str) -> str:
+    value = out.get("structured") if isinstance(out, dict) else None
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    if not isinstance(value, str) or _PUSH_SHA.fullmatch(value) is None:
+        die("the server did not report the new object's sha;  check before running push again", EXIT_ERROR)
+    return value
+
+
+def cmd_push(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
+    """Replay the local commits a remote branch lacks, then create the branch or move it forward.
+
+    Order:  every refusal this client can see (default branch, stale remote head, a commit the verbs cannot
+    carry, a size limit, a path, a secret-scan hit) happens before the first write.  Then each commit, oldest
+    first, becomes a tree and a commit on the remote, unattached;  the pair is recorded as soon as the commit
+    exists, and a merge is read back at once.  The ref moves once, last, and is read back:  the remote tip's
+    tree must equal the local one and its parents must be the ones this push gave it."""
+    _push_refuse_early(a)
+    repo_dir = a.dir
+    if _local_git(repo_dir, ["rev-parse", "--git-dir"], ok=(0, 128))[0] != 0:
+        die(f"{repo_dir!r} is not a git repository;  name the clone with --dir", EXIT_USAGE)
+    src, branch = _push_spec(a.branch)
+    if src is None:
+        code, out = _local_git(repo_dir, ["symbolic-ref", "--quiet", "--short", "HEAD"], ok=(0, 1, 128))
+        name = out.decode("utf-8", "replace").strip()
+        if code != 0 or not name:
+            die("HEAD is not on a branch;  name what to push, for example `push origin HEAD:my-branch`", EXIT_USAGE)
+        src, branch = _push_spec(name)
+    src = src.removeprefix("refs/heads/")
+    tip = _push_rev(repo_dir, "refs/heads/" + src) or _push_rev(repo_dir, src)
+    if tip is None:
+        die(f"{src!r} is not a commit in this clone", EXIT_USAGE)
+    repo = _push_repo(a)
+
+    def call(name: str, args: dict) -> dict:
+        return _tool_call(tools, name, args, bearer, seat, deadline)
+
+    # The default branch is whatever the repository itself says it is:  no name is assumed, and this clone's
+    # own record of the remote HEAD (which can be stale) is not consulted.  The relay refuses it again.
+    structured = call("gr_wf_repo_get", {"repo": repo}).get("structured")
+    repository = structured.get("repository") if isinstance(structured, dict) else None
+    default = repository.get("default_branch") if isinstance(repository, dict) else None
+    if not isinstance(default, str) or not default:
+        die("the server did not report the repository's default branch;  nothing was sent", EXIT_ERROR)
+    if branch == default:
+        die(
+            f"refusing to push the default branch {branch!r}:  push a feature branch and open a pull request",
+            EXIT_USAGE,
+        )
+    head = _push_remote_head(tools, repo, branch, bearer, seat, deadline)
+
+    # This push's working copy of the map.  It is read without the lock (a dry run takes none and writes
+    # nothing), so it is never written back:  _push_map_record re-reads the file under the lock.
+    map_path = _push_map_path()
+    pairs = dict(_push_map_load(map_path)["replayed"].get(repo, {}))
+
+    # Local commits no remote-tracking ref of this remote reaches, oldest first, each with its parents.
+    # The second --not ends the exclusion, so the tip that follows it is what is listed.
+    _, out = _local_git(
+        repo_dir,
+        ["rev-list", "--topo-order", "--reverse", "--parents", "--not", f"--remotes={a.remote}", "--not"],
+        operands=(tip,),
+    )
+    local_only: dict = {}
+    for line in out.decode("ascii", "replace").splitlines():
+        sha, *parents = line.split()
+        local_only[sha] = parents
+
+    remote_id: dict = {}  # local sha -> the sha the remote knows that commit by
+    needed: dict = {}  # local sha -> commit info, for commits to replay
+    dropped: dict = {}  # local sha -> a recorded pair that is not that commit on the remote
+    trusted: dict = {}  # local sha -> (local commit, remote commit) for a recorded pair this run relied on
+    stack = [tip]
+
+    def wanted_parents(info: dict) -> list:
+        """For each parent of a local commit, in order, the ids the remote may know it by:  the id it was
+        replayed as in this run;  else its own id, when the remote has that very commit;  else its own id or
+        the pair recorded for it."""
+        wanted = []
+        for parent in info["parents"]:
+            if parent in remote_id:
+                wanted.append((remote_id[parent],))
+            elif parent in local_only and parent in pairs:
+                wanted.append((parent, pairs[parent]))
+            else:
+                wanted.append((parent,))
+        return wanted
+
+    def parents_kept(info: dict, there: dict) -> bool:
+        """Does a remote commit have the parents this client means the local commit to have there, the same
+        number in the same order?  A tree and a message can be right on a merge that lost a parent."""
+        wanted = wanted_parents(info)
+        return len(there["parents"]) == len(wanted) and all(
+            theirs in mine for theirs, mine in zip(there["parents"], wanted)
+        )
+
+    def parents_shown(info: dict, there: dict) -> str:
+        return (
+            f"parents [{' '.join(there['parents'])}] where this push meant "
+            f"[{' '.join(mine[-1] for mine in wanted_parents(info))}]"
+        )
+
+    while stack:
+        sha = stack.pop()
+        if sha in remote_id or sha in needed:
+            continue
+        if sha not in local_only:
+            remote_id[sha] = sha  # the remote has this very commit
+            continue
+        info = _push_read_commit(repo_dir, sha)
+        recorded = pairs.get(sha)
+        if recorded is not None:
+            there = _push_remote_commit(tools, repo, recorded, bearer, seat, deadline)
+            if (
+                there is not None
+                and there["tree_sha"] == info["tree"]
+                and _push_same_message(info["message"], there["message"])
+                and parents_kept(info, there)
+            ):
+                remote_id[sha] = recorded  # replayed by an earlier push, and still what the remote holds
+                trusted[sha] = (info, there)
+                continue
+            dropped[sha] = pairs.pop(sha)
+        needed[sha] = info
+        if len(needed) > PUSH_MAX_COMMITS:
+            die(
+                f"more than {PUSH_MAX_COMMITS} commits are not on {a.remote} as this clone knows it;  fetch first, "
+                "or push in smaller steps",
+                EXIT_USAGE,
+            )
+        stack.extend(info["parents"])
+    # A commit this clone thinks is local-only may already be on the remote (a stale or missing remote-tracking
+    # ref).  The remote holds a commit only with all its ancestors, so asking about the oldest ones is enough.
+    checked: set = set()
+    while True:
+        roots = [s for s, i in needed.items() if s not in checked and not any(p in needed for p in i["parents"])]
+        if not roots:
+            break
+        for sha in roots:
+            checked.add(sha)
+            if _push_remote_commit(tools, repo, sha, bearer, seat, deadline) is not None:
+                remote_id[sha] = sha
+                del needed[sha]
+    # A recorded pair was trusted while its parents were still being sorted out.  Now every ancestor is either
+    # known on the remote or going to be replayed under a new id, so its parents are checked once more:  a child
+    # recorded on top of a pair that turned out stale does not have the parent this push is about to give it.
+    settled = False
+    while not settled:
+        settled = True
+        for sha, (info, there) in list(trusted.items()):
+            if sha in remote_id and not parents_kept(info, there):
+                dropped[sha] = pairs.pop(sha)
+                del remote_id[sha], trusted[sha]
+                needed[sha] = info
+                settled = False
+    order = [sha for sha in local_only if sha in needed]  # parents before children
+
+    # The remote head must be part of what is pushed, or this is not a fast-forward and nothing is sent.  It
+    # is part of it when it is an ancestor of the local tip under its own id, or when it is the recorded pair
+    # of one (a replayed commit, whether or not this clone has since fetched it).
+    if head is not None:
+        here = _push_rev(repo_dir, head)
+        candidates = ([here] if here else []) + [k for k, v in pairs.items() if v == head]
+        if not any(
+            _local_git(repo_dir, ["merge-base", "--is-ancestor"], ok=(0, 1, 128), operands=(c, tip))[0] == 0
+            for c in candidates
+        ):
+            die(
+                f"the remote branch {branch} is at {head}, which is not part of what you are pushing (it has "
+                "commits this clone lacks, or it was rewritten):  fetch, integrate it and push again;  nothing was sent",
+                EXIT_ERROR,
+            )
+
+    # Plan every commit before the first write.
+    cache: dict = {}
+    remote_trees: set = set()
+    sent_blobs: set = set()
+    plans: dict = {}
+    problems: list = []
+    for sha in order:
+        info = needed[sha]
+        parent_trees = []
+        for parent in info["parents"]:
+            tree = needed[parent]["tree"] if parent in needed else _push_read_commit(repo_dir, parent)["tree"]
+            parent_trees.append(tree)
+            remote_trees.add(tree)
+        plan = _push_plan_commit(repo_dir, info, parent_trees, remote_trees, frozenset(sent_blobs), bearer, cache)
+        plans[sha] = plan
+        # The short sha only.  A commit's subject is part of its message, and a message is what the secret
+        # scan may have just flagged:  no refusal, context or progress line on stderr ever carries one.
+        problems.extend(f"commit {sha[:10]}:  {why}" for why in plan["reasons"])
+        remote_trees.add(info["tree"])
+        sent_blobs.update(f["blob"] for f in plan["files"] if "text" in f)
+    if problems:
+        sys.stderr.write(f"{prog()}: push refused before anything was sent, the branch was not moved:\n")
+        for line in problems:
+            sys.stderr.write(f"{prog()}:   {line}\n")
+        raise SystemExit(EXIT_USAGE)
+
+    tip_info = needed[tip] if tip in needed else _push_read_commit(repo_dir, tip)
+    tip_tree = tip_info["tree"]
+    where = f"{repo} {branch}"
+    if not order and head == remote_id[tip]:
+        print(f"Everything up-to-date:  {where} is at {head}")
+        return 0
+    uploads = [f for sha in order for f in plans[sha]["files"] if "text" in f]
+    reused = sum(1 for sha in order for f in plans[sha]["files"] if "sha" in f)
+    tree_calls = sum(len(plans[sha]["batches"]) for sha in order)
+    if a.dry_run:
+        print(f"dry run:  nothing was sent.  Pushing {src} to {where} as {seat} would")
+        print(f"  replay {len(order)} commit(s), oldest first:")
+        for sha in order:
+            files = plans[sha]["files"]
+            merge = ", a merge of 2 parents" if len(needed[sha]["parents"]) == 2 else ""
+            print(f"    {sha[:10]}  {needed[sha]['subject']}  ({len(files)} file(s){merge})")
+        print(
+            f"  upload {len(uploads)} new blob(s), {sum(f['size'] for f in uploads)} bytes, in {tree_calls} tree call(s)"
+            + (f";  reuse {reused} blob(s) the remote already has" if reused else "")
+        )
+        if head is None:
+            print(f"  create the branch {branch} at the replayed tip")
+        else:
+            print(f"  move the branch {branch} from {head} to the replayed tip (expected old sha {head}, never forced)")
+        return 0
+
+    lock = _push_lock(map_path)
+    try:
+        added: dict = {}  # the pairs this push made
+        if dropped:
+            _push_map_record(map_path, repo, added, dropped)
+        for sha in order:
+            info, plan = needed[sha], plans[sha]
+            # No subject here either:  the relay's own scan may refuse this very message.
+            label = f"commit {sha[:10]}"
+            if plan["batches"]:
+                built = plan["base"]
+                for files, large in plan["batches"]:
+                    args = {
+                        "repo": repo,
+                        "base_tree": built,
+                        "files": [
+                            {"path": f["path"], "mode": f["mode"], **({"text": f["text"]} if "text" in f else {"sha": f["sha"]})}
+                            for f in files
+                        ],
+                    }
+                    if large:
+                        args["allow_large_text"] = True
+                    out = _push_step(label, lambda: call("gr_wf_git_tree_create", args), paths=[f["path"] for f in files])
+                    built = _push_result_sha(out, "tree", "sha")
+                if built != info["tree"]:
+                    die(
+                        f"push stopped at {label}:  TREE MISMATCH before the commit was created:  the relay built tree "
+                        f"{built}, the local commit has tree {info['tree']};  nothing refers to the built tree and "
+                        "the branch was not moved",
+                        EXIT_ERROR,
+                    )
+            out = _push_step(
+                label,
+                lambda: call(
+                    "gr_wf_git_commit_create",
+                    {
+                        "repo": repo,
+                        "tree_sha": info["tree"],
+                        "parents": [remote_id[p] for p in info["parents"]],
+                        "message": info["message"],
+                    },
+                ),
+            )
+            remote_id[sha] = pairs[sha] = added[sha] = _push_result_sha(out, "commit", "sha")
+            # Durable before the next call:  a rerun never replays this commit again.
+            _push_map_record(map_path, repo, added, dropped)
+            if len(info["parents"]) > 1:
+                # A merge is read back before anything is built on it, while the branch has not moved.
+                made = _push_step(
+                    f"{label} (reading the merge back)",
+                    lambda: _push_remote_commit(tools, repo, remote_id[sha], bearer, seat, deadline),
+                )
+                if made is None or not parents_kept(info, made):
+                    dropped[sha] = added.pop(sha)
+                    _push_map_record(map_path, repo, added, dropped)
+                    die(
+                        f"push stopped at {label}:  PARENT MISMATCH:  the relay created {dropped[sha]} with "
+                        + ("no readable commit" if made is None else parents_shown(info, made))
+                        + ";  nothing refers to that commit and the branch was not moved",
+                        EXIT_ERROR,
+                    )
+        target = remote_id[tip]
+        if head is None:
+            out = _push_step(
+                f"creating the branch {branch}",
+                lambda: call("gr_wf_branch_create", {"repo": repo, "branch": branch, "sha": target}),
+                ref=branch,
+            )
+        else:
+            out = _push_step(
+                f"moving the branch {branch}",
+                lambda: call("gr_wf_branch_update", {"repo": repo, "branch": branch, "sha": target, "expected_sha": head}),
+                ref=branch,
+            )
+        if _push_result_sha(out, "sha") != target:
+            die(f"the server reported a different sha for {branch} than the one sent;  inspect the branch", EXIT_ERROR)
+
+        # Read the ref back.  The relay answered that the branch is at the pushed tip;  this client cannot move
+        # it back, so what the remote now holds is said plainly.
+        moved = f"The branch {branch} WAS moved to {target} and this client cannot move it back (it never forces):  inspect it before using it"
+        try:
+            now = _push_remote_head(tools, repo, branch, bearer, seat, deadline)
+            there = None if now != target else _push_remote_commit(tools, repo, target, bearer, seat, deadline)
+        except SystemExit:
+            sys.stderr.write(f"{prog()}: READ-BACK FAILED:  the pushed branch could not be read.  {moved}\n")
+            raise
+        if now != target:
+            # Not "was moved":  the relay answers a repeated identical ref call from its outcome store for a day
+            # without reaching GitHub (creating a branch again at the sha it was deleted at, for one), and
+            # someone else may have moved the branch since.
+            die(
+                f"READ-BACK MISMATCH:  the relay answered that {branch} is at the pushed tip {target}, but the "
+                f"branch reads as {'missing' if now is None else 'at ' + now}.  It was moved again, or the relay "
+                "answered a repeated identical request without reaching GitHub:  inspect the branch before using it",
+                EXIT_ERROR,
+            )
+        if there is None:
+            die(f"READ-BACK FAILED:  the pushed tip {target} could not be read.  {moved}", EXIT_ERROR)
+        if there["tree_sha"] != tip_tree:
+            die(
+                f"TREE MISMATCH after the push:  the remote tip {target} has tree {there['tree_sha']}, the local "
+                f"commit {tip} has tree {tip_tree}.  {moved}",
+                EXIT_ERROR,
+            )
+        if target != tip and not parents_kept(tip_info, there):
+            die(f"PARENT MISMATCH after the push:  the remote tip {target} has {parents_shown(tip_info, there)}.  {moved}", EXIT_ERROR)
+    finally:
+        lock.close()
+
+    print(f"To {where} through the relay, as {seat}")
+    print(f"   {head[:10] + '..' + target[:10] if head else '* [new branch]'}  {src} -> {branch}")
+    for sha in order:
+        print(f"   replayed {sha[:10]} as {remote_id[sha][:10]}  {needed[sha]['subject']}")
+    print(
+        f"verified:  the remote tip {target} has tree {tip_tree}, the same as the local commit {tip}"
+        + (", and the parents this push gave it" if target != tip else "")
+    )
+    if target != tip:
+        if not _push_same_message(tip_info["message"], there["message"]):
+            print("note:  the remote tip's message does not read back as the local one")
+        if any(needed[sha]["signed"] for sha in order):
+            print("note:  signatures on the local commits were not carried over")
+        code, out = _local_git(repo_dir, ["symbolic-ref", "--quiet", "--short", "HEAD"], ok=(0, 1, 128))
+        current = out.decode("utf-8", "replace").strip() if code == 0 else ""
+        print(
+            "note:  the remote commits have different ids.  The relay's commit verb sets the author, the committer and\n"
+            "       the dates to this bot's GitHub App;  the tree, the parents and the message are the local ones.\n"
+            f"       This machine keeps the pairs in {map_path}, so the next push continues from here.\n"
+            "       To put the local branch on the pushed commits (files and index stay as they are):\n"
+            f"           {prog()} fetch {a.remote} {branch}"
+        )
+        if _push_rev(repo_dir, "refs/heads/" + src) == tip:
+            print(
+                f"           git reset --soft {target}"
+                if current == src
+                else f"           git update-ref refs/heads/{src} {target} {tip}"
+            )
+    return 0
+
+
 # A report, never a merge authorization. Only existing reviewed read tools are used.
 class ReadinessUnknown(ValueError):
     pass
@@ -2471,7 +3444,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Fleet git tools: a thin client for the hosted simple-tools MCP git tools. "
         "Every operation runs on the hosted server as this bot's own identity; there is no direct path. "
         "clone, fetch, pull, ls-remote, bundle and archive use local git over the hosted read-only route, "
-        "with no GitHub token on this machine.",
+        "with no GitHub token on this machine.  push replays local commits through the relay's tools;  "
+        "there is no git push.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
     pl = sub.add_parser(
@@ -2538,14 +3512,39 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument(
         "--file", action="append", default=[], metavar="LOCAL[=REPO_PATH]", help="repeatable;  up to 2 MiB per file"
     )
+    px = sub.add_parser(
+        "push",
+        help="replay local commits onto a remote branch as this bot:  push [REMOTE] [[SRC:]BRANCH]",
+        allow_abbrev=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=PUSH_HELP,
+    )
+    px.add_argument("remote", nargs="?", default="origin", help="the remote whose branch moves (default: origin)")
+    px.add_argument(
+        "branch",
+        nargs="?",
+        metavar="[SRC:]BRANCH",
+        help="the branch to push (default: the checked-out branch);  SRC:BRANCH pushes another local commit",
+    )
+    px.add_argument("--dir", default=".", help="the clone (default: this folder)")
+    px.add_argument("--repo", help="owner/name (default: read from the remote's URL)")
+    px.add_argument(
+        "-n", "--dry-run", action="store_true", help="list the commits, the new blobs and the ref move;  write nothing"
+    )
+    # Parsed only to be refused with a clear message:  push never forces.
+    px.add_argument("-f", "--force", action="store_true", help=argparse.SUPPRESS)
+    px.add_argument("--force-with-lease", nargs="?", const="", default=None, help=argparse.SUPPRESS)
+    px.add_argument("--force-if-includes", action="store_true", help=argparse.SUPPRESS)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
+    if a.cmd == "push":
+        _push_refuse_early(a)  # force and a bad refspec are refused before any credential is read
     # One overall budget for the verb:  the identities probe, every discovery page and the target call
-    # all draw from it, and a request that cannot start inside it is never sent.
-    overall_deadline = time.monotonic() + OVERALL_DEADLINE_S
+    # all draw from it, and a request that cannot start inside it is never sent.  A push is many calls.
+    overall_deadline = time.monotonic() + (PUSH_DEADLINE_S if a.cmd == "push" else OVERALL_DEADLINE_S)
     args = None
     bearer = remote_bearer()
     whoami_out = None
@@ -2578,6 +3577,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_readiness(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "publish":
         return cmd_publish(tools, a, bearer, server_seat, overall_deadline)
+    if a.cmd == "push":
+        return cmd_push(tools, a, bearer, server_seat, overall_deadline)
     if a.cmd == "list":
         return cmd_list(tools, a)
     if a.cmd == "show":

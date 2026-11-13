@@ -173,6 +173,10 @@ SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 SESSION_GENERIC_ENV = "AGENT_SESSION"
 SESSION_EXEMPT_SEATS = frozenset(("ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"))
 SESSION_EXEMPT_PATTERNS = ("GB-*",)
+# Linear intros (Jay, Thu Nov 12 2026):  single-thread seats are the session-exempt ones plus the BotFleet bots,
+# whose Linear app already names them, so their own typed intro is dropped from Linear bodies.  Every other seat
+# (CLAUDE, CODEX, CURSOR, MM, ...) is multi-threaded and keeps it.  Copy of session-ids.js SINGLE_THREAD_EXTRA_PATTERNS.
+SINGLE_THREAD_EXTRA_PATTERNS = ("BF-*",)
 SESSION_ENV_BY_SEAT = {
     "AG": ("ANTIGRAVITY_CONVERSATION_ID",),
     "CLAUDE": ("CLAUDE_CODE_SESSION_ID",),
@@ -375,6 +379,53 @@ def app_name_ok(name, accepted, seat: str = "") -> bool:
     if seat:
         ok.add(seat.casefold())
     return isinstance(name, str) and name.casefold() in ok
+
+
+def seat_for_linear_author(name: str | None) -> str | None:
+    """Map a Linear viewer or comment name to one seat (app name, alias, or tag).  None if empty, unknown, or shared (JET and JET-CHAT both sign as Jet)."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    key = name.casefold()
+    hits: list[str] = []
+    for seat, primary in SEAT_APP_NAMES.items():
+        accepted = {primary.casefold(), seat.casefold()}
+        accepted.update(a.casefold() for a in SEAT_APP_ALIASES.get(seat, ()))
+        if key in accepted:
+            hits.append(seat)
+    unique = list(dict.fromkeys(hits))
+    return unique[0] if len(unique) == 1 else None
+
+
+def creator_seat(user) -> str | None:
+    """The seat whose Linear app created an issue, or None.  A single-thread seat's filed issue carries no
+    Reported by line (owner 2026-11-12), so its reporter is read from the creating app, trusted only for a
+    known seat app (the comment author_seat rule)."""
+    if not is_known_linear_app(user):
+        return None
+    return seat_for_linear_author(linear_author_name(user))
+
+
+def linear_author_name(user) -> str | None:
+    """The Linear commenter's name or displayName, or None when both are missing."""
+    if not isinstance(user, dict):
+        return None
+    for key in ("name", "displayName"):
+        val = user.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return None
+
+
+def is_known_linear_app(user) -> bool:
+    """True when this Linear user is a recognized app:  a seat app, or the retired shared Fleet app."""
+    if not isinstance(user, dict) or user.get("app") is not True:
+        return False
+    name = linear_author_name(user)
+    if name is None:
+        return False
+    if name.casefold() == "fleet":
+        return True
+    return seat_for_linear_author(name) is not None
 
 
 # The importer writes "Reported by x, addressed by y" through str.capitalize(),
@@ -693,6 +744,14 @@ def session_exempt(seat: str) -> bool:
     seat = norm_seat(seat)
     return seat in SESSION_EXEMPT_SEATS or any(
         fnmatch.fnmatchcase(seat, pat) for pat in SESSION_EXEMPT_PATTERNS
+    )
+
+
+def single_thread(seat: str) -> bool:
+    """True for a seat with one thread with the owner (session-exempt, or a BotFleet bot):  its Linear app
+    already names it, so its Linear bodies carry no intro and its filed issues no Reported by line."""
+    return session_exempt(seat) or any(
+        fnmatch.fnmatchcase(norm_seat(seat), pat) for pat in SINGLE_THREAD_EXTRA_PATTERNS
     )
 
 
@@ -1313,11 +1372,23 @@ def opens_with_own_intro(seat: str, text: str) -> bool:
     return end >= 0 and not re.search(r"[\r\n\[]", text[start + 1 : end])
 
 
+def strip_own_intro(seat: str, text: str) -> str:
+    """`text` with every leading own-seat intro removed (the hosted contract.js stripOwnIntro rule).  A
+    foreign-seat or malformed bracket stays;  text that is only an intro is returned unchanged."""
+    rest = text
+    while opens_with_own_intro(seat, rest):
+        rest = rest[rest.find("]") + 1 :]
+        rest = re.sub(r"^[ \t]*(?:\r?\n)*", "", rest)
+    return rest if rest.strip() else text
+
+
 def tagged(seat: str, sessions: list[str] | None, text: str) -> str:
     """The body as it will be posted.  No seat tag is prepended and a supplied session is not
-    injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  `seat` and
-    `sessions` stay on the signature because comment_body and parity_tagger still pass them."""
-    return text
+    injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity, so a single-thread
+    seat's own typed intro is dropped too (Jay 2026-11-12);  a multi-threaded seat keeps its intro,
+    which names the thread.  `sessions` stays on the signature because comment_body and
+    parity_tagger still pass it."""
+    return strip_own_intro(norm_seat(seat), text) if seat and single_thread(seat) else text
 
 
 # ----------------------------------------------------------------- input files and flat labels
@@ -2151,6 +2222,7 @@ Q_ISSUE = (
   issue(id: $id) {
     ...BoardIssue
     description
+    creator { id name displayName app }
     attachments(first: 50) { nodes { url title } }
     relations(first: 50) { nodes { type relatedIssue { id identifier } } }
     inverseRelations(first: 50) { nodes { type issue { id identifier } } }
@@ -2162,7 +2234,7 @@ Q_COMMENTS = """query BoardComments($id: String!, $first: Int!, $after: String) 
   issue(id: $id) {
     comments(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id body createdAt user { id name app } }
+      nodes { id body createdAt user { id name displayName app } }
     }
   }
 }"""
@@ -2753,60 +2825,59 @@ def split_description(desc: str | None) -> dict:
     return out
 
 
-def _where_sessions(body: str) -> tuple[str, str, str, str]:
-    """Strip trailing Where/Sessions/Reported by footer lines.
-
-    Returns (body, where, sessions, reported_by).  `Reported by` is the AFC-692
-    seat attribution on an untagged write:  the body is no longer opened with a
-    `[SEAT]` / `[SEAT·session]` tag, and the shared Fleet app cannot name the
-    seat on its own.
-    """
+def _where_sessions(body: str) -> tuple[str, str, str]:
+    """Strip trailing Where/Sessions footer lines.  Returns (body, where, sessions)."""
     lines = body.rstrip().split("\n")
     where = ""
     sessions = ""
-    reported_by = ""
-    while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions|Reported by): ", lines[-1])):
+    while lines and (not lines[-1].strip() or re.match(r"^(Where|Sessions): ", lines[-1])):
         k, _, v = lines.pop().partition(": ")
         if not v:
             continue
         if k == "Where":
             where = v.strip()
-        elif k == "Sessions":
-            sessions = v.strip()
         else:
-            reported_by = v.strip()
-    return "\n".join(lines).strip(), where, sessions, reported_by
+            sessions = v.strip()
+    return "\n".join(lines).strip(), where, sessions
 
 
 def parse_comment(c: dict) -> dict:
     body = md_unescape((c.get("body") or "").replace("\r\n", "\n"))
-    author = ((c.get("user") or {}).get("name")) or "unknown"
+    user = c.get("user") or {}
+    author = linear_author_name(user) or "unknown"
     where = ""
     sessions = ""
     tm = TAG_RE.match(body)
     mm = MIGRATED_COMMENT_RE.match(body)
-    reported_by = ""
+    # author_seat is trusted only when the Linear commenter is a known app (a seat
+    # app, or the retired shared Fleet app).  A typed [SEAT] tag or a matching
+    # display name is not enough on its own.
+    known_app = is_known_linear_app(user)
+    author_seat = None
     if tm:
         author = tm.group(1)
-        body, where, sessions, reported_by = _where_sessions(body[tm.end() :])
+        if known_app:
+            author_seat = author
+        body, where, sessions = _where_sessions(body[tm.end() :])
     elif mm:
         author = mm.group(1)
+        if known_app:
+            author_seat = seat_for_linear_author(linear_author_name(user))
         where = mm.group(3) or ""
         body = body[mm.end() :]
     else:
-        body, where, sessions, reported_by = _where_sessions(body)
-        if reported_by:
-            author = norm_seat(reported_by)
+        body, where, sessions = _where_sessions(body)
+        if known_app:
+            author_seat = seat_for_linear_author(linear_author_name(user))
     body = HTML_COMMENT_RE.sub("\n", body).strip()
-    # `author` is the name a reader shows and the seat a tag line claims;  anyone who can write a comment can type a
-    # tag line, so a consumer that has to know WHO wrote it (the needs-owner notifier, for the owner's reply) reads
-    # `author_id` and `author_app`, which are Linear's own account fields and never come from the text.
-    user = c.get("user") or {}
+    # `author` is the display name (legacy tag or Linear user).  A consumer that has to know
+    # WHO wrote it reads `author_seat`, `author_id` and `author_app`.
     author_id = user.get("id") if isinstance(user.get("id"), str) and user.get("id") else None
     author_app = user.get("app") if isinstance(user.get("app"), bool) else None
     return {
         "id": c.get("id"),
         "author": author,
+        "author_seat": author_seat,
         "text": body,
         "where": where,
         "sessions": sessions,
@@ -3009,7 +3080,7 @@ def cmd_show(L: Linear, ids: IdIndex, a) -> int:
             "description": parts["description"],
             "recommended_fix": parts["recommended_fix"],
             "resolution": resolution_of(comments),
-            "reported_by": parts["reported_by"],
+            "reported_by": parts["reported_by"] or creator_seat(n.get("creator")),
             "location": location_of(comments, parts["footer"]),
             "provenance": parts["footer"],
             "attachments": [x.get("url") for x in (n.get("attachments") or {}).get("nodes") or []],
@@ -3177,7 +3248,7 @@ def cmd_file(L: Linear, a, seat: str) -> int:
     if len(title) > 250:
         title = title[:247] + "..."
         lines += [f"**{full_title}**", ""]
-    lines.append((a.desc or "").strip() or "_No description given._")
+    lines.append(tagged(by, sessions, (a.desc or "").strip()) or "_No description given._")
     if (a.fix or "").strip():
         lines += ["", "## Recommended fix", "", a.fix.strip()]
     foot = [
@@ -3186,7 +3257,7 @@ def cmd_file(L: Linear, a, seat: str) -> int:
         "",
         "**Filed with the board CLI**",
         "",
-        f"- Reported by {by}",
+        *([] if single_thread(by) else [f"- Reported by {by}"]),
         f"- App: `{(a.app or DEFAULT_APP).strip()}` (team {team})",
         f"- Kind: {kind}",
     ]
@@ -3311,10 +3382,6 @@ def comment_body(
         extra.append(f"Where: {loc}")
     if sessions:
         extra.append(f"Sessions: {', '.join(sessions)}")
-    # AFC-692:  no prepended seat tag.  Record the writing seat in a trailing
-    # footer so a shared Fleet-app comment still has a signer (needs-owner).
-    if seat and not re.search(r"(?m)^Reported by: ", body):
-        extra.append(f"Reported by: {seat}")
     return body + "".join("\n\n" + x for x in extra)
 
 

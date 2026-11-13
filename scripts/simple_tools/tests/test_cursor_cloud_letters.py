@@ -228,6 +228,308 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(self.steer.calls, [])
 
 
+class SharedUnitSweepTests(unittest.TestCase):
+    """The sweep as the shared Operator unit runs it (`--no-dm`, `--api-only`):  no Zulip DM ever goes out, and every
+    row registers under the Cursor seat, never under the seat in AGENT_SEAT."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = os.path.join(self.tmp.name, "state")
+        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
+        OR.SessionRegistry(self.db).close_db()
+        self.env = {"HOME": self.tmp.name, "SIMPLE_TOOLS_STATE_DIR": self.state, "AGENT_SEAT": "CLAUDE"}
+        self.agents = [agent(A1, "GB-Director: tidy the board"), agent(A2, "fix the login page")]
+        self.dm = Fake()
+        self.sent: list[list[str]] = []
+
+    def transport(self, argv: list[str]) -> dict:
+        self.sent.append(list(argv))
+        out = io.StringIO()
+        PL.registry_main(list(argv), env=self.env, stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_no_dm_sends_nothing_even_when_a_bot_would_be_asked(self) -> None:
+        steer = Steer("unavailable")  # the account refuses:  without --no-dm the named bot would get a DM now
+        out = CCL.sweep(self.env, discover=lambda: list(self.agents), runner=self.dm, steer=steer,
+                        transport=self.transport, send_dms=False)
+        self.assertEqual(self.dm.calls, [])
+        self.assertEqual(out["rows"][0]["dm"], "off")
+        self.assertNotIn("dm", out["rows"][1])  # the untitled chat names no bot
+        self.assertNotIn("dm", CCL.read_state(self.env)[A1])  # nothing is recorded as told
+        self.assertEqual(len(steer.calls), 2)  # the steer through the Cursor API still goes out
+
+    def test_rows_register_under_the_cursor_seat_whatever_agent_seat_says(self) -> None:
+        CCL.sweep(self.env, discover=lambda: list(self.agents), runner=self.dm, steer=Steer(),
+                  transport=self.transport, send_dms=False)
+        self.assertEqual(len(self.sent), 2)
+        for argv in self.sent:
+            self.assertEqual(argv[argv.index("--seat") + 1], "CURSOR")
+            self.assertNotIn("CLAUDE", argv)
+        reg = OR.SessionRegistry(self.db)
+        try:
+            self.assertEqual(reg.lookup("cursor", "cloud", PL.SCOPE, A1)["seat"], "CURSOR")
+        finally:
+            reg.close_db()
+
+    def test_api_only_with_no_registry_url_tries_no_other_route(self) -> None:
+        with mock.patch.object(PL, "with_registry_env", side_effect=AssertionError("env file read")):
+            answer = CCL.register(self.env, agent(A1, "x"), runner=self.dm, now=0.0, remote="mac",
+                                  transport=None, api_only=True)
+        self.assertEqual(answer["code"], "not_configured")
+        self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", answer["error"])
+        self.assertEqual(self.dm.calls, [])  # no ssh hop
+
+
+class UnitRunTests(unittest.TestCase):
+    """`sweep --api-only --no-dm`, run through main() the way the unit runs it:  the registry URL and key come only from
+    the knobs (the process environment does not set them), AGENT_SEAT and SESSION_LETTER_REMOTE are ignored, the Cursor
+    key is read with CURSOR_LETTERS_INFISICAL_TOKEN, and no DM goes out."""
+
+    def setUp(self) -> None:
+        from simple_tools import registry_api
+        from simple_tools.tests.registry_fake import FakeRegistry
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.fake = FakeRegistry().install()
+        self.addCleanup(self.fake.uninstall)
+        knobs = {registry_api.URL_KNOB: self.fake.url, registry_api.KEY_KNOB: self.fake.keys["OPERATOR"]}
+        registry_api._knob_value = lambda name: knobs.get(name, "")  # restored by the fake's uninstall
+        self.env = {
+            "HOME": tmp.name,
+            "SIMPLE_TOOLS_STATE_DIR": os.path.join(tmp.name, "state"),
+            "AGENT_SEAT": "CLAUDE",
+            "SESSION_LETTER_REMOTE": "mac-somewhere",
+            CCL.CURSOR_TOKEN_ENV: "st." + "fixture-cursor-letters-token-0123",
+        }
+        self.cloud = mock.MagicMock()
+        self.cloud.return_value.discover.return_value = [agent(A1, "GB-Director: tidy"), agent(A2, "fix it")]
+        self.cloud.return_value.steer.return_value = "unavailable"
+        self.cloud.return_value.last_discovery_status = "complete"
+
+    def run_main(self, argv: list[str]) -> tuple[int, str]:
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", self.cloud), \
+                mock.patch.object(CCL, "read_cursor_key", return_value="fixture-cursor-key") as key, \
+                mock.patch.object(CCL, "send_dm", side_effect=AssertionError("a DM was sent")), \
+                mock.patch.object(PL, "with_registry_env", side_effect=AssertionError("env file read")), \
+                mock.patch("sys.stdout", out):
+            code = CCL.main(argv)
+            self.key_calls = key.call_count
+            self.left = dict(os.environ)
+        return code, out.getvalue()
+
+    def test_the_unit_command_registers_under_cursor_and_sends_no_dm(self) -> None:
+        code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        report = json.loads(out)
+        self.assertEqual([row.get("dm") for row in report["rows"]], ["off", None])
+        for sid in (A1, A2):
+            row = self.fake.lookup("cursor", "cloud", PL.SCOPE, sid)
+            self.assertEqual(row["seat"], "CURSOR")
+        self.assertEqual(self.key_calls, 1)
+        surfaces = self.cloud.call_args.kwargs["surfaces"]
+        self.assertEqual(surfaces.load_api_key(), "fixture-cursor-key")
+        self.assertNotIn("CURSOR_SYNC_API_KEY", self.left)  # the key never enters the environment
+        self.assertNotIn("fixture-cursor-key", out)
+
+    def test_the_unit_command_with_no_cursor_token_stops_before_any_cursor_call(self) -> None:
+        # A missing env file or token line:  the run stops with service-token-required and never falls back to a key
+        # in the environment, `fleet-secrets get`, or any other credential route.
+        from simple_tools import cursor_chat_transport as CT
+
+        env = dict(self.env)
+        del env[CCL.CURSOR_TOKEN_ENV]
+        env["CURSOR_SYNC_API_KEY"] = "fixture-environment-key"
+        env["CURSOR_API_KEY"] = "fixture-environment-key"
+        out = io.StringIO()
+        refuse = AssertionError("another key source was tried")
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("simple_tools.cursor_chat_transport.CursorCloudTransport", self.cloud), \
+                mock.patch.object(CT._surfaces, "load_api_key", side_effect=refuse), \
+                mock.patch.object(CT._surfaces, "_fleet_secrets_key", side_effect=refuse), \
+                mock.patch("subprocess.run", side_effect=refuse), \
+                mock.patch.object(CCL, "send_dm", side_effect=AssertionError("a DM was sent")), \
+                mock.patch("sys.stdout", out):
+            code = CCL.main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 1)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0]), {"error": "KeyUnavailable", "status": None,
+                                                "code": "service-token-required"})
+        self.cloud.assert_not_called()  # no discovery, no steer
+        self.assertNotIn("fixture-environment-key", out.getvalue())
+        for sid in (A1, A2):
+            self.assertIsNone(self.fake.lookup("cursor", "cloud", PL.SCOPE, sid))
+
+    def _second_agent_answers(self, answer: dict):
+        real = CCL.register
+
+        def register(env, agent_row, **kw):
+            if str(agent_row.get("session_id")) == A2:
+                return dict(answer)
+            return real(env, agent_row, **kw)
+
+        return mock.patch.object(CCL, "register", side_effect=register)
+
+    def test_a_refusal_because_every_pair_is_live_does_not_fail_the_run(self) -> None:
+        # Jay's rule:  when all 26 main-chat pairs are live the letter is refused and the chat carries on.  That is the
+        # registry working as designed, so the row says refused, not error, and the unit does not read as failed.
+        refused = {"error": PL.refused_text(None, "cursor", 26), "code": "labels_exhausted", "swept": 0}
+        with self._second_agent_answers(refused):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertIn("label", rows[A1])
+        self.assertNotIn("error", rows[A2])
+        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[A2]["refused"])
+
+    def test_a_closed_chat_that_cannot_have_a_pair_again_yet_is_refused_not_failed(self) -> None:
+        refused = {"error": "this registry cannot give a closed chat a pair letter again yet", "code": "space_lost",
+                   "swept": 0}
+        with self._second_agent_answers(refused):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertNotIn("error", rows[A2])
+        self.assertIn("cannot give a closed chat a pair letter again", rows[A2]["refused"])
+
+    def test_the_real_api_path_refusal_reaches_the_row_when_every_pair_is_live(self) -> None:
+        # No mocked register:  the shared unit's own path (platform_letter._register_api over the registry API) runs
+        # against the real registry service with a one-pair space, so the second chat is refused by the registry
+        # itself and the code it answers with must reach the row.
+        with mock.patch.dict(OR.LETTER_SPACES, {"double": ("AA",)}):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 0, out)
+        rows = [json.loads(out)["rows"][0], json.loads(out)["rows"][1]]
+        self.assertEqual(rows[0].get("label"), "AA")
+        self.assertNotIn("error", rows[1])
+        self.assertIn("main-chat pairs (AA to ZZ) are live", rows[1]["refused"])
+
+    def test_any_other_registration_error_still_fails_the_run(self) -> None:
+        with self._second_agent_answers({"error": "the registry did not answer in time", "code": "timeout"}):
+            code, out = self.run_main(["sweep", "--api-only", "--no-dm"])
+        self.assertEqual(code, 1, out)
+        rows = {row["session_id"]: row for row in json.loads(out)["rows"]}
+        self.assertEqual(rows[A2]["error"], "the registry did not answer in time")
+        self.assertNotIn("refused", rows[A2])
+
+    def test_api_only_and_remote_cannot_be_combined(self) -> None:
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr", io.StringIO()):
+            CCL.main(["sweep", "--api-only", "--remote", "mac"])
+
+
+class CursorKeyTests(unittest.TestCase):
+    """The Cursor key is read with the sweep's own token through fleet_secrets' scoped reader, and a failure names a
+    reason token only."""
+
+    class Core:
+        class SecretsError(Exception):
+            pass
+
+        def __init__(self, answer=None, error: str = "") -> None:
+            self.answer, self.error, self.calls = answer, error, []
+
+        def home_dir(self, env):
+            return env.get("HOME", "")
+
+        def infisical_project_id(self, env, home):
+            return "00000000-0000-4000-8000-000000000000"
+
+        def fetch_project(self, project, path, env, **kw):
+            self.calls.append((project, path, dict(env), kw))
+            if self.error:
+                raise self.SecretsError(self.error)
+            return self.answer
+
+    TOKEN = "st." + "fixture-cursor-letters-token-0123"
+
+    def test_it_reads_the_one_name_from_the_one_folder(self) -> None:
+        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
+        key = CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN, "HOME": "/nowhere"}, core=core)
+        self.assertEqual(key, "fixture-key")
+        project, path, env, kw = core.calls[0]
+        self.assertEqual(path, "/cursor-cloud-letters")
+        self.assertEqual(env, {})
+        self.assertEqual(kw["names"], ["CURSOR_SYNC_API_KEY"])
+        self.assertEqual(kw["token"], self.TOKEN)
+
+    def test_no_token_is_refused_before_any_read(self) -> None:
+        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
+        with self.assertRaises(CCL.KeyUnavailable) as caught:
+            CCL.read_cursor_key({"CURSOR_SYNC_API_KEY": "from-the-environment"}, core=core)
+        self.assertEqual(caught.exception.code, "service-token-required")
+        self.assertEqual(core.calls, [])
+
+    def test_a_refusal_is_a_reason_token_only(self) -> None:
+        core = self.Core(error="token-scope-mismatch: " + self.TOKEN)
+        with self.assertRaises(CCL.KeyUnavailable) as caught:
+            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=core)
+        self.assertEqual(caught.exception.code, "token-scope-mismatch")
+        self.assertNotIn(self.TOKEN, str(caught.exception))
+        with self.assertRaises(CCL.KeyUnavailable) as caught:
+            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=self.Core({}))
+        self.assertEqual(caught.exception.code, "unset")
+
+    def test_a_missing_project_id_has_its_own_reason(self) -> None:
+        core = self.Core({"CURSOR_SYNC_API_KEY": "fixture-key"})
+
+        def no_project(env, home):
+            raise core.SecretsError("the Fleet-OPS Infisical project id is not set:  set INFISICAL_FLEET_OPS_PROJECT_ID")
+
+        core.infisical_project_id = no_project
+        with self.assertRaises(CCL.KeyUnavailable) as caught:
+            CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=core)
+        self.assertEqual(caught.exception.code, "project-id-missing")
+        self.assertEqual(core.calls, [])  # nothing is fetched without a project
+
+    def test_a_message_in_plain_words_is_refused_not_its_first_word(self) -> None:
+        for message, code in (("key CURSOR_SYNC_API_KEY is not in Infisical at /cursor-cloud-letters", "refused"),
+                              ("refusing Infisical environment 'dev' from INFISICAL_ENV", "refused"),
+                              ("fetch-failed:  bad-output for CURSOR_SYNC_API_KEY", "fetch-failed"),
+                              ("token-expired-or-invalid", "token-expired-or-invalid")):
+            with self.assertRaises(CCL.KeyUnavailable) as caught:
+                CCL.read_cursor_key({CCL.CURSOR_TOKEN_ENV: self.TOKEN}, core=self.Core(error=message))
+            self.assertEqual(caught.exception.code, code, message)
+
+
+class CheckTests(unittest.TestCase):
+    """`check`, the installer's preflight:  names and reason tokens only, and the knob token does not stay behind in
+    the environment."""
+
+    def test_it_reports_by_name_and_leaves_no_token_behind(self) -> None:
+        from simple_tools import registry_api
+
+        knob_token = "st." + "fixture-knobs-token-0123456789"
+        cursor_token = "st." + "fixture-cursor-token-0123456789"
+        seen = {}
+
+        def knob(name: str) -> str:
+            seen[name] = os.environ.get(CCL.KNOBS_TOKEN_ENV)
+            return "https://registry.fake.invalid" if name == registry_api.URL_KNOB else ""
+
+        def key(env):
+            self.assertEqual(env[CCL.CURSOR_TOKEN_ENV], cursor_token)
+            raise CCL.KeyUnavailable("token-scope-mismatch")
+
+        stdin = io.StringIO("%s=%s\n%s=%s\n" % (CCL.KNOBS_TOKEN_ENV, knob_token, CCL.CURSOR_TOKEN_ENV, cursor_token))
+        with mock.patch.dict(os.environ, {registry_api.URL_ENV: "https://from-env.invalid"}, clear=True), \
+                mock.patch.object(registry_api, "_knob_value", side_effect=knob), \
+                mock.patch.object(CCL, "read_cursor_key", side_effect=key):
+            report = CCL.check(stdin)
+            left = dict(os.environ)
+        self.assertEqual(report["registry_url"], "present")
+        self.assertEqual(report["cursor_key"], "token-scope-mismatch")
+        self.assertNotEqual(report["registry_key"], "present")
+        self.assertEqual(seen[registry_api.URL_KNOB], knob_token)  # the URL came from the knob, not the environment
+        self.assertNotIn(CCL.KNOBS_TOKEN_ENV, left)
+        self.assertNotIn(registry_api.URL_ENV, left)
+        self.assertNotIn(knob_token, json.dumps(report))
+        self.assertNotIn(cursor_token, json.dumps(report))
+
+
 class RecentTests(unittest.TestCase):
     def test_window(self) -> None:
         now = datetime.datetime(2026, 11, 8, 12, 0, tzinfo=datetime.timezone.utc).timestamp()

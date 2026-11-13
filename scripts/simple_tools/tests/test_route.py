@@ -355,7 +355,9 @@ class RouteUnitTests(RouteHarness):
 
     def test_the_route_budget_caps(self) -> None:
         now = self.clock.time()
-        budget = dict(BUDGET_DEFAULTS)
+        # The route caps have no default (owner, Nov 10, 2026), so a seat writes the ones it wants:  the
+        # old defaults, 3 an hour, 10 a day and 30 minutes between routes in one topic.
+        budget = dict(BUDGET_DEFAULTS, routes_per_hour=3, routes_per_day=10, route_topic_minutes=30)
 
         def view(n: int, age: float, key: str = "k%d") -> tuple[str, dict]:
             return "w%d" % n, {"topic_key": key % n if "%" in key else key, "route": {"status": "posted"},
@@ -376,6 +378,19 @@ class RouteUnitTests(RouteHarness):
         dropped = {"w1": {"topic_key": "t", "route": {"status": "dropped"}, "times": {"done": now}}}
         self.assertIsNone(W.route_budget_block(dropped, budget, key="t", now=now), "a dropped route costs nothing")
         self.assertEqual(W.routes_in(hour.values(), now), 3)
+
+    def test_a_route_cap_the_budget_does_not_carry_is_no_limit(self) -> None:
+        now = self.clock.time()
+        posted = {
+            "w%d" % n: {"topic_key": "t", "route": {"status": "posted"}, "times": {"done": now - 60 * n}}
+            for n in range(40)
+        }
+        self.assertIsNone(W.route_budget_block(posted, dict(BUDGET_DEFAULTS), key="t", now=now))
+        self.assertEqual(
+            W.route_budget_block(posted, dict(BUDGET_DEFAULTS, routes_per_hour=0), key="t", now=now),
+            "routes_per_hour",
+            "0 is reached at once, so a seat can still switch routes off",
+        )
 
     def test_a_route_post_counts_like_a_wake_reply_but_still_wakes_its_target(self) -> None:
         codex = R.SeatIdentity("CODEX", 11, "Codex", "codex-bot@zulip.test")
