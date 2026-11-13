@@ -34,6 +34,7 @@ import repo_catalog
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSIONS = {1, 2}
 COLLECTION_POLICY_ID = repo_catalog.COLLECTION_POLICY_ID
+COLLECTION_IDENTITY_VERSION = 1
 VERIFIED_PRIVATE_DOC_REPOS = {
     "simple-with-us/fleet-ops",
     "simple-with-us/kodus-config",
@@ -1061,6 +1062,22 @@ def _build_manifest(
         "files": dict(sorted(current.items())),
         "missing_local_links": missing_links,
     }
+    if "collection_identity_version" in previous:
+        previous_identity_version = previous["collection_identity_version"]
+        if (
+            type(previous_identity_version) is not int
+            or previous_identity_version != COLLECTION_IDENTITY_VERSION
+        ):
+            raise CollectionError(
+                "Existing manifest has an unsupported collection identity version"
+            )
+    else:
+        previous_identity_version = None
+    owner_repo = manifest["owner_repo"]
+    if previous_identity_version == COLLECTION_IDENTITY_VERSION or (
+        previous and previous.get("owner_repo") != owner_repo
+    ):
+        manifest["collection_identity_version"] = COLLECTION_IDENTITY_VERSION
     if private_docs_opt_in is not None:
         manifest["private_docs_opt_in"] = private_docs_opt_in
     if repo.snapshot is not None:
@@ -1082,6 +1099,15 @@ def _manifest_version_key(manifest: dict[str, Any]) -> str:
         commit = f"{commit}-private-docs"
     if manifest.get("source_provenance"):
         commit = f"{commit}-git-relay"
+    if "collection_identity_version" in manifest:
+        identity_version = manifest["collection_identity_version"]
+        if type(identity_version) is not int or identity_version != COLLECTION_IDENTITY_VERSION:
+            raise CollectionError("Manifest has an unsupported collection identity version")
+        owner_repo = manifest.get("owner_repo")
+        if not isinstance(owner_repo, str):
+            raise CollectionError("Manifest collection identity is invalid")
+        identity_hash = hashlib.sha256(owner_repo.encode("utf-8")).hexdigest()[:12]
+        commit = f"{commit}-identity-{identity_hash}"
     return commit
 
 
@@ -1508,10 +1534,11 @@ def collect_repository(
         previous_report_readme = _safe_output_path(
             repo_root, f"reports/{previous_version_key}/README.md"
         )
-        previous_report_expected = _version_readme(
-            RepoInfo(repo.path, repo.owner, repo.name, previous["source_ref"], previous_commit),
-            previous,
+        previous_owner, previous_name = previous["owner_repo"].split("/", 1)
+        previous_repo_info = RepoInfo(
+            repo.path, previous_owner, previous_name, previous["source_ref"], previous_commit
         )
+        previous_report_expected = _version_readme(previous_repo_info, previous)
         if _read_existing(previous_report_readme) != previous_report_expected:
             raise CollectionError("An immutable versioned report README was changed or deleted")
         if previous.get("collection_policy_id"):
@@ -1540,9 +1567,7 @@ def collect_repository(
             if _read_existing(versioned_catalog_path) != previous_catalog_bytes:
                 raise CollectionError("Versioned catalog differs from its current copy")
         old_readme = _read_existing(_safe_output_path(repo_root, "README.md"))
-        old_repo_info = RepoInfo(
-            repo.path, repo.owner, repo.name, previous["source_ref"], previous_commit
-        )
+        old_repo_info = previous_repo_info
         expected_old_readme = (
             _legacy_repo_readme(old_repo_info, previous)
             if not previous.get("collection_policy_id")

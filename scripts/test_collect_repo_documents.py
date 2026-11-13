@@ -198,6 +198,141 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("DifferentOwnerCopy", skipped)
         self.assertIn("AnotherCollision", skipped)
 
+    def test_owner_transition_uses_previous_owner_for_guards_and_preserves_history(self) -> None:
+        repo = self.make_repo(owner="old-owner")
+        repo.write("README.md", "Old owner source.\n")
+        repo.write("docs/guide.md", "First published revision.\n")
+        old_commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        old_manifest_bytes = (mirror / "manifest.json").read_bytes()
+        old_manifest = json.loads(old_manifest_bytes)
+        old_version_key = collector._manifest_version_key(old_manifest)
+        old_report = mirror / "reports" / old_version_key
+        old_versioned_manifest_bytes = (old_report / "manifest.json").read_bytes()
+        old_versioned_readme_bytes = (old_report / "README.md").read_bytes()
+        old_catalog_bytes = (mirror / "catalog.json").read_bytes()
+        old_versioned_catalog_bytes = (old_report / "catalog.json").read_bytes()
+        old_repo_readme_bytes = (mirror / "README.md").read_bytes()
+
+        git(
+            repo.path,
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/new-owner/ExampleRepo.git",
+        )
+        repo.write("README.md", "New owner source.\n")
+        repo.write("docs/guide.md", "Second published revision.\n")
+        new_commit = repo.commit_published()
+        self.assertNotEqual(old_commit, new_commit)
+
+        plan = collector.collect(self.code, self.output, check_only=True)
+        self.assertTrue(any("ExampleRepo/README.md" in operation for operation in plan))
+        self.assertEqual((mirror / "manifest.json").read_bytes(), old_manifest_bytes)
+        self.assertEqual((mirror / "README.md").read_bytes(), old_repo_readme_bytes)
+        self.assertEqual((mirror / "catalog.json").read_bytes(), old_catalog_bytes)
+        self.assertEqual(
+            (old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes
+        )
+        self.assertEqual((old_report / "README.md").read_bytes(), old_versioned_readme_bytes)
+        self.assertEqual(
+            (old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes
+        )
+
+        collector.collect(self.code, self.output)
+        new_manifest = json.loads((mirror / "manifest.json").read_bytes())
+        self.assertEqual(new_manifest["owner_repo"], "new-owner/ExampleRepo")
+        self.assertEqual(new_manifest["source_commit"], new_commit)
+        self.assertIn("new-owner/ExampleRepo", (mirror / "README.md").read_text())
+        self.assertEqual((old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes)
+        self.assertEqual((old_report / "README.md").read_bytes(), old_versioned_readme_bytes)
+        self.assertEqual((old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes)
+
+        self.assertEqual(collector.collect(self.code, self.output, check_only=True), [])
+        self.assertEqual(collector.collect(self.code, self.output), [])
+
+        (mirror / "README.md").write_bytes(b"tampered generated README\n")
+        with self.assertRaisesRegex(
+            collector.CollectionError,
+            "An existing generated repository README was changed or deleted",
+        ):
+            collector.collect(self.code, self.output, check_only=True)
+
+    def test_same_commit_owner_transition_gets_exact_identity_version_key(self) -> None:
+        repo = self.make_repo(owner="old-owner")
+        repo.write("README.md", "Stable source.\n")
+        repo.write("docs/guide.md", "Stable guide.\n")
+        source_commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        old_manifest = json.loads((mirror / "manifest.json").read_bytes())
+        old_key = collector._manifest_version_key(old_manifest)
+        old_immutable = {
+            relative: (mirror / relative).read_bytes()
+            for relative in (
+                f"reports/{old_key}/manifest.json",
+                f"reports/{old_key}/README.md",
+                f"reports/{old_key}/catalog.json",
+            )
+        }
+        old_catalog = (mirror / "catalog.json").read_bytes()
+        old_readme = (mirror / "README.md").read_bytes()
+
+        new_owner_repo = "new-owner/ExampleRepo"
+        git(
+            repo.path,
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/new-owner/ExampleRepo.git",
+        )
+        plan = collector.collect(self.code, self.output, check_only=True)
+        self.assertTrue(any("ExampleRepo/README.md" in operation for operation in plan))
+        self.assertEqual((mirror / "README.md").read_bytes(), old_readme)
+        self.assertEqual((mirror / "catalog.json").read_bytes(), old_catalog)
+        for relative, content in old_immutable.items():
+            self.assertEqual((mirror / relative).read_bytes(), content)
+
+        collector.collect(self.code, self.output)
+        current = json.loads((mirror / "manifest.json").read_bytes())
+        self.assertEqual(current["source_commit"], source_commit)
+        self.assertEqual(current["owner_repo"], new_owner_repo)
+        self.assertEqual(current["collection_identity_version"], 1)
+        new_key = collector._manifest_version_key(current)
+        expected_hash = hashlib.sha256(new_owner_repo.encode("utf-8")).hexdigest()[:12]
+        self.assertTrue(new_key.endswith(f"-identity-{expected_hash}"))
+        self.assertNotEqual(new_key, old_key)
+        case_variant = {
+            **current,
+            "owner_repo": "NEW-OWNER/ExampleRepo",
+        }
+        self.assertNotEqual(new_key, collector._manifest_version_key(case_variant))
+        self.assertEqual(current["catalog_version_path"], f"reports/{new_key}/catalog.json")
+        for relative, content in old_immutable.items():
+            self.assertEqual((mirror / relative).read_bytes(), content)
+
+        self.assertEqual(collector.collect(self.code, self.output, check_only=True), [])
+        self.assertEqual(collector.collect(self.code, self.output), [])
+
+        for invalid in (None, True, 0, 2, "1"):
+            with self.subTest(identity_version=invalid):
+                with self.assertRaisesRegex(
+                    collector.CollectionError, "unsupported collection identity version"
+                ):
+                    collector._manifest_version_key(
+                        {**current, "collection_identity_version": invalid}
+                    )
+
+        (mirror / "README.md").write_bytes(b"tampered generated README\n")
+        with self.assertRaisesRegex(
+            collector.CollectionError,
+            "An existing generated repository README was changed or deleted",
+        ):
+            collector.collect(self.code, self.output, check_only=True)
+
     def test_check_is_read_only_and_second_collection_is_idempotent(self) -> None:
         repo = self.make_repo()
         repo.write("README.md", "# Example\n")
