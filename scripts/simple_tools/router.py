@@ -649,6 +649,9 @@ class Classes:
         # The seat opted in (`bracket_recipient_wakes`) and the post's bracket recipient list
         # names it:  a directed ask without an @, woken exactly like its mention.
         self.bracket_recipient = False
+        # A plain @SEAT tag in the visible text (never in code or quotes):  woken exactly like
+        # the seat's loud mention, always on (Jay, Nov 12 2026).
+        self.plain_at = False
         self.no_wake = False
         self.owner_topic = self.owner_topic_peer = self.owner_note = False
         self.reply_to: int | None = None
@@ -684,6 +687,7 @@ class Classes:
                 "wake_tag",
                 "route_tag",
                 "bracket_recipient",
+                "plain_at",
                 "no_wake",
                 "stale",
                 "owner_topic",
@@ -764,6 +768,9 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     visible = outside_code(content)
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
     c.direct = "mentioned" in flags and any(n in visible for n in names)
+    # A plain @SEAT tag also tags the seat (Jay, Nov 12 2026):  always on, no switch, and
+    # a DM already wakes on its own.
+    c.plain_at = not c.dm and plain_at_seat(visible, me.seat)
     tokens = _broadcast_tokens_visible(visible)  # `visible` is already outside_code(content)
     # `@all`, `@channel` and `@stream` count exactly like `@all` (owner, Oct 27 2026).  `@everyone`
     # is inert on its own:  it lands unread in every bot's inbox and wakes nobody.
@@ -815,6 +822,7 @@ def _reply_target(
         or c.no_wake
         or c.owner_topic_peer
         or c.direct
+        or c.plain_at
         or c.fleet
         or c.wildcard
         or c.broadcast_all
@@ -887,6 +895,13 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
     if c.direct or c.dm:
         # An eligible bot's DM wakes like a direct mention (owner 2026-10-09).
         return (None, "stale") if c.stale else ("peer", None)
+    if c.plain_at:
+        # A plain @SEAT tag wakes the seat the way its loud mention does (Jay, Nov 12 2026):
+        # the same stale rule, loop guard and budgets.  The owner's tag wakes as the owner's, a
+        # peer's as a peer's - peer data, never owner authority.
+        if c.stale:
+            return None, "stale"
+        return ("owner" if c.owner else "peer"), None
     if c.peer_broadcast and not c.owner_topic:
         # A fleet bot's `@all` wakes like the owner's (owner, Oct 27 2026):  the same stale rule,
         # the same loop guard, the peer budgets.  It is still peer data, never owner authority.
@@ -926,7 +941,7 @@ def route(
     if c.reply_to_chat is not None:
         d.linked_by = "reply"
         d.reply_target_letter = c.reply_to_chat.letter
-    if not c.dm and c.key in ctx.muted and not (c.direct or c.bracket_recipient):
+    if not c.dm and c.key in ctx.muted and not (c.direct or c.plain_at or c.bracket_recipient):
         d.drop_reason = "muted"
         return c, d
     on_topic = [l for l in leases if not c.dm and c.key in l.topics]
@@ -944,6 +959,7 @@ def route(
         and not c.no_wake
         and (
             c.direct
+            or c.plain_at
             or c.bracket_recipient
             or c.dm
             or (c.owner and c.fleet)
@@ -979,6 +995,7 @@ def route(
                 and (
                     (c.owner and not c.everyone_inert)
                     or c.direct
+                    or c.plain_at
                     or c.bracket_recipient
                     or (
                         not c.everyone_inert
@@ -1020,6 +1037,7 @@ def route(
             return c, d
     if (
         c.direct
+        or c.plain_at
         or c.bracket_recipient
         or c.dm
         or c.fleet
