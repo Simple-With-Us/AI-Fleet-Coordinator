@@ -495,7 +495,11 @@ class WriteIntentTests(unittest.TestCase):
         self.assertEqual(self.calls, before)
 
     def test_remote_plaintext_provider_refuses_before_state_or_network(self):
-        for provider in ("http://provider.invalid/api", "http://192.0.2.1/api", "http://[2001:db8::1]/api"):
+        for provider in (
+            "http://provider.invalid/api",
+            "http://192.0.2.1/api",
+            "http://[2001:db8::1]/api",
+        ):
             with self.subTest(provider=provider):
                 self.env[core.ENV_API] = provider
                 with self.assertRaisesRegex(core.SecretsError, "write-provider-invalid"):

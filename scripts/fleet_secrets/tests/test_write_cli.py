@@ -130,7 +130,10 @@ class WriteCallerTests(unittest.TestCase):
 
     def test_stdin_byte_cap_refuses_ascii_and_multibyte_before_writer_or_state(self):
         for value in ("x" * (core.MAX_VALUE_BYTES + 1), "é" * (core.MAX_VALUE_BYTES // 2 + 1)):
-            with self.subTest(multibyte=value[0] == "é"), mock.patch.object(core, "put_secret") as put:
+            with (
+                self.subTest(multibyte=value[0] == "é"),
+                mock.patch.object(core, "put_secret") as put,
+            ):
                 code, out, err = self.call([], io.StringIO(value + "\n"))
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn("maximum size", err)

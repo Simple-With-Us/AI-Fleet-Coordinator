@@ -2,6 +2,8 @@
 
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +14,45 @@ from simple_tools.operator_github_state import LedgerError, NonceLedger
 
 
 class SerializationTests(unittest.TestCase):
+    def test_kernel_lock_excludes_an_actual_second_process_until_release(self):
+        program = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from simple_tools.operator_github_state import NonceLedger, LedgerError
+try:
+    with NonceLedger(sys.argv[2], retain_unsettled=True).serialized(timeout=0.03):
+        print('entered')
+except LedgerError:
+    print('held')
+"""
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "outcomes"
+            ledger = NonceLedger(directory, retain_unsettled=True)
+            command = [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                program,
+                str(Path(__file__).resolve().parents[2]),
+                str(directory),
+            ]
+
+            def probe():
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    env={"PATH": os.defpath},
+                    timeout=3,
+                    check=True,
+                )
+                return result.stdout.strip()
+
+            with ledger.serialized():
+                self.assertEqual(probe(), "held")
+            self.assertEqual(probe(), "entered")
+
     def test_a_competing_caller_times_out_then_can_enter_after_release(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root) / "outcomes"

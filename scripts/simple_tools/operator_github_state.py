@@ -126,8 +126,9 @@ class NonceLedger:
     def _create_retained_marker(self, parent):
         """Publish complete evidence atomically without replacing existing history."""
         temporary = ".retained-initialized-" + uuid.uuid4().hex + ".tmp"
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o600, dir_fd=parent)
+        fd = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+        )
         try:
             if os.write(fd, self.INITIALIZED_BYTES) != len(self.INITIALIZED_BYTES):
                 raise LedgerError("replay storage unavailable")
@@ -135,8 +136,13 @@ class NonceLedger:
             try:
                 # Atomic no-overwrite publication; a concurrent winner is validated
                 # by the caller, never repaired or replaced.
-                os.link(temporary, self.INITIALIZED_NAME, src_dir_fd=parent,
-                        dst_dir_fd=parent, follow_symlinks=False)
+                os.link(
+                    temporary,
+                    self.INITIALIZED_NAME,
+                    src_dir_fd=parent,
+                    dst_dir_fd=parent,
+                    follow_symlinks=False,
+                )
             except FileExistsError:
                 pass
         finally:

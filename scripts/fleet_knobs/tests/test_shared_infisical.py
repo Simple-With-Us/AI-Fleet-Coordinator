@@ -31,8 +31,11 @@ else:
 """
         with tempfile.TemporaryDirectory() as home:
             payload = Path(home) / "payload"
-            shutil.copytree(Path(scripts) / "fleet_knobs", payload / "fleet_knobs",
-                            ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(
+                Path(scripts) / "fleet_knobs",
+                payload / "fleet_knobs",
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
             proc = subprocess.run(
                 [sys.executable, "-I", "-B", "-c", boot, str(payload)],
                 env={"HOME": home, "PATH": "/unavailable"},
@@ -87,7 +90,9 @@ print(json.dumps(sorted(result)))
             env = {"HOME": home, "PATH": "/unavailable", **api.env}
             poison = Path(home) / "untrusted"
             poison.mkdir()
-            (poison / "fleet_infisical.py").write_text("raise AssertionError('untrusted path loaded')\n")
+            (poison / "fleet_infisical.py").write_text(
+                "raise AssertionError('untrusted path loaded')\n"
+            )
             for wrong_scope in (False, True):
                 with self.subTest(wrong_scope=wrong_scope):
                     api.requests.clear()
