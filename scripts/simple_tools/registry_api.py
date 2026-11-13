@@ -126,16 +126,27 @@ def _direct_values(env: Mapping[str, str]) -> dict[str, str]:
 
             scoped_env = dict(env)
             scoped_env[FI.ENV_READ_PATHS] = REGISTRY_PATH
-            values = FI.fetch_project(PROJECT_ID, REGISTRY_PATH, scoped_env,
-                                      token=token, names=(URL_ENV, KEY_VAR),
-                                      timeout=REGISTRY_FETCH_TIMEOUT)
+            values = FI.fetch_project(
+                PROJECT_ID,
+                REGISTRY_PATH,
+                scoped_env,
+                token=token,
+                names=(URL_ENV, KEY_VAR),
+                timeout=REGISTRY_FETCH_TIMEOUT,
+            )
             url, key = values.get(URL_ENV, ""), values.get(KEY_VAR, "")
             parsed = urllib.parse.urlsplit(url)
             loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-            valid_url = (bool(parsed.hostname) and parsed.port != 0
-                         and (parsed.scheme == "https" or (parsed.scheme == "http" and loopback))
-                         and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment
-                         and parsed.username is None and parsed.password is None)
+            valid_url = (
+                bool(parsed.hostname)
+                and parsed.port != 0
+                and (parsed.scheme == "https" or (parsed.scheme == "http" and loopback))
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+                and parsed.username is None
+                and parsed.password is None
+            )
             valid_key = 32 <= len(key) <= 512 and all(33 <= ord(c) <= 126 for c in key)
             if valid_url and valid_key:
                 _DIRECT_CACHE.update({URL_ENV: url.rstrip("/"), KEY_VAR: key})
