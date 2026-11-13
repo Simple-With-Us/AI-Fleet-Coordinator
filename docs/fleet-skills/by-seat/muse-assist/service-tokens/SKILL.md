@@ -1,7 +1,7 @@
 ---
 name: service-tokens
 description: >-
-  Scoped Infisical service tokens for fleet consumers: mint one narrow grant, store it in the consumer host's own secret store, verify its exact scope in both directions, register the row in the fleet references registry, and retire it on time.  Load BEFORE issuing, rotating, widening or revoking any Infisical service token, before a consumer asks for a key no approved token covers, and before writing anything into a token registry.
+  Create and manage narrowly scoped Infisical service tokens for fleet consumers, store each value in its consumer's host secret store, verify the grant, register nonsecret metadata in the Fleet Reference sheet, and retire tokens safely.  Load before issuing, rotating, widening or revoking a service token, or editing its registry record.
 ---
 
 # Service Tokens
@@ -9,98 +9,155 @@ description: >-
 > **Cloud VM batch agent.**  Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
-## Why this exists
+Give each consumer its own token scoped to exactly the project, environment and folder it needs, read-only unless write access is proven necessary, with an expiry.  Never create or use retired machine identities, borrow another consumer's token, or fall back to `fleet-secrets`.  If the issuer session, consumer, scope or approved registry access is uncertain, stop before issuance or write.
 
-A shared credential that many consumers read is a credential none of them owns.  It cannot be revoked without breaking someone else, its scope drifts until it covers the whole estate, and nobody can say who reads it.  One consumer gets one token, scoped to exactly what it reads.
+## Inventory before issuance
 
-Two failures make this a written rule rather than a habit.  A token was minted and printed into a transcript, so it had to be revoked by hand and the leak was in the transcript forever.  Another consumer asked for a key no approved token covered, and the tempting answer was to reuse the shared Automation identity, which would have granted far more than the consumer needed.
+Establish the exact consumer and runtime location, Infisical project and project ID, environment, folder path(s), read/write need, expiry, purpose, owner and secure-storage destination.  Check the Fleet Reference registry for an exact existing entry before minting.  Folder scope is exact: do not assume a parent grants descendants or `/` means every folder.  Never widen a token shared by another consumer.
 
-## The rule
+## Issue with the authorized Infisical user session
 
-Every consumer gets its own scoped service token: one project, one environment, one folder, the narrowest access level that works, and an expiry.  The shared Automation identity is never a consumer's credential, and it is never a fallback.  A consumer that cannot resolve its own token stops and says so.
+Use the existing authorized Infisical user CLI issuer session.  The Mac GUI login/keychain may provide the user's encryption credentials; a server session may lack them.  Missing user credentials are a stop condition, never a reason to try machine auth or another person's session.
 
-## Before you mint one
-
-1. Inventory first.  Read the registry: the Fleet Reference sheet is the source of truth and `Fleet-OPS/docs/infisical-service-tokens.json` is its mirror.  Check whether a token already covers this consumer and this folder.
-2. Reuse beats minting.  A token whose scope already matches the consumer exactly is the right answer, and the registry row already names its consumer.
-3. Never widen.  If the consumer needs more than an existing token grants, mint a new token for the consumer.  Editing an existing grant changes what every other holder of it can read.
-4. One consumer, one row.  Two consumers sharing a token means neither can be rotated alone.
-
-## Minting it
-
-The Infisical CLI reads the login keychain, so a plain shell over SSH cannot authenticate as the owner.  Run the CLI in the owner's GUI session, and treat the output as a secret.
+Check `infisical service-token create --help` in that session.  Pass explicit profile and project selections, exact environment/folder scope, access level, expiry, and a consumer-specific name.  Use only flags confirmed by the installed CLI.  This example captures both streams privately before invocation; it never displays a value:
 
 ```sh
-infisical service-token create \
-  --projectId <project-id> \
-  --scope <environment>:<folder> \
+umask 077
+stdout_file="$(mktemp "${TMPDIR:-/tmp}/infisical-token.stdout.XXXXXX")"
+stderr_file="$(mktemp "${TMPDIR:-/tmp}/infisical-token.stderr.XXXXXX")"
+chmod 600 "$stdout_file" "$stderr_file"
+if infisical service-token create \
+  --profile "<authorized-user-profile>" \
+  --projectId "<approved-project-id>" \
+  --scope "<environment>:<exact-folder>" \
   --access-level read \
-  --expiry-seconds 7776000 \
-  --name <consumer>-ro
+  --expiry-seconds "<approved-seconds>" \
+  --name "<consumer>-ro" \
+  --token-only >"$stdout_file" 2>"$stderr_file"; then
+  issue_status=0
+else
+  issue_status=$?
+fi
 ```
 
-The CLI prints the token on stderr.  Capture it straight into a 0600 file and never echo it, never let it reach a log, and never let it reach a transcript.  That file is staging, not a home: install the value into the consumer host's secret store, verify it there, and delete the file.  A token that was printed is a token that must be revoked and re-minted, not a token that may be reused.
+Keep shell tracing off.  Never print either capture, copy its value to a command argument, broad shell export or diagnostic dump, or let it reach an error, transcript, metadata file, source or registry.  Process-local variables and a narrowly scoped child-process environment binding are allowed when the consumer requires them; do not persist or log them.  After confirmed installation and verification, delete both captures.  If issuance is ambiguous, preserve them and reconcile with the authorized issuer before any retry.  If the value reaches a transcript or log, stop, report it and arrange authorized revocation before issuing a replacement.
 
-## Where the token lives
+## Verify the issued grant
 
-The value lives in the consumer host's own secret store, and nowhere else.
+Use the newly issued token as a Bearer credential to call `GET /api/v2/service-token` (no token ID in the path).  Parse the response in memory and retain only these nonsecret fields: `id`, `name`, `projectId` or `workspace`, `permissions`, `scopes`, `createdAt` and `expiresAt`.  Confirm returned project, environment, exact folder scopes, permissions and expiry match the inventory.  Record verification time and evidence summary; do not infer actual scope from requested CLI options.
 
-- On the Mac: the owner's login keychain, one generic-password item per token.  The service is `infisical-service-token` and the account is the token's registry name, so a reader holding the registry row can find the item by that name: `security find-generic-password -s infisical-service-token -a <name> -w`.
-- On a server or a container: that host's own store, which for a fleet consumer is Infisical itself or the environment the host injects the value into.  A server-side consumer never reaches for the Mac keychain, and a Mac consumer never reaches for a server-side file.
-- The metadata sidecar `~/.config/infisical/<consumer>.json` carries the token id, the project, the environment, the folder, the access level and the expiry.  It never carries the value.
-- The token is never passed as a command line argument, because a command line is visible in `ps` and in the process log.  It is read from the store inside the process that uses it, and the Mac's keychain write takes the value on stdin rather than in the argument list.
-- A 0600 file under `~/.config/infisical/` is a staging step on the way in, never the resting place: the CLI prints the value on stderr, so it has to be captured somewhere before it can be installed.  Once the value is in the keychain, the staging file is deleted.  A file in a repo is a published secret the moment the repo is pushed.
-- The Mac login keychain is reachable only from the owner's GUI session.  A plain shell over SSH cannot read or write it, so the install and the consumer both run in that session, and a consumer outside it fails closed with the reason.
+The complete CLI value may have the legacy four-part form `st.<id>.<secret>.<encryption-key>`.  For the metadata request's Bearer header, remove only the final encryption-key segment to form `st.<id>.<secret>`.  Preserve the complete CLI value when installing it for the consumer.  Never print the response or retain unallowlisted fields.
 
-## Verifying the scope
+A successful in-scope read is positive evidence that access works.  A zero-item result or HTTP 200 outside the requested path does not prove permission denial; the raw endpoint may project the allowed scope regardless of the requested path.  Use a known outside-key control only if the authorized issuer confirms it is available independently and its use is approved.  Otherwise record that the boundary is unverified.  Claim a 403 only when one was actually observed.  Do not probe arbitrary keys or issue a write probe for a read-only grant.
 
-A scope that was never checked is a scope that was never bound.
+## Store the value on the consumer host
 
-1. Read one secret from the folder with the token, and confirm the value is the one the consumer expects.  A token that returns nothing is a token with no access, not a consumer with no secrets.
-2. Read a secret outside the folder, and expect a refusal.  If that read succeeds, the token is wider than its grant: revoke it and mint a narrower one.
-3. Check the access level.  A consumer that only reads is issued a read-only token, even when the same folder also holds a write path.
+The value lives only in the consumer host's approved secret store.
 
-## Registering the row
+- On the Mac, use the owner's login keychain, one generic-password item per token.  Set service to `infisical-service-token` and account to the registry token name.  A reader can retrieve it with `security find-generic-password -s infisical-service-token -a <name> -w`.
+- On a server or container, use that consumer host's approved store.  A file owned by the consumer account with mode 0600 inside a parent directory mode 0700 is an allowed explicit choice when that host's policy permits it; Infisical or another approved host store may also be used.  A server consumer never reaches for the Mac keychain; a Mac consumer never reaches for a server-side file.
+- The metadata sidecar `~/.config/infisical/<consumer>.json` may contain token ID, project, environment, folder, access level and expiry, never the value.
+- Never pass the token as a command-line argument.  Read it from the store inside the process that uses it; pass a Mac keychain write over stdin.
+- A 0600 file under `~/.config/infisical/` is staging only and must be deleted after installation.  A file in a repository is a published secret when pushed.
+- The Mac login keychain is reachable only from the owner's GUI session.  If a consumer cannot access its approved store, fail closed and identify the missing item or scope.
 
-A token that is not registered cannot be rotated by anybody but the seat that minted it, and it cannot be revoked in an emergency by a human who does not know it exists.  Every token gets a row in both places:
+## Register metadata in the Fleet Reference sheet
 
-- The Fleet Reference sheet, which is the source of truth.  The sheet has a seat that owns it, so the row goes to that seat to write; ask for it with the fields below, and do not treat the token as registered until the sheet row exists.
-- The mirror `Fleet-OPS/docs/infisical-service-tokens.json`, one object per token.
+The source is <https://fleetlink.online/references>, tab `Infisical Service Tokens`.  Use only the shared Fleet-OPS module `scripts/fleet-sheet/sa.mjs` and its exported `api(path, init)`.  The module pins the private workbook configuration, reads `GOOGLE_SHEETS_SA` in memory from Infisical Fleet-OPS prod `/google-sheets-sa`, and handles Google Sheets authentication.  Normal use relies on the approved prebound `INFISICAL_TOKEN` and explicit Fleet-OPS project selection.  If either is missing, stop; do not mint or borrow another consumer's token for the sheet client.  An authorized GUI issuer operation may bootstrap the approved binding, never machine auth or another identity.  Do not print or write `GOOGLE_SHEETS_SA` JSON to disk or create a competing client.
 
-The row carries: `id` (the token id), `name`, `project`, `projectId`, `scopes`, `purpose`, `owner`, `consumer`, `status`, `createdAt`, `expiresAt`, `verifiedAt` and `evidence`.
+Save only the nonsecret token metadata below as JSON.  From an authorized Fleet-OPS checkout, run the following with that metadata file as its sole argument.  The example reads the live header, maps by exact column names, checks for an existing token ID, appends once, and fully reads back `updatedRange` before claiming success.  It prints no metadata, values, errors or provider responses.
 
-- `consumer` is the program or host that reads the token, named exactly as it appears in its configuration, so a reader can find the item.
-- `evidence` is what proved the scope: the verification that was run and when.
-- `status` is `active`, `revoked` or `expired`.  A revoked token keeps its row, because the history of a grant is part of the registry.
+Required metadata JSON fields: `id`, `name`, `project`, `projectId`, `scopes` (array of `{environment, folder, permissions}`, where `permissions` is a nonempty array), `purpose`, `owner`, `consumer`, `status`, `createdAt`, `expiresAt`, `verifiedAt`, `evidence` and `secureStorageReference`.  Optional fields are `auditCoverage`, `screenshotComparison`, `discrepancyEvidenceLimits` and `createdBy`; omitted values become empty cells.  Do not include the token value or secret response fields.
 
-## Rotating and revoking
+```sh
+export FLEET_OPS_ROOT="$(pwd -P)"  # Run from the owned Fleet-OPS checkout root.
+metadata_file="$HOME/.config/infisical/service-token-metadata.json"
+node --input-type=module - "$metadata_file" <<'JS'
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-Rotation is never a metadata edit.
+const fail = () => { process.exitCode = 1; };
+try {
+  const root = process.env.FLEET_OPS_ROOT;
+  if (!root || process.argv.length !== 3) throw new Error();
+  if (!process.env.INFISICAL_TOKEN || !process.env.INFISICAL_FLEET_OPS_PROJECT_ID) throw new Error();
 
-1. Mint the replacement with the same scope and a fresh expiry, and install it on the consumer.
-2. Verify the replacement in both directions.
-3. Update the registry row: the new id, the new expiry, the old row's status `revoked`.
-4. Revoke the old token through the API with an owner session: `DELETE https://app.infisical.com/api/v2/service-token/<token-id>`.
+  const input = JSON.parse(await readFile(process.argv[2], 'utf8'));
+  const required = ['id', 'name', 'project', 'projectId', 'scopes', 'purpose', 'owner', 'consumer', 'status', 'createdAt', 'expiresAt', 'verifiedAt', 'evidence', 'secureStorageReference'];
+  const optional = ['auditCoverage', 'screenshotComparison', 'discrepancyEvidenceLimits', 'createdBy'];
+  if (Object.keys(input).some(key => !required.includes(key) && !optional.includes(key))) throw new Error();
+  for (const key of optional) input[key] ??= '';
+  if (required.filter(key => key !== 'scopes').some(key => typeof input[key] !== 'string' || !input[key].trim())) throw new Error();
+  if (optional.some(key => typeof input[key] !== 'string')) throw new Error();
+  if (!Array.isArray(input.scopes) || input.scopes.length === 0) throw new Error();
+  if (input.scopes.some(scope => typeof scope.environment !== 'string' || typeof scope.folder !== 'string' || !scope.environment || !scope.folder || !Array.isArray(scope.permissions) || scope.permissions.length === 0 || scope.permissions.some(value => typeof value !== 'string' || !value))) throw new Error();
+  delete process.env.GOOGLE_SHEETS_SA; // Require the shared client's Infisical read.
+  const { api } = await import(pathToFileURL(join(root, 'scripts/fleet-sheet/sa.mjs')).href);
+  const sheet = 'Infisical Service Tokens';
+  const readPath = range => '/values/' + encodeURIComponent(range) + '?majorDimension=ROWS';
+  const read = range => api(readPath(range));
+  const current = await read(sheet);
+  const [headers, ...rows] = current.values ??  [];
+  const needed = ['Token', 'Token ID', 'Project', 'Project ID', 'Environment', 'Folders', 'Permission', 'Purpose', 'Owner', 'Runtime consumer', 'Status', 'Expires (UTC)', 'Metadata verified (UTC)', 'Evidence', 'Audit coverage', 'Secure storage reference', 'Screenshot comparison 2026-11-03', 'Discrepancy / evidence limits', 'Created By'];
+  if (!headers || headers.length !== needed.length || needed.some(name => headers.filter(value => value === name).length !== 1)) throw new Error();
+  const values = {
+    'Token': input.name, 'Token ID': input.id, 'Project': input.project, 'Project ID': input.projectId,
+    'Environment': [...new Set(input.scopes.map(scope => scope.environment))].join(', '),
+    'Folders': input.scopes.map(scope => scope.folder).join(', '),
+    'Permission': [...new Set(input.scopes.flatMap(scope => Array.isArray(scope.permissions) ? scope.permissions : [scope.permissions]))].join(', '),
+    'Purpose': input.purpose, 'Owner': input.owner, 'Runtime consumer': input.consumer,
+    'Status': input.status, 'Expires (UTC)': input.expiresAt, 'Metadata verified (UTC)': input.verifiedAt,
+    'Evidence': input.evidence, 'Audit coverage': input.auditCoverage,
+    'Secure storage reference': input.secureStorageReference,
+    'Screenshot comparison 2026-11-03': input.screenshotComparison,
+    'Discrepancy / evidence limits': input.discrepancyEvidenceLimits, 'Created By': input.createdBy,
+  };
+  const row = headers.map(header => values[header] ??  '');
+  const secretPattern = /(?:\bst\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|-----BEGIN [A-Z ]*PRIVATE KEY-----|"private_key"\s*:|"(?:encryptedKey|secret|token)"\s*:)/i;
+  if (row.some(value => typeof value !== 'string' || secretPattern.test(value))) throw new Error();
+  const idColumn = headers.indexOf('Token ID');
+  const matches = rows.filter(existingRow => existingRow[idColumn] === input.id);
+  if (matches.length > 1) throw new Error();
+  const existing = matches[0];
+  if (existing) {
+    if (needed.some(header => String(existing[headers.indexOf(header)] ?? '') !== String(row[headers.indexOf(header)] ?? ''))) {
+      process.stdout.write('Token ID exists with different metadata; stop and reconcile.\n');
+      process.exitCode = 2;
+    } else {
+      process.stdout.write('Token ID already registered; no row added.\n');
+    }
+  } else {
+    const appended = await api('/values/' + encodeURIComponent(sheet + '!A:S') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', {
+      method: 'POST', body: JSON.stringify({ majorDimension: 'ROWS', values: [row] }),
+    });
+    if (appended.updates?.updatedRows !== 1 || !appended.updates?.updatedRange) throw new Error();
+    const readback = await read(appended.updates.updatedRange);
+    const actual = readback.values ??  [];
+    if (actual.length !== 1 || actual[0].length > row.length) throw new Error();
+    const normalized = Array.from({ length: row.length }, (_, index) => actual[0][index] ?? '');
+    if (JSON.stringify([normalized]) !== JSON.stringify([row])) throw new Error();
+    process.stdout.write('Registry row appended and read back exactly.\n');
+  }
+} catch {
+  process.stdout.write('Registration stopped; inspect privately and reconcile by Token ID before retrying.\n');
+  fail();
+}
+JS
+```
 
-Revoke a token when it is expired, when its consumer is retired, when it was printed or logged, or when its scope turns out to be wider than its grant.  Never revoke or broaden a token from a metadata row alone: a row is a claim about a token, and the API is the fact about it.
+Coordinate one writer for each token before registration; Google Sheets has no token-ID uniqueness constraint, so the read-before-append check is not a concurrent-writer lock.  The exact headers are embedded above and the live header is checked on every run.  The row contains metadata only: never include token value, value hash, `encryptedKey`, `iv`, `tag` or service-account JSON.  If an append outcome is uncertain, the next run rereads by token ID and must reconcile; never blindly append twice.
 
-## Failing closed
+After verifying the sheet row, the Fleet-OPS metadata mirror may be synchronized from an owned Fleet-OPS lane with `node scripts/infisical-service-tokens/sync-from-sheet.mjs --write`.  Inspect the diff and confirm only the matching metadata changed.  The sheet remains the source of truth; never hand-edit the mirror as a substitute.
 
-- A missing item, a locked keychain or an unreadable secret store means the consumer stops with a clear error naming the item and the missing scope.
-- A refused API call means the consumer stops.  It does not fall back to another token, does not read a flat key file, does not reuse the Automation identity, and does not cache a value it managed to read once.
-- A grant that no approved token covers is an owner request, not a technical obstacle.  Ask for the narrow grant, and say which folder and which access level it needs.
+## Rotate, revoke and close out
 
-## Before you call it done
+Rotation is not a metadata edit.  Issue a replacement with the intended scope and fresh expiry, install it, verify the grant and consumer store, update the registry with the new token metadata and mark the old row revoked, then revoke the old token through the authorized user session.  Never revoke or broaden a token based on a metadata row alone; verify actual token metadata and consumer state first.
 
-- One project, one environment, one folder, read-only unless write is genuinely required.
-- An expiry is set, and it is short enough to be meaningful.
-- The value is in the consumer host's secret store, the Mac login keychain for a Mac consumer, and appears in no log, no transcript, no command line and no pull request.
-- The scope was verified in both directions: it reads inside the folder and it is refused outside it.
-- The registry row exists in the sheet and in the mirror, with the verification recorded.
-- Every temporary issuance artifact is gone: the issue script, the launchd job that ran it, the log that held the value, and the staging file the value was captured in.
+A missing item, locked keychain, unreadable store, refused API call or uncertain write means stop and report the observed boundary.  Do not retry as another identity or silently change stores.  A token is complete when the consumer can read its own store entry without printing it, its exact metadata is verified, the sheet row is confirmed by readback, and any mirror sync is verified.  Record outside-scope uncertainty accurately rather than describing it as a denial.
 
 ## Related
 
-- `secret-handoff` for how a credential reaches a consumer in the first place.
-- `secret-safety` for the handling rules that apply to every secret, token included.
+- `secret-handoff` for moving a credential to its consumer.
+- `secret-safety` for handling any secret value.
 - `housekeeper` for a consumer that posts to a webhook from the Mac.
