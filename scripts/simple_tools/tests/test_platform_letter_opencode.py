@@ -1,7 +1,7 @@
 """OpenCode on `platform-letter` (AFC-564): the adapter's spec, the hook flows the plugin drives, the installer for the
 `plugins` array of opencode.json, and the plugin's own node tests (and one run of the plugin against the real hook).
-The hook runs in process against a temporary registry in the double (pair) letter space, with the ssh leg faked by the
-core tests' FakeSsh.  No test depends on which pair the registry hands out first, only on the letter being a pair that
+The hook runs in process against the one assigner, its registry API served over a temporary store, with the calls
+counted by the core tests' Calls transport.  No test depends on which pair the registry hands out first, only on the letter being a pair that
 the Operator, the note and the title agree on; the one adjacency test needs a registry that takes a parent."""
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ class SpecTests(unittest.TestCase):
     def test_the_adapter_is_found_by_the_library(self) -> None:
         self.assertIs(PL.load_spec("opencode"), OC.SPEC)
         self.assertEqual((OC.SPEC.platform, OC.SPEC.seat, OC.SPEC.source), ("opencode", "OPENCODE", "opencode-letter-plugin"))
-        self.assertEqual(OC.SPEC.off_variable, "OPENCODE_LETTER")
         self.assertEqual((OC.SPEC.output, OC.SPEC.title_in_output), ("json", True))
         self.assertEqual(OC.SPEC.locations, PL.LOCATIONS)  # OpenCode runs on both hosts
 
@@ -63,10 +62,10 @@ class SpecTests(unittest.TestCase):
         self.assertEqual(OC.opencode_title({}), "")
 
     def test_a_launcher_run_and_the_off_switches_take_no_letter(self) -> None:
-        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "BF"}, {"SESSION_LETTER": "0"}, {"OPENCODE_LETTER": "0"}):
+        for env in ({"AGENT_LAUNCHER": "botfleet"}, {"AGENT_LAUNCH_SEAT": "BF"}, {"SESSION_LETTER": "0"}):
             with self.subTest(env=env):
                 self.assertFalse(PL.in_scope(OC.SPEC, env, {}))
-        self.assertTrue(PL.in_scope(OC.SPEC, {"CODEX_LETTER": "0"}, {}))
+        self.assertTrue(PL.in_scope(OC.SPEC, {"OPENCODE_LETTER": "0"}, {}))  # no per-platform switch
 
     def test_a_title_with_the_no_letter_mark_is_a_headless_run_and_takes_no_letter(self) -> None:
         # The spec's `kind` answered chat or subagent only, so the library's rule that a headless run takes no letter
@@ -111,7 +110,7 @@ class HookBase(T.Base):
         out = io.StringIO()
         code = PL.hook(
             OC.SPEC, env if env is not None else self.server_env(), io.StringIO(json.dumps(payload)), out,
-            runner=runner or T.FakeSsh(self), now=now, platform=platform, **flags,
+            transport=runner or T.Calls(self), now=now, platform=platform, **flags,
         )
         self.assertEqual(code, 0)
         text = out.getvalue().strip()
@@ -155,7 +154,7 @@ class HookTests(HookBase):
 
     def test_the_first_prompt_names_the_chat_and_a_later_one_costs_no_hop(self) -> None:
         label = self.start()["label"]
-        ssh = T.FakeSsh(self)
+        ssh = T.Calls(self)
         out = self.fire({"event": "prompt", "session_id": SID, "title": "%s: New Chat" % label,
                          "prompt": "fix the login page for the billing app"}, runner=ssh)
         self.assertEqual(out["title"], "%s: Fix the Login Page for the Billing" % label)
@@ -215,13 +214,13 @@ class HookTests(HookBase):
         self.assertRegex(out["label"], PAIR)
 
     def test_a_launcher_run_takes_no_letter(self) -> None:
-        ssh = T.FakeSsh(self)
+        ssh = T.Calls(self)
         self.assertIsNone(self.fire({"event": "start", "session_id": SID}, env=self.server_env(AGENT_LAUNCHER="botfleet"), runner=ssh))
         self.assertEqual(ssh.calls, [])
         self.assertIsNone(self.row())
 
     def test_a_headless_run_takes_no_letter_whichever_event_the_plugin_sends(self) -> None:
-        ssh = T.FakeSsh(self)
+        ssh = T.Calls(self)
         mark = "[no-letter] pr-sweep"
         for payload in (
             {"event": "start", "session_id": SID, "source": "startup", "title": mark},
@@ -240,11 +239,8 @@ class HookTests(HookBase):
         self.assertEqual(self.lookup("s-codex-0001")["label"], out["label"])  # AA and AA, two chats
         self.assertEqual(self.row()["seat"], "OPENCODE")
 
-    def test_on_the_mac_the_registry_is_reached_in_process(self) -> None:
-        def no_ssh(*a, **k):
-            raise AssertionError("the Mac does not ssh")
-
-        out = self.fire({"event": "start", "session_id": SID}, env=self.env(), runner=no_ssh, platform="darwin")
+    def test_on_the_mac_the_registry_is_reached_like_everywhere(self) -> None:
+        out = self.fire({"event": "start", "session_id": SID}, env=self.env(), platform="darwin")
         self.assertRegex(out["label"], PAIR)
         self.assertEqual(self.note()["location"], "mac")
 
@@ -268,9 +264,8 @@ class HookTests(HookBase):
         """`platform-letter hook --platform opencode` as the plugin runs it: stdin in, one JSON line out."""
         out = io.StringIO()
         code = PL.main(
-            ["hook", "--platform", "opencode", "--location", "server", "--remote", "mac"],
+            ["hook", "--platform", "opencode", "--location", "server"],
             env=self.env(), stdin=io.StringIO(json.dumps({"event": "start", "session_id": SID})), stdout=out,
-            runner=T.FakeSsh(self),
         )
         self.assertEqual(code, 0)
         self.assertRegex(json.loads(out.getvalue())["platform_letter"]["label"], PAIR)
@@ -345,23 +340,28 @@ class InstallTests(InstallBase):
         self.assertEqual(Path(self.cfg).read_bytes(), before)
         self.assertEqual(self.backups(), [])
 
-    def test_the_server_entry_carries_its_location_and_registry_host_and_keeps_them(self) -> None:
+    def test_the_server_entry_carries_its_location_and_keeps_it(self) -> None:
         self.write({})
-        code, answer = self.run_install("--location", "server", "--remote", "mac")
+        code, answer = self.run_install("--location", "server")
         self.assertEqual(code, 0)
-        self.assertEqual(self.read()["plugins"], [{"package": self.plugin, "options": {"location": "server", "remote": "mac"}}])
-        # Run again without them: the ones installed stay.
+        self.assertEqual(self.read()["plugins"], [{"package": self.plugin, "options": {"location": "server"}}])
+        # Run again without it: the one installed stays.
         self.assertEqual(self.run_install()[1]["changed"], [])
-        self.assertEqual(self.read()["plugins"][0]["options"], {"location": "server", "remote": "mac"})
-        # A new registry host replaces the old one, in place.
-        self.run_install("--remote", "macbook")
-        self.assertEqual(self.read()["plugins"][0]["options"], {"location": "server", "remote": "macbook"})
+        self.assertEqual(self.read()["plugins"][0]["options"], {"location": "server"})
         self.assertEqual(len(self.read()["plugins"]), 1)
 
+    def test_a_registry_host_an_older_install_wrote_is_dropped_on_refresh(self) -> None:
+        # The ssh hop is gone:  the `remote` option an older install wrote is no part of a current entry.
+        self.write({"plugins": [{"package": self.plugin, "options": {"location": "server", "remote": "mac"}}]})
+        self.assertEqual(self.run_install("--check")[0], 1)
+        code, answer = self.run_install()
+        self.assertEqual((code, answer["action"]), (0, "updated"))
+        self.assertEqual(self.read()["plugins"], [{"package": self.plugin, "options": {"location": "server"}}])
+
     def test_options_set_by_hand_survive_a_refresh_and_a_check_calls_the_entry_current(self) -> None:
-        # The plugin's `log` and `command` have no flag; a refresh used to rebuild the entry from location and remote only,
+        # The plugin's `log` and `command` have no flag; a refresh used to rebuild the entry from the flags only,
         # which dropped them with no warning, and `--check` called such an entry not current.
-        hand = {"location": "server", "remote": "mac", "log": "/tmp/letters.log", "command": "/x/platform-letter"}
+        hand = {"location": "server", "log": "/tmp/letters.log", "command": "/x/platform-letter"}
         self.write({"plugins": [{"package": self.plugin, "options": dict(hand)}]})
         code, answer = self.run_install("--check")
         self.assertEqual((code, answer["installed"], answer["current"]), (0, {"plugins": True}, {"plugins": True}))
@@ -370,23 +370,20 @@ class InstallTests(InstallBase):
         self.assertEqual((code, answer["changed"]), (0, []))
         self.assertEqual(Path(self.cfg).read_bytes(), before)
         self.assertEqual(self.backups(), [])
-        # A check against another registry host still says the entry is not what was asked for.
-        self.assertEqual(self.run_install("--check", "--remote", "other")[0], 1)
-        # An outdated entry is renewed where it stands with the hand-set options, and a new registry host replaces the old.
+        # A check against another location still says the entry is not what was asked for.
+        self.assertEqual(self.run_install("--check", "--location", "mac")[0], 1)
+        # An outdated entry is renewed where it stands with the hand-set options.
         stale = "/old/home/.local/share/fleet-cli/current/scripts/simple_tools/" + OC.PLUGIN_DIRNAME
         self.write({"plugins": ["/a", {"package": stale, "options": dict(hand)}]})
-        code, answer = self.run_install("--remote", "macbook")
+        code, answer = self.run_install()
         self.assertEqual((code, answer["action"]), (0, "updated"))
-        self.assertEqual(
-            self.read()["plugins"],
-            ["/a", {"package": self.plugin, "options": dict(hand, remote="macbook")}],
-        )
+        self.assertEqual(self.read()["plugins"], ["/a", {"package": self.plugin, "options": dict(hand)}])
         # The `[path, options]` form is renewed as the object form with its options.
         self.write({"plugins": [[stale, {"log": "/tmp/l2"}]]})
-        self.run_install("--location", "server", "--remote", "mac")
+        self.run_install("--location", "server")
         self.assertEqual(
             self.read()["plugins"],
-            [{"package": self.plugin, "options": {"log": "/tmp/l2", "location": "server", "remote": "mac"}}],
+            [{"package": self.plugin, "options": {"log": "/tmp/l2", "location": "server"}}],
         )
 
     def test_other_plugins_stay_where_they_are_and_ours_goes_last(self) -> None:
@@ -467,9 +464,10 @@ class InstallTests(InstallBase):
         self.assertFalse(os.path.exists(self.cfg))
 
     def test_bad_flags_are_refused(self) -> None:
-        code, answer = self.run_install("--remote=-oProxyCommand=x")
+        out = io.StringIO()
+        code = OC.install(PL.InstallOptions("opencode", "cloud"), self.env, out)
         self.assertEqual(code, 2)
-        self.assertIn("ssh destination", answer["error"])
+        self.assertIn("--location must be", json.loads(out.getvalue())["error"])
         self.assertFalse(os.path.exists(self.cfg))
 
     def test_the_indent_of_the_file_is_kept(self) -> None:
@@ -486,7 +484,7 @@ class InstallTests(InstallBase):
         os.makedirs(os.path.join(self.home, ".local", "bin"))
         Path(self.home, ".local", "bin", "platform-letter").write_text("#!/bin/sh\n")
         self.write({})
-        _, answer = self.run_install("--location", "server", "--remote", "mac")
+        _, answer = self.run_install("--location", "server")
         self.assertNotIn("notes", answer)
         self.assertTrue(self.run_install("--check")[1]["hook_present"])
 
@@ -555,8 +553,8 @@ class NodeTests(HookBase):
         self.assertRegex(proc.stdout, r"(?m)^\S+ fail 0\s*$")
 
     def test_the_plugin_drives_the_real_hook_end_to_end(self) -> None:
-        """The plugin's engine, its real spawn, `scripts/platform-letter hook --platform opencode`, a temporary
-        registry as the Mac's, and a fake OpenCode that records the titles written."""
+        """The plugin's engine, its real spawn, `scripts/platform-letter hook --platform opencode`, the
+        assigner served on loopback, and a fake OpenCode that records the titles written."""
         driver = os.path.join(self.tmp.name, "driver.mjs")
         Path(driver).write_text(
             "import { createLetters, runHook } from %s;\n" % json.dumps((PLUGIN / "index.js").as_uri())
@@ -581,10 +579,13 @@ class NodeTests(HookBase):
         env = dict(
             os.environ,
             SIMPLE_TOOLS_STATE_DIR=self.state,
-            SESSION_LETTER_LOCATION="mac",  # the registry in process, as on the Mac
+            SESSION_LETTER_LOCATION="mac",
             HOME=self.home,
+            **self.fake.env(),
         )
-        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER", "OPENCODE_LETTER"):
+        # The hook runs in a subprocess, so the assigner is served on loopback for it.
+        env["SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"] = self.fake.serve(self.state)
+        for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"):
             env.pop(name, None)
         proc = subprocess.run(
             ["node", driver, sys.executable, str(ENTRY)], capture_output=True, text=True, timeout=180, env=env

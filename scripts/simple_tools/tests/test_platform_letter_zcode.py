@@ -12,7 +12,6 @@ import json
 import os
 import sqlite3
 import shlex
-import subprocess
 import tempfile
 import time
 import unittest
@@ -22,6 +21,7 @@ from simple_tools import listener_registry as RG
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_zcode as Z
+from simple_tools.tests.registry_fake import FakeRegistry
 
 PAIR = r"^[A-Z]{2}$"
 
@@ -61,11 +61,15 @@ class Base(unittest.TestCase):
         with conn:
             conn.execute(SESSION_DDL)
         conn.close()
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
 
     def env(self, **extra: str) -> dict[str, str]:
-        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state}
+        env = {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **(self.assigner.env() if getattr(self, "FAKE", True) else {})}
         env.update(extra)
         return env
 
@@ -110,10 +114,9 @@ class Spec(Base):
         self.assertEqual(spec.seat_for({}, self.env()), "ZC")
         self.assertEqual(spec.display, "ZCode")
         self.assertEqual(spec.locations, ("mac", "server"))
-        self.assertEqual(spec.off_variable, "ZCODE_LETTER")
         self.assertEqual(spec.events["SessionStart"], "start")
         self.assertEqual(spec.events["UserPromptSubmit"], "prompt")
-        self.assertEqual(spec.events["Stop"], "end")
+        self.assertEqual(spec.events["Stop"], "turn")
         self.assertEqual(spec.close_reasons, ())
         self.assertIn("Stop", spec.quiet_events)
 
@@ -202,7 +205,7 @@ class HookFlow(Base):
         self.add_session(sid)
         self.run_hook(
             {"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"},
-            env=self.env(ZCODE_LETTER="0"),
+            env=self.env(SESSION_LETTER="0"),
         )
         registry = OR.SessionRegistry(self.db)
         self.assertIsNone(registry.lookup("zcode", "mac", "default", sid))
@@ -213,6 +216,7 @@ class HookFlow(Base):
 
 
 class ServerLocation(Base):
+    FAKE = False  # its own environment, or a real listener on loopback, answers here
     def test_server_location_without_url_or_remote_is_a_quiet_retry(self) -> None:
         sid = sess(40)
         self.add_session(sid)
@@ -228,6 +232,7 @@ class ServerLocation(Base):
 
 
 class ApiTransport(Base):
+    FAKE = False  # its own environment, or a real listener on loopback, answers here
     """A hook installed --location server on a host off the registry, with the registry API
     URL in its environment:  the hook calls the API itself and the record lands attributed
     to the location it was installed under."""
@@ -282,62 +287,6 @@ class ApiTransport(Base):
         self.assertIn("No Operator letter yet", out)
 
 
-class SweepAgainstApi(Base):
-    """The dropped-session diff against a real registry API:  a registration whose session is
-    ACTIVE in the store is never closed (the false positive Kody's follow-up caught), and one
-    whose row the store has dropped is closed by the diff."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        import secrets
-
-        self.operator_key = secrets.token_hex(24)
-        self.service = RG.RegistryService(self.db, {"OPERATOR": self.operator_key})
-        self.server = API.ListenerReadApi(
-            "127.0.0.1", 0, self.state, {}, registry=self.service
-        )
-        self.server.start()
-        self.addCleanup(self.server.close)
-        host, port = self.server.address
-        self.api_env = self.env(
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="http://%s:%d" % (host, port),
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL="OPERATOR",
-            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=self.operator_key,
-        )
-
-    def _register(self, sid: str) -> None:
-        OR.register_session(
-            self.db,
-            platform="zcode",
-            verified_host="server",
-            profile_scope="default",
-            native_session_id=sid,
-            seat="ZC",
-            source="sweep test",
-            issuer=OR.ISSUER_OPERATOR,
-        )
-
-    def test_active_registration_is_not_closed_and_dropped_one_is(self) -> None:
-        active, dropped, archived = sess(60), sess(61), sess(62)
-        self.add_session(active, title="Still live")
-        self.add_session(archived, title="Done")
-        conn = sqlite3.connect(self.store)
-        with conn:
-            conn.execute("UPDATE session SET time_archived = 2 WHERE id = ?", (archived,))
-        conn.close()
-        self._register(active)
-        self._register(dropped)
-        self._register(archived)
-        out = io.StringIO()
-        code = Z.main(["sweep", "--apply", "--location", "server"], env=self.api_env, stdout=out)
-        self.assertEqual(code, 0, out.getvalue())
-        registry = OR.SessionRegistry(self.db)
-        live = registry.lookup("zcode", "server", "default", active)
-        self.assertTrue(live and live["label"])  # untouched: it still holds its letter
-        self.assertEqual(registry.lookup("zcode", "server", "default", dropped)["state"], "closed")
-        self.assertEqual(registry.lookup("zcode", "server", "default", archived)["state"], "closed")
-
-
 class TitleWriter(Base):
     def test_rename_writes_generated_title(self) -> None:
         sid = sess(20)
@@ -358,6 +307,7 @@ class TitleWriter(Base):
         self.assertEqual(rows[sid], ("AA: Words the prompt gave", "custom"))
 
     def test_a_titled_chat_records_its_thread_link(self) -> None:
+        self.assigner.uninstall()  # a real listener on loopback answers this one
         import secrets
 
         from simple_tools import listener_api as API
@@ -450,6 +400,8 @@ class TitleWriter(Base):
             reason="rename",
             data={},
             env=self.env(),
+            shown="AA: Words",
+            held=("BB", "AA"),
         )
         self.assertTrue(Z.zcode_rename(request))
         rows = dict((r[0], (r[1], r[2])) for r in self.rows())
@@ -544,33 +496,38 @@ class Install(Base):
         code = PL.install_main(["--platform", "zcode", *argv], self.env(), out)
         return code, out.getvalue()
 
-    def test_install_adds_entries_and_copies_wrapper(self) -> None:
+    def test_install_adds_entries_that_run_the_shared_command(self) -> None:
         code, out = self.install("--location", "server")
         self.assertEqual(code, 0)
         answer = json.loads(out.splitlines()[-1])
         self.assertEqual(answer["changed"], ["SessionStart", "UserPromptSubmit", "Stop"])
-        self.assertEqual(answer["wrapper"], os.path.join(self.home, ".local/bin/zc-letter/platform-letter"))
-        self.assertTrue(os.path.isfile(answer["wrapper"]))
         doc = json.load(open(self.config))
         events = doc["hooks"]["events"]
         self.assertTrue(doc["hooks"]["enabled"])  # the user's flag survives
         names = []
         for entry in events["SessionStart"]:
             for hook in entry["hooks"]:
-                words = hook["command"].split()
-                # the full wrapper path, not only its basename:  the first install wrote
-                # ~/.local/zc-letter (one dirname too many) and the hooks silently no-opped
-                self.assertEqual(
-                    words[0],
-                    os.path.join(self.home, ".local/bin/zc-letter/platform-letter"),
-                )
-                self.assertIn("--platform", words)
-                self.assertIn("zcode", words)
+                words = shlex.split(hook["command"])
+                self.assertEqual(words[0], os.path.join(self.home, ".local/bin/platform-letter"))
+                self.assertEqual(words[1:], ["hook", "--platform", "zcode", "--location", "server"])
                 names.append(hook["command"])
         self.assertEqual(len(names), 1)
         # the other tool's hook keeps its matcher and its command
         self.assertEqual(events["PreToolUse"][0]["matcher"], "Bash")
         self.assertIn("lane-guard-hook", events["PreToolUse"][0]["hooks"][0]["command"])
+
+    def test_install_replaces_an_entry_that_ran_the_retired_wrapper(self) -> None:
+        old = os.path.join(self.home, ".local/bin/zc-letter/platform-letter") + " hook --platform zcode --location server"
+        doc = json.load(open(self.config))
+        doc["hooks"]["events"]["SessionStart"] = [{"hooks": [{"type": "command", "command": old, "timeout": 20}]}]
+        with open(self.config, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        self.install()
+        events = json.load(open(self.config))["hooks"]["events"]
+        commands = [h["command"] for e in events["SessionStart"] for h in e["hooks"]]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(shlex.split(commands[0])[0], os.path.join(self.home, ".local/bin/platform-letter"))
+        self.assertIn("--location", commands[0])  # the location the old entry carried is kept
 
     def test_install_is_idempotent_and_check_passes(self) -> None:
         self.install("--location", "server")
@@ -579,13 +536,6 @@ class Install(Base):
         self.assertEqual(answer["changed"], [])
         code, out = self.install("--location", "server", "--check")
         self.assertEqual(code, 0)
-
-    def test_entry_keeps_shell_quoting_for_a_home_with_a_space(self) -> None:
-        command = PL.command_for("/home/a b", "zcode", "server")
-        entry = Z.zcode_entry(command, 10, "SessionStart")
-        words = shlex.split(entry["hooks"][0]["command"])
-        self.assertEqual(words[0], "/home/a b/.local/bin/zc-letter/platform-letter")
-        self.assertEqual(words[1:3], ["hook", "--platform"])
 
     def test_remove_takes_only_ours(self) -> None:
         self.install("--location", "server")
@@ -597,88 +547,145 @@ class Install(Base):
         self.assertNotIn("UserPromptSubmit", events)
         self.assertNotIn("Stop", events)
         self.assertIn("PreToolUse", events)
-        self.assertTrue(os.path.isfile(os.path.join(self.home, ".local/bin/zc-letter/platform-letter")))
 
 
-class Wrapper(Base):
-    WRAPPER = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
-        "zcode-letter-hook",
-        "platform-letter",
-    )
+class NoLetterTitles(Base):
+    """The "??" title on ZCode, through the store writer (PR #1838 review):  the hook's own "??: Words" is replaced by
+    the letter when it comes, and a lettered chat keeps its letter when one call fails."""
 
-    def test_wrapper_exists_and_is_executable(self) -> None:
-        self.assertTrue(os.path.isfile(self.WRAPPER))
-        self.assertTrue(os.access(self.WRAPPER, os.X_OK))
+    def down(self) -> dict[str, str]:
+        env = self.env()
+        env.pop("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", None)
+        return env
 
-    def test_wrapper_is_a_quiet_noop_without_a_checkout(self) -> None:
-        result = subprocess.run(
-            [self.WRAPPER, "hook", "--platform", "zcode"],
-            env={"HOME": self.home, "PATH": "/usr/bin:/bin"},
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "")
+    def title(self, sid: str) -> tuple[str, str]:
+        return dict((r[0], (r[1], r[2])) for r in self.rows())[sid]
 
-    def test_wrapper_sources_env_and_runs_the_real_cli(self) -> None:
-        # A fake checkout carrying a platform-letter that prints what it was given, and an
-        # env file with a marker export, prove both halves of the wrapper's one job.
-        runtime = os.path.join(self.home, "apps", "lanes", "_managed", "fleet", "simple-tools-runtime", "scripts")
-        os.makedirs(runtime)
-        real = os.path.join(runtime, "platform-letter")
-        seen = os.path.join(self.tmp.name, "seen.txt")
-        body = (
-            "#!/bin/sh\n"
-            ': > "%s"\n' % seen
-            + 'for w in "$@"; do echo "$w" >> "%s"; done\n' % seen
-            + 'printenv REGISTRY_MARK >> "%s" 2>/dev/null\n' % seen
-        )
-        with open(real, "w", encoding="utf-8") as fh:
-            fh.write(body)
-        os.chmod(real, 0o755)
-        envfile = os.path.join(self.home, ".local", "bin", "operator-registry-env")
-        os.makedirs(os.path.dirname(envfile))
-        with open(envfile, "w", encoding="utf-8") as fh:
-            fh.write("export REGISTRY_MARK=sourced\n")
-        result = subprocess.run(
-            [self.WRAPPER, "hook", "--platform", "zcode", "--location", "server"],
-            env={"HOME": self.home, "PATH": "/usr/bin:/bin"},
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        seen_words = open(seen).read().split()
-        self.assertEqual(
-            seen_words[:5], ["hook", "--platform", "zcode", "--location", "server"]
-        )
-        self.assertIn("sourced", seen_words)
+    def test_an_unlettered_chat_takes_its_letter_over_the_mark(self) -> None:
+        sid, t0 = sess(60), time.time()
+        self.add_session(sid)
+        self.run_hook({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"},
+                      env=self.down(), now=t0)
+        self.assertEqual(self.title(sid), ("??: New Chat", "custom"))
+        self.run_hook({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "fix the login bug"},
+                      now=t0 + PL.RETRY_SECONDS + 1)
+        label = OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", sid)["label"]
+        self.assertEqual(self.title(sid), ("%s: Fix the Login Bug" % label, "custom"))
 
+    def test_a_turn_end_asks_again_and_letters_the_chat(self) -> None:
+        sid, t0 = sess(61), time.time()
+        self.add_session(sid, title="Mutex semantics")
+        self.run_hook({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"},
+                      env=self.down(), now=t0)
+        self.assertEqual(self.title(sid), ("??: Mutex semantics", "custom"))
+        self.run_hook({"session_id": sid, "hook_event_name": "Stop"}, now=t0 + PL.RETRY_SECONDS + 1)
+        label = OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", sid)["label"]
+        self.assertEqual(self.title(sid), ("%s: Mutex semantics" % label, "custom"))
 
-class Sweep(Base):
-    def test_sweep_reports_archived_and_deleted(self) -> None:
-        keep, archived, deleted = sess(30), sess(31), sess(32)
-        self.add_session(keep)
-        self.add_session(archived, title="done")
-        self.add_session(deleted, title="gone")
+    def test_a_lettered_chat_keeps_its_letter_through_one_failed_resume(self) -> None:
+        sid, t0 = sess(62), time.time()
+        self.add_session(sid, title="Fix the login bug")
+        self.run_hook({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"}, now=t0)
+        label = OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", sid)["label"]
+        self.assertEqual(self.title(sid)[0], "%s: Fix the login bug" % label)
+        _, out = self.run_hook({"session_id": sid, "hook_event_name": "SessionStart", "source": "resume"},
+                               env=self.down(), now=t0 + 60)
+        self.assertEqual(self.title(sid)[0], "%s: Fix the login bug" % label)
+        self.assertIn("Operator session letter: ZCode %s" % label, out)
+        self.run_hook({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "more"}, now=t0 + 120)
+        self.assertEqual(self.title(sid)[0], "%s: Fix the login bug" % label)
+
+    def test_a_turn_end_puts_the_letter_back_on_a_title_the_app_regenerated(self) -> None:
+        sid, t0 = sess(63), time.time()
+        self.add_session(sid, title="Fix the login bug")
+        self.run_hook({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"}, now=t0)
+        label = OR.SessionRegistry(self.db).lookup("zcode", "mac", "default", sid)["label"]
         conn = sqlite3.connect(self.store)
         with conn:
-            conn.execute("UPDATE session SET time_archived = 2 WHERE id = ?", (archived,))
-            conn.execute("UPDATE session SET time_deleted = 3 WHERE id = ?", (deleted,))
+            conn.execute("UPDATE session SET title = 'Merge Draft PRs', title_source = 'generated' WHERE id = ?",
+                         (sid,))
         conn.close()
-        out = io.StringIO()
-        code = Z.main(["sweep", "--location", "server"], env=self.env(), stdout=out)
-        self.assertEqual(code, 0)
-        answer = json.loads(out.getvalue())
-        self.assertEqual(answer["platform"], "zcode")
-        self.assertEqual(
-            sorted(item["session_id"] for item in answer["closed"]),
-            sorted([archived, deleted]),
+        self.run_hook({"session_id": sid, "hook_event_name": "Stop"}, now=t0 + 60)
+        self.assertEqual(self.title(sid), ("%s: Merge Draft PRs" % label, "custom"))
+
+    def test_a_persons_name_is_never_overwritten(self) -> None:
+        sid = sess(64)
+        self.add_session(sid, title="Jay named this", title_source="custom")
+        request = PL.TitleRequest(platform=Z.PLATFORM, session_id=sid, label="CC", title="CC: Jay named this",
+                                  words="Jay named this", current="Jay named this", reason="prompt", data={},
+                                  env=self.env(), shown="??: New Chat", held=("CC",))
+        self.assertTrue(Z.zcode_rename(request))
+        self.assertEqual(self.title(sid), ("Jay named this", "custom"))
+
+
+class ServerShapedHome(Base):
+    """A server's home:  the managed `platform-letter` wrapper (the one `fleet-cli-git-update` writes), a `zc-letter`
+    wrapper from before, and the host's registry env script.  `install --platform zcode --location server` replaces the
+    ZCode entry, and the hook it writes must go on registering, because the managed wrapper sources the env script."""
+
+    FAKE = False
+
+    def test_after_the_install_the_hook_goes_through_the_managed_wrapper_and_registers(self) -> None:
+        import importlib.util
+        import subprocess
+        from pathlib import Path
+
+        # The managed wrapper runs the system interpreter by its fixed path, isolated:  it must be one this checkout runs on.
+        try:
+            probe = subprocess.run(
+                ["/usr/bin/python3", "-c", "import sys; print(sys.version_info >= (3, 11))"],
+                capture_output=True, text=True, timeout=30,
+            )
+            usable = probe.stdout.strip() == "True"
+        except OSError:
+            usable = False
+        if not usable:
+            self.skipTest("the managed wrapper's fixed interpreter /usr/bin/python3 is missing or older than 3.11 here")
+        scripts = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location("_rel", scripts / "fleet-cli-release.py")
+        rel = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rel)
+        home = Path(self.home)
+        bin_dir = home / ".local" / "bin"
+        (bin_dir / "zc-letter").mkdir(parents=True)
+        managed = bin_dir / "platform-letter"
+        managed.write_bytes(rel.wrapper(home, "scripts/platform-letter"))
+        managed.chmod(0o755)
+        # The release the wrapper runs:  this checkout.
+        (home / ".local" / "share" / "fleet-cli").mkdir(parents=True)
+        (home / ".local" / "share" / "fleet-cli" / "current").symlink_to(scripts.parent)
+        # The host's env script (fake values):  it points the hook at the registry served on loopback.
+        self.assigner.install()
+        self.addCleanup(self.assigner.uninstall)
+        url = self.assigner.serve(os.path.join(self.tmp.name, "listener-state"))
+        values = {**self.assigner.env(), "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": url}
+        (bin_dir / "operator-registry-env").write_text(
+            "".join("export %s=%s\n" % (k, shlex.quote(v)) for k, v in values.items())
         )
-        self.assertTrue(all(item.get("would_close") for item in answer["closed"]))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        # An entry an earlier install pointed at the zc-letter wrapper:  install replaces it in place.
+        old = "%s hook --platform zcode --location server" % (bin_dir / "zc-letter" / "platform-letter")
+        config = home / ".zcode" / "cli" / "config.json"
+        config.write_text(
+            json.dumps({"hooks": {"events": {"SessionStart": [{"hooks": [{"type": "command", "command": old}]}]}}})
+        )
+        out = io.StringIO()
+        code = PL.install_main(["--platform", "zcode", "--location", "server"], {"HOME": self.home}, out)
+        self.assertEqual(code, 0, out.getvalue())
+        written = json.loads(config.read_text())["hooks"]["events"]["SessionStart"]
+        commands = [h["command"] for group in written for h in group["hooks"]]
+        self.assertEqual(commands, ["%s hook --platform zcode --location server" % managed])
+        # The hook, as a process with no profile and none of the registry settings, registers the chat.
+        sid = sess(31)
+        self.add_session(sid, title="Fix the wake path")
+        done = subprocess.run(
+            shlex.split(commands[0]),
+            input=json.dumps({"session_id": sid, "hook_event_name": "SessionStart", "source": "startup"}),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={"HOME": self.home, "PATH": "/usr/bin:/bin", "SIMPLE_TOOLS_STATE_DIR": self.state},
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        record = OR.SessionRegistry(self.db).lookup("zcode", "server", "default", sid)
+        self.assertTrue(record)
+        self.assertRegex(record["label"], PAIR)

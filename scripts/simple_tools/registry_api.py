@@ -1,9 +1,8 @@
 """The Operator's session registry over its HTTPS API, for the registry machinery on this host.
 
 The registry API (listener_registry.py, served by the listener under /registry/v1/) is the
-one store now:  the server's file, reached over HTTPS with a signed call.  The MiniMax
-letter helper (scripts/mm_session_letter.py) grew the first client for it;  this module is
-the same client discipline for the package's own registry callers, the operator-registry
+one store now:  the server's file, reached over HTTPS with a signed call.  This module is
+the one client for the package's own registry callers, the operator-registry
 CLI (operator_registry.main, which the letter sweep drives) and the platform-letter
 registry side (platform_letter.registry_main).  Both speak the registry CLI's dialect, so
 a call here takes the op and its fields under the CLI's names and answers with the API's
@@ -25,12 +24,11 @@ live registry by accident.
 
 Scope of the hard cut (AFC-720).  This module has no store:  a host with no URL or no key
 answers code "not_configured" for every op, nothing is opened, created or written here,
-and a failed call answers with its failure rather than falling back to a file.  That is a
-promise about this module only.  The callers (operator_registry.main,
-platform_letter.registry_main, claude_letter, mm_session_letter and the platform adapters)
-still choose their own local-file or ssh branch when base_url() is empty;  P4 and P6 of the
-AFC-694 consolidation delete those branches, and until they land a caller with no URL can
-still write a local file.
+and a failed call answers with its failure rather than falling back to a file.  The shared
+letter client (platform_letter and every platform adapter on it) has no other branch:  a
+host with no URL gets no letter and titles the chat "??".  operator_registry.main still
+chooses its own local-file branch when base_url() is empty, until a later AFC-694 stage
+deletes it.
 
 Python 3.11+, standard library only.
 """
@@ -69,8 +67,8 @@ KEY_KNOB = KEY_VAR
 #: so OPERATOR is the only default that keeps the calls working.
 DEFAULT_PRINCIPAL = "OPERATOR"
 
-#: CLI spellings that name a registry field under another name, folded for the API (the
-#: same folds mm_session_letter applies, so every client sends one dialect).
+#: CLI spellings that name a registry field under another name, folded for the API, so
+#: every caller sends one dialect.
 _ARG_ALIASES = {
     "location": "verified_host",
     "scope": "profile_scope",
@@ -230,6 +228,19 @@ def signing_key(env: Mapping[str, str] | None = None) -> str:
     """The one signing key, or "" when this host has none."""
     env = os.environ if env is None else env
     return _setting(env, KEY_VAR, KEY_KNOB)
+
+
+def configuration(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Whether this process can reach the registry API, and when it cannot, the class of reason, by variable and knob
+    names only:  never a value.  `{"configured": True}`, or `{"configured": False, "reason": "no URL: ..."}` (or
+    "no key: ...").  A hook launched without the registry settings in its environment answers `no URL` here, and
+    `call` answers `not_configured` with the same words;  `platform-letter install --check` prints this."""
+    env = os.environ if env is None else env
+    if not base_url(env):
+        return {"configured": False, "reason": "no URL: " + _unset_reason(env, URL_ENV, URL_KNOB)}
+    if not signing_key(env):
+        return {"configured": False, "reason": "no key: " + _unset_reason(env, KEY_VAR, KEY_KNOB)}
+    return {"configured": True}
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
