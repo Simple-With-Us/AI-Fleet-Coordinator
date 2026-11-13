@@ -310,6 +310,10 @@ class LetterParse(unittest.TestCase):
             self.assertEqual(self.letter(text), want, text)
 
     def test_the_first_of_a_headers_recipients_for_the_seat_wins(self) -> None:
+        header = ("[GROK:\u200a\u200a\u200aBB.2.M\u200a\u200a📁\u200aAFC,\u200aOPS"
+                  " → CODEX EE,\u200a\u200aCLAUDE AA] text")
+        self.assertEqual(self.letter(header, "CODEX", "Codex"), "EE")
+        self.assertEqual(self.letter(header), "AA")
         five = "CLAUDE EE, CLAUDE AA, CLAUDE BB, CLAUDE CC, CLAUDE DD"
         self.assertEqual(self.letter(self.HEADER % five), "EE")
         self.assertEqual(self.letter(self.HEADER % ("CODEX ZZ, " + five)), "EE")
