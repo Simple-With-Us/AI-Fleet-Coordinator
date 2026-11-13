@@ -10,6 +10,15 @@ from unittest import mock
 from simple_tools import cli, post_header, router, wake_router
 
 FIXTURES = json.loads(Path(__file__).with_name("header-spacing.json").read_text())
+if not isinstance(FIXTURES, list) or not FIXTURES or not all(
+    isinstance(case, dict)
+    and all(isinstance(case.get(key), str) for key in ("name", "input", "expected"))
+    and (case.get("seat") is None or isinstance(case["seat"], str))
+    and all(key not in case or (isinstance(case[key], list) and all(isinstance(v, str) for v in case[key]))
+            for key in ("repos", "peers"))
+    for case in FIXTURES
+):
+    raise ValueError("Invalid header-spacing.json fixture shape")
 
 
 class HeaderSpacingTests(unittest.TestCase):
@@ -57,3 +66,15 @@ class HeaderSpacingTests(unittest.TestCase):
         with mock.patch.object(cli, "MAX_CONTENT_LENGTH", len(text)):
             with self.assertRaises(cli.UsageError):
                 cli._compose(agent, text, labels=[], mentions=[], no_tag=False)
+
+    def test_quiet_own_headers_and_ascii_transport_arrows_keep_recipients(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        text = "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] Body.\u00a0 Next."
+        for marker, quiet in (("", True), (":eyes: ", False), ("👀 ", True)):
+            body = cli._compose(agent, marker + text, labels=["AG"], mentions=[], no_tag=False, quiet=quiet)
+            self.assertEqual(body, (marker or ":eyes: ") + FIXTURES[0]["expected"])
+            _, no_wake = router.strip_no_wake(body, "CODEX")
+            self.assertTrue(no_wake)
+            self.assertEqual(router.header_peers(body), ["CODEX EE", "AG"])
+        self.assertEqual(cli._compose(agent, "[CODEX·oldtag->AG] hi", labels=["CURSOR"], mentions=[], no_tag=False),
+                         "[CODEX·deadbeef → AG,\u200a\u200aCURSOR] hi")
