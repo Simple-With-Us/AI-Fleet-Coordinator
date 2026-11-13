@@ -1,6 +1,6 @@
 # Production deploys
 
-> Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
+> Moved from `FLEET-PROTOCOL.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in FLEET-PROTOCOL.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
 > **⚠️ SUPERSEDED for <YOUR_PROJECT_NAME> (owner-directed 2026-07-10): AUTO-DEPLOY IS ON.** Merging to
 > `main` now auto-deploys `socratic-trade-prod` via Coolify's GitHub-App webhook
@@ -16,7 +16,7 @@
 conflicting with the post-Coolify repo docs): agents MAY deploy merged, green `main` without a
 per-release owner ask, **but only announce-then-deploy**:
 
-1. **Announce first** on `#agent-sync`: a claim line naming the app, the exact `main` commit,
+1. **Announce first** on `#Work-In-Progress`: a claim line naming the app, the exact `main` commit,
    what it ships, and "deploying in N minutes unless objection". The claim line makes ONE agent
    the deployer — this is what prevents the 2026-07-09 double-trigger (two lanes deployed the
    same commit 2s apart; Coolify's cancel API is broken, so both built).
@@ -30,24 +30,24 @@ Zulip announce gives peers visibility, but it is not itself a lock — a poll-ca
 exactly what let two lanes deploy the same commit 2 seconds apart on 2026-07-09 (Coolify's
 cancel API is broken, so both builds ran). The old board server rejected a second claim of an
 `in_progress` item with a `409` inside a 20-minute lease. That lock is gone with the server.
-Linear's `board claim` is check-then-set:  it exits `3` when another seat holds the issue In
+Linear's `simple-board claim` is check-then-set:  it exits `3` when another seat holds the issue In
 Progress, but two claims in the same second can both pass the check, and the later write
 replaces the earlier `claimed:` label. So the claim is a strong signal, not an atomic lock.
 Use it together with the announce and the no-objection window, and re-read the holder before
 you deploy:
 
 ```bash
-board file --title "DEPLOY LOCK: <app>" --app <app> --severity P2 --kind agent-report --by "$AGENT_SEAT" --env Mac
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "deploying <commit>"   # exit 3 = someone already holds it, stop
-sleep 10 && board show <id>        # the holder must still be you;  if it names another seat, stand down
+simple-board file --title "DEPLOY LOCK: <app>" --app <app> --severity P2 --kind agent-report --by "$AGENT_SEAT" --env Mac
+simple-board claim <id> --by "$AGENT_SEAT" --env Mac --where "deploying <commit>"   # exit 3 = someone already holds it, stop
+sleep 10 && simple-board show <id>        # the holder must still be you;  if it names another seat, stand down
 # ...announce, wait the window, deploy, health-verify...
-board status <id> completed --resolution "deployed <commit>"
+simple-board status <id> completed --resolution "deployed <commit>"
 ```
 
 Exit `3`, or a holder that is not you after the re-read, means another seat claimed that app's
-deploy lock — stand down, do not also trigger, and go find them in `#agent-sync` instead of
+deploy lock — stand down, do not also trigger, and go find them in `#Work-In-Progress` instead of
 assuming your Zulip post won. Prefer reusing the app's open `DEPLOY LOCK` issue over filing a
-new one each time (`board list --app <app> --search "DEPLOY LOCK"`), so the history stays in
+new one each time (`simple-board list --app <app> --search "DEPLOY LOCK"`), so the history stays in
 one place. An atomic lock (a GitHub environment or a Coolify-side lock) is an open item for the
 owner.  This does not require GitHub Environments or a new `Kind` label.
 
@@ -72,7 +72,7 @@ change is only that the `main → production` release step no longer needs a hum
   **FALSE failure** even though the Worker deployed fine; verify with a browser UA, not the
   workflow's red X.
 - On a **real** deploy failure, roll back (or restart the prior good version) and raise it in
-  `#agent-sync` — do not leave production broken.
+  `#Work-In-Progress` — do not leave production broken.
 - Never run destructive one-offs (prod DB wipes, unbounded backfills/queue drains) under cover of
   "deploy" — this directive is about releasing merged code, not arbitrary prod mutations.
 

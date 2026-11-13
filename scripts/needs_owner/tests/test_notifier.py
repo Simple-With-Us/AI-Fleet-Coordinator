@@ -1,8 +1,8 @@
 """The fallback notifier (`needs-owner notify`):  notices, caps, the pause, the lock, the log.
 
-Every test runs the real notifier in process against the fake `board` and `agent-sync` (built on the real parsers), a
+Every test runs the real notifier in process against the fake `board` and `simple-chat` (built on the real parsers), a
 fake clock and fake K1 knobs, in a temp HOME.  Jay is Zulip user 7 (the pinned owner);  CODEX, BF-DIRECTOR and the
-Grok Bot personas are the filing seats.
+Grok bots are the filing seats.
 """
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ class NotifierCase(unittest.TestCase):
 
     # ---- looking ---------------------------------------------------------------------------
     def posts(self, seat: str | None = None, *, went_out: bool = False) -> list[dict]:
-        return [c for c in self.w.calls("agent-sync") if c["argv"][0] in ("post", "reply") and (seat is None or c["seat"] == seat)
+        return [c for c in self.w.calls("simple-chat") if c["argv"][0] in ("post", "reply") and (seat is None or c["seat"] == seat)
                 and (not went_out or c.get("code") == 0)]
 
     def sent_by_notifier(self) -> list[dict]:
@@ -101,7 +101,7 @@ class FallbackTests(NotifierCase):
         row = self.state_of(ident)
         self.assertEqual((row["state"], row["notified_msg_id"] is not None), ("notified", True))
         comments = self.w.comments(ident)
-        self.assertTrue(any(c.startswith("[CLAUDE") and "[needs-owner] notified msg" in c for c in comments), comments)
+        self.assertTrue(any("[needs-owner] notified msg" in c for c in comments), comments)
         # nothing was closed, restated or edited
         self.assertEqual(self.issue_status(ident), "Todo")
 
@@ -178,6 +178,19 @@ class FallbackTests(NotifierCase):
         self.assertTrue(any("reason: no_credential" in c for c in self.w.comments(ident)))
         self.w.set_zulip(no_credential=[])
         self.assertEqual(len(self.events(self.run_notify(), "notified")), 1)
+
+    def test_a_notice_whose_record_may_have_landed_is_not_posted_again(self) -> None:
+        """The board's exit-1 failure may have applied the record comment, so it is not written again:  the
+        notice is not posted a second time and the item stays pending."""
+        record = self.pending()
+        first = self.w.notify(env=self.w.env(FAKE_BOARD_FAIL="comment"))
+        (event,) = self.events(first.json(), "notice-failed")
+        self.assertEqual(event["reason"], "outcome_unknown")
+        self.assertEqual(len(self.sent_by_notifier()), 1)
+        self.run_notify()
+        self.assertEqual(len(self.sent_by_notifier()), 1, "the notice is not posted again")
+        self.assertEqual(self.state_of(record["identifier"])["state"], "notify_pending")
+        self.assertEqual(len([c for c in self.w.comments(record["identifier"]) if "notified msg" in c]), 0)
 
     def test_an_item_that_fails_revalidation_is_skipped_with_a_reason(self) -> None:
         edited = self.pending("Edited after filing?")
@@ -306,7 +319,7 @@ class PauseTests(NotifierCase):
         old_item = self.file("Settled long ago?", seat="CODEX")
         self.w.close(old_item["identifier"])
         self.run_notify()
-        reads = lambda: len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "read" and old_item["topic"] in c["argv"]])  # noqa: E731
+        reads = lambda: len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "read" and old_item["topic"] in c["argv"]])  # noqa: E731
         before = reads()
         self.run_notify()
         self.assertEqual(reads(), before)
@@ -361,8 +374,8 @@ class PauseTests(NotifierCase):
         request = "```needs-owner-request\n%s\n```" % json.dumps({"question": "Rotate it?", "options": ["Yes", "No"], "seat": "GB-PLUMBER"})
         self.w.add_message("OWNER GB-PLUMBER needs a key", request, seat="GB-PLUMBER")
         self.run_notify()
-        self.assertEqual([c for c in self.w.calls("board") if c["argv"][0] == "file"], [])
-        self.assertEqual([c for c in self.w.calls("agent-sync") if c["argv"][0] == "reply"], [])
+        self.assertEqual([c for c in self.w.calls("simple-board") if c["argv"][0] == "file"], [])
+        self.assertEqual([c for c in self.w.calls("simple-chat") if c["argv"][0] == "reply"], [])
         self.w.knobs.values["NEEDS_OWNER_NOTIFY_PAUSED"] = False
         self.assertEqual(len(self.events(self.run_notify(), "mirrored")), 1)
 
@@ -376,11 +389,11 @@ class RunTests(NotifierCase):
         self.assertEqual([e["event"] for e in result["events"]], ["start", "board-read-failed"])
         self.assertEqual(self.sent_by_notifier(), [])
 
-    def test_a_missing_board_is_a_failed_read_too(self) -> None:
-        self.w.remove_tool("board")
+    def test_a_missing_board_refuses_before_any_read(self) -> None:
+        self.w.remove_tool("simple-board")
         ran = self.w.notify()
-        self.assertEqual(ran.code, 0, ran.err)
-        self.assertIn("board-read-failed", [e["event"] for e in ran.json()["events"]])
+        self.assertEqual(ran.code, 2, "no board means no bearer to prove the seat:  the notifier refuses, it never acts unverified")
+        self.assertIn("simple-board", ran.err)
 
     def test_a_refused_or_broken_knob_stops_the_run_before_anything_is_sent(self) -> None:
         self.pending()
@@ -402,11 +415,11 @@ class RunTests(NotifierCase):
 
     def test_dry_run_changes_nothing_anywhere(self) -> None:
         record = self.pending()
-        before_board = len(self.w.calls("board"))
+        before_board = len(self.w.calls("simple-board"))
         result = self.run_notify("--dry-run")
         self.assertEqual([e["id"] for e in self.events(result, "would-notify")], [record["identifier"]])
         self.assertEqual(self.sent_by_notifier(), [])
-        self.assertEqual([c for c in self.w.calls("board")[before_board:] if c["argv"][0] in ("comment", "file", "label", "status")], [])
+        self.assertEqual([c for c in self.w.calls("simple-board")[before_board:] if c["argv"][0] in ("comment", "file", "label", "status")], [])
         self.assertFalse(self.w.notifier_dir.exists(), "no state, no lock")
 
     def test_the_state_files_are_private_and_hold_no_words(self) -> None:

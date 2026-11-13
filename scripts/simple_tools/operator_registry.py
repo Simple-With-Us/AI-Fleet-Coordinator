@@ -1,0 +1,3407 @@
+"""Durable Operator session registry and export outbox (AFC-412 PR1).
+
+Identity is (platform, verified_host, profile_scope, native_session_id) - never the seat, never
+the label, never the title.  A resume on the same tuple returns the same immutable record_id and
+its live label;  a fork or a new native session id is a new registration.
+
+Labels are per-platform pairs (AA-ZZ) with one namespace across all hosts.  No single letter is issued (owner, Nov 11
+2026:  "no single letters");  one a chat still holds from before is read, and moves onto a pair when that chat next
+registers, reopens or is relabelled.  A pair's generation counts its own issues for the seat.
+A main chat's pair follows one rule for every seat (owner, Nov 11 2026):  only the doubled pairs
+AA, BB ... ZZ, the free one issued the fewest times first, counting every past issue including legacy rows ("count the
+history"), then the lap order, so the seat keeps advancing and starts AA.2 only after ZZ.1;  all 26 live refuses the
+letter;  a caller's pick does not change it (see PRIMARY_ORDER and SessionRegistry._allocate).  A session
+another session started names its parent (`parent_session_id`) and takes the first free pair after the parent's in
+the same row, wrapping past Z (parent CC, child CD;  parent XX, children XY, XZ, XA, XB);  when that row is full it
+takes a random free pair of two different letters, never a doubled one, and all 650 live refuses the letter.  Cross-seat references to a
+generation > 1 letter must carry the generation:  "MM A (gen 2)".
+
+Seat is checked separately from identity:  a resolve under an unexpected seat returns the
+existing record with outcome "seat_mismatch", writes an events row, and changes nothing.  No
+rebind to another seat, except the one correction below, and no token or wake authority is derived from a
+match.  A seat also has to be one of its
+platform's (AFC-772):  a claude chat under ZC is refused with SeatPlatformMismatch before a row is
+written or a letter moved, while a platform fleet-apps.json `seatApps` does not name registers
+under any seat (check_seat_platform).  A known platform's seat is stored as its tag (filed_seat),
+and a live row filed under a wrong seat earlier is still resumed under it until it is closed.  The one
+correction:  a register that names the one seat of a platform that has exactly one (fixed_seat) re-seats a
+row filed under another seat (SessionRegistry._reseat, event `reseat`), and never the other way.
+
+Standard library only, Python 3.11+.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import random
+import re
+import secrets
+import sqlite3
+import sys
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from . import identity as I
+from . import secretscan
+from . import session_ids as SI
+from .operator_registry_schema import DDL, SCHEMA_VERSION
+
+# Wake-transport support by adapter platform, the one canonical table the registry
+# derives a session's stored wake_capability from and the chat-nudge transport list
+# reads.  It lives in this module, not a file of its own, because the shipped set is
+# capped at 150 files (fleet-cli-release.py MAX_FILES, with the receiver's
+# fleet-cli-sync.py enforcing the same count):  a 151st file would need a budget
+# raise on both sides, and this table does not carry one.
+WAKE_SUPPORTED = "code-supported"
+WAKE_NONE = "none"
+WAKE_UNKNOWN = "unknown"
+
+# Every platform the chat catalog scans, assessed against this tree, plus the
+# owner-named chatgpt exception below.  A platform not listed derives
+# WAKE_UNKNOWN, not WAKE_NONE.
+_WAKE_SUPPORT: dict[str, str] = {
+    "grok-leader": WAKE_SUPPORTED,
+    "cursor-cloud": WAKE_SUPPORTED,
+    "codex": WAKE_SUPPORTED,
+    "claude": WAKE_NONE,
+    "cursor-local": WAKE_NONE,
+    "muse": WAKE_NONE,
+    "minimax": WAKE_NONE,
+    "fx": WAKE_NONE,
+    "antigravity": WAKE_NONE,
+    "opencode": WAKE_NONE,
+    # Owner ask 2026-11-04:  "jet needs to wake also his own way".  chatgpt is
+    # not a catalog platform - the JET/JET-CHAT seat is OpenAI-hosted with no
+    # local store to scan - and this tree ships no chatgpt wake adapter:  his
+    # wake is his own hosted route (the JET listener HTTP -> hosted MCP events
+    # callbacks, events-only per the Oct 30 grounding), outside this tree.  So
+    # he is recorded here explicitly, NONE against this tree, never UNKNOWN.
+    "chatgpt": WAKE_NONE,
+}
+
+
+def wake_capability_for_platform(platform: object) -> str:
+    """The tree's wake-transport support for one adapter platform, source-only.
+
+    This table is the tree's support as written, not a runtime promise:  it
+    says nothing about a live adapter's current reachability.  Registration
+    derives a session's stored wake_capability from it only when the caller
+    makes no claim of its own, so a new row carries the tree's honest support
+    level instead of the blanket "unknown" default.  Derivation fills new or
+    "unknown" rows only:  a stored non-"unknown" value is a stored claim,
+    explicit or derived, and is never rewritten by a later derivation.
+    """
+    if not isinstance(platform, str):
+        return WAKE_UNKNOWN
+    return _WAKE_SUPPORT.get(platform.strip().lower(), WAKE_UNKNOWN)
+
+
+def implemented_wake_platforms() -> frozenset[str]:
+    """The adapter platforms this tree ships a delivery adapter for."""
+    return frozenset(p for p, state in _WAKE_SUPPORT.items() if state == WAKE_SUPPORTED)
+
+
+LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+# Two letter spaces.  Since the owner's Nov 11 2026 rule every chat takes a pair ("double"):  a main chat a doubled
+# pair, a subthread a pair in its parent's row.  "single" is kept only so a single letter issued before the rule is
+# still read and checked;  no single letter is issued again.  A resume finds the row that already holds the letter,
+# so a session id always answers with the same letter.
+LETTER_SPACES = {
+    "single": LETTERS,
+    "double": tuple(a + b for a in LETTERS for b in LETTERS),
+}
+ALL_LETTERS = tuple(sorted(set(LETTERS) | set(LETTER_SPACES["double"])))
+# The pairs a main chat takes, for every seat (owner, Nov 11 2026):  only the 26 doubled pairs AA, BB ... ZZ.  "after ZZ
+# it should go to the next generation if all double letters in alphabet were used."  A generation is the number in a
+# post header ("MC: CC.1.M" is Muse Code, pair CC, 1st generation, on the Mac), counted per pair per seat:  "it is okay
+# to make the generation be generation of CC's for that platform".  The other 650 pairs are a subthread's
+# (pairs_after), never a main chat's.  _allocate applies this for every main chat of every seat, whatever the caller
+# asks for:  the rule lives in the one assigner.
+PRIMARY_ORDER = tuple(a + a for a in LETTERS)
+# The picks a caller may still name.  None changes the order (owner, Nov 11 2026:  the order lives in the allocator):
+# every chat takes a pair by _allocate's one rule, so a pick is accepted and ignored.  The names stay known values so
+# the callers that still send one are not refused.
+LETTER_PICKS = ("lowest", "oldest", "primary")
+# Every seat's main chats take the doubled pairs, whoever registers them and whatever space or pick the caller names
+# (owner, Nov 11 2026:  "if a Muse Code seat asks for a letter then it will get a DD since the last assigned to MC was
+# CC").  There is no per-platform table:  a single letter is never issued again.  A single letter a chat already holds
+# from before the rule stays readable (letter_space_of), and a relabel or a reopen moves that chat onto a pair.
+DEFAULT_SPACE = "double"
+# The random source for a subthread whose parent's row is full (owner, Nov 11 2026:  "issue random non-pair of letters
+# like random 2 letters not identical ones to preserve those for main chats").  The operating system's generator, so
+# the pick is not predictable from earlier picks;  a test injects its own chooser through SessionRegistry(choose=...)
+# rather than weakening this one.
+_OVERFLOW_RANDOM = random.SystemRandom()
+
+
+def _clean_parent(value: object) -> str:
+    """A parent's session id as register_session checks it, or "":  a parent that is not a session id is no parent, and
+    the chat is picked like any other and still gets a letter, rather than none because of a hint it was never owed."""
+    if not value:
+        return ""
+    try:
+        return SI.check(value, "the parent session id")
+    except ValueError:
+        return ""
+
+
+def letter_space_of(letter: str) -> str:
+    """The letter space a letter belongs to:  "double" for a pair, "single" for one letter.
+
+    It is the same rule the registry allocates by, so a caller can tell whether a session already holds
+    a letter in the space it is asking for.
+    """
+    return "double" if len(letter) == 2 else "single"
+
+
+def pairs_after(pair: str) -> tuple[str, ...]:
+    """The pairs a subthread of the chat that holds `pair` may take, in order:  the parent's first letter with each
+    second letter after the parent's, wrapping past Z to A (owner, Oct 29, 2026:  parent AA: AB, AC, AD ...;  parent
+    XX: XY, XZ, XA, XB ...;  parent CD: CE, CF ...), never the doubled pair, which belongs to a main chat.  Anything
+    that is not a pair has none."""
+    if len(pair) != 2 or pair not in LETTER_SPACES["double"]:
+        return ()
+    first, second = pair
+    start = LETTERS.index(second)
+    return tuple(
+        first + LETTERS[(start + step) % 26]
+        for step in range(1, 26)
+        if LETTERS[(start + step) % 26] != first
+    )
+
+
+MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", "wake_capability")
+IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
+
+# One platform namespace per platform, not per adapter.
+#
+# The chat catalog discovers sessions through adapters, and two adapters can feed
+# one seat:  "cursor-cloud" and "cursor-local" are both Cursor.  A letter is
+# issued per platform, so the namespace has to be the platform.  Keyed on the
+# adapter name the catalog emits, folding to the namespace the letters live in.
+#
+# Only adapters that feed the SAME seat are folded.  Two Cursor adapters are one
+# platform because they are one seat;  folding an adapter that might later gain
+# a sibling for a different seat would merge two seats' letter spaces, and a
+# letter is only unique inside one of them.  An adapter that is not listed folds
+# to itself, so a new adapter gets its own namespace rather than colliding with
+# another platform's.
+PLATFORM_NAMESPACES = {
+    "cursor": "cursor",
+    "cursor-cloud": "cursor",
+    "cursor-local": "cursor",
+    # One seat, GROK:  the Grok leader, terminal Grok and Grok Build (owner 2026-10-08).  Its letters already live
+    # under "grok-leader" (platform_letter_grok_leader), so the other two labels fold into it rather than each
+    # starting its own AA.
+    "grok": "grok-leader",
+    "grok-build": "grok-leader",
+}
+
+
+SESSIONS_HEADERS = (
+    "Record ID",
+    "Label",
+    "Seat",
+    "Platform",
+    "Host",
+    "Native Session ID",
+    "Title",
+    "Project",
+    "Thread Link",
+    "Apple Note Link",
+    "State",
+    "Wake Capability",
+    "Registered At",
+    "Last Seen At",
+    "Closed At",
+    "Source",
+)
+EVENTS_HEADERS = (
+    "Event ID",
+    "Recorded At",
+    "Session Record ID",
+    "Label",
+    "Event",
+    "Actor",
+    "Outcome",
+    "Source",
+    "Details",
+)
+
+
+class SessionClosed(ValueError):
+    """A session that is closed cannot be given another letter.
+
+    It is a ValueError, so a caller that catches ValueError still catches it, and it is
+    its own type, so a caller that cares can tell this refusal from another one.
+    """
+
+
+class SessionUnknown(ValueError):
+    """A session this registry has never seen cannot be given a letter.
+
+    It is a ValueError, so a caller that catches ValueError still catches it, and it is
+    its own type, so a caller that cares can tell it from another refusal:  a session
+    that is unknown is registered, and a session that is closed is not.
+    """
+
+
+class LabelExhausted(RuntimeError):
+    """Every doubled pair in one seat's namespace has a live holder, so the chat is refused a letter (owner, Nov 11
+    2026:  "ok just refuse actually is fine").  `space` is "double" and `limit` the number of doubled pairs (26):  a
+    caller reports the refusal and carries on, and never frees another chat's pair to make room."""
+
+    space = "double"
+    limit = 26
+
+
+class UnknownRecord(KeyError):
+    """No session with this record_id."""
+
+
+SEAT_PLATFORM_MISMATCH = "seat_platform_mismatch"
+
+
+class SeatPlatformMismatch(ValueError):
+    """A platform's chat arrived under a seat that is not one of that platform's (AFC-772).
+
+    Three Claude Code chats once registered as platform "claude" under the seat ZC, because their
+    host exported another platform's seat and the letter hook passed it on.  The wake router picks
+    only rows of its own seat, no op changed a stored seat, and a second registration under the
+    right seat answered `seat_mismatch`, so those chats were left with a letter nothing could reach
+    (a register under the platform's own seat now re-seats such a row:  SessionRegistry._reseat).
+    The refusal comes before anything is written.
+
+    It is a ValueError, so a caller that catches ValueError still catches it and no letter client
+    crashes on it, and it is its own type, so the API answers it with its own code (`code`).
+    `platform` is the folded namespace, `seat` the canonical seat that was refused ("" when what
+    arrived is not a seat tag, so nothing a caller typed by mistake is repeated back), and
+    `expected` the seats the platform registers under (tags, then role patterns such as BF-*).
+    """
+
+    code = SEAT_PLATFORM_MISMATCH
+
+    def __init__(self, platform: str, seat: str, expected: Sequence[str]) -> None:
+        self.platform = platform
+        self.seat = seat
+        self.expected = tuple(expected)
+        owners = " or ".join(self.expected)
+        super().__init__(
+            f"platform {platform} registers under seat {owners}, not {seat or 'the seat given'}"
+        )
+
+    def answer(self) -> dict[str, Any]:
+        """The refusal as the API and the CLI print it."""
+        return {
+            "error": str(self),
+            "code": self.code,
+            "platform": self.platform,
+            "seat": self.seat,
+            "expected": list(self.expected),
+        }
+
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _ulid(now_ms: int | None = None) -> str:
+    """A 26-character ULID (48-bit ms time + 80-bit random, Crockford base32).  Minted once per
+    record or event and never reused."""
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    now_ms &= (1 << 48) - 1
+    rand = secrets.randbits(80)
+    out = []
+    for shift in range(45, -1, -5):
+        out.append(_CROCKFORD[(now_ms >> shift) & 31])
+    for shift in range(75, -1, -5):
+        out.append(_CROCKFORD[(rand >> shift) & 31])
+    return "".join(out)
+
+
+def _utcnow() -> str:
+    """Canonical UTC instant.  Display formatting (12-hour America/Chicago) is the exporter's job."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def display_title(label: str, title: str) -> str:
+    """In-platform display form (owner 2026-10-20):  "H: Title"."""
+    return f"{label}: {title}" if label else title
+
+
+SECRET_DETECTED = "secret_detected"
+TITLE_NOT_STRING = "title_not_string"
+
+
+def _scan_title(title: str | None) -> None:
+    """Refuse a title that carries a credential, with a stable code and no value.
+
+    The registry is the system of record for every session name, so the scan lives
+    here and not only in the callers:  a title that arrives from anywhere is refused
+    before it is stored, and the answer names the problem without repeating the
+    secret or any part of it.
+    """
+    if title is None:
+        return
+    if not isinstance(title, str):
+        # A value of another type is never coerced into a string that might scan clean:
+        # it is not a title, so it is refused with its own stable code.
+        raise ValueError(TITLE_NOT_STRING)
+    if secretscan.scan(title):
+        raise ValueError(SECRET_DETECTED)
+
+
+def _scan_field(field: str, value: object) -> None:
+    """Refuse a field that carries a credential, with a stable code and no value.
+
+    The title has its own code, so every other field names itself:  the refusal says which
+    field was refused, and never repeats the secret or any part of it.
+    """
+    if not isinstance(value, str) or not value:
+        return
+    if secretscan.scan(value):
+        raise ValueError("%s_secret_detected" % field)
+
+
+def _scan_fields(fields: Mapping[str, object]) -> None:
+    """Scan every user-supplied field that is about to be written.
+
+    The registry is the system of record for every session, so a credential in ANY of the
+    fields is refused before it reaches SQLite:  the title keeps its own code and every other
+    field names itself.
+    """
+    for field, value in fields.items():
+        if field == "title":
+            _scan_title(value)
+        else:
+            _scan_field(field, value)
+
+
+def registry_title(label: str, title: str) -> str:
+    """The topic stored on the row:  the letter prefix belongs in display_title only."""
+    text = (title or "").strip()
+    if not label or not text:
+        return text
+    prefix = f"{label}:"
+    if text.startswith(prefix):
+        return text[len(prefix) :].lstrip()
+    return text
+
+
+def cross_seat_ref(seat: str, letter: str, generation: int) -> str:
+    """Cross-seat reference form.  Generation > 1 (a recycled letter) must be disambiguated."""
+    base = f"{seat} {letter}"
+    return f"{base} (gen {generation})" if generation > 1 else base
+
+
+ENV_REGISTRY_PATH = "SIMPLE_TOOLS_OPERATOR_REGISTRY"
+
+#: The seat that may issue a letter.
+#:
+#: The owner ruled (Oct 21 2026) that no agent issues its own letter:  the
+#: Operator does.  A seat that could call the register path would be choosing
+#: its own handle, and the handle is the thing that decides who a reply
+#: reaches.  The Operator is a service seat, so it is named here rather than
+#: inferred, and the register path refuses any other issuer.
+ISSUER_OPERATOR = "OPERATOR"
+
+
+def registry_db_path(root: str, env: Mapping[str, str] | None = None) -> str:
+    """Where the one shared registry lives.
+
+    The default is under the state root, which is per host.  That is enough on one host
+    and it is not enough for the fleet:  AFC-412 asks for one namespace and one allocator
+    across the Mac and the server, and a per-host file would give each host its own
+    letters.  The environment override is the seam:  the deployment points it at the
+    shared store where the Operator runs, so every host reads and writes one file.
+    """
+    if env:
+        override = env.get(ENV_REGISTRY_PATH)
+        if override:
+            return os.path.expanduser(override)
+    return os.path.join(str(root), "operator", "registry.sqlite3")
+
+
+def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
+    return [
+        row["record_id"],
+        label,
+        row["seat"],
+        row["platform"],
+        row["verified_host"],
+        row["native_session_id"],
+        row["title"],
+        row["project"],
+        row["thread_link"],
+        row["apple_note_link"],
+        row["state"],
+        row["wake_capability"],
+        row["registered_at"],
+        row["last_seen_at"],
+        row["closed_at"] or "",
+        row["source"],
+    ]
+
+
+class SessionRegistry:
+    """The one writer of the registry database."""
+
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        read_only: bool = False,
+        choose: Callable[[Sequence[str]], str] | None = None,
+    ):
+        self.db_path = str(db_path)
+        # How a subthread whose parent's row is full picks its random pair.  None is the system's random source
+        # (_OVERFLOW_RANDOM), read at each call;  a test hands in a seeded chooser so its answer is fixed.
+        self._choose = choose
+        self.read_only = bool(read_only)
+        parent = os.path.dirname(self.db_path)
+        if parent and not self.read_only:
+            os.makedirs(parent, exist_ok=True)
+        if self.read_only:
+            # Read-only by behaviour, not by mode.  A mode=ro handle cannot roll back a
+            # hot journal left by a crashed writer, and SQLite then refuses every read
+            # with SQLITE_READONLY_ROLLBACK, which would drop every letter for good.
+            # A read-write handle can recover that journal, and it takes no write lock
+            # for a plain SELECT, so the wake path never contends with the Operator's
+            # registration writes.  This handle runs no DDL and inserts no migration row:
+            # it never writes.
+            #
+            # mode=rw and not a plain connect:  the handle is read-write, and it still
+            # never creates the file, so a lookup can never bring a registry into being.
+            # The cost of the hot-journal recovery is that the wake path needs write
+            # permission on the registry file, which the store the Operator owns gives
+            # it anyway.
+            #
+            # The URI comes from as_uri() and not from quoting the path by hand:  a path
+            # that begins with two slashes quotes to "file://host/path", which SQLite
+            # reads as an authority and opens a different file.  as_uri() keeps the
+            # leading slashes as part of the path.
+            self._conn = sqlite3.connect(
+                "%s?mode=rw" % pathlib.Path(os.path.abspath(self.db_path)).as_uri(),
+                uri=True,
+            )
+            self._conn.row_factory = sqlite3.Row
+            return
+        self._conn = sqlite3.connect(self.db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.executescript(DDL)
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (SCHEMA_VERSION, _utcnow()),
+            )
+
+    def close_db(self) -> None:
+        self._conn.close()
+
+    @contextmanager
+    def _write_txn(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction that holds the SQLite write lock for its whole body.
+
+        BEGIN IMMEDIATE takes the lock before the first SELECT, so the identity and status
+        checks below cannot run in a window where a second writer has not yet committed:  a
+        concurrent registration now resumes the committed record instead of racing to an
+        unhandled IntegrityError on the identity UNIQUE constraint.  Callers mint their
+        timestamp inside this block, after the lock, so created_at follows commit order and
+        the outbox exports in the order the changes were committed.
+        """
+        with self._conn as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+
+    # ---- reads -------------------------------------------------
+
+    def _get(self, record_id: str) -> sqlite3.Row:
+        row = self._conn.execute(
+            "SELECT * FROM sessions WHERE record_id = ?", (record_id,)
+        ).fetchone()
+        if row is None:
+            raise UnknownRecord(record_id)
+        return row
+
+    def _get_by_identity(
+        self, platform: str, verified_host: str, profile_scope: str, native_session_id: str
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
+            " AND profile_scope = ? AND native_session_id = ? AND native_session_id != ''",
+            (platform, verified_host, profile_scope, native_session_id),
+        ).fetchone()
+
+    def _live_rows_for_native_session_id(
+        self, conn: sqlite3.Connection, platform: str, native_session_id: str
+    ) -> list[sqlite3.Row]:
+        """Every live session row on one platform that carries this native session id."""
+        native = SI.check(native_session_id, "the native session id")
+        namespace = normalize_platform(platform)
+        return conn.execute(
+            "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
+            " AND native_session_id != '' AND closed_at IS NULL"
+            " ORDER BY registered_at DESC",
+            (namespace, native),
+        ).fetchall()
+
+    def session_by_identity(
+        self,
+        *,
+        platform: str,
+        verified_host: str,
+        profile_scope: str,
+        native_session_id: str,
+    ) -> sqlite3.Row | None:
+        """The session row for one identity, or None when this registry has never seen it."""
+        return self._get_by_identity(platform, verified_host, profile_scope, native_session_id)
+
+    def session_rows_for_id(self, native_session_id: str) -> list[dict[str, Any]]:
+        """The live identities a native session id holds rows under (OPS-1048):  the note-link
+        hook finds the row to carry a note's link by session id alone, because a session id
+        belongs to one platform in practice and the platform is the row's to say.  Closed rows
+        are skipped:  a link is for a chat that can still answer."""
+        try:
+            rows = self._conn.execute(
+                "SELECT platform, verified_host, profile_scope FROM sessions"
+                " WHERE native_session_id = ? AND closed_at IS NULL",
+                (str(native_session_id),),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [
+            {
+                "platform": row["platform"],
+                "verified_host": row["verified_host"],
+                "profile_scope": row["profile_scope"],
+            }
+            for row in rows
+        ]
+
+    def _active_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
+        row = conn.execute(
+            "SELECT letter, generation FROM alias_assignments"
+            " WHERE record_id = ? AND retired_at IS NULL"
+            " ORDER BY assigned_at DESC LIMIT 1",
+            (record_id,),
+        ).fetchone()
+        return (row["letter"], row["generation"]) if row else ("", 0)
+
+    def letters_held(self, record_id: str) -> tuple[str, ...]:
+        """Every letter this record has held, newest first.
+
+        Read-only, and the history is what tells a letter prefix from an acronym:  a
+        title that starts with a letter this session held is a title the seat wrote, and
+        one that starts with any other two capitals is a topic that happens to begin
+        with an acronym.
+        """
+        rows = self._conn.execute(
+            "SELECT letter FROM alias_assignments WHERE record_id = ? ORDER BY assigned_at DESC",
+            (record_id,),
+        ).fetchall()
+        held: list[str] = []
+        for row in rows:
+            letter = str(row["letter"] or "")
+            if letter and letter not in held:
+                held.append(letter)
+        return tuple(held)
+
+    def live_registration_rows_for_native_id(
+        self, platform: str, native_session_id: str
+    ) -> list[dict[str, Any]]:
+        """Live registrations of one native session id, for reads on this open handle."""
+        native = SI.check(native_session_id, "the native session id")
+        namespace = normalize_platform(platform)
+        rows = self._conn.execute(
+            "SELECT s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+            " s.seat AS seat, s.state AS state,"
+            " a.letter AS label, a.generation AS generation"
+            " FROM sessions s"
+            " JOIN alias_assignments a"
+            "   ON a.record_id = s.record_id AND a.platform = ? AND a.retired_at IS NULL"
+            " WHERE s.platform = ? AND s.native_session_id = ? AND s.closed_at IS NULL"
+            " ORDER BY s.registered_at",
+            (namespace, namespace, native),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _last_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
+        """The letter this record holds now, or, once it is retired, the last one it held.
+
+        A closed session has no live alias, but a caller asking about it still needs
+        to know which letter ended, so the history answers when the live lookup is
+        empty.
+        """
+        letter, generation = self._active_alias(conn, record_id)
+        if letter:
+            return letter, generation
+        row = conn.execute(
+            "SELECT letter, generation FROM alias_assignments WHERE record_id = ?"
+            " ORDER BY assigned_at DESC LIMIT 1",
+            (record_id,),
+        ).fetchone()
+        return (row["letter"], row["generation"]) if row else ("", 0)
+
+    def lookup(
+        self,
+        platform: str,
+        verified_host: str,
+        profile_scope: str,
+        native_session_id: str,
+    ) -> dict[str, Any] | None:
+        """Read-only: the live label for one identity, or None when it is not registered.
+
+        This never writes, never mints a letter and never opens a transaction, so it is
+        safe to call on the wake path for every catalog row.  A missing registration is
+        simply "no letter yet";  it is not an error and it is not a reason to allocate one.
+
+        The platform is folded to its namespace on the way in, because the caller may
+        name the adapter it discovered through ("cursor-cloud") while the registry keys
+        on the platform ("cursor").  Both sides fold, so the join finds the record.
+        """
+        row = self._get_by_identity(
+            normalize_platform(platform), verified_host, profile_scope, native_session_id
+        )
+        if row is None:
+            return None
+        letter, generation = self._active_alias(self._conn, row["record_id"])
+        return {
+            "record_id": row["record_id"],
+            "label": letter,
+            "generation": generation,
+            "seat": row["seat"],
+            "title": row["title"],
+            "state": row["state"],
+        }
+
+    # ---- writes (each one transaction:  state + events + outbox) ----------------
+
+    def _pair_of(
+        self, conn: sqlite3.Connection, platform: str, native_session_id: str, own: str = ""
+    ) -> str:
+        """The pair a live session holds on the platform, found by its native session id on any host, or "" when
+        it is unknown, closed, holds a single letter, or is the chat asking (a chat is not its own parent)."""
+        if not native_session_id or native_session_id == own:
+            return ""
+        row = conn.execute(
+            "SELECT a.letter FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE s.platform = ? AND s.native_session_id = ? AND s.closed_at IS NULL"
+            " AND a.retired_at IS NULL ORDER BY a.assigned_at DESC LIMIT 1",
+            (platform, native_session_id),
+        ).fetchone()
+        letter = str(row["letter"]) if row else ""
+        return letter if len(letter) == 2 else ""
+
+    def _parent_pair(
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        native_session_id: object,
+        own: str = "",
+        letter: object = "",
+    ) -> str:
+        """The pair a new chat's parent holds:  the live session named by its session id, else (for a platform that
+        knows only the parent's letter) that pair itself when a live session on the platform holds it.  "" when
+        neither names a live pair, so the chat is picked like any other."""
+        # Whitespace is trimmed here as register_session's check trims it, so a padded id finds the same parent on
+        # every path;  an id that is not valid simply matches no session.
+        named = native_session_id.strip() if isinstance(native_session_id, str) else ""
+        pair = self._pair_of(conn, platform, named, own)
+        text = letter if isinstance(letter, str) else ""
+        if pair or not re.fullmatch(r"[A-Z]{2}", text):
+            return pair
+        live = conn.execute(
+            "SELECT 1 FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL AND s.closed_at IS NULL",
+            (platform, text),
+        ).fetchone()
+        return text if live else ""
+
+    def _allocate(
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        record_id: str,
+        now: str,
+        space: str = DEFAULT_SPACE,
+        pick: str = "primary",
+        after: str = "",
+    ) -> tuple[str, int]:
+        """The next pair for one session, never one that is live and never a single letter.  A pair's generation is
+        its own issue count in the seat's namespace plus one (MAX(generation) + 1 for that pair):  CC.3 is the third
+        time CC was issued for the seat.  Raises LabelExhausted when no pair can be issued.
+
+        One rule for every seat (owner, Nov 11 2026), and nothing the caller sends changes it:  `space` and `pick` are
+        accepted and ignored ("no single letters").
+
+        A main chat (no `after`) takes only a doubled pair (AA, BB ... ZZ):  the free one issued the fewest times,
+        counting every row the seat's namespace holds for it, including rows written before this rule ("count the
+        history"), so a pair issued five times waits behind one issued three times;  among those, the first one after
+        where the lap is (the last doubled pair issued in the newest generation), wrapping past ZZ (on a fresh lap that
+        is the alphabet).  That keeps advancing:  AA.1 ... ZZ.1 in order, a released AA not reused while later pairs
+        are un-issued, then AA.2 onward after ZZ;  a pair still live when its turn comes is skipped, issued once it is
+        freed (it has the fewest issues then), and the lap then goes on from where it was rather than handing that pair
+        out again;  a pair live through a whole lap misses that lap's generation.  When all 26 are live the letter is
+        refused ("ok just refuse actually is fine") and the chat carries on unlettered.
+
+        `after` is the pair its parent chat holds, for a subthread:  the first pair after the parent's (pairs_after,
+        the owner's Oct 29 naming:  DD's children DE, DF, DG;  XX's XY, XZ, XA, XB;  never the doubled pair) that is not
+        live is taken.  When the parent's row is full, the subthread takes a random pair of two different letters that
+        is not live, with any first letter (owner, Nov 11 2026:  "issue random non-pair of letters like random 2
+        letters not identical ones to preserve those for main chats"), never a doubled pair, whether or not one is
+        free.  When none of the 650 is free the letter is refused and the chat carries on unlettered."""
+        members = frozenset(LETTER_SPACES["double"])
+        live = {
+            r["letter"]
+            for r in conn.execute(
+                "SELECT letter FROM alias_assignments WHERE platform = ? AND retired_at IS NULL",
+                (platform,),
+            )
+        }
+        # Every past issue of each pair, legacy rows included:  the count orders the main chats, the newest
+        # generation numbers the next issue (the primary key is (platform, letter, generation), so it must be new).
+        counts: dict[str, int] = {}
+        newest: dict[str, int] = {}
+        for r in conn.execute(
+            "SELECT letter, COUNT(*) AS n, MAX(generation) AS g FROM alias_assignments"
+            " WHERE platform = ? GROUP BY letter",
+            (platform,),
+        ):
+            counts[r["letter"]] = int(r["n"] or 0)
+            newest[r["letter"]] = int(r["g"] or 0)
+
+        def issue(letter: str) -> tuple[str, int]:
+            generation = newest.get(letter, 0) + 1
+            conn.execute(
+                "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (platform, letter, generation, record_id, now),
+            )
+            return letter, generation
+
+        if after:
+            follow = [p for p in pairs_after(after) if p in members and p not in live]
+            if follow:
+                return issue(follow[0])
+            # The parent's row is full.  A random pair of two different letters, any row, never a doubled one:  the
+            # doubled pairs stay the main chats'.  Sorted first, so a seeded chooser gives the same answer every run.
+            spare = sorted(p for p in members if p[0] != p[1] and p not in live)
+            if spare:
+                return issue((self._choose or _OVERFLOW_RANDOM.choice)(spare))
+            limit = sum(1 for p in members if p[0] != p[1])
+            exhausted = LabelExhausted(
+                f"all {limit} non-doubled pairs are active on platform {platform!r}:  the parent's row ({after[0]}) is"
+                " full and a subthread never takes a doubled pair (they are the main chats'), so this one is refused a"
+                " letter"
+            )
+            exhausted.space = "double"
+            exhausted.limit = limit
+            raise exhausted
+
+        doubled = tuple(p for p in PRIMARY_ORDER if p in members)
+        # Where the lap is:  the last doubled pair issued in the newest generation.  A pair issued late, to catch up
+        # on a generation it missed while live, is an older generation, so it does not move the lap.
+        doubled_sql = (
+            "platform = ? AND length(letter) = 2 AND substr(letter, 1, 1) = substr(letter, 2, 1)"
+        )
+        last = conn.execute(
+            f"SELECT letter FROM alias_assignments WHERE {doubled_sql} AND generation ="
+            f" (SELECT MAX(generation) FROM alias_assignments WHERE {doubled_sql})"
+            " ORDER BY assigned_at DESC, rowid DESC LIMIT 1",
+            (platform, platform),
+        ).fetchone()
+        start = doubled.index(last["letter"]) + 1 if last and last["letter"] in doubled else 0
+        position = {p: (i - start) % len(doubled) for i, p in enumerate(doubled)} if doubled else {}
+        main = sorted(
+            (p for p in doubled if p not in live), key=lambda p: (counts.get(p, 0), position[p])
+        )
+        if main:
+            return issue(main[0])
+        # Owner, Nov 11 2026:  "ok just refuse actually is fine".  A main chat never takes a non-doubled pair.
+        exhausted = LabelExhausted(
+            f"all {len(doubled)} letters are active on platform {platform!r}:  a seat holds at most {len(doubled)}"
+            " live main chats (the doubled pairs AA to ZZ), so this one is refused a letter"
+        )
+        exhausted.space = "double"
+        exhausted.limit = len(doubled)
+        raise exhausted
+
+    def _insert_event(
+        self,
+        conn: sqlite3.Connection,
+        record_id: str,
+        label: str,
+        event: str,
+        actor: str,
+        outcome: str,
+        source: str,
+        details: str,
+        now: str,
+    ) -> str:
+        event_id = _ulid()
+        conn.execute(
+            "INSERT INTO events(event_id, recorded_at, session_record_id, label, event, actor,"
+            " outcome, source, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, now, record_id, label, event, actor, outcome, source, details),
+        )
+        cells = [event_id, now, record_id, label, event, actor, outcome, source, details]
+        conn.execute(
+            "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+            (_ulid(), "event_append", json.dumps({"cells": cells}), now),
+        )
+        return event_id
+
+    def _enqueue_session_upsert(self, conn: sqlite3.Connection, record_id: str, now: str) -> None:
+        row = conn.execute("SELECT * FROM sessions WHERE record_id = ?", (record_id,)).fetchone()
+        letter, _ = self._active_alias(conn, record_id)
+        conn.execute(
+            "INSERT INTO export_outbox(outbox_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+            (_ulid(), "session_upsert", json.dumps({"cells": _session_cells(row, letter)}), now),
+        )
+
+    def _reseat(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        seat: str,
+        letter: str,
+        source: str,
+        now: str,
+    ) -> None:
+        """Move a row filed under a seat that is not its platform's onto the platform's own (AFC-772).
+
+        The one place a stored seat changes.  It runs inside resolve_or_register's write transaction,
+        so the seat, the `reseat` event (old and new seat in its details) and the outbox rows for the
+        changed row commit together or not at all.  It changes the seat and nothing else:  the
+        record, its letter and generation, its state and its closed time stay as they were, so a
+        closed row is re-seated and left closed.
+        """
+        conn.execute("UPDATE sessions SET seat = ? WHERE record_id = ?", (seat, row["record_id"]))
+        self._insert_event(
+            conn,
+            row["record_id"],
+            letter,
+            "reseat",
+            seat,
+            "reseated",
+            source,
+            f"seat {row['seat']} to {seat}",
+            now,
+        )
+        self._enqueue_session_upsert(conn, row["record_id"], now)
+
+    def resolve_or_register(self, identity: Mapping[str, Any]) -> dict[str, Any]:
+        """Resume an existing registration or create a new one, atomically with its label,
+        events row and outbox rows.  A seat change never rebinds identity, with one exception:
+        a row filed under another seat than its fixed-seat platform's is re-seated, below.
+
+        The platform is folded to its namespace before anything is read or written, so
+        the record is keyed on the platform ("cursor") and not on the adapter the caller
+        discovered it through ("cursor-cloud").  One Cursor session under each adapter
+        would otherwise be two records with the same letter.
+
+        A platform's chat under a seat that is not one of that platform's is refused
+        (check_seat_platform, SeatPlatformMismatch) with nothing written:  this is the only
+        place a session row is made.  One case passes:  a live row that was filed under that
+        same seat before the check existed is still resumed under it, as it was before, so its
+        chat keeps its heartbeat and can end the row itself.  Once that row is closed it is
+        not brought back.
+
+        A known platform's seat is filed and compared as its tag (filed_seat), so a spelling
+        the check accepts ("claude", "Grok Build") is stored as CLAUDE or GROK and the same
+        chat resumes under the tag.
+
+        A row filed under another seat before the check existed is healed, one way only:  when the
+        seat the caller sends (the payload, never the signed principal) is the one seat of a
+        platform that has exactly one (fixed_seat), the row is re-seated to it (_reseat) and answers
+        as the platform's own row, so the chat takes its letter again.  A wrong seat is still
+        refused when the stored one is right, a platform with no single seat (a role pattern, or
+        several tags) and one the table does not name are left alone, and a closed row is re-seated
+        and stays closed.
+        """
+        required = IDENTITY_FIELDS + ("seat", "source")
+        missing = [k for k in required if not identity.get(k)]
+        if missing:
+            raise ValueError(f"missing identity fields: {', '.join(missing)}")
+        identity = dict(identity)
+        identity["platform"] = normalize_platform(str(identity["platform"]))
+        identity["seat"] = filed_seat(identity["platform"], identity["seat"])
+        refusal: SeatPlatformMismatch | None = None
+        try:
+            check_seat_platform(identity["platform"], identity["seat"])
+        except SeatPlatformMismatch as exc:
+            refusal = exc
+        with self._write_txn() as conn:
+            now = _utcnow()
+            row = self._get_by_identity(*(identity[k] for k in IDENTITY_FIELDS))
+            if refusal is not None and (
+                row is None or row["closed_at"] or row["seat"] != identity["seat"]
+            ):
+                raise refusal
+            if row is not None:
+                record_id = row["record_id"]
+                letter, generation = self._active_alias(conn, record_id)
+                if (
+                    row["seat"] != identity["seat"]
+                    and refusal is None
+                    and identity["seat"] == fixed_seat(identity["platform"])
+                ):
+                    # The caller names its platform's own seat and the row is filed under another:  the
+                    # AFC-772 rows.  Re-seat it here, in this transaction, then carry on as the platform's
+                    # own row (a live one resumes with its letter, a closed one stays closed).
+                    self._reseat(conn, row, identity["seat"], letter, identity["source"], now)
+                elif row["seat"] != identity["seat"]:
+                    self._insert_event(
+                        conn,
+                        record_id,
+                        letter,
+                        "resolve",
+                        identity["seat"],
+                        "seat_mismatch",
+                        identity["source"],
+                        f"stored seat is {row['seat']}",
+                        now,
+                    )
+                    return {
+                        "record_id": record_id,
+                        "label": letter,
+                        "generation": generation,
+                        "created": False,
+                        "outcome": "seat_mismatch",
+                    }
+                outcome = "resumed_closed" if row["closed_at"] else "resumed"
+                if not row["closed_at"]:
+                    # The session is alive, so it was seen:  the sweep that ends a stale
+                    # letter's use reads this column, and a session that is being resumed
+                    # is by definition not stale.
+                    conn.execute(
+                        "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+                        (now, record_id),
+                    )
+                    # A stored "unknown" is the no-claim sentinel, never a stored
+                    # claim, so the row takes the incoming value on its own resume:
+                    # the derivation's source-tree support, or a caller's fresher
+                    # claim.  Any other stored value is a stored claim, explicit
+                    # or derived, and wins.  The sentinel is recognized case- and
+                    # whitespace-insensitively on BOTH sides (kody #1348):  a row
+                    # written "UNKNOWN" or " unknown " through the mutable
+                    # session_upsert path is still no claim and takes the update,
+                    # and an unknown-ish incoming value is never stored as one.
+                    # Real claims stay verbatim (any case is a claim).
+                    # This is not a batch migration:  rows change only when their own
+                    # session next registers, and closed rows keep their history.
+                    stored_capability = str(row["wake_capability"] or "unknown").strip().lower()
+                    incoming_capability = str(identity.get("wake_capability") or "unknown")
+                    if (
+                        stored_capability == "unknown"
+                        and incoming_capability.strip().lower() != "unknown"
+                    ):
+                        conn.execute(
+                            "UPDATE sessions SET wake_capability = ? WHERE record_id = ?",
+                            (incoming_capability, record_id),
+                        )
+                    # The exported sheet refreshes "Last Seen At" only from a
+                    # session_upsert payload, so the row that just moved has to be
+                    # enqueued in the same transaction.  Without it the database
+                    # advances on every resume while the sheet keeps the value it had
+                    # at registration, and the two copies of the registry disagree.
+                    previous = ""
+                    if letter and letter_space_of(letter) == "single":
+                        # No single letters (owner, Nov 11 2026:  "no single letters").  A live chat that still
+                        # holds one from before the pair rule moves onto a pair the next time it registers, by the
+                        # rule a new chat gets (after its parent's pair when it names a live parent).  The single
+                        # letter is retired, never deleted, so its history stays.  When no pair is free this raises
+                        # LabelExhausted and the whole resume rolls back:  the chat is refused, and moves on a later
+                        # registration once a pair is free.
+                        conn.execute(
+                            "UPDATE alias_assignments SET retired_at = ?"
+                            " WHERE record_id = ? AND retired_at IS NULL",
+                            (now, record_id),
+                        )
+                        parent_pair = self._parent_pair(
+                            conn,
+                            identity["platform"],
+                            identity.get("parent_session_id"),
+                            identity["native_session_id"],
+                            identity.get("parent_letter") or "",
+                        )
+                        previous = letter
+                        letter, generation = self._allocate(
+                            conn, identity["platform"], record_id, now, after=parent_pair
+                        )
+                        self._insert_event(
+                            conn,
+                            record_id,
+                            letter,
+                            "relabel",
+                            identity["seat"],
+                            "relabelled",
+                            identity["source"],
+                            "previous letter %s" % previous,
+                            now,
+                        )
+                    self._enqueue_session_upsert(conn, record_id, now)
+                    if previous:
+                        self._insert_event(
+                            conn,
+                            record_id,
+                            letter,
+                            "resume",
+                            identity["seat"],
+                            outcome,
+                            identity["source"],
+                            "",
+                            now,
+                        )
+                        return {
+                            "record_id": record_id,
+                            "label": letter,
+                            "generation": generation,
+                            "created": False,
+                            "outcome": outcome,
+                            "previous": previous,
+                        }
+                self._insert_event(
+                    conn,
+                    record_id,
+                    letter,
+                    "resume",
+                    identity["seat"],
+                    outcome,
+                    identity["source"],
+                    "",
+                    now,
+                )
+                return {
+                    "record_id": record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "created": False,
+                    "outcome": outcome,
+                }
+            record_id = _ulid()
+            conn.execute(
+                "INSERT INTO sessions(record_id, seat, platform, verified_host, profile_scope,"
+                " native_session_id, title, project, thread_link, apple_note_link,"
+                " wake_capability, registered_at, last_seen_at, source)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record_id,
+                    identity["seat"],
+                    identity["platform"],
+                    identity["verified_host"],
+                    identity["profile_scope"],
+                    identity["native_session_id"],
+                    identity.get("title", ""),
+                    identity.get("project", ""),
+                    identity.get("thread_link", ""),
+                    identity.get("apple_note_link", ""),
+                    identity.get("wake_capability", "unknown"),
+                    now,
+                    now,
+                    identity["source"],
+                ),
+            )
+            parent_pair = self._parent_pair(
+                conn,
+                identity["platform"],
+                identity.get("parent_session_id"),
+                identity["native_session_id"],
+                identity.get("parent_letter") or "",
+            )
+            letter, generation = self._allocate(
+                conn, identity["platform"], record_id, now, after=parent_pair
+            )
+            # The parent's pair when this chat really took a pair after it, else "" (no parent, or its row was full and
+            # it took a random pair of two different letters).
+            placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
+            self._insert_event(
+                conn,
+                record_id,
+                letter,
+                "register",
+                identity["seat"],
+                "registered",
+                identity["source"],
+                f"after {placed_after}" if placed_after else "",
+                now,
+            )
+            self._enqueue_session_upsert(conn, record_id, now)
+            return {
+                "record_id": record_id,
+                "label": letter,
+                "generation": generation,
+                "created": True,
+                "outcome": "registered",
+                "placed_after": placed_after,
+            }
+
+    def mark_seen(self, record_id: str, at: str | None = None) -> None:
+        with self._write_txn() as conn:
+            at = at or _utcnow()
+            self._get(record_id)
+            conn.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id)
+            )
+            self._enqueue_session_upsert(conn, record_id, at)
+
+    def update_attrs(self, record_id: str, /, **attrs: str) -> None:
+        bad = [k for k in attrs if k not in MUTABLE_ATTRS]
+        if bad:
+            raise ValueError(f"not mutable: {', '.join(bad)}")
+        if not attrs:
+            return
+        with self._write_txn() as conn:
+            now = _utcnow()
+            row = self._get(record_id)
+            if row["closed_at"]:
+                raise ValueError(
+                    "session %s is closed; open a new registration instead" % record_id
+                )
+            if "state" in attrs:
+                # The lifecycle value is not free-form:  it is derived from closed_at, which only
+                # close() sets.  Accepting it here would let a closed row be marked active again,
+                # or an open row claim 'closed' with no closed_at and a still-live alias.
+                want_closed = attrs["state"] == "closed"
+                if want_closed != bool(row["closed_at"]):
+                    raise ValueError(
+                        f"state 'closed' is set by close(), not update_attrs (record {record_id})"
+                    )
+            sets = ", ".join(f"{k} = ?" for k in attrs)
+            conn.execute(
+                f"UPDATE sessions SET {sets} WHERE record_id = ?", (*attrs.values(), record_id)
+            )
+            self._enqueue_session_upsert(conn, record_id, now)
+
+    def close(
+        self,
+        record_id: str,
+        at: str | None = None,
+        actor: str = "registry",
+        source: str = "registry",
+        reason: str = "",
+    ) -> bool:
+        """Set closed_at once and retire the live alias.  Closing twice changes nothing.
+
+        The reason says why the letter's use ended ("stale", "replaced"), and it goes
+        into the event the close writes, so the letter's history says more than a
+        timestamp.
+        """
+        with self._write_txn() as conn:
+            now = at or _utcnow()
+            row = self._get(record_id)
+            if row["closed_at"]:
+                return False
+            letter, _ = self._active_alias(conn, record_id)
+            conn.execute(
+                "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                (now, record_id),
+            )
+            conn.execute(
+                "UPDATE alias_assignments SET retired_at = ?"
+                " WHERE record_id = ? AND retired_at IS NULL",
+                (now, record_id),
+            )
+            self._insert_event(
+                conn, record_id, letter, "close", actor, "closed", source, reason, now
+            )
+            self._enqueue_session_upsert(conn, record_id, now)
+            return True
+
+    def reopen(
+        self,
+        record_id: str,
+        at: str | None = None,
+        actor: str = "registry",
+        source: str = "registry",
+        pick: str = "primary",
+        parent_session_id: str = "",
+        parent_letter: str = "",
+    ) -> tuple[str, int, str]:
+        """Give a closed session a letter again (AFC-564, owner Oct 28 2026:  a reopened chat checks with the
+        Operator in case it needs a new letter).
+
+        The record keeps its record_id and identity, and closed_at is cleared.  It gets back the pair it held, as the
+        same generation (its own assignment row is made live again, so AA.1 stays AA.1 and a return is not a second
+        issue of AA), while no other chat has held that pair since;  otherwise, or when what it held was a single
+        letter from before the pair rule, it takes the next pair by _allocate's rule (after its parent's pair when
+        parent_session_id names a live chat that holds one).  `pick` is accepted and ignored, as everywhere.  Returns
+        (letter, generation, previous letter).  An open session comes back as it is, with nothing written.  Raises
+        LabelExhausted, with nothing written, when every doubled pair is live.
+        """
+        with self._write_txn() as conn:
+            now = at or _utcnow()
+            row = self._get(record_id)
+            if not row["closed_at"]:
+                letter, generation = self._active_alias(conn, record_id)
+                return letter, generation, letter
+            namespace = row["platform"]
+            last = conn.execute(
+                "SELECT letter, generation FROM alias_assignments WHERE record_id = ?"
+                " ORDER BY assigned_at DESC, rowid DESC LIMIT 1",
+                (record_id,),
+            ).fetchone()
+            previous = last["letter"] if last else ""
+            newest = (
+                conn.execute(
+                    "SELECT MAX(generation) AS g FROM alias_assignments WHERE platform = ? AND letter = ?",
+                    (namespace, previous),
+                ).fetchone()["g"]
+                if len(previous) == 2
+                else None
+            )
+            held = conn.execute(
+                "SELECT 1 FROM alias_assignments WHERE platform = ? AND letter = ? AND retired_at IS NULL",
+                (namespace, previous),
+            ).fetchone()
+            if len(previous) == 2 and newest == last["generation"] and not held:
+                conn.execute(
+                    "UPDATE alias_assignments SET retired_at = NULL"
+                    " WHERE platform = ? AND letter = ? AND generation = ? AND record_id = ?",
+                    (namespace, previous, last["generation"], record_id),
+                )
+                letter, generation = previous, int(last["generation"])
+            else:
+                parent_pair = self._parent_pair(
+                    conn, namespace, parent_session_id, row["native_session_id"], parent_letter
+                )
+                letter, generation = self._allocate(
+                    conn, namespace, record_id, now, after=parent_pair
+                )
+            conn.execute(
+                "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
+                " WHERE record_id = ?",
+                (now, record_id),
+            )
+            details = f"previous letter {previous}" if previous else ""
+            self._insert_event(
+                conn, record_id, letter, "reopen", actor, "reopened", source, details, now
+            )
+            self._enqueue_session_upsert(conn, record_id, now)
+            return letter, generation, previous
+
+    def relabel(
+        self,
+        record_id: str,
+        *,
+        space: str = "double",
+        pick: str = "primary",
+        parent_session_id: str = "",
+        parent_letter: str = "",
+        actor: str = "registry",
+        source: str = "registry",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Move one session onto a pair, in place.
+
+        A letter is the address of a thread, so when the rule changes (every seat's chats became pairs, owner Nov 11
+        2026) the sessions that are already live have to move with it.  A registration cannot do that:  the identity
+        is the record, and a session id always answers with the letter its record already holds.  So this retires the
+        old letter (retired, never deleted, so its history and its generation count stay) and gives the session a pair
+        by the rule a new session would get:  the main-chat order, or the first free pair after its parent's in the
+        same row when the session names a live parent.
+
+        A session that already holds a pair keeps it, so the call is idempotent and a rerun changes nothing.  `space`
+        and `pick` are checked and ignored:  a single letter is never issued.  Force places a pair holder again only
+        when it names a live parent, which is what a migration needs (a child that already holds a pair may still have
+        to move into its parent's row);  without a parent it changes nothing, so a forced rerun never burns a pair of
+        the seat's lap.
+        """
+        if space not in LETTER_SPACES:
+            raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
+        if pick not in LETTER_PICKS:
+            raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
+        with self._write_txn() as conn:
+            now = _utcnow()
+            row = self._get(record_id)
+            if row["closed_at"]:
+                raise SessionClosed(
+                    "session %s is closed; open a new registration instead" % record_id
+                )
+            current, generation = self._active_alias(conn, record_id)
+            parent_pair = self._parent_pair(
+                conn, row["platform"], parent_session_id, row["native_session_id"], parent_letter
+            )
+            # Every chat holds a pair now, so a single letter is the only one that moves on its own, and the space a
+            # caller names does not change that.  Force only places a pair holder again when it names a live parent
+            # whose row it belongs in:  a forced relabel with no parent would burn a pair of the seat's lap for
+            # nothing, so it changes nothing.
+            if current and letter_space_of(current) == "double" and not (force and parent_pair):
+                return {
+                    "record_id": record_id,
+                    "label": current,
+                    "generation": generation,
+                    "previous": current,
+                    "outcome": "unchanged",
+                    "placed_after": "",
+                }
+            if current:
+                # The old letter ends first, so the new one is picked from a pool that does not
+                # count this session's own letter as live.
+                conn.execute(
+                    "UPDATE alias_assignments SET retired_at = ?"
+                    " WHERE record_id = ? AND retired_at IS NULL",
+                    (now, record_id),
+                )
+            letter, new_generation = self._allocate(
+                conn, row["platform"], record_id, now, after=parent_pair
+            )
+            placed_after = parent_pair if letter in pairs_after(parent_pair) else ""
+            details = "previous letter %s" % current if current else ""
+            self._insert_event(
+                conn, record_id, letter, "relabel", actor, "relabelled", source, details, now
+            )
+            self._enqueue_session_upsert(conn, record_id, now)
+            return {
+                "record_id": record_id,
+                "label": letter,
+                "generation": new_generation,
+                "previous": current,
+                "outcome": "relabelled",
+                "placed_after": placed_after,
+            }
+
+    def record_event(
+        self, record_id: str, event: str, actor: str, outcome: str, source: str, details: str = ""
+    ) -> str:
+        with self._write_txn() as conn:
+            now = _utcnow()
+            self._get(record_id)
+            letter, _ = self._active_alias(conn, record_id)
+            return self._insert_event(
+                conn, record_id, letter, event, actor, outcome, source, details, now
+            )
+
+
+# ---- the register path (AFC-412) ---------------------------------------------------
+
+
+def normalize_platform(platform: str) -> str:
+    """The platform namespace, folded.
+
+    A platform's display form ("MiniMax") and its namespace ("minimax") name the same
+    registry namespace, so the namespace is folded on the way in and on the way out.  A
+    letter is only ever issued under the folded name, and the index still serves the
+    lookup because the comparison stays on the column.
+
+    The fold also maps an adapter name onto its platform:  the catalog discovers
+    Cursor through "cursor-cloud" and "cursor-local", and both are the one Cursor
+    namespace, so both draw from the same letters.  Without that, one Cursor session
+    under each adapter would be issued the same letter twice, and both would read as
+    "CURSOR A".
+    """
+    text = str(platform or "").strip().lower()
+    return PLATFORM_NAMESPACES.get(text, text)
+
+
+def seat_table_problem() -> str:
+    """Why the platform's seats cannot be read (fleet-apps.json `seatApps`), or "".
+
+    While the table cannot be read the seat check below refuses nothing, so the caller that owns a
+    log says so:  a guard that is off is worse unsaid."""
+    try:
+        I.load_seat_registry()
+    except I.SeatRegistryError as exc:
+        return str(exc)[:200]
+    return ""
+
+
+def check_seat_platform(platform: object, seat: object) -> None:
+    """Refuse a platform's chat that arrives under a seat that is not one of that platform's.
+
+    The pairs are not a table of this module's.  `identity.platform_seats` reads them from
+    fleet-apps.json `seatApps` (the app each seat runs in), the one table a platform contributes its
+    row to, by way of the folded namespace:  claude is CLAUDE, zcode is ZC, any Cursor adapter is
+    CURSOR, the Grok leader is GROK, and a launcher whose bots each have a seat is its pattern
+    (botfleet is BF-*, grok-bot is GB-* or GROK-BOT).  The seat is compared as
+    `identity.canonical_seat` reads it, so case and the published aliases do not matter.
+
+    Wakes and letters are liberal, so only a known platform under another seat is refused, with
+    SeatPlatformMismatch.  A platform the table does not name registers under any seat, and so
+    does every platform while the table cannot be read (seat_table_problem says why).
+
+    The check is on every path that takes a platform and a seat from its caller:
+    resolve_or_register (the one place a row is made, and the resume of one), register_session and
+    relabel_session.  No op changes a stored platform, and the only one that changes a seat is the
+    re-seat in resolve_or_register, toward the platform's own.  This check reads no stored row, so a row
+    filed under a wrong seat before the check existed is still touched, updated, swept, reported
+    gone and closed (ending it must always work), and `reopen`, which names a record and no seat,
+    is not checked.  While such a row is live, resolve_or_register still resumes it under the seat
+    it is stored under:  a refused resume would leave its chat with no way to end it.
+    """
+    namespace = normalize_platform(platform if isinstance(platform, str) else "")
+    try:
+        owners = I.platform_seats(namespace)
+    except I.SeatRegistryError:
+        return
+    if owners is None or owners.allows(seat):
+        return
+    tag = I.canonical_seat(seat if isinstance(seat, str) else "")
+    shown = tag if I.valid_seat(tag) and not secretscan.scan(tag) else ""
+    raise SeatPlatformMismatch(namespace, shown, owners.expected)
+
+
+def filed_seat(platform: object, seat: Any) -> Any:
+    """The seat a session of `platform` is stored and compared under.
+
+    check_seat_platform reads a known platform's seat through `identity.canonical_seat`, so
+    "claude", " CLAUDE " and "Grok Build" pass it.  Stored as typed, such a row could never be
+    resumed under CLAUDE or GROK (`seat_mismatch`, no rebind) and the wake router, which only
+    upper-cases the column, would skip it:  the stuck row of AFC-772 again, reached by spelling.
+    So for a platform the table knows the seat is its canonical tag from here on.  A platform the
+    table does not name, and every platform while the table cannot be read, keeps the seat as
+    given, as before.
+    """
+    if not isinstance(seat, str):
+        return seat
+    namespace = normalize_platform(platform if isinstance(platform, str) else "")
+    try:
+        known = I.platform_seats(namespace) is not None
+    except I.SeatRegistryError:
+        return seat
+    return I.canonical_seat(seat) if known else seat
+
+
+def fixed_seat(platform: object) -> str:
+    """The one seat tag every chat of `platform` is filed under, or "".
+
+    "" for a platform the table does not name, for a launcher whose bots each have a seat (a role
+    pattern, so no one seat is right), for an app with several tags, and while the table cannot be
+    read:  resolve_or_register re-seats a row only toward a seat this returns."""
+    try:
+        owners = I.platform_seats(normalize_platform(platform if isinstance(platform, str) else ""))
+    except I.SeatRegistryError:
+        return ""
+    return owners.sole_seat if owners is not None else ""
+
+
+def register_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    seat: str,
+    source: str,
+    title: str = "",
+    project: str = "",
+    thread_link: str = "",
+    apple_note_link: str = "",
+    wake_capability: str = "unknown",
+    issuer: str = "",
+    letter_space: str | None = None,
+    letter_pick: str | None = None,
+    parent_session_id: str = "",
+    parent_letter: str = "",
+) -> dict[str, Any]:
+    """Register one session and hand back its letter.
+
+    The identity is checked the same way the wake path checks it, so a session
+    registered here is one the wake can find:  a native session id that would not
+    survive the join's own check is refused here rather than stored and never matched.
+
+    A seat never chooses its own letter, and no caller changes the order (owner, Nov 11 2026).  Every seat's main
+    chat takes a doubled pair by the one rule in SessionRegistry._allocate:  the free one issued the fewest times
+    for the seat, the next after the last one issued on a tie, with its own issue count plus one as the generation;
+    all 26 live refuses the letter (LabelExhausted).  letter_space and letter_pick are checked and ignored.  The
+    title comes back in the display form the platform expects:  "HH: Title".
+
+    A session another session started names its parent with parent_session_id (the parent's native session id on
+    this platform, on any host) or, for a platform that knows only the letter, parent_letter (the parent's pair,
+    which a live session on the platform must hold;  the session id wins when both are given):  when the parent is
+    live and holds a pair, the child takes the first free pair after it in the same row, wrapping past Z (parent
+    CC, child CD, the next CE;  parent XX: XY, XZ, XA, XB).  When none is free, it takes a random free pair of two
+    different letters from any row, never a doubled pair (owner, Nov 11 2026), and is refused when none of those is
+    free.  When the parent is unknown, closed or holds a single letter, it is picked as a main chat is.  A live chat
+    that still holds a single letter from before the pair rule is moved onto a pair here, on its next registration:
+    the answer is its new pair, with `previous` naming the single letter it gave up.  The answer's `placed_after` is the
+    parent's pair when the session really took a pair after it, else "".
+
+    The Operator dispenses the pair in exchange for the session id, plus the app's id for the chat or a parent
+    when the chat was started by another, and nothing else:  no title, seat claim or request chooses a letter.
+
+    Only the Operator issues a letter (owner ruling, Oct 21 2026):  a seat that could
+    call this would be choosing its own handle, and the handle is what decides who a
+    reply reaches.  The issuer is named rather than defaulted, so a caller cannot
+    issue a letter by omitting it, and any issuer other than the Operator is refused
+    before anything is written.
+    """
+    if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
+        raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
+    if letter_pick is not None and letter_pick not in LETTER_PICKS:
+        raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
+    _scan_fields(
+        {
+            "title": title,
+            "project": project,
+            "thread_link": thread_link,
+            "apple_note_link": apple_note_link,
+        }
+    )
+    native = SI.check(native_session_id, "the native session id")
+    parent = _clean_parent(parent_session_id)
+    if str(wake_capability or "unknown").strip().lower() == "unknown":
+        # No caller claim:  derive the tree's own source-only support level for
+        # the adapter platform (new or "unknown" rows only;  a stored
+        # non-"unknown" claim, explicit or derived, is never rewritten), before
+        # the letter namespace folds it ("cursor-cloud" and "cursor-local" both
+        # become "cursor", and only one of them can deliver).
+        wake_capability = wake_capability_for_platform(platform)
+    if letter_space is not None and letter_space not in LETTER_SPACES:
+        raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
+    platform = normalize_platform(platform)
+    space = DEFAULT_SPACE
+    pick = letter_pick or "primary"
+    for name, value in (
+        ("platform", platform),
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+        ("seat", seat),
+        ("source", source),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
+    # A platform's chat under another platform's seat is refused (AFC-772).  With no store there is
+    # no row to resume, so the refusal comes before one is made.  With a store, resolve_or_register
+    # refuses it under the write lock, unless a live row was filed under that seat earlier.
+    try:
+        check_seat_platform(platform, seat)
+    except SeatPlatformMismatch:
+        if not os.path.isfile(db_path):
+            raise
+    registry = SessionRegistry(db_path)
+    try:
+        out = registry.resolve_or_register(
+            {
+                "platform": platform,
+                "verified_host": verified_host,
+                "profile_scope": profile_scope,
+                "native_session_id": native,
+                "seat": seat,
+                "source": source,
+                "title": title,
+                "project": project,
+                "thread_link": thread_link,
+                "apple_note_link": apple_note_link,
+                "wake_capability": wake_capability,
+                "letter_space": space,
+                "letter_pick": pick,
+                "parent_session_id": parent,
+                "parent_letter": parent_letter if isinstance(parent_letter, str) else "",
+            }
+        )
+    finally:
+        registry.close_db()
+    out["title_display"] = display_title(str(out.get("label") or ""), title)
+    return out
+
+
+def relabel_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    seat: str,
+    source: str,
+    letter_space: str = "double",
+    letter_pick: str = "primary",
+    parent_session_id: str = "",
+    parent_letter: str = "",
+    issuer: str = "",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Move one session onto a pair, in place, and hand back its letter (SessionRegistry.relabel).
+
+    A chat that still holds a single letter from before the pair rule needs moving:  a session id always answers
+    with the letter its record already holds, so a new registration cannot move it.  This is the Operator's own path
+    (only the Operator issues a letter) and it names the session by its identity and the seat that owns it.
+    letter_space and letter_pick are checked and ignored:  every chat holds a pair.
+
+    The seat is checked against the stored one, so a seat cannot re-letter another seat's session.
+    It is checked against the platform first (check_seat_platform, AFC-772):  the seat named here
+    is the stored one, so a session filed under a seat that is not one of its platform's is given
+    no new letter, and the refusal (SeatPlatformMismatch) comes before the store is opened.  A
+    known platform's seat is then compared as its tag (filed_seat), the way it was stored.
+    """
+    if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
+        raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
+    if letter_space not in LETTER_SPACES:
+        raise ValueError("letter_space must be one of %s" % ", ".join(LETTER_SPACES))
+    if letter_pick not in LETTER_PICKS:
+        raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
+    native = SI.check(native_session_id, "the native session id")
+    platform = normalize_platform(platform)
+    check_seat_platform(platform, seat)
+    seat = filed_seat(platform, seat)
+    registry = SessionRegistry(db_path)
+    try:
+        row = registry.session_by_identity(
+            platform=platform,
+            verified_host=verified_host,
+            profile_scope=profile_scope,
+            native_session_id=native,
+        )
+        if row is None:
+            raise SessionUnknown(
+                f"session {native} is not registered on {platform} at {verified_host}/{profile_scope}"
+            )
+        if str(row["seat"]) != str(seat):
+            raise ValueError(f"session {native} belongs to seat {row['seat']}, not {seat}")
+        out = registry.relabel(
+            str(row["record_id"]),
+            space=letter_space,
+            pick=letter_pick,
+            parent_session_id=_clean_parent(parent_session_id),
+            parent_letter=parent_letter if isinstance(parent_letter, str) else "",
+            actor=str(seat),
+            source=source,
+            force=bool(force),
+        )
+    finally:
+        registry.close_db()
+    out["title_display"] = display_title(str(out.get("label") or ""), str(row["title"] or ""))
+    return out
+
+
+def _session_row_for_update(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> sqlite3.Row:
+    """The session row one update should touch, found by its native session id.
+
+    Updates are pinned to the caller's own location:  a host or scope miss does not write
+    another location's live row.  A row whose native session id is empty is never a match.
+    A closed row at the caller's location is still returned so callers can answer the closed
+    state without cross-location mutation.
+    """
+    namespace = normalize_platform(platform)
+    native = SI.check(native_session_id, "the native session id")
+    row = conn.execute(
+        "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
+        " AND profile_scope = ? AND native_session_id = ? AND native_session_id != ''"
+        " AND closed_at IS NULL"
+        " ORDER BY registered_at DESC LIMIT 1",
+        (namespace, verified_host, profile_scope, native),
+    ).fetchone()
+    if row is not None:
+        return row
+    closed = conn.execute(
+        "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
+        " AND profile_scope = ? AND native_session_id = ? AND native_session_id != ''"
+        " AND closed_at IS NOT NULL"
+        " ORDER BY registered_at DESC LIMIT 1",
+        (namespace, verified_host, profile_scope, native),
+    ).fetchone()
+    if closed is not None:
+        return closed
+    rows = conn.execute(
+        "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
+        " AND native_session_id != '' AND closed_at IS NULL"
+        " ORDER BY registered_at DESC",
+        (namespace, native),
+    ).fetchall()
+    if not rows:
+        raise ValueError(
+            "session %s is not registered on %s at %s/%s; register it first"
+            % (native, namespace, verified_host, profile_scope)
+        )
+    for candidate in rows:
+        if (
+            candidate["verified_host"] == verified_host
+            and candidate["profile_scope"] == profile_scope
+        ):
+            return candidate
+    if len(rows) > 1:
+        raise ValueError(
+            "session %s is registered at more than one location on %s; resolve the contradiction first"
+            % (native, namespace)
+        )
+    raise ValueError(
+        "session %s is not registered on %s at %s/%s; register it first"
+        % (native, namespace, verified_host, profile_scope)
+    )
+
+
+# ---- the Linear issues a session works on (AFC-694) ---------------------------------
+#
+# Each session may carry `issues`:  at most MAX_ISSUES entries {"id": "AFC-694", "seen_at":
+# "<ISO 8601 UTC>"}, newest first, kept in the session_issues side table.  The wake router
+# reads them to link a wake to the chat that works on its issue.  The session-letter hooks
+# (platform_letter, the one letter client for every platform) find the ids and send the whole list through
+# `update`.
+
+#: The fleet's Linear team keys, copied from TEAM_KEYS in scripts/linear-board/board (the board's
+#: routing table, which the skill and MCP copies are already pinned to).  A literal, because the
+#: registry runs where the board script may not be, and a test pins it to the board's.
+LINEAR_TEAM_KEYS = (
+    "ST",
+    "CT",
+    "UM",
+    "CTS",
+    "DD",
+    "AFC",
+    "PS",
+    "AR",
+    "CL",
+    "BF",
+    "HH",
+    "OPS",
+    "C",
+    "FL",
+    "CC",
+    "SWU",
+)
+MAX_ISSUES = 8
+# Longest key first, so "CTS-1" is never read as "CT" and a stray "S".
+ISSUE_KEYS_PATTERN = "|".join(sorted(LINEAR_TEAM_KEYS, key=len, reverse=True))
+ISSUE_ID_RE = re.compile(r"^(?:%s)-[0-9]{1,7}$" % ISSUE_KEYS_PATTERN)
+
+
+def issue_instant(when: float | datetime) -> str:
+    """An instant as an issue's `seen_at` holds it:  UTC, to the second, with a Z."""
+    if not isinstance(when, datetime):
+        when = datetime.fromtimestamp(float(when), UTC)
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _zoned_instant(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None  # an instant with no zone could be any instant
+    return parsed.astimezone(UTC)
+
+
+def valid_issue_id(value: object) -> str:
+    """The issue id in the form Linear writes it ("AFC-694"), or "" when it is not one."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().upper()
+    return text if ISSUE_ID_RE.fullmatch(text) else ""
+
+
+def normalize_issues(value: object, now: float | None = None) -> list[dict[str, str]]:
+    """A list of issues as the registry keeps it:  valid ids only, one entry per id with its newest
+    `seen_at`, newest first, at most MAX_ISSUES.
+
+    An entry is {"id", "seen_at"};  a bare id string counts as seen `now` when `now` is given.  An
+    entry whose id is not a known team's, or whose `seen_at` is not an instant with a zone, is dropped
+    without a word, as the contract says.  A value that is not a list raises ValueError."""
+    if not isinstance(value, list):
+        raise ValueError("issues must be a list")
+    newest: dict[str, datetime] = {}
+    for item in value:
+        if isinstance(item, str) and now is not None:
+            ident, seen = valid_issue_id(item), datetime.fromtimestamp(float(now), UTC)
+        elif isinstance(item, Mapping):
+            ident, seen = valid_issue_id(item.get("id")), _zoned_instant(item.get("seen_at"))
+        else:
+            continue
+        if not ident or seen is None:
+            continue
+        if ident not in newest or seen > newest[ident]:
+            newest[ident] = seen
+    ordered = sorted(newest.items(), key=lambda pair: (pair[1], pair[0]), reverse=True)
+    return [{"id": ident, "seen_at": issue_instant(seen)} for ident, seen in ordered[:MAX_ISSUES]]
+
+
+def issue_ids(issues: object) -> list[str]:
+    """The ids of an issues list, in its order;  anything malformed is left out."""
+    if not isinstance(issues, list):
+        return []
+    return [i["id"] for i in issues if isinstance(i, Mapping) and valid_issue_id(i.get("id"))]
+
+
+def merge_issues(old: object, seen: Any, now: float) -> list[dict[str, str]]:
+    """`old` with every id in `seen` marked seen `now`, normalized."""
+    stamp = issue_instant(now)
+    base = [i for i in old if isinstance(i, Mapping)] if isinstance(old, list) else []
+    return normalize_issues(base + [{"id": ident, "seen_at": stamp} for ident in seen])
+
+
+def _stored_issues(conn: sqlite3.Connection, record_id: str) -> list[dict[str, str]]:
+    """The issues one session holds, or [] (none stored, or a registry from before the table:  a
+    read-only handle runs no DDL, so an old file has no session_issues table to read)."""
+    return _stored_issues_many(conn, [record_id]).get(record_id, [])
+
+
+def _stored_issues_many(
+    conn: sqlite3.Connection, record_ids: list[str]
+) -> dict[str, list[dict[str, str]]]:
+    ids = [rid for rid in dict.fromkeys(record_ids) if rid]
+    if not ids:
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT record_id, issues FROM session_issues WHERE record_id IN (%s)"
+            % ",".join("?" * len(ids)),
+            ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    out: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        try:
+            issues = normalize_issues(json.loads(row["issues"] or "[]"))
+        except ValueError:
+            continue
+        if issues:
+            out[row["record_id"]] = issues
+    return out
+
+
+def _store_issues(
+    conn: sqlite3.Connection, record_id: str, issues: list[dict[str, str]], at: str
+) -> bool:
+    """Replace one session's issues;  True when the stored list changed."""
+    if issues == _stored_issues(conn, record_id):
+        return False
+    conn.execute(
+        "INSERT INTO session_issues(record_id, issues, updated_at) VALUES (?, ?, ?)"
+        " ON CONFLICT(record_id) DO UPDATE SET issues = excluded.issues,"
+        " updated_at = excluded.updated_at",
+        (record_id, json.dumps(issues, separators=(",", ":")), at),
+    )
+    return True
+
+
+def update_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    title: str | None = None,
+    project: str | None = None,
+    thread_link: str | None = None,
+    apple_note_link: str | None = None,
+    wake_capability: str | None = None,
+    issues: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Update the mutable fields of one registered session, found by its session id.
+
+    The session id is the identity here:  the same id always finds the same row, so
+    running this again with the same values changes nothing and reports "unchanged".
+    It never mints a letter — only the Operator issues one, and this cannot.
+
+    The title is the field that moves in practice:  a thread is named once the first
+    message lands, and the registry has to carry the name the thread actually carries,
+    not the placeholder it was registered under.
+
+    A session id that is not registered raises ValueError:  a caller that wants a
+    letter must register first, and a miss here is not a reason to invent a row.
+
+    `issues` (AFC-694), when given, replaces the Linear issues the session holds:  it is
+    normalized first (normalize_issues:  invalid ids dropped, one entry per id, newest
+    first, at most MAX_ISSUES), and an update without it leaves them as they are.  The
+    answer carries `issues` whenever the session holds any.
+    """
+    for name, value in (
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
+    fields = {
+        "title": title,
+        "project": project,
+        "thread_link": thread_link,
+        "apple_note_link": apple_note_link,
+        "wake_capability": wake_capability,
+    }
+    wanted = {k: v for k, v in fields.items() if v is not None}
+    new_issues = None if issues is None else normalize_issues(issues, now=time.time())
+    if not wanted and new_issues is None:
+        raise ValueError("nothing to update: name at least one field")
+    bad = [k for k in wanted if k not in MUTABLE_ATTRS]
+    if bad:
+        raise ValueError(f"not mutable: {', '.join(bad)}")
+    _scan_fields(wanted)
+    registry = SessionRegistry(db_path)
+    namespace = normalize_platform(platform)
+    try:
+        with registry._write_txn() as conn:
+            row = _session_row_for_update(
+                conn,
+                platform=platform,
+                verified_host=verified_host,
+                profile_scope=profile_scope,
+                native_session_id=native_session_id,
+            )
+            record_id = row["record_id"]
+            if row["closed_at"]:
+                letter, generation = registry._last_alias(conn, record_id)
+                # The letter is already over, so the row can never be updated again.
+                # Answer with the closed state instead of raising:  a caller that
+                # only carries the title (the seat's stop hook) would otherwise be
+                # blocked forever by a row that cannot change.
+                closed = {
+                    "record_id": record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "title": row["title"],
+                    "outcome": "closed",
+                    "changed": [],
+                    "title_display": display_title(letter, str(row["title"] or "")),
+                }
+                held_issues = _stored_issues(conn, record_id)
+                if held_issues:
+                    closed["issues"] = held_issues
+                return closed
+            letter, generation = registry._active_alias(conn, record_id)
+            if title is not None:
+                wanted["title"] = registry_title(letter, title)
+            changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
+            issues_moved = new_issues is not None and _store_issues(
+                conn, record_id, new_issues, _utcnow()
+            )
+            if changed or issues_moved:
+                if changed:
+                    sets = ", ".join(f"{k} = ?" for k in changed)
+                    conn.execute(
+                        f"UPDATE sessions SET {sets} WHERE record_id = ?",
+                        (*changed.values(), record_id),
+                    )
+                now = _utcnow()
+                registry._enqueue_session_upsert(conn, record_id, now)
+                registry._insert_event(
+                    conn,
+                    record_id,
+                    letter,
+                    "update",
+                    "registry",
+                    "updated",
+                    "registry",
+                    ", ".join(sorted([*changed, *(["issues"] if issues_moved else [])])),
+                    now,
+                )
+                outcome = "updated"
+            else:
+                outcome = "unchanged"
+            at = _utcnow()
+            conn.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id)
+            )
+            registry._enqueue_session_upsert(conn, record_id, at)
+            current = conn.execute(
+                "SELECT * FROM sessions WHERE record_id = ?", (record_id,)
+            ).fetchone()
+            held_issues = _stored_issues(conn, record_id)
+    finally:
+        registry.close_db()
+    out = {
+        "record_id": record_id,
+        "label": letter,
+        "generation": generation,
+        "title": current["title"],
+        "outcome": outcome,
+        "changed": sorted([*changed, *(["issues"] if issues_moved else [])]),
+    }
+    if held_issues:
+        out["issues"] = held_issues
+    out["title_display"] = display_title(letter, str(current["title"] or ""))
+    return out
+
+
+# ---- the letter's life:  it ends, and the history says when ------------------------
+
+
+def _parse_instant(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def touch_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> dict[str, Any]:
+    """Stamp last_seen_at for a live session without changing its fields.
+
+    A live session's answer also names the letter and generation it holds now, so a hook
+    that touches on a schedule learns of a letter the registry changed in place (a relabel,
+    or a restore that moved records between letters) and retitles its chat.  The fields are
+    additions only: `record_id` and `outcome` keep their meaning, a closed session's answer
+    is unchanged, and a live row with no live letter (none to name) answers without them."""
+    for name, value in (
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
+    registry = SessionRegistry(db_path)
+    try:
+        row = _session_row_for_update(
+            registry._conn,
+            platform=platform,
+            verified_host=verified_host,
+            profile_scope=profile_scope,
+            native_session_id=native_session_id,
+        )
+        held_issues = _stored_issues(registry._conn, row["record_id"])
+        if row["closed_at"]:
+            closed: dict[str, Any] = {"record_id": row["record_id"], "outcome": "closed"}
+            if held_issues:
+                closed["issues"] = (
+                    held_issues  # a closed session keeps its list, as update reports it
+                )
+            return closed
+        registry.mark_seen(row["record_id"])
+        out: dict[str, Any] = {"record_id": row["record_id"], "outcome": "seen"}
+        letter, generation = registry._active_alias(registry._conn, row["record_id"])
+        if letter:
+            out["label"] = letter
+            out["generation"] = generation
+        if held_issues:
+            out["issues"] = held_issues  # AFC-694:  an addition, like the letter
+        return out
+    finally:
+        registry.close_db()
+
+
+def close_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    reason: str = "",
+    actor: str = "registry",
+    source: str = "registry",
+) -> dict[str, Any]:
+    """End one session's letter:  close the row, retire the alias, keep the history.
+
+    The letter's row stays in alias_assignments with its retired_at, so the platform
+    keeps the history of every letter it has issued and the window each one was used
+    in.  The reason ("stale", "replaced") goes into the close event.
+    """
+    for name, value in (
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
+    registry = SessionRegistry(db_path)
+    try:
+        row = _session_row_for_update(
+            registry._conn,
+            platform=platform,
+            verified_host=verified_host,
+            profile_scope=profile_scope,
+            native_session_id=native_session_id,
+        )
+        record_id = row["record_id"]
+        # A session closed by an earlier call has no live alias;  the letter it really
+        # held is the last one it was given, so a second close still names it.
+        letter, generation = registry._last_alias(registry._conn, record_id)
+        closed = registry.close(record_id, actor=actor, source=source, reason=reason)
+        current = registry._get(record_id)
+    finally:
+        registry.close_db()
+    return {
+        "record_id": record_id,
+        "label": letter,
+        "generation": generation,
+        "closed": bool(closed),
+        "outcome": "closed" if closed else "already_closed",
+        "reason": reason,
+        "closed_at": current["closed_at"],
+    }
+
+
+def sweep_stale(
+    db_path: str,
+    *,
+    platform: str,
+    seat: str,
+    stale_after_minutes: int = 120,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """End the letters of sessions that are stale AND have been replaced.
+
+    A letter is the seat's handle for replies, so it may only end when the session
+    behind it can no longer answer.  Two things have to be true:  the session has not
+    been seen for the stale window, and another session for the same seat has taken
+    over since.  A stale session nobody replaced keeps its letter, because a reply to
+    it is still this seat's business.
+
+    The letters themselves stay in alias_assignments with their start and end times,
+    so the history of the platform is complete after a sweep.
+    """
+    namespace = normalize_platform(platform)
+    moment = now or datetime.now(UTC)
+    cutoff = moment - timedelta(minutes=max(1, int(stale_after_minutes)))
+    registry = SessionRegistry(db_path)
+    ended: list[dict[str, Any]] = []
+    try:
+        with registry._write_txn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE platform = ? AND seat = ? AND closed_at IS NULL"
+                " ORDER BY registered_at ASC",
+                (namespace, seat),
+            ).fetchall()
+            open_rows = list(rows)
+            seen_at = {r["record_id"]: _parse_instant(r["last_seen_at"]) for r in open_rows}
+            registered_at = {r["record_id"]: _parse_instant(r["registered_at"]) for r in open_rows}
+            for row in open_rows:
+                last_seen = seen_at.get(row["record_id"])
+                if last_seen is None or last_seen >= cutoff:
+                    continue
+                replaced = False
+                for other in open_rows:
+                    if other["record_id"] == row["record_id"]:
+                        continue
+                    other_seen = seen_at.get(other["record_id"])
+                    other_registered = registered_at.get(other["record_id"])
+                    if (other_seen is None or other_seen > last_seen) and (
+                        other_registered is None or other_registered > last_seen
+                    ):
+                        replaced = True
+                        break
+                if not replaced:
+                    continue
+                letter, generation = registry._active_alias(conn, row["record_id"])
+                if row["closed_at"]:
+                    continue
+                now = _utcnow()
+                conn.execute(
+                    "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                    (now, row["record_id"]),
+                )
+                conn.execute(
+                    "UPDATE alias_assignments SET retired_at = ?"
+                    " WHERE record_id = ? AND retired_at IS NULL",
+                    (now, row["record_id"]),
+                )
+                registry._insert_event(
+                    conn,
+                    row["record_id"],
+                    letter,
+                    "close",
+                    "registry",
+                    "closed",
+                    "stale_sweep",
+                    "stale and replaced by a newer session",
+                    now,
+                )
+                registry._enqueue_session_upsert(conn, row["record_id"], now)
+                ended.append(
+                    {
+                        "record_id": row["record_id"],
+                        "label": letter,
+                        "generation": generation,
+                        "native_session_id": row["native_session_id"],
+                        "title": row["title"],
+                        "last_seen_at": row["last_seen_at"],
+                        "reason": "stale and replaced by a newer session",
+                    }
+                )
+    finally:
+        registry.close_db()
+    return ended
+
+
+def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Every letter the platform has issued, with the window it was used in.
+
+    A live letter has no end time;  a retired one carries the moment its use ended
+    and why, so "MM B" can be read as a window rather than only as a handle.
+    """
+    namespace = normalize_platform(platform)
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    registry = SessionRegistry(str(db_path), read_only=True)
+    try:
+        rows = registry._conn.execute(
+            "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
+            " a.assigned_at AS assigned_at, a.retired_at AS retired_at,"
+            " s.native_session_id AS native_session_id, s.seat AS seat, s.title AS title,"
+            " s.state AS state, s.verified_host AS verified_host, s.closed_at AS closed_at,"
+            # The session's last activity (every touch, title and update stamps it), so the wake
+            # router can rank sessions by recency rather than by when they were lettered.
+            " s.last_seen_at AS last_seen_at"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? ORDER BY a.assigned_at DESC LIMIT ?",
+            (namespace, max(1, int(limit))),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        record_ids = [row["record_id"] for row in rows]
+        close_by_id: dict[str, sqlite3.Row] = {}
+        if record_ids:
+            placeholders = ",".join("?" * len(record_ids))
+            for event in registry._conn.execute(
+                "SELECT session_record_id, recorded_at, details FROM events"
+                " WHERE event = 'close' AND session_record_id IN (%s)"
+                " ORDER BY recorded_at DESC" % placeholders,
+                record_ids,
+            ):
+                rid = event["session_record_id"]
+                if rid not in close_by_id:
+                    close_by_id[rid] = event
+        issues_by_id = _stored_issues_many(registry._conn, record_ids)
+        for row in rows:
+            event = close_by_id.get(row["record_id"])
+            item = dict(row)
+            item["end_reason"] = (event["details"] if event else "") or ""
+            item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
+            item["title_display"] = display_title(row["letter"], str(row["title"] or ""))
+            item["live"] = row["retired_at"] is None
+            if row["record_id"] in issues_by_id:
+                item["issues"] = issues_by_id[row["record_id"]]  # AFC-694, when the session has any
+            out.append(item)
+        return out
+    finally:
+        registry.close_db()
+
+
+# ---- the other direction: a letter names a session (AFC-412) ------------------------
+
+
+class RegistryUnavailable(RuntimeError):
+    """The registry could not be read at all:  a hot journal, a locked file, a missing table.
+
+    This is not a miss.  A miss is an identity with no registration;  this is a registry
+    that could not be opened, and the caller has to say so rather than report every
+    session as having no letter.
+    """
+
+
+def _check_generation(generation: int | None) -> None:
+    if generation is None:
+        return
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise ValueError("generation must be a positive integer")
+
+
+def resolve_label(
+    db_path: str,
+    platform: str,
+    letter: str,
+    generation: int | None = None,
+) -> dict[str, Any] | None:
+    """The session a letter names, or None when the letter is not live.
+
+    This is the other direction of the join.  The catalog answers "what letter is this
+    session", and the wake carries that answer on the row.  This answers "which session
+    is this letter", which is what an address like "@**MiniMax** Z" needs.
+
+    A letter is unique on its platform while it is live, so the letter alone names one
+    session, and the platform is always part of the address.  A recycled letter takes a
+    generation, and "MM A (gen 2)" names the second session to hold that letter.
+
+    None means one thing only:  the registry was read and that letter has no live
+    holder.  A registry that is missing, unreadable or broken raises
+    RegistryUnavailable, and malformed input raises ValueError, so a caller can tell a
+    miss from a failure to know.
+
+    The lookup is on the indexed (platform, letter) pair, so it answers for a session
+    the catalog no longer lists, which is the point:  the catalog shows a bounded window
+    of recent sessions and this does not.
+    """
+    if not isinstance(platform, str) or not platform.strip():
+        raise ValueError("platform is required")
+    if not isinstance(letter, str) or not letter.strip():
+        raise ValueError("letter is required")
+    want = letter.strip().upper()
+    if want not in ALL_LETTERS:
+        raise ValueError("letter must be A-Z, or two letters for a subthread")
+    _check_generation(generation)
+    if not db_path:
+        raise RegistryUnavailable("no registry path was given")
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    namespace = normalize_platform(platform)
+    columns = (
+        "a.letter AS label, a.generation AS generation, a.record_id AS record_id,"
+        " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
+        " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+        " s.state AS state"
+    )
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
+    try:
+        if generation is None:
+            row = registry._conn.execute(
+                "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL" % columns,
+                (namespace, want),
+            ).fetchone()
+        else:
+            row = registry._conn.execute(
+                "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.generation = ?" % columns,
+                (namespace, want, int(generation)),
+            ).fetchone()
+        held_issues = _stored_issues(registry._conn, row["record_id"]) if row is not None else []
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    if row is None:
+        return None
+    found = dict(row)
+    label = str(found.get("label") or "")
+    found["ref"] = cross_seat_ref(
+        str(found.get("seat") or ""),
+        label,
+        int(found.get("generation") or 0),
+    )
+    found["title_display"] = display_title(label, str(found.get("title") or ""))
+    found["found"] = True
+    if held_issues:
+        found["issues"] = held_issues  # AFC-694, when the session has any
+    return found
+
+
+def registrations_for_native_id(
+    db_path: str, platform: str, native_session_id: str
+) -> list[dict[str, Any]]:
+    """Every live registration of one native session id on a platform, across locations.
+
+    This direction answers a session id that arrives without a location:  the answer is the
+    set of locations that id is currently lettered at.  (The ask-before-letter flow that first
+    needed it, operator_registration, is gone:  the Operator asks nobody, owner ruling Nov 10,
+    2026.)  Only live letters count:  a session whose letter was retired reads as unlettered,
+    and the register path resumes its record with a fresh letter.  A closed session is not a live registration either - the same filter every
+    other registry read (resolve_ref, the letter reads) applies.  An empty list means unlettered, one row is the short-circuit, and several rows
+    are the contradiction the owner settles - the same id lettered on both the Mac and the
+    server is never merged or picked between here.
+
+    Read-only by behaviour, on the same handle discipline as resolve_label:  no DDL, no
+    migration row, a hot journal recovered rather than reported as an empty registry.  A
+    missing or broken registry raises RegistryUnavailable;  an empty list is a real answer.
+    """
+    if not isinstance(platform, str) or not platform.strip():
+        raise ValueError("platform is required")
+    native = SI.check(native_session_id, "the native session id")
+    if not db_path:
+        raise RegistryUnavailable("no registry path was given")
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    namespace = normalize_platform(platform)
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception as exc:
+        raise RegistryUnavailable(
+            "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
+        ) from exc
+    try:
+        rows = registry.live_registration_rows_for_native_id(platform, native_session_id)
+    except Exception as exc:
+        raise RegistryUnavailable(
+            "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
+        ) from exc
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    return rows
+
+
+def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:
+    """The session a reference form names, or None when it names none.
+
+    The reference form is what a reply carries:  "MM A", or "MM A (gen 2)" for a letter
+    that has been recycled.  This is the inverse of the form the registry hands out, and
+    the inverse is exact:  a bare form names generation 1 of the letter, and a suffix
+    names that generation.  So "MM A" always names the same session, whether or not the
+    letter has been recycled since.
+
+    A bare form that resolved to the live holder would not be an inverse.  After a
+    recycle it would name a different session than the one it was handed out for, so a
+    reply to an old message would reach the wrong session.  The live holder is what
+    `resolve_label` answers, and the two questions are different on purpose.
+
+    The seat in the form is checked against the session it names.  A ref is
+    "SEAT LETTER", so "CODEX A" is a claim about Codex holding A;  without the check it
+    resolved to whichever session held A on the platform, and the seat in the form was
+    decoration.  A ref whose seat does not hold the letter names no session, and a miss
+    is None rather than an error.
+    """
+    if not isinstance(ref, str) or not ref.strip():
+        raise ValueError("the reference form is required")
+    text = ref.strip()
+    generation = 1
+    match = re.search(r"\s*\(gen\s+(\d+)\)\s*$", text)
+    if match:
+        generation = int(match.group(1))
+        text = text[: match.start()].strip()
+    parts = text.split()
+    if len(parts) < 2:
+        raise ValueError("the reference form is SEAT LETTER or SEAT LETTER (gen N)")
+    seat = parts[0].strip().upper()
+    letter = parts[-1].strip().upper()
+    found = resolve_label(db_path, platform, letter, generation)
+    if found is None:
+        return None
+    if str(found.get("seat") or "").strip().upper() != seat:
+        # The letter is held, but by another seat:  this ref names no session.
+        return None
+    return found
+
+
+def candidates_for(
+    db_path: str,
+    platform: str,
+    letter: str,
+) -> list[dict[str, Any]]:
+    """The live holders of one letter on one platform.
+
+    This is the query a tagged letter needs:  the sessions that could hold the letter
+    the sender used.  It is read-only and it never allocates, so a letter nobody holds
+    simply has no candidates rather than a new one.
+
+    `retired_at IS NULL` is cached lease state, not proof of life, so a session that has
+    actually been closed (closed_at set) is not a candidate even if its alias was never
+    retired.  A closed session can never hold a letter again.
+    """
+    want = str(letter or "").strip().upper()
+    if not want or want not in ALL_LETTERS:
+        return []
+    if not db_path or not os.path.isfile(str(db_path)):
+        return []
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception:
+        return []
+    try:
+        rows = registry._conn.execute(
+            "SELECT a.letter AS label, a.generation AS generation, a.record_id AS record_id,"
+            " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
+            " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+            " s.state AS state"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL"
+            " AND s.closed_at IS NULL"
+            " ORDER BY s.registered_at DESC, a.record_id ASC",
+            (normalize_platform(platform), want),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    out = []
+    for row in rows:
+        found = dict(row)
+        label = str(found.get("label") or "")
+        generation = int(found.get("generation") or 0)
+        seat = str(found.get("seat") or "")
+        out.append(
+            {
+                "label": label,
+                "generation": generation,
+                "ref": cross_seat_ref(seat, label, generation),
+                "record_id": found.get("record_id"),
+                "seat": seat,
+                "native_session_id": str(found.get("native_session_id") or ""),
+                "title": str(found.get("title") or ""),
+                "platform": normalize_platform(platform),
+                "location": str(found.get("verified_host") or ""),
+                "scope": str(found.get("profile_scope") or ""),
+            }
+        )
+    return out
+
+
+def candidates_for_letter(db_path: str, letter: str) -> list[dict[str, Any]]:
+    """The live holders of one letter on every platform.
+
+    A letter used without a platform is the ambiguous case:  the same letter can be
+    live on more than one platform, because the namespace is per platform.  This is the
+    query that finds them.
+    """
+    want = str(letter or "").strip().upper()
+    if not want or want not in ALL_LETTERS or not db_path or not os.path.isfile(str(db_path)):
+        return []
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception:
+        return []
+    try:
+        rows = registry._conn.execute(
+            "SELECT a.platform AS platform, a.letter AS label, a.generation AS generation,"
+            " a.record_id AS record_id, s.seat AS seat, s.native_session_id AS native_session_id,"
+            " s.title AS title, s.verified_host AS verified_host, s.profile_scope AS profile_scope"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.letter = ? AND a.retired_at IS NULL AND s.closed_at IS NULL"
+            " ORDER BY a.platform ASC, s.registered_at DESC, a.record_id ASC",
+            (want,),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    out = []
+    for row in rows:
+        found = dict(row)
+        label = str(found.get("label") or "")
+        generation = int(found.get("generation") or 0)
+        seat = str(found.get("seat") or "")
+        platform = normalize_platform(str(found.get("platform") or ""))
+        out.append(
+            {
+                "label": label,
+                "generation": generation,
+                "ref": cross_seat_ref(seat, label, generation),
+                "record_id": found.get("record_id"),
+                "seat": seat,
+                "native_session_id": str(found.get("native_session_id") or ""),
+                "title": str(found.get("title") or ""),
+                "platform": platform,
+                "location": str(found.get("verified_host") or ""),
+                "scope": str(found.get("profile_scope") or ""),
+            }
+        )
+    return out
+
+
+# ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
+
+
+def lookup_many(
+    db_path: str,
+    identities: list[tuple[str, str, str, str]],
+    failures: list[tuple[str, str, str, str]] | None = None,
+) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    """Read-only lookups for many identities, over one connection.
+
+    The wake path asks about every catalog row it shows, so one connection per row would
+    be one connection per row per wake.  One connection, one pass, many answers.
+
+    Side-effect free on purpose:  a missing database is not created and no letter is
+    allocated, because a catalog scan must never mint registrations as a side effect of
+    reading.  A registry that cannot be read at all raises RegistryUnavailable, so the
+    caller can report that instead of silently showing every session as unlettered.
+
+    A partial failure is not a miss:  one unreadable session losing its letter is not the
+    same as that session never having one, so the identities that failed are collected
+    for the caller to report.
+
+    The reference form carries the generation when a letter has been recycled, so
+    "MM A" and "MM A (gen 2)" never read as the same session.
+    """
+    result: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    if not db_path or not os.path.isfile(str(db_path)) or not identities:
+        return result
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
+    failed: list[tuple[str, str, str, str]] = []
+    try:
+        for identity in identities:
+            try:
+                found = registry.lookup(*identity)
+            except Exception:
+                failed.append(identity)
+                continue
+            if not found or not found.get("label"):
+                continue
+            letter = str(found["label"])
+            generation = int(found.get("generation") or 0)
+            seat = str(found.get("seat") or "")
+            result[identity] = {
+                "record_id": found.get("record_id"),
+                "label": letter,
+                "generation": generation,
+                "seat": seat,
+                "ref": cross_seat_ref(seat, letter, generation),
+                "title": str(found.get("title") or ""),
+            }
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    if failures is not None:
+        failures.extend(failed)
+    if failed and len(failed) == len(identities):
+        # Every read failed, so the registry is unreadable rather than empty.
+        raise RegistryUnavailable("every lookup failed")
+    return result
+
+
+def lookup_entry(
+    db_path: str,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> dict[str, Any]:
+    """One read-only registry lookup: the letter, its generation and its reference form."""
+    identity = (platform, verified_host, profile_scope, native_session_id)
+    try:
+        return lookup_many(db_path, [identity]).get(identity, {})
+    except RegistryUnavailable:
+        return {}
+
+
+def lookup_label(
+    db_path: str,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> str:
+    """The live letter for one identity, or "" when it is not registered."""
+    return str(
+        lookup_entry(db_path, platform, verified_host, profile_scope, native_session_id).get(
+            "label"
+        )
+        or ""
+    )
+
+
+# ---- outbox bridge for the async exporter (AFC-412 PR2) -------------------------
+
+
+def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        # rowid is the commit order (one writer, appended under the write lock), and it is the only
+        # correct key here:  created_at can be caller-supplied (close(at=...), mark_seen(at=...)),
+        # so a transaction with a historical timestamp would export before the state it supersedes
+        # and leave the sheet stale.  outbox_id cannot either:  it is a ULID whose random suffix
+        # does not sort with the event it accompanies.
+        rows = conn.execute(
+            "SELECT outbox_id, kind, payload, created_at FROM export_outbox"
+            " WHERE exported_at IS NULL ORDER BY rowid LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None = None) -> int:
+    """Mark outbox rows exported only after the Sheets write is confirmed.  Re-running after a
+    crash simply re-exports unmarked rows;  the exporter reconciles by id so that is safe."""
+    if not outbox_ids:
+        return 0
+    at = exported_at or _utcnow()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            cur = conn.executemany(
+                "UPDATE export_outbox SET exported_at = ? WHERE outbox_id = ?",
+                [(at, i) for i in outbox_ids],
+            )
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+EXPORT_OUTCOMES = ("exported", "already_present", "failed", "ambiguous")
+
+
+def record_export_attempt(
+    db_path: str,
+    outbox_id: str,
+    destination: str,
+    tab: str,
+    kind: str,
+    outcome: str,
+    detail: str = "",
+) -> str:
+    """Record one export attempt in the store-side fence (OPS-1037) and return its id.
+
+    The fence is the store's own record of what an exporter did:  an outbox row is only
+    treated as exported (see mark_exported) once an attempt with outcome 'exported' or
+    'already_present' exists for its (outbox_id, destination, tab, kind).  Recording is
+    deliberately separate from marking, so a runner can never quietly skip the audit row:
+    it asks the store to remember the attempt, then asks the store to mark the row.
+    """
+    if outcome not in EXPORT_OUTCOMES:
+        raise ValueError("outcome must be one of %s" % ", ".join(EXPORT_OUTCOMES))
+    attempt_id = _ulid()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO export_attempts"
+                " (attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (attempt_id, outbox_id, destination, tab, kind, outcome, detail, _utcnow()),
+            )
+        return attempt_id
+    finally:
+        conn.close()
+
+
+def record_export_attempts(db_path: str, records: list[dict[str, Any]]) -> list[str]:
+    """Record many fence attempts in one transaction and return their ids (OPS-1037).
+
+    The drain records one attempt per outbox row; batching keeps a multi-thousand-row
+    backfill from paying a process spawn and a connection per row.  Every record is
+    validated before any insert, so a bad record fails the whole batch with nothing
+    written — the caller keeps all of the batch's rows pending and retries cleanly.
+    """
+    prepared = []
+    for record in records:
+        outcome = str(record.get("outcome") or "")
+        if outcome not in EXPORT_OUTCOMES:
+            raise ValueError("outcome must be one of %s" % ", ".join(EXPORT_OUTCOMES))
+        prepared.append(
+            (
+                _ulid(),
+                str(record.get("outbox_id") or ""),
+                str(record.get("destination") or ""),
+                str(record.get("tab") or ""),
+                str(record.get("kind") or ""),
+                outcome,
+                str(record.get("detail") or ""),
+                _utcnow(),
+            )
+        )
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT INTO export_attempts"
+                " (attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                prepared,
+            )
+        return [p[0] for p in prepared]
+    finally:
+        conn.close()
+
+
+def export_attempts(
+    db_path: str, outbox_id: str | None = None, limit: int = 100
+) -> list[dict[str, Any]]:
+    """The fence rows, newest first — one outbox row's history, or the recent drain's."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        if outbox_id:
+            rows = conn.execute(
+                "SELECT attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at"
+                " FROM export_attempts WHERE outbox_id = ? ORDER BY rowid DESC LIMIT ?",
+                (outbox_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT attempt_id, outbox_id, destination, tab, kind, outcome, detail, attempted_at"
+                " FROM export_attempts ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def default_db(env: Mapping[str, str] | None = None) -> str:
+    """The shared registry location, from the same environment the Operator's eavesdropper reads.
+
+    The env is the caller's:  a caller that hands in its own mapping is answered about
+    the file its own CLI would open, so a guard and the CLI it guards can never name
+    two different registries.
+    """
+    env = os.environ if env is None else env
+    home = env.get("HOME") or os.path.expanduser("~")
+    root = env.get("SIMPLE_TOOLS_STATE_DIR") or os.path.join(home, ".simple-tools")
+    return registry_db_path(root, env)
+
+
+def _issues_arg(text: str) -> Any:
+    """The --issues value read as JSON.  Text that is not JSON is passed on as it is, so the
+    registry refuses it as it refuses any value that is not a list, instead of storing nothing."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _api_call_for(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    """The API call one parsed CLI invocation names:  the op and its fields, under the
+    names the registry API folds (registry_api drops the unset ones)."""
+    identity = {
+        "platform": getattr(args, "platform", None),
+        "location": getattr(args, "location", None),
+        "scope": getattr(args, "scope", None),
+        "session_id": getattr(args, "session_id", None),
+    }
+    command = args.command
+    if command == "pending-outbox":
+        return "pending-outbox", {"limit": args.limit}
+    if command == "mark-exported":
+        return "mark-exported", {"outbox_ids": list(args.outbox_ids)}
+    if command == "resolve":
+        return "resolve", {
+            "platform": args.platform,
+            "letter": args.letter,
+            "generation": args.generation,
+        }
+    if command == "register":
+        return "register", {
+            **identity,
+            "seat": args.seat,
+            "source": args.source,
+            "title": args.title,
+            "project": args.project,
+            "thread_link": args.thread_link,
+            "apple_note_link": args.apple_note_link,
+            "wake_capability": args.wake_capability,
+            "letter_space": args.letter_space,
+            "letter_pick": args.letter_pick,
+            "parent_session_id": args.parent_session_id,
+            "parent_letter": args.parent_letter,
+        }
+    if command == "relabel":
+        return "relabel", {
+            **identity,
+            "seat": args.seat,
+            "source": args.source,
+            "letter_space": args.letter_space,
+            "letter_pick": args.letter_pick,
+            "parent_session_id": args.parent_session_id,
+            "parent_letter": args.parent_letter,
+            "force": args.force,
+        }
+    if command == "update":
+        payload = {
+            **identity,
+            "title": args.title,
+            "project": args.project,
+            "thread_link": args.thread_link,
+            "apple_note_link": args.apple_note_link,
+            "wake_capability": args.wake_capability,
+        }
+        if args.issues is not None:
+            payload["issues"] = _issues_arg(args.issues)
+        return "update", payload
+    if command == "close":
+        return "close", {
+            **identity,
+            "reason": args.reason,
+            "actor": args.actor,
+            "source": args.source,
+        }
+    if command == "touch":
+        return "touch", dict(identity)
+    if command == "sweep":
+        return "sweep", {
+            "platform": args.platform,
+            "seat": args.seat,
+            "stale_after_minutes": args.stale_after_minutes,
+        }
+    if command == "reopen":
+        return "reopen", {
+            "record_id": args.record_id,
+            "actor": args.actor,
+            "source": args.source,
+            "letter_pick": args.letter_pick,
+            "parent_session_id": args.parent_session_id,
+        }
+    if command == "history":
+        return "history", {"platform": args.platform, "limit": args.limit}
+    return command, {}
+
+
+def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
+    env = os.environ if env is None else env
+    parser = argparse.ArgumentParser(prog="operator-registry")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("pending-outbox")
+    p.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    p.add_argument("--limit", type=int, default=50)
+    m = sub.add_parser("mark-exported")
+    m.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    m.add_argument("outbox_ids", nargs="+")
+    ra = sub.add_parser(
+        "record-export-attempt",
+        help="record one export attempt in the store-side fence (OPS-1037)",
+    )
+    ra.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    ra.add_argument("--outbox-id", required=True)
+    ra.add_argument("--destination", required=True, help="the export target, such as a workbook id")
+    ra.add_argument("--tab", required=True)
+    ra.add_argument("--kind", required=True)
+    ra.add_argument("--outcome", required=True, choices=list(EXPORT_OUTCOMES))
+    ra.add_argument("--detail", default="")
+    rb = sub.add_parser(
+        "record-export-attempts",
+        help="record a batch of export attempts in the store-side fence (OPS-1037)",
+    )
+    rb.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rb.add_argument(
+        "--record",
+        action="append",
+        default=[],
+        help="one JSON object per attempt: outbox_id, destination, tab, kind, outcome, detail",
+    )
+    ea = sub.add_parser("export-attempts", help="read the export fence (OPS-1037)")
+    ea.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    ea.add_argument("--outbox-id", default="")
+    ea.add_argument("--limit", type=int, default=100)
+    r = sub.add_parser(
+        "register",
+        help="register one session and print its letter, generation and title form",
+    )
+    r.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    r.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    r.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    r.add_argument("--scope", required=True, help="the profile scope")
+    r.add_argument("--session-id", required=True, help="the native session id")
+    r.add_argument("--seat", required=True)
+    r.add_argument("--source", required=True, help="what asked for the registration")
+    r.add_argument("--title", default="")
+    r.add_argument("--project", default="")
+    r.add_argument("--thread-link", default="")
+    r.add_argument("--apple-note-link", default="")
+    r.add_argument("--wake-capability", default="unknown")
+    r.add_argument(
+        "--letter-space",
+        default=None,
+        choices=sorted(LETTER_SPACES),
+        help="accepted and ignored:  every seat's chat takes a doubled pair, AA to ZZ (owner, Nov 11 2026)",
+    )
+    r.add_argument(
+        "--letter-pick",
+        default=None,
+        choices=LETTER_PICKS,
+        help="accepted and ignored:  the order is the allocator's (the free doubled pair issued the fewest times)",
+    )
+    r.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one: take the first free pair after its pair",
+    )
+    r.add_argument(
+        "--parent-letter",
+        default="",
+        help="the pair the session that started this one holds (for a platform that knows only the letter);"
+        " --parent-session-id wins when both are given",
+    )
+    rl = sub.add_parser(
+        "relabel",
+        help="move a session that still holds a single letter onto a pair, in place",
+    )
+    rl.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rl.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    rl.add_argument("--location", required=True, help="the fleet location (mac, server, cloud)")
+    rl.add_argument("--scope", required=True, help="the profile scope")
+    rl.add_argument("--session-id", required=True, help="the native session id")
+    rl.add_argument("--seat", required=True)
+    rl.add_argument("--source", required=True, help="what asked for the move")
+    rl.add_argument(
+        "--letter-space",
+        default="double",
+        choices=sorted(LETTER_SPACES),
+        help="accepted and ignored:  every session holds a pair",
+    )
+    rl.add_argument(
+        "--letter-pick",
+        default="primary",
+        choices=LETTER_PICKS,
+        help="accepted and ignored:  the order is the allocator's",
+    )
+    rl.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one: take the first free pair after its pair",
+    )
+    rl.add_argument(
+        "--parent-letter",
+        default="",
+        help="the pair the session that started this one holds",
+    )
+    rl.add_argument(
+        "--force",
+        action="store_true",
+        help="place the letter again even when the session already holds one in that space",
+    )
+    rs = sub.add_parser("resolve", help="name the session a letter points at")
+    rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    rs.add_argument("--letter", required=True, help="the letter, such as A")
+    rs.add_argument(
+        "--generation", type=int, default=None, help="the generation of a recycled letter"
+    )
+    u = sub.add_parser(
+        "update",
+        help="update the mutable fields of one registered session, found by its session id",
+    )
+    u.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    u.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    u.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    u.add_argument("--scope", required=True, help="the profile scope")
+    u.add_argument("--session-id", required=True, help="the native session id")
+    u.add_argument("--title", default=None)
+    u.add_argument("--project", default=None)
+    u.add_argument("--thread-link", default=None)
+    u.add_argument("--apple-note-link", default=None)
+    u.add_argument("--wake-capability", default=None)
+    u.add_argument(
+        "--issues",
+        default=None,
+        help='the Linear issues, as a JSON list of {"id", "seen_at"};  replaces the stored list',
+    )
+    c = sub.add_parser("close", help="end one session's letter and keep its history")
+    c.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    c.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    c.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    c.add_argument("--scope", required=True, help="the profile scope")
+    c.add_argument("--session-id", required=True, help="the native session id")
+    c.add_argument("--reason", default="", help="why the letter's use ended")
+    c.add_argument("--actor", default="registry")
+    c.add_argument("--source", default="registry")
+    w = sub.add_parser(
+        "sweep", help="end the letters of sessions that are stale and have been replaced"
+    )
+    w.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    w.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    w.add_argument("--seat", required=True)
+    w.add_argument("--stale-after-minutes", type=int, default=120)
+    h = sub.add_parser("history", help="every letter the platform has issued, with its window")
+    h.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    h.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    h.add_argument("--limit", type=int, default=50)
+    t = sub.add_parser("touch", help="stamp last_seen_at for one live session")
+    t.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    t.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    t.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    t.add_argument("--scope", required=True, help="the profile scope")
+    t.add_argument("--session-id", required=True, help="the native session id")
+    rp = sub.add_parser(
+        "reopen",
+        help="give a closed session its letter again",
+    )
+    rp.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rp.add_argument("--record-id", required=True, help="the registry record of the closed session")
+    rp.add_argument("--actor", default="registry")
+    rp.add_argument("--source", default="registry")
+    rp.add_argument(
+        "--letter-pick",
+        default="primary",
+        choices=sorted(LETTER_PICKS),
+        help="accepted and ignored:  the order is the allocator's",
+    )
+    rp.add_argument(
+        "--parent-session-id",
+        default="",
+        help="the session that started this one: take the first free pair after its pair",
+    )
+    args = parser.parse_args(argv)
+    from . import registry_api
+
+    if args.command in ("record-export-attempt", "record-export-attempts", "export-attempts"):
+        # The export fence is the store's own bookkeeping (OPS-1037):  it is handled
+        # locally, before the registry-API cutover below, because the API carries no
+        # fence ops and the fence's only caller (the Sheets drain) runs on the store's
+        # host against the store file.  Routing these through the API would reject
+        # them as unknown ops and wedge the drain.  The no-registry guard still
+        # applies, so a stray local file is never brought into being for them either.
+        db = getattr(args, "db", "") or default_db(env)
+        if not os.path.isfile(db):
+            print(json.dumps({"error": "no Operator registry on this host"}))
+            return 3
+        if args.command == "record-export-attempt":
+            attempt_id = record_export_attempt(
+                db,
+                args.outbox_id,
+                args.destination,
+                args.tab,
+                args.kind,
+                args.outcome,
+                args.detail,
+            )
+            print(json.dumps({"attempt_id": attempt_id}))
+            return 0
+        if args.command == "record-export-attempts":
+            records = [json.loads(item) for item in args.record]
+            print(json.dumps({"attempt_ids": record_export_attempts(db, records)}))
+            return 0
+        print(json.dumps(export_attempts(db, args.outbox_id or None, args.limit)))
+        return 0
+
+    if registry_api.base_url(env):
+        # The HTTPS transport is this CLI's cutover, the same rule the MiniMax helper's
+        # registry_call follows:  with the registry API URL configured, the server's
+        # store answers every op and the local file is never opened, so a caller on a
+        # host that keeps a stale local copy (the letter sweep, run every quarter hour
+        # against this CLI) cannot keep writing that copy after the cutover.  A failed
+        # call prints its error and exits 2;  nothing falls back to the file.
+        answer = registry_api.call(env, *_api_call_for(args))
+        print(json.dumps(answer))
+        return 0 if "error" not in answer else 2
+    db = getattr(args, "db", "") or default_db(env)
+    if not os.path.isfile(db):
+        # Never bring a registry into being:  a second registry would hand out letters
+        # that collide with the ones the Operator keeps.  Every op that takes a
+        # database refuses the same way, so the transport that runs this CLI directly
+        # is guarded as well as the passthrough that runs it through simple-chat.
+        print(json.dumps({"error": "no Operator registry on this host"}))
+        return 3
+    if args.command == "pending-outbox":
+        print(json.dumps(pending_outbox(args.db, args.limit)))
+        return 0
+    if args.command == "resolve":
+        try:
+            found = resolve_label(
+                db,
+                args.platform,
+                args.letter,
+                args.generation,
+            )
+        except (ValueError, RegistryUnavailable) as exc:
+            print(json.dumps({"error": str(exc), "found": False}))
+            return 2
+        print(json.dumps(found if found else {"label": args.letter, "found": False}))
+        return 0
+    if args.command == "register":
+        try:
+            out = register_session(
+                db,
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+                seat=args.seat,
+                source=args.source,
+                title=args.title,
+                project=args.project,
+                thread_link=args.thread_link,
+                apple_note_link=args.apple_note_link,
+                wake_capability=args.wake_capability,
+                issuer=ISSUER_OPERATOR,
+                letter_space=args.letter_space,
+                letter_pick=args.letter_pick,
+                parent_session_id=args.parent_session_id,
+                parent_letter=args.parent_letter,
+            )
+        except LabelExhausted as exc:
+            # A platform that asks for a letter gets an answer it can read, never a traceback and an empty line.
+            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
+            return 2
+        except SeatPlatformMismatch as exc:
+            print(json.dumps(exc.answer()))
+            return 2
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "relabel":
+        try:
+            out = relabel_session(
+                db,
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+                seat=args.seat,
+                source=args.source,
+                letter_space=args.letter_space,
+                letter_pick=args.letter_pick,
+                parent_session_id=args.parent_session_id,
+                parent_letter=args.parent_letter,
+                issuer=ISSUER_OPERATOR,
+                force=args.force,
+            )
+        except LabelExhausted as exc:
+            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
+            return 2
+        except SessionClosed as exc:
+            print(json.dumps({"error": str(exc), "code": "closed_session"}))
+            return 2
+        except SessionUnknown as exc:
+            print(json.dumps({"error": str(exc), "code": "not_registered"}))
+            return 2
+        except SeatPlatformMismatch as exc:
+            print(json.dumps(exc.answer()))
+            return 2
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "update":
+        try:
+            out = update_session(
+                db,
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+                title=args.title,
+                project=args.project,
+                thread_link=args.thread_link,
+                apple_note_link=args.apple_note_link,
+                wake_capability=args.wake_capability,
+                issues=None if args.issues is None else _issues_arg(args.issues),
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "close":
+        try:
+            out = close_session(
+                db,
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+                reason=args.reason,
+                actor=args.actor,
+                source=args.source,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "touch":
+        try:
+            out = touch_session(
+                db,
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "sweep":
+        ended = sweep_stale(
+            db,
+            platform=args.platform,
+            seat=args.seat,
+            stale_after_minutes=args.stale_after_minutes,
+        )
+        print(json.dumps({"ended": ended, "count": len(ended)}))
+        return 0
+    if args.command == "reopen":
+        # The reopen shares the platform's own rule, the one every hook uses, so the
+        # pair space is kept the same way here as it is in the hook.  It lives behind
+        # this verb because a host that keeps no registry asks the host that holds one.
+        from . import platform_letter
+
+        reg = None
+        try:
+            reg = SessionRegistry(db)
+            letter, generation, previous = platform_letter.operator_reopen(
+                sys.modules[__name__],
+                db,
+                reg,
+                args.record_id,
+                actor=args.actor,
+                source=args.source,
+                pick=args.letter_pick,
+                parent=args.parent_session_id,
+            )
+        except platform_letter.SpaceLost as exc:
+            # A chat that held a pair would come back with a single letter.  That is
+            # refused before anything is written.
+            print(
+                json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"})
+            )
+            return 2
+        except LabelExhausted as exc:
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}
+                )
+            )
+            return 2
+        except (UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
+            # A database that faults is a refusal, not a traceback:  the far host has
+            # to answer with something the caller can read.
+            print(
+                json.dumps(
+                    {"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}
+                )
+            )
+            return 2
+        finally:
+            if reg is not None:
+                reg.close_db()
+        print(
+            json.dumps(
+                {
+                    "record_id": args.record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "previous": previous,
+                    "outcome": "reopened",
+                }
+            )
+        )
+        return 0
+    if args.command == "history":
+        try:
+            rows = letter_history(db, args.platform, args.limit)
+        except (ValueError, RegistryUnavailable) as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(rows))
+        return 0
+    print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -30,9 +30,13 @@
 # `junk`) so any future `clean junk` call -- from this script, from
 # ~/apps/mac-auto-cleanup.sh's own unconditional `cleanmymac clean --force`, or
 # from CleanMyMac's own background Smart Care agent -- skips them too.
-# 2026-09-30 (Claude): memory/load pressure gate.  On a thrashing Mac (load1 > 40 or
-# swap >= 90%) the run logs PRESSURE-SKIP, does only the cheap truncations, and exits --
-# no git/gh/find-over-worktrees phase, no CleanMyMac.  See the gate below the lock.
+# 2026-09-30 (Claude): memory/load pressure gate.  On a thrashing Mac the run logs
+# PRESSURE-SKIP, does only the cheap truncations, and exits -- no git/gh/
+# find-over-worktrees phase, no CleanMyMac.  The gate is GRADED (see the thresholds
+# block below): load1 > 250 or swap >= 98% is the hard stop, and load1 >= 150 or
+# swap >= 90% is lean mode, which still reclaims and only skips the du probes.  The
+# old arms (load1 > 40, swap >= 90%) sat inside this Mac's normal operating band, so
+# every tick skipped and nothing was ever retired; they are gone.
 # 2026-10-07 (lanes-guard, board a7dfde0e / 912034a0): REPOS = legacy list UNION fleet-apps.json; every repo root joins
 # KEEP_RE; nothing under ~/apps/lanes is retired unless the lane doctor says SAFE-TO-REMOVE + MERGED + >= STALE_DAYS old;
 # a checkout BORN < STALE_DAYS ago is never retired (0-ahead ancestry is not "merged" for a fresh lane); a process cwd,
@@ -114,7 +118,7 @@ REPOS=(
 # Suffixed per-lane trees (trading-grok-litestream-cascade) remain reaped
 # when merged+idle.  Retired-KIMI seat trees reap when idle (not on a "kimi"
 # substring, and never by skipping the idle check).
-KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server|agent-sync|agent-sync-push|clutch-runtime|xcode-health))$"
+KEEP_RE="^(/Users/jay/Code/Socratic.Trade|/Users/jay/Code/Congress.Trade|/Users/jay/Code/Usage-Monitor|/Users/jay/Code/congress-trading-shared|/Users/jay/Code/DealDex|/Users/jay/Code/Personal-Site|/Users/jay/Code/Autorotate|/Users/jay/Code/ContactLogo|/Users/jay/Code/AI-Fleet-Coordinator|/Users/jay/Code/BotFleet|/Users/jay/Code/fleet-ops|/Users/jay/Code/botfleet-site|/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)|/Users/jay/apps/(grok-acp-runtime|agy-acp-runtime|shellular-runtime|_retired/mac-collab-20261019|seat-mcp|KIMI-SALVAGE-2026-08-22|botfleet-server|clutch-runtime|xcode-health))$"
 
 # Retired-KIMI seat, nested agent scratch, or /tmp.  Not a substring:
 # branch cursor/kimi-audit-def (ST #3044, owner-kept) must not match.
@@ -858,9 +862,10 @@ janitor_cheap_truncations() {
 # under LOW_FREE/PRESSURE_FREE ran the full git fetch x12 plus per-worktree git status,
 # find, merge-base and gh fan-out back to back (one tick ran 3h07m with repeated WATCHDOG
 # kills) -- the janitor was adding to the thrash it exists to relieve.  Same rule as the
-# housekeeper skill: load1 > JANITOR_MAX_LOAD or swap >= JANITOR_MAX_SWAP_PCT means
-# thrashing, so do the cheap truncations only and skip every git/gh/find-over-worktrees
-# phase, the du buckets, and all CleanMyMac calls.  The next tick re-evaluates, so full
+# housekeeper skill's pressure rule, graded (thresholds block below): load1 >
+# JANITOR_MAX_LOAD or swap >= JANITOR_MAX_SWAP_PCT is the HARD arm -- a real crisis --
+# so do the cheap truncations only and skip every git/gh/find-over-worktrees phase, the
+# du buckets, and all CleanMyMac calls.  The next tick re-evaluates, so full
 # runs resume on their own once the Mac settles.  Nothing here reads the repos.
 janitor_load1() { sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}'; }
 # vm.swapusage: "total = 10240.00M  used = 9401.44M  free = 838.56M  (encrypted)" -> used%

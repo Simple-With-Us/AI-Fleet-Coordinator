@@ -6,10 +6,11 @@ import json
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
-from seat_mcp import server
+from seat_mcp import recall_bridge, server
+from seat_mcp.seats import SeatError
 
 
 class FakeHandler(server.SeatHandler):
@@ -39,6 +40,8 @@ class RecallHttpTest(unittest.TestCase):
         server.recall_stats = lambda _args: {"collection": "fleet-agents", "points": 3}  # type: ignore[method-assign]
         server.recall_search = lambda args: {"hits": [{"q": args.get("query")}], "mode": "hybrid"}  # type: ignore[method-assign]
         server.recall_contribute = lambda args: {"id": "x", "seat": args.get("seat")}  # type: ignore[method-assign]
+        server.recall_correct = lambda args: {"id": "x", "revision": 2}  # type: ignore[method-assign]
+        server.recall_retract = lambda args: {"id": "x", "retracted": True}  # type: ignore[method-assign]
 
     def _json(self, method: str, path: str, body=None, token: str = "test-token"):
         data = None if body is None else json.dumps(body).encode()
@@ -51,13 +54,62 @@ class RecallHttpTest(unittest.TestCase):
         req = Request(self.base + "/health")
         with urlopen(req, timeout=5) as resp:
             payload = json.loads(resp.read().decode())
-        self.assertEqual(payload.get("recall"), ["/recall/stats", "/recall/search", "/recall/contribute"])
+        self.assertEqual(
+            payload.get("recall"),
+            [
+                "/recall/stats",
+                "/recall/search",
+                "/recall/contribute",
+                "/recall/correct",
+                "/recall/retract",
+            ],
+        )
 
     def test_stats_requires_bearer(self) -> None:
         req = Request(self.base + "/recall/stats")
         with self.assertRaises(HTTPError) as ctx:
             urlopen(req, timeout=5)
         self.assertEqual(ctx.exception.code, 401)
+
+    def test_mutation_aliases(self) -> None:
+        code, payload = self._json(
+            "POST",
+            "/recall/correct",
+            {"doc_id": "d", "text": "x" * 60, "reason": "current", "seat": "GROK"},
+        )
+        self.assertEqual((code, payload["revision"]), (200, 2))
+        code, payload = self._json(
+            "POST", "/recall/retract", {"doc_id": "d", "reason": "obsolete", "seat": "GROK"}
+        )
+        self.assertEqual((code, payload["retracted"]), (200, True))
+
+    def test_mutation_expected_revision_is_a_strict_integer(self) -> None:
+        original = recall_bridge._call
+        recall_bridge._call = lambda fn_name, **kwargs: kwargs  # type: ignore[attr-defined]
+        try:
+            for expected_revision in (1.5, "1", True, 0, 1000001):
+                with self.assertRaisesRegex(
+                    SeatError, "expected_revision", msg=repr(expected_revision)
+                ):
+                    recall_bridge.recall_retract(
+                        {
+                            "doc_id": "contrib/GROK/2026-11-05/472fc36e",
+                            "reason": "obsolete",
+                            "seat": "GROK",
+                            "expected_revision": expected_revision,
+                        }
+                    )
+            result = recall_bridge.recall_retract(
+                {
+                    "doc_id": "contrib/GROK/2026-11-05/472fc36e",
+                    "reason": "obsolete",
+                    "seat": "GROK",
+                    "expected_revision": 2,
+                }
+            )
+            self.assertEqual(result["expected_revision"], 2)
+        finally:
+            recall_bridge._call = original  # type: ignore[attr-defined]
 
     def test_stats_and_search(self) -> None:
         code, payload = self._json("GET", "/recall/stats")

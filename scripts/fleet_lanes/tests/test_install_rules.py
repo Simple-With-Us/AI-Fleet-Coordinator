@@ -175,11 +175,15 @@ class TemplateTests(unittest.TestCase):
         out.update({ph: (IR.RULES_DIR / f).read_text(encoding="utf-8") for ph, f in IR.PART_FILES.items()})
         return out
 
-    def test_templates_exist_and_are_plain_ascii(self) -> None:
+    def test_templates_exist_and_are_ascii_apart_from_the_gap(self) -> None:
+        # The house gap is a real U+00A0 (owner 2026-10-23), and these templates are
+        # prose every seat reads in its own AGENTS.md, so the gap character is allowed.
+        # Everything else stays ASCII: no smart quotes, no em dash, no other stray
+        # unicode in a file the installer writes into every seat home.
         for variant, text in self.texts().items():
             with self.subTest(variant=variant):
                 self.assertTrue(text.strip())
-                text.encode("ascii")
+                text.replace("\u00a0", "").encode("ascii")
 
     def test_block_is_wrapped_in_the_markers(self) -> None:
         for variant in IR.TEMPLATE_FILES:
@@ -205,10 +209,13 @@ class TemplateTests(unittest.TestCase):
         self.assertTrue(IR.compose(None, "cursor").new_text.startswith("---\n"))
         self.assertIsNone(IR.frontmatter_problem(IR.compose(None, "cursor").new_text))
 
-    def test_two_spaces_between_sentences(self) -> None:
+    def test_a_sentence_end_carries_the_gap(self) -> None:
+        # The house gap is a real U+00A0 plus a normal space (owner 2026-10-23).  A
+        # sentence end here carries neither a plain space nor two ASCII spaces.
         for variant, text in self.texts().items():
             with self.subTest(variant=variant):
                 self.assertIsNone(re.search(r"[.!?] [A-Za-z]", text), re.findall(r".{12}[.!?] [A-Za-z].{8}", text))
+                self.assertIsNone(re.search(r"[.!?]  [A-Za-z]", text), re.findall(r".{12}[.!?]  [A-Za-z].{8}", text))
 
     def test_every_variant_carries_the_rule(self) -> None:
         for variant in ("full", "minimal"):
@@ -411,12 +418,12 @@ class ContradictionTests(unittest.TestCase):
             "~/apps/lanes/_codex/fix/BotFleet and ~/apps/lanes/BotFleet/active-engines-display-e380b8",
             "/Users/jay/apps/lanes/AI-Fleet-Coordinator/claude-x and ~/apps/lanes/congress-trading-shared/cursor-y",
             "~/apps/lanes/homebrew-tap/codex-x",
-            "Printer: ~/apps/fleet-mode and ~/apps/agent-sync/consumer.mjs",
+            "Printer: ~/apps/fleet-mode and ~/apps/FLEET-PROTOCOL.md",
             "run ~/apps/lane new fleet my-slug",
             "~/apps/scratch/claude/topic",
             "~/Code/Socratic-Trade is the integration tree",
             "branches are `<seat>/<slug>`",
-            "~/apps/apple-notes-coding.sh and ~/apps/AGENT-SYNC.md",
+            "~/apps/apple-notes-coding.sh and ~/apps/FLEET-PROTOCOL.md",
         ])
         self.assertEqual(self.kinds(text), [])
 
@@ -1143,10 +1150,10 @@ def _load_seat_block_checker():
 
 
 class FleetBasicsTests(HomeCase):
-    """Clutch, Kimi, Vibe and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
+    """Clutch, Kimi and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
 
-    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "kimi"),
+           "zcode": (".zcode/AGENTS.md", "zcode"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():
@@ -1160,7 +1167,7 @@ class FleetBasicsTests(HomeCase):
             body = IR.body_text(variant)
             with self.subTest(variant=variant):
                 self.assertTrue(body.startswith("## Fleet Basics\n"))
-                for needle in ("/Users/jay/apps/AGENT-SYNC.md", "### Seat Identity", "## Lane Map: where every checkout lives",
+                for needle in ("/Users/jay/apps/FLEET-PROTOCOL.md", "### Seat Identity", "## Lane Map: where every checkout lives",
                                "~/apps/lanes/<Repo>/<seat>-<slug>", "### Coordination", "### Land Your Work",
                                "### Secrets", "### Writing Anything a Human Reads", "sentence-gap", "`ps`",
                                "Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`"):
@@ -1229,15 +1236,15 @@ class FleetBasicsTests(HomeCase):
         self.assertFalse(os.path.exists(self.path(".config/opencode")))
 
     def test_the_owners_own_text_survives_and_a_backup_is_made(self) -> None:
-        owner = "# My Vibe notes\n\nKeep answers short.\n"
-        self.write(".vibe/AGENTS.md", owner)
-        code, out, err = self.run_cli("apply", "vibe")
+        owner = "# My Kimi notes\n\nKeep answers short.\n"
+        self.write(".kimi-code/AGENTS.md", owner)
+        code, out, err = self.run_cli("apply", "kimi")
         self.assertEqual(code, IR.EXIT_OK, out + err)
-        text = self.read(".vibe/AGENTS.md")
+        text = self.read(".kimi-code/AGENTS.md")
         self.assertTrue(text.startswith(owner + "\n" + IR.BEGIN_PREFIX))
-        backups = [n for n in self.files_in(".vibe") if ".bak-lane-map-" in n]
+        backups = [n for n in self.files_in(".kimi-code") if ".bak-lane-map-" in n]
         self.assertEqual(len(backups), 1)
-        self.assertEqual(self.read(".vibe/" + backups[0]), owner)
+        self.assertEqual(self.read(".kimi-code/" + backups[0]), owner)
 
     def test_clutch_is_capped_at_64_kib_and_a_big_file_is_refused(self) -> None:
         self.write(".clutch/dsh/AGENTS.md", "x" * (64 * 1024 + 10))
@@ -1323,8 +1330,8 @@ class FleetBasicsTests(HomeCase):
                 self.assertEqual(os.listdir(self.home), [])
 
     def test_short_names_resolve(self) -> None:
-        names = [p.name for p in IR.resolve_platform_names(["mc", "muse", "kimi-code", "mistral-vibe", "copilot-cli", "dsh"])]
-        self.assertEqual(names, ["muse-code", "kimi", "vibe", "copilot", "clutch"])
+        names = [p.name for p in IR.resolve_platform_names(["mc", "muse", "kimi-code", "copilot-cli", "dsh"])]
+        self.assertEqual(names, ["muse-code", "kimi", "copilot", "clutch"])
 
 
 # --------------------------------------------------------------------------- command line

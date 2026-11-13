@@ -1,0 +1,489 @@
+# git-relay - the GitHub relay CLI, and GR-MCP
+
+git-relay knows each seat from its bearer token and picks the credential by task:  Opening a PR
+runs under the owner's scoped PR-only token (the only copy lives in the service's
+environment), and every other GitHub task runs under the seat's own GitHub App token, which
+git-relay mints and refreshes from App keys in Infisical.  Every call is checked against per-seat
+policy, and every denial, failure and write is written to the audit log (a successful read is not).
+
+The MCP wrapper is **GR-MCP**:  `git-relay mcp`.  It is the GitHub work's own MCP server.  The
+bearer-token arrangement is shared with ST-MCP, so a seat may find these tools on its ST-MCP
+connection as well;  GR-MCP is the other route, and the tool names are the same either way.
+
+## git-relay owns per-bot GitHub token minting (owner decision 2026-10-22, Q5)
+
+git-relay is the ONE path in the fleet that mints per-bot GitHub App tokens.  The OPS-966
+Operator GitHub token broker (`scripts/simple_tools/operator_github*.py`,
+`scripts/simple_tools/github_token_router.py`, `scripts/operator/github_tokens/repo_token.py`) is
+NOT a minting path:  it stays disabled by default, and both of its mint primitives now fail
+closed naming git-relay, before any App credential is read.  That code is retained for review
+history and was not deleted;  it simply cannot mint.
+
+`scripts/simple_tools/tests/test_github_relay_minting_owner.py` is the executable form of this:
+it fails if a second unguarded mint site ever appears in the repository, if the broker's guard
+is bypassed, or if the broker's real router can reach a mint.
+
+## Status
+
+Deployed on the fleet server as a systemd service behind its own Cloudflare tunnel, with an
+Access service token in front of the public hostname.  The relay mints every seat's App token
+itself from the App keys in Fleet-OPS.
+
+A seat reaches it through ST-MCP's `gr_*` tools on a bearer connection:  its own `sbt_<seat>_`
+bearer, or `gbb_<role>_` for a Grok bot, minted on the ST-MCP + GR-MCP Admin page.  The
+Worker forwards that bearer and the relay resolves it through the Worker's verifier.  An OAuth
+connection carries no bearer, so its `gr_*` tools answer `not_configured`.
+
+The seat policy is [deploy/seat-policy.json](deploy/seat-policy.json), installed with
+`deploy/seat_policy.py` (see Policy).  Moving seats off the interim `gh` and shell path is still
+the owner's cutover decision.
+
+## Actions
+
+| Action | Endpoint | Body | GitHub call |
+| --- | --- | --- | --- |
+| open_pr | POST /v1/open_pr | repo, base, head, title, body, draft? | POST /repos/{repo}/pulls, then GET /repos/{repo}/pulls/{number} |
+| edit_pr | POST /v1/edit_pr | repo, number, title?, body? | PATCH /repos/{repo}/pulls/{number} |
+| reply_thread | POST /v1/reply_thread | repo, number, comment_id, body | POST /repos/{repo}/pulls/{number}/comments (in_reply_to) |
+| comment_pr | POST /v1/comment_pr | repo, number, body | POST /repos/{repo}/issues/{number}/comments |
+
+`GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
+
+`open_pr` never reports a number for a pull request it has not seen.  After the create answers,
+the relay reads the pull request back by number with the same owner token and checks the number,
+the repository, the base branch and the head branch (and the owner, for an `owner:branch` or
+`owner:repo:branch` head), and draft when a draft was requested.  The `url` is checked too:  the
+create and the read-back must both name `https://github.com/{repo}/pull/{number}`.
+A success is `{"number", "url", "verified": true}`.  When the create answered but the read-back
+fails (a transport error or any HTTP error, 404 and 429 included) or does not match, the answer
+is 502 with `"outcome": "unknown"`, `"retryable": false` and `github_code`
+`open_pr_readback_failed` or `open_pr_readback_mismatch` (`open_pr_receipt_invalid` when the
+create answer had no usable number), and no number or URL.  `github_status` is 502 for every
+read-back failure, because 502 is the relay's classification (outcome unknown, key held);  the
+cause is in `github_code`, and what the read-back itself answered is in `readback_status` (the
+HTTP status, 0 for a transport failure or an unreadable body, 200 for a mismatch) with
+`readback_retry_after_seconds` when GitHub named a wait.  The read-back is bounded:  at most 3
+reads of 3 seconds each inside 8 seconds in total, waiting 0.5 then 1 second (or GitHub's
+Retry-After, when it fits) after a transport failure, 404, 408, 429, 5xx or a 403 that names a
+Retry-After;  any other status, or a mismatch, is not retried.  The budget is a real deadline, not only a per-read timeout:  the body is read one raw receive at a time (`read1`), the deadline is checked after each, and a read that trickles past it fails the attempt as a transport failure (at most one socket operation, 3 seconds, can overshoot; a peer that trickles the response headers before the body is not bounded by this deadline).  The budget also starts when `open_pr` starts:  it is the smaller of 8 seconds and the 30 seconds the MCP wrapper waits (`CALLER_BUDGET_SECONDS`) less the time the create used and a 4 second margin (`READBACK_MARGIN_SECONDS`);  when less than 1 second is left the read-back is skipped, and the answer is the same outcome unknown with `github_code` `open_pr_readback_skipped` and `readback_status` 0.  A draft create whose own receipt does not verify (another URL, or draft not true) is `open_pr_receipt_mismatch`, with the number kept in the audit row only.  The read-back uses the same credential as the create.  The MCP wrapper's `outcome_unknown` answer carries `github_code`, `readback_status` and `readback_retry_after_seconds` from this answer, never a number or URL.  The outcome store holds that key as
+unknown:  an identical call answers 409 with no GitHub call, so it can neither open a second
+pull request nor replay an unconfirmed success.  A held key is never evicted and counts toward
+the store's capacity until an operator reconciles it;  the audit row carries the number the
+create named as `unconfirmed_number` for that.  Look for the pull request in the repository
+before any retry.
+
+Only opening a PR is authored as the owner through the scoped PR-only token.  Edits, review
+replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
+seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats never get a raw token or a `git push`:  the file-write verbs (`wf_file_put`, `wf_file_delete`, `wf_file_rename`, `wf_files_put`) commit through the API, on a non-default branch by default (the default branch takes only the exact paths in `default_branch_paths`);  a path under `.github/workflows` is refused unless the request names it, and then the relay mints that one write under a token that also holds the `workflows` permission (`wf_file_patch` refuses every such path);  no seat policy can exceed its GitHub credential.
+
+**Pull request writes.**  `wf_pr_create` and `wf_pr_edit` are deliberately ungranted: no seat policy grants them.  `gr_open_pr` is the route to open a pull request, authored as the owner by design, and `gr_edit_pr` is the route to edit a title or body, which the current seat policy grants.
+
+How the default branch is recognised (AFC-775): GitHub drops `.` segments from a URL path, so `./main` reaches `main`.  The ref validator therefore refuses any branch, tag or ref name with an empty, `.`, `..` or dot-leading segment, or a segment ending in `.` or `.lock`.  One helper, `_is_default_branch`, decides for every verb that refuses the default branch (`wf_branch_update`, `wf_branch_delete`, `wf_file_put`, `wf_file_delete`, `wf_file_rename`, `wf_file_patch`, `wf_files_put`).  It compares case-folded names with any `refs/heads/` or `heads/` prefix and any `.` segment removed, and counts an unknown default branch as the default.  Each of those verbs also checks the provider's own answer against the default branch before any write:  the ref it returned (`refs/heads/<name>`) for the ref-based verbs, the branch name it returned for `wf_file_put` and `wf_file_delete`.  An answer that lacks the ref or name, or names a branch other than the one asked for, is refused.  For `wf_file_put` and `wf_file_delete` such an answer is a retryable pre-read failure with no write attempted, so the idempotency key is released;  the ref-based verbs refuse it outright.  GitHub branch names are case-sensitive, so a case or prefix variant of the default branch (`Main`, `MAIN`, `refs/heads/main`) is still the default branch and is refused by every file verb.  Only the exact default name, byte for byte, can take the exact-path route below, and on that route `wf_file_put` makes no separate branch read because the contents read already proves the branch exists.
+
+`wf_file_put` and `wf_file_delete` may also write the default branch, and only for an exact path named in that seat's `default_branch_paths` for that exact repository.  The relay prefixes the commit message with `default-branch-path: ` and requires `prior_sha` to equal the blob it just read.  Omit `prior_sha` only when that read says the file is absent.  `wf_files_put`, `wf_file_patch`, rename and branch moves stay refused on the default branch, and so does every path that is not listed.
+
+## Scope and action catalog (owner direction 2026-10-21)
+
+The relay covers every GitHub task seats need.  It knows the seat from its bearer token and picks
+the credential BY TASK:  opening a PR uses the owner's scoped PR-only token so Kody can review an
+owner-authored PR; every other write, including edits, review replies and comments, uses the seat's OWN GitHub App token, which the relay mints and refreshes itself
+from App keys in Infisical - seats never handle an App id, private key, or the 1-hour token expiry.
+GITHUB_UNIVERSAL_PAT is not used by anyone.  Default deny:  an action is callable only by seats
+explicitly allowlisted for it, and App actions only within the seat's mint_permissions ceiling.
+Actions are catalogued even where no seat is allowlisted yet;  granting a seat later (Echo included)
+is only a policy entry.
+
+| Action | Credential | Status |
+| --- | --- | --- |
+| open_pr | owner PR-only token | implemented |
+| edit_pr (title/body only) | seat's App, relay-minted | implemented |
+| reply_thread (inline review reply) | seat's App, relay-minted | implemented |
+| comment_pr | seat's App, relay-minted | implemented |
+| mint_token (per-repo, per-permission) | seat's App, relay-minted | implemented |
+| merge_pr (squash/merge/rebase) | seat's App (contents+pull_requests write) | implemented |
+| workflow_dispatch | seat's App (actions write) | implemented |
+| resolve_thread | seat's App (contents write + pull_requests write) | implemented |
+| create_repo | seat's App, namespace token (not returned) | implemented |
+| create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection | seat's App | registered, refused until implemented |
+
+`create_repo` creates a repository under `Simple-With-Us` (organization) or `jaywedgeworth22` (user).  A seat needs `create_repo` in its own policy row; nothing grants it by default.  Visibility is private unless the request says `public` and that same row sets `create_repo_public` to true.  The relay reads the repository first, never follows a redirect, and returns `already_exists` when the repository is already there, so a second call does not create again.  The call uses a namespace installation token minted only for this verb (`organization_administration: write` plus `metadata: read` for the org, `administration: write` plus `metadata: read` for the user).  That token is not the seat's mint ceiling, `mint_token` cannot request those writes, the token is not cached, it is revoked when the call finishes, and it is never returned or written to the audit log.  GitHub's default for `private` is false, so the relay always sends `private: true` unless public was both requested and allowed.  The GitHub App installation has to already hold those administration permissions or GitHub refuses the mint.
+
+App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read together - one
+`fleet-secrets` call per App - from the /github-apps folder (GIT_RELAY_SECRETS_PATH
+overrides) through the `fleet-secrets` CLI only (owner decision 2026-10-21:  no
+process-environment secrets, no direct Infisical HTTP in the relay), JWT signed with the local openssl binary
+(the key reaches openssl through an inherited pipe fd, never a file), installation tokens
+cached in memory under per-(app, repo, permissions) locks (one slow mint never blocks another
+seat's) and refreshed 5 minutes early.  Values are cached in memory
+per process.  Nothing secret is written to disk, logged, or audited;  audit rows hash token
+values.  GIT_RELAY_APP_MINT=0 disables App actions;  otherwise the fleet-secrets executable
+must be on PATH at startup.
+
+## MCP wrapper
+
+**GR-MCP** (`git-relay/git_relay/mcp_server.py`, run as `git-relay mcp`) is a stdio MCP server
+(initialize, tools/list, tools/call) that advertises itself as `GR-MCP` and exposes the relay
+actions as MCP tools. A seat runs it with only its own bearer token
+(GIT_RELAY_SEAT_TOKEN, GIT_RELAY_URL); the wrapper forwards over HTTP, so policy, caps and audit
+stay server-side. Refusals come back as tool errors, never protocol errors.  Every call carries the `gr-mcp/1` User-Agent (Cloudflare refuses urllib's default with error 1010), redirects are never followed, and an https relay also gets the Cloudflare Access service-token headers from the env pair below (AFC-672).
+
+## Relay as a permission layer (owner direction 2026-10-21)
+
+Per-seat policy (actions, repos, mint_permission ceilings, rate caps) is a first-class permission
+layer of its own:  it can narrow what a credential allows, never exceed it.  A seat's effective
+power is the INTERSECTION of the relay policy and the underlying GitHub credential - tightening
+either side restricts the seat, and no policy entry can grant what GitHub already denies.  Policy
+lives in reviewed config (GIT_RELAY_SEATS_JSON sourced from a reviewed file or Infisical), so
+permission changes ship without touching GitHub App settings;  every change is a reviewed PR (or an
+audited Infisical write), and every denial, failure and write is in the audit log (a successful read is not).
+
+## Policy
+
+Seats come from `GIT_RELAY_SEATS_JSON` at process start:
+
+```json
+{
+  "swu-echo": {
+    "token": "<bearer, 16+ chars>",
+    "actions": ["open_pr", "edit_pr", "reply_thread", "comment_pr"],
+    "repos": ["Simple-With-Us/AI-Fleet-Coordinator", "Simple-With-Us/*"]
+  }
+}
+```
+
+### Default-branch paths
+
+A seat may name `default_branch_paths`.  It is a map from an exact `owner/name` to one to eight exact paths.  The repository must already match that seat's `repos`.  A path is matched exactly.  Globs, a `.` or `..` segment, a repeated path and anything under `.github` are refused when the policy loads.  Missing or empty means the default branch stays closed.  The reviewed `deploy/seat-policy.json` grants none.  Put the grant on the publishing seat's own row.  A grant on the fleet profile reaches every seat that uses it.  `deploy/seat_policy.py` checks the same rules as `SeatPolicy` before it renders.
+
+A seat's `app_slug` must be that seat's own bot identity:  one bearer = one Zulip bot = one
+GitHub App (owner decision 2026-10-22, Q7).  A config entry naming another bot's App is refused
+at load, so a bearer can never act through a GitHub App that is not its own bot.
+
+Every check is an allowlist: an action or repo not named is denied. Token comparison is
+constant-time over all seats. A per-seat hourly call cap (`GIT_RELAY_RATE_PER_HOUR`, default 3600) bounds a leaked seat
+token's blast radius; it is not a throttle for routine work, and GitHub's own 429 with Retry-After is
+returned to the caller as a retryable refusal.
+
+### The reviewed seat policy file
+
+[deploy/seat-policy.json](deploy/seat-policy.json) is the production policy.  It holds no secret:
+every seat is `auth: shared` and signs in with its own admin-minted bearer.  It lists one entry
+for each of the 40 identities in this file (source, not live: the live seats file differs - it also carries BF-BUILDER, omitted here, and it does not yet carry swu-zc, whose admission is the proof-gated first-seat runbook in this document), each acting as the `swu-` App
+whose GitHub description names that seat.  Five slugs are not `swu-<identity>`:  MA is
+`swu-rob`, GROK is `swu-grok-build`, MM is `swu-minimax`, JET-CHAT is `swu-jet` and AMP is `swu-amp-agent` (`swu-amp` is reserved for an account).  JET-CHAT is the full Jet login on its own policy entry; the original JET wake-only login has no Git entry (Q7).  Seats share the `fleet` profile
+(the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names both reviewed namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*` (the legacy namespace covers repositories still held by the personal account; a renamed or transferred repository is refused as `repository moved`, with `moved_to` only when the seat's own App can read the destination and the seat's repo allowlist covers it - the relay never follows a redirect);  Echo's profile survives but resolves to the same set.  The fleet profile carries a 187-action list (8 relay actions, including `git_read`, plus 179 workflow actions, including `wf_pr_close`, `wf_pr_reopen`, the metadata-read rule reads `wf_branch_rules` and `wf_rulesets`, and the seven verbs AFC-629 grants: `wf_pr_search`, `wf_repo_list`, `wf_review_thread_comments`, `wf_file_patch`, `wf_issue_state_set`, `wf_issue_milestone_set` and `wf_release_notes_preview`) and the live 10-key mint ceiling.  The two rule reads reach a seat only once the live seats file on the relay host carries them, so they are added there at relay install.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-10-29 5:50am CT:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
+Worker's identity lists and each action's permission needs.
+
+On the relay host, as root.  Root runs only a root-owned copy that only root can write, never
+the files in a checkout another account can change.  So copy the two files from the merged
+commit into a root-owned folder first, and check that the blob ids the script prints equal
+`git rev-parse <commit>:git-relay/deploy/seat_policy.py` and the same for `seat-policy.json`.
+`UNIT` is the relay's systemd unit, and everything else about the deployment is read from it:
+the relay code (its working directory), the policy line (its one EnvironmentFile), the apps
+credential (its LoadCredential) and the health address and App-key folder (its environment).
+
+```
+python3 -I <copy>/seat_policy.py install --unit UNIT                          # validate with the deployed code, diff, digest
+python3 -I <copy>/seat_policy.py install --unit UNIT --apply --expect DIGEST  # back up, write, restart, check health
+python3 -I <copy>/seat_policy.py verify-apps --unit UNIT                      # every seat's own App mints read-only and reads
+```
+
+`--apply` installs only the policy whose digest the dry run printed.  It restores the previous
+file when the restart fails, the relay is not healthy within 30 seconds, or the run is
+interrupted.  `verify-apps` runs the deployed minter in a transient unit with the relay's own
+credential binding and App-key folder, so it reads the App keys exactly as the service does, and
+it never prints a token.  A policy entry does not make a seat usable alone:  the seat also needs
+its bearer, minted by the owner on the Admin page.
+
+### Admitting one new seat
+
+Adding a seat that is already able to prove itself stays `install-seat --receipt`, or `--bootstrap-receipt` for the operator-listener denial proof.  Both of those check the signed receipt before any write.
+
+A brand-new seat cannot produce `ExternalProof` until the row is loaded, because `wf_repo_get` is refused first.  `install-seat --first-seat` writes that one additive row under the same digest fence, runs `ExternalProof`, and restores the prior digest unless the proof is proven and bound to the relay audit log.  The proof key, the marker and the rollback rules are in [SEAT-POLICY-FILE.md](SEAT-POLICY-FILE.md).  This document does not install a row.
+
+The proof key is owned by root, the relay host operator.  Mint it once, as root, with `python3 -I <copy>/seat_policy.py proof-key` and `GIT_RELAY_PROOF_KEY_FILE` set to a new file in a directory root owns and only root can write.  The file is mode 0600.  The command never prints the key and never overwrites an existing one.  The service user does not own it, and the seat does not own it either.
+
+After this change is merged, admitting `swu-zc` is a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above.  The reviewed policy file carries no `swu-zc` row:  a wholesale `install` renders the whole file with no per-seat ExternalProof, so an unproven row must never ride the image.  Render the row from the reviewed fleet profile with the real renderer instead:
+
+```
+# Proof key, once. <root-only-dir> is a directory root owns and only root can write.
+export GIT_RELAY_PROOF_KEY_FILE=<root-only-dir>/git-relay-proof.key
+python3 -I <copy>/seat_policy.py proof-key
+stat -c '%u %a' "$GIT_RELAY_PROOF_KEY_FILE"    # 0 600. Do not print the file.
+
+# ZC bearer, one token, root-owned 0600. Write it without displaying it.
+export GIT_RELAY_FIRST_SEAT_BEARER_FILE=<root-only-dir>/zc-bearer
+
+python3 -I -c 'import importlib.util as u, json, sys; spec = u.spec_from_file_location("seat_policy", sys.argv[1]); sp = u.module_from_spec(spec); sys.modules["seat_policy"] = sp; spec.loader.exec_module(sp); doc = sp.load(); doc["seats"].append({"identity": "ZC", "app_slug": "swu-zc", "profile": "fleet"}); json.dump(sp.render(doc)["swu-zc"], sys.stdout); sys.stdout.write("\n")' \
+  <copy>/seat_policy.py > <root-only-dir>/swu-zc.json
+chmod 600 <root-only-dir>/swu-zc.json
+
+# Prints expect-before, then expect-after. <relay-workdir> is the unit WorkingDirectory.
+python3 -I -c 'import json,sys; sys.path.insert(0, sys.argv[1]); from git_relay.seat_add_policy import digest, prepare; live=json.load(open(sys.argv[2])); row=json.load(open(sys.argv[3])); before=digest(live); print(before); print(digest(prepare(live, "swu-zc", row, before)))' \
+  <relay-workdir> "$LIVE_SEATS" <root-only-dir>/swu-zc.json
+
+python3 -I <copy>/seat_policy.py install-seat --unit UNIT --seat swu-zc \
+  --row-json <root-only-dir>/swu-zc.json \
+  --expect-before BEFORE --expect-after AFTER \
+  --first-seat --proof-id zc-admit-1
+# Same command with --apply. A fresh --proof-id after an inconclusive proof.
+```
+
+Exit 3 means the prior digest was restored.  The ZC App id and private key are already `GH_APP_SWU_ZC_ID` and `GH_APP_SWU_ZC_PRIVATE_KEY` in Fleet-OPS prod `/github-apps`.  This admission does not write them.  The restart the command already performs is what drops a process-lifetime cache of a missing name.
+
+## Outbound hygiene
+
+Seat-supplied text (PR titles, bodies, review replies) is scanned for credential shapes
+(fine-grained and classic GitHub tokens, private-key blocks, Infisical service tokens) and
+refused with a 400 before anything leaves for GitHub - a seat cannot paste or smuggle a secret
+into content authored under the owner's token.  The audit log applies the same scan:  any detail
+value matching a credential shape is stored hashed, whatever key it arrived under.
+
+### Reviewed security-test fixtures
+
+File writes still scan the full decoded content before any GitHub write. The
+server-owned `git_relay/reviewed_fixtures.py` records thirteen exact-content
+attestations for synthetic credential-rejection fixtures in AFC. Each entry binds
+repository, destination path and SHA-256 of the entire file. It is not a caller
+option, path-wide exemption, environment setting or trust in existing Git history.
+Changing one byte or destination invalidates the attestation; any credential shape
+then fails closed. The ordinary scanner and the rejection tests are unchanged.
+PR text, messages, binary assets and all unattested files have no exemption.
+
+All thirteen rows were re-verified byte-exact against the corrected rename checkpoint
+`81d8bb0cd4f5a63d3dc330b8f42be4a3e93e87a3` (tree
+`b548e1a81d4fd18d72206f8c1f22cb41a6d19bcf`, built on main
+`ac6d5d44500937274aeddfc794a05fb427158f8c`). The first checkpoint
+`4977e6a7970dc0a25638181600137fe06167dcec` is retained as original evidence only,
+never as a shipping target: semantic review found out-of-scope changes in it, so the
+corrected checkpoint restores the current retirement behavior and wire-protocol
+surfaces and drops the bundled seat-policy and cleanup changes. Ten rows carry
+digests unchanged from the first re-attestation; three rows
+(`scripts/fleet_lanes/tests/test_install_mcp.py`,
+`scripts/simple-tools-mcp/test/integration.workerd.mjs`,
+`scripts/simple_tools/tests/test_infisical_api_route.py`) are refreshed from the
+corrected checkpoint (10 + 3 = the 13 rows in the registry and the table below). The rename-affected destinations are FUTURE targets: they do not exist
+on main yet, match nothing, and fail closed until the exact attested bytes land with
+the rename; the published rename branch currently omits these ten files, which is the
+gap this attestation exists to close:
+
+| Destination | Source Git blob | Whole-file SHA-256 |
+| --- | --- | --- |
+| `scripts/simple_tools/mcp/fixtures.jsonl` | `a4ff4ac5636654ee20954aa7e14595c125c5d547` | `bea6ca376aefdce65ce0295dbc72cef4a396b051c8add3e6d0174fc917c81829` |
+| `scripts/simple_tools/tests/test_operator_github.py` | `db5248bc7e9f61daaffd180b9b7b026643a07a14` | `ef10944dc053c2f4bf664f1ee796257d0deb4d64f1bb786be9ad58ec3ea4b442` |
+| `scripts/simple_tools/tests/test_operator_send.py` | `2ef871ceb92213e7208ab2faaa2cb235d478faf8` | `4353cf8e69c53151e3340c4a1bed374e380bac3dfa076e22d8c08eb575963873` |
+| `scripts/test-lark-mm-bridge.py` | `287b0c42cb7234deb9fd03d359ed6e52fe40959e` | `f94d6ecb794baab74b2d43c97b7cf5efd8aab0e76bc42e2a6224eb2f4ddb5535` |
+| `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
+| `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
+| `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `3a7c6b485d91a7f2dfee5922b3d026450d087fb1` | `2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394` |
+| `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `804d547cb96bba4cade20a058e76ec32c1fa7022` | `8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2` |
+| `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
+| `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
+| `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
+| `scripts/fleet_lanes/tests/test_install_mcp.py` | `6b2392ff3238806f7ad251b347e424b8bb99b57d` | `a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b` |
+
+The `gr-front.test.mjs` row was refreshed after merging main (with AFC-734, PR #1826) into AFC-727.  The bytes combine the `gr_create_repo` pinned name list (AFC-632), the AFC-734 not_configured reasons, and the intent-only `gr_workflow_dispatch` assertions from this branch.  Source blob `3a7c6b485d91a7f2dfee5922b3d026450d087fb1` supersedes the earlier attestations.
+
+The table records the current 13-entry source registry, not an installed-state claim.
+The Infisical API-route row is separately refreshed from immutable main
+27801add4cfd5ea09fa8d2cbc3307e509779c1b9, source blob
+03f2ca24e1de1a47fd7aa1bb031e1e68f064c76e, through the five rename/import/env
+edits recorded in docs/security/preservation-pending-manifest.json. Its complete
+credential-containing lines are unchanged. The new REVIEWED_PRESERVATIONS and
+REVIEWED_SAME_PATH_SOURCES registries remain empty; that does not mean the
+existing _REVIEWED_FIXTURES registry is empty or inactive. The refreshed exact
+Infisical row is active in source semantics, but no deployment or runtime use
+is authorized or established by this proposal. Provider and loaded-value guards
+remain independent.
+
+Every attestation addition/change requires normal source review of the complete
+fixture contents and its provenance, evidence that values are synthetic and
+rejection behavior is preserved, negative controls for added/changed credentials,
+and deployment of the reviewed service code by its operator. A filename, a test
+claim or a digest supplied by a seat cannot create an attestation. Do not add real
+credentials even if already present in history. Fail closed if review cannot
+establish that a fixture is synthetic. No automatic registry generation/update
+runs in the service. This change does not deploy itself or resume a paused write.
+
+On November 10, 2026 the `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` row was
+refreshed to the exact bytes under review in PR #1707 (source blob
+`804d547cb96bba4cade20a058e76ec32c1fa7022`, SHA-256
+`8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2`, 109,448 UTF-8
+bytes). The prior digest attested the corrected rename-checkpoint bytes, which never
+landed on main, match nothing there, and are carried by no open PR. The complete
+attested file was re-reviewed, not only the changed lines: it is the wf-v1
+caller-contract test suite - input shape validation, receipt guards, traversal and
+refusal fail-closed cases, and own-bearer Authorization header assertions.
+Independent pattern enumeration found 38 occurrences of one distinct bearer-shaped
+literal: a synthetic 17-character hyphenated placeholder introduced with the
+relay-parity contract tests in #1011, standing for the caller's own bearer in
+header-shape assertions (the literal itself is withheld from this document so the
+document stays publishable under the scanner). No other pattern label matched, no
+credential literal was found, non-ASCII content is confined to UTF-8 length-boundary
+fixtures, and the file holds no network or dynamic-evaluation constructs. Negative
+controls are unchanged: dedicated shapes and loaded values still refuse, and
+superseded bytes fail closed (git_relay/tests/test_reviewed_fixtures.py). The
+attested bytes are a FUTURE target until PR #1707 merges; this source change deploys
+only through the relay operator's normal review and authorizes no write by itself.
+
+On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the exact bytes on PR #1826 after merging main (source blob `8b5c00c94f3bd0635335226e607bc0a94a3a8660`, SHA-256 `dc79d7b078aa35816ffc5ce35ee3c9c2dbaff5d4fdf47499f46f8480f6d478db`, 30639 UTF-8 bytes).  The prior digests attested AFC-632's `gr_create_repo` name list and the pre-merge AFC-734 copy separately.  The complete file was re-reviewed, not only the added lines.  Those lines are the not_configured reason tests and the pinned `gr_create_repo` tool name.  They name seat-bearer shapes and never a credential literal, and none of the added lines match a dedicated secret pattern.  The whole file still matches bearer_credential because of the synthetic bearer header fixtures the prior attestation already covered.  Changing one byte of this file fails closed.  This source change deploys only through the relay operator's normal review and authorizes no write by itself.
+On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the AFC-727 bytes (source blob `6c5cae45145f20b36cf1641c59397c432cfb3784`, SHA-256 `34c5596e04e2352a729d0c377bfe15a5c8dc2a7a3fcef4bcadc1dd689833a46a`, 27,053 UTF-8 bytes).  The prior digest attested the pre-change bytes.  The whole file was re-checked.  The only delta is the dispatch-intent test now accepting `intent_id` without `expected_head_sha`, plus the paired call that follows it.  No credential literal was added or removed.  Dedicated shapes and loaded values still refuse, and any other byte still fails closed.
+After merging main (with PR #1826) into AFC-727, the row was refreshed again to the combined bytes (source blob `3a7c6b485d91a7f2dfee5922b3d026450d087fb1`, SHA-256 `2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394`, 30787 UTF-8 bytes).
+
+`mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
+(a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the
+relay's HTTP API directly, where the response goes only to that caller.
+
+## Read-only git
+
+`GET /git/<owner>/<repo>[.git]/info/refs?service=git-upload-pack` and `POST /git/<owner>/<repo>[.git]/git-upload-pack` serve `git fetch` and `git clone` under the action `git_read`, as the seat's own GitHub App, with the seat's bearer in the `Authorization` header.  The relay mints a `contents:read` token for that one repo and keeps it, so the caller never holds a GitHub credential.  Pushing has no route and answers 403.  A refused, denied or failed request writes one audit row (a successful fetch writes none), and each request draws on the seat's hourly quota, at most four transfers run at once and two per seat, and a later one answers 503.  A long want list needs `http.postBuffer` set to 8 MiB, because the route refuses a chunked request.  The code is `git_relay/git_read.py`.
+
+## Audit
+
+Owner ruling Fri, Nov 6, 2026:  successful reads leave the audit log.  A call that ends `ok` on a read action (`git_read` and the `wf_` reads, `SeatPolicy.audits`) writes no row;  every denial, failure and write still writes one, and so does `mint_token`, which issues a credential.
+
+One JSON object per line at `GIT_RELAY_AUDIT_PATH` (default `git-relay-audit.jsonl`), fsynced after
+every write: timestamp, seat, action, repo, result (ok / denied / bad_request / unavailable /
+github_terminal / github_unknown / duplicate_refused), and the GitHub id/URL returned. Titles and
+bodies are never logged; the row keeps their length and SHA-256 so a call is attributable without
+storing text that might contain a pasted secret - the same hashing applies to credential-shaped
+strings nested anywhere in the detail payload.  Upstream error MESSAGES are never logged (an
+error body can carry content);  the row keeps the numeric status only.  Seat-supplied detail keys
+can never overwrite the reserved seat/action/result/ts fields.  The GitHub token is never logged
+or returned.
+
+## Bounds and failure shape
+
+Request bodies are capped at 64 KiB, text fields at 32 KiB, GitHub responses at 1 MiB (8 MiB for a
+paged GET other than a compare, whose raw rows are far larger than the rows the relay returns), and every
+GitHub call has a 30 s timeout.  Workflow-dispatch inputs are a flat object of at most 32 scalar
+values (strings capped at 1024 characters).  Neither the GitHub client nor the Infisical client
+follows 3xx redirects, so a bearer can never be forwarded to another origin.  A redirect GitHub
+uses for a renamed or transferred repository (Location `/repositories/<id>/...`) answers 400
+`{"error": "repository moved", "github_status": 301, "repository_id": <id>}`, plus `moved_to`
+(the current owner/name) when the seat's own App can read it and the seat's repo allowlist covers
+it.  The name is read with one installation token limited to that repository and `metadata: read`,
+revoked after the read (OPS-1036).  A raw-JSON read answer is bounded like the hosted front's own
+check (depth 12, 50,000 nodes, 1,000 keys per object or list, 900,000 serialized bytes):  a
+compare over the bound drops its file list (`files_omitted`) and then trailing commits
+(`commits_truncated`), and any other read over it answers 400 `workflow read result too large`.
+Errors: 401
+unauthenticated, 403 policy denial, 400 bad request or terminal GitHub refusal, 409 idempotent
+replay refusal (an identical request is in flight or its outcome is unknown), 429 GitHub rate
+limit (retryable), 502 GitHub outcome unknown (NOT retryable - see the outcome store), 503
+app-token minting unavailable.
+
+## Outcome store (write idempotency)
+
+Every non-idempotent write (open_pr, edit_pr, reply_thread, comment_pr, merge_pr,
+workflow_dispatch, resolve_thread) is gated by a durable outcome record at
+`GIT_RELAY_OUTCOMES_PATH` (default `git-relay-outcomes.json`), keyed by seat + action + canonical
+arguments, with explicit pending / ok / refused / unknown states.  A 4xx answer from GitHub is a
+definite refusal and releases the key, with two exceptions:  408 (request timeout) can arrive
+after GitHub applied the write, so it is treated as outcome UNKNOWN, and 429 is simply
+retryable.  A transport failure or 5xx likewise leaves the outcome UNKNOWN:  the relay answers 502 with `"retryable": false`, and an identical
+replay is refused with 409 until the seat checks GitHub and changes the request.  An `open_pr`
+whose create answered but whose read-back failed or did not match is recorded the same way, as
+unknown and never as ok, so no later call replays its number.  A replay of a
+successful call returns the stored result without touching GitHub twice.  A crash mid-write loads
+as unknown - the store fails closed, never replays.  The registry is bounded:  ok rows are
+evicted after a 24 h replay window, refused rows are evicted oldest-first under capacity, and
+a store full of held pending/unknown rows refuses new writes with 503 until an operator
+reconciles them (fail closed - never evict a held side effect).  Writes go through a
+full-write loop, so a short write fails loudly instead of renaming a truncated registry.  `mint_token` is exempt:  it returns a raw
+credential (never cached in the store) and a re-mint is safe under the minter's own lock.
+
+## Configuration and running
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| GITHUB_TOKEN | (required) | Scoped PR-only token; the only credential the service holds |
+| GIT_RELAY_SEATS_JSON | (required) | Seat tokens, action allowlists, repo allowlists |
+| GIT_RELAY_VERIFY_CACHE_S | 3600 | Seconds one relay process reuses a positive `sbt_`/`gbb_` bearer verify, capped at 3600 and never past the bearer's expiry;  0 verifies live on every call.  A pause or revocation can reach that bearer's Git calls, writes included, up to this late (owner ruling Fri, Nov 6, 2026).  The hour runs from the Worker's own live check (`verified_at` in its answer), so the Worker's cache and this one together stay within one hour, and an older positive answer never replaces a newer refusal.  Refusals are remembered for 30 seconds as refusals only. |
+| GIT_RELAY_AUDIT_PATH | git-relay-audit.jsonl | Audit log location |
+| GIT_RELAY_OUTCOMES_PATH | git-relay-outcomes.json | Write idempotency outcome store |
+| GIT_RELAY_HOST | 127.0.0.1 | Bind address |
+| GIT_RELAY_PORT | 8471 | Bind port |
+| GIT_RELAY_RATE_PER_HOUR | 3600 | Per-seat hourly call cap |
+| GIT_RELAY_WRITE_RATE_PER_HOUR | 500 | Per-seat hourly cap on state-changing dispatches (logical writes, a second bound under the call cap; not a GitHub request count) |
+| GIT_RELAY_APP_MINT | 1 | Set to 0 to disable App actions and all App minting |
+| GIT_RELAY_ENABLE_WORKFLOW_VERBS | off (unset) | Set to 1 to wire the wf_ workflow verbs into HTTP dispatch; any other value keeps them refused as registered-not-wired |
+| GIT_RELAY_SECRETS_PATH | /github-apps | Fleet-OPS prod folder the GH_APP_<SLUG>_* pairs are read from;  a set-but-empty value is a startup config error |
+| GIT_RELAY_URL | http://127.0.0.1:8471 | GR-MCP (`git-relay mcp`) only:  the relay base URL each tool call is posted to, as `<url>/v1/<tool>` |
+| GIT_RELAY_SEAT_TOKEN | (required by `git-relay mcp`) | GR-MCP only:  the seat's own bearer token, sent to the relay as `Authorization: Bearer`;  unset or empty stops the wrapper at startup |
+| GIT_RELAY_CF_ACCESS_CLIENT_ID / GIT_RELAY_CF_ACCESS_CLIENT_SECRET | (unset) | GR-MCP only:  the Cloudflare Access service token sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret` when `GIT_RELAY_URL` is the relay's public https hostname;  never sent to a loopback http relay;  setting only one half stops the wrapper at startup (AFC-672) |
+| CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET | (unset) | GR-MCP only:  fallback for the pair above, the fleet-wide names (Infisical Fleet-OPS `/agents-jays-services-access-service-token`) |
+
+```
+git-relay serve                 # the CLI; also the default command
+git-relay mcp                   # GR-MCP over stdio
+python3 -m git_relay.server     # equivalent, no wrapper needed
+```
+
+`git-relay/bin/git-relay` runs straight from a checkout with no install step.  Stdlib only, no
+dependencies to install.
+
+## Seat provisioning and deployment
+
+Seat bearer tokens are minted and delivered out of band (Infisical); rotation is a config change
+plus restart. Deployment (host choice, process supervision, network reachability for seats) is a
+separate decision; nothing here installs daemons or touches the operator broker.
+
+## Tests
+
+```
+cd git-relay && python3 -m unittest discover -s git_relay/tests -t . -v
+```
+
+Fakes only: no network, no real token.
+
+### Guarded same-path file patches
+
+`wf_file_patch` is a separate operation, not an exemption for whole-file writes.
+It accepts up to 32 sorted, disjoint UTF-8 byte-offset edits against a server-fetched
+file bound to repository, path, branch head and verified Git blob SHA-1. Every caller
+string, including inserted text, remains normally scanned. The full reconstructed
+file is scanned too: dedicated token patterns, provider tokens and loaded bearer
+values are refused even when present in the base. Only generic assigned-secret and
+assigned-credential matches can retain baseline provenance. Their entire containing
+line must map to a contiguous, identical original interval. Inserted/copied/replaced
+bytes never inherit provenance, even if identical text occurs elsewhere.
+
+Residual risk is explicit: a pre-existing generic assignment may be a real secret
+and remains in that same source file. This operation does not certify such content
+as secret-free. It cannot relocate the content or admit a newly assembled match.
+Security fixtures with dedicated token patterns still require reviewed attestations.
+
+The target must be a non-executable regular file (100644) on a nondefault branch,
+not a workflow path. GitHub GraphQL `createCommitOnBranch` atomically checks
+`expectedHeadOid`, creates the commit and advances the branch under the same own-App
+contents:write credential. FileAddition carries the full server-reconstructed base64
+content. Its API cannot preserve other file modes, so those are refused, not changed.
+The receipt must bind the sole parent, branch, new head and exact published blob.
+Unverifiable post-write receipts/GraphQL partial errors are UNKNOWN and must not be
+blindly retried. Registration, least-privilege seat policy and rollout are separate
+from source merge. Mutation docs: https://docs.github.com/en/graphql/reference/commits
+and file input docs: https://docs.github.com/en/graphql/reference/git .
+
+### Guarded patch bootstrap closure
+
+The existing canonical seat policy predates `wf_file_patch`. The pure
+`git_relay.patch_policy.prepare` transform appends only that action to each
+existing file-write seat, after matching the full policy digest. It changes no
+seat, App, repository, mint permission, private field or existing action order.
+Its regression uses the actual canonical policy and proves exact delta,
+idempotence, stale-input refusal and no input mutation. It performs no I/O.
+
+Activation must put the reviewed code and this exact transformed live policy in
+one bounded administrative deployment transaction with quiescence, pinned
+source/live digests, durable before-images, atomic writes and verified recovery.
+The old env-only seat installer does not qualify the live seats-file route.
+Code-only live/action-denied activation is not completion. No activation is
+implemented or implied by the pure transform.
+
+Canonical consolidation remains owned by this change: after successful own-App
+patch qualification, apply only the three existing profile action additions and
+update the existing canonical digest regression to its computed new digest,
+then verify rendered canonical policy equals the transformed policy. Until that
+lands, this bootstrap transform and its durable tests record the exact delta.

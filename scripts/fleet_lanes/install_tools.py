@@ -18,11 +18,12 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch or kimi.  The first five get
-a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns: MiniMax Code reads no settings
+PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, copilot, opencode
+or fx.  The first five get a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns:
+MiniMax Code reads no settings
 file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
 minimax` writes ~/.minimax/plugins/fleet-guard/ (.claude-plugin/plugin.json and hooks/hooks.json: PreToolUse, matcher
-Bash, the fleet hook with --format claude), refuses a directory it did not write, and `verify minimax` runs the command
+Bash|Read|Write|Edit|bash|read|write|edit, its own minimax-guard-hook), refuses a directory it did not write, and `verify minimax` runs the command
 it reads back out of that hooks.json.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
 bundle into the stable dir (with everything else, atomically), `plan muse` shows it and the OWNER ACTIONS
 that finish the job, `apply muse` is `apply tools` (the bundle is part of the stable copy, and an unchanged
@@ -32,8 +33,21 @@ never edits Muse's config, and the only muse it runs is `muse plugins validate` 
 found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside a throwaway dir, none of the
 caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
 muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
-`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards).  `apply` needs a target; `plan` defaults to all plus muse, clutch
+`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards), plus
+copilot, opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch
 and kimi, and `verify` the same.
+
+copilot, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
+(version 1, hooks.PreToolUse, matcher Bash, the fleet hook with --format claude and timeoutSec 5); this tool never
+edits ~/.copilot/settings.json, and whether Copilot fires a preToolUse hook at all is UNVERIFIED on this Mac, so the
+live proof is owner-gated (the CLI is installed, and Jay starts a new session) and `verify copilot` ends with a SKIP for it.  opencode is a
+local V2 TypeScript plugin in the stable dir (opencode-plugin/index.ts) whose DIRECTORY is listed in the
+plugins array of ~/.config/opencode/opencode.json.  It registers tool execute.before and throws to deny;
+OpenCode surfaces the throw to the model without running the tool.  The empty-allow contract and a live
+deny were both proven in a running v2.1.1 session (2026-10-22).  fx has NO hook surface at
+all: `plan fx` prints a prepared compensating control (a static permission.bash deny list over the temp-destination
+shapes, with permission_mode moved off yolo) for the owner to merge by hand, this tool never writes ~/.fx, and
+`verify fx` is a FAIL (UNSUPPORTED) with the blocker recorded until Jay approves that control or an exception.
 
 The fleet hook.  `fleet-guard-hook` (fleet_lanes/fleet_guard_hook.py) is the lane guard AND the secret guard in one
 command:  the lane guard, then the secret guard (scripts/hooks/secret-guard-pretooluse.py, copied into the stable dir
@@ -89,6 +103,8 @@ Layout written under --home (default $HOME):
         fleet-apps.json               the registry the shims point FLEET_APPS_JSON at
         VERSION                       sha=, package=, files=, tree= (digest of every file above)
         lane-guard-hook               executable shim; takes --format FMT, reads the hook JSON on stdin
+        claude-file-guard-hook        executable shim for Claude Code's file tools (fleet_lanes/claude_file_guard_hook.py,
+                                      the seat-neutral policy in fleet_lanes/file_guard.py); no prefilter
         muse-seat                     executable shim: AGENT_SEAT=MC and AGENT_TAG=MC, then the real `muse`
         muse-plugin/fleet-lane-guard/ the Muse Code plugin bundle (.muse-plugin/plugin.json, hooks/lane-guard.sh)
     apps/lane                         executable shim for `python3 -m fleet_lanes.lane`; written only when
@@ -116,6 +132,20 @@ the match.  Whatever is not provably free of a trigger word reaches Python as th
 the guard's, byte for byte.  A NUL byte cannot live in a shell variable and is dropped; NUL is not valid JSON, so
 the guard allowed that payload anyway.  `verify` proves deny through the installed shim, and fails on a shim
 whose patterns match nothing.
+
+The hook shim resolves the fleet roots itself.  A hook process often inherits no profile (a systemd unit, a
+tool that clears the environment, a session started from a bare shell), and on a server host the integration
+trees and the apps folder live on a volume while the root account has no ~/Code and no ~/apps.  So the shim
+reads FLEET_CODE_ROOT, FLEET_APPS_ROOT and FLEET_LANES_ROOT, then the home directory, then the volume the
+host names in FLEET_SERVER_VOLUME, and takes the first candidate whose directory is there:  the rule
+scripts/fleet_lanes/server_working_dirs.py uses.  The volume is baked into the shim as the default when the
+shim is generated, because its path is host configuration and never lives in this repository.  The guard
+reads the roots from the environment, so the shim exports the three variables before Python starts.
+
+The registry in the stable dir names THIS host's roots.  The copy of fleet-apps.json the shims point
+FLEET_APPS_JSON at keeps every app and every seat byte for byte, and only the two root values are the host's
+own, so scripts/disk-janitor.sh looks for checkouts where they are.  The repository's own fleet-apps.json is
+never rewritten:  it is the Mac's record.
 
 The Muse Code plugin.  Muse rejects a `matcher` on a plugin hook, so its hook runs on EVERY tool call.  The
 bundle's hooks/lane-guard.sh therefore exits 0 at once only when it can PROVE from the raw bytes that the guard
@@ -147,7 +177,7 @@ Safety:
   * The stable dir is replaced as a whole, so it is owned only if it is empty, or if its VERSION has the
     `sha=` and a 64-hex `tree=` line, its lane-guard-hook carries this tool's generated mark, and every
     entry in it is a file this tool writes (VERSION, fleet-apps.json, lane-guard-hook,
-    fleet_lanes/*.py).  Anything else is a foreign dir and is refused, whatever else it contains: a project
+    fleet_lanes/*.py, fleet_lanes/rules/*).  Anything else is a foreign dir and is refused, whatever else it contains: a project
     with its own VERSION file is not a stable dir.  `--replace-extra` waives only the last rule.  A dir that
     holds `.git`, the source, the registry or the home is refused with or without it.  `plan` prints
     `WILL DELETE n files` for what the replacement removes.
@@ -187,13 +217,17 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import copy
 import difflib
+import fcntl
 import functools
+import grp
 import hashlib
 import json
 import math
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -233,6 +267,7 @@ __all__ = [
     "check_deny_output",
     "guard_switch",
     "hook_command",
+    "host_paths",
     "main",
     "make_paths",
     "plan_platform",
@@ -251,7 +286,16 @@ EXIT_FAIL = 1
 EXIT_USAGE = 64
 
 PACKAGE = "fleet_lanes"
+RULES_DIRNAME = "rules"  # the templates install_rules reads beside itself;  they travel with the package
 HOOK_NAME = "lane-guard-hook"
+MINIMAX_HOOK_NAME = "minimax-guard-hook"
+# Claude Code's file guard (fleet_lanes/claude_file_guard_hook.py over file_guard.py).  It is a second PreToolUse
+# group in ~/.claude/settings.json, beside the shell group that runs lane-guard-hook, so the shell group and its
+# prefilter stay exactly as they are.  No prefilter: every file path needs Python.
+CLAUDE_FILE_HOOK_NAME = "claude-file-guard-hook"
+CLAUDE_FILE_MATCHER = "Read|Write|Edit|MultiEdit|NotebookEdit"
+CLAUDE_FILE_TOOLS = ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit")
+CLAUDE_FILE_HOOK_TIMEOUT_S = 10  # seconds.  A timeout fails open, and this hook starts Python on every file call
 FLEET_HOOK_NAME = "fleet-guard-hook"  # the lane guard and the secret guard in one command
 SECRET_GUARD_MODULE = "secret_guard.py"  # fleet_lanes/secret_guard.py in the stable copy
 SECRET_GUARD_SOURCE = ("hooks", "secret-guard-pretooluse.py")  # under the source's scripts dir
@@ -269,22 +313,61 @@ MINIMAX_HOOKS_FILE = "hooks/hooks.json"  # the default hooks path of that flavou
 MINIMAX_HOOK_TIMEOUT_S = (
     10  # seconds, 1 to 10 (MiniMax's range).  A timeout fails OPEN, so the top of the range
 )
-PLATFORM_ALIASES = {"mm": "minimax"}  # the seat tag works as a target
+PLATFORM_ALIASES = {
+    "mm": "minimax",
+    "z-code": "zcode",
+    "zc": "zcode",
+}
+COPILOT_HOOKS_REL = ".copilot/hooks/fleet-lane-guard.json"  # a fleet-owned file; ~/.copilot/settings.json is not ours
+OPENCODE_CONFIG_REL = ".config/opencode/opencode.json"
+OPENCODE_PLUGIN_FILE = "opencode-plugin/index.ts"  # relative to the stable dir; the config entry is its directory
+OPENCODE_LEGACY_PLUGIN_FILE = "opencode-plugin/fleet-lane-guard.ts"  # written by earlier releases; replaced on apply
+OPENCODE_PLUGIN_ID = "fleet-lane-guard"
+FX_BLOCKER = (
+    "UNSUPPORTED: fx has no hook, plugin or extension surface in the CLI (fx --help and the published docs index "
+    "name none), so the lane guard cannot run there.  The only enforcement surface is static permission rules in "
+    "~/.fx/settings.json, which cannot resolve d=$(mktemp -d), cannot read a repo's fleet status, and cannot see "
+    "through a bash -c layer, all of which guard.py handles.  FX stays RED until Jay approves the prepared "
+    "compensating control (plan fx prints it) or approves an exception"
+)
 BLOCK_NAME = "hooks-fleet-guards"
 BLOCK_TOOL = "fleet_lanes.install_tools"
 LANE_NAME = "lane"
 STABLE_DIRNAME = "lane-tools"
+# The volume a server host keeps the apps folder on when the home directory holds
+# no copy of it.  The owner asked for the /root aliases to be removed on 2026-10-25,
+# so an install there must write to the volume and not create a new apps folder
+# under the home.  The volume's path is not in this repository:  the host names it
+# in the environment, and a host that names none has no volume, so the copy under
+# the home is the only fallback there is.
+ENV_SERVER_VOLUME = "FLEET_SERVER_VOLUME"
+# The environment variable that names each of the host's roots:  the integration trees (Code) and the
+# apps folder (apps).  The generated hook shims read them, and the lane tools read all three roots.
+ROOT_ENV_VARS = {"Code": "FLEET_CODE_ROOT", "apps": "FLEET_APPS_ROOT"}
 REGISTRY_NAME = "fleet-apps.json"
 VERSION_NAME = "VERSION"
 GENERATED_MARK = "Generated by fleet_lanes.install_tools"
 REQUIRED_MODULES = (
     "__init__.py",
     "layout.py",
+    "placement.py",
+    "temp_build.py",  # guard.py imports it for the temp-build rule
     "guard.py",
     "lane_guard_hook.py",
     "fleet_guard_hook.py",
+    "minimax_guard_hook.py",
+    "file_guard.py",
+    "claude_file_guard_hook.py",
 )
 LANE_MODULE = "lane.py"
+EXCEPTIONS_FILE = "placement-exceptions.json"
+GIT_SHIM_FILE = "shims/git"
+# Tools that can start a checkout on Claude Code besides Bash:  a spawn or EnterWorktree (isolation), and the Desktop Commander
+# and terminal shells, whose commands the Bash-only matcher never saw.
+CLAUDE_MATCHER = (
+    "Bash|Agent|Task|EnterWorktree"
+    "|mcp__.*desktop-commander.*__start_process|mcp__terminal__run_in_terminal"
+)
 AG_GROUP = "lane-guard"
 GROK_FILE = "lane-guard.json"
 
@@ -365,7 +448,14 @@ _OURS_RE = re.compile(
     + re.escape(HOOK_NAME)
     + "|"
     + re.escape(FLEET_HOOK_NAME)
+    + "|"
+    + re.escape(MINIMAX_HOOK_NAME)
     + r")(?=$|[\s'\"])"
+)
+
+
+_CLAUDE_FILE_RE = re.compile(
+    r"(?:^|[\s/'\"=])" + re.escape(CLAUDE_FILE_HOOK_NAME) + r"(?=$|[\s'\"])"
 )
 
 
@@ -384,10 +474,17 @@ class ShapeError(Refused):
 class Paths:
     home: str
     stable: str
+    apps: str | None = None
 
     @property
     def apps_dir(self) -> str:
-        return os.path.join(self.home, "apps")
+        """The apps folder:  the one named by FLEET_APPS_ROOT when it is set.
+
+        A server host keeps the apps folder on a volume and links no ~/apps
+        into the home, so the installer must write there and not create a
+        second apps folder under the home.
+        """
+        return self.apps or os.path.join(self.home, "apps")
 
     @property
     def lane_shim(self) -> str:
@@ -400,6 +497,10 @@ class Paths:
     @property
     def fleet_shim(self) -> str:
         return os.path.join(self.stable, FLEET_HOOK_NAME)
+
+    @property
+    def claude_file_shim(self) -> str:
+        return os.path.join(self.stable, CLAUDE_FILE_HOOK_NAME)
 
     @property
     def clutch_hooks(self) -> str:
@@ -424,6 +525,22 @@ class Paths:
     @property
     def minimax_hooks(self) -> str:
         return os.path.join(self.minimax_bundle, *MINIMAX_HOOKS_FILE.split("/"))
+
+    @property
+    def copilot_hooks(self) -> str:
+        return os.path.join(self.home, *COPILOT_HOOKS_REL.split("/"))
+
+    @property
+    def opencode_config(self) -> str:
+        return os.path.join(self.home, *OPENCODE_CONFIG_REL.split("/"))
+
+    @property
+    def opencode_plugin(self) -> str:
+        return os.path.join(self.stable, *OPENCODE_PLUGIN_FILE.split("/"))
+
+    @property
+    def opencode_plugin_dir(self) -> str:
+        return os.path.dirname(self.opencode_plugin)
 
     @property
     def package_dir(self) -> str:
@@ -454,14 +571,164 @@ class Paths:
         return os.path.join(self.stable, *MUSE_WRAPPER.split("/"))
 
 
-def make_paths(home: str, stable_dir: str | None = None) -> Paths:
+def _apps_root(home: str, env: dict[str, str] | None = None) -> str:
+    """The apps folder:  FLEET_APPS_ROOT when it is set, else <home>/apps.
+
+    A server host keeps the apps folder on a volume and links no ~/apps into
+    the home, so the installer must write there and not create a second apps
+    folder under the home.  `~` expands against the home and a relative path
+    is joined onto it, the way FLEET_LANES_ROOT is read.
+    """
+    env = os.environ if env is None else env
+    raw = (env.get("FLEET_APPS_ROOT") or "").strip()
+    if raw == "~":
+        return home
+    if raw.startswith("~/"):
+        return os.path.join(home, raw[2:])
+    if raw and os.path.isabs(raw):
+        return raw
+    if raw:
+        return os.path.join(home, raw)
+    return os.path.join(home, "apps")
+
+
+def make_paths(home: str, stable_dir: str | None = None,
+               env: dict[str, str] | None = None) -> Paths:
     """`home` is required: only the CLI supplies a default, so a test cannot reach the real home by
-    leaving the argument out."""
+    leaving the argument out.
+
+    `FLEET_APPS_ROOT` names the apps folder when it is not under the home, as on a server host
+    that keeps it on a volume; the stable dir then lives inside it.
+    """
     if not home:
         raise ValueError("home is required")
     h = os.path.abspath(home)
-    s = os.path.abspath(stable_dir) if stable_dir else os.path.join(h, "apps", STABLE_DIRNAME)
-    return Paths(home=h, stable=s)
+    apps = _apps_root(h, env)
+    s = os.path.abspath(stable_dir) if stable_dir else os.path.join(apps, STABLE_DIRNAME)
+    return Paths(home=h, stable=s, apps=apps)
+
+
+def host_paths(home: str, stable_dir: str | None = None,
+               env: dict[str, str] | None = None) -> Paths:
+    """The paths for a real install on this host.
+
+    The apps folder is the one the host already keeps:  the copy under the home when it is
+    there, and otherwise the volume the host names in FLEET_SERVER_VOLUME, where a server host
+    keeps it and links no ~/apps into the home.  Without this an install on such a host would
+    write a second apps folder under the home, the one the owner asked to be rid of.
+    """
+    env = dict(os.environ if env is None else env)
+    env["FLEET_APPS_ROOT"] = _host_apps_root(home, env)
+    return make_paths(home, stable_dir, env)
+
+
+def server_volume(env: dict[str, str] | None = None) -> str | None:
+    """The volume a host keeps its trees on, when the host names one.
+
+    The path is read from the environment, so it is not in this repository.  A host
+    that names no volume has none, and the copy under the home is the only fallback
+    there is.
+    """
+    env = dict(os.environ if env is None else env)
+    raw = (env.get(ENV_SERVER_VOLUME) or "").strip()
+    if not raw:
+        return None
+    path = os.path.abspath(os.path.expanduser(raw))
+    return path if os.path.isdir(path) else None
+
+
+def _env_path(raw: str, home: str) -> str:
+    """A configured root read the way layout.py reads one.
+
+    "~" is the home, "~/x" is under it, an absolute path is itself, and a relative path is joined onto the
+    home, so a setting selects the same directory here that `lane new` uses.
+    """
+    raw = (raw or "").strip()
+    if raw == "~":
+        return home
+    if raw.startswith("~/"):
+        return os.path.join(home, raw[2:])
+    if os.path.isabs(raw):
+        return raw
+    return os.path.join(home, raw)
+
+
+def _host_apps_root(home: str, env: dict[str, str]) -> str:
+    """The apps folder this host keeps.
+
+    A configured root wins; then the copy under the home when it is there; then the
+    volume the host names, which holds the real tree on a server host.  This is where the tools are
+    WRITTEN, so a configured root wins even before the directory is there;  the roots they READ are
+    resolved by _resolved_root, which counts a candidate only when the directory is.
+    """
+    configured = (env.get("FLEET_APPS_ROOT") or "").strip()
+    if configured:
+        return _apps_root(home, env)
+    local = os.path.join(home, "apps")
+    if os.path.isdir(local):
+        return local
+    volume = server_volume(env)
+    if volume is not None:
+        canonical = os.path.join(volume, "apps")
+        if os.path.isdir(canonical):
+            return canonical
+    return local
+
+
+def host_code_root(home: str, env: dict[str, str] | None = None) -> str:
+    """Where the integration trees live on this host:  FLEET_CODE_ROOT, then ~/Code, then the volume.
+
+    A server host keeps the trees on the volume and gives the root account no ~/Code, so a guard that
+    resolved only the home would not see them.  The rule is the one scripts/fleet_lanes/server_working_dirs.py
+    uses and the one the generated hook shims run, so the registry this host installs names the same
+    directories the guard looks at.
+    """
+    env = dict(os.environ if env is None else env)
+    return _resolved_root(home, "Code", env)
+
+
+def _guard_code_root(home: str, volume: str = "") -> str:
+    """Where the guard will look for the integration trees, resolved the way the hook shim resolves them.
+
+    The shim exports FLEET_CODE_ROOT before the guard's Python starts:  the environment first, then the
+    home, then the volume it carries.  A probe's own environment holds no fleet root, so the volume the shim
+    carries is the one that decides.  A probe that wrote under <home>/Code would test a path the guard does
+    not watch on a server host, where the trees live on the volume and the root account has no ~/Code:  the
+    guard would allow that write, the probe would read the allow as a failure to deny, and `apply tools`
+    would refuse an install that is correct.
+    """
+    env = {ENV_SERVER_VOLUME: volume} if volume else {}
+    return host_code_root(home, env)
+
+
+def host_apps_root(home: str, env: dict[str, str] | None = None) -> str:
+    """Where the apps folder lives on this host:  FLEET_APPS_ROOT, then ~/apps, then the volume."""
+    env = dict(os.environ if env is None else env)
+    return _resolved_root(home, "apps", env)
+
+
+def _resolved_root(home: str, name: str, env: dict[str, str]) -> str:
+    """The host's folder for `name`, resolved the way the host's own tools resolve it.
+
+    The environment first, then the copy under the home when it is there, then the volume the host names in
+    FLEET_SERVER_VOLUME, and a candidate counts only when the directory is there.  That is the rule
+    scripts/fleet_lanes/server_working_dirs.py uses, so a stale setting cannot point the guard at a path that
+    is not on this host.
+    """
+    configured = (env.get(ROOT_ENV_VARS[name]) or "").strip()
+    if configured:
+        candidate = _env_path(configured, home)
+        if os.path.isdir(candidate):
+            return candidate
+    local = os.path.join(home, name)
+    if os.path.isdir(local):
+        return local
+    volume = server_volume(env)
+    if volume is not None:
+        canonical = os.path.join(volume, name)
+        if os.path.isdir(canonical):
+            return canonical
+    return local
 
 
 @dataclass(frozen=True)
@@ -737,6 +1004,102 @@ def _lower_lookalikes(letters: str) -> tuple:
     )
 
 
+def _shim_root_lines(volume: str | None) -> list:
+    """The shell lines a generated hook shim uses to resolve the fleet roots.
+
+    A hook process often inherits no profile:  a systemd unit, a tool that clears the environment, or a
+    session started from a bare shell.  On a server host the integration trees and the apps folder live on a
+    volume and the root account has no ~/Code and no ~/apps, so a guard that resolved only the home would not
+    see the server's integration tree and would allow a clone into it.  The shim therefore resolves the roots
+    itself, in the order scripts/fleet_lanes/server_working_dirs.py resolves them:  the environment, then the
+    home directory, then the volume the host names in FLEET_SERVER_VOLUME.  A candidate counts only when the
+    directory is there, so a stale setting cannot point the guard at a path that is not on this host.
+
+    `volume` is the host's volume, baked in as the default for a process that inherits no environment at all.
+    The volume's path is host configuration:  it is read from the environment when the shim is generated and
+    never lives in this repository.
+    """
+    out = [
+        "# The fleet roots:  the environment first, then the home directory, then the volume the host names",
+        "# in FLEET_SERVER_VOLUME, and a candidate counts only when the directory is there.  A hook",
+        "# process often inherits no profile, so the shim resolves the roots itself:  on a server host",
+        "# the root account has no ~/Code and no ~/apps, and a guard that looked only there would not",
+        "# see the integration tree and would allow a clone into it.",
+        "_lg_home=${HOME:-}",
+        "_lg_vol=${FLEET_SERVER_VOLUME:-}",
+    ]
+    if volume:
+        out.append(f'if [ -z "$_lg_vol" ]; then _lg_vol={shlex.quote(volume)}; fi')
+    out += [
+        "_lg_vol_code=",
+        "_lg_vol_apps=",
+        "_lg_vol_lanes=",
+        'if [ -n "$_lg_vol" ]; then',
+        "  _lg_vol_code=$_lg_vol/Code",
+        "  _lg_vol_apps=$_lg_vol/apps",
+        "  _lg_vol_lanes=$_lg_vol/apps/lanes",
+        "fi",
+        "_lg_root() {",
+        "  # $1 = the configured value;  the rest are the fallbacks, tried in order.  A candidate counts",
+        "  # only when the directory is there, the rule server_working_dirs.py uses, and a configured root",
+        "  # is read the way layout.py reads one:  a lone tilde is the home, a tilde and a slash are",
+        "  # under it, an absolute path is itself, and a relative path is joined onto the home.",
+        "  # With no home at all there is nothing to join onto, so the path stays as it is, which is what",
+        "  # os.path.join(home, raw) reads it as.",
+        "  _lg_c=",
+        '  if [ -n "$1" ]; then',
+        '    if [ "$1" = "~" ]; then',
+        "      _lg_c=$_lg_home",
+        '    elif [ "${1%%/*}" = "~" ]; then',
+        '      if [ -z "$_lg_home" ]; then _lg_c=${1#??}; else _lg_c=$_lg_home/${1#??}; fi',
+        '    elif [ "${1#/}" != "$1" ]; then',
+        "      _lg_c=$1",
+        "    else",
+        '      if [ -z "$_lg_home" ]; then _lg_c=$1; else _lg_c=$_lg_home/$1; fi',
+        "    fi",
+        "  fi",
+        '  if [ -n "$_lg_c" ] && [ -d "$_lg_c" ]; then',
+        "    printf '%s' \"$_lg_c\"",
+        "    return 0",
+        "  fi",
+        "  shift",
+        '  for _lg_d in "$@"; do',
+        '    if [ -n "$_lg_d" ] && [ -d "$_lg_d" ]; then',
+        "      printf '%s' \"$_lg_d\"",
+        "      return 0",
+        "    fi",
+        "  done",
+        "  return 1",
+        "}",
+    ]
+    return out
+
+
+def _shim_resolve_lines() -> list:
+    """The lines inside the shim's _lg_py that resolve the roots and export them.
+
+    The guard reads the roots from the environment (layout.make_roots), so the three variables are exported
+    before Python starts.  A root that resolves nowhere is not exported at all:  the environment stays as it
+    was, and layout falls back to the home the way it always did.
+    """
+    # server_working_dirs.py resolves the lanes root from FLEET_LANES_ROOT, the home and the volume, and
+    # never from the apps root, so the shim must not offer a candidate the host tools do not:  a custom
+    # FLEET_APPS_ROOT would otherwise point the guard at a different directory than the host tools read.
+    lanes = (
+        '  _lg_lanes=$(_lg_root "${FLEET_LANES_ROOT:-}" "$_lg_home/apps/lanes"'
+        ' "$_lg_vol_lanes") || _lg_lanes='
+    )
+    return [
+        "  # the fleet roots, resolved the way server_working_dirs.py resolves them",
+        '  _lg_code=$(_lg_root "${FLEET_CODE_ROOT:-}" "$_lg_home/Code" "$_lg_vol_code") || _lg_code=',
+        '  _lg_apps=$(_lg_root "${FLEET_APPS_ROOT:-}" "$_lg_home/apps" "$_lg_vol_apps") || _lg_apps=',
+        lanes,
+        '  if [ -n "$_lg_code" ]; then export FLEET_CODE_ROOT="$_lg_code"; fi',
+        '  if [ -n "$_lg_apps" ]; then export FLEET_APPS_ROOT="$_lg_apps"; fi',
+        '  if [ -n "$_lg_lanes" ]; then export FLEET_LANES_ROOT="$_lg_lanes"; fi',
+    ]
+
+
 def render_hook_shim(
     facts: GuardFacts | None = None,
     *,
@@ -744,6 +1107,7 @@ def render_hook_shim(
     purpose: Sequence[str] | None = None,
     extra_words: Sequence[str] = (),
     extra_globs: Sequence[str] = (),
+    volume: str | None = None,
 ) -> str:
     """lane-guard-hook.  Relocatable: it derives its directory from $0, so a staged copy runs itself.
     `module` and `purpose` make the same script for another hook module (fleet-guard-hook); with empty
@@ -760,9 +1124,14 @@ def render_hook_shim(
 
     `extra_words` (matched in any ASCII letter case) and `extra_globs` (case patterns, used as given) widen the match
     for a hook that runs a second guard (fleet-guard-hook adds the secret guard's).  They change nothing when the
-    lane guard's own words are unknown: `facts.words` empty means no prefilter at all."""
+    lane guard's own words are unknown: `facts.words` empty means no prefilter at all.
+
+    `volume` is the volume a host keeps its trees on, baked into the shim as the default for a hook process that
+    inherits no environment at all.  None reads it from the host's environment (the volume's path is host
+    configuration and never lives in this repository);  an empty string means the host has no volume."""
     facts = read_guard_facts() if facts is None else facts
     boot = _PY_BOOT.format(module=module or f"{PACKAGE}.lane_guard_hook")
+    volume = server_volume() if volume is None else (volume or None)
     out = [
         "#!/bin/sh",
         f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.",
@@ -781,6 +1150,7 @@ def render_hook_shim(
             "# payload, in any letter case, and also passes a JSON \\u escape and the non-ASCII letters that fold",
             "# onto a trigger letter.  Everything else reaches Python as the original bytes.",
         ]
+    out += _shim_root_lines(volume)
     out += [
         "_lg_py() {",
         "  # the caller's LC_ALL, exactly as it was (set, empty or unset), for Python",
@@ -794,6 +1164,7 @@ def render_hook_shim(
         "  PYTHONPATH=$D",
         "  FLEET_APPS_JSON=$D/fleet-apps.json",
         "  export PYTHONPATH FLEET_APPS_JSON",
+    ] + _shim_resolve_lines() + [
         f'  exec /usr/bin/env python3 -I -c \'{boot}\' "$D" "$@"',
         "}",
     ] + _C_LOCALE_LINES
@@ -867,11 +1238,12 @@ def _secret_ps_globs() -> tuple:
 SECRET_PS_GLOBS = _secret_ps_globs()
 
 
-def render_fleet_hook_shim(facts: GuardFacts | None = None) -> str:
+def render_fleet_hook_shim(facts: GuardFacts | None = None, *, volume: str | None = None) -> str:
     """fleet-guard-hook: the same script as lane-guard-hook, for fleet_lanes.fleet_guard_hook.  Its prefilter is the
     lane guard's (`facts`, read from the guard) widened by the secret guard's words (SECRET_WORDS, SECRET_PS_GLOBS), so
     an ordinary shell call exits 0 in `sh` without starting Python, and every call either guard could deny reaches it.
-    With no lane facts there is no prefilter at all."""
+    With no lane facts there is no prefilter at all.  `volume` is the host's volume, baked into the shim as the
+    default for a hook process that inherits no environment (see render_hook_shim)."""
     facts = read_guard_facts() if facts is None else facts
     return render_hook_shim(
         GuardFacts(facts.words, facts.lookalikes, facts.max_chars, (), facts.problems),
@@ -879,6 +1251,7 @@ def render_fleet_hook_shim(facts: GuardFacts | None = None) -> str:
         purpose=FLEET_SHIM_PURPOSE,
         extra_words=SECRET_WORDS,
         extra_globs=SECRET_PS_GLOBS,
+        volume=volume,
     )
 
 
@@ -1117,6 +1490,297 @@ def render_muse_seat() -> str:
     )
 
 
+def render_opencode_plugin() -> str:
+    """opencode-plugin/index.ts in the stable dir, loaded as a directory by OpenCode V2.  V2 has no config
+    hooks key and its plugin entries must name a DIRECTORY; the directory's index.ts is the module.  The plugin
+    registers tool execute.before (keyed on the presence of a command in the tool args, because OpenCode's shell
+    tool name is not confirmed) and throws on a guard denial, which OpenCode surfaces to the model and turns into
+    a tool error without running the call.  A guard that cannot answer is a denial.  It runs the stable
+    fleet-guard-hook with a Claude-shaped payload and reads the Claude deny shape back; the guard prints NOTHING
+    on allow, so empty output is an allow (parsing it as JSON turned every allowed call into a denial).  The
+    guard path is derived from the plugin's own file, so the text holds no home path and no credential, and this
+    function takes no home to embed: the same text is right in every stable dir."""
+    return """// Generated by fleet_lanes.install_tools.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.
+// OpenCode V2 guard plugin: denies fleet-repo checkouts in temp directories and the commands the secret guard blocks.
+// It registers tool execute.before and throws to refuse a call; OpenCode surfaces the throw to the model and does
+// not run the tool.  A guard that cannot answer is a denial, never an allow.
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Plugin } from "@opencode/plugin";
+
+const guardCommand = join(dirname(fileURLToPath(import.meta.url)), "..", "fleet-guard-hook");
+
+type AnyRecord = Record<string, unknown>;
+
+// Tool-call data and permission prompts are untrusted and walked recursively, so the walk
+// carries bounds:  the depth, width and cycle ceilings apply to every payload, and the byte
+// ceiling applies to the extracted command and to the whole permission prompt.  Anything
+// over a ceiling is refused before it can exhaust the stack or the CPU ahead of the guard.
+const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
+const MAX_COMMAND_INPUT_DEPTH = 16;
+const MAX_COMMAND_INPUT_NODES = 1000;
+
+// checkInputStructure refuses an untrusted document that is too deep, too wide or cyclic:
+// the walk counts the nodes, measures the depth and finds a cycle, and it runs before any
+// field of the document is read.
+function checkInputStructure(value: unknown, label: string): void {
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  const walk = (current: unknown, depth: number): void => {
+    if (depth > MAX_COMMAND_INPUT_DEPTH) {
+      throw new TypeError(`${label} exceeds the maximum depth`);
+    }
+    if (++nodes > MAX_COMMAND_INPUT_NODES) {
+      throw new TypeError(`${label} exceeds the maximum element count`);
+    }
+    if (!current || typeof current !== "object") return;
+    if (seen.has(current)) {
+      throw new TypeError(`${label} contains a cycle`);
+    }
+    seen.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current) walk(item, depth + 1);
+    } else {
+      const record = current as AnyRecord;
+      for (const key of Object.keys(record)) walk(record[key], depth + 1);
+    }
+    seen.delete(current);
+  };
+  walk(value, 0);
+}
+
+function commandFrom(value: unknown): string | null {
+  // Structural bounds guard the walk below;  the byte ceiling is applied to the extracted
+  // command, not the whole payload.  The hook keys on the presence of a command rather
+  // than a tool name because OpenCode's shell tool name is not confirmed (v2 research
+  // recorded `shell`, current builds `bash`), and a file write or edit can legitimately
+  // carry more than 64 KiB of content:  a whole-payload ceiling would deny a call the
+  // guard never ruled on (sentry #757).
+  checkInputStructure(value, "OpenCode tool input");
+  const walk = (current: unknown): string | null => {
+    if (typeof current === "string") return current;
+    if (Array.isArray(current)) {
+      return current.every((v) => typeof v === "string") ? current.join(" ") : null;
+    }
+    if (!current || typeof current !== "object") return null;
+    const record = current as AnyRecord;
+    for (const key of ["command", "cmd", "CommandLine", "commandLine", "script"]) {
+      const found = walk(record[key]);
+      if (found) return found;
+    }
+    for (const key of ["tool_input", "toolInput", "input", "args"]) {
+      const found = walk(record[key]);
+      if (found) return found;
+    }
+    return null;
+  };
+  const command = walk(value);
+  if (command !== null && Buffer.byteLength(command, "utf8") > MAX_COMMAND_INPUT_BYTES) {
+    throw new TypeError("OpenCode command input exceeds 64 KiB");
+  }
+  return command;
+}
+
+function cwdFrom(value: unknown, fallback: string): string {
+  if (!value || typeof value !== "object") return fallback;
+  const record = value as AnyRecord;
+  for (const key of ["workdir", "cwd", "Cwd", "working_directory", "directory"]) {
+    if (typeof record[key] === "string" && record[key]) return record[key] as string;
+  }
+  return fallback;
+}
+
+// The guard is the authorization source, so a guard that cannot answer is a denial, not an
+// allow:  a timeout, a guard that will not start, and output we cannot read all reject, so a
+// hung or missing fleet-guard-hook never reads as authorization.  Nothing here resolves null
+// except a guard that answered and did not deny.
+const GUARD_TIMEOUT_MS = 5000;
+
+// A child that ignores SIGTERM must not outlive the runner:  after the grace period the
+// child is SIGKILLed,  and the runner waits for its close so the child is reaped on the
+// interruption paths as well as on the timeout path.
+const GUARD_KILL_GRACE_MS = 500;
+
+class GuardFailure extends Error {
+  readonly exitCode: number;
+  constructor(message: string, exitCode: number) {
+    super(message);
+    this.name = "GuardFailure";
+    this.exitCode = exitCode;
+  }
+}
+
+function runGuard(command: string, cwd: string): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    let terminateChild = () => {};
+    try {
+      const child = spawn(guardCommand, ["--format", "claude"], { stdio: ["pipe", "pipe", "ignore"] });
+      let out = "";
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      // `child.killed` only says a signal was SENT,  not that the child died,  so liveness
+      //  is read off the exit state:  a child still running has neither code nor signal.
+      const alive = () => child.exitCode === null && child.signalCode === null;
+      const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        process.off("exit", onParentExit);
+        process.off("SIGINT", onParentSignal as () => void);
+        process.off("SIGTERM", onParentSignal as () => void);
+      };
+      // SIGTERM first,  then SIGKILL if the child is still there after the grace period,
+      //  so a guard that ignores SIGTERM cannot outlive the runner.
+      const terminate = () => {
+        if (alive()) child.kill("SIGTERM");
+        if (killTimer === undefined) {
+          killTimer = setTimeout(() => {
+            killTimer = undefined;
+            if (alive()) child.kill("SIGKILL");
+          }, GUARD_KILL_GRACE_MS);
+        }
+      };
+      terminateChild = terminate;
+      const onParentExit = () => terminate();
+      // An interruption is not a reason to leave the guard running:  terminate the child
+      //  first,  drop our own handlers so the signal takes its normal course,  then re-raise.
+      const onParentSignal = (signal: NodeJS.Signals) => {
+        terminate();
+        cleanup();
+        process.kill(process.pid, signal);
+      };
+      const fail = (error: GuardFailure) => {
+        if (settled) return;
+        settled = true;
+        terminate();
+        cleanup();
+        reject(error);
+      };
+      const succeed = (reason: string | null) => {
+        if (settled) return;
+        settled = true;
+        if (killTimer !== undefined) clearTimeout(killTimer);
+        killTimer = undefined;
+        cleanup();
+        resolve(reason);
+      };
+      process.once("exit", onParentExit);
+      process.once("SIGINT", onParentSignal as () => void);
+      process.once("SIGTERM", onParentSignal as () => void);
+      timer = setTimeout(() => {
+        fail(new GuardFailure(`fleet guard at ${guardCommand} timed out after ${GUARD_TIMEOUT_MS}ms`, 124));
+      }, GUARD_TIMEOUT_MS);
+      child.on("error", (error: Error) => {
+        const code = (error as NodeJS.ErrnoException).code === "ENOENT" ? 127 : 1;
+        fail(new GuardFailure(`fleet guard at ${guardCommand} failed to start: ${error.message}`, code));
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+      });
+      child.stdin.on("error", (error: Error) => {
+        fail(new GuardFailure(`fleet guard at ${guardCommand} input failed: ${error.message}`, 1));
+      });
+      child.on("close", (code, signal) => {
+        if (settled) return;
+        try {
+          // The guard answers an ALLOW with nothing at all:  it prints a decision only
+          // when it denies.  Empty output is therefore an allow,  not a broken answer,
+          // and parsing it as JSON turned every allowed call into a denial with
+          // "Unexpected EOF" (the plugin was registered but unusable).  It is an allow
+          // ONLY when the guard exited cleanly:  a crashed, signalled or killed guard
+          // printed nothing because it never answered, and reading that as an allow would
+          // skip every lane and secret check.
+          if (out.trim() === "") {
+            if (code === 0 && signal === null) {
+              succeed(null);
+              return;
+            }
+            fail(
+              new GuardFailure(
+                `fleet guard at ${guardCommand} exited without an answer (code ${
+                  code === null ? "none" : code
+                }, signal ${signal === null ? "none" : signal})`,
+                code || 1,
+              ),
+            );
+            return;
+          }
+          const body = JSON.parse(out) as AnyRecord;
+          if (!body || typeof body !== "object" || Array.isArray(body)) {
+            throw new Error("response is not an object");
+          }
+          const hook = body.hookSpecificOutput as AnyRecord | undefined;
+          const reason = hook?.permissionDecisionReason;
+          succeed(
+            hook?.permissionDecision === "deny" && typeof reason === "string" ? reason : null,
+          );
+        } catch (error) {
+          fail(
+            new GuardFailure(
+              `fleet guard at ${guardCommand} returned invalid output: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              1,
+            ),
+          );
+        }
+      });
+      child.stdin.end(JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd }));
+    } catch (error) {
+      terminateChild();
+      reject(
+        new GuardFailure(
+          `fleet guard at ${guardCommand} failed to start: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          127,
+        ),
+      );
+    }
+  });
+}
+
+// The V2 registration.  V2 has no permission.ask plugin hook: tool execute.before is the
+// documented place to reject a call, and a throw there is the rejection (OpenCode surfaces the
+// error to the model and does not run the tool).  The runner above is the V1 runner unchanged,
+// so both paths reason about a command identically.  A guard that cannot answer is a denial.
+export default Plugin.define({
+  id: "fleet-lane-guard",
+  async setup(ctx) {
+    // The V2 setup context carries the session directory under `location`; other shapes expose
+    // it directly or not at all.  Reading it unguarded would throw inside setup and leave the
+    // guard registered nowhere, so every shape is tolerated and "" is the last resort.
+    const context = ctx as unknown as AnyRecord;
+    const location = context.location as AnyRecord | undefined;
+    const fallbackCwd =
+      (typeof location?.directory === "string" && location.directory) ||
+      (typeof context.directory === "string" && context.directory) ||
+      "";
+    await ctx.tool.hook("execute.before", async (event) => {
+      // The live V2 build delivers the tool arguments under `input`;  `args` is the other name
+      // the SDK has used, so both are read and the command is never missed because of the key.
+      const payload =
+        (event as unknown as AnyRecord).input ?? (event as unknown as AnyRecord).args;
+      let command: string | null;
+      try {
+        command = commandFrom(payload);
+      } catch {
+        throw new Error("OpenCode command input could not be read");
+      }
+      if (!command) return;
+      let reason: string | null;
+      try {
+        reason = await runGuard(command, cwdFrom(payload, fallbackCwd));
+      } catch (error) {
+        throw new Error(error instanceof Error ? error.message : String(error));
+      }
+      if (reason) throw new Error(reason);
+    });
+  },
+});
+"""
+
+
 def muse_owner_actions(paths: Paths) -> list:
     """What the OWNER still has to do after `apply tools`.  This tool never runs these commands and never edits
     Muse's config, so it can only say them."""
@@ -1132,6 +1796,37 @@ def hook_command(paths: Paths, fmt: str) -> str:
     return f"{shlex.quote(paths.hook_shim)} --format {fmt}"
 
 
+def render_minimax_hook_shim(*, volume: str | None = None) -> str:
+    """MM owns its adapter.  No shell prefilter: native file paths need Python too.  `volume` is the host's volume,
+    baked into the shim as the default for a hook process that inherits no environment (see render_hook_shim)."""
+    return render_hook_shim(
+        GuardFacts(),
+        module=f"{PACKAGE}.minimax_guard_hook",
+        purpose=("# MiniMax shell and file guards.  No seat is assigned or overwritten here.",),
+        volume=volume,
+    )
+
+
+def render_claude_file_hook_shim(*, volume: str | None = None) -> str:
+    """Claude Code's file guard.  No shell prefilter:  every file path needs Python.  `volume` as for
+    render_hook_shim."""
+    return render_hook_shim(
+        GuardFacts(),
+        module=f"{PACKAGE}.claude_file_guard_hook",
+        purpose=(
+            "# Claude Code file guard (Read, Write, Edit, MultiEdit, NotebookEdit) from THIS directory's copy of",
+            "# fleet_lanes, never from the caller's working directory (-I).  It allows on any internal error, so",
+            "# `install_tools verify claude` is the proof that it denies.",
+        ),
+        volume=volume,
+    )
+
+
+def claude_file_hook_command(paths: Paths) -> str:
+    """The exact string written into the Claude file-guard group.  It takes no --format:  the deny is Claude's."""
+    return shlex.quote(paths.claude_file_shim)
+
+
 def fleet_hook_command(paths: Paths, fmt: str) -> str:
     """The fleet hook (lane guard plus secret guard) as a command string."""
     return f"{shlex.quote(paths.fleet_shim)} --format {fmt}"
@@ -1139,6 +1834,11 @@ def fleet_hook_command(paths: Paths, fmt: str) -> str:
 
 def is_ours(command: object) -> bool:
     return isinstance(command, str) and bool(_OURS_RE.search(command))
+
+
+def is_claude_file_hook(command: object) -> bool:
+    """The Claude file-guard command.  It is kept out of is_ours, so the shell entry's merge never sees it."""
+    return isinstance(command, str) and bool(_CLAUDE_FILE_RE.search(command))
 
 
 # --------------------------------------------------------------------------- the stable dir
@@ -1165,6 +1865,52 @@ def _read_bytes(path: str) -> bytes:
         return fh.read()
 
 
+def _top_level_indent(text: str) -> str:
+    """The indentation of the registry's top-level keys, so a nested key is never the one replaced."""
+    match = re.search(r"^\{[\r\n]+([ \t]*)", text)
+    return match.group(1) if match else ""
+
+
+def _replace_registry_root(text: str, key: str, value: str) -> str:
+    """One top-level root value in the registry text, replaced in place.
+
+    The value is replaced in the text and not in a re-serialized copy, so every other byte of the registry
+    (the apps, the seats, the formatting) stays exactly as the source has it.  A registry with no such key
+    at the top level is rewritten from its parsed shape instead, so an install never loses a root.
+    """
+    indent = _top_level_indent(text)
+    pattern = re.compile(
+        rf'^({re.escape(indent)}"{re.escape(key)}"[ \t]*:[ \t]*)"(?:[^"\\]|\\.)*"',
+        re.MULTILINE,
+    )
+    match = pattern.search(text)
+    if not match:
+        data = json.loads(text)
+        data[key] = value
+        return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    # the value sits between the quote that opens it and the quote that closes it
+    return text[: match.end(1) + 1] + json.dumps(value)[1:-1] + text[match.end() - 1 :]
+
+
+def _registry_for_host(reg_bytes: bytes, home: str, env: dict[str, str] | None = None) -> bytes:
+    """The registry with this host's roots, and every other byte as the source has it.
+
+    The source registry names the roots of the machine it was written on, so the copy installed on a server
+    host would point the disk janitor (scripts/disk-janitor.sh reads codeRoot) at a path that is not there.
+    Only the two root values change:  the apps, the seats and the formatting stay byte for byte as the
+    source has them, because the source is the record of the fleet's shape.  The repository's own
+    fleet-apps.json is never rewritten:  it is the Mac's record, and the Mac's roots are the ones it names.
+    """
+    env = dict(os.environ if env is None else env)
+    text = reg_bytes.decode("utf-8")
+    for key, value in (
+        ("codeRoot", host_code_root(home, env)),
+        ("appsRoot", host_apps_root(home, env)),
+    ):
+        text = _replace_registry_root(text, key, value)
+    return text.encode("utf-8")
+
+
 def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     """Relative path (under the stable dir) to bytes, VERSION included.  Raises Refused when the
     source is not a usable package."""
@@ -1189,10 +1935,30 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     ):
         raise Refused(f"registry {src.registry} needs top-level 'apps' and 'seats' lists")
     files: dict[str, bytes] = {f"{PACKAGE}/{n}": _read_bytes(os.path.join(pkg, n)) for n in names}
-    files[REGISTRY_NAME] = reg_bytes
+    # The rule templates are data the package reads at runtime:  install_rules looks for them beside
+    # install_rules.py, so an installed copy that leaves them behind cannot keep a seat's Lane Map rule
+    # current at all.  They travel under the name the package expects.
+    rules_dir = os.path.join(pkg, RULES_DIRNAME)
+    if os.path.isdir(rules_dir):
+        for n in sorted(os.listdir(rules_dir)):
+            rule = os.path.join(rules_dir, n)
+            if os.path.isfile(rule):
+                files[f"{PACKAGE}/{RULES_DIRNAME}/{n}"] = _read_bytes(rule)
+    # The placement rows are data the guard reads beside its module, and the shim runs from the stable dir, so its PATH
+    # link does not depend on a checkout.  `apply tools` writes both and links nothing;  nothing changes until ~/bin/git exists.
+    # A source from before these existed still installs:  no rows reads as no exceptions, and no shim links nothing.
+    for dest, src_path in (
+        (f"{PACKAGE}/{EXCEPTIONS_FILE}", os.path.join(pkg, EXCEPTIONS_FILE)),
+        (GIT_SHIM_FILE, os.path.join(pkg, *GIT_SHIM_FILE.split("/"))),
+    ):
+        if os.path.isfile(src_path):
+            files[dest] = _read_bytes(src_path)
+    files[REGISTRY_NAME] = _registry_for_host(reg_bytes, paths.home)
     facts = read_guard_facts(src.scripts_dir)
     files[HOOK_NAME] = render_hook_shim(facts).encode("utf-8")
     files[FLEET_HOOK_NAME] = render_fleet_hook_shim(facts).encode("utf-8")
+    files[MINIMAX_HOOK_NAME] = render_minimax_hook_shim().encode("utf-8")
+    files[CLAUDE_FILE_HOOK_NAME] = render_claude_file_hook_shim().encode("utf-8")
     secret_src = os.path.join(src.scripts_dir, *SECRET_GUARD_SOURCE)
     try:
         files[f"{PACKAGE}/{SECRET_GUARD_MODULE}"] = _read_bytes(secret_src)
@@ -1202,6 +1968,7 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     files[MUSE_SEAT_NAME] = render_muse_seat().encode("utf-8")
     files[MUSE_MANIFEST] = render_muse_manifest(paths.stable).encode("utf-8")
     files[MUSE_WRAPPER] = render_muse_wrapper(paths.stable, facts).encode("utf-8")
+    files[OPENCODE_PLUGIN_FILE] = render_opencode_plugin().encode("utf-8")
     init_text = files[f"{PACKAGE}/__init__.py"].decode("utf-8", "replace")
     version = (
         f"sha={src.sha}\npackage={_package_version(init_text)}\nfiles={len(files)}\n"
@@ -1212,7 +1979,20 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
 
 
 def file_mode(rel: str) -> int:
-    return 0o755 if rel in (HOOK_NAME, FLEET_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER) else 0o644
+    return (
+        0o755
+        if rel
+        in (
+            HOOK_NAME,
+            FLEET_HOOK_NAME,
+            MINIMAX_HOOK_NAME,
+            CLAUDE_FILE_HOOK_NAME,
+            MUSE_SEAT_NAME,
+            MUSE_WRAPPER,
+            GIT_SHIM_FILE,
+        )
+        else 0o644
+    )
 
 
 def read_tree(root: str) -> dict[str, bytes]:
@@ -1230,18 +2010,28 @@ def read_tree(root: str) -> dict[str, bytes]:
 
 _TREE_RE = re.compile(r"^[0-9a-f]{64}$")
 _PKG_FILE_RE = re.compile(re.escape(PACKAGE) + r"/[^/]+\.py")
+_PKG_RULES_RE = re.compile(re.escape(PACKAGE) + "/" + re.escape(RULES_DIRNAME) + r"/[^/]+")
 _TOP_FILES = (
     VERSION_NAME,
     REGISTRY_NAME,
     HOOK_NAME,
     FLEET_HOOK_NAME,
+    MINIMAX_HOOK_NAME,
+    CLAUDE_FILE_HOOK_NAME,
     CLUTCH_HOOKS_FILE,
+    OPENCODE_PLUGIN_FILE,
+    GIT_SHIM_FILE,
+    f"{PACKAGE}/{EXCEPTIONS_FILE}",
 ) + _MUSE_FILES
 
 
 def _expected_shape(rel: str) -> bool:
     """A path this tool could have written into a stable dir (in this or an earlier version)."""
-    return rel in _TOP_FILES or _PKG_FILE_RE.fullmatch(rel) is not None
+    return (
+        rel in _TOP_FILES
+        or _PKG_FILE_RE.fullmatch(rel) is not None
+        or _PKG_RULES_RE.fullmatch(rel) is not None
+    )
 
 
 def scan_stable(root: str) -> tuple[dict[str, bytes], list[str]]:
@@ -1275,6 +2065,8 @@ def scan_stable(root: str) -> tuple[dict[str, bytes], list[str]]:
             if fn == ".DS_Store":
                 continue
             rel = f"{reld}/{fn}" if reld else fn
+            if rel == OPENCODE_LEGACY_PLUGIN_FILE:
+                continue
             full = os.path.join(dirpath, fn)
             try:
                 regular = stat.S_ISREG(os.lstat(full).st_mode)
@@ -1795,7 +2587,11 @@ PLATFORMS: dict[str, Platform] = {
                 ("statusMessage", "Checking checkout location"),
             ),
             notes=(
-                "New last group under hooks.PreToolUse, matcher Bash.  Existing groups, order and formatting stay.",
+                "New last group under hooks.PreToolUse, matcher CLAUDE_MATCHER (Bash plus the spawn and other shell tools).  "
+                "Existing groups, order and formatting stay.",
+                "A second group, matcher CLAUDE_FILE_MATCHER (Read, Write, Edit, MultiEdit, NotebookEdit), runs "
+                "claude-file-guard-hook:  secret paths refused for reads and writes, the integration tree, review lanes "
+                "and other seats' lanes refused for writes.",
                 "Keeps the file's mode (settings.json is 0600 and its env block can hold secrets).",
                 "Start a new session after applying: a running session may keep the hooks it started with.",
             ),
@@ -1975,6 +2771,7 @@ PLATFORMS: dict[str, Platform] = {
             KIMI_CONFIG_REL,
             supported=False,
             kind="block",
+            in_all=True,
             notes=(
                 "ONE marked [[hooks]] block appended to ~/.kimi-code/config.toml.  Kimi Code documents that exit code 2 "
                 "blocks a PreToolUse call and that stderr is the reason, so the command is the fleet hook with `--format "
@@ -2011,16 +2808,16 @@ PLATFORMS: dict[str, Platform] = {
                 f"MiniMax Code reads no settings.json for hooks.  It loads them from a LOCAL PLUGIN: this tool writes the "
                 f"directory ~/{MINIMAX_PLUGIN_REL}/ (a real directory, copied in, never a symlink: MiniMax skips symlinks) "
                 f"with {MINIMAX_MANIFEST_FILE} and {MINIMAX_HOOKS_FILE}, in the Claude-compatible plugin flavour, so the "
-                "matcher is the Claude tool name `Bash`.  Local plugins are enabled by default: there is no install or "
+                "matchers are the compatible tool names `Bash|Read|Write|Edit|bash|read|write|edit`.  Local plugins are enabled by default: there is no install or "
                 "approve step.  Nothing else under ~/.minimax is touched.",
-                "The hook is the fleet hook (lane guard, then secret guard) with `--format claude`, by absolute path into "
+                "The hook is MM-owned minimax-guard-hook (shared shell policy plus file guards), by absolute path into "
                 "the stable dir.  Deny is the Claude shape; MiniMax honours it, and a timeout, a crash or invalid output "
-                "FAILS OPEN, so only `verify` proves it works.  Hook stdin is Claude-shaped JSON; MiniMax gives a hook only "
+                "FAILS OPEN.  `verify` probes policy; native dispatch remains a separate proof step.  MiniMax gives a hook only "
                 "a small allowlist of environment variables, so no seat or switch reaches it and none is passed.",
                 "It is part of `all` (the owner runs MiniMax Code), and a missing ~/.minimax makes it a skip.  An existing "
                 "directory that holds anything but our two files, or is a symlink, is refused and left alone.",
-                "No SessionStart seat hook is wired: the only one that exists is ~/.claude/monet-sync/session-hook.sh, a "
-                "home-local file with no source in this repo, and this tool installs nothing it cannot copy from the repo.",
+                "No SessionStart seat hook is wired.  MiniMax omits seat variables from hook subprocesses; the adapter never "
+                "assigns MM or overwrites a launcher seat.  Other-seat lane protection requires trusted identity.",
             ),
             unverified=(
                 "That MiniMax Code fires the hook for its shell tool (verify runs the exact command, not MiniMax): the "
@@ -2028,6 +2825,129 @@ PLATFORMS: dict[str, Platform] = {
                 "Whether MiniMax runs the command through a shell (the path is written unquoted when it has no special "
                 "characters, as it does for the other platforms).",
                 "Whether an already-running MiniMax session picks up a newly written plugin: start a new session.",
+            ),
+        ),
+        Platform(
+            "copilot",
+            "Copilot CLI (fleet-owned hooks file)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".copilot",
+            COPILOT_HOOKS_REL,
+            supported=False,
+            kind="bundle",
+            in_all=True,
+            notes=(
+                "A NEW fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json (a documented user-level load path for "
+                "*.json under ~/.copilot/hooks).  This tool never edits ~/.copilot/settings.json, which the fleet does "
+                "not own, and never touches the existing agent-hook-otlp.json in the same directory.",
+                "The file is version 1 with one hooks.PreToolUse group, matcher Bash (the PascalCase event gets Claude "
+                "matcher semantics and reports the Claude tool name, which is exactly the payload fleet-guard-hook "
+                "--format claude parses), and one type command hook running the fleet hook by absolute path with "
+                "timeoutSec 5.  A command preToolUse hook is fail-closed on exit 2, a crash or any non-zero exit, and "
+                "fails open only on a timeout.",
+                "OWNER-GATED: there is no live preToolUse record on this Mac, so the live proof needs Jay to start a "
+                "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
+                "command in the written file denies, and ends with a SKIP for that live proof;  it never claims it.  "
+                "Copilot CLI is a supported platform again (owner 2026-10-20),  but if its configuration directory "
+                "does not exist yet the target has no config to write, and nothing recreates the directory.  Named explicitly with no directory, "
+                "the platform is a FAIL (an uninstalled platform reached through `all` is a SKIP):  asking to verify "
+                "a platform that is not there is a mistake worth reporting,  not a healthy state.",
+            ),
+            unverified=(
+                "That Copilot CLI fires a PreToolUse hook from ~/.copilot/hooks/fleet-lane-guard.json at all (only a "
+                "postToolUse firing, from agent-hook-otlp.json, is recorded on this Mac).",
+                "That a running Copilot session picks up the new file: start a new session.",
+            ),
+        ),
+        Platform(
+            "opencode",
+            "OpenCode (local plugin in the stable dir)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            None,
+            ".config/opencode",
+            OPENCODE_CONFIG_REL,
+            supported=False,
+            kind="plugin",
+            in_all=True,
+            new_mode=0o600,
+            notes=(
+                "OpenCode's config schema has no hooks key.  `apply tools` writes the guard plugin into the stable dir "
+                f"({OPENCODE_PLUGIN_FILE}); `apply opencode` lists its DIRECTORY by ABSOLUTE path in the "
+                "plugins array of ~/.config/opencode/opencode.json (V2 rejects a file entry, and a configured "
+                "plugin path must be a directory).  Nothing else "
+                "in opencode.json is changed: its other keys are never printed, a backup is owner-only (0600) whatever "
+                "the file's mode, and the plugin text holds no credential, so no second copy of any token in that file "
+                "is made.",
+                "The plugin registers tool execute.before, keyed on the presence of a command in the tool args rather "
+                "than a tool name (OpenCode's shell tool name is not confirmed), runs the stable fleet-guard-hook with "
+                "a Claude-shaped payload, and throws on a deny; OpenCode surfaces the throw to the model and does not "
+                "run the call.  A guard that cannot answer (malformed, oversized or unavailable) is a denial, never an "
+                "allow.  The guard prints nothing on allow, and the plugin reads that as an allow.",
+                "OpenCode is the OPENCODE seat (branch prefix opencode/), so this guard is for a real seat.",
+            ),
+            unverified=(
+                "That OpenCode loads an absolute-path local plugin DIRECTORY in a live session: proven on this host "
+                "in v2.1.1 on 2026-10-22 (a temp checkout was refused and an allowed command ran).  The live proof "
+                "for a new seat is still a session asked for a process listing, which must be refused.",
+            ),
+        ),
+        Platform(
+            "fx",
+            "fx (no hook surface: UNSUPPORTED)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".fx",
+            ".fx/settings.json",
+            supported=False,
+            kind="config",
+            in_all=True,
+            notes=(
+                "Compensating control (prepared, NOT applied): merge the JSON that `plan fx` prints into "
+                "~/.fx/settings.json by hand, after Jay approves it.  It moves permission_mode off yolo to ask and "
+                "adds a static permission.bash deny list over the provable temp-destination shapes (a clone, a gh "
+                "clone, a worktree add or an archive extraction into /tmp, /private/tmp, /var/tmp or "
+                "/private/var/tmp), with a top-level `*` rule that asks for everything else.  This tool never "
+                "writes ~/.fx/settings.json.",
+                "The live ~/.fx/settings.json has permission_mode yolo with no permission block (key names only were "
+                "looked at; no value was printed).",
+            ),
+            unverified=(
+                "The exact wildcard matching fx applies to a permission.bash pattern (the shape is taken from the "
+                "published permissions documentation example).",
+                "That the compensating control, once Jay applies it, is ever exercised: fx stays RED until then.",
+            ),
+        ),
+        Platform(
+            "zcode",
+            "Z Code (Z.ai desktop IDE)",
+            "claude",
+            "claude",
+            "zcode",
+            "PreToolUse",
+            "Bash",
+            ".zcode",
+            ".zcode/cli/config.json",
+            supported=True,
+            kind="config",
+            in_all=True,
+            new_mode=0o644,
+            hook_extra=(("timeout", HOOK_TIMEOUT_S),),
+            notes=(
+                "New last group under hooks.events.PreToolUse, matcher Bash.  Existing groups, order and formatting stay.",
+                "Deny output is Claude-style JSON payload.",
+            ),
+            unverified=(
+                "That Z Code fires the PreToolUse hook on shell executions without a full restart.",
             ),
         ),
     )
@@ -2041,6 +2961,15 @@ NEXT_STEPS: dict[str, str] = {
     "kimi": "start a new Kimi Code session, ask it to run `ps`, and expect a refusal",
     "minimax": "start a new MiniMax Code session, ask it to run `ps`, and expect a refusal (a local plugin is enabled by "
     "default: nothing to install or approve)",
+    "copilot": "OWNER STEP (live proof): the CLI is installed, so start a new Copilot CLI session, ask it to run a process listing, and "
+    "expect a refusal.  No live preToolUse firing is recorded on this Mac, so until that proof exists the guard is "
+    "written but UNVERIFIED",
+    "opencode": "OWNER STEP: start a new OpenCode session, ask it to run a process listing, and expect a refusal.  "
+    "The empty-allow and live-deny paths were exercised on this host in v2.1.1 on 2026-10-22; verify still "
+    "cannot load the plugin itself",
+    "fx": "no installer step exists: fx stays RED (UNSUPPORTED) until Jay merges the prepared compensating control "
+    "from `plan fx` into ~/.fx/settings.json by hand, or approves an exception",
+    "zcode": "start a new Z Code session, ask it to run `ps`, and expect a refusal",
 }
 PLATFORM_ORDER: tuple[str, ...] = tuple(PLATFORMS)
 SUPPORTED_KEYS: tuple[str, ...] = tuple(k for k in PLATFORM_ORDER if PLATFORMS[k].supported)
@@ -2168,10 +3097,55 @@ def _locate_antigravity(doc: dict, plat: Platform) -> list[Entry]:
     return out
 
 
+def _locate_zcode(doc: dict, plat: Platform) -> list[Entry]:
+    hooks = doc.get("hooks")
+    if hooks is None:
+        return []
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    events = hooks.get("events")
+    if events is None:
+        return []
+    if not isinstance(events, dict):
+        raise ShapeError("'hooks.events' is not an object")
+    groups = events.get(plat.event)
+    if groups is None:
+        return []
+    if not isinstance(groups, list):
+        raise ShapeError(f"'hooks.events.{plat.event}' is not a list")
+    out: list[Entry] = []
+    for gi, group in enumerate(groups):
+        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(inner, list):
+            continue
+        for hi, hook in enumerate(inner):
+            if isinstance(hook, dict) and is_ours(hook.get("command")):
+                problems: list[str] = []
+                if not _matcher_gates(group.get("matcher"), plat.matcher):
+                    problems.append(
+                        f"matcher {group.get('matcher')!r} never matches {plat.matcher}"
+                    )
+                if hook.get("type", "command") != "command":
+                    problems.append(f"hook type is {hook.get('type')!r}, not 'command'")
+                out.append(
+                    Entry(
+                        hook["command"],
+                        f"hooks.events.{plat.event}[{gi}].hooks[{hi}]",
+                        problems,
+                        hook,
+                        group,
+                        gi,
+                        hi,
+                    )
+                )
+    return out
+
+
 _LOCATE: dict[str, Callable[[dict, Platform], list[Entry]]] = {
     "claude": _locate_claude,
     "cursor": _locate_cursor,
     "antigravity": _locate_antigravity,
+    "zcode": _locate_zcode,
 }
 
 
@@ -2180,11 +3154,16 @@ def locate(doc: dict, plat: Platform) -> list[Entry]:
     return _LOCATE[plat.style](doc, plat)
 
 
+def _written_matcher(plat: Platform) -> str | None:
+    """The matcher a new or upgraded group gets.  `plat.matcher` stays the tool name the entry must gate."""
+    return CLAUDE_MATCHER if plat.config_rel == ".claude/settings.json" else plat.matcher
+
+
 def _hook_object(plat: Platform, command: str) -> dict:
     hook: dict = {}
     if plat.style == "antigravity":
         hook["matcher"] = plat.matcher
-    if plat.style == "claude":
+    if plat.style in ("claude", "zcode"):
         hook["type"] = "command"
     hook["command"] = command
     for k, v in plat.hook_extra:
@@ -2195,7 +3174,9 @@ def _hook_object(plat: Platform, command: str) -> dict:
 def new_document(plat: Platform, command: str) -> dict:
     hook = _hook_object(plat, command)
     if plat.style == "claude":
-        return {"hooks": {plat.event: [{"matcher": plat.matcher, "hooks": [hook]}]}}
+        return {"hooks": {plat.event: [{"matcher": _written_matcher(plat), "hooks": [hook]}]}}
+    if plat.style == "zcode":
+        return {"hooks": {"events": {plat.event: [{"matcher": plat.matcher, "hooks": [hook]}]}}}
     if plat.style == "cursor":
         return {"version": 1, "hooks": {plat.event: [hook]}}
     return {AG_GROUP: {plat.event: [hook], "enabled": True}}
@@ -2215,13 +3196,33 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
             notes.append("hook command updated to the current path and format")
             changed = True
         if (
-            plat.style == "claude"
+            plat.style in ("claude", "zcode")
             and first.group is not None
             and not _matcher_gates(first.group.get("matcher"), plat.matcher)
         ):
-            first.group["matcher"] = plat.matcher
-            notes.append(f"group matcher corrected to {plat.matcher}")
+            first.group["matcher"] = _written_matcher(plat)
+            notes.append(f"group matcher corrected to {_written_matcher(plat)}")
             changed = True
+        elif (
+            plat.config_rel == ".claude/settings.json"
+            and first.group is not None
+            and first.group.get("matcher") == "Bash"
+            and len(first.group.get("hooks") or ()) == 1
+            and len(entries) == 1
+        ):
+            # Our own group from before AFC-618.  A group shared with someone else's hook keeps its matcher.
+            first.group["matcher"] = CLAUDE_MATCHER
+            notes.append(f"group matcher widened to {CLAUDE_MATCHER}")
+            changed = True
+        elif (
+            plat.config_rel == ".claude/settings.json"
+            and first.group is not None
+            and first.group.get("matcher") != CLAUDE_MATCHER
+        ):
+            notes.append(
+                f"group matcher left narrow at {first.group.get('matcher')}, because the group is shared or customised:  "
+                "Agent, EnterWorktree and the other shells are not gated"
+            )
         if plat.style == "antigravity":
             grp = new[first.group_index]  # type: ignore[index]
             if grp.get("enabled") is False:
@@ -2243,6 +3244,17 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
         groups = hooks.get(plat.event)
         if groups is None:
             groups = hooks[plat.event] = []
+        groups.append({"matcher": _written_matcher(plat), "hooks": [hook]})
+    elif plat.style == "zcode":
+        hooks = new.setdefault("hooks", {})
+        if not isinstance(hooks, dict):
+            raise ShapeError("'hooks' is not an object")
+        events = hooks.setdefault("events", {})
+        if not isinstance(events, dict):
+            raise ShapeError("'hooks.events' is not an object")
+        groups = events.get(plat.event)
+        if groups is None:
+            groups = events[plat.event] = []
         groups.append({"matcher": plat.matcher, "hooks": [hook]})
     elif plat.style == "cursor":
         if not new:
@@ -2268,6 +3280,105 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
     return new, "added", notes
 
 
+def locate_claude_files(doc: dict) -> list[Entry]:
+    """The Claude file-guard entries under hooks.PreToolUse, with the problems that stop Claude Code from sending
+    every file tool to them (a matcher that misses one, a hook type that is not `command`)."""
+    plat = PLATFORMS["claude"]
+    hooks = doc.get("hooks")
+    if hooks is None:
+        return []
+    if not isinstance(hooks, dict):
+        raise ShapeError("'hooks' is not an object")
+    groups = hooks.get(plat.event)
+    if groups is None:
+        return []
+    if not isinstance(groups, list):
+        raise ShapeError(f"'hooks.{plat.event}' is not a list")
+    out: list[Entry] = []
+    for gi, group in enumerate(groups):
+        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(inner, list):
+            continue
+        for hi, hook in enumerate(inner):
+            if not (isinstance(hook, dict) and is_claude_file_hook(hook.get("command"))):
+                continue
+            problems: list[str] = []
+            missed = [t for t in CLAUDE_FILE_TOOLS if not _matcher_gates(group.get("matcher"), t)]
+            if missed:
+                problems.append(f"matcher {group.get('matcher')!r} never matches {', '.join(missed)}")
+            if hook.get("type", "command") != "command":
+                problems.append(f"hook type is {hook.get('type')!r}, not 'command'")
+            out.append(
+                Entry(hook["command"], f"hooks.{plat.event}[{gi}].hooks[{hi}]", problems, hook, group, gi, hi)
+            )
+    return out
+
+
+def merge_claude_files(doc: dict, command: str) -> tuple[dict, str, list[str]]:
+    """(new document, action, notes) for the Claude file-guard group.  action is added, updated or unchanged.  It
+    appends its own group (CLAUDE_FILE_MATCHER) or corrects its own entry, and never touches another hook."""
+    new = copy.deepcopy(doc)
+    entries = locate_claude_files(new)
+    notes: list[str] = []
+    if entries:
+        first = entries[0]
+        changed = False
+        if first.holder.get("command") != command:
+            first.holder["command"] = command
+            notes.append("file-guard hook command updated to the current path")
+            changed = True
+        if first.group is not None and first.group.get("matcher") != CLAUDE_FILE_MATCHER:
+            if len(first.group.get("hooks") or ()) == 1:
+                first.group["matcher"] = CLAUDE_FILE_MATCHER
+                notes.append(f"file-guard group matcher set to {CLAUDE_FILE_MATCHER}")
+                changed = True
+            elif first.problems:
+                notes.append(
+                    f"file-guard group matcher left at {first.group.get('matcher')!r}, because the group is shared:  "
+                    "fix it by hand"
+                )
+        if len(entries) > 1:
+            notes.append(f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entr{'y' if len(entries) == 2 else 'ies'} left in place")
+        return new, ("updated" if changed else "unchanged"), notes
+    hooks = new.setdefault("hooks", {})
+    groups = hooks.get(PLATFORMS["claude"].event)
+    if groups is None:
+        groups = hooks[PLATFORMS["claude"].event] = []
+    groups.append(
+        {
+            "matcher": CLAUDE_FILE_MATCHER,
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": CLAUDE_FILE_HOOK_TIMEOUT_S,
+                    "statusMessage": "Checking file path",
+                }
+            ],
+        }
+    )
+    return new, "added", notes
+
+
+def _claude_files_ok(doc: dict, paths: Paths) -> bool:
+    """True when `doc` holds the current Claude file-guard command where Claude Code sends every file tool to it."""
+    try:
+        found = locate_claude_files(doc)
+    except Refused:
+        return False
+    return bool(found) and found[0].command == claude_file_hook_command(paths) and not found[0].problems
+
+
+def _combine_actions(first: str, second: str) -> str:
+    """One action for two merges into the same file:  unchanged only when both are, added when nothing existing
+    changed, else updated."""
+    if first == second:
+        return first
+    if "updated" in (first, second):
+        return "updated"
+    return "added"
+
+
 def _is_extension(old: object, new: object) -> bool:
     """True when `new` is `old` plus appended list items and new dict keys (the only change a merge 'add' may make)."""
     if isinstance(old, dict):
@@ -2290,6 +3401,10 @@ def subtree(doc: dict, plat: Platform) -> tuple[str, object]:
             k: v for k, v in doc.items() if k == AG_GROUP or (isinstance(v, dict) and count_ours(v))
         }
         return AG_GROUP, picked
+    if plat.style == "zcode":
+        hooks = doc.get("hooks")
+        events = hooks.get("events") if isinstance(hooks, dict) else None
+        return f"hooks.events.{plat.event}", (events.get(plat.event) if isinstance(events, dict) else None)
     hooks = doc.get("hooks")
     return f"hooks.{plat.event}", (hooks.get(plat.event) if isinstance(hooks, dict) else None)
 
@@ -2366,7 +3481,7 @@ def _ours_view(hook: dict) -> dict:
 
 
 def _is_our_hook(h: object) -> bool:
-    return isinstance(h, dict) and is_ours(h.get("command"))
+    return isinstance(h, dict) and (is_ours(h.get("command")) or is_claude_file_hook(h.get("command")))
 
 
 def _hook_list_view(lst: object) -> tuple[object, int]:
@@ -2392,7 +3507,7 @@ def plan_view(doc: dict, plat: Platform) -> tuple[str, object, int]:
     hidden = 0
     if node is None:
         return label, None, 0
-    if plat.style == "claude":
+    if plat.style in ("claude", "zcode"):
         view: list = []
         for g in node if isinstance(node, list) else []:
             inner = g.get("hooks") if isinstance(g, dict) else None
@@ -2662,6 +3777,16 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     path = config_path(paths, plat)
     cmd = hook_command(paths, plat.fmt)
     if plat.kind == "plugin":
+        if plat.key == "opencode":
+            op = plan_opencode(paths, follow_symlinks=follow_symlinks)
+            act = {
+                "new": "add",
+                "stale": "update",
+                "current": "unchanged",
+                "skip": "skip",
+                "refuse": "refuse",
+            }[op.state]
+            return PlatformPlan(plat, op.config, act, op.entry, op.reason, notes=list(op.notes))
         return PlatformPlan(
             plat,
             paths.muse_bundle,
@@ -2671,6 +3796,16 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
             "`apply tools` writes it.  No config file is edited",
         )
     if plat.kind == "bundle":
+        if plat.key == "copilot":
+            cp = plan_copilot(paths, follow_symlinks=follow_symlinks)
+            act = {
+                "new": "add",
+                "stale": "update",
+                "current": "unchanged",
+                "skip": "skip",
+                "refuse": "refuse",
+            }[cp.state]
+            return PlatformPlan(plat, cp.path, act, cp.command, cp.reason, notes=list(cp.notes))
         mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
         act = {
             "new": "add",
@@ -2681,9 +3816,12 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
         }[mp.state]
         return PlatformPlan(plat, mp.bundle, act, mp.command, mp.reason, notes=list(mp.notes))
     if not plat.supported:
-        return PlatformPlan(
-            plat, path, "unsupported", cmd, "no verified hook surface; nothing is written"
+        reason = (
+            FX_BLOCKER + "; nothing is written"
+            if plat.key == "fx"
+            else "no verified hook surface; nothing is written"
         )
+        return PlatformPlan(plat, path, "unsupported", cmd, reason)
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
         return PlatformPlan(
             plat,
@@ -2698,6 +3836,11 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     try:
         cfg = load_config(path)
         new_doc, action, notes = merge_document(cfg.doc, plat, cmd)
+        if plat.key == "claude":
+            # The file guard is its own group in the same file, so one plan writes both, once.
+            new_doc, file_action, file_notes = merge_claude_files(new_doc, claude_file_hook_command(paths))
+            action = _combine_actions(action, file_action)
+            notes.extend(file_notes)
     except Refused as exc:
         return PlatformPlan(plat, path, "refuse", cmd, str(exc))
     if action != "unchanged":
@@ -2878,7 +4021,14 @@ def apply_tools(
     lane_text = plan.lane_shim_text
     runnable = all(
         os.access(p, os.X_OK)
-        for p in (paths.hook_shim, paths.fleet_shim, paths.muse_seat, paths.muse_wrapper)
+        for p in (
+            paths.hook_shim,
+            paths.fleet_shim,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            paths.claude_file_shim,
+            paths.muse_seat,
+            paths.muse_wrapper,
+        )
     )
     if (
         plan.state == "current"
@@ -2918,6 +4068,54 @@ def apply_tools(
                     secret=True,
                 )
                 bad.extend(c for c in got if c.status == "FAIL")
+            staged_mm = shlex.quote(os.path.join(stage, MINIMAX_HOOK_NAME))
+            bad.extend(
+                c
+                for c in probe_minimax_files(
+                    staged_mm,
+                    paths.home,
+                    os.path.join(stage, REGISTRY_NAME),
+                    timeout,
+                    minimal_path,
+                    source_registry=src.registry,
+                    volume=_baked_volume(os.path.join(stage, MINIMAX_HOOK_NAME)),
+                )
+                if c.status == "FAIL"
+            )
+            # MM has its own adapter, so the shared shell probes above prove nothing for it.  Probe
+            # the staged copy with compatible (Bash) and native (bash) shell payloads, including
+            # secret denials, or a broken decide() shell branch could be swapped in and fail open.
+            for shape in ("claude", "muse"):
+                bad.extend(
+                    c
+                    for c in probe_command(
+                        staged_mm,
+                        target="staged-mm",
+                        fmt="claude",
+                        shape=shape,
+                        home=paths.home,
+                        timeout=timeout,
+                        minimal_path=minimal_path,
+                        secret=True,
+                    )
+                    if c.status == "FAIL"
+                )
+            # Claude Code's file guard has its own adapter too:  prove the staged copy denies and allows the file
+            # payloads, or a broken file_guard could be swapped in and fail open.
+            staged_claude = os.path.join(stage, CLAUDE_FILE_HOOK_NAME)
+            bad.extend(
+                c
+                for c in probe_claude_files(
+                    shlex.quote(staged_claude),
+                    paths.home,
+                    os.path.join(stage, REGISTRY_NAME),
+                    timeout,
+                    minimal_path,
+                    source_registry=src.registry,
+                    volume=_baked_volume(staged_claude),
+                )
+                if c.status == "FAIL"
+            )
             if bad:
                 for c in bad:
                     emit(c.line())
@@ -2968,6 +4166,79 @@ def _reread_matches(real: str, raw: bytes, existed: bool) -> bool:
     return now == raw if existed else now is None
 
 
+def _makedirs_private(dirpath: str) -> None:
+    """Create `dirpath` (and parents) owner-only, refusing a symlinked final component.
+
+    A config directory the fleet writes credentials into must not be created with the
+    process umask's permissions,  and `os.makedirs` follows a symlink at the target,  so
+    the link is refused here rather than written through.  Every level this call creates
+    is 0700,  because `os.makedirs` gives its intermediate levels the umask's default.
+    `exist_ok=True` keeps an existing directory's own permissions:  only a directory this
+    call creates is 0700.
+    """
+    if os.path.islink(dirpath):
+        raise OSError(f"{dirpath} is a symlink; not creating a directory through it")
+    missing = []
+    current = dirpath
+    while current and not os.path.isdir(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for level in reversed(missing):
+        try:
+            os.mkdir(level, 0o700)
+        except FileExistsError:
+            pass
+    if os.path.islink(dirpath):
+        raise OSError(f"{dirpath} is a symlink; not creating a directory through it")
+
+
+# The lock files live in the fleet's own state directory,  never beside the file they
+# guard,  so a lock never appears in a platform's home as a file this tool does not own.
+LOCK_DIR_REL = ".local/state/fleet-lanes/locks"
+
+
+@contextlib.contextmanager
+def _target_lock(home: str, *targets: str):
+    """Hold an exclusive lock over the targets for the whole check-and-write.
+
+    The re-read that guards against a concurrent edit runs outside any lock,  so two
+    installers can both pass the check and the second write then erases the first.
+    The lock is taken before the re-read and released after the last write,  its
+    validation and its rollback,  so the check and the write are one unit.
+    """
+    directory = os.path.join(home, *LOCK_DIR_REL.split("/"))
+    missing = []
+    current = directory
+    while current and not os.path.isdir(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for level in reversed(missing):
+        try:
+            os.mkdir(level, 0o700)
+        except FileExistsError:
+            pass
+    handles = []
+    try:
+        for target in sorted(set(targets)):
+            name = hashlib.sha256(target.encode("utf-8")).hexdigest()[:16] + ".lock"
+            handle = open(os.path.join(directory, name), "a+")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handles.append(handle)
+        yield
+    finally:
+        for handle in handles:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
 def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
     for n in range(1000):
         name = f"{real}.{BACKUP_TAG}-{stamp}" + (f"-{n}" if n else "")
@@ -3010,7 +4281,24 @@ def apply_platform(
     platform's own format right now.  The `apply` command never sets `shim_proven` (it skips those probes):
     `apply tools` proves a staged copy, and an `unchanged` tools result proves nothing about this run.  Only
     callers that have just proven the shim themselves (the self-test, the tests) pass it."""
+    if plat.key == "fx":
+        return Result(
+            plat.key,
+            "skipped",
+            FX_BLOCKER
+            + "; no file was written.  Merge the compensating control from `plan fx` by hand "
+            "only after Jay approves it",
+        )
     if plat.kind == "plugin":
+        if plat.key == "opencode":
+            return apply_opencode(
+                paths,
+                now=now,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                shim_proven=shim_proven,
+                follow_symlinks=follow_symlinks,
+            )
         return apply_muse(paths)
     if plat.kind == "block":
         return apply_block(
@@ -3024,6 +4312,15 @@ def apply_platform(
             check_kimi=check_kimi,
         )
     if plat.kind == "bundle":
+        if plat.key == "copilot":
+            return apply_copilot(
+                paths,
+                now=now,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                shim_proven=shim_proven,
+                follow_symlinks=follow_symlinks,
+            )
         return apply_minimax(
             paths,
             timeout=timeout,
@@ -3062,8 +4359,35 @@ def apply_platform(
                 "the installed hook shim fails its probes, so it will not be wired in: "
                 + bad[0].detail,
             )
+        if plat.key == "claude":
+            if not (os.path.isfile(paths.claude_file_shim) and os.access(paths.claude_file_shim, os.X_OK)):
+                return Result(
+                    plat.key,
+                    "refused",
+                    f"the file-guard shim {paths.claude_file_shim} is missing or not executable; run `apply tools` first",
+                )
+            bad = [
+                c
+                for c in probe_claude_files(
+                    claude_file_hook_command(paths),
+                    paths.home,
+                    paths.registry,
+                    timeout,
+                    minimal_path,
+                    volume=_baked_volume(paths.claude_file_shim),
+                )
+                if c.status == "FAIL"
+            ]
+            if bad:
+                return Result(
+                    plat.key,
+                    "refused",
+                    "the installed file-guard shim fails its probes, so it will not be wired in: "
+                    + bad[0].detail,
+                )
     if plan.action == "unchanged":
-        return Result(plat.key, "unchanged", f"{plan.path} already has the hook")
+        note = "".join("; " + n for n in plan.notes)
+        return Result(plat.key, "unchanged", f"{plan.path} already has the hook{note}")
     cfg = plan.cfg
     assert cfg is not None and plan.new_text is not None
     # Self-checks on the document we are about to write.
@@ -3079,6 +4403,12 @@ def apply_platform(
             plat.key,
             "refused",
             "the merged document does not hold the hook where the platform reads it",
+        )
+    if plat.key == "claude" and not _claude_files_ok(reparsed, paths):
+        return Result(
+            plat.key,
+            "refused",
+            "the merged document does not hold the file-guard hook where Claude Code reads it",
         )
     if plan.action == "add" and not _is_extension(cfg.doc, reparsed):
         return Result(
@@ -3110,6 +4440,8 @@ def apply_platform(
     try:
         after = json.loads(_read_bytes(real).decode("utf-8"))
         ok = bool(locate(after, plat)) and locate(after, plat)[0].command == plan.command
+        if ok and plat.key == "claude":
+            ok = _claude_files_ok(after, paths)
     except (OSError, ValueError):
         ok = False
     if not ok:
@@ -3192,7 +4524,14 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
     except (OSError, ValueError) as exc:
         out.append(Check(t, REGISTRY_NAME, "FAIL", f"{paths.registry}: {exc}"))
     facts = read_guard_facts(paths.stable)
-    out.append(_check_shim(t, HOOK_NAME, paths.hook_shim, render_hook_shim(facts)))
+    out.append(
+        _check_shim(
+            t,
+            HOOK_NAME,
+            paths.hook_shim,
+            _shim_renderings(functools.partial(render_hook_shim, facts), paths.hook_shim),
+        )
+    )
     if facts.words:
         out.append(
             Check(
@@ -3212,7 +4551,30 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
                 "; ".join(facts.problems) or "the installed guard has no trigger words",
             )
         )
-    out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
+    out.append(
+        _check_shim(
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            _shim_renderings(functools.partial(render_fleet_hook_shim, facts), paths.fleet_shim),
+        )
+    )
+    out.append(
+        _check_shim(
+            t,
+            MINIMAX_HOOK_NAME,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            _shim_renderings(render_minimax_hook_shim, os.path.join(paths.stable, MINIMAX_HOOK_NAME)),
+        )
+    )
+    out.append(
+        _check_shim(
+            t,
+            CLAUDE_FILE_HOOK_NAME,
+            paths.claude_file_shim,
+            _shim_renderings(render_claude_file_hook_shim, paths.claude_file_shim),
+        )
+    )
     if f"{PACKAGE}/{SECRET_GUARD_MODULE}" in have:
         out.append(
             Check(
@@ -3277,7 +4639,41 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
     return out
 
 
-def _check_shim(target: str, name: str, path: str, expected: str) -> Check:
+_BAKED_VOLUME_RE = re.compile(r'^if \[ -z "\$_lg_vol" \]; then _lg_vol=(.*); fi$', re.MULTILINE)
+
+
+def _baked_volume(path: str) -> str:
+    """The volume the installed shim carries as its default, "" when it carries none.
+
+    The volume is host configuration and it is baked in when the shim is generated, so a verify that runs
+    in an environment the install did not see must not call a correct install stale.
+    """
+    try:
+        text = _read_bytes(path).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    match = _BAKED_VOLUME_RE.search(text)
+    if not match:
+        return ""
+    try:
+        parts = shlex.split(match.group(1))
+    except ValueError:
+        return ""
+    return parts[0] if parts else ""
+
+
+def _shim_renderings(render: Callable[..., str], path: str) -> tuple:
+    """The renderings an installed hook shim may be:  the one this environment would write, the one with no
+    volume at all, and the one with the volume the install baked in."""
+    return tuple(
+        render(volume=volume) for volume in ("", server_volume() or "", _baked_volume(path))
+    )
+
+
+def _check_shim(target: str, name: str, path: str, expected: str | Sequence[str]) -> Check:
+    """Is the installed shim the one this tool writes?  `expected` may name more than one rendering:  a shim
+    carries the host's volume as a default, and a verify that runs in an environment the install did not see
+    (no FLEET_SERVER_VOLUME) must not call a correct install stale."""
     if not os.path.isfile(path):
         return Check(target, f"shim {name}", "FAIL", f"{path} is missing")
     mode = os.stat(path).st_mode
@@ -3285,8 +4681,11 @@ def _check_shim(target: str, name: str, path: str, expected: str) -> Check:
         return Check(
             target, f"shim {name}", "FAIL", f"{path} is not executable (mode {mode & 0o777:o})"
         )
+    wanted = {expected.encode("utf-8")} if isinstance(expected, str) else {
+        e.encode("utf-8") for e in expected
+    }
     try:
-        if _read_bytes(path) != expected.encode("utf-8"):
+        if _read_bytes(path) not in wanted:
             return Check(
                 target,
                 f"shim {name}",
@@ -3403,11 +4802,29 @@ def verify_platform(
     in the config's env block (or, as a warning, in the caller's environment), and for Codex the feature
     flag and the trust record.  Finds the entry through the same event and matcher accessors the merge uses."""
     t = plat.key
+    if plat.key == "fx":
+        if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
+            return [
+                Check(
+                    t,
+                    "platform",
+                    "SKIP",
+                    f"~/{plat.platform_dir} does not exist (platform not installed)",
+                )
+            ]
+        return [Check(t, "platform", "FAIL", FX_BLOCKER)]
     if plat.kind == "plugin":
+        if plat.key == "opencode":
+            return verify_opencode(paths, timeout=timeout, minimal_path=minimal_path)
         return verify_muse(paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "block":
         return verify_block(plat, paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "bundle":
+        if plat.key == "copilot":
+            # Copilot CLI is a supported platform,  but its platform dir may be absent until it has run.  The
+            # per-platform verifier SKIPs that case,  and the dispatch must reach it
+            # rather than answer FAIL for a platform that is simply not installed.
+            return verify_copilot(paths, timeout=timeout, minimal_path=minimal_path)
         return verify_minimax(paths, timeout=timeout, minimal_path=minimal_path)
     if not plat.supported:
         return [
@@ -3483,6 +4900,20 @@ def verify_platform(
                 f"{elsewhere} more {HOOK_NAME} command(s) in the file are outside {plat.event} and do nothing",
             )
         )
+    if plat.config_rel == ".claude/settings.json":
+        group = entries[0].group
+        if group is not None and group.get("matcher") != CLAUDE_MATCHER:
+            out.append(
+                Check(
+                    t,
+                    "matcher",
+                    "WARN",
+                    f"the hook's group matcher is {group.get('matcher')!r}, not {CLAUDE_MATCHER!r}:  Agent, EnterWorktree and the "
+                    "other shells are not gated, so `isolation block` does nothing on this host",
+                )
+            )
+    if plat.key == "claude":
+        out.extend(verify_claude_files(cfg.doc, paths, path, timeout=timeout, minimal_path=minimal_path))
     for problem in _switch_warnings(cfg.doc):
         out.append(
             Check(
@@ -3508,6 +4939,157 @@ def verify_platform(
         out.extend(
             _codex_checks(paths, os.path.join(paths.home, ".codex", "hooks.json"), entries[0])
         )
+    return out
+
+
+# --------------------------------------------------------------------------- Claude Code: the file guard
+
+
+def probe_claude_files(
+    command: str,
+    home: str,
+    registry: str,
+    timeout: float,
+    minimal_path: bool = True,
+    source_registry: str | None = None,
+    volume: str = "",
+) -> list[Check]:
+    """Run Claude Code's file payloads through `command` (the file-guard shim) and check each answer.
+
+    Denied:  Read, Edit, MultiEdit and NotebookEdit of a path under ~/.secrets, a Read of ~/.env, and a Write
+    into the first registered integration tree.  Allowed (empty stdout and stderr):  a Read and a Write of a
+    public path in the home, and a Read inside the integration tree (Claude sessions open there).  A deny must be
+    the Claude PreToolUse shape and name the "Claude" label;  an answer that blames a missing secret table or
+    registry is a failure, because the policy behind it is not there.  `volume` is the one the shim carries, so
+    the integration path is the one the guard watches (see _guard_code_root).  Nothing is created:  the hook is
+    only handed the path as text.
+    """
+    try:
+        tree = registry_tree(registry)
+    except Refused as exc:
+        detail = str(exc)
+        if source_registry and source_registry != registry:
+            detail = f"{detail}; source registry: {source_registry}"
+        return [Check("claude", "registry-tree", "FAIL", detail)]
+    out: list[Check] = []
+    for vname, vpath in _variants(minimal_path):
+        env = probe_env(home, vpath)
+        root_env = dict(env)
+        if volume and not (root_env.get(ENV_SERVER_VOLUME) or "").strip():
+            root_env[ENV_SERVER_VOLUME] = volume
+        integration = os.path.join(host_code_root(home, root_env), tree, "probe-placeholder")
+        secret = os.path.join(home, ".secrets", "probe-placeholder")
+        public = os.path.join(home, "public-placeholder")
+        for tool, field_name, path, deny in (
+            ("Read", "file_path", secret, True),
+            ("Read", "file_path", os.path.join(home, ".env"), True),
+            ("Write", "file_path", integration, True),
+            ("Edit", "file_path", secret, True),
+            ("MultiEdit", "file_path", secret, True),
+            ("NotebookEdit", "notebook_path", secret + ".ipynb", True),
+            ("Read", "file_path", integration, False),
+            ("Read", "file_path", public, False),
+            ("Write", "file_path", public, False),
+        ):
+            payload = {
+                "session_id": "lane-verify",
+                "hook_event_name": "PreToolUse",
+                "tool_name": tool,
+                "tool_input": {field_name: path},
+                "cwd": home,
+            }
+            res = run_shell(command, json.dumps(payload).encode("utf-8"), env, timeout)
+            problem = res.error or (f"timed out after {timeout:g}s" if res.timed_out else None)
+            if not problem and res.returncode != 0:
+                problem = f"exit {res.returncode}, expected 0"
+            if not problem:
+                problem = (
+                    check_deny_output("claude", res.stdout, "Claude")
+                    if deny
+                    else ("unexpected output" if res.stdout.strip() or res.stderr.strip() else None)
+                )
+            missing = [s.decode("ascii") for s in (b"SECRET_FILE_PATTERNS", b"FLEET_APPS_JSON") if s in res.stdout]
+            if not problem and missing:
+                problem = "required file policy is unavailable or invalid: " + ", ".join(missing)
+            where = "integration" if path == integration else os.path.basename(path)
+            out.append(
+                Check(
+                    "claude",
+                    f"{tool}/{where}/{'deny' if deny else 'allow'}/{vname}",
+                    "FAIL" if problem else "PASS",
+                    (f"{problem}; " if problem else "") + f"exit={res.returncode} stdout={_brief(res.stdout)}",
+                )
+            )
+    return out
+
+
+def verify_claude_files(
+    doc: dict, paths: Paths, path: str, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """The file-guard group of ~/.claude/settings.json:  present, a matcher that sends every file tool, the current
+    command, and a command that denies and allows what it must (probe_claude_files)."""
+    t = "claude"
+    try:
+        entries = locate_claude_files(doc)
+    except Refused as exc:
+        return [Check(t, "file-guard", "FAIL", str(exc))]
+    if not entries:
+        return [
+            Check(
+                t,
+                "file-guard",
+                "FAIL",
+                f"no {CLAUDE_FILE_HOOK_NAME} hook under PreToolUse in {path}, so Read, Write, Edit, MultiEdit and "
+                "NotebookEdit are not guarded; run `apply claude`",
+            )
+        ]
+    # Claude Code runs every entry it finds, so every entry is checked and every distinct command is probed:  a
+    # stale or narrow duplicate is a FAIL even when the first entry is current.  An exact duplicate of the current
+    # entry runs the same command twice, which is only a WARN.
+    out: list[Check] = []
+    want = claude_file_hook_command(paths)
+    for idx, entry in enumerate(entries):
+        label = "file-guard" if len(entries) == 1 else f"file-guard#{idx + 1}"
+        if entry.problems:
+            out.append(Check(t, label, "FAIL", f"{entry.where}: " + "; ".join(entry.problems)))
+            continue
+        matcher = entry.group.get("matcher") if entry.group else None
+        if entry.command != want:
+            out.append(
+                Check(
+                    t,
+                    label,
+                    "FAIL" if len(entries) > 1 else "WARN",
+                    f"{entry.where} runs {entry.command}, not this install's {want}; re-run `apply claude`"
+                    + ("" if len(entries) == 1 else " and remove the stale entry by hand"),
+                )
+            )
+        else:
+            out.append(Check(t, label, "PASS", f"{entry.where} matcher={matcher!r}"))
+    if len(entries) > 1 and all(e.command == want and not e.problems for e in entries):
+        out.append(
+            Check(t, "file-guard duplicates", "WARN", f"{len(entries) - 1} duplicate {CLAUDE_FILE_HOOK_NAME} entries")
+        )
+    # Probe the current command and at most one stale one:  every stale entry already FAILs above, and a settings
+    # file bloated with stale entries must not turn verify into N full probe matrices.
+    commands = list(dict.fromkeys(e.command for e in entries if not e.problems))
+    if len(commands) > 2:
+        stale = [c for c in commands if c != want]
+        commands = ([want] if want in commands else []) + stale[: 2 - (want in commands)]
+    for command in commands:
+        try:
+            out.extend(
+                probe_claude_files(
+                    command,
+                    paths.home,
+                    paths.registry,
+                    timeout,
+                    minimal_path,
+                    volume=_baked_volume(paths.claude_file_shim),
+                )
+            )
+        except Refused as exc:
+            out.append(Check(t, "file-guard probes", "FAIL", str(exc)))
     return out
 
 
@@ -3752,7 +5334,14 @@ def verify_muse(
             True,
         )
     )
-    out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
+    out.append(
+        _check_shim(
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            _shim_renderings(functools.partial(render_fleet_hook_shim, facts), paths.fleet_shim),
+        )
+    )
     out.append(_check_text(t, "shim muse-seat", paths.muse_seat, render_muse_seat(), True))
     argv: list | None = None
     try:
@@ -3908,7 +5497,9 @@ def verify_muse(
 
 
 def block_path(plat: Platform, paths: Paths) -> str:
-    return paths.clutch_patch if plat.key == "clutch" else paths.kimi_config
+    if plat.key == "clutch":
+        return paths.clutch_patch
+    return paths.kimi_config
 
 
 def block_command(plat: Platform, paths: Paths) -> str:
@@ -3945,6 +5536,72 @@ def kimi_fields(plat: Platform, paths: Paths) -> dict:
     }
 
 
+def block_fields(plat: Platform, paths: Paths) -> dict:
+    """The `[[hooks]]` fields this tool writes for the TOML block platform (Kimi)."""
+    return kimi_fields(plat, paths)
+
+
+_TOML_TABLE_RE = re.compile(r"^[ \t]*\[")
+
+# A top-level TOML key, as the structural check sees it:  a bare name, a quoted name or
+# a single-quoted name, then an equals sign.  It is the line shape a well-formed
+# top-level key/value pair has.
+_TOML_KEY_RE = re.compile(
+    r"^[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')"
+    r"(?:[ \t]*\.[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*'))*[ \t]*="
+)
+
+
+def _toml_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
+    """The bracket depth and the open string delimiter after reading `line`, both carried across lines.  A value may
+    span lines, so `depth` and `quote` are the whole state of a TOML value: inside them the lines are the value's
+    text and not keys or tables of their own."""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\" and quote == '"':
+                i += 2  # an escaped character, whatever it is
+                continue
+            if line.startswith(quote, i):
+                i += len(quote)
+                quote = None
+                continue
+            i += 1
+            continue
+        if line.startswith('"""', i) or line.startswith("'''", i):
+            quote = line[i : i + 3]
+            i += 3
+        elif ch == "#":
+            break  # a comment runs to the end of the line
+        elif ch == '"' or ch == "'":
+            quote = ch
+            i += 1
+        elif ch in "[{":
+            depth += 1
+            i += 1
+        elif ch in "]}":
+            depth -= 1
+            i += 1
+        else:
+            i += 1
+    return depth, quote
+
+
+def _toml_value_end(lines: list[str], start: int) -> int:
+    """The index just past the value that begins on `lines[start]`: a multi-line array, inline table or
+    triple-quoted string ends on the line that closes it, not on the line its key is on."""
+    depth = 0
+    quote: str | None = None
+    for i in range(start, len(lines)):
+        depth, quote = _toml_scan(lines[i], depth, quote)
+        if quote is None and depth <= 0:
+            return i + 1
+    return len(lines)
+
+
+
+
 @dataclass
 class BlockPlan:
     key: str
@@ -3961,21 +5618,83 @@ class BlockPlan:
     notes: list[str] = field(default_factory=list)
 
 
+def _toml_structure_problem(text: str) -> str | None:
+    """Why `text` is not well-formed TOML, as far as a scanner can tell, or None.
+
+    There is no ``tomllib`` on the minimum Python,  so this is the check that stands in
+    for it.  A scanner cannot check every rule of TOML,  but it catches the corruption a
+    writer like this one can do:  a value or a string that is never closed,  and a line
+    left over from a value that was replaced.
+
+    It reuses ``_toml_scan``,  which already carries the bracket depth and the open
+    string across lines,  so a line inside a value is that value's text and not a key.
+    """
+    depth = 0
+    quote: str | None = None
+    for lineno, line in enumerate(text.splitlines(), 1):
+        at_top = quote is None and depth <= 0
+        depth, quote = _toml_scan(line, depth, quote)
+        if not at_top:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _TOML_TABLE_RE.match(line):
+            continue
+        if not _TOML_KEY_RE.match(line):
+            return "config.toml line %d is neither a table header nor a key" % lineno
+    if quote is not None:
+        return "config.toml has a string that is never closed"
+    if depth != 0:
+        return "config.toml has a bracket or a brace that is not closed"
+    return None
+
+
+def _has_top_level_key(text: str, name: str) -> bool:
+    """True when `name` is a key at the top level of `text`, not inside a table.
+
+    A key under a table belongs to that table,  and a regex over the whole file cannot
+    tell the two apart:  a table-scoped `hooks` key is perfectly valid,  and refusing it
+    would refuse a good file.  A table header therefore ENDS the top level,  and every
+    key after one belongs to that table until the next header.
+    """
+    depth = 0
+    quote: str | None = None
+    in_table = False
+    pattern = re.compile(r"^[ \t]*%s[ \t]*=" % re.escape(name))
+    for line in text.splitlines():
+        at_top = quote is None and depth <= 0
+        depth, quote = _toml_scan(line, depth, quote)
+        if at_top and _TOML_TABLE_RE.match(line):
+            # A table header ends the top level:  the keys under it are that table's.
+            in_table = True
+            continue
+        if at_top and pattern.match(line) and not in_table:
+            return True
+    return False
+
+
 def _toml_problem(text: str) -> str | None:
     """Why `text` would not load as Kimi's config.toml, or None.  With tomllib (Python 3.11+) the new file has to
-    parse; without it the one thing checked is that no top-level `hooks` key exists beside our array of tables."""
+    parse; without it the structure is scanned,  which catches a value that was replaced
+    and left a line behind,  and a value or a string that is never closed.  The one
+    thing checked either way is that no top-level `hooks` key exists beside our array
+    of tables."""
     try:
         import tomllib
     except ImportError:
-        if re.search(r"(?m)^\s*hooks\s*=", text):
-            return (
-                "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
-            )
-        return None
-    try:
-        tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        return f"the new config.toml would not parse as TOML ({exc})"
+        problem = _toml_structure_problem(text)
+        if problem:
+            return problem
+    else:
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            return f"the new config.toml would not parse as TOML ({exc})"
+    # The one thing checked either way:  a top-level `hooks` key would be redefined by
+    # the [[hooks]] table this tool writes.
+    if _has_top_level_key(text, "hooks"):
+        return "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
     return None
 
 
@@ -4025,7 +5744,7 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
         else:
             # Kimi rewrites its config.toml without comments, so the entry is found by what it says, not by markers
             new, bp.action, extra = TH.plan(
-                text, BLOCK_NAME, BLOCK_TOOL, bp.body, kimi_fields(plat, paths), is_ours
+                text, BLOCK_NAME, BLOCK_TOOL, bp.body, block_fields(plat, paths), is_ours
             )
             bp.notes.extend(extra)
     except MB.BlockError as exc:
@@ -4262,7 +5981,7 @@ def _block_command_from_file(plat: Platform, paths: Paths, text: str) -> tuple[s
             else (None, f"{paths.clutch_hooks} has no command string")
         )
     try:
-        info = TH.inspect(text, BLOCK_NAME, kimi_fields(plat, paths), is_ours)
+        info = TH.inspect(text, BLOCK_NAME, block_fields(plat, paths), is_ours)
     except MB.BlockError as exc:
         return None, str(exc)
     if not info.ours:
@@ -4317,7 +6036,7 @@ def verify_block(
         if plat.key == "kimi":
             # Kimi rewrites config.toml without comments, so the markers can be gone while the hook is still wired:
             # the entry is found by what it says (see toml_hooks)
-            info = TH.inspect(text, BLOCK_NAME, kimi_fields(plat, paths), is_ours)
+            info = TH.inspect(text, BLOCK_NAME, block_fields(plat, paths), is_ours)
             body = MB.block_body(text, BLOCK_NAME) if info.state == "block" else None
             not_wired = info.state == "none"
         else:
@@ -4465,15 +6184,131 @@ def render_minimax_manifest() -> str:
     """.claude-plugin/plugin.json.  MiniMax needs at least a name; the other two keys are the Claude plugin manifest's."""
     doc = {
         "name": MINIMAX_PLUGIN_ID,
-        "version": "1.0.0",
-        "description": "Fleet lane guard and secret guard for shell calls (written by fleet_lanes.install_tools)",
+        "version": "2.0.0",
+        "description": "MiniMax shell and file guards (written by fleet_lanes.install_tools)",
     }
     return json.dumps(doc, indent=2) + "\n"
 
 
 def minimax_hook_command(paths: Paths) -> str:
-    """The command the plugin runs: the fleet hook (lane guard, then secret guard), Claude deny shape, absolute path."""
-    return fleet_hook_command(paths, "claude")
+    """MM-owned adapter, compatible deny shape, absolute stable path."""
+    return shlex.quote(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
+
+
+def _login_users() -> list[pwd.struct_passwd]:
+    """Accounts that own a real home:  root, the regular uid range, and any account with a login shell."""
+    try:
+        users = pwd.getpwall()
+    except OSError:
+        return []
+
+    def login_shell(shell: str) -> bool:
+        base = os.path.basename((shell or "").strip()).lower()
+        return bool(base) and base not in ("false", "nologin", "sync", "shutdown", "halt")
+
+    return [
+        u for u in users if u.pw_uid == 0 or 500 <= u.pw_uid < 65534 or login_shell(u.pw_shell)
+    ]
+
+
+def _within(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _mode_allows(st: os.stat_result, uid: int, gids: set[int], bit: int) -> bool:
+    """Whether the mode bits give `uid` (with `gids`) the permission `bit` (4 read, 2 write, 1 execute)."""
+    if st.st_uid == uid:
+        return bool(st.st_mode & (bit << 6))
+    if st.st_gid in gids:
+        return bool(st.st_mode & (bit << 3))
+    return bool(st.st_mode & bit)
+
+
+def _runnable_by(path: str, uid: int, gids: set[int]) -> str | None:
+    """None when `uid` can run `path` by its mode bits (search on every directory on the way, execute on the
+    file), else why not.  This is the check for a user other than the one running the installer, where
+    os.access would answer for the wrong user:  root can run what the target user cannot."""
+    real = os.path.realpath(path)
+    parts = real.split(os.sep)[1:]
+    current = os.sep
+    for part in parts[:-1]:
+        current = os.path.join(current, part)
+        try:
+            st = os.stat(current)
+        except OSError as exc:
+            return f"{current} cannot be checked: {type(exc).__name__}"
+        if uid != 0 and not _mode_allows(st, uid, gids, 1):
+            return f"{current} does not let uid {uid} reach {path}"
+    try:
+        st = os.stat(real)
+    except OSError as exc:
+        return f"{real} cannot be checked: {type(exc).__name__}"
+    if not stat.S_ISREG(st.st_mode):
+        return f"{real} is not a regular file"
+    if uid == 0:
+        return None if st.st_mode & 0o111 else f"{real} has no execute bit"
+    if not _mode_allows(st, uid, gids, 1):
+        return f"{real} is not executable by uid {uid}"
+    # The hook is a script:  the kernel reads it to find the interpreter, so execute alone is not enough.
+    if not _mode_allows(st, uid, gids, 4):
+        return f"{real} is not readable by uid {uid}"
+    return None
+
+
+def hook_home_problem(executable: str, home: str) -> str | None:
+    """None when the user who owns `home` can run the hook at `executable`, else why not.
+
+    A runtime runs its hook as the user whose home holds the config.  An installer run as another
+    user (root installing for a seat account, say) can write a hook path from its own home, such as
+    /root/apps/lane-tools/..., which its own probes run without trouble while the seat's runtime gets
+    Permission denied, and MiniMax Code lets every tool call through when its hook cannot run.  So
+    the path must not sit in another account's home, and the home's owner must be able to run it.
+    """
+    # Each path is compared both as written and resolved, so a home reached through a symlink gets the
+    # same verdict as the same home spelled out.
+    homes = {os.path.abspath(home), os.path.realpath(home)}
+    candidates = {os.path.abspath(executable), os.path.realpath(executable)}
+
+    def in_target_home(path: str) -> bool:
+        return any(_within(path, h) for h in homes)
+
+    for user in _login_users():
+        if not user.pw_dir:
+            continue
+        others = {os.path.abspath(user.pw_dir), os.path.realpath(user.pw_dir)} - {os.sep}
+        if not others or others & homes:
+            continue
+        # An account whose home holds the target home covers only the paths inside the target home.
+        holds_target = any(_within(h, o) for h in homes for o in others)
+        for candidate in candidates:
+            if holds_target and in_target_home(candidate):
+                continue
+            inside = next((o for o in others if _within(candidate, o)), None)
+            if inside:
+                return (
+                    f"the hook {executable} is inside {user.pw_name}'s home {inside}, not {home}; "
+                    f"run the installer as the user who owns {home}"
+                )
+    try:
+        owner = os.stat(home).st_uid
+    except OSError as exc:
+        return f"{home} cannot be checked: {type(exc).__name__}"
+    if owner == os.geteuid():
+        if os.path.isfile(executable) and os.access(executable, os.R_OK | os.X_OK):
+            return None
+        return (
+            f"the hook {executable} is missing, unreadable or not executable by the owner of {home}; "
+            "run `apply tools` first"
+        )
+    try:
+        entry = pwd.getpwuid(owner)
+        gids = {entry.pw_gid} | {g.gr_gid for g in grp.getgrall() if entry.pw_name in g.gr_mem}
+    except (KeyError, OSError):
+        gids = set()
+    problem = _runnable_by(executable, owner, gids)
+    if problem:
+        return f"the owner of {home} cannot run the hook: {problem}"
+    return None
 
 
 def render_minimax_hooks(paths: Paths) -> str:
@@ -4482,7 +6317,7 @@ def render_minimax_hooks(paths: Paths) -> str:
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": "Bash",
+                    "matcher": "Bash|Read|Write|Edit|bash|read|write|edit",
                     "hooks": [
                         {
                             "type": "command",
@@ -4503,6 +6338,116 @@ def minimax_expected(paths: Paths) -> dict[str, str]:
         MINIMAX_MANIFEST_FILE: render_minimax_manifest(),
         MINIMAX_HOOKS_FILE: render_minimax_hooks(paths),
     }
+
+
+def registry_tree(registry: str) -> str:
+    """The first registered ~/Code folder name.  Probes follow the registry, not a literal.
+
+    The registry is required input to a security probe, so an unreadable, unparseable, or
+    misshapen one is refused by name instead of degrading to no tree: silently returning ""
+    would drop the integration-tree deny probes and let the probe pass without ever running them.
+    """
+    try:
+        payload = json.loads(_read_bytes(registry).decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(
+            f"required integration registry is unavailable or invalid: {registry}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise Refused(f"required integration registry {registry}: top level must be an object")
+    apps = payload.get("apps")
+    if not isinstance(apps, list):
+        raise Refused(f"required integration registry {registry}: 'apps' must be a list")
+    for app in apps:
+        if not isinstance(app, dict):
+            raise Refused(f"required integration registry {registry}: app entries must be objects")
+        for candidate in (app.get("codeDir"), app.get("repo")):
+            if candidate is None:
+                continue
+            if not isinstance(candidate, str):
+                raise Refused(
+                    f"required integration registry {registry}: app paths must be strings"
+                )
+            # Only the folder name under ~/Code identifies the tree: a registry value
+            # spelled as a path or `owner/name` would otherwise probe outside ~/Code.
+            name = os.path.basename(candidate.strip().rstrip("/"))
+            if name and name not in (".", ".."):
+                return name
+    raise Refused(f"required integration registry {registry} contains no registered tree")
+
+
+def probe_minimax_files(
+    command: str,
+    home: str,
+    registry: str,
+    timeout: float,
+    minimal_path: bool,
+    source_registry: str | None = None,
+    volume: str = "",
+) -> list[Check]:
+    """Run MM's compatible file payloads in its restricted subprocess environment.
+
+    `source_registry` names the registry the operator has to repair when `registry` is a staged
+    copy that is deleted with the stage; it is reported with the refusal.
+
+    `volume` is the volume the hook shim being probed carries as its default, so the probe writes into the
+    code root the guard watches (see _guard_code_root).
+    """
+    env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
+    env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
+    try:
+        tree = registry_tree(registry)
+    except Refused as exc:
+        # An unreadable/invalid registry is a failed check, not an abort: letting
+        # Refused escape here unwinds through apply_minimax and skips the
+        # remaining platforms in `apply all`.
+        detail = str(exc)
+        if source_registry and source_registry != registry:
+            # The staged copy is removed with the stage, so its path is not actionable:
+            # name the registry the operator must repair.
+            detail = f"{detail}; source registry: {source_registry}"
+        return [Check("minimax", "registry-tree", "FAIL", detail)]
+    integration = os.path.join(_guard_code_root(home, volume), tree, "probe-placeholder")
+    out = []
+    for tool, path, deny in (
+        ("Read", ".secrets/probe-placeholder", True),
+        ("Read", ".env", True),
+        ("Write", integration, True),
+        ("Edit", ".secrets/probe-placeholder", True),
+        ("Read", "public-placeholder", False),
+        ("Write", "public-placeholder", False),
+        ("read", ".secrets/probe-placeholder", True),
+        ("write", integration, True),
+        ("edit", ".secrets/probe-placeholder", True),
+    ):
+        field = "path" if tool in ("read", "write") else "file_path"
+        payload = {"tool_name": tool, "tool_input": {field: os.path.join(home, path)}, "cwd": home}
+        res = run_shell(command, json.dumps(payload).encode("utf-8"), env, timeout)
+        problem = res.error or ("timed out" if res.timed_out else None)
+        if not problem and res.returncode != 0:
+            problem = f"exit {res.returncode}, expected 0"
+        if not problem:
+            problem = (
+                check_deny_output("claude", res.stdout, "MiniMax")
+                if deny
+                else ("unexpected output" if res.stdout.strip() or res.stderr.strip() else None)
+            )
+        missing_sources = [
+            source.decode("ascii")
+            for source in (b"SECRET_FILE_PATTERNS", b"FLEET_APPS_JSON")
+            if source in res.stdout
+        ]
+        if not problem and missing_sources:
+            problem = "required file policy is unavailable or invalid: " + ", ".join(missing_sources)
+        out.append(
+            Check(
+                "minimax",
+                f"{tool}/{os.path.basename(path)}/{'deny' if deny else 'allow'}/hook-env",
+                "FAIL" if problem else "PASS",
+                problem or f"compatible file payload checked ({path})",
+            )
+        )
+    return out
 
 
 @dataclass
@@ -4646,12 +6591,20 @@ def apply_minimax(
         return Result("minimax", "skipped", mp.reason)
     if mp.state == "refuse":
         return Result("minimax", "refused", mp.reason)
+    # MiniMax lets every tool call through when its hook cannot run, so a hook path the home's owner cannot
+    # execute is no guard at all, however well it passes probes run as the installer's own user.
+    home_problem = hook_home_problem(os.path.join(paths.stable, MINIMAX_HOOK_NAME), paths.home)
+    if home_problem:
+        return Result("minimax", "refused", home_problem)
     if not shim_proven:
-        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+        if not (
+            os.path.isfile(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
+            and os.access(os.path.join(paths.stable, MINIMAX_HOOK_NAME), os.X_OK)
+        ):
             return Result(
                 "minimax",
                 "refused",
-                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+                f"the MiniMax hook {minimax_hook_command(paths)} is missing or not executable; run `apply tools` first",
             )
         bad = [
             c
@@ -4667,6 +6620,18 @@ def apply_minimax(
             )
             if c.status == "FAIL"
         ]
+        bad.extend(
+            c
+            for c in probe_minimax_files(
+                mp.command,
+                paths.home,
+                paths.registry,
+                timeout,
+                minimal_path,
+                volume=_baked_volume(os.path.join(paths.stable, MINIMAX_HOOK_NAME)),
+            )
+            if c.status == "FAIL"
+        )
         if bad:
             return Result(
                 "minimax",
@@ -4734,8 +6699,10 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
                 f"expected exactly 1 PreToolUse group, found {len(groups) if isinstance(groups, list) else type(groups).__name__}"
             )
         group = groups[0]
-        if group.get("matcher") != "Bash":
-            raise ValueError(f"matcher is {group.get('matcher')!r}, expected 'Bash'")
+        if group.get("matcher") != "Bash|Read|Write|Edit|bash|read|write|edit":
+            raise ValueError(
+                f"matcher is {group.get('matcher')!r}, expected 'Bash|Read|Write|Edit|bash|read|write|edit'"
+            )
         hooks = group.get("hooks")
         if not isinstance(hooks, list) or len(hooks) != 1:
             raise ValueError("expected exactly 1 hook in the group")
@@ -4752,7 +6719,10 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
         return None, [Check(t, "hooks.json", "FAIL", f"{path}: {exc}")]
     out = [
         Check(
-            t, "hooks.json", "PASS", f"PreToolUse, matcher Bash, type command, timeout {timeout}s"
+            t,
+            "hooks.json",
+            "PASS",
+            f"PreToolUse, matcher Bash|Read|Write|Edit|bash|read|write|edit, type command, timeout {timeout}s",
         )
     ]
     if raw != render_minimax_hooks(paths).encode("utf-8"):
@@ -4833,9 +6803,9 @@ def verify_minimax(
     out.append(
         _check_shim(
             t,
-            FLEET_HOOK_NAME,
-            paths.fleet_shim,
-            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+            MINIMAX_HOOK_NAME,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            _shim_renderings(render_minimax_hook_shim, os.path.join(paths.stable, MINIMAX_HOOK_NAME)),
         )
     )
     cmd, got = _minimax_hook_from_file(paths.minimax_hooks, paths)
@@ -4846,6 +6816,21 @@ def verify_minimax(
         )
         return out
     out.append(Check(t, "hook command", "PASS", cmd))
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        argv = []
+    home_problem = (
+        hook_home_problem(argv[0], paths.home) if argv else f"{cmd!r} is not a parseable command"
+    )
+    out.append(
+        Check(
+            t,
+            "hook runnable by home owner",
+            "FAIL" if home_problem else "PASS",
+            home_problem or f"the owner of {paths.home} can run {argv[0]}",
+        )
+    )
     out.extend(
         probe_command(
             cmd,
@@ -4888,6 +6873,21 @@ def verify_minimax(
                 + f"exit={res.returncode} stdout={_brief(res.stdout)}",
             )
         )
+    # The verify CLI surfaces an invalid registry as a structured refusal
+    # (main prints `REFUSED ...`), not a downgraded check FAIL: verify runs a
+    # single platform, so the `apply all` unwind the downgrade inside
+    # probe_minimax_files protects against does not apply here.
+    registry_tree(paths.registry)
+    out.extend(
+        probe_minimax_files(
+            cmd,
+            paths.home,
+            paths.registry,
+            timeout,
+            minimal_path,
+            volume=_baked_volume(os.path.join(paths.stable, MINIMAX_HOOK_NAME)),
+        )
+    )
     switch, _off = guard_switch()
     if _is_off(os.environ.get(switch, "")):
         out.append(
@@ -4909,6 +6909,745 @@ def verify_minimax(
         )
     )
     return out
+
+
+# --------------------------------------------------------------------------- Copilot CLI: a fleet-owned hooks file
+
+
+def render_copilot_hooks(paths: Paths) -> str:
+    """~/.copilot/hooks/fleet-lane-guard.json.  Version 1, one PreToolUse group with matcher Bash and one command
+    hook (timeoutSec 5), running the fleet hook in the Claude contract."""
+    doc = {
+        "version": 1,
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": fleet_hook_command(paths, "claude"),
+                            "timeoutSec": HOOK_TIMEOUT_S,
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def copilot_expected(paths: Paths) -> dict:
+    return json.loads(render_copilot_hooks(paths))
+
+
+def _copilot_foreign(doc: object, paths: Paths) -> str | None:
+    """Why a file at our own hooks path is not one this tool wrote, or None.  A file that holds any hook that is not
+    ours, any other event, or any other top-level key is somebody else's and is left alone."""
+    if not isinstance(doc, dict):
+        return "it is JSON but not an object"
+    if doc == copilot_expected(paths) or doc == {}:
+        return None
+    if set(doc) - {"version", "hooks"}:
+        return (
+            "it holds top-level keys this tool never writes ("
+            + ", ".join(sorted(set(doc) - {"version", "hooks"}))
+            + ")"
+        )
+    hooks = doc.get("hooks")
+    if not isinstance(hooks, dict):
+        return "its hooks value is not an object"
+    if set(hooks) - {"PreToolUse"}:
+        return (
+            "it holds hook events this tool never writes ("
+            + ", ".join(sorted(set(hooks) - {"PreToolUse"}))
+            + ")"
+        )
+    total = 0
+    for group in hooks.get("PreToolUse") or []:
+        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(inner, list):
+            return "a PreToolUse group holds no hook list"
+        for hook in inner:
+            total += 1
+            if not isinstance(hook, dict) or not is_ours(hook.get("command")):
+                return "it holds a hook this tool did not write"
+    if total == 0:
+        return "it holds no fleet hook and is not a file this tool wrote"
+    return None
+
+
+@dataclass
+class CopilotPlan:
+    path: str
+    state: str  # new, stale, current, skip, refuse
+    reason: str
+    command: str
+    text: str
+    notes: list[str] = field(default_factory=list)
+    raw: bytes | None = None
+    mode: int | None = None
+    exists: bool = False
+
+
+def plan_copilot(paths: Paths, *, follow_symlinks: bool = False) -> CopilotPlan:
+    """Read-only: what `apply copilot` writes into ~/.copilot/hooks/fleet-lane-guard.json."""
+    path = paths.copilot_hooks
+    cmd = fleet_hook_command(paths, "claude")
+    text = render_copilot_hooks(paths)
+
+    def plan(state: str, reason: str = "", notes: Sequence[str] = ()) -> CopilotPlan:
+        return CopilotPlan(path, state, reason, cmd, text, list(notes))
+
+    if not os.path.isdir(os.path.join(paths.home, ".copilot")):
+        return plan("skip", "~/.copilot does not exist (platform not installed)")
+    refusal, outside, link = _link_check(path, paths.home, COPILOT_HOOKS_REL, follow_symlinks)
+    if refusal:
+        return plan("refuse", refusal)
+    notes = [link] if link else []
+    if os.path.islink(path):
+        return plan(
+            "refuse", f"{path} is a symlink; this tool writes a real file there, not through a link"
+        )
+    if os.path.lexists(path):
+        if not os.path.isfile(path):
+            return plan("refuse", f"{path} exists and is not a regular file")
+        try:
+            cfg = load_config(path)
+        except Refused as exc:
+            return plan("refuse", str(exc))
+        foreign = _copilot_foreign(cfg.doc, paths)
+        if foreign:
+            return plan("refuse", f"{path}: {foreign}; left alone")
+        cp = plan("current" if cfg.doc == copilot_expected(paths) else "stale", "", notes)
+        cp.raw, cp.mode, cp.exists = cfg.raw, cfg.mode, cfg.exists
+        if cp.state != "current" and outside:
+            return plan("refuse", outside, notes)
+        return cp
+    if outside:
+        return plan("refuse", outside, notes)
+    return plan("new", "", notes)
+
+
+def apply_copilot(
+    paths: Paths,
+    *,
+    now: Callable[[], float] = time.time,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    shim_proven: bool = False,
+    follow_symlinks: bool = False,
+) -> Result:
+    """Write the fleet-owned Copilot hooks file, with a backup first, but only if the fleet hook denies right now."""
+    cp = plan_copilot(paths, follow_symlinks=follow_symlinks)
+    if cp.state == "skip":
+        return Result("copilot", "skipped", cp.reason)
+    if cp.state == "refuse":
+        return Result("copilot", "refused", cp.reason)
+    if not shim_proven:
+        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+            return Result(
+                "copilot",
+                "refused",
+                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+            )
+        bad = [
+            c
+            for c in probe_command(
+                cp.command,
+                target="copilot",
+                fmt="claude",
+                shape="claude",
+                home=paths.home,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                secret=True,
+            )
+            if c.status == "FAIL"
+        ]
+        if bad:
+            return Result(
+                "copilot",
+                "refused",
+                "the installed fleet hook fails its probes, so it will not be wired in: "
+                + bad[0].detail,
+            )
+    if cp.state == "current":
+        return Result("copilot", "unchanged", f"{cp.path} already holds the hook")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
+    backup: str | None = None
+    # The lock covers the re-read,  the write,  the validation and the rollback,  so a
+    # second installer cannot write between this check and this write.
+    with _target_lock(paths.home, cp.path):
+        try:
+            _makedirs_private(os.path.dirname(cp.path))
+            if cp.exists:
+                assert cp.raw is not None
+                backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
+            if not _reread_matches(cp.path, cp.raw or b"", cp.exists):
+                if backup:
+                    os.unlink(backup)
+                return Result(
+                    "copilot",
+                    "failed",
+                    f"{cp.path} changed while it was being written; nothing written, retry",
+                )
+            atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
+        except OSError as exc:
+            return Result(
+                "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
+            )
+        try:
+            after = json.loads(_read_bytes(cp.path).decode("utf-8"))
+            ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
+        except (OSError, ValueError):
+            ok = False
+        if not ok:
+            try:
+                if cp.exists and cp.raw is not None:
+                    atomic_write(cp.path, cp.raw, cp.mode if cp.mode is not None else 0o644)
+                else:
+                    os.unlink(cp.path)
+            except OSError:
+                pass
+            return Result(
+                "copilot",
+                "failed",
+                f"{cp.path} failed validation after the write; the original was restored",
+                backup,
+            )
+    detail = cp.path + (f" (backup {backup})" if backup else " (new file)")
+    return Result("copilot", "added" if cp.state == "new" else "updated", detail, backup)
+
+
+def verify_copilot(
+    paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """Take the command back out of the written hooks file and run it.  What this cannot see is whether Copilot
+    fires a preToolUse hook, which is UNVERIFIED on this Mac and stays a SKIP."""
+    t = "copilot"
+    if not os.path.isdir(os.path.join(paths.home, ".copilot")):
+        return [Check(t, "platform", "SKIP", "~/.copilot does not exist (platform not installed)")]
+    path = paths.copilot_hooks
+    if not os.path.lexists(path):
+        return [
+            Check(t, "hooks file", "SKIP", f"not wired: {path} does not exist; run `apply copilot`")
+        ]
+    if os.path.islink(path) or not os.path.isfile(path):
+        return [Check(t, "hooks file", "FAIL", f"{path} is not a regular file")]
+    out: list[Check] = [Check(t, "hooks file", "PASS", f"{path} is a regular file")]
+    facts = read_guard_facts(paths.stable)
+    out.append(
+        _check_shim(
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            _shim_renderings(functools.partial(render_fleet_hook_shim, facts), paths.fleet_shim),
+        )
+    )
+    try:
+        cfg = load_config(path)
+        entries = locate(cfg.doc, PLATFORMS["copilot"])
+    except Refused as exc:
+        out.append(Check(t, "hooks entry", "FAIL", str(exc)))
+        return out
+    if cfg.doc != copilot_expected(paths):
+        out.append(
+            Check(
+                t,
+                "hooks entry",
+                "FAIL",
+                f"{path} differs from what this install_tools writes; re-run `apply copilot`",
+            )
+        )
+        return out
+    if not entries or entries[0].problems:
+        out.append(
+            Check(
+                t,
+                "hooks entry",
+                "FAIL",
+                f"{path}: "
+                + ("; ".join(entries[0].problems) if entries else "no fleet hook under PreToolUse"),
+            )
+        )
+        return out
+    out.append(Check(t, "hooks entry", "PASS", f"{entries[0].where} command={entries[0].command}"))
+    out.extend(
+        probe_command(
+            entries[0].command,
+            target=t,
+            fmt="claude",
+            shape="claude",
+            home=paths.home,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            secret=True,
+        )
+    )
+    switch, _off = guard_switch()
+    if _is_off(os.environ.get(switch, "")):
+        out.append(
+            Check(
+                t,
+                "guard-switch-env",
+                "WARN",
+                f"{switch}={os.environ.get(switch)!r} is set in the environment this command runs in; the probes scrub it",
+            )
+        )
+    out.append(
+        Check(
+            t,
+            "fires",
+            "SKIP",
+            "whether Copilot CLI fires this PreToolUse hook is UNVERIFIED (no live preToolUse record on this "
+            "Mac); the owner proof is a new Copilot session asked to run a process listing, which must be refused",
+        )
+    )
+    return out
+
+
+# --------------------------------------------------------------------------- OpenCode: a local plugin listed in opencode.json
+
+
+def opencode_entry(paths: Paths) -> str:
+    """The plugin array entry: the stable plugin directory by absolute path."""
+    return paths.opencode_plugin_dir
+
+
+_OPENCODE_PLUGIN_FILES = ("index.ts", "fleet-lane-guard.ts")
+
+
+def _fleet_opencode_path(entry: str) -> bool:
+    """True for the plugin directory, or one of the two files earlier releases listed inside it, under any
+    fleet stable directory (`<somewhere>/lane-tools/opencode-plugin`), whichever machine or release wrote it.
+    The `lane-tools` parent is what makes it ours:  a plugin that merely sits in a directory called
+    `opencode-plugin` belongs to someone else and is left alone."""
+    parts = [part for part in entry.replace("\\", "/").split("/") if part not in ("", ".")]
+    if len(parts) >= 2 and parts[-1] == "opencode-plugin" and parts[-2] == "lane-tools":
+        return True
+    return (
+        len(parts) >= 3
+        and parts[-1] in _OPENCODE_PLUGIN_FILES
+        and parts[-2] == "opencode-plugin"
+        and parts[-3] == "lane-tools"
+    )
+
+
+def _is_opencode_ours(entry: object, paths: Paths) -> bool:
+    """Whether `entry` is this tool's own plugin entry:  this stable directory itself, the file forms earlier
+    releases listed inside it (whatever `--stable-dir` named it), and an entry a previous machine or stable
+    root recorded under a `lane-tools` directory.  Never a bare suffix test:  a user's plugin that happens to
+    sit in a directory called `opencode-plugin` is not ours."""
+    ours_here = {opencode_entry(paths)}
+    ours_here.update(
+        os.path.join(paths.stable, "opencode-plugin", name) for name in _OPENCODE_PLUGIN_FILES
+    )
+
+    def ours(value: str) -> bool:
+        return value in ours_here or _fleet_opencode_path(value)
+
+    if isinstance(entry, str):
+        return ours(entry)
+    if isinstance(entry, (list, tuple)) and entry and isinstance(entry[0], str):
+        return ours(entry[0])
+    return False
+
+
+def opencode_merge(doc: dict, paths: Paths) -> tuple[dict, str]:
+    """(new document, action): the plugins array holds our absolute path exactly once.  Every other key and entry
+    is preserved as it is.  A `plugins` or legacy `plugin` value that is not a list (or a string, for the legacy
+    key) raises ShapeError.  A config written by the previous release keeps the old `plugin` key:  our entry is
+    moved out of it into `plugins` and the key is dropped once it holds nothing, so a stale entry cannot make
+    verify pass while OpenCode ignores it."""
+    new = copy.deepcopy(doc)
+    legacy = new.get("plugin")
+    if legacy is not None:
+        if isinstance(legacy, str):
+            if _is_opencode_ours(legacy, paths):
+                new.pop("plugin", None)
+        elif isinstance(legacy, list):
+            kept = [e for e in legacy if not _is_opencode_ours(e, paths)]
+            if kept:
+                new["plugin"] = kept
+            else:
+                new.pop("plugin", None)
+        else:
+            raise ShapeError("'plugin' in opencode.json is not a list")
+    plugins = new.get("plugins")
+    if plugins is None:
+        plugins = new["plugins"] = []
+    if not isinstance(plugins, list):
+        raise ShapeError("'plugins' in opencode.json is not a list")
+    want = opencode_entry(paths)
+    ours = [i for i, e in enumerate(plugins) if _is_opencode_ours(e, paths)]
+    if len(ours) == 1 and plugins[ours[0]] == want:
+        return new, "unchanged"
+    if not ours:
+        plugins.append(want)
+        return new, "added"
+    first = ours[0]
+    plugins[first] = want
+    for i in reversed(ours[1:]):
+        del plugins[i]
+    return new, "updated"
+
+
+@dataclass
+class OpencodePlan:
+    config: str
+    entry: str
+    state: str  # new, stale, current, skip, refuse
+    reason: str = ""
+    notes: list[str] = field(default_factory=list)
+    cfg: Loaded | None = None
+    new_text: str | None = None
+    plugin_text: str = ""
+
+
+def plan_opencode(paths: Paths, *, follow_symlinks: bool = False) -> OpencodePlan:
+    """Read-only: what `apply opencode` does to the plugins array of opencode.json.  Only the entry is described;
+    no other key of that file (which holds credential-shaped values) is ever read into the output."""
+    config = paths.opencode_config
+    entry = opencode_entry(paths)
+    plugin_text = render_opencode_plugin()
+
+    def plan(state: str, reason: str = "", notes: Sequence[str] = ()) -> OpencodePlan:
+        return OpencodePlan(config, entry, state, reason, list(notes), plugin_text=plugin_text)
+
+    if not os.path.isdir(os.path.join(paths.home, ".config", "opencode")):
+        return plan("skip", "~/.config/opencode does not exist (platform not installed)")
+    refusal, outside, link = _link_check(config, paths.home, OPENCODE_CONFIG_REL, follow_symlinks)
+    if refusal:
+        return plan("refuse", refusal)
+    notes = [link] if link else []
+    try:
+        cfg = load_config(config)
+        new_doc, action = opencode_merge(cfg.doc, paths)
+    except Refused as exc:
+        return plan("refuse", str(exc))
+    have_plugin = _read_regular(paths.opencode_plugin)
+    if have_plugin is None:
+        notes.append(
+            f"{paths.opencode_plugin} is not in the stable dir yet; `apply tools` writes it"
+        )
+        plugin_state = "new"
+    elif have_plugin != plugin_text.encode("utf-8"):
+        notes.append(
+            f"{paths.opencode_plugin} is not what this install_tools writes; `apply tools` refreshes it"
+        )
+        plugin_state = "stale"
+    else:
+        plugin_state = "current"
+    state = {
+        "added": "new" if not cfg.exists else "stale",
+        "updated": "stale",
+        "unchanged": "current",
+    }[action]
+    if state == "current" and plugin_state != "current":
+        state = "stale"
+    if state != "current":
+        if outside:
+            return plan("refuse", outside, notes)
+        if cfg.unparseable_numbers:
+            return plan(
+                "refuse",
+                f"{config} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
+                "strict parsers reject the file and a rewrite would change them; fix the file first",
+            )
+        if cfg.duplicate_keys:
+            return plan(
+                "refuse",
+                f"{config} has duplicate key(s) {_first(cfg.duplicate_keys)} in one object; a rewrite would "
+                "silently keep only the last value; fix the file first",
+            )
+        if cfg.lossy_numbers:
+            return plan(
+                "refuse",
+                f"{config} holds number(s) a rewrite would change ({_first(cfg.lossy_numbers)}); refusing to touch it",
+            )
+        if cfg.exists and cfg.mode is not None and not cfg.mode & 0o200:
+            return plan(
+                "refuse",
+                f"{config} is read-only (mode {cfg.mode:04o}); not overriding the owner's choice",
+            )
+    op = plan(state, "", notes)
+    op.cfg = cfg
+    op.new_text = dump_config(new_doc, cfg)
+    return op
+
+
+def apply_opencode(
+    paths: Paths,
+    *,
+    now: Callable[[], float] = time.time,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    shim_proven: bool = False,
+    follow_symlinks: bool = False,
+) -> Result:
+    """List the stable plugin directory by absolute path in opencode.json's plugins array.  A backup is owner-only (0600)
+    whatever the file's mode, so a file that holds a token never gains a second readable copy."""
+    op = plan_opencode(paths, follow_symlinks=follow_symlinks)
+    if op.state == "skip":
+        return Result("opencode", "skipped", op.reason)
+    if op.state == "refuse":
+        return Result("opencode", "refused", op.reason)
+    if _read_regular(paths.opencode_plugin) != render_opencode_plugin().encode("utf-8"):
+        return Result(
+            "opencode",
+            "refused",
+            f"{paths.opencode_plugin} is missing or not current; run `apply tools` first",
+        )
+    if not shim_proven:
+        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+            return Result(
+                "opencode",
+                "refused",
+                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+            )
+        bad = [
+            c
+            for c in probe_command(
+                fleet_hook_command(paths, "claude"),
+                target="opencode",
+                fmt="claude",
+                shape="claude",
+                home=paths.home,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                secret=True,
+            )
+            if c.status == "FAIL"
+        ]
+        if bad:
+            return Result(
+                "opencode",
+                "refused",
+                "the installed fleet hook fails its probes, so it will not be wired in: "
+                + bad[0].detail,
+            )
+    if op.state == "current":
+        return Result("opencode", "unchanged", f"{op.config} already lists the plugin")
+    cfg = op.cfg
+    assert cfg is not None and op.new_text is not None
+    try:
+        reparsed = json.loads(op.new_text)
+        _doc, act = opencode_merge(reparsed, paths)
+        if act != "unchanged":
+            return Result(
+                "opencode", "refused", "the merged document does not hold the plugin entry"
+            )
+    except (ValueError, Refused) as exc:
+        return Result("opencode", "refused", f"the merged document is not valid: {exc}")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
+    backup: str | None = None
+    real = cfg.real
+    # The lock covers the re-read,  the write,  the validation and the rollback,  so a
+    # second installer cannot write between this check and this write.
+    with _target_lock(paths.home, real):
+        try:
+            _makedirs_private(os.path.dirname(real))
+            if cfg.exists:
+                backup = _make_backup(real, cfg.raw, cfg.mode, stamp)
+            if not _reread_matches(real, cfg.raw, cfg.exists):
+                if backup:
+                    os.unlink(backup)
+                return Result(
+                    "opencode",
+                    "failed",
+                    f"{op.config} changed while it was being merged; nothing written, retry",
+                )
+            atomic_write(real, op.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else 0o600)
+        except OSError as exc:
+            return Result(
+                "opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup
+            )
+        try:
+            after = json.loads(_read_bytes(real).decode("utf-8"))
+            _doc, act = opencode_merge(after, paths)
+            ok = act == "unchanged"
+        except (OSError, ValueError, Refused):
+            ok = False
+        if not ok:
+            try:
+                if cfg.exists:
+                    atomic_write(real, cfg.raw, cfg.mode if cfg.mode is not None else 0o600)
+                else:
+                    os.unlink(real)
+            except OSError:
+                pass
+            return Result(
+                "opencode",
+                "failed",
+                f"{op.config} failed validation after the write; the original was restored",
+                backup,
+            )
+    detail = op.config + (f" (backup {backup})" if backup else " (new file)")
+    return Result("opencode", "added" if not cfg.exists else "updated", detail, backup)
+
+
+def verify_opencode(
+    paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """The plugin entry is read back out of opencode.json and the plugin file is checked against what this tool
+    writes; the guard command the plugin runs is then probed directly.  Whether OpenCode loads the plugin and
+    whether OpenCode loads it and denies live are UNVERIFIED and stay a SKIP."""
+    t = "opencode"
+    if not os.path.isdir(os.path.join(paths.home, ".config", "opencode")):
+        return [
+            Check(
+                t, "platform", "SKIP", "~/.config/opencode does not exist (platform not installed)"
+            )
+        ]
+    if not os.path.isfile(paths.opencode_plugin):
+        return [
+            Check(
+                t,
+                "plugin file",
+                "SKIP",
+                f"not wired: {paths.opencode_plugin} does not exist; run `apply tools`",
+            )
+        ]
+    out: list[Check] = []
+    out.append(
+        _check_text(t, "plugin file", paths.opencode_plugin, render_opencode_plugin(), False)
+    )
+    plugin_text = (_read_regular(paths.opencode_plugin) or b"").decode("utf-8", "replace")
+    for needle, label in (
+        ("Plugin.define", "V2 Plugin.define entry"),
+        ('ctx.tool.hook("execute.before"', "V2 execute.before hook"),
+        ("throw new Error(reason)", "V2 throw-to-deny"),
+        ("fleet-guard-hook", "stable fleet hook"),
+    ):
+        out.append(
+            Check(
+                t,
+                label,
+                "PASS" if needle in plugin_text else "FAIL",
+                f"{paths.opencode_plugin} "
+                + ("contains it" if needle in plugin_text else f"does not contain {needle}"),
+            )
+        )
+    if "Authorization" in plugin_text or "Bearer" in plugin_text:
+        out.append(
+            Check(
+                t,
+                "no credential copy",
+                "FAIL",
+                "the plugin text names an authorization value; it must hold none",
+            )
+        )
+    else:
+        out.append(Check(t, "no credential copy", "PASS", "the plugin text holds no credential"))
+    facts = read_guard_facts(paths.stable)
+    out.append(
+        _check_shim(
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            _shim_renderings(functools.partial(render_fleet_hook_shim, facts), paths.fleet_shim),
+        )
+    )
+    config = paths.opencode_config
+    if not os.path.exists(os.path.realpath(config)):
+        out.append(Check(t, "config", "FAIL", f"{config} does not exist; no plugin listed"))
+        return out
+    try:
+        cfg = load_config(config)
+    except Refused as exc:
+        out.append(Check(t, "config", "FAIL", str(exc)))
+        return out
+    if cfg.unparseable_numbers:
+        out.append(
+            Check(
+                t,
+                "config",
+                "FAIL",
+                f"{config} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
+                "the platform's JSON parser rejects the whole file, so no plugin loads",
+            )
+        )
+        return out
+    plugins = cfg.doc.get("plugins")
+    if not isinstance(plugins, list):
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"{config} has no plugins list; the guard plugin is not listed",
+            )
+        )
+        return out
+    ours = [e for e in plugins if _is_opencode_ours(e, paths)]
+    want = opencode_entry(paths)
+    if ours == [want]:
+        out.append(Check(t, "plugin entry", "PASS", f"plugins array lists {want} exactly once"))
+    elif not ours:
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"no fleet plugin entry in {config}; run `apply opencode`",
+            )
+        )
+        return out
+    else:
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"{config} lists the fleet plugin {len(ours)} times or by a stale path; re-run `apply opencode`",
+            )
+        )
+        return out
+    out.extend(
+        probe_command(
+            fleet_hook_command(paths, "claude"),
+            target=t,
+            fmt="claude",
+            shape="claude",
+            home=paths.home,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            secret=True,
+        )
+    )
+    for problem in _switch_warnings(cfg.doc):
+        out.append(Check(t, "hook-switch", "FAIL", f"{config}: {problem}"))
+    out.append(
+        Check(
+            t,
+            "fires",
+            "SKIP",
+            "whether OpenCode loads this local plugin and denies a live shell call is UNVERIFIED; the owner "
+            "proof is a new OpenCode session asked to run a process listing, which must be refused (the deny "
+            "path was exercised on this host in v2.1.1 on 2026-10-22)",
+        )
+    )
+    return out
+
+
+# --------------------------------------------------------------------------- fx: no hook surface (UNSUPPORTED, with a prepared control)
+
+
+def render_fx_compensating_control() -> str:
+    """The prepared fx compensating control, as JSON for the owner to merge into ~/.fx/settings.json by hand.
+    It is a static permission.bash deny list over the temp-destination shapes guard.py proves, plus permission_mode
+    off yolo.  The top-level `*` rule asks for every other call, so the deny list is the only thing that blocks
+    and nothing else is silently allowed.  It cannot resolve d=$(mktemp -d), cannot read a repo's fleet status, and
+    cannot see a bash -c layer."""
+    roots = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp")
+    phrases = ("git clone", "gh repo clone", "git worktree add", "git worktree move", "git archive")
+    bash: dict[str, str] = {}
+    for phrase in phrases:
+        for root in roots:
+            bash[f"*{phrase}* {root}/*"] = "deny"
+    doc = {"permission_mode": "ask", "permission": {"*": "ask", "bash": bash}}
+    return json.dumps(doc, indent=2) + "\n"
 
 
 # --------------------------------------------------------------------------- command line
@@ -5222,6 +7961,74 @@ def _emit_minimax_plan(
     return False
 
 
+def _emit_copilot_plan(
+    plat: Platform, cp: CopilotPlan, emit: Callable[[str], None], *, explicit: bool
+) -> bool:
+    """Print the plan of the Copilot CLI hooks file.  True when it is a failure."""
+    emit(f"== {plat.key}  {plat.label}  {cp.path}  [{cp.state}]")
+    if cp.state in ("skip", "refuse"):
+        emit(f"   {cp.state.upper()}: {cp.reason}")
+        return cp.state == "refuse" or (explicit and cp.state == "skip")
+    emit(
+        "   Copilot CLI loads *.json under ~/.copilot/hooks.  This is a NEW fleet-owned file; "
+        "~/.copilot/settings.json and agent-hook-otlp.json are never touched."
+    )
+    emit(f"   command: {cp.command}")
+    for ln in cp.text.splitlines():
+        emit(f"     | {ln}")
+    for n in cp.notes:
+        emit(f"   {n}")
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
+def _emit_opencode_plan(
+    plat: Platform, op: OpencodePlan, emit: Callable[[str], None], *, explicit: bool
+) -> bool:
+    """Print the plan of the OpenCode plugin guard.  True when it is a failure."""
+    emit(f"== {plat.key}  {plat.label}  {op.config}  [{op.state}]")
+    if op.state in ("skip", "refuse"):
+        emit(f"   {op.state.upper()}: {op.reason}")
+        return op.state == "refuse" or (explicit and op.state == "skip")
+    emit(
+        "   OpenCode has no config hooks key.  The plugin array entry below is the only change to opencode.json; "
+        "no other key of that file is printed, and a backup is owner-only (0600)."
+    )
+    emit(f"   plugin entry (absolute path): {op.entry}")
+    emit(f"   plugin file in the stable dir: {OPENCODE_PLUGIN_FILE} (written by `apply tools`)")
+    for ln in op.plugin_text.splitlines():
+        emit(f"     | {ln}")
+    for n in op.notes:
+        emit(f"   {n}")
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
+def _emit_fx_plan(plat: Platform, emit: Callable[[str], None]) -> bool:
+    """Print the fx blocker and the prepared compensating control.  Nothing is written, ever."""
+    emit(f"== {plat.key}  {plat.label}  ~/.fx/settings.json  [unsupported]")
+    emit(f"   {FX_BLOCKER}.")
+    emit("   prepared compensating control (reviewable; merge by hand only after Jay approves it):")
+    for ln in render_fx_compensating_control().splitlines():
+        emit(f"     | {ln}")
+    emit(
+        "   apply path: Jay merges that JSON into ~/.fx/settings.json (moving permission_mode off yolo), then "
+        "runs `install_tools verify fx`, which stays FAIL UNSUPPORTED until Jay also approves an exception or a "
+        "real hook surface exists.  This tool never writes ~/.fx."
+    )
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
 def _emit_block_plan(
     plat: Platform, paths: Paths, emit: Callable[[str], None], *, explicit: bool
 ) -> bool:
@@ -5253,7 +8060,7 @@ def _emit_block_plan(
 
 def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
-    paths = make_paths(home, _resolve_stable(args))
+    paths = host_paths(home, _resolve_stable(args))
     targets, explicit = _expand(args.targets, ("all", "muse", "clutch", "kimi"))
     src = resolve_source(args.source, args.registry, args.sha)
     rc = EXIT_OK
@@ -5337,15 +8144,35 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
                 rc = EXIT_FAIL
             continue
         plat = PLATFORMS[tgt]
+        if plat.key == "fx":
+            _emit_fx_plan(plat, emit)
+            continue
         if plat.kind == "plugin":
-            _emit_muse_plan(plat, plan_muse(src, paths), paths, emit)
+            if plat.key == "opencode":
+                if _emit_opencode_plan(
+                    plat,
+                    plan_opencode(paths, follow_symlinks=args.follow_symlinks),
+                    emit,
+                    explicit=tgt in explicit,
+                ):
+                    rc = EXIT_FAIL
+            else:
+                _emit_muse_plan(plat, plan_muse(src, paths), paths, emit)
             continue
         if plat.kind == "block":
             if _emit_block_plan(plat, paths, emit, explicit=tgt in explicit):
                 rc = EXIT_FAIL
             continue
         if plat.kind == "bundle":
-            if _emit_minimax_plan(
+            if plat.key == "copilot":
+                if _emit_copilot_plan(
+                    plat,
+                    plan_copilot(paths, follow_symlinks=args.follow_symlinks),
+                    emit,
+                    explicit=tgt in explicit,
+                ):
+                    rc = EXIT_FAIL
+            elif _emit_minimax_plan(
                 plat,
                 plan_minimax(paths, follow_symlinks=args.follow_symlinks),
                 paths,
@@ -5383,7 +8210,7 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     if not args.targets:
         return _usage_error("apply needs a target: tools, a platform, or all")
     home = _resolve_home(args)
-    paths = make_paths(home, _resolve_stable(args))
+    paths = host_paths(home, _resolve_stable(args))
     targets, explicit = _expand(args.targets, ())
     wired = [
         t
@@ -5455,7 +8282,7 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
 
 def _cmd_verify(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
-    paths = make_paths(home, _resolve_stable(args))
+    paths = host_paths(home, _resolve_stable(args))
     targets, explicit = _expand(args.targets, ("all", "muse", "clutch", "kimi"))
     return _verify_targets(
         targets,
@@ -5518,6 +8345,10 @@ def _seed_fake_home(home: str) -> None:
         ".grok/hooks/imported-from-claude.json",
         {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}},
     )
+    put(
+        ".zcode/cli/config.json",
+        {"hooks": {"events": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}}},
+    )
     os.makedirs(
         os.path.join(home, ".minimax", "plugins"), exist_ok=True
     )  # MiniMax Code: an empty plugins dir
@@ -5539,7 +8370,10 @@ def self_test(
         home = os.path.join(tmp, "home")
         os.makedirs(home)
         _seed_fake_home(home)
-        paths = make_paths(home)
+        # The fake home, not the host:  make_paths with an empty env keeps the self-test inside
+        # its temp home, where host_paths would follow the host's apps folder (the production
+        # one on a server) and the test would write into it.
+        paths = make_paths(home, env={})
         emit(f"self-test: fake home {home}")
         res = apply_tools(src, paths, timeout=timeout, minimal_path=minimal_path, emit=emit)
         emit(res.line())
@@ -5647,7 +8481,7 @@ def self_test(
             _fails, checks = run_verify(
                 "with the fleet hook shim allowing everything, expect FAIL on muse", ("FAIL",)
             )
-            for key in ("muse", "minimax"):
+            for key in ("muse",):
                 if not any(
                     c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                     for c in checks
@@ -5673,7 +8507,7 @@ def self_test(
                 _fails, checks = run_verify(
                     "with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",)
                 )
-                for key in ("muse", "minimax"):
+                for key in ("muse",):
                     if not any(
                         c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                         for c in checks
@@ -5685,11 +8519,48 @@ def self_test(
             finally:
                 with open(paths.fleet_shim, "wb") as fh:
                     fh.write(fleet_bytes)
+
+        # MiniMax owns its shim and adapter.  Damage those paths independently:
+        # changing Muse's shared fleet shim must not be treated as MM coverage.
+        def require_minimax_damage(checks: list[Check], damage: str) -> None:
+            for name in (
+                "deny/login-PATH",
+                "Read/probe-placeholder/deny/hook-env",
+                "Write/probe-placeholder/deny/hook-env",
+            ):
+                if not any(
+                    c.target == "minimax" and c.name == name and c.status == "FAIL" for c in checks
+                ):
+                    failures.append(f"verify did NOT fail minimax {name} {damage}")
+            if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
+                failures.append(f"verify tools did not notice MiniMax damage {damage}")
+
+        mm_shim = os.path.join(paths.stable, MINIMAX_HOOK_NAME)
+        mm_bytes = _read_bytes(mm_shim)
+        with open(mm_shim, "wb") as fh:
+            fh.write(b"#!/bin/sh\nexit 0\n")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax hook shim allowing everything, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with an allow-everything MiniMax hook")
+        finally:
+            with open(mm_shim, "wb") as fh:
+                fh.write(mm_bytes)
+        mm_adapter = os.path.join(paths.package_dir, "minimax_guard_hook.py")
+        os.rename(mm_adapter, mm_adapter + ".disabled")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax adapter renamed, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with the MiniMax adapter missing")
+        finally:
+            os.rename(mm_adapter + ".disabled", mm_adapter)
         secret = os.path.join(paths.package_dir, SECRET_GUARD_MODULE)
         os.rename(secret, secret + ".disabled")
         try:
             _fails, checks = run_verify(
-                "with the secret guard module renamed, expect FAIL on muse", ("FAIL",)
+                "with the secret guard module renamed, expect FAIL on muse and minimax", ("FAIL",)
             )
             for key in ("muse", "minimax"):
                 if not any(
@@ -5710,7 +8581,8 @@ def self_test(
         return EXIT_FAIL
     emit(
         "self-test PASS: the install verifies, a renamed guard module, an emptied prefilter, an allow-everything fleet hook "
-        "and a missing secret guard each make verify FAIL, and each repair verifies again"
+        "and independent MiniMax shim/adapter damage and a missing secret guard each make verify FAIL, "
+        "and each repair verifies again"
     )
     return EXIT_OK
 

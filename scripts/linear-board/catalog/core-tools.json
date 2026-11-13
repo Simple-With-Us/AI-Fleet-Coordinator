@@ -1,7 +1,7 @@
 {
   "count": 10,
-  "generated_by": "scripts/agent-sync-mcp/scripts/export-linear-catalog.mjs",
-  "regenerate": "cd scripts/agent-sync-mcp && node scripts/export-linear-catalog.mjs",
+  "generated_by": "scripts/simple-tools-mcp/scripts/export-linear-catalog.mjs",
+  "regenerate": "cd scripts/simple-tools-mcp && node scripts/export-linear-catalog.mjs",
   "sources": [
     "src/linear.js",
     "src/linear-api.js"
@@ -50,7 +50,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Whoami"
+      "title": "Linear: Whoami"
     },
     {
       "annotations": {
@@ -67,6 +67,11 @@
               "cloud"
             ],
             "type": "string"
+          },
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
           },
           "kind": {
             "enum": [
@@ -148,7 +153,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear List"
+      "title": "Linear: List"
     },
     {
       "annotations": {
@@ -206,7 +211,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Show"
+      "title": "Linear: Show"
     },
     {
       "annotations": {
@@ -214,7 +219,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "File a new issue.  The body starts with your seat tag line.  Writes need the server's write switch on, which the owner sets at deploy.",
+      "description": "File a new issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on, which the owner sets at deploy.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -259,7 +264,7 @@
             "type": "array"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           },
@@ -308,7 +313,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear File"
+      "title": "Linear: File"
     },
     {
       "annotations": {
@@ -316,7 +321,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  An issue another seat holds is refused.  Writes need the server's write switch on.",
+      "description": "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  On the hosted server the claim label is optional and the issue is also delegated to the seat's Linear app user;  the stdio server's board CLI claims by label only and sends no delegate.  An issue another seat holds is refused.  Writes need the server's write switch on.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -333,7 +338,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           }
@@ -347,6 +352,12 @@
       "name": "linear_claim",
       "output_schema": {
         "properties": {
+          "delegate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "duplicate": {
             "type": "boolean"
           },
@@ -363,7 +374,10 @@
             "type": "string"
           },
           "label": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -373,7 +387,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Claim"
+      "title": "Linear: Claim"
     },
     {
       "annotations": {
@@ -381,7 +395,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Add a comment to an issue.  The body starts with your seat tag line.  Writes need the server's write switch on.",
+      "description": "Add a comment to an issue.  The body is posted as given;  attribution is the Linear app identity.  Writes need the server's write switch on.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -398,7 +412,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           }
@@ -429,7 +443,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Comment"
+      "title": "Linear: Comment"
     },
     {
       "annotations": {
@@ -456,7 +470,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           },
@@ -515,7 +529,7 @@
         ],
         "type": "object"
       },
-      "title": "Linear Status"
+      "title": "Linear: Status"
     },
     {
       "annotations": {
@@ -554,7 +568,7 @@
       },
       "kind": "read",
       "name": "linear_schema",
-      "title": "Linear Schema"
+      "title": "Linear: Schema"
     },
     {
       "annotations": {
@@ -565,9 +579,14 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "full": {
+            "default": false,
+            "description": "Return the full lossless payload.  The default is compact:  at most ten rows and text fields cut to about 280 characters.",
+            "type": "boolean"
+          },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -588,7 +607,7 @@
       },
       "kind": "read",
       "name": "linear_query",
-      "title": "Linear Query"
+      "title": "Linear: Query"
     },
     {
       "annotations": {
@@ -608,7 +627,7 @@
           },
           "max_chars": {
             "default": 24000,
-            "maximum": 64000,
+            "maximum": 1000000,
             "minimum": 1000,
             "type": "integer"
           },
@@ -618,7 +637,7 @@
             "type": "string"
           },
           "session": {
-            "description": "Your session id, for the seat tag line.",
+            "description": "Your session id, recorded on the write.",
             "maxLength": 100,
             "type": "string"
           },
@@ -635,7 +654,7 @@
       },
       "kind": "write",
       "name": "linear_mutation",
-      "title": "Linear Mutation"
+      "title": "Linear: Mutation"
     }
   ]
 }

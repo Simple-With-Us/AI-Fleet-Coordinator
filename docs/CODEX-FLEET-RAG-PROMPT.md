@@ -34,7 +34,7 @@ d. If step a or b failed, run `recall doctor --platforms` in a shell and paste t
    If the ingest:sentinel row says "direct path skipped", note that search still works through
    the recall.jays.services fallback; only ingest/eval need `recall-tunnel up`.
 e. Post one comment on Linear issue OPS-372 in this exact shape:
-   board comment OPS-372 --by CODEX --env Mac --text "surface: stdio-mcp | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
+   simple-board comment OPS-372 --by CODEX --env Mac --text "surface: stdio-mcp | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
 
 From now on in every session:
 - **Search recall at the START of turns and tasks, before re-deriving.**  Evaluate the 4 Search

@@ -6,7 +6,7 @@ Usage-Monitor, and DealDex.
 
 **GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
 **Sibling (new seat):** [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
-**Protocol:** `/Users/jay/apps/AGENT-SYNC.md` · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md  
+**Protocol:** `/Users/jay/apps/FLEET-PROTOCOL.md`  
 Copy `TEMPLATE-AGENTS.md` into the new repo (includes Delegation & model economics + this start-here table).
 
 **Run the script first, then finish the checklist.** The script does the
@@ -35,7 +35,7 @@ A new folder under `~/Code` is **not** a fleet app yet. Peers will not see it
 in Linear, the daily digest, Zulip skim-match, Apple Notes acronyms,
 or iOS ship tooling. Agents will also work in `~/Code/<App>` and collide with
 the integration tree. This procedure is the self-propagation rule from
-`AGENT-SYNC.md`, expanded so the next app is not a scavenger hunt.
+`FLEET-PROTOCOL.md`, expanded so the next app is not a scavenger hunt.
 
 Equally important: once an app **is** onboarded, no further top-level folder
 may be added to `~/Code/` — *except* the integration tree for another
@@ -43,7 +43,7 @@ brand-new fleet app.  Per-seat worktrees, lane checkouts, scratch clones,
 and `*-wt-*` directories all belong in `~/apps/`, never under `~/Code/`.
 `code-main-keeper.sh` (PM2 daemon) scans `~/Code/*` every ~60s and logs a
 `STRAY-WORKTREE` line to `~/apps/logs/code-main-keeper.log` for any linked
-worktree it finds there.  See `AGENT-SYNC.md` § *"Hard rule: `~/Code/` is
+worktree it finds there.  See `FLEET-PROTOCOL.md` § *"Hard rule: `~/Code/` is
 for integration trees only"* (owner ruling 2026-09-25).
 
 ---
@@ -60,9 +60,9 @@ for integration trees only"* (owner ruling 2026-09-25).
    brand-new fleet app being onboarded via this procedure — strays are
    detected and logged by `code-main-keeper.sh` and pruned by the owner.
 2. **Linear, then code.**  The app needs a Linear team keyed by its acronym (Jay creates it, so ask
-   in the claim post).  Claim the onboarding issue with `board claim` (writes need `AGENT_SEAT`) and
+   in the claim post).  Claim the onboarding issue with `simple-board claim` (writes need your bearer-verified seat) and
    move it to In Progress before substantial edits.  There is no effort log to create.
-3. **Claim and closeout:** the Linear issue + `#agent-sync`, and the PR names the issue (`Fixes <ID>`
+3. **Claim and closeout:** the Linear issue + `#Work-In-Progress`, and the PR names the issue (`Fixes <ID>`
    or `Refs <ID>`, branch `<seat>/<id>-<slug>`).
    Do **not** add a per-app Grok Bot seat for the new app.  `GROK-BOT` is
    fleet-wide (Cursor cloud), not a lane in `fleet-apps.json`.
@@ -80,7 +80,7 @@ for integration trees only"* (owner ruling 2026-09-25).
    `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 6. **Light theme is the product default.** Dark is opt-in.
 7. **Two spaces between sentences** in every human-facing string, including
-   App Store listing and review notes.  See `AGENT-SYNC.md` § Two spaces and
+   App Store listing and review notes.  See `FLEET-PROTOCOL.md` § Two spaces and
    `FLEET-UI-COPY.md`.
 8. **New DNS-only app zones go on Cloudflare account Usage.Jays.Services.**
    That is an account name, not the hostname `usage.jays.services`.  Create a
@@ -102,14 +102,14 @@ Pick and write these down. They never change casually.
 |-------|---------|--------|
 | GitHub repo | `DealDex` | `Simple-With-Us/<repo>` |
 | `~/Code` folder | `DealDex` | Same spelling as the repo when possible |
-| Zulip `repo:` | `DealDex` | `repo:` value in every #agent-sync status block |
+| Zulip `repo:` | `DealDex` | `repo:` value in every #Work-In-Progress status block |
 | Acronym | `DD` | Apple Notes `[DD, Grok] …` |
 | Linear team key | `DD` | The acronym;  Jay creates the public team (design section 3) |
 | `codeDir` | `DealDex` | Lanes at `~/apps/lanes/DealDex/grok-<slug>`; the folder is the `~/Code` folder name exactly as spelled |
 | Worktree prefix | `dealdex` | Legacy flat lane names, an accepted `lane new <app>` query and telemetry tags; no longer a lane folder |
 | Visibility | private / public | Match the product |
 
-File and claim one Linear issue on the **AFC** team (`board file --app AFC`) for the onboarding
+File and claim one Linear issue on the **AFC** team (`simple-board file --app AFC`) for the onboarding
 before you start;  the new app's own team is created by Jay in Phase 4.
 
 ---
@@ -137,8 +137,10 @@ exists) · `infra` (PR gate only — do not require digest/publish jobs).
    `git clone https://github.com/Simple-With-Us/<repo>.git ~/Code/<App>`.
 3. If `~/Code/<App>` already has uncommitted product work, **do not**
    `git init` on top of it. Commit or move that work first.
-4. `code-main-keeper` auto-discovers new `~/Code/*` git repos. No edit needed
-   unless the folder should be denylisted (`code-main-keeper.sh` `SKIP_NAMES`).
+4. `code-main-keeper` fast-forwards only the repos on its allowlist and reports every
+   other `~/Code/*` clone without touching it (AFC-618).  Add the new app's
+   folder to `ALLOWLIST_DEFAULT` in `scripts/code-main-keeper.sh`, then copy that file to
+   `~/apps/code-main-keeper.sh`.
 5. Do **not** create `~/Code/copilot-worktrees/<App>/` or any other new folder under
    `~/Code`.  Lanes are per task and live under `~/apps/lanes` (Phase 2).
 
@@ -184,7 +186,7 @@ Required:
 
 | Path | What |
 |------|------|
-| `AGENTS.md` | Worktree keepout, Zulip coordination stanza (Linear, `board`), verify commands, product traps |
+| `AGENTS.md` | Worktree keepout, Zulip coordination stanza (Linear, `simple-board`), verify commands, product traps |
 | `CLAUDE.md` | Symlink to `AGENTS.md` |
 | `STATUS.md` | Snapshot |
 | `docs/rollouts/YYYY-MM-DD-fleet-onboard.md` | This join |
@@ -195,7 +197,7 @@ If the repo's `.gitignore` ignores `AGENTS.md` (Grok / Replit leftover),
 **remove that line**. The fleet pointer must be tracked.
 
 `AGENTS.md` must include the Inter-agent coordination stanza from
-`AGENT-SYNC.md` § "Onboarding a new app/repo", plus the DealDex-style
+`FLEET-PROTOCOL.md` § "Onboarding a new app/repo", plus the DealDex-style
 keepout table with **this** app's paths.
 
 Optional but expected before the app is "done" as a fleet citizen:
@@ -210,7 +212,7 @@ Optional but expected before the app is "done" as a fleet citizen:
 - iOS entry in `/Users/jay/apps/ios-fleet/apps.json` if there is a native app.
 - Native iOS onboarding file (`ios/CLAUDE.md`, `clients/ios/CLAUDE.md`, or
   `native/ios/CLAUDE.md`) with bundle ID, scheme, annotated file tree, and a
-  pointer to AGENT-SYNC § iOS agent build loop (`xcodebuild` via bash is
+  pointer to FLEET-PROTOCOL § iOS agent build loop (`xcodebuild` via bash is
   pre-approved; do not stand up Xcode MCP).
 - Claude iOS write-block hook: copy
   `scripts/block-xcode-project-writes.py` → `.claude/hooks/` and merge
@@ -225,7 +227,7 @@ Optional but expected before the app is "done" as a fleet citizen:
 
 ### Live machine (`/Users/jay/apps` — not a git repo)
 
-- `AGENT-SYNC.md` — intro app list, Apple Notes acronym table, Zulip
+- `FLEET-PROTOCOL.md` — intro app list, Apple Notes acronym table, Zulip
   `repo:` canonical names.  **Do not edit it by hand:**  it is being generated from
   Fleet-OPS `handbook/`, so these rows are a pull request there (the app table is
   `handbook/appendix/reference-tables.md`)
@@ -239,7 +241,7 @@ Optional but expected before the app is "done" as a fleet citizen:
 
 - `fleet-apps.json` — **add the row first**
 - `FLEET-UI-COPY.md`, `TEMPLATE-AGENTS.md` (keep in lockstep with `~/apps`).
-  `AGENT-SYNC.md` is not edited here:  see the handbook pull request above
+  `FLEET-PROTOCOL.md` is not edited here:  see the handbook pull request above
 - `scripts/build-fleet-daily-digest.py` — `DEFAULT_REPOS`,
   `LIVE_EFFORT_FILES`, `REPO_BADGE`, `REPO_APP_ICON`, `REPO_STRIP_ALIASES`,
   CSS color, HTML legend
@@ -267,7 +269,7 @@ Run `python3 scripts/check-fleet-registry.py` until it is clean.
 
 ## Phase 5 — Zulip + Notes
 
-1. Read `#agent-sync` (`agent-sync inbox`, `agent-sync topics --limit 30`), then post a
+1. Read `#Work-In-Progress` (`simple-chat inbox`, `simple-chat topics --limit 30`), then post a
    claim in a work topic such as `AFC-<n> onboard <App>` (the onboarding issue's id):
 
    ```
@@ -277,7 +279,7 @@ Run `python3 scripts/check-fleet-registry.py` until it is clean.
    work:  onboard <App> as a fleet app
    ```
 
-2. After merge: closeout in Zulip (`DONE`, then `agent-sync resolve`), move the Linear issue to Done, write /
+2. After merge: closeout in Zulip (`DONE`, then `simple-chat resolve`), move the Linear issue to Done, write /
    update Apple Notes `[<ACRONYM>, FLEET, Grok] onboard <App>` in folder
    **Coding** via `/Users/jay/apps/apple-notes-coding.sh`.
 
@@ -299,7 +301,7 @@ Do **not** invent these. Ask the owner or stop after listing them.
 | Usage-Monitor producer wiring | Only if this app will push telemetry |
 
 Coolify token split still applies: never put `COOLIFY_AGENTS` into Infisical
-as app `COOLIFY_API_TOKEN`. See `AGENT-SYNC.md`.
+as app `COOLIFY_API_TOKEN`. See `FLEET-PROTOCOL.md`.
 
 ---
 
@@ -308,7 +310,7 @@ as app `COOLIFY_API_TOKEN`. See `AGENT-SYNC.md`.
 1. PR on the **new app** (bootstrap files).
 2. PR on **AI-Fleet-Coordinator** (registries + this doc if you changed it).
 3. Merge both when CI is green.
-4. Confirm the Linear team exists (Jay) and `board file --app <ACRONYM>` lands in it.
+4. Confirm the Linear team exists (Jay) and `simple-board file --app <ACRONYM>` lands in it.
 5. Confirm `~/Code/<App>` fast-forwards to `main` (code-main-keeper or
    `git -C ~/Code/<App> pull --ff-only`).
 
@@ -322,7 +324,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 2. Stop and unload any LaunchAgent or pm2 job, and mark its row **Retired** in `MAC-LOCAL-PROCESSES.md`, then refresh the Apple Note.
 3. Move local checkouts and worktrees to the Trash (never `rm -rf`), after pushing any unpushed work to an `archive/<name>` branch.
 4. Remove the row from `fleet-apps.json`, the `DEFAULT_REPOS` and `FLEET_REPOS` lists, the ios-fleet `apps.json`, and `ios-app-versions.json`, then run `check-fleet-registry.py`.
-5. Close the app's open Linear issues with a resolution that names the successor (`board status <id> wontfix --resolution ...`), then ask Jay to archive its Linear team.
+5. Close the app's open Linear issues with a resolution that names the successor (`simple-board status <id> wontfix --resolution ...`), then ask Jay to archive its Linear team.
 6. List App Store Connect, Sentry, and Infisical cleanup as owner follow-ups.  ASC app records cannot be deleted once builds exist.
 
 ---
@@ -332,11 +334,11 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 - [ ] `~/Code/<App>` is a git checkout of `Simple-With-Us/<repo>` on `main`
 - [ ] The onboarding PR was made from a lane under `~/apps/lanes/<codeDir>/`, not from `~/Code/<App>`
 - [ ] `AGENTS.md` is tracked and forbids working in `~/Code/<App>`
-- [ ] The Linear team exists (Jay) and `board file --app <ACRONYM>` lands in it
+- [ ] The Linear team exists (Jay) and `simple-board file --app <ACRONYM>` lands in it
 - [ ] `fleet-apps.json` has the row
 - [ ] Digest + calendar `DEFAULT_REPOS` include the repo
 - [ ] Apple Notes acronym table includes the acronym
-- [ ] Zulip `repo:` name is in `AGENT-SYNC.md`
+- [ ] Zulip `repo:` name is in `FLEET-PROTOCOL.md`
 - [ ] `check-fleet-registry.py` exits 0
 - [ ] Zulip claim + closeout posted
 - [ ] Remaining owner dashboard items are listed, not silently skipped

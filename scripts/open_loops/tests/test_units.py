@@ -48,13 +48,24 @@ class CentralTime(unittest.TestCase):
 
 class Urls(unittest.TestCase):
     def test_hash_encoding_matches_the_listeners(self):
-        from agent_sync import adapters
+        from simple_tools import adapters
         for text in ("OWNER FFX-1 pick a color", "a.b c", "100% sure", "FFX-284 open-loops gather, render, send", "ü and 日本"):
             self.assertEqual(urls.hash_part(text), adapters._hash_part(text), text)
 
     def test_zulip_links_are_built_from_ids(self):
-        self.assertEqual(urls.topic_url("OWNER FFX-1 x"), "%s/#narrow/channel/%d-agent-sync/topic/OWNER.20FFX-1.20x" % (urls.REALM, urls.STREAM_ID))
+        self.assertEqual(urls.topic_url("OWNER FFX-1 x"), "%s/#narrow/channel/%d-%s/topic/OWNER.20FFX-1.20x" % (urls.REALM, urls.STREAM_ID, urls.CHANNEL))
         self.assertTrue(urls.message_url("t", 12).endswith("/topic/t/near/12"))
+
+    def test_the_channel_is_the_one_the_owner_renamed_the_stream_to(self):
+        # The realm renamed the coordination channel on 2026-10-22, so a narrow link built
+        # from the old name points at a stream nobody reads.  This is the drift guard:  when the
+        # realm renames the channel again, urls.CHANNEL has to move with it.
+        # The stream id stays out of this test on purpose:  a test must not carry a production
+        # resource id, and the id itself does not move when the channel is renamed.
+        self.assertEqual(urls.CHANNEL, "work-in-progress")
+        self.assertIsInstance(urls.STREAM_ID, int)
+        self.assertGreater(urls.STREAM_ID, 0)
+        self.assertIn("/channel/%d-%s/" % (urls.STREAM_ID, urls.CHANNEL), urls.topic_url("t"))
 
     def test_pr_and_linear_links_are_validated(self):
         self.assertEqual(urls.pr_url("Simple-With-Us/example-repo", 3), "https://github.com/Simple-With-Us/example-repo/pull/3")
@@ -157,7 +168,7 @@ class ZulipSignals(Sandbox):
     def setUp(self):
         super().setUp()
         self.world = World()
-        self.world.programs(self.bin, ["agent-sync"])
+        self.world.programs(self.bin, ["simple-chat"])
 
     def read(self, wanted, **kw):
         return zulip_topics.read_signals(self.world.runner(), wanted, **kw)
@@ -166,30 +177,30 @@ class ZulipSignals(Sandbox):
         return dict({"timestamp": int((NOW - timedelta(hours=hours)).timestamp()), "seat": seat}, **extra)
 
     def test_only_messages_that_name_a_seat_count(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
-        self.world.agent_sync["read"] = {"FFX-1 thing": [self.message("CLAUDE", 2), self.message(None, 1), {"seat": "CODEX"}, self.message("", 1)]}
+        self.world.simple_chat["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
+        self.world.simple_chat["read"] = {"FFX-1 thing": [self.message("CLAUDE", 2), self.message(None, 1), {"seat": "CODEX"}, self.message("", 1)]}
         got = self.read([{"identifier": "FFX-1", "seat": "CLAUDE"}])
         self.assertEqual(got["by_ident"]["FFX-1"], {"ok": True, "events": [{"at": ago(2), "by": "CLAUDE"}]})
 
     def test_the_topic_must_start_with_the_identifier_and_a_space(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-10 other", "max_id": 3}, {"name": "FFX-1", "max_id": 2}, {"name": "FFX-1 thing", "max_id": 1},
+        self.world.simple_chat["topics"] = [{"name": "FFX-10 other", "max_id": 3}, {"name": "FFX-1", "max_id": 2}, {"name": "FFX-1 thing", "max_id": 1},
                                            {"name": "xFFX-1 thing", "max_id": 9}]
-        self.world.agent_sync["read"] = {"FFX-1": [self.message("CLAUDE", 5)], "FFX-1 thing": [self.message("CLAUDE", 4)]}
+        self.world.simple_chat["read"] = {"FFX-1": [self.message("CLAUDE", 5)], "FFX-1 thing": [self.message("CLAUDE", 4)]}
         got = self.read([{"identifier": "FFX-1", "seat": "CLAUDE"}])
         self.assertEqual(len(got["by_ident"]["FFX-1"]["events"]), 2)
         self.assertEqual(got["reads"], 2)
 
     def test_a_failed_read_is_ok_false(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
-        self.world.agent_sync["read_rc"] = {"FFX-1 thing": 6}
+        self.world.simple_chat["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
+        self.world.simple_chat["read_rc"] = {"FFX-1 thing": 6}
         self.assertEqual(self.read([{"identifier": "FFX-1", "seat": "X"}])["by_ident"]["FFX-1"], {"ok": False})
 
     def test_a_topic_list_that_may_be_cut_off_makes_a_missing_topic_unknown(self):
-        self.world.agent_sync["topics"] = [{"name": "T%d" % i, "max_id": i} for i in range(zulip_topics.TOPICS_LIMIT)]
+        self.world.simple_chat["topics"] = [{"name": "T%d" % i, "max_id": i} for i in range(zulip_topics.TOPICS_LIMIT)]
         self.assertEqual(self.read([{"identifier": "FFX-1", "seat": "X"}])["by_ident"]["FFX-1"], {"ok": False})
 
     def test_the_read_budget_skips_the_rest_without_failing(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 200)]
+        self.world.simple_chat["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 200)]
         wanted = [{"identifier": "FFX-%d" % i, "seat": "X"} for i in range(1, 150)]
         got = self.read(wanted)
         self.assertEqual(got["reads"], zulip_topics.MAX_READS)
@@ -198,7 +209,7 @@ class ZulipSignals(Sandbox):
         self.assertEqual(got["status"], "ok")
 
     def test_the_time_budget_stops_the_reads(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 5)]
+        self.world.simple_chat["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 5)]
         clock = iter([0, 0, 1000, 1000, 1000, 1000, 1000])
         got = self.read([{"identifier": "FFX-%d" % i, "seat": "X"} for i in range(1, 5)], monotonic=lambda: next(clock))
         self.assertGreaterEqual(got["skipped"], 1)

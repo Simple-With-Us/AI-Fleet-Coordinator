@@ -15,6 +15,7 @@ fails if one contains
 
 Findings print as `file:line:rule`, never the text that matched.  Exit 0 clean, 1 findings, 2 usage.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,9 +25,28 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-FALLBACK_TEAM_KEYS = ("ST", "CT", "UM", "CTS", "DD", "AFC", "PS", "AR", "CL", "BF", "HH", "OPS", "C", "FL", "CC", "SWU")
+FALLBACK_TEAM_KEYS = (
+    "ST",
+    "CT",
+    "UM",
+    "CTS",
+    "DD",
+    "AFC",
+    "PS",
+    "AR",
+    "CL",
+    "BF",
+    "HH",
+    "OPS",
+    "C",
+    "FL",
+    "CC",
+    "SWU",
+)
 SYNTHETIC_UUID = re.compile(r"^00000000-0000-4000-8000-[0-9a-f]{12}$")
-UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+UUID = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
 BANNED_WORDS = ("jaywedgeworth", "wedgeworth", "jays.services", "simplewithus", "zulipchat")
 PATHS = ("/Users/", "/Volumes/")
 
@@ -34,7 +54,9 @@ PATHS = ("/Users/", "/Volumes/")
 def real_team_keys() -> tuple[str, ...]:
     board = HERE.parent / "linear-board" / "board"
     try:
-        match = re.search(r"^TEAM_KEYS\s*=\s*\(([^)]*)\)", board.read_text(encoding="utf-8"), re.MULTILINE)
+        match = re.search(
+            r"^TEAM_KEYS\s*=\s*\(([^)]*)\)", board.read_text(encoding="utf-8"), re.MULTILINE
+        )
     except OSError:
         match = None
     if match:
@@ -45,7 +67,7 @@ def real_team_keys() -> tuple[str, ...]:
 
 
 def _scanner():
-    path = HERE.parent / "agent_sync" / "secretscan.py"
+    path = HERE.parent / "simple_tools" / "secretscan.py"
     if not path.is_file():
         return None
     spec = importlib.util.spec_from_file_location("_ff_check_secretscan", path)
@@ -90,7 +112,11 @@ def check_tree(root: Path) -> list[tuple[str, int, str]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--root", default=str(HERE / "tests"), help="the folder to scan (default: this package's tests)")
+    parser.add_argument(
+        "--root",
+        default=str(HERE / "tests"),
+        help="the folder to scan (default: this package's tests)",
+    )
     args = parser.parse_args(argv)
     root = Path(args.root)
     if not root.is_dir():
@@ -100,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
     for name, number, rule in findings:
         print("%s:%d:%s" % (name, number, rule))
     if findings:
-        sys.stderr.write("check_fixtures: %d finding(s);  fixtures must be synthetic\n" % len(findings))
+        sys.stderr.write(
+            "check_fixtures: %d finding(s);  fixtures must be synthetic\n" % len(findings)
+        )
         return 1
     print("check_fixtures: clean")
     return 0

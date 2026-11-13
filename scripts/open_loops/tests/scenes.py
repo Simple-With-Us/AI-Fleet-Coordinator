@@ -84,7 +84,7 @@ def standard_world(home: Path, bin_dir: Path, *, programs: bool = True, now: dat
         ]},
     }
     if programs:
-        w.programs(bin_dir, ["gh", "board", "fleet-autopush", "needs-owner", "agent-sync", "fleet-facts"])
+        w.programs(bin_dir, ["gh", "simple-board", "fleet-autopush", "needs-owner", "simple-chat", "fleet-facts"])
         (home / "apps").mkdir(exist_ok=True)
         w.programs(home / "apps", ["lane"])
     return w

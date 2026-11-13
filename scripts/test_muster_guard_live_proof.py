@@ -413,6 +413,56 @@ class CheckPolicy(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["missed"], [])
 
+    def test_a_failed_hook_retains_the_terminal_error(self):
+        diagnostic = "early frame " * 30 + "terminal interpreter failure"
+        command = write_fake_hook(
+            self.root / "broken.sh", "printf '%s' '" + diagnostic + "' >&2; exit 127"
+        )
+        plugin = write_plugin(self.root, "Bash|bash", command)
+        result = proof.check_policy(proof.read_plugin(plugin))
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("terminal interpreter failure", result["why"])
+        self.assertNotIn(diagnostic, result["why"])
+
+    def test_a_crashing_handler_does_not_hide_a_later_denial(self):
+        """The verdict must not depend on the order the groups are declared in."""
+        crashing = write_fake_hook(self.root / "broken.sh", "exit 127")
+        denying = write_fake_hook(self.root / "guard.sh", deny_all_body())
+        verdicts = []
+        for groups in (
+            [("Bash|bash", crashing), ("Bash|bash", denying)],
+            [("Bash|bash", denying), ("Bash|bash", crashing)],
+        ):
+            plugin = write_plugin_groups(self.root / str(len(verdicts)), groups)
+            result = proof.check_policy(proof.read_plugin(plugin))
+            verdicts.append((result["ok"], result["status"]))
+        self.assertEqual(verdicts[0], verdicts[1])
+        self.assertTrue(verdicts[0][0])
+
+    def test_an_unstartable_handler_does_not_hide_a_later_denial(self):
+        missing = str(self.root / "missing-hook")
+        denying = write_fake_hook(self.root / "guard.sh", deny_all_body())
+        for groups in (
+            [("Bash|bash", missing), ("Bash|bash", denying)],
+            [("Bash|bash", denying), ("Bash|bash", missing)],
+        ):
+            plugin = write_plugin_groups(self.root / str(len(groups[0][1])), groups)
+            result = proof.check_policy(proof.read_plugin(plugin))
+            self.assertTrue(result["ok"])
+
+    def test_an_invalid_argv_does_not_hide_an_aggregate_denial(self):
+        denying = write_fake_hook(self.root / "guard.sh", deny_all_body())
+        for index, groups in enumerate(
+            (
+                [("Bash|bash", "'unclosed"), ("Bash|bash", denying)],
+                [("Bash|bash", denying), ("Bash|bash", "'unclosed")],
+            )
+        ):
+            plugin = write_plugin_groups(self.root / str(index), groups)
+            result = proof.check_policy(proof.read_plugin(plugin))
+            self.assertTrue(result["ok"])
+
     def test_an_allowing_hook_fails(self):
         command = write_fake_hook(self.root / "allow.sh", "exit 0")
         plugin = write_plugin(self.root, "Bash|bash", command)

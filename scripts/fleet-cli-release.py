@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -22,87 +23,209 @@ import tomllib
 import uuid
 from pathlib import Path, PurePosixPath
 
-MAX_BUNDLE_BYTES = 8 * 1024 * 1024
-MAX_FILES = 128
+# Two-step cap raise (Nov 11-12, 2026).  The receiver accepts up to 12 MiB.  Step 2 set
+# fleet-cli-sync.py MAX_BYTES to 11 MiB, leaving at least 1 MiB of headroom.  The sender
+# runs this file from the published source commit (python3 -c), so the pairing does not
+# depend on a host install.  The receiver cap must never be below the sender cap.
+MAX_BUNDLE_BYTES = 12 * 1024 * 1024
+# The reviewed allowlisted runtime contains 154 files.  Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
+# library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
+# platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
+# (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026);  the 138th and 139th are notes_service_reader.py and mcp/bearer_gate.py (from main);  the 140th and 141st are platform_letter_muse.py and muse_session_rename.py (the Muse adapter);  the 142nd is platform_letter_grok_leader.py (the Grok adapter);  the 143rd is platform_letter_antigravity.py (the Antigravity adapter), added for that review.
+# The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
+# and its implementation;  tests and the offline catalog fixture stay repo-only).
+# The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
+# Files 147 and 148 are the existing low-level scoped verifier library; no secrets CLI ships.
+# The 149th is simple_tools/listener_registry.py, the Operator session-registry service the daemon
+# serves over the listener HTTPS API (Path B, operator.simplewithus.com).
+# The 151st is simple_tools/registry_api.py, the signed client the package's own registry callers
+# (the operator-registry CLI, the platform-letter registry side) use to reach that API.
+# The 153rd is simple_tools/operator_sheets_google.mjs, the Google Sheets operator adapter shipped beside the
+# AFC-412 PR2 exporter as a data file (AFC-412 PR3, this PR).
+# The 154th is simple_tools/operator_sheets_drain.mjs, the OPS-1037 production drain runner shipped beside the
+# exporter it calls (its systemd units stay repo-only under simple_tools/server/).
+# The 155th is simple_tools/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# dispatches for Muster's Seats panel.
+# The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
+# The 157th is simple_tools/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
+# The 158th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
+# unit template stays repo-only under simple_tools/server/).
+# The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
+# env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
+# The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
+# simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
+# unit template stays repo-only under simple_tools/server/).
+# The 163rd is simple_tools/platform_letter_clutch.py (the Clutch session-letter adapter) and the 164th is
+# simple_tools/platform_letter_fx.py (the Fx session-letter adapter, which registers from the fx session store).
+# The 165th is simple_tools/operator_linear.py (AFC-565, the Operator's Zulip-to-Linear living comments
+# service the daemon hosts).
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048, the shared wake
+# router and Claude's delivery;  `simple-chat wake-deliver` has to run on the Mac, so they ship).
+# The 168th is simple_tools/wake_settings.py (OPS-1048, the router's settings through fleet_knobs).
+# The 169th and 170th are simple_tools/thread_registry.py (the Operator chat-thread registry the listener
+# keeps) and simple_tools/thread_registry_export.mjs (its Google drain, a data file beside the Python
+# modules), added for that review.
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the platform modules the wake router
+# registers ahead of them (codex_wake, muse_wake, zcode_wake), so a new module no longer has to move it;
+# fleet-cli-sync.py keeps the same number, and a test checks the two agree and the bundle fits.
+MAX_FILES = 180
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
-# The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
-# (exported from scripts/agent-sync-mcp by scripts/export-linear-catalog.mjs).
+# Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
+# `previous`, or a release a live process still runs from.  RELEASE_LIMIT is the backstop when everything is protected.
+KEEP_RELEASES = 10
+RELEASE_LIMIT = 32
+RELEASE_NAME = re.compile(r"[0-9a-f]{64}")
+# The Simple-Tools Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
+# (exported from scripts/simple-tools-mcp by scripts/export-linear-catalog.mjs).
 LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inputs.json")
 # `recall` runs from these fleet_rag modules only (its static import closure).  `recall eval` and
 # `recall ingest` import eval/ingest lazily;  they are Mac and Hetzner-box jobs and are not shipped.
 RECALL_MODULES = (
+    "storage_guard",
     "__init__",
     "contribute_guard",
     "core",
     "doctor",
     "health",
+    "infisical_settings",
     "public_fallback",
     "recall_api",
+    "recall_presentation",
     "scrub",
+    "search_cache",
     "search_log",
     "telemetry",
 )
-# `agent-sync` reads the NOTES_RELAY_CONSUMER knob through these fleet_knobs modules (stdlib only;  the package's
-# tests, its inventory CLI and its README stay out).  Without them a host silently falls back to the default consumer.
+# `simple-notes` reads the OPERATOR_API_URL knob through these fleet_knobs modules (stdlib only;  the package's
+# tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
+SCOPED_READER_MODULES = ("__init__", "core")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
-LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
+LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout", "placement", "temp_build")
 AFC331_FILES = (
-    "scripts/agent_sync/mcp/notes-tools.json",
-    "scripts/agent_sync/mcp/recall-tools.json",
+    "scripts/simple_tools/mcp/notes-tools.json",
+    "scripts/simple_tools/mcp/peer-actions-tools.json",
+    "scripts/simple_tools/mcp/recall-tools.json",
     "scripts/linear-board/catalog/core-tools.json",
-    "docs/protocols/agent-sync-tools-guide.md",
+    "docs/protocols/simple-tools-guide.md",
 )
 EXACT = frozenset(
     {
-        "scripts/agent-sync",
+        "scripts/simple-chat",
+        "scripts/simple-notes",
+        "scripts/simple-peer-actions",
+        "scripts/simple-board",
+        "scripts/simple_tools/post_header.py",
+        # The git tools CLI entry wrapper and implementation.
+        "scripts/simple-git",
+        "scripts/git-tools/git",
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
-        "docs/protocols/agent-sync-partition.toml",
+        "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
-        "scripts/agent_sync/mcp/tools.json",
-        "scripts/agent_sync/mcp/fixtures.jsonl",
+        "scripts/simple_tools/mcp/tools.json",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
-        # and the enabled Grok Bot personas).
-        "scripts/agent_sync/mcp/listener-tools.json",
-        "scripts/agent_sync/mcp/renamed-tools.json",
-        "scripts/agent_sync/mcp/gb-identities.json",
+        # and the enabled Grok bots).
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
+        "scripts/simple_tools/mcp/renamed-tools.json",
+        "scripts/simple_tools/mcp/gb-identities.json",
         # AFC-331:  the notes_* and recall_* tool contracts, the core Linear tools the stdio server serves
         # through board, and the guide tool's text.
         *AFC331_FILES,
-        "scripts/agent_sync/wake/wake-schema.json",
+        "scripts/simple_tools/wake/wake-schema.json",
         *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
         "scripts/recall",
         *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
         "scripts/fleet_lanes/bin/lane",
         *("scripts/fleet_lanes/" + name + ".py" for name in LANE_MODULES),
+        "scripts/fleet_lanes/placement-exceptions.json",
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
+        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
-        # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `agent-sync mcp` reads it at startup.
-        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
+        # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
+        "scripts/simple_tools/operator_sheets_export.mjs",
+        "scripts/simple_tools/operator_sheets_google.mjs",
+        # OPS-1037:  the production drain runner, shipped beside the exporter and adapter it wires.
+        "scripts/simple_tools/operator_sheets_drain.mjs",
+        # The Operator chat-thread registry drain:  the same shape as the outbox exporter above — the Node
+        # writer that owns the service-account auth, shipped as a data file beside the Python modules.
+        "scripts/simple_tools/thread_registry_export.mjs",
+        # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
+        # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
+        "scripts/simple_tools/opencode_letter_plugin/index.js",
+        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to).
+        "scripts/zc-wake-bridge",
+        # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
+        "scripts/ag-wake-bridge",
+    }
+)
+# Paths that match the allowlist pattern (or were previously named in EXACT) but that nothing runs, on any
+# host, so they stay in the repository and out of the release (AFC-768, Nov 11, 2026).  Every module that a
+# host or an installer still runs or loads stays in the release, even when today's hosts run it from a git
+# checkout:  the release path is dormant (the server runs from git since Oct 19, 2026), and a release must
+# still be whole if it is ever used again.  Each Python module below has no importer outside this set and
+# the repo-only tests:
+#   - operator_github_client, operator_github_policy, operator_github_secrets:  the OPS-966 token broker's
+#     outer layers, which git-relay replaced as the one minting path (owner decision Oct 22, 2026);  kept for
+#     review history and their repo-only tests.
+#   - operator_send and clarify:  Operator DM paths that are not wired in (simple_tools/README.md).
+#   - mcp/fixtures.jsonl:  golden cases the unit suites load from the checkout;  `simple-chat mcp` does not
+#     read them at runtime.  Leaving them out of the bundle keeps the encoded sender payload under the
+#     sender cap after AFC-756 (list_presentation plus the compact/full catalog fields).
+# A new module still ships by default:  this list only ever names a path that nothing runs.
+REPO_ONLY = frozenset(
+    {
+        *(
+            "scripts/simple_tools/" + name + ".py"
+            for name in (
+                "clarify",
+                "operator_github_client",
+                "operator_github_policy",
+                "operator_github_secrets",
+                "operator_send",
+            )
+        ),
+        "scripts/simple_tools/mcp/fixtures.jsonl",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
 # release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
+# The simple-* entry points are NOT here (they are in TOOL_REQUIRED):  a retained older release may not carry them,
+# so demanding them would make status and rollback refuse exactly the rollback targets they exist for.
 BASE_REQUIRED = frozenset(
     {
-        "scripts/agent-sync",
         "scripts/linear-board/board",
         "fleet-apps.json",
         *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
-        "scripts/agent_sync/__init__.py",
-        "scripts/agent_sync/cli.py",
-        "scripts/agent_sync/mcp/stdio.py",
-        "scripts/agent_sync/mcp/tools.json",
+        "scripts/simple_tools/__init__.py",
+        "scripts/simple_tools/cli.py",
+        "scripts/simple_tools/mcp/stdio.py",
+        "scripts/simple_tools/mcp/tools.json",
         "scripts/fleet-cli-release.py",
     }
 )
 # The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
 TOOL_REQUIRED = frozenset(
     {
+        # The CLI entry points:  a new bundle must carry them, but a retained older release may not and
+        # stays a valid rollback target.
+        "scripts/simple-chat",
+        "scripts/simple-notes",
+        "scripts/simple-peer-actions",
+        "scripts/simple-board",
+        # The git tools CLI.  TOOL_REQUIRED, not BASE_REQUIRED:  a retained pre-git release stays a valid
+        # rollback target (the smoke skips cases whose script a rollback target does not carry).
+        "scripts/simple-git",
+        "scripts/git-tools/git",
         "scripts/recall",
         *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
         "scripts/fleet_lanes/bin/lane",
@@ -110,13 +233,28 @@ TOOL_REQUIRED = frozenset(
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         *AFC331_FILES,
-        # The listener_* MCP tools (AFC-330):  `agent-sync mcp` reads it at startup.
-        "scripts/agent_sync/mcp/listener-tools.json",
+        # The eavesdropper_* MCP tools (AFC-330):  `simple-chat mcp` reads it at startup.
+        "scripts/simple_tools/mcp/eavesdropper-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        # The fleetlink_* MCP tools:  `agent-sync mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
+        # Required scoped verifier dependency for new knobs/recall bundles, without the generic CLI.
+        *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
+        # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
-        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        "scripts/simple_tools/mcp/fleetlink-tools.json",
+        # The fleet secret scanner (standard library only):  every remote transport scans its arguments with it
+        # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
+        # built before it stays a valid rollback target.
+        "scripts/simple_tools/secretscan.py",
+        # Shared by the native chat and board formatters; required only for newly received bundles.
+        "scripts/simple_tools/post_header.py",
+        # Imported by notes_client: new bundles need it, older rollback targets do not.
+        "scripts/simple_tools/notes_service_reader.py",
+        "scripts/simple_tools/peer_actions.py",
+        "scripts/simple_tools/peer_actions_cli.py",
+        "scripts/simple_tools/fleet_bearer.py",
+        # New stdio bundles must carry the hard-imported own-bearer gate. Older rollback targets stay valid.
+        "scripts/simple_tools/mcp/bearer_gate.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
@@ -124,6 +262,11 @@ REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
 
 class Refused(Exception):
     """Only fixed, non-sensitive error codes leave this program."""
+
+
+def shipped_path(path: str) -> bool:
+    """What a new bundle carries:  the allowlist minus the repo-only files."""
+    return allowed_path(path) and path not in REPO_ONLY
 
 
 def allowed_path(path: str) -> bool:
@@ -136,9 +279,11 @@ def allowed_path(path: str) -> bool:
         return False
     if path in EXACT:
         return True
+    if path in REPO_ONLY:
+        return False
     return bool(
-        re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py")
+        re.fullmatch(r"scripts/simple_tools/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
+        or path in ("scripts/simple_tools/__init__.py", "scripts/simple_tools/mcp/__init__.py")
     )
 
 
@@ -241,10 +386,106 @@ def point(base: Path, name: str, release: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def releases_in_use(releases: Path, proc: Path = Path("/proc")) -> set[str]:
+    """Names of the releases a live process runs from:  its cwd, executable, command line (the wrappers exec the
+    resolved release path), mapped files and open files.  Linux /proc only;  elsewhere it finds none, and
+    `current` and `previous` stay protected anyway."""
+    prefixes = {str(releases) + os.sep, str(releases.resolve()) + os.sep}
+    found: set[str] = set()
+
+    def note(text: str) -> None:
+        for prefix in prefixes:
+            start = 0
+            while (at := text.find(prefix, start)) >= 0:
+                start = at + len(prefix)
+                name = text[start : start + 64]
+                if RELEASE_NAME.fullmatch(name):
+                    found.add(name)
+
+    try:
+        pids = [entry for entry in proc.iterdir() if entry.name.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        for link in ("cwd", "exe"):
+            try:
+                note(os.readlink(pid / link))
+            except OSError:
+                pass
+        try:
+            cmdline = (pid / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            cmdline = ""
+        note(cmdline)
+        # The expensive reads (full maps and every open descriptor) run only for a process
+        # whose command line already mentions a release prefix;  the wrappers exec the
+        # resolved release path, so a process using a release names it there.
+        if not any(prefix in cmdline for prefix in prefixes):
+            continue
+        try:
+            note((pid / "maps").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"))
+        except OSError:
+            pass
+        try:
+            fds = list((pid / "fd").iterdir())
+        except OSError:
+            fds = []
+        for fd in fds:
+            try:
+                note(os.readlink(fd))
+            except OSError:
+                pass
+    return found
+
+
+def prune(base: Path, keep: int, proc: Path = Path("/proc")) -> list[str]:
+    """Delete all but the newest `keep` releases, oldest first.  `current`, `previous` and any release a live
+    process runs from are never deleted (they still count toward `keep`).  Only real directories with a release
+    name are touched;  anything else in releases/ is left alone.  Returns the names deleted.  Call under the lock."""
+    releases = base / "releases"
+    protected = set()
+    for pointer in ("current", "previous"):
+        try:
+            path = release_at(base, pointer)
+        except Refused:
+            # A dangling or replaced pointer protects nothing:  its target is gone or
+            # it is not a release link at all, and a broken pointer must not abort pruning.
+            path = None
+        if path:
+            protected.add(path.name)
+    protected |= releases_in_use(releases, proc)
+    rows = []
+    for entry in releases.iterdir():
+        if RELEASE_NAME.fullmatch(entry.name) and entry.is_dir() and not entry.is_symlink():
+            rows.append((entry.stat().st_mtime, entry.name, entry))
+    rows.sort(reverse=True)
+    removed = []
+    retained = 0
+    for _mtime, name, entry in rows:
+        if retained < keep or name in protected:
+            # Protected releases still consume retention budget, so the total stays at `keep`.
+            retained += 1
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            removed.append(name)
+    return removed
+
+
 def smoke(release: Path, home: Path) -> None:
     for path in release.rglob("*"):
         if path.is_file() and (
-            path.suffix == ".py" or path.name in ("board", "agent-sync", "recall")
+            path.suffix == ".py"
+            or path.name
+            in (
+                "board",
+                "simple-chat",
+                "simple-notes",
+                "simple-board",
+                "simple-git",
+                "git",
+                "recall",
+            )
         ):
             try:
                 compile(path.read_bytes(), str(path), "exec")
@@ -253,10 +494,18 @@ def smoke(release: Path, home: Path) -> None:
     # Only an empty temporary HOME and a minimal environment reach the smoke processes.
     env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENT_SEAT": "CODEX"}
     cases = [
-        ("agent_sync_version", "scripts/agent-sync", ["--version"], 0),
-        ("agent_sync_mcp_help", "scripts/agent-sync", ["mcp", "--help"], 0),
-        ("board_help", "scripts/linear-board/board", ["--help"], 0),
-        ("board_missing_credentials", "scripts/linear-board/board", ["whoami"], 4),
+        ("simple_chat_version", "scripts/simple-chat", ["--version"], 0),
+        ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
+        ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
+        ("simple_board_help", "scripts/simple-board", ["--help"], 0),
+        # A usage error exits 2 before any credential is read, with or without the host's seat helper.  The
+        # earlier case ran `whoami` and expected exit 4 (missing credentials), which depended on the host:  a host that
+        # has the helper and a bearer for the smoke seat authenticates and exits 0, and every release was refused.
+        ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
+        # Same shape as the board cases:  --help prints and exits 0, and a usage error exits 2, with a blank
+        # HOME and no credentials, with or without the host's seat helper.
+        ("simple_git_help", "scripts/simple-git", ["--help"], 0),
+        ("simple_git_usage_error", "scripts/simple-git", ["call"], 2),
         ("recall_help", "scripts/recall", ["--help"], 0),
         ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
         ("fleet_mode_block", "scripts/fleet-mode", [], 0),
@@ -282,11 +531,169 @@ def smoke(release: Path, home: Path) -> None:
 
 
 BASH_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane", "scripts/fleet-mode"})
+# The volume a host keeps its integration trees and its apps folder on when the
+# home directory holds no alias for them.  The server keeps both on a volume and
+# links no ~/Code or ~/apps into the home, so a tool that resolves only the home
+# finds no tree and no repo.  The path is not in this repository:  the host names
+# it in the environment, and a host that names none has no volume.  The managed
+# wrappers carry the roots, so every shell that calls them resolves the same
+# directories, with or without an interactive login (owner 2026-10-25).
+ENV_SERVER_VOLUME = "FLEET_SERVER_VOLUME"
+ENV_CODE_ROOT = "FLEET_CODE_ROOT"
+ENV_APPS_ROOT = "FLEET_APPS_ROOT"
+ENV_LANES_ROOT = "FLEET_LANES_ROOT"
+ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
+# Tools whose wrapper runs the host's seat-scoped remote defaults before the tool starts.  The helper is
+# host configuration (never part of a release and never holding a credential value);  the wrapper only names it.
+# Lifecycle contract:  whether the helper exists is decided when the wrapper is generated.
+#   - A host without the helper keeps the plain wrapper.  Provisioning the helper later (its owner, parent
+#     custody and exact hash qualified first) takes effect only when the canonical --install regenerates the
+#     managed wrappers;  a routine update writes missing wrappers only and never rewrites an existing one.
+#   - A wrapper generated with the helper fails closed if the helper is removed later:  runpy raises before the
+#     tool is exec'd, so the command exits nonzero.  There is deliberately no runtime fallback to a plain run,
+#     because that would silently drop the seat's own route.
+HELPER_COMMANDS = {
+    "scripts/simple-chat": "simple-chat",
+    "scripts/simple-board": "simple-board",
+    "scripts/recall": "recall",
+    # simple-git: a process that DECLARES a seat (AGENT_SEAT, AGENT_TAG or the launcher seat) gets that
+    # seat's OWN bearer from the host helper, the same as the commands above.  A process that declares
+    # no seat gets nothing from the helper and supplies its own bearer (env or the hidden prompt), and
+    # the server still decides identity and permissions from the bearer it receives.  The helper refuses
+    # an inherited bearer that is not the declared seat's own, and conflicting declarations, and the
+    # implementation then checks the declared seat against the seat the server reports.  The helper
+    # must carry the simple-git entry (scripts/git-tools/testdata/seat-remote-defaults.capture.py);  a
+    # helper without it refuses the command, so a host whose helper is older keeps its existing plain
+    # wrapper until the helper is updated and the wrapper is installed again.
+    "scripts/simple-git": "simple-git",
+}
+HELPER_PATH = ".config/fleet-cli/seat-remote-defaults.py"
+
+
+def expand(candidate: str, home: Path) -> Path:
+    """A path the host named, with `~` expanded against the given home.
+
+    The home is the one the release runs under, and a test runs inside a throwaway
+    home, so a `~` never resolves against the real one.  A `~user` spelling names
+    another account's home, and it is left exactly as it was named.
+    """
+    text = candidate.strip()
+    if text == "~":
+        text = str(home)
+    elif text.startswith("~/"):
+        text = str(home) + text[1:]
+    return Path(text)
+
+
+def host_root(home: Path, name: str) -> str:
+    """The host's folder for `name` ("Code" or "apps").
+
+    A root the caller configured wins, because that is the root the rest of the
+    fleet is using.  Then the copy under the home wins when it is there; then the
+    volume the host names holds these folders, and it holds the real trees when
+    the home holds no alias for them.
+
+    The authoritative resolution for the fleet is `server_working_dirs.py`
+    (server_volume(), code_root(), apps_root(), lanes_root()) and the roots the
+    lane tools read in `fleet_lanes/layout.py`.  This is the release's own copy,
+    because the release payload ships no fleet_lanes module, and the two must
+    agree.
+    """
+    configured = (os.environ.get(ENV_CODE_ROOT if name == "Code" else ENV_APPS_ROOT) or "").strip()
+    if configured:
+        return str(expand(configured, home))
+    local = home / name
+    if local.is_dir():
+        return str(local)
+    raw = (os.environ.get(ENV_SERVER_VOLUME) or "").strip()
+    if raw:
+        volume = expand(raw, home) / name
+        if volume.is_dir():
+            return str(volume)
+    return str(local)
+
+
+def host_lanes_root(home: Path, apps: str) -> str:
+    """The lanes root this host names, or the one beside the apps folder.
+
+    A host that names its lanes root carries that one:  the lanes do not always sit
+    beside the apps folder, and a wrapper that derived one would point the lane
+    tools at a directory the host does not use.
+    """
+    named = (os.environ.get(ENV_LANES_ROOT) or "").strip()
+    if named:
+        return str(expand(named, home))
+    candidate = os.path.join(apps, "lanes")
+    return candidate if os.path.isdir(candidate) else ""
+
+
+def root_exports(home: Path) -> str:
+    """The root exports a wrapper sets when the caller has not set them itself.
+
+    Every line is a setdefault and never an assignment, so the environment wins
+    over the wrapper.
+    """
+    code = host_root(home, "Code")
+    apps = host_root(home, "apps")
+    lanes = host_lanes_root(home, apps)
+    return (
+        f"os.environ.setdefault('FLEET_CODE_ROOT', {code!r})\n"
+        f"os.environ.setdefault('FLEET_APPS_ROOT', {apps!r})\n"
+        + (f"os.environ.setdefault('FLEET_LANES_ROOT', {lanes!r})\n" if lanes else "")
+    )
+
+
+#: The tool whose wrapper carries the registry settings into the process it runs.  A session-letter hook is launched with no
+#: profile, so its environment holds neither the registry URL nor its key, and the host's own env script is what sets them.
+#: The settings are read in SHELL before the script is exec'd:  no Python of this repository reads that file.
+REGISTRY_ENV_SCRIPT = "scripts/platform-letter"
+#: The env scripts, under the home folder, in the order they are looked for:  the first one that is a file is the one used.
+REGISTRY_ENV_FILES = (".local/bin/platform-letter-registry-env", ".local/bin/operator-registry-env")
+REGISTRY_ENV_NAMES = (
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+)
+#: Managed wrappers a routine update REWRITES when the host has an older managed one (it carries MARKER, it is a regular
+#: file and no link):  the registry settings of a server's hooks arrive through the wrapper, so a wrapper without them
+#: would drop them at the update.  Every other wrapper is only ever written when it is missing.
+REFRESHED_WRAPPERS = frozenset({"platform-letter"})
+
+
+def registry_env_wrapper(home: Path, script: str) -> bytes:
+    """The wrapper of REGISTRY_ENV_SCRIPT:  a bash script that sources the host's registry env script, when there is
+    one, and then runs the release's script as every other managed Python tool is run (isolated, the arguments and the
+    standard input as they came).
+
+    The first of REGISTRY_ENV_FILES that is a file is used.  It is run once in a subshell with its output thrown away,
+    and is sourced into the wrapper only when that run got to its end, so a script that exits cannot stop the hook from
+    running:  the hook runs without the settings.  A script that fails, or does not parse, is sourced as far as bash
+    goes and the hook runs all the same.  Nothing it prints is shown, and its status is not the wrapper's.  The names
+    it may set are exported, whether or not it exported them."""
+    names = " ".join(REGISTRY_ENV_NAMES)
+    files = " ".join('"$HOME/%s"' % name for name in REGISTRY_ENV_FILES)
+    target = str(home / ".local/share/fleet-cli/current" / script)
+    return (
+        f"#!/bin/bash\n{MARKER}\n"
+        "# The registry settings of a session-letter hook come from the host's env script, sourced here in shell.\n"
+        f"for f in {files}; do\n"
+        '  if [ -f "$f" ]; then\n'
+        '    if [ "$( . "$f" >/dev/null 2>&1 </dev/null; echo ok )" = ok ]; then\n'
+        '      . "$f" >/dev/null 2>&1 </dev/null\n'
+        f"      export {names}\n"
+        "    fi\n"
+        "    break\n"
+        "  fi\n"
+        "done\n"
+        f'exec /usr/bin/python3 -I -B {shlex.quote(target)} "$@"\n'
+    ).encode()
 
 
 def wrapper(
     home: Path, script: str, extra: list[str] | None = None, codex_only: bool = False
 ) -> bytes:
+    if script == REGISTRY_ENV_SCRIPT and not extra and not codex_only:
+        return registry_env_wrapper(home, script)
     guard = ""
     if codex_only:
         guard = """
@@ -300,10 +707,27 @@ for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT"):
 """
     # Python tools run isolated;  the two bash tools run under bash with the caller's environment.
     interpreter = ["/bin/bash"] if script in BASH_SCRIPTS else ["/usr/bin/python3", "-I", "-B"]
+    roots = root_exports(home) if script in ROOTED_SCRIPTS else ""
+    helper = ""
+    # Only a host that has installed the helper gets the lines:  a wrapper that runs a missing file would break
+    # its tool, and a host without the helper keeps the plain wrapper it has today.
+    helper_file = home / HELPER_PATH
+    if (
+        script in HELPER_COMMANDS
+        and not codex_only
+        and helper_file.is_file()
+        and not helper_file.is_symlink()
+    ):
+        helper = (
+            "import runpy\n"
+            f"runpy.run_path({str(home / HELPER_PATH)!r}, init_globals={{'fleet_command': {HELPER_COMMANDS[script]!r}}})\n"
+        )
     return (
         f"#!/usr/bin/python3 -I\n{MARKER}\nimport os, sys\nfrom pathlib import Path\n"
+        + helper
         + guard
         + f"release = Path({str(home / '.local/share/fleet-cli/current')!r}).resolve(strict=True)\n"
+        + roots
         + f"argv = {repr(interpreter)[:-1]}, str(release / {script!r})] + {extra or []!r}\n"
         + ("" if codex_only else "argv += sys.argv[1:]\n")
         + "os.execv(argv[0], argv)\n"
@@ -314,12 +738,16 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
     """Every managed command wrapper a release provides, by path."""
     bin_dir = home / ".local/bin"
     return {
-        bin_dir / "board": (wrapper(home, "scripts/linear-board/board"), 0o755),
-        bin_dir / "agent-sync": (wrapper(home, "scripts/agent-sync"), 0o755),
-        bin_dir / "agent-sync-codex-mcp": (
+        bin_dir / "simple-board": (wrapper(home, "scripts/simple-board"), 0o755),
+        # The user-facing Git command.
+        bin_dir / "simple-git": (wrapper(home, "scripts/simple-git"), 0o755),
+        bin_dir / "simple-chat": (wrapper(home, "scripts/simple-chat"), 0o755),
+        bin_dir / "simple-notes": (wrapper(home, "scripts/simple-notes"), 0o755),
+        bin_dir / "simple-peer-actions": (wrapper(home, "scripts/simple-peer-actions"), 0o755),
+        bin_dir / "simple-chat-codex-mcp": (
             wrapper(
                 home,
-                "scripts/agent-sync",
+                "scripts/simple-chat",
                 ["mcp", "--default-seat", "CODEX", "--codex-thread-meta"],
                 True,
             ),
@@ -329,19 +757,66 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "recall": (wrapper(home, "scripts/recall"), 0o755),
         bin_dir / "lane": (wrapper(home, "scripts/fleet_lanes/bin/lane"), 0o755),
         bin_dir / "fleet-mode": (wrapper(home, "scripts/fleet-mode"), 0o755),
+        # AFC-564: the session-letter hook and its registry side for the non-Claude platforms.  The git-update path
+        # runs the whole checkout, so the script is there once a release holds it.  The paused Mac-push bundle path
+        # would also need it in EXACT (and the doctor's SHIPPED_EXACT).
+        bin_dir / "platform-letter": (wrapper(home, "scripts/platform-letter"), 0o755),
+    }
+
+
+CODEX_KEY = (
+    "simple-chat"  # local stdio MCP mode of the simple-chat CLI (the hosted server is ST-MCP)
+)
+
+
+def codex_mcp_expected(bin_dir: Path) -> dict:
+    return {
+        "command": str(bin_dir / "simple-chat-codex-mcp"),
+        "env_vars": [
+            "AGENT_LAUNCHER",
+            "AGENT_LAUNCH_SEAT",
+            "AGENT_SEAT",
+            "AGENT_TAG",
+            "AGENT_SESSION",
+        ],
+    }
+
+
+def assigned_codex_mcp_expected(home: Path) -> dict:
+    """The owner's assigned hosted transport; only recognize it, never install or rewrite it."""
+    return {
+        **codex_mcp_expected(home / ".local/bin"),
+        "command": str(home / ".local/libexec/codex-simple-tools"),
     }
 
 
 def new_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
     """On a routine update (no --install), the wrappers a newer release added that this host lacks.
-    Only absent paths are written:  an existing file, managed or not, and a symlink are left alone, and
-    the Codex config is never touched here.  Without this, a command added after the first install
-    (recall, lane, fleet-mode) would ship in every release and never reach PATH."""
-    return {
+    Only absent paths are written:  an existing file, managed or not, and a symlink are left alone.
+    Without this, a command added after the first install (recall, lane, fleet-mode) would ship in
+    every release and never reach PATH.
+
+    The Codex config is not written here."""
+    files = {
         path: entry
         for path, entry in wrapper_files(home).items()
         if not path.exists() and not path.is_symlink()
     }
+    return files
+
+
+def refreshed_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+    """The managed wrappers of REFRESHED_WRAPPERS the host has in an older form:  a regular file (never a link) that
+    carries MARKER and differs from what this release generates.  Anything else, a wrapper the host wrote itself
+    included, is left as it is."""
+    files = {}
+    for path, entry in wrapper_files(home).items():
+        if path.name not in REFRESHED_WRAPPERS or path.is_symlink() or not path.is_file():
+            continue
+        current = path.read_bytes()
+        if MARKER.encode() in current and current != entry[0]:
+            files[path] = entry
+    return files
 
 
 def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
@@ -352,6 +827,7 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
             path.exists() and (not path.is_file() or MARKER.encode() not in path.read_bytes())
         ):
             raise Refused("existing_unmanaged_wrapper")
+    expected = codex_mcp_expected(bin_dir)
     config = home / ".codex/config.toml"
     if config.is_symlink() or (config.exists() and not config.is_file()):
         raise Refused("unsafe_codex_config")
@@ -362,29 +838,24 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         before = tomllib.loads(original.decode())
     except (ValueError, UnicodeError):
         raise Refused("invalid_codex_config") from None
-    expected = {
-        "command": str(bin_dir / "agent-sync-codex-mcp"),
-        "env_vars": [
-            "AGENT_LAUNCHER",
-            "AGENT_LAUNCH_SEAT",
-            "AGENT_SEAT",
-            "AGENT_TAG",
-            "AGENT_SESSION",
-        ],
-    }
-    present = before.get("mcp_servers", {}).get("agent-sync")
-    if present is not None and present != expected:
-        raise Refused("existing_agent_sync_mcp_conflict")
+    servers = before.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise Refused("invalid_codex_config")
+    present = servers.get(CODEX_KEY)
+    # A current-key registration is left untouched when it is the one this tool writes or the owner's
+    # assigned hosted transport (the exact standard environment passthrough);  anything else is a conflict.
+    if present is not None and present not in (expected, assigned_codex_mcp_expected(home)):
+        raise Refused("existing_simple_chat_mcp_conflict")
     if present is None:
         addition = (
-            "\n# Local CODEX-only fleet MCP; no credentials or pinned seat.\n"
-            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(expected["command"]) + "\n"
+            "\n# Local CODEX-only fleet MCP (simple-chat mcp); no credentials or pinned seat.\n"
+            "[mcp_servers.simple-chat]\ncommand = " + json.dumps(expected["command"]) + "\n"
             "env_vars = " + json.dumps(expected["env_vars"]) + "\n"
         ).encode()
         after_raw = original.rstrip(b"\n") + b"\n" + addition
         after = tomllib.loads(after_raw.decode())
         desired = copy.deepcopy(before)
-        desired.setdefault("mcp_servers", {})["agent-sync"] = expected
+        desired.setdefault("mcp_servers", {})[CODEX_KEY] = expected
         if after != desired:
             raise Refused("codex_config_semantics_changed")
         mode = stat.S_IMODE(config.stat().st_mode) if config.exists() else 0o600
@@ -410,6 +881,13 @@ def verify_existing(release: Path, files: dict) -> None:
             raise Refused("existing_release_changed")
 
 
+def retained_path(path: str) -> bool:
+    # A retained release was judged by the policy that installed it.  A path that policy shipped and REPO_ONLY
+    # has since kept out is still a valid member of that older release, so status and rollback keep accepting
+    # it:  narrowing the release must never strand the rollback target it exists for.
+    return allowed_path(path) or path in REPO_ONLY
+
+
 def verify_retained(release: Path) -> dict:
     metadata = release / "release.json"
     if (
@@ -432,7 +910,7 @@ def verify_retained(release: Path) -> dict:
             raise Refused("invalid_release_metadata")
         for name, entry in files.items():
             if (
-                not allowed_path(name)
+                not retained_path(name)
                 or set(entry) != {"mode", "sha256"}
                 or type(entry["mode"]) is not int
                 or entry["mode"] not in (0o644, 0o755)
@@ -475,14 +953,18 @@ def receive(raw: bytes, home: Path, install: bool = False) -> dict:
             verify_retained(new)
             verify_existing(new, bundle["files"])
         else:
-            if len(list((base / "releases").iterdir())) >= 32:
-                raise Refused("release_retention_limit")
             stage = Path(tempfile.mkdtemp(prefix=".stage-", dir=base))
             try:
                 for name, data in decoded.items():
                     atomic_write(stage / name, data, bundle["files"][name]["mode"])
                 with tempfile.TemporaryDirectory(prefix=".smoke-", dir=base) as empty:
                     smoke(stage, Path(empty))
+                # Room for the new one, only now that the bundle passed smoke:  a refused
+                # bundle leaves retention unchanged.  Keep the newest KEEP_RELEASES - 1,
+                # so at most KEEP_RELEASES after activation.
+                prune(base, KEEP_RELEASES - 1)
+                if len(list((base / "releases").iterdir())) >= RELEASE_LIMIT:
+                    raise Refused("release_retention_limit")
                 json_write(
                     stage / "release.json",
                     {
@@ -573,6 +1055,9 @@ def control(home: Path, command: str) -> dict:
             atomic_write(base / "paused", b"paused by operator\n")
         elif command == "resume":
             (base / "paused").unlink(missing_ok=True)
+        elif command == "prune":
+            removed = prune(base, KEEP_RELEASES)
+            return {**control(home, "status"), "removed": len(removed)}
         elif command == "rollback":
             previous, current = release_at(base, "previous"), release_at(base, "current")
             if not previous or not current:
@@ -588,7 +1073,9 @@ def control(home: Path, command: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["receive", "status", "pause", "resume", "rollback"])
+    parser.add_argument(
+        "command", choices=["receive", "status", "pause", "resume", "rollback", "prune"]
+    )
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args(argv)

@@ -1,33 +1,32 @@
 # Title + structure standard (binding — all seats, all apps; owner 2026-08-09)
 
-> Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
+> Moved from `FLEET-PROTOCOL.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in FLEET-PROTOCOL.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
-**Title (note name / first heading row) — ALWAYS start with app acronym(s) + agent:**
+**Title (note name / first heading row) — ALWAYS start with team key acronym(s) + Agent:**
 
 ```
-[APP, Agent] short topic title
+[TEAM_KEY, Agent] Topic
 ```
 
 Examples:
 - `[UM, Grok] TestFlight first ship + export compliance`
-- `[ST, Monet] Pinecone WU breaker and embed staging`
+- `[ST, Codex] Pinecone WU breaker and embed staging`
 - `[CT, Claude] stuck-filing recovery (deterministic)`
-- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-app
+- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-team key
 - `[AFC, Grok] Apple Notes title/timestamp standard`
 
 Rules:
-- **App acronyms FIRST, then agent name**, comma-separated inside `[]`, then a space,
-  then the short topic. **No** bare `App — topics` titles; **no** "session" in the title.
+- **TEAM_KEY FIRST, then Agent**, comma-separated inside `[]`, then a space,
+  then the short topic. **No** bare `Team key — topics` titles; **no** "session" in the title.
 - **Multiple apps** when more than one is impacted: list each acronym
-  (`[ST, CT, UM, Grok] …`). Order = impact order (primary first).
-- **Agent display name** (Title Case, not the ALL-CAPS chat tag):  
-  `Grok` | `Grok Build` | `Monet` | `Claude` | `Codex` | `Cursor` | `AG` | `Kimi` | `Copilot` | `MiniMax` | `DeepSeek Harness` | …
+  (`[ST, CT, UM, GROK] …`). Order = impact order (primary first).
+- **Agent rendering:** use the canonical Title Case `notesName` for the verified calling seat, such as `Claude`, `Codex` or `Grok Web`.  The exact uppercase seat tag remains accepted for compatibility; another seat’s name is refused.
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
 
-**App acronym table (generalized — extend when new apps join the fleet):**
+**Team key acronym table (generalized — extend when new apps join the fleet):**
 
-| Acronym | App / Scope | Repo / Details |
+| Acronym | Team key / Scope | Repo / Details |
 |---------|-------------|----------------|
 | `ST` | Socratic.Trade | `Simple-With-Us/Socratic-Trade` |
 | `CT` | Congress.Trade | `Simple-With-Us/Congress.Trade` |
@@ -40,7 +39,7 @@ Rules:
 | `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | `PS` | Personal-Site | `Simple-With-Us/Personal-Site` |
 | `CTS` | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
-| `FLEET` | Zulip wake (`@**all**` in #agent-sync, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | A recipient only.  Never a SENDER tag. |
+| `FLEET` | Zulip wake (`@**all**` in #Work-In-Progress, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS.  | A recipient only.  Never a SENDER tag.  |
 
 **Second row of the note (first body line) — ALWAYS the local create/update stamp + optional PR numbers:**
 
@@ -50,7 +49,7 @@ Sun, Aug 9, 3:52pm · PR #18
 
 - Format: `Day, Mon D, h:mmam|pm · PR #<num>` — **no leading zero** on day or hour; **lowercase** `am`/`pm`; local Mac timezone. Append related PR numbers on the same line separated by a divider (` · PR #18` or ` · PR #18, PR #19`).
 - This is the **created or last-updated** time. On every `--update`, **refresh this line** to now (do not leave a stale create-only stamp when the note changed). Pass `--pr "18"` to `apple-notes-coding.sh` to auto-inject the PR numbers on the timestamp line.
-- **Third row, the session (AFC-361):** `Session: <id> - Mon, Oct 19, 9:40pm`, directly under the timestamp.  `apple-notes-coding.sh` writes it from `--session`, `AGENT_SESSION` or the seat's platform variable, refuses to create or update without one, and refreshes it on every `--update`.  A headless resume reads it to find the seat's session for the note's topic.  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and write no Session row.
+- **Third row, the session (AFC-361):** `Session: <id>`, a small line directly under the timestamp, with no second date (owner, Oct 19).  A chat tag such as `session8` is not a session id and is refused.  `apple-notes-coding.sh` writes it from `--session`, `AGENT_SESSION` or the seat's platform variable, refuses to create or update without one, and refreshes it on every `--update`.  A headless resume reads it to find the seat's session for the note's topic.  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and write no Session row.
 - After the timestamp line: blank line, then optional type line (`Completion` / `Plan` / `Review` / `Design` / `Handoff` / `Rollout` / `Incident` / `Fleet change` / `Work log`), then content.
 - Helper auto-injects/refreshes the timestamp line and preserves PR numbers.
 

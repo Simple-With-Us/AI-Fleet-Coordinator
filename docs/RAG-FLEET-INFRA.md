@@ -35,8 +35,9 @@ collections and is no longer ST-only.
 | `fleet-agents` | grows nightly | The shared agent memory.  Embedded by the **self-hosted** endpoint. |
 
 `fleet-agents` is 1024-dim cosine, vectors in RAM, with payload indexes on `source`, `app`,
-`category`, `seat`, `doc_id`, `content_hash`, `created_at`, and a full-text index on `text` so
-keyword and vector search are fused (see *Search*).
+`category`, `seat`, `doc_id`, `content_hash`, `created_at`, and `retracted` (bool), plus a
+full-text index on `text` so keyword and vector search are fused (see *Search*).  The recall
+service creates the `retracted` index idempotently before its first search after deploy.
 
 ### Payload schema (v2)
 
@@ -45,7 +46,7 @@ Every point carries:
 ```jsonc
 {
   "text":         "[Title › Section]\nthe chunk",
-  "source":       "board | effort-log | apple-note | doc | skill | memory | chat-log | agent-contribution | meta",
+  "source":       "board | linear | effort-log | apple-note | doc | skill | memory | chat-log | agent-contribution | meta",
   "app":          "fleet | socratic-trade | congress-trade | usage-monitor | dealdex | botfleet | ...",
   "category":     "lesson | preference | infrastructure | decision | runbook | finding | note | doc",
   "seat":         "CLAUDE | MONET | GROK | CODEX | AG | CURSOR | OWNER | FLEET",
@@ -66,20 +67,48 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 
 | Source | Where it comes from | Notes |
 |---|---|---|
-| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`;  a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
-| `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[APP, Agent]` title convention |
-| `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
+| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`, frozen at the retirement) | category `lesson` when resolved, else `finding`; url is the Linear issue from the migration map |
+| `linear` | All live and archived Linear issues through the installed `simple-board` read-only GraphQL path. Untouched imported history is included, independent of `findings.db`, the migration TSV or freeze date. Committed ingest state controls incremental refetches; `FLEET_RAG_LINEAR_FULL=1` bypasses that cache and selects every scanned UUID. Comment edits can escape issue timestamps, so the committed `refreshed_at` window still forces periodic refetches (default 7 days). Issue chunks halve on the CLI cap; a single issue retries with one connection node, and follow-on comments, labels and attachments page completely with adaptive widths, cursor-progress checks and a per-chunk deadline. A single-field overflow remains an identified incomplete issue, never a partial document. Run `linear_read_receipt` records every scanned UUID, selected count, fetched/cached/skipped status, skip reason and fetched Markdown SHA256. `source_complete` means an unlimited read fetched every scanned UUID without skips; `state_hash_verified` separately compares fetched text with committed ingest state. Neither proves independent Qdrant chunk coverage or authorizes deletion. Linear is in the normal nightly source set, but explicit Linear prune remains refused and nightly Linear prune is skipped, even with FULL. Board/effort reconciliation and retired-file deletion require separate validated coverage and clearance. Stable doc ID `linear/<issue-uuid>` survives team moves; app from `app:<slug>` else team mapping | category `lesson` for completed state, otherwise `finding`; seat from `seat:`/`claimed:` labels |
+
+Agent-facing recall text is presented as nonce-fenced JSON with an explicit warning that hits
+are untrusted data, never instructions or owner approval. The shared `recall_presentation`
+helper covers the standalone stdio MCP, recall-service MCP, seat-mcp and CLI text surfaces.
+
+**Compact by default (AFC-742).** `recall_search` returns a token-thrift payload unless the
+caller opts in with `full=true` / `--full`.  Compact mode keeps a modest default top-k (3 when
+`limit` is omitted), collapses multiple chunks from the same `doc_id` to the best-scoring hit,
+truncates `text` to `FLEET_RECALL_SNIPPET_CHARS` (default 280), and optionally narrows output
+with a `fields` list.  Explicit `limit` values are preserved.  MCP `structuredContent`, fenced
+text, REST `/recall/search`, and CLI text mode share this presentation.  CLI `--json` and the
+in-process Python `recall_api.recall_search` return/remain full-fidelity for machine pipelines.
+
+The JSON inside the fence is lossless relative to the presented payload: delimiter-like text
+uses JSON Unicode escapes, not source removal. Machine consumers must treat their hits as
+untrusted source data and separately verify authority before acting; indexing text does not
+authenticate it.
+No text fence can make an agent immune to prompt injection. The hosted/simple-tools MCP already
+has its own untrusted recall envelope. `install-fleet-rag.sh --with-seat-mcp` now copies the
+seat server renderer as well as its bridge/tools; the main package rsync and service Docker
+COPY include the shared helper. These source changes do not install, restart or deploy a
+runtime by themselves.
+
+| `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, Agent] Topic` title convention |
+| `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Also skip coverage and framework output, vendored and third-party trees, lockfiles, generated names, minified files, binaries, and files over the size cap.  Those new excludes are held out of prune until a dry run writes `doc-diet-report.json` and the operator passes `--prune-excluded`, sets `FLEET_RAG_PRUNE_EXCLUDED=1`, or sets `FLEET_RAG_PRUNE_EXCLUDED_ALLOW`.  Identical chunk bodies in one doc-source run are stored once, and later paths are listed on `also_paths`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
-| `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md` | deduped by content |
+| `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md`, and `~/.grok/skills/*/SKILL.md` | deduped by content |
 | `memory` | `~/.claude/projects/*/memory/*.md`, `~/.codex/memories/*.md` | the per-seat silos, so their lessons are shared |
 | `chat-log` | infrequent policy scan of agent transcripts (not in `ingest --all`) | **Owner 2026-09-02:** only user turns that look like an owner ruling or infra/policy shift.  Not a lesson dump.  Agents contribute lessons via `recall_contribute`; chat review is sparingly for policy/infra drift.  Explicit `recall ingest --source chat-log`. |
 | `agent-contribution` | `recall contribute` / `recall_contribute` | **Highest-yield write path.**  Scrubbed, gitleaks-gated, 40–4,000 chars.  Search first, then contribute the lesson at the moment it was learned. |
 
 Mirror rules keep one copy of each document: the live `~/apps/*.md` copy wins over its
-repo mirror (AGENT-SYNC, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
+repo mirror (FLEET-PROTOCOL, MAC-LOCAL-PROCESSES, FLEET-UI-COPY, TEMPLATE-AGENTS), the by-seat and
 repo copies of skills are skipped in favour of the `skill` source, effort-log mirrors are skipped
 in favour of the live boards, and checkouts reachable under two spellings are walked once.
-`recall ingest --prune` deletes the chunks of documents a source no longer yields.
+`recall ingest --prune` deletes the chunks of documents a source no longer yields.  Documents the doc diet newly excludes stay until that explicit release.
+
+The nightly server job and the Mac mirror are in `docs/RAG-NIGHTLY-INGEST.md` (AFC-687).  Both ship disabled.
+
+The server nightly and the ingest CLI check the Mac mirror marker `/home/jay/fleet-rag-mirror/current/.complete` (AFC-760).  When that file is missing, or its stamp is older than `FLEET_RAG_MIRROR_MAX_AGE_S` (default 36 hours, allowed from 1 hour to 14 days), ingest and prune are skipped for the mirror-backed sources `skill`, `memory`, and `apple-note`.  Linear, doc, and any other selected source still run.  A stale or missing marker never prunes those three sources, and `FLEET_RAG_PRUNE_FORCE=1` does not lift that skip.  The nightly summary `~/.local/state/fleet-rag-nightly/last.json` records `mirror_stale` with `reason`, `marker`, `max_age_s`, and `age_s` (seconds since the stamp, or null when the marker is missing).  A fresh marker leaves `mirror_stale` null.  Apple Notes stay out of the nightly command and are still never pruned when the marker is fresh.  When that server tree is in use and the marker is fresh, skill and memory are read from that tree.  A Mac run that does not set `FLEET_RAG_MIRROR`, and does not have that server tree, keeps reading local skill and memory files.
 
 Every chunk goes through the secret scrub (`scripts/fleet_rag/scrub.py`: well-known token shapes,
 assignment patterns, basic-auth URLs) and then a gitleaks gate over the staged rows; anything
@@ -156,6 +185,39 @@ the chat log.  Search first, then contribute one paragraph.  Chat transcripts ar
 ingested as lessons; `ingest --all` skips `chat-log`.  An explicit `--source chat-log` pass is
 a rare infra/policy scan of owner rulings only.
 
+**Correction and retraction (2026-11-05).**  A contribution can be corrected or taken back by
+exact `doc_id`; the take-back operation is named *retraction*, never "recall".  The owning
+seat, or the `OWNER` admin seat, may mutate it.  On the shared HTTP service the OWNER claim
+requires the distinct `RECALL_OWNER_TOKEN` bearer; a client-supplied seat value alone is never
+proof.  `recall_correct` replaces the current text in
+one Qdrant point upsert on the same point id and `doc_id`:  the old text, hash, title and URL
+move into the payload's `revisions[]` audit with actor, time and reason, `revision` increments,
+and only the current `text` is embedded or searched.  A same-text correction with new metadata
+updates that same point's title/URL and audit; one with no text or metadata change returns
+`status: unchanged`.  Contributing text that already occupies the deterministic point id returns
+`duplicate`, even when that point was retracted or later corrected to different text, so a write
+can never erase retraction audit or resurrect old text by overwrite.  `recall_retract` makes one
+Qdrant payload write setting `retracted`,
+`retracted_at`, `retracted_by` and `retraction_reason`; it never deletes the point, and a
+repeat returns `already_retracted`.  Normal search excludes retracted contributions by
+construction (`include_retracted=True` is the audit view), and a retracted contribution cannot
+be corrected back to life.  Replacement text, reasons, titles and URLs get the same scrub and
+fail-closed gitleaks gate as a contribution.  `expected_revision` is an optional optimistic
+precondition for a caller that read first.
+
+Supported fleet mutation surfaces route through the single recall service process (the stock CLI,
+stdio MCP, seat-mcp and hosted Worker all use the public service route).  `QDRANT_URL` and
+`TEI_URL` alone do not select a local mutation path: an SSH tunnel can point those variables at
+the shared corpus, and that would bypass the service lock and OWNER bearer check.  Only an
+explicit `FLEET_RECALL_LOCAL_MUTATIONS=1` Run-your-own override uses the same implementation in
+that operator's process against their own corpus instead; a local OWNER mutation still requires
+`RECALL_OWNER_TOKEN`, and local mutations are outside the fleet service's serialization.
+`recall_api._MUTATION_LOCK` serializes the read-modify-write
+inside that one process, and each write is deliberately a one-point Qdrant operation because
+Qdrant has no cross-point transaction or compare-and-set.  If the service is ever scaled to
+multiple replicas, that in-process lock no longer spans writers:  run mutations behind one
+writer or add an external lock/leader before scaling out.
+
 ### From a Mac seat (Claude, Codex, Cursor, Grok, Antigravity, Monet)
 
 The `fleet-recall` MCP server is registered in every CLI's global MCP config by
@@ -165,21 +227,27 @@ calls `python3 -m fleet_lanes.install_mcp` for them (each tool's native shape, a
 hand-registered entry is left alone).  Clutch is not in the list: it carries `fleet-recall` as a native agent preset
 (`~/.clutch/dsh/.agent-presets/fleet-recall`), and a second copy would double the tools.  Tools:
 
-- `recall_search(query, limit=5, category?, app?, source?, seat?, since_days?)`
+- `recall_search(query, limit=5, category?, app?, source?, seat?, since_days?, include_retracted?)`
 - `recall_contribute(text, category, app="fleet", seat, title?, url?)`
+- `recall_correct(doc_id, text, reason, seat, title?, url?, expected_revision?)`
+- `recall_retract(doc_id, reason, seat, expected_revision?)`
 - `recall_stats()`
 
-The CLI is `recall`, on PATH through `~/.local/bin/recall` like `board` (the old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19):
+The CLI is `recall`, on PATH through `~/.local/bin/recall` like `simple-board` (the old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19):
 
 ```bash
 recall "pm2 orphan holds port"                       # ranked hits with source, date, board id / url
 recall "rotate the Coolify token" --app fleet --limit 3 --since-days 60
 recall contribute "TEI warmup memory scales with --max-batch-tokens; 4096 under 10 GiB is stable." --category lesson --app fleet
+recall correct contrib/CLAUDE/2026-11-05/472fc36e "Replacement lesson text ..." --reason "make the command exact"
+recall retract contrib/CLAUDE/2026-11-05/472fc36e --reason "obsolete after the bridge rewrite"
+recall "old lesson" --include-retracted         # audit view only
 recall stats            # points, by source / app, embedder health
-recall doctor           # credentials found (names only), key mode, service health
+recall doctor [--json]  # setup health: token file mode 600, Infisical read, TEI, Qdrant, mirror and
+                        # nightly last.json where configured, install layout, ingest.lock (SKIP when N/A)
 recall eval --k 5 [--compare]   # golden-set retrieval quality, with/without lessons and rerank
 recall digest --days 7          # this week's contributions grouped by app (the weekly owner note)
-recall doctor --platforms --box # parity table: every CLI config, skills, hooks, seat-mcp, routines, box rows
+recall doctor --platforms --box # Mac parity table: CLI configs, skills, hooks, seat-mcp, routines, box rows
 recall ingest --all --prune     # what the nightly routine runs (idempotent, resumable)
 ```
 
@@ -199,7 +267,7 @@ loop.
 2026-09-08).  The `recall` CLI and the stdio `fleet-recall-mcp.py` both call `recall_api`
 directly against `TEI_URL` / `QDRANT_URL` -- Tailscale mesh addresses -- so a Mac that is
 logged out of Tailscale used to fail every `recall_search` / `recall_stats` /
-`recall_contribute` with a slow, opaque `RemoteDisconnected` / `ConnectionError` traceback
+`recall_contribute`, `recall_correct` or `recall_retract` with a slow, opaque `RemoteDisconnected` / `ConnectionError` traceback
 (`core.http_json` retries a connection failure 4x with backoff before giving up).  Both
 surfaces now route every call through `public_fallback.call_with_fallback`, which:
 
@@ -256,7 +324,7 @@ with the local connection error, the Tailscale-down check, and the public call m
 network, no real subprocess).
 
 **Troubleshooting: the transparent proxy makes SSH/direct-connect failures look like
-successes.**  `nc -z -G 6 -w 6 167.233.254.55 47123` (a closed port on the Hetzner box)
+successes.**  `nc -z -G 6 -w 6 <the Hetzner host address> 47123` (a closed port on the Hetzner box; the host address is private deployment inventory, so it lives in the operator's own inventory on that Mac)
 "succeeding" in well under a second -- instead of refusing the connection or timing out --
 means this network's client-side transparent TCP proxy is intercepting the connect, not that
 the port is actually open.  Seeing that: stop retrying SSH by hand (it will keep "connecting"
@@ -308,11 +376,12 @@ Access service-token headers when you are not already on the Mac.
 | Mac CLI (Claude, Codex, Cursor, Grok, AG, Monet) | stdio MCP `fleet-recall` (installer) or `recall` CLI |
 | BotFleet on this Mac | inherits that stdio MCP from the engine config |
 | Cursor cloud / Claude Code Cloud / Codex cloud / Grok Bot | remote MCP `https://recall.jays.services/mcp` (entry `fleet-recall` in `scripts/seat-mcp/mcp.example.json`); `https://agents.jays.services/mcp` when you need seat tools too |
-| Anything that can HTTP | REST: `GET https://recall.jays.services/recall/stats`, `POST .../recall/search`, `POST .../recall/contribute` (same paths on agents.jays.services) |
+| Anything that can HTTP | REST: `GET https://recall.jays.services/recall/stats`, `POST .../recall/search`, `POST .../recall/contribute`, `POST .../recall/correct`, `POST .../recall/retract` (same paths on agents.jays.services) |
 | iOS BotFleet | same REST or remote MCP; the companion talks to the Mac harness when the Mac is the computer, otherwise `recall.jays.services` |
 
-MCP tools on `/mcp`: `recall_search`, `recall_stats`, `recall_contribute` (`seat` is required
-for contributions on both hops; a remote caller has no `AGENT_SEAT`).  REST bodies are the same
+MCP tools on `/mcp`: `recall_search`, `recall_stats`, `recall_contribute`, `recall_correct`,
+and `recall_retract` (`seat` is required for mutations on both hops; a remote caller has no
+`AGENT_SEAT`).  REST bodies are the same
 JSON as the MCP arguments.  The Hetzner service is a stdlib-only Python process
 (`scripts/fleet-recall-service/server.py`) that imports `fleet_rag.recall_api` unchanged and
 reads its configuration from the environment only (`QDRANT_*`, `TEI_*`, `RECALL_API_TOKEN`);
@@ -390,7 +459,7 @@ and `FLEET_RAG_HANDOFF_FILE` override the defaults this repo ships for its owner
 
 | Routine | Schedule | What it does |
 |---|---|---|
-| Fleet RAG nightly ingest | daily 02:30 local | `recall ingest --all --prune`, reads `~/apps/fleet-rag/state/last-run.json`, retries once, files a P1 in Linear (`board file`) on repeated failure |
+| Fleet RAG nightly ingest | daily 02:30 local | `recall ingest --all --prune`, reads `~/apps/fleet-rag/state/last-run.json`, retries once, files a P1 in Linear (`simple-board file`) on repeated failure |
 | Fleet RAG weekly health + recall eval | Sundays 06:30 local | `recall doctor --platforms --box` / `stats` / `eval` / `digest --days 7`, checks `recall.jays.services/health` and yesterday's snapshot, writes the owner note "[FLEET, Oracle] Weekly recall digest", files a P1 on regressions |
 
 Both routines start with a preflight (added Tue, Sep 8, 2026): `recall doctor --platforms`, and when the `ingest:sentinel` (or `tei:rerank`) row says the direct path is skipped because Tailscale is logged out, `recall-tunnel up` plus the three tunnel URLs on every recall command, then `recall-tunnel down`.  Without it the nightly failed every night from Sep 3 to Sep 8 while the corpus itself stayed green.
@@ -409,17 +478,175 @@ checksums it, copies it to Backblaze B2 (`jays-socratic-trade-eu/qdrant/socratic
 API key is read from the running container's environment at run time and never written to disk.
 A full `socratic-trade` snapshot is ~6.4 GB and takes about a minute to create.
 
+### Pre-prune snapshot (nightly ingest, AFC-754)
+
+Every non-dry-run ingest that will delete missing documents takes one extra Qdrant snapshot of the
+fleet collection **immediately before** the prune phase.  Upserts and source reads still complete;
+a snapshot failure aborts **only** the prune, with a clear error in the ingest report.
+
+On the Hetzner nightly job, the snapshot name is copied into
+`~/.local/state/fleet-rag-nightly/last.json` under `qdrant_snapshot.name`.  Archived files default to
+`~/.local/state/fleet-rag-nightly/qdrant-prune-snapshots/` when
+`FLEET_RAG_QDRANT_SNAPSHOT_VOLUME` is set on the unit (same move-off-volume pattern as
+`fleet-qdrant-snapshot.sh`).  Without a volume path, snapshots stay in Qdrant and retention uses
+the snapshots API.
+
+| Knob | Default | Purpose |
+|---|---|---|
+| `FLEET_RAG_PRUNE_SNAPSHOT_KEEP` | `3` | Local and in-Qdrant copies to retain after each pre-prune snapshot |
+| `FLEET_RAG_PRUNE_SNAPSHOT_DIR` | nightly state subdir above | Override archive directory |
+| `FLEET_RAG_QDRANT_SNAPSHOT_VOLUME` | unset | Qdrant storage root; when set, the `.snapshot` file moves off the live volume |
+
+**Restore from a pre-prune archive (server).**  Stop writers to the collection (disable the nightly
+timer and any manual `recall ingest --prune`).  On the box, pick the snapshot file under
+`qdrant-prune-snapshots/` or the name recorded in `last.json`.  If the file was archived locally,
+upload or copy it into Qdrant's snapshots directory for the fleet collection, or use Qdrant's
+`snapshots/upload` API with the write API key.  Call `POST
+/collections/<fleet-collection>/snapshots/recover` with that snapshot name and `wait=true`.  When
+`GET /collections/<fleet-collection>` shows the expected point count, re-enable the nightly timer
+and run `recall doctor --box` to confirm the ingest sentinel and backup rows are green again.  The
+daily `/data/backups/qdrant/` copies remain the long-retention DR path; pre-prune archives are the
+last known-good instant before a prune deleted rows.
+
 ## Health rows
 
 `/usr/local/sbin/fleet-health-verify.sh` (every 15 minutes, pages through the existing
 rate-limited Pushover path on FAIL) now calls `fleet-qdrant-health.sh`, which fails when:
 
 - the latest local snapshot of either collection is older than 36 hours, or
-- the **ingest sentinel** (`doc_id = meta/ingest-status`, written by every ingest run with
-  `updated_at` and `ok`) is older than 30 hours or its last run failed.
+- the **ingest sentinel** (`doc_id = meta/ingest-status`, written by each full untruncated
+  `recall ingest --all --prune` run with `updated_at` and `ok`) is older than 30 hours or its
+  last run failed.  A partial or unpruned run deliberately leaves the sentinel and
+  `last-run.json` untouched, so only the nightly pass attests health.
 
 The sentinel is the dead-man switch for the Oracle routine: if BotFleet stops running it, the
 box pages.  No credential leaves the box for this check.
+
+### The ingest lock: the nightly has priority
+
+The sheet sync and the nightly pass share one lock file (`state/ingest.lock`), because
+`save_state()` writes one shared state file, so two runs must not interleave.
+
+A partial refresh — the sheet sync's `recall ingest --source doc` — may hold that lock for its
+whole budget, and the sheet sync allows it 90 minutes.  The nightly is the only run that writes
+the sentinel, so it is the only run that can attest health, and therefore the only run that must
+not be locked out.  Before this, the two were the same case: the nightly exited 3 the moment the
+partial took the lock, the sentinel went stale, and `fleet-qdrant-health.sh` paged for a night
+that never ran.
+
+The command line decides which run it is, and gives the wait accordingly:
+
+- a full `recall ingest --all --prune` with no `--since` and no `--limit` is the nightly, and
+  waits up to 100 minutes (6000 s) for the lock;
+- every other invocation is a partial refresh and fails at once with exit 3, because the sheet
+  sync's ingest is best-effort and a long wait there would hold its own budget open;
+- a `--dry-run` is a partial refresh in this sense:  it writes no sentinel, so it attests
+  nothing, and it must not hold the queue either.
+
+`--lock-timeout SECONDS` overrides both, and `--lock-timeout 0` makes even the nightly fail at
+once, which is what the tests use.  The flag is on `recall ingest` and on
+`python3 -m fleet_rag.ingest`.  The wait is polled, never blocking forever, so a lock held by a
+hung run cannot hang the nightly.
+
+**The late-starting partial is closed by a pending-nightly claim, not by a longer wait.**  The
+sheet sync's ingest budget is `FLEET_SHEET_INGEST_TIMEOUT_MS` (default 5400000 ms, so 90 minutes),
+so a partial that already held the lock when the nightly started is covered by the 100-minute
+wait.  The hole was a partial that arrived *during* that wait: it took the lock in the gap between
+the waiter's polls and then held it for its own budget, outliving the nightly's deadline, so the
+nightly exited 3 into a stale sentinel — the failure this design set out to remove.
+
+The claim closes it.  A health-attesting run that will actually wait claims the queue *before* it
+waits, by writing `state/ingest.nightly.pending/` — a directory beside the lock, one file per
+claiming run.  A partial refresh that finds a live claim does not wait and does not take the
+lock: it exits 3 at once, which is what it already did when the nightly held the lock.  A dry run
+is in the same case: it writes no sentinel, so it attests nothing, and it must not take the lock
+from a waiter either.
+
+Each claim is its own file, named for the run that made it, so a run can only ever clear its own
+claim.  One shared marker file could name only one owner, so the run that finished first cleared
+the claim of the run that was still waiting, and a partial could then take the lock from it.  Two
+nightlies at once now hold two claims, and each releases only its own.  A claim is written
+atomically (a temp file and then `os.replace`), so a reader never sees half of one, and it carries
+an expiry, so a nightly that was killed leaves nothing behind that wedges the partial refreshes
+for good.  An expired claim counts as absent.
+
+So the 100-minute wait now only has to cover a partial that was already running when the nightly
+started, which the sheet sync's own 90-minute budget bounds.  The late-start race is gone.
+
+A claim's lifetime is twice the wait budget, so a nightly that is killed rather than finished
+leaves the partial refreshes failing fast until it expires — up to 200 minutes for a nightly with
+the default wait.  The sheet sync's ingest half is best-effort (it warns and still writes the
+sheet), so that costs a few skipped refreshes rather than a stale sentinel, which is the trade the
+claim makes on purpose.  A nightly that finishes leaves nothing behind at all, and a run with no
+wait budget (`--lock-timeout 0`) never claims at all, because there is nothing for a claim to
+protect.
+
+The wait is keyed on the same predicate that gates the sentinel, not on the `--all` flag, so an
+explicitly enumerated nightly run — `recall ingest --source board,effort-log,doc,skill,memory,
+apple-note --prune` — waits too.  Keying them differently let a health-attesting run be locked
+out, and the two predicates are now one (`_attests_health`).
+
+## Weekly Collection Report
+
+A plain read-only job writes a JSON report and a Markdown report for the configured collection.  It does not call an embedding model or any other model.  It does not upsert, delete, or change a payload.  See [AFC-762](https://linear.app/simple-with-us/issue/AFC-762).
+
+The script is `scripts/fleet_rag/collection_health.py`.  The units are `scripts/systemd/fleet-rag-collection-health.service` and `scripts/systemd/fleet-rag-collection-health.timer`.  The example environment is `scripts/systemd/fleet-rag-collection-health.env.example`.
+
+The timer fires Sunday at 06:30 America/Chicago.  `Persistent=true` runs a missed week after boot.  Copying the unit does not enable the timer.  The service file has no install section.  The process runs only when `/etc/fleet/rag-collection-health.env` exists and `FLEET_RAG_COLLECTION_HEALTH` is exactly `1`.  Any other value exits 0 and leaves the last report in place.
+
+Each enabled run takes `~/.local/state/fleet-rag-collection-health/report.lock`.  A busy lock exits 0 and does not replace the report.  The report files are `latest.json` and `latest.md` in that directory (mode 0600).  `FLEET_RAG_COLLECTION_HEALTH_DIR` overrides the directory.  A failed read writes `last-error.json` and leaves the last successful report in place.
+
+The report counts points and distinct `doc_id` values per `source`, plus the oldest and newest `updated_at` per source.  It scrolls with payload fields `source`, `doc_id`, and `updated_at` only, and with vectors off, so chunk text never enters the report.
+
+Orphaned chunks are points whose `doc_id` is absent from the latest ingest state file, `~/apps/fleet-rag/state/ingest-state.json`.  `FLEET_RAG_INGEST_STATE` overrides that path.  Keys that are not document rows, including `_linear_sync`, are not document ids.  When that file is missing, unreadable, or a symlink, the report still finishes and records orphans as unavailable.  A point with no `doc_id` counts as an orphan point and is not treated as a document.  The ingest sentinel `meta/ingest-status` is not an ingest state row, so it counts as an orphan when it is present.  Contributions, and any other point the ingest state does not name, show up the same way.
+
+Growth is the difference in points and documents, overall and per source, against the previous `latest.json`.  The first run records growth as unavailable.  Orphan growth is included when both reports had a manifest.
+
+The job reads Qdrant with the read-only key when that key is present, through the same recall service token the nightly job uses (`FLEET_RECALL_INFISICAL_TOKEN_FILE`).  It does not request an embedding key.  It does not read a Linear token, and it does not post to Zulip.  A machine-identity variable in the environment refuses the run.  The unit asks systemd to start `code-main-sync` first, the same way the nightly unit does, and still writes the report if that sync did not succeed.
+
+Install it on the host the same way as the nightly job.  This repository does not run these commands.
+
+```bash
+sudo install -d -m 0755 /etc/fleet
+sudo install -m 0644 scripts/systemd/fleet-rag-collection-health.service /etc/systemd/system/
+sudo install -m 0644 scripts/systemd/fleet-rag-collection-health.timer /etc/systemd/system/
+sudo install -m 0600 scripts/systemd/fleet-rag-collection-health.env.example /etc/fleet/rag-collection-health.env
+```
+
+Add the account drop-in with `sudo systemctl edit fleet-rag-collection-health.service`:
+
+```ini
+[Service]
+User=<account>
+Group=<account>
+```
+
+Confirm the clock before the flag is turned on:
+
+```bash
+systemd-analyze calendar 'Sun *-*-* 06:30:00 America/Chicago'
+```
+
+Reload and start once before the flag is turned on.  The process exits without writing a report.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start fleet-rag-collection-health.service
+```
+
+Set `FLEET_RAG_COLLECTION_HEALTH=1` in the env file, then enable the timer:
+
+```bash
+sudo systemctl enable --now fleet-rag-collection-health.timer
+```
+
+Roll back by setting `FLEET_RAG_COLLECTION_HEALTH=0`.  The next start exits 0 before any Qdrant read.  To unload the timer:
+
+```bash
+sudo systemctl disable --now fleet-rag-collection-health.timer
+```
+
+This job is separate from the BotFleet Oracle weekly digest in the routines table.  That digest still calls a model.  This report does not.
 
 ## Observability (added 2026-09-10)
 
@@ -538,7 +765,7 @@ Consequences:
   the status probe itself came back unknown.
 - **`recall-tunnel up` retries the SSH connect.**  On this network, about half of fresh SSH
   attempts to the box fail with "Connection timed out during banner exchange" or "Connection
-  closed by 167.233.254.55 port 22" even though ping RTT is a steady 330-680ms (the transparent
+  closed by <the Hetzner host address> port 22" even though ping RTT is a steady 330-680ms (the transparent
   proxy again: the sshd journal on the box shows those attempts never arrive, so retrying is
   not a fail2ban / PerSourcePenalties risk).  `up` now passes `-o ConnectTimeout=60 -o
   ServerAliveInterval=15 -o ServerAliveCountMax=8` (the CountMax tolerates about 2 minutes of a
@@ -590,7 +817,7 @@ Consequences:
 ## Files
 
 - `scripts/fleet_rag/` — `core` (creds, embed, rerank, Qdrant client), `scrub`, `chunk`,
-  `sources`, `ingest`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`,
+  `sources`, `ingest`, `qdrant_snapshot`, `notes_export`, `recall_api`, `contribute_guard`, `doctor`, `health`, `collection_health`,
   `eval`, `telemetry` (optional Sentry reporting, see *Observability*), `golden.jsonl`, `tests/`
 - `scripts/hooks/` — the Claude Code SessionStart and Stop hooks
 - `scripts/fleet-recall-service/` — the Hetzner-side recall service (`server.py`, `bootstrap.sh`,
