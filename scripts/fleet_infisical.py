@@ -455,13 +455,13 @@ def verify_service_token(
     return paths
 
 
-def secret_query(project: str, path: str) -> str:
+def secret_query(project: str, path: str, *, values: bool = True) -> str:
     return urllib.parse.urlencode(
         {
             "workspaceId": project,
             "environment": ENVIRONMENT,
             "secretPath": path,
-            "viewSecretValue": "true",
+            "viewSecretValue": "true" if values else "false",
             "expandSecretReferences": "false",
             "recursive": "false",
             "include_imports": "false",
@@ -469,14 +469,11 @@ def secret_query(project: str, path: str) -> str:
     )
 
 
-def validate_secret_record(
+def validate_secret_name_record(
     record: object, project: str, path: str, *, single_scope: bool = True
-) -> tuple[str, str]:
-    if (
-        not isinstance(record, dict)
-        or record.get("type") != "shared"
-        or record.get("secretValueHidden") is True
-    ):
+) -> str:
+    """The shared provenance and name checks for value reads and names-only listing."""
+    if not isinstance(record, dict) or record.get("type") != "shared":
         raise SecretsError("unverified-source")
     for field, expected in (
         ("workspace", project),
@@ -485,8 +482,20 @@ def validate_secret_record(
     ):
         if record.get(field) != expected and not (single_scope and field not in record):
             raise SecretsError("unverified-source")
-    key, value = record.get("secretKey"), record.get("secretValue")
-    if not isinstance(key, str) or not NAME_RE.fullmatch(key) or not isinstance(value, str):
+    key = record.get("secretKey")
+    if not isinstance(key, str) or not NAME_RE.fullmatch(key):
+        raise SecretsError("fetch-failed: bad-output")
+    return key
+
+
+def validate_secret_record(
+    record: object, project: str, path: str, *, single_scope: bool = True
+) -> tuple[str, str]:
+    key = validate_secret_name_record(record, project, path, single_scope=single_scope)
+    if record.get("secretValueHidden") is True:
+        raise SecretsError("unverified-source")
+    value = record.get("secretValue")
+    if not isinstance(value, str):
         raise SecretsError("fetch-failed: bad-output")
     return key, value
 
@@ -584,6 +593,52 @@ def fetch_project(
             found[key] = value
     reject_unresolved(found)
     return found
+
+
+def list_project_names(
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    token: str | None = None,
+    timeout: float = EXPORT_TIMEOUT,
+) -> tuple[str, ...]:
+    """List one folder's names without requesting or retaining secret values.
+
+    The same transport and grant verifier serve every consumer.  A listing requires
+    exactly this prod folder and read-only permission; ambient folder declarations
+    cannot widen the grant accepted here.
+    """
+    check_path(path)
+    scoped_env = dict(env)
+    scoped_env[ENV_READ_PATHS] = path
+    if token is None:
+        project_name = project_name_for_id(project, scoped_env)
+        token = resolve_token(scoped_env, project_name=project_name)
+    deadline = time.monotonic() + timeout
+    verify_service_token(token, project, path, scoped_env, deadline=deadline)
+    status, payload = _api_json(
+        "GET",
+        "/v3/secrets/raw?" + secret_query(project, path, values=False),
+        token,
+        None,
+        scoped_env,
+        max_bytes=MAX_OUTPUT_BYTES,
+        deadline=deadline,
+    )
+    if status != 200 or not isinstance(payload, dict):
+        raise SecretsError("fetch-failed")
+    records = payload.get("secrets")
+    if not isinstance(records, list):
+        raise SecretsError("fetch-failed: bad-output")
+    found: set[str] = set()
+    for record in records:
+        key = validate_secret_name_record(record, project, path)
+        value = record.get("secretValue")
+        if key in found or (value is not None and value != ""):
+            raise SecretsError("unverified-source")
+        found.add(key)
+    return tuple(sorted(found))
 
 
 def _pairs(payload) -> dict[str, str]:
