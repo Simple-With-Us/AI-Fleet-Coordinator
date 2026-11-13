@@ -39,7 +39,7 @@ async function withFetch(handler, body) {
   }
 }
 
-const logWith = (workerEnv) => PEER_ACTIONS_METHODS.tool_peer_actions_log.call({ seat: "TEST-SEAT", workerEnv, reserve: async () => {} }, LOG_ARGS, {});
+const logWith = (workerEnv) => PEER_ACTIONS_METHODS.tool_peer_actions_log.call({ seat: "TEST-SEAT", known: [], workerEnv, reserve: async () => {} }, LOG_ARGS, {});
 
 test("an unbound INFISICAL_SHEETS_SA_TOKEN answers not_configured, and a GOOGLE_SHEETS_SA Worker binding is never read", async () => {
   let calls = 0;
