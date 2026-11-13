@@ -1,0 +1,562 @@
+{
+  "synthetic": true,
+  "producer": "real fleet-ops-control.main -> editor.run_request -> canonical transaction",
+  "module_sha256": "5c9ff62a57448ffe4fffadc8d0f3dd3732e15b7c383dbd0381990ce2725ff00e",
+  "cases": {
+    "get": {
+      "request": null,
+      "response": {
+        "commands": [],
+        "detail": "3 allowlisted settings",
+        "eavesdropperSettings": {
+          "action": "get",
+          "autosaveEnabled": true,
+          "baseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
+          "channelNames": [
+            "Alerts",
+            "Builds",
+            "Work-In-Progress"
+          ],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "ok": true,
+          "persisted": true,
+          "readback": true,
+          "result": "read",
+          "revision": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
+          "runtimeApplied": false,
+          "runtimeSHA256": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30",
+          "settings": {
+            "daemon.coalesce_seconds": 1.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings"
+        },
+        "ok": true,
+        "output": "daemon.coalesce_seconds = 1.0\ndaemon.presence_topics = [[\"Work-In-Progress\", \"A Topic\"]]\nseat.GROK.wake = \"inbox\"\n",
+        "result": "read",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 0
+    },
+    "save1": {
+      "request": {
+        "action": "save",
+        "set": {
+          "daemon.coalesce_seconds": 2.0
+        },
+        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
+        "requestID": "45733def-1f6e-495e-8eaa-7c01202ecb24",
+        "requestCreatedAt": 1794558862434
+      },
+      "response": {
+        "auditID": "9f4d991f82c4",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "saved to Infisical and verified by the listener",
+        "eavesdropperSettings": {
+          "action": "save",
+          "autosaveEnabled": true,
+          "baseSHA256": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0",
+          "channelNames": [
+            "Alerts",
+            "Builds",
+            "Work-In-Progress"
+          ],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "detail": "Saved and verified",
+          "ok": true,
+          "outcome": "ok",
+          "persisted": true,
+          "readback": true,
+          "reload": {
+            "code": "reloaded",
+            "confirmed": true,
+            "ok": true,
+            "revision": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0"
+          },
+          "requestID": "45733def-1f6e-495e-8eaa-7c01202ecb24",
+          "result": "saved",
+          "revision": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0",
+          "runtimeApplied": true,
+          "runtimeSHA256": "70afc6b11681ddb43a3069866ff93f8aa14096aa459806e18968301be2312922",
+          "settings": {
+            "daemon.coalesce_seconds": 2.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings",
+          "writeAttempted": true
+        },
+        "ok": true,
+        "result": "saved",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 0
+    },
+    "save2": {
+      "request": {
+        "action": "save",
+        "set": {
+          "daemon.coalesce_seconds": 3.0
+        },
+        "expectBaseSHA256": "a87e84f20ff0522f7e0a35a8da17125aa4c749e2095d29aa591698b8fe593ba0",
+        "requestID": "550fff86-ac10-4201-93eb-6cf5add9ad9a",
+        "requestCreatedAt": 1794558862451
+      },
+      "response": {
+        "auditID": "e3d2bf707d03",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "saved to Infisical and verified by the listener",
+        "eavesdropperSettings": {
+          "action": "save",
+          "autosaveEnabled": true,
+          "baseSHA256": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb",
+          "channelNames": [
+            "Alerts",
+            "Builds",
+            "Work-In-Progress"
+          ],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "detail": "Saved and verified",
+          "ok": true,
+          "outcome": "ok",
+          "persisted": true,
+          "readback": true,
+          "reload": {
+            "code": "reloaded",
+            "confirmed": true,
+            "ok": true,
+            "revision": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb"
+          },
+          "requestID": "550fff86-ac10-4201-93eb-6cf5add9ad9a",
+          "result": "saved",
+          "revision": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb",
+          "runtimeApplied": true,
+          "runtimeSHA256": "3d7c4a73afe66c4a5a5a6dddf1e36c8d3655ba48f4e582762fed0719ad9f3c64",
+          "settings": {
+            "daemon.coalesce_seconds": 3.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings",
+          "writeAttempted": true
+        },
+        "ok": true,
+        "result": "saved",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 0
+    },
+    "runtime_pending": {
+      "request": {
+        "action": "save",
+        "set": {
+          "daemon.coalesce_seconds": 4.0
+        },
+        "expectBaseSHA256": "3f298ad53200662ec584018a94ae07ba6610920f03ff77f3d1249369facf5dbb",
+        "requestID": "c8c40360-0674-44d2-8c92-1b5684f26cd9",
+        "requestCreatedAt": 1794558862462
+      },
+      "response": {
+        "auditID": "4f6e53dc71db",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "Saved to Infisical; runtime acceptance remains pending",
+        "eavesdropperSettings": {
+          "action": "save",
+          "autosaveEnabled": true,
+          "baseSHA256": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "channelNames": [
+            "Alerts",
+            "Builds",
+            "Work-In-Progress"
+          ],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "detail": "Saved to Infisical; runtime acceptance remains pending",
+          "errorCode": "runtime_pending",
+          "ok": false,
+          "outcome": "unknown",
+          "persisted": true,
+          "readback": true,
+          "reload": {
+            "code": "reload_unconfirmed",
+            "confirmed": false,
+            "ok": true
+          },
+          "requestID": "c8c40360-0674-44d2-8c92-1b5684f26cd9",
+          "result": "failed",
+          "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "runtimeApplied": false,
+          "runtimeSHA256": "da36aea913c4cb3b2ef24db4211185dbffaceea93bc74236fe4629bb67cfdc80",
+          "settings": {
+            "daemon.coalesce_seconds": 4.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings",
+          "writeAttempted": true
+        },
+        "errorCode": "runtime_pending",
+        "ok": false,
+        "result": "failed",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 1
+    },
+    "reconcile_unknown": {
+      "request": {
+        "action": "reconcile",
+        "requestID": "c8c40360-0674-44d2-8c92-1b5684f26cd9",
+        "requestCreatedAt": 1794558862462
+      },
+      "response": {
+        "auditID": "8c06a3f0803d",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "Canonical persistence is verified; prior runtime acceptance remains unconfirmed",
+        "eavesdropperSettings": {
+          "action": "reconcile",
+          "autosaveEnabled": true,
+          "baseSHA256": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "channelNames": [
+            "Alerts",
+            "Builds",
+            "Work-In-Progress"
+          ],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "detail": "Canonical persistence is verified; prior runtime acceptance remains unconfirmed",
+          "errorCode": "outcome_unknown",
+          "ok": false,
+          "operation": "save",
+          "outcome": "unknown",
+          "persisted": true,
+          "readback": true,
+          "requestID": "c8c40360-0674-44d2-8c92-1b5684f26cd9",
+          "result": "failed",
+          "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "runtimeApplied": false,
+          "runtimeSHA256": "da36aea913c4cb3b2ef24db4211185dbffaceea93bc74236fe4629bb67cfdc80",
+          "settings": {
+            "daemon.coalesce_seconds": 4.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings"
+        },
+        "errorCode": "outcome_unknown",
+        "ok": false,
+        "result": "failed",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 1
+    },
+    "reconcile_saved": {
+      "request": {
+        "action": "reconcile",
+        "requestID": "c8c40360-0674-44d2-8c92-1b5684f26cd9",
+        "requestCreatedAt": 1794558862462
+      },
+      "response": {
+        "auditID": "70ddac2d364d",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "saved to Infisical and verified by the listener",
+        "eavesdropperSettings": {
+          "action": "reconcile",
+          "autosaveEnabled": true,
+          "baseSHA256": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "channelNames": [],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "detail": "The prior request was verified without repeating its write",
+          "ok": true,
+          "operation": "save",
+          "outcome": "ok",
+          "persisted": true,
+          "readback": true,
+          "requestID": "c8c40360-0674-44d2-8c92-1b5684f26cd9",
+          "result": "saved",
+          "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "runtimeApplied": true,
+          "runtimeSHA256": "da36aea913c4cb3b2ef24db4211185dbffaceea93bc74236fe4629bb67cfdc80",
+          "settings": {
+            "daemon.coalesce_seconds": 4.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings"
+        },
+        "ok": true,
+        "result": "saved",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 0
+    },
+    "superseded": {
+      "request": {
+        "action": "save",
+        "set": {
+          "daemon.coalesce_seconds": 2.0
+        },
+        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
+        "requestID": "45733def-1f6e-495e-8eaa-7c01202ecb24",
+        "requestCreatedAt": 1794558862434
+      },
+      "response": {
+        "auditID": "49d61df1b7a1",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "Current settings differ from this request; no write was repeated",
+        "eavesdropperSettings": {
+          "action": "save",
+          "autosaveEnabled": true,
+          "baseSHA256": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "channelNames": [],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "detail": "Current settings differ from this request; no write was repeated",
+          "errorCode": "request_superseded",
+          "ok": false,
+          "operation": "save",
+          "outcome": "ok",
+          "persisted": false,
+          "readback": false,
+          "requestID": "45733def-1f6e-495e-8eaa-7c01202ecb24",
+          "result": "failed",
+          "revision": "b5b58a25fb5ccac01c61384dce49c6c1b7d49b478a371cb671e3b40f9e2fb8b3",
+          "runtimeApplied": false,
+          "runtimeSHA256": "da36aea913c4cb3b2ef24db4211185dbffaceea93bc74236fe4629bb67cfdc80",
+          "settings": {
+            "daemon.coalesce_seconds": 4.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings"
+        },
+        "errorCode": "request_superseded",
+        "ok": false,
+        "result": "failed",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 1
+    },
+    "known_ok_read_failed": {
+      "request": {
+        "action": "save",
+        "set": {
+          "daemon.coalesce_seconds": 2.0
+        },
+        "expectBaseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
+        "requestID": "45733def-1f6e-495e-8eaa-7c01202ecb24",
+        "requestCreatedAt": 1794558862434
+      },
+      "response": {
+        "auditID": "cda1a3a9ce5f",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "The previous outcome has no current verified runtime receipt; no write was repeated",
+        "eavesdropperSettings": {
+          "action": "save",
+          "autosaveEnabled": true,
+          "detail": "The previous outcome has no current verified runtime receipt; no write was repeated",
+          "errorCode": "prior_result_unavailable",
+          "ok": false,
+          "operation": "save",
+          "outcome": "ok",
+          "persisted": false,
+          "readback": false,
+          "requestID": "45733def-1f6e-495e-8eaa-7c01202ecb24",
+          "result": "failed",
+          "runtimeApplied": false,
+          "source": "infisical",
+          "tool": "eavesdropper-settings"
+        },
+        "errorCode": "prior_result_unavailable",
+        "ok": false,
+        "result": "failed",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 1
+    },
+    "cancelled": {
+      "request": {
+        "action": "reconcile",
+        "requestID": "94e4c70c-b5a5-4abd-a6cf-6e0abf6b3ac5",
+        "requestCreatedAt": 1794558862496
+      },
+      "response": {
+        "auditID": "a95e7c82e4ed",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "This absent request was durably cancelled; its ID cannot write",
+        "eavesdropperSettings": {
+          "action": "reconcile",
+          "autosaveEnabled": false,
+          "cancelled": true,
+          "detail": "This absent request was durably cancelled; its ID cannot write",
+          "errorCode": "request_cancelled",
+          "ok": false,
+          "operation": "cancelled",
+          "outcome": "refused",
+          "persisted": false,
+          "readback": false,
+          "requestID": "94e4c70c-b5a5-4abd-a6cf-6e0abf6b3ac5",
+          "result": "failed",
+          "runtimeApplied": false,
+          "source": "infisical",
+          "tool": "eavesdropper-settings"
+        },
+        "errorCode": "request_cancelled",
+        "ok": false,
+        "result": "failed",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 1
+    },
+    "unactivated_get": {
+      "request": null,
+      "response": {
+        "commands": [],
+        "detail": "3 allowlisted settings",
+        "eavesdropperSettings": {
+          "action": "get",
+          "applyEnabled": false,
+          "autosaveEnabled": false,
+          "baseSHA256": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30",
+          "file": "listener.toml",
+          "ok": true,
+          "persisted": false,
+          "readback": false,
+          "result": "read",
+          "revision": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30",
+          "runtimeApplied": false,
+          "schemaVersion": 1,
+          "settings": {
+            "daemon.coalesce_seconds": 1.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "runtime-copy",
+          "tool": "eavesdropper-settings"
+        },
+        "ok": true,
+        "output": "daemon.coalesce_seconds = 1.0\ndaemon.presence_topics = [[\"Work-In-Progress\", \"A Topic\"]]\nseat.GROK.wake = \"inbox\"\n",
+        "result": "read",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 0
+    },
+    "initialized": {
+      "request": {
+        "action": "initialize",
+        "expectBaseSHA256": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30",
+        "requestID": "c772ffb0-03e9-4a64-89f0-46b947a52676",
+        "requestCreatedAt": 1794558862545
+      },
+      "response": {
+        "auditID": "fa6078327826",
+        "auditTarget": "eavesdropper settings",
+        "commands": [],
+        "detail": "canonical settings initialized and read back; runtime source is not activated",
+        "eavesdropperSettings": {
+          "action": "initialize",
+          "autosaveEnabled": false,
+          "baseSHA256": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
+          "channelNames": [],
+          "channelNamesSource": "daemon-Zulip-cache",
+          "detail": "Canonical settings initialized and read back; runtime source is not activated",
+          "ok": true,
+          "outcome": "ok",
+          "persisted": true,
+          "readback": true,
+          "requestID": "c772ffb0-03e9-4a64-89f0-46b947a52676",
+          "result": "initialized",
+          "revision": "2df096a8457fcfb4c819565b03a67b220224a031ca79ef1f3ace4e7985bbad3c",
+          "runtimeApplied": false,
+          "runtimeSHA256": "90c7a6e5eef0147d8d6e44a7c14fb271fd41294d46076d90e97fc6d6a85a3b30",
+          "settings": {
+            "daemon.coalesce_seconds": 1.0,
+            "daemon.presence_topics": [
+              [
+                "Work-In-Progress",
+                "A Topic"
+              ]
+            ],
+            "seat.GROK.wake": "inbox"
+          },
+          "source": "infisical",
+          "tool": "eavesdropper-settings",
+          "writeAttempted": true
+        },
+        "ok": true,
+        "result": "initialized",
+        "target": "server",
+        "verb": "server eavesdropper-settings"
+      },
+      "exitCode": 0
+    }
+  },
+  "producer_sha256": {
+    "scripts/fleet-ops-control.py": "bc996be9966d7f9fba6c936538f94a6ad9531cb0050c9c058c588ade595cc89e",
+    "scripts/simple_tools/server/eavesdropper_settings_edit.py": "4edfbc41de0efad10ba155a82ec275d59e6bdc492e80fc673e983ff2ecfcdca3",
+    "scripts/simple_tools/server/operator_settings.py": "5c9ff62a57448ffe4fffadc8d0f3dd3732e15b7c383dbd0381990ce2725ff00e",
+    "scripts/simple_tools/operator_github_state.py": "acadeef91879a7774b259383d004a840f0b82e29e92487b79dcc5e02e035e51f"
+  }
+}
