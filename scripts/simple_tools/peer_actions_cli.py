@@ -62,6 +62,7 @@ def cmd_log(ns: argparse.Namespace) -> int:
             request_source=ns.request_source,
             action_taken=ns.action_taken,
             result=ns.result,
+            known=(os.environ.get(P.ENV_INFISICAL_TOKEN, ""), os.environ.get(P.ENV_SA_JSON, "")),
         )
         out = P.log_row(entry, dry_run=bool(ns.dry_run))
     except P.PeerActionsError as exc:
