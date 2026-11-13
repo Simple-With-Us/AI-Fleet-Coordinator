@@ -412,7 +412,7 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 3. **Title:** `[TEAM_KEY, Agent] Topic` — team key + agent **first**.  Multi-team:
    `[CT1, CT2, Grok] …`.  Acronyms: `CT` `ST` `UM` `CTS` `FLEET`.  Seat Title Case
    (`Grok` / `Claude` / `Codex` / `AG` / `Cursor` / `MM` / `Wise` / …).  **No "session"** in title; **no date** in title.
-4. **Second body line:** local create/update stamp + optional PR #, e.g.  `Sun, Aug 9, 3:52pm · PR #18`
+4. **Second body line:** local create/update stamp + optional PR #, e.g.  `Sun, Aug 9, 3:52 PM · PR #18`
    (refresh on every material update; pass `--pr "18"` to helper).  Helper auto-injects/preserves this.
 5. **Helper:** `/Users/jay/apps/apple-notes-coding.sh "Title" "body"`  
    (supports `--html path`, `--update`, `--pr "18"`, `--notify` for instant Pushover alerts, `--needs-owner` for amber review banners, and `--summary "text"` for an optional, readable `Summary:` block at the top - long notes only, up to 4-5 sentences of real context beyond the title, never a restatement of it; the helper drops a summary on a note under 800 characters of body text (`APPLE_NOTES_SUMMARY_MIN_BODY_CHARS` adjusts the floor) or one over 20% of the note length (`APPLE_NOTES_SUMMARY_MAX_PCT` adjusts it)).  
@@ -436,7 +436,7 @@ Skip Notes on headless/cloud agents without Notes.app.  Full rule:
 **Owner binding 2026-09-08 (Jay):** ASC What to Test is mandatory on every TestFlight upload — briefly name 1–2 change/fix/upgrade types, or the other reason for the build if not a product change.  Publish with `IOS_TF_RELEASE_NOTES=1`.  Canonical detail: `~/apps/FLEET-PROTOCOL.md`.  No `--force-ship`.
 
   1. Title header: `[1.0.N] <Build Title>`
-  2. Release timestamp on the owner's clock, 12-hour, am or pm, with no timezone abbreviation, and the PR #: `Released: Mon, Aug 12, 2026 at 1:15am · PR #1065`
+  2. Release timestamp on the owner's clock, 12-hour, with a space before uppercase AM or PM, with no timezone abbreviation, and the PR #: `Released: Mon, Aug 12, 2026 at 1:15 AM · PR #1065`
   3. **STRICT RULE — NO AGENT NAMES:** Public / TestFlight release notes **MUST NOT** include internal agent names (`Agent: Grok`, etc.).
   4. Change summary: Concise bulleted list of what changed/fixed in this build.
 

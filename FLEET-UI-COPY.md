@@ -78,7 +78,7 @@ when the string is not a full sentence — not Title Case:
   `Sun, Oct 5, 2026 at 3:15 AM`.  Give only the Central time: convert UTC and every
   other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00 PM the previous
   calendar day during daylight saving, and 6:00 PM the previous calendar day after
-  the fall-back.  See `/Users/jay/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
+  the fall-back.  This current owner ruling supersedes older lowercase or unspaced examples in installed or generated protocol mirrors.  The canonical Fleet-OPS handbook correction and regenerated protocol are tracked in [Fleet-OPS #313](https://github.com/Simple-With-Us/Fleet-OPS/pull/313); never hand-edit the generated mirror.  See `/Users/jay/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time after that delivery completes.
 
 ## Money
 - Compact suffixes **lowercase**: `$99.8k`, `$1.2m`, `$3.4b`.
