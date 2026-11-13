@@ -120,6 +120,7 @@ EXACT = frozenset(
         "scripts/simple-notes",
         "scripts/simple-peer-actions",
         "scripts/simple-board",
+        "scripts/simple_tools/post_header.py",
         # The git tools CLI entry wrapper and implementation.
         "scripts/simple-git",
         "scripts/git-tools/git",
@@ -251,6 +252,8 @@ TOOL_REQUIRED = frozenset(
         # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
         # built before it stays a valid rollback target.
         "scripts/simple_tools/secretscan.py",
+        # Shared by the native chat and board formatters; required only for newly received bundles.
+        "scripts/simple_tools/post_header.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/simple_tools/notes_service_reader.py",
         "scripts/simple_tools/peer_actions.py",
