@@ -91,7 +91,7 @@ def relay_fetch_url(env: Mapping[str, str], repo: str) -> str:
     return f"{(env.get('FLEET_SYNC_RELAY_URL') or '').strip().rstrip('/')}/git/{repo}.git"
 
 
-def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
+def relay_git_env(env: Mapping[str, str], remote: str | None = None) -> dict[str, str] | None:
     """The git environment that sends this clone's fetches through the relay as this job's seat, or None when it cannot.
 
     The clone's exact origin string is what gets rewritten, so an embedded login, a case-variant host or an explicit port
@@ -104,8 +104,9 @@ def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
     path = (env.get("FLEET_SYNC_BEARER_FILE") or "").strip()
     if not url or not (bearer or path):
         return None
-    repo = origin_repo(remote)
-    if repo is None:
+    # A job-level preflight uses the same validator without a clone-specific rewrite.
+    repo = origin_repo(remote) if remote is not None else None
+    if remote is not None and repo is None:
         log("relay route: refused, the origin cannot be read as owner/name on GitHub")
         return None
     parsed = urlsplit(url)
@@ -129,8 +130,9 @@ def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
     if not bearer or any(ch.isspace() for ch in bearer):
         log("relay route: refused, the bearer file has no usable value")
         return None
-    config = [
+    config = ([
         (f"url.{relay_fetch_url(env, repo)}.insteadOf", remote),
+    ] if remote is not None else []) + [
         (f"http.{url}/.extraHeader", f"Authorization: Bearer {bearer}"),
         ("http.followRedirects", "false"),
         ("http.postBuffer", str(8 * 1024 * 1024)),
@@ -535,9 +537,20 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     try:
         counters = {"updated": 0, "current": 0, "would_update": 0, "skipped": 0, "failed": 0}
         problems: list[tuple[str, str]] = []
-        relay_route = bool((env.get("FLEET_SYNC_RELAY_URL") or "").strip())
         log(f"start: {'dry-run local refs only' if args.dry_run else 'fetch and fast-forward'}")
-        log(f"github route: {'own-seat relay' if relay_route else 'missing required relay'}")
+        if args.dry_run:
+            log("github route: unused (dry-run local refs only)")
+        else:
+            if not (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+                log("fail job: the required own-seat relay route is not configured")
+                write_sync_stamp(env, 1)
+                return 1
+            if relay_git_env(env) is None:
+                log("github route: configured but not usable")
+                log("fail job: fix the host relay configuration before syncing Code clones")
+                write_sync_stamp(env, 1)
+                return 1
+            log("github route: own-seat relay configured; each clone verifies its URL rewrite")
         for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
             if repo.name.startswith(".") or not repo.is_dir():
                 continue

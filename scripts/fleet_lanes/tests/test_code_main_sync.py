@@ -61,8 +61,8 @@ class SyncCase(unittest.TestCase):
                      "FLEET_PLACEMENT_EXCEPTIONS": str(self.home / "no-rows.json")}
         # Transport seam for the real local bare fixture; explicit relay tests still call the real builders.
         relay_env, relay_url = S.relay_git_env, S.relay_fetch_url
-        def fixture_env(env, remote):
-            if env.get("FLEET_SYNC_RELAY_URL") == str(self.upstream) and remote == str(self.upstream):
+        def fixture_env(env, remote=None):
+            if env.get("FLEET_SYNC_RELAY_URL") == str(self.upstream) and remote in (None, str(self.upstream)):
                 return {"GIT_TERMINAL_PROMPT": "0"}
             return relay_env(env, remote)
         def fixture_url(env, repo):
@@ -373,7 +373,33 @@ class RelayRoute(SyncCase):
             code, out = self.sync()
         self.assertEqual(code, 1)
         self.assertIn("configured but not usable", out)
+        self.assertNotIn("github route: own-seat relay", out)
         self.assertNotEqual(self.head(), self.origin())
+
+    def test_bad_host_route_is_one_job_failure_without_clone_alerts(self) -> None:
+        for route in ({}, {"FLEET_SYNC_RELAY_URL": "https://relay.example"},
+                      {"FLEET_SYNC_RELAY_URL": "http://relay.example", "SIMPLE_TOOLS_BEARER": "fixture"}):
+            with self.subTest(route=route):
+                self.vars.pop("FLEET_SYNC_RELAY_URL", None)
+                self.vars.update(route)
+                stamp = self.home / "sync-state.json"
+                self.vars[S.ENV_CODE_SYNC_STATE] = str(stamp)
+                with mock.patch.object(S, "process_repo") as process, mock.patch.object(S, "alert_problems") as alert:
+                    code, out = self.sync()
+                self.assertEqual(code, 1, out)
+                self.assertEqual(json.loads(stamp.read_text())["ok"], False)
+                process.assert_not_called()
+                alert.assert_not_called()
+                self.assertNotIn("Agents must work in lanes", out)
+                self.assertNotIn("github route: own-seat relay", out)
+                self.assertEqual(out.count("fail job:"), 1)
+
+    def test_dry_run_needs_no_host_route_and_reports_no_active_github_route(self) -> None:
+        self.vars.pop("FLEET_SYNC_RELAY_URL")
+        with mock.patch.object(S, "relay_git_env", side_effect=AssertionError("dry-run loaded a bearer")):
+            code, out = self.sync("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertIn("github route: unused", out)
 
     def test_an_origin_git_will_not_resolve_to_the_route_fails_with_no_fetch(self) -> None:
         self.route_vars()
