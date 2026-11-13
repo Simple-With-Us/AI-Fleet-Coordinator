@@ -30,8 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--action", "--action-taken", dest="action_taken", required=True, metavar="TEXT"
     )
     log.add_argument("--result", required=True, metavar="TEXT")
-    log.add_argument("--hosted", action="store_true",
-                     help="use this bot's own hosted Fleet Tools bearer; never local Google credentials")
+    log.add_argument(
+        "--hosted",
+        action="store_true",
+        help="use this bot's own hosted Fleet Tools bearer; never local Google credentials",
+    )
     log.add_argument(
         "--dry-run", action="store_true", help="validate and print the row without writing"
     )
@@ -64,25 +67,36 @@ def _hosted_log(entry: P.LogEntry, *, dry_run: bool) -> dict:
         who = _remote_write_identity(os.environ)
         if I.canonical_seat(who) != entry.acting_seat:
             raise P.PeerActionsError(
-                "invalid_argument", "the hosted bearer belongs to a different acting seat; nothing was sent"
+                "invalid_argument",
+                "the hosted bearer belongs to a different acting seat; nothing was sent",
             )
-        result = _remote_call(os.environ, "peer_actions_log", {
-            "identity": who,
-            "requesting_seat": entry.requesting_seat,
-            "request": entry.request_source,
-            "action_taken": entry.action_taken,
-            "result": entry.result,
-            "dry_run": dry_run,
-        }, write=not dry_run)
+        result = _remote_call(
+            os.environ,
+            "peer_actions_log",
+            {
+                "identity": who,
+                "requesting_seat": entry.requesting_seat,
+                "request": entry.request_source,
+                "action_taken": entry.action_taken,
+                "result": entry.result,
+                "dry_run": dry_run,
+            },
+            write=not dry_run,
+        )
     except RemoteError as exc:
         # No retry and no direct fallback, including after an ambiguous write.
         raise P.PeerActionsError("hosted_failed", str(exc)) from None
     out = result.get("structuredContent")
-    if (not isinstance(out, dict) or out.get("dry_run") is not dry_run
-            or not isinstance(out.get("row"), list) or len(out["row"]) != 6
-            or out["row"][1:] != entry.row()[1:]):
+    if (
+        not isinstance(out, dict)
+        or out.get("dry_run") is not dry_run
+        or not isinstance(out.get("row"), list)
+        or len(out["row"]) != 6
+        or out["row"][1:] != entry.row()[1:]
+    ):
         raise P.PeerActionsError(
-            "hosted_failed", "the hosted logger returned an unexpected receipt; do not repeat a possible write"
+            "hosted_failed",
+            "the hosted logger returned an unexpected receipt; do not repeat a possible write",
         )
     return out
 
@@ -97,8 +111,11 @@ def cmd_log(ns: argparse.Namespace) -> int:
             result=ns.result,
         )
         hosted = bool(ns.hosted) or os.environ.get("PEER_ACTIONS_REMOTE", "").strip() == "1"
-        out = (_hosted_log(entry, dry_run=bool(ns.dry_run)) if hosted
-               else P.log_row(entry, dry_run=bool(ns.dry_run)))
+        out = (
+            _hosted_log(entry, dry_run=bool(ns.dry_run))
+            if hosted
+            else P.log_row(entry, dry_run=bool(ns.dry_run))
+        )
     except P.PeerActionsError as exc:
         if ns.json:
             print(
