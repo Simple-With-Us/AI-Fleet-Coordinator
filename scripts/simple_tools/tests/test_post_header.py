@@ -67,6 +67,21 @@ class HeaderSpacingTests(unittest.TestCase):
             with self.assertRaises(cli.UsageError):
                 cli._compose(agent, text, labels=[], mentions=[], no_tag=False)
 
+    def test_generated_native_recipients_use_the_shared_arrow_and_comma_contract(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        body = cli._compose(agent, "Body", labels=["AG", "CURSOR"], mentions=[], no_tag=False, quiet=False)
+        self.assertEqual(body, "[CODEX·deadbeef → AG,\u200a\u200aCURSOR] Body")
+
+    def test_both_composed_quiet_markers_keep_wake_sender_and_addressed_letter(self):
+        agent = SimpleNamespace(seat="CLAUDE", tag_prefix="[CLAUDE·aaaaaaaa")
+        for marker in (":eyes: ", "👀 "):
+            body = cli._compose(agent, marker + "[CLAUDE·aaaaaaaa 📁AFC → CODEX EE] Body",
+                                labels=[], mentions=[], no_tag=False, quiet=False)
+            wake = wake_router.wake_from_payload({"seat": "CODEX", "excerpt": body}, "Codex")
+            self.assertEqual(wake.sender_fragment, "aaaaaaaa")
+            self.assertEqual(wake.session_fragments, ())
+            self.assertEqual(wake.letter, "EE")
+
     def test_quiet_native_posts_and_edits_keep_canonical_header_bytes(self):
         agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
         expected = router.NO_WAKE_MARKER + " " + FIXTURES[0]["expected"]
@@ -79,7 +94,7 @@ class HeaderSpacingTests(unittest.TestCase):
     def test_quiet_own_headers_and_ascii_transport_arrows_keep_recipients(self):
         agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
         text = "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] Body.\u00a0 Next."
-        for marker, quiet in (("", True), (":eyes: ", False), ("👀 ", True)):
+        for marker, quiet in (("", True), (":eyes: ", False), ("👀 ", True), ("👀 ", False)):
             body = cli._compose(agent, marker + text, labels=["AG"], mentions=[], no_tag=False, quiet=quiet)
             self.assertEqual(body, (marker or ":eyes: ") + FIXTURES[0]["expected"])
             _, no_wake = router.strip_no_wake(body, "CODEX")
