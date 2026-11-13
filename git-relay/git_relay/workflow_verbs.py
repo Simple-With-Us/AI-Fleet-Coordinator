@@ -1258,7 +1258,12 @@ class WorkflowVerbs:
             ):
                 raise Refused("PR head not matched")
             base_ref = quote(pr["base"]["ref"], safe="/")
-            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+            try:
+                tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+            except RelayGitHubError as exc:
+                if exc.status == 404:
+                    raise Refused("PR base not matched") from None
+                raise
             tip_obj = tip.get("object") if isinstance(tip, dict) else None
             base_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
             if not isinstance(base_sha, str) or not _SHA.fullmatch(base_sha):
