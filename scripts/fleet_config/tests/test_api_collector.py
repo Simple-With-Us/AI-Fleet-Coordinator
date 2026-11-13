@@ -7,22 +7,26 @@ All tests are hermetic:  no real network, no real home, and no real credentials.
 
 from __future__ import annotations
 
+import builtins
 import io
 import json
 import socket
+import threading
 import unittest
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from fleet_config import aggregator, collectors, contract
+from fleet_config import aggregator, collectors, contract, manifest as manifest_mod
 from fleet_config.api_collector import (
     API_OBSERVATION_SCHEMA_VERSION,
     API_OBSERVER_CACHE_KEY,
     API_SIDECAR_CACHE_KEY,
+    DEFAULT_USER_AGENT,
     ApiObserverRuntime,
     ApiObserverTarget,
     ObserverClass,
@@ -619,6 +623,353 @@ class ApiCollectorSecurityTests(unittest.TestCase):
         )
         self.assertIs(res_unconfirmed.state, CheckState.DRIFT)
         self.assertIs(res_unconfirmed.reason_code, ReasonCode.DRIFT)
+
+    def test_custom_opener_strips_redirect_handler_and_sets_user_agent(self) -> None:
+        observed_headers: list[str | None] = []
+
+        class _RedirectOrOkHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib BaseHTTPRequestHandler method
+                observed_headers.append(self.headers.get("User-Agent"))
+                if self.path == "/redir":
+                    self.send_response(302)
+                    self.send_header("Location", "https://evil.example/steal")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *_args: object) -> None:
+                return None
+
+        server = HTTPServer(("127.0.0.1", 0), _RedirectOrOkHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            custom = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+            with self.assertRaises(CheckError) as cm:
+                http_fetch_observer(
+                    f"http://127.0.0.1:{port}/redir",
+                    {},
+                    5,
+                    1024,
+                    allowed_hosts=frozenset({"127.0.0.1"}),
+                    allow_insecure_loopback=True,
+                    opener=custom,
+                    resolve_dns=False,
+                )
+            self.assertIs(cm.exception.reason_code, ReasonCode.ERROR)
+            self.assertIn("redirect", str(cm.exception).lower())
+
+            body = http_fetch_observer(
+                f"http://127.0.0.1:{port}/ok",
+                {},
+                5,
+                1024,
+                allowed_hosts=frozenset({"127.0.0.1"}),
+                allow_insecure_loopback=True,
+                opener=custom,
+                resolve_dns=False,
+            )
+            self.assertEqual(body, b'{"ok":true}')
+            self.assertEqual(observed_headers, [DEFAULT_USER_AGENT, DEFAULT_USER_AGENT])
+
+            custom_body = http_fetch_observer(
+                f"http://127.0.0.1:{port}/ok",
+                {"User-Agent": "custom-client/2.0"},
+                5,
+                1024,
+                allowed_hosts=frozenset({"127.0.0.1"}),
+                allow_insecure_loopback=True,
+                resolve_dns=False,
+            )
+            self.assertEqual(custom_body, b'{"ok":true}')
+            self.assertEqual(observed_headers[-1], "custom-client/2.0")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_dns_pinning_prevents_rebinding_between_verify_and_connect(self) -> None:
+        seen_hosts: list[str | None] = []
+
+        class _OkHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                seen_hosts.append(self.headers.get("Host"))
+                self.send_response(200)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(b'{"pinned":true}')
+
+            def log_message(self, *_args: object) -> None:
+                return None
+
+        server = HTTPServer(("127.0.0.1", 0), _OkHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        real_getaddrinfo = socket.getaddrinfo
+        hostname_calls = {"n": 0}
+
+        def _rebinding_getaddrinfo(host, port_arg, family=0, type=0, proto=0, flags=0):  # noqa: A002, ANN001
+            if host == "localhost" and not (flags & socket.AI_NUMERICHOST):
+                hostname_calls["n"] += 1
+                if hostname_calls["n"] == 1:
+                    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))]
+            return real_getaddrinfo(host, port_arg, family, type, proto, flags)
+
+        try:
+            with mock.patch("fleet_config.api_collector.socket.getaddrinfo", side_effect=_rebinding_getaddrinfo):
+                body = http_fetch_observer(
+                    f"http://localhost:{port}/v1/obs",
+                    {},
+                    5,
+                    1024,
+                    allowed_hosts=frozenset({"localhost"}),
+                    allow_insecure_loopback=True,
+                    resolve_dns=True,
+                )
+            self.assertEqual(body, b'{"pinned":true}')
+            self.assertEqual(hostname_calls["n"], 1)
+            self.assertEqual(seen_hosts, [f"localhost:{port}"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_compliance_empty_seat_row_accepted_and_missing_seat_rejected(self) -> None:
+        compliance_rule = Rule(
+            id="compliance-cloud-seat-api-observer",
+            kind=ConfigKind.MCP,
+            platforms=("cursor-cloud",),
+            check=CheckSpec(type=CheckType.MCP_SERVERS_REGISTERED, target="cloud://observer"),
+            expected=ExpectedState(description="compliance observer", names=("simple-chat",)),
+            proof_level=ProofLevel.L0,
+            owner_seat="CODEX",
+            autofix_allowed=False,
+            collector=Collector.API,
+            ttl_seconds=900,
+            seat="",
+            scope=("cloud",),
+            source="AFC-441",
+        )
+        res_ok, sidecar = evaluate_api_observation(
+            compliance_rule,
+            "cursor-cloud",
+            _payload(rule_id=compliance_rule.id, seat=""),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+        )
+        self.assertIs(res_ok.state, CheckState.PASS)
+        self.assertIsNotNone(sidecar)
+
+        missing_seat_doc = json.loads(_payload(rule_id=compliance_rule.id, seat="").decode("utf-8"))
+        del missing_seat_doc["rows"][0]["seat"]
+        res_missing_key, _ = evaluate_api_observation(
+            compliance_rule,
+            "cursor-cloud",
+            json.dumps(missing_seat_doc).encode("utf-8"),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+        )
+        self.assertIs(res_missing_key.state, CheckState.UNKNOWN)
+        self.assertIs(res_missing_key.reason_code, ReasonCode.UNPARSEABLE)
+
+    def test_canaries_scrubbed_on_bad_schema_unknown_observer_and_sidecar_scope(self) -> None:
+        canary = "SECRET-TOKEN-9911"
+        rule = _cloud_rule()
+
+        res_schema, _ = evaluate_api_observation(
+            rule,
+            "cursor-cloud",
+            _payload(schema_version=f"v-{canary}"),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+            secret_canaries=(canary,),
+        )
+        self.assertIs(res_schema.reason_code, ReasonCode.UNPARSEABLE)
+        self.assertNotIn(canary, res_schema.reason)
+
+        res_obs, _ = evaluate_api_observation(
+            rule,
+            "cursor-cloud",
+            _payload(observer_class=f"custom-{canary}"),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+            secret_canaries=(canary,),
+        )
+        self.assertIs(res_obs.reason_code, ReasonCode.ERROR)
+        self.assertNotIn(canary, res_obs.reason)
+
+        doc = json.loads(_payload().decode("utf-8"))
+        doc["rows"][0]["scope"] = [f"cloud-{canary}"]
+        _, sidecar = evaluate_api_observation(
+            rule,
+            "cursor-cloud",
+            json.dumps(doc).encode("utf-8"),
+            expected_nonce="nonce-123",
+            expected_host_id="cloud-host-1",
+            ctx=self.ctx,
+            secret_canaries=(canary,),
+        )
+        self.assertIsNotNone(sidecar)
+        assert sidecar is not None
+        self.assertNotIn(canary, json.dumps(sidecar.to_dict()))
+
+    def test_l2_hook_rule_clamps_ttl_and_passes_manifest_validation(self) -> None:
+        rules = build_first_cloud_seat_rules(
+            seat="GROK-BOT",
+            platform="cursor-cloud",
+            host_id="cloud-host-1",
+            owner_seat="CODEX",
+            rules_target="cloud://registered-subject/AGENTS.md",
+            rules_sha256="b" * 64,
+            hooks_target="cloud://registered-subject/hooks.json",
+            hook_names=("lane-guard",),
+            mcp_target="cloud://registered-subject/mcp.json",
+            mcp_names=("simple-chat",),
+            skills_target="cloud://registered-subject/skills",
+            skill_names=("fleet-guard",),
+            subagents_target="cloud://registered-subject/subagents",
+            subagent_names=("research",),
+            permissions_target="cloud://registered-subject/permissions.json",
+            permission_names=("read-only",),
+            hook_proof_level=ProofLevel.L2,
+            ttl_seconds=900,
+        )
+        hooks_rule = next(r for r in rules if r.kind is ConfigKind.HOOKS)
+        self.assertGreaterEqual(hooks_rule.ttl_seconds, 86400)
+        manifest = Manifest(
+            schema_version=2,
+            seats=(SeatManifest(seat="GROK-BOT", platforms=("cursor-cloud",), rules=rules),),
+            compliance_rules=(),
+            source_path="",
+        )
+        manifest_mod.validate_rules(manifest)
+
+    def test_api_collect_batches_multi_row_host_and_caches_host_failures(self) -> None:
+        rules = build_first_cloud_seat_rules(
+            seat="GROK-BOT",
+            platform="cursor-cloud",
+            host_id="cloud-host-1",
+            owner_seat="CODEX",
+            rules_target="cloud://registered-subject/AGENTS.md",
+            rules_sha256="b" * 64,
+            hooks_target="cloud://registered-subject/hooks.json",
+            hook_names=("lane-guard",),
+            mcp_target="cloud://registered-subject/mcp.json",
+            mcp_names=("simple-chat",),
+            skills_target="cloud://registered-subject/skills",
+            skill_names=("fleet-guard",),
+            subagents_target="cloud://registered-subject/subagents",
+            subagent_names=("research",),
+            permissions_target="cloud://registered-subject/permissions.json",
+            permission_names=("read-only",),
+        )
+        base_rows = [
+            {
+                "observationId": f"obs-{i}",
+                "ruleId": r.id,
+                "seat": "GROK-BOT",
+                "platform": "cursor-cloud",
+                "hostId": "cloud-host-1",
+                "observerId": "hetzner-ro-observer-1",
+                "observerClass": "owner_observer",
+                "observedAt": "2026-11-12T20:00:00Z",
+                "expiresAt": "2026-11-12T20:15:00Z",
+                "observed": {
+                    "present": True,
+                    "sha256": r.expected.sha256,
+                    "names": list(r.expected.names),
+                },
+            }
+            for i, r in enumerate(rules)
+        ]
+        fetch_calls = {"n": 0}
+
+        def batch_fetch(url: str, *_args: object) -> bytes:
+            fetch_calls["n"] += 1
+            self.assertNotIn("ruleId=", url)
+            return json.dumps(
+                {"schemaVersion": 1, "nonce": "nonce-123", "rows": base_rows}
+            ).encode("utf-8")
+
+        target = ApiObserverTarget(
+            service_id="afc-398-observer",
+            base_url="https://observer.example.com/v1/obs",
+            allowed_hosts=frozenset({"observer.example.com"}),
+            expected_host_id="cloud-host-1",
+            batch_by_host=True,
+        )
+        runtime = ApiObserverRuntime(
+            target=target,
+            fetcher=batch_fetch,
+            nonce_factory=lambda: "nonce-123",
+        )
+        ctx = CheckContext(
+            home=Path(self.tmp.name),
+            now=self.now,
+            timeout=5,
+            cache={API_OBSERVER_CACHE_KEY: runtime},
+        )
+        manifest = Manifest(
+            schema_version=2,
+            seats=(SeatManifest(seat="GROK-BOT", platforms=("cursor-cloud",), rules=rules),),
+            compliance_rules=(),
+            source_path="",
+        )
+        report = aggregator.run_status(manifest, ctx=ctx)
+        self.assertEqual(fetch_calls["n"], 1)
+        self.assertTrue(all(res.state is CheckState.PASS for res in report.results))
+
+        # Host failure short-circuits remaining rules in the same run after one fetch.
+        err_calls = {"n": 0}
+
+        def failing_fetch(*_args: object) -> bytes:
+            err_calls["n"] += 1
+            raise CheckError("timeout", ReasonCode.TIMEOUT)
+
+        err_runtime = ApiObserverRuntime(
+            target=target,
+            fetcher=failing_fetch,
+            nonce_factory=lambda: "nonce-123",
+        )
+        err_ctx = CheckContext(
+            home=Path(self.tmp.name),
+            now=self.now,
+            timeout=5,
+            cache={API_OBSERVER_CACHE_KEY: err_runtime},
+        )
+        err_report = aggregator.run_status(manifest, ctx=err_ctx)
+        self.assertEqual(err_calls["n"], 1)
+        self.assertTrue(all(res.reason_code is ReasonCode.TIMEOUT for res in err_report.results))
+
+    def test_aggregator_catches_api_collector_import_error(self) -> None:
+        rule = _cloud_rule()
+        real_import = builtins.__import__
+
+        def _fail_api_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002, ANN001
+            if "api_collector" in name or (fromlist and "api_collector" in fromlist):
+                raise ImportError("simulated broken api_collector import")
+            return real_import(name, globals, locals, fromlist, level)
+
+        manifest = Manifest(
+            schema_version=2,
+            seats=(SeatManifest(seat="GROK-BOT", platforms=("cursor-cloud",), rules=(rule,)),),
+            compliance_rules=(),
+            source_path="",
+        )
+        with mock.patch("builtins.__import__", side_effect=_fail_api_import):
+            report = aggregator.run_status(manifest, ctx=self.ctx)
+        self.assertEqual(len(report.results), 1)
+        self.assertIs(report.results[0].state, CheckState.UNKNOWN)
+        self.assertIs(report.results[0].reason_code, ReasonCode.ERROR)
 
 
 if __name__ == "__main__":
