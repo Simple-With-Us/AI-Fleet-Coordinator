@@ -59,6 +59,23 @@ class DirectRegistryTests(unittest.TestCase):
             self.assertNotIn("provider-secret", result["error"])
         self.fetch.assert_called_once()
 
+    def test_failed_dedicated_route_never_uses_inherited_url_and_signing_key(self):
+        os.environ[API.URL_ENV] = "https://inherited.example.test"
+        os.environ[API.KEY_VAR] = "inherited-signing-key-" * 3
+        self.fetch.side_effect = RuntimeError("provider-secret-must-not-appear")
+        for token in ("", "st." + "synthetic-registry-" * 3):
+            with self.subTest(token_present=bool(token)):
+                API.reset_knob_cache()
+                os.environ[API.TOKEN_ENV] = token
+                with mock.patch.object(API, "_open") as opened:
+                    result = API.call(None, "assign", {})
+                self.assertEqual(result["code"], "not_configured")
+                self.assertIn(API.TOKEN_ENV, result["error"])
+                self.assertNotIn("provider-secret", result["error"])
+                self.assertEqual(API.base_url(), "")
+                self.assertEqual(API.signing_key(), "")
+                opened.assert_not_called()
+
     def test_rotation_and_api_origin_change_invalidate_process_cache(self):
         API.base_url()
         os.environ[API.TOKEN_ENV] += "rotated"
