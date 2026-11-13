@@ -154,6 +154,10 @@ GONE_SENT_IDS = 2000
 # runs, so a letter whose hook run died after the register - or an ask that never reached the assigner - would
 # otherwise keep a chat "??: " until its next CLI or Desktop event;  the pass is the way back for those chats.
 REPAIR_SWEEP_SECONDS = 3600
+# The most wall-clock time one repair pass spends starting replays:  an implementation judgment, not a
+# platform-documented limit - the pass rides a chat's start hook, which the platform may cut off, so a slow
+# assigner must not stretch one chat's start.  A candidate the budget cuts waits for the next pass.
+REPAIR_PASS_SECONDS = 10
 #: The most chats one pass replays:  the repair is real work on a live chat's start budget.
 REPAIR_MAX_CHATS = 5
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
@@ -3733,8 +3737,10 @@ def repair_unlettered(
     REPAIR_SWEEP_SECONDS (the stamp beside the notes;  `force` repairs whatever the stamp says).  The stamp is
     written before anything else, so a pass that fails, or a hook killed inside it, is tried again after the
     window and never on every start.  A finished pass also leaves its outcome beside the time (chats found,
-    replayed and lettered, the replays that failed, or the listing's error):  a stamp with no outcome is a
-    pass that never finished, which a host check can tell from a healthy quiet window.
+    replayed and lettered, and each replay that failed with its session id and exception type - or the
+    listing's error):  a stamp with no outcome is a pass that never finished, which a host check can tell from a
+    healthy quiet window.  A candidate the hook itself would refuse (`in_scope`), or whose note says closed or
+    mismatch, is left alone, and a pass starts no new replay once REPAIR_PASS_SECONDS have gone by.
 
     A repair is the chat's own start flow on the resume payload the adapter makes for it:  a chat the assigner
     still knows resumes the letter it holds (nothing re-allocates), one it does not know registers again, and a
@@ -3763,19 +3769,26 @@ def repair_unlettered(
         _save_json(path, {"at": now, "outcome": {"error": "the adapter could not list them"}})
         return {"skipped": "the adapter could not list them"}
     home = str(env.get("HOME") or os.path.expanduser("~"))
+    started = time.monotonic()
     asked: list[str] = []
     repaired: list[str] = []
-    failed = 0
+    failures: list[dict[str, str]] = []
     for sid in found:
         if sid == exclude or len(asked) >= REPAIR_MAX_CHATS:
             continue
+        if time.monotonic() - started >= REPAIR_PASS_SECONDS:
+            break  # the rest wait for the next pass:  no chat's start may stretch for the others
         try:
             payload = dict(spec.chat_payload(sid))
             sid = _text(payload.get("session_id")) or sid
+            if not in_scope(spec, env, payload):
+                continue  # what the hook itself would refuse (headless, another launcher's, a bare sub-agent)
             chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+            if chat.read().get("state") in ("closed", "mismatch"):
+                continue  # a settled no-letter state:  replaying it would re-register it every pass
             on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
-        except Exception:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
-            failed += 1
+        except Exception as exc:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
+            failures.append({"sid": sid, "error": type(exc).__name__})
             continue
         asked.append(sid)
         try:
@@ -3791,11 +3804,12 @@ def repair_unlettered(
                 "found": len(found),
                 "asked": len(asked),
                 "repaired": len(repaired),
-                "failed": failed,
+                "failed": len(failures),
+                "failures": failures,
             },
         },
     )
-    return {"asked": asked, "repaired": repaired}
+    return {"asked": asked, "repaired": repaired, "failures": failures}
 
 
 def _repair_unlettered_after_start(chat: Chat, stdout: TextIO) -> None:
@@ -3901,6 +3915,8 @@ def repair_main(
             stdout.write(
                 head + "%s %s\n" % (sid[:8], "letter back" if sid in fixed else "still unlettered")
             )
+        for failed_chat in done.get("failures") or []:
+            stdout.write(head + "%s failed (%s)\n" % (failed_chat["sid"][:8], failed_chat["error"]))
         stdout.write(head + "%d replayed, %d lettered\n" % (len(asked), len(fixed)))
     return 0
 
