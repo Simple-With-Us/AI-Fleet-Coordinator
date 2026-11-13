@@ -36,7 +36,7 @@ API (`registry_api`, whose URL and key are the fleet knobs in AI Fleet Coordinat
 token in FLEET_KNOBS_INFISICAL_TOKEN), never over ssh and never from `operator-registry-env`.  `--no-dm` sends no
 Zulip message, because the Operator sends none (owner ruling);  the steer through the Cursor API still goes out.
 Under `--api-only`, or whenever CURSOR_LETTERS_INFISICAL_TOKEN is set, the Cursor key is read with that token alone,
-from Fleet-OPS prod `/cursor-cloud-letters` (CURSOR_SYNC_API_KEY) through `fleet_secrets.core`, and held in memory,
+from Fleet-OPS prod `/cursor-cloud-letters` (CURSOR_SYNC_API_KEY) through `fleet_infisical`, and held in memory,
 never in the environment.  Under `--api-only` a missing token stops the run with service-token-required before any
 Cursor call, so no other key source is tried.  `check` is the installer's preflight:  it reads both tokens from standard input and answers, by name
 only, whether the registry URL, the registry key and the Cursor key can be read.
@@ -338,7 +338,7 @@ def _reason(exc: BaseException) -> str:
 def read_cursor_key(env: Mapping[str, str], core: Any = None) -> str:
     """CURSOR_SYNC_API_KEY from Fleet-OPS prod /cursor-cloud-letters, read with CURSOR_LETTERS_INFISICAL_TOKEN.
 
-    This is the reader `fleet_secrets.core` already gives every scoped consumer:  it checks the token's own grant
+    The shared `fleet_infisical` client checks the token's own grant
     (Fleet-OPS, prod, read only, exactly this folder) before it asks for the one name.  The project id comes from
     INFISICAL_FLEET_OPS_PROJECT_ID or ~/.simple-tools/fleet-ops-project-id, as for every other Fleet-OPS reader.  No
     other source is tried, so a missing or wrong token stops the sweep instead of reaching another credential."""
@@ -347,9 +347,7 @@ def read_cursor_key(env: Mapping[str, str], core: Any = None) -> str:
         raise KeyUnavailable("service-token-required")
     if core is None:
         try:
-            from fleet_secrets import (
-                core,
-            )  # the checkout's own reviewed reader, beside simple_tools
+            import fleet_infisical as core  # the checkout's own reviewed reader, beside simple_tools
         except Exception:  # noqa: BLE001 - no reader is "unavailable", never a traceback
             raise KeyUnavailable("scoped-reader-unavailable") from None
     try:
