@@ -1203,7 +1203,7 @@ class WorkflowVerbs:
         the write will change first and mint the extra scope only when that touches the
         directory. Merge: the PR file list. Update-branch: the base changes it pulls in
         (compare head...base, with a complete two-tree diff when the compare itself is
-        unverifiable), after checking the PR head is still the expected sha.  The
+        unverifiable), after checking the PR head is still the expected sha.  The proof anchors on the live base tip, not the PR snapshot's routinely-stale base.sha.  The
         update-branch write itself always runs under the workflow ceiling:  the
         provider endpoint fences only the head, so the base tip cannot be fenced
         atomically and a base that advances after the proof could pull unaudited
@@ -1253,16 +1253,26 @@ class WorkflowVerbs:
                 or not isinstance(pr.get("base"), dict)
                 or not isinstance(pr["base"].get("ref"), str)
                 or not pr["base"]["ref"]
-                or not isinstance(pr["base"].get("sha"), str)
-                or not _SHA.fullmatch(pr["base"]["sha"])
             ):
                 raise Refused("PR head not matched")
             base_ref = quote(pr["base"]["ref"], safe="/")
-            base_sha = pr["base"]["sha"]
+            # The PR snapshot's base.sha refreshes only on a PR sync, so it is
+            # routinely stale and cannot anchor the workflow-touch proof:  with
+            # it, every call refuses once the base ref advances (the caller can
+            # never retry its way out).  Resolve the live base tip and prove
+            # against that instead;  the recheck below fences the real
+            # proof-to-write window, and a retry after a genuine base move
+            # succeeds because each call re-reads the tip.
+            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+            tip_obj = tip.get("object") if isinstance(tip, dict) else None
+            tip_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
+            if not isinstance(tip_sha, str) or not _SHA.fullmatch(tip_sha):
+                raise Refused("PR base tip unverifiable")
+            base_sha = tip_sha
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
-            # The proof input is the immutable base sha from the PR snapshot, not the
-            # mutable ref.  When the compare cannot prove the workflow-touch answer -
+            # The proof input is the live base tip resolved above (tip_sha), not the
+            # mutable ref name and not the routinely-stale PR snapshot.  When the compare cannot prove the workflow-touch answer -
             # too large to read, no files array, or a possibly-truncated full page
             # without a touch - fall back to a complete two-tree diff.
             try:
@@ -1288,10 +1298,10 @@ class WorkflowVerbs:
             # recheck stays possible - the endpoint gives no stronger fence - which
             # is exactly why the write below always runs under the workflow ceiling
             # instead of relying on the provider to refuse unaudited changes.
-            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
-            tip_obj = tip.get("object") if isinstance(tip, dict) else None
-            tip_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
-            if tip_sha != base_sha:
+            tip_again = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+            tip_again_obj = tip_again.get("object") if isinstance(tip_again, dict) else None
+            tip_again_sha = tip_again_obj.get("sha") if isinstance(tip_again_obj, dict) else None
+            if tip_again_sha != base_sha:
                 raise Refused("PR base not matched")
         else:
             for page in range(1, 31):

@@ -47,6 +47,7 @@ const BAD_REQUEST_REASONS = new Map([
   ["auto-merge is not armed", "bad_request_auto_merge_not_armed"],
   ["auto-merge enable was refused", "bad_request_auto_merge_refused"],
   ["auto-merge is armed with a different method", "bad_request_auto_merge_method_mismatch"],
+  ["PR base tip unverifiable", "bad_request_pr_base_tip_unverifiable"],
 ]);
 
 /** The relay's fixed head, ref and identity fences:  the caller's expected
@@ -213,6 +214,7 @@ const REASON_TEXT = Object.freeze({
   bad_request_auto_merge_not_armed: "A follow-up read shows squash, merge, or rebase auto-merge is off.  Sending the call again is safe.",
   bad_request_auto_merge_refused: "GitHub refused the enable, and a follow-up read shows auto-merge is off.",
   bad_request_auto_merge_method_mismatch: "A follow-up read shows auto-merge is on with a different merge method.  Read the pull request before enabling again.",
+  bad_request_pr_base_tip_unverifiable: "The pull request's live base tip could not be verified, so the write stayed fenced off.  Read the pull request again and retry;  a persistent failure means the base branch is not readable under this seat's policy.",
 });
 
 /** Fixed caller-facing text for a reason id, or null when there is none. */
