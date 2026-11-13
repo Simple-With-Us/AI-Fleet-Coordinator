@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync } from "node:crypto";
 
+import { scanSecret } from "../src/contract.js";
 import { buildPeerActionsRow, PEER_ACTIONS_METHODS } from "../src/peer_actions.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
 
@@ -50,8 +51,19 @@ test("a missing transport credential list fails before dry-run output", async ()
 
 test("compact fetched PEM body refuses before OAuth or row publication", async () => {
   // Fresh test-only PEM is generated in memory and never authenticates.
-  const { privateKey: key } = generateKeyPairSync("ed25519", { privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
-  const compact = key.split(/\r?\n/).filter(line => !line.startsWith("-----")).join("");
+  // Isolate fetched-known scanning from a legitimate earlier syntax refusal.
+  let key, compact;
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const { privateKey } = generateKeyPairSync("ed25519", { privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
+    const body = privateKey.split(/\r?\n/).filter(line => !line.startsWith("-----")).join("");
+    if (scanSecret(body, []) === null) {
+      key = privateKey;
+      compact = body;
+      break;
+    }
+  }
+  assert.ok(key && compact, "bounded synthetic fetched-key fixture unavailable");
+  assert.equal(scanSecret(compact, []), null);
   const args = { requesting_seat: "CLAUDE", request: compact, action_taken: "reviewed code", result: "complete" };
   const context = { seat: "CODEX", known: [], workerEnv: { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "project-test", INFISICAL_SHEETS_SA_TOKEN: "synthetic own reader" }, reserve: async () => {} };
   const original = globalThis.fetch;
