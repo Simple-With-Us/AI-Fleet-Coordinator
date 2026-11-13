@@ -72,12 +72,12 @@ when the string is not a full sentence — not Title Case:
 - Label a zone in product UI only when the time is not the viewer's clock
   (`9:30 AM ET` for a market bell).  Relative times (`3m ago`) need no label.
 - Owner-facing agent writing (chat, boards, rollouts, Zulip, Notes, release notes,
-  bot-to-bot) is the owner's clock: **12-hour, with am or pm**, on every agent, bot,
-  and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15am`,
-  not `3:15am CDT` and not `08:15Z`.  When the day matters, write
-  `Sun, Oct 5, 2026 at 3:15am`.  Give only the Central time:  convert UTC and every
-  other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous
-  calendar day during daylight saving, and 6:00pm the previous calendar day after
+  bot-to-bot) is the owner's clock: **12-hour, with a space before uppercase AM or PM**, on every agent, bot,
+  and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15 AM`,
+  not `3:15 AM CDT` and not `08:15Z`.  When the day matters, write
+  `Sun, Oct 5, 2026 at 3:15 AM`.  Give only the Central time: convert UTC and every
+  other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00 PM the previous
+  calendar day during daylight saving, and 6:00 PM the previous calendar day after
   the fall-back.  See `/Users/jay/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
 
 ## Money
