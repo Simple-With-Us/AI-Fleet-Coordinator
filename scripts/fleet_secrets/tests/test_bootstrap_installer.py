@@ -11,7 +11,9 @@ SCRIPTS = Path(__file__).resolve().parents[2]
 
 
 class InstallerTests(unittest.TestCase):
-    def test_installed_shared_writer_has_exact_lazy_ledger_and_missing_dependency_fails_closed(self):
+    def test_installed_shared_writer_has_exact_lazy_ledger_and_missing_dependency_fails_closed(
+        self,
+    ):
         for opt_in in (False, True):
             with self.subTest(opt_in=opt_in), tempfile.TemporaryDirectory() as tmp:
                 env = {"HOME": tmp, "PATH": os.defpath}
@@ -19,8 +21,10 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 installed = Path(tmp) / ".local/share/fleet-secrets"
                 for name in ("__init__.py", "operator_github_state.py"):
-                    self.assertEqual((installed / "simple_tools" / name).read_bytes(),
-                                     (SCRIPTS / "simple_tools" / name).read_bytes())
+                    self.assertEqual(
+                        (installed / "simple_tools" / name).read_bytes(),
+                        (SCRIPTS / "simple_tools" / name).read_bytes(),
+                    )
                 code = (
                     "import sys,pathlib;sys.path.insert(0,sys.argv[1]);"
                     "import fleet_infisical_cli as cli;"
@@ -29,9 +33,16 @@ class InstallerTests(unittest.TestCase):
                     "ledger=cli.core._write_ledger(intent.state_dir);"
                     "assert ledger.lookup('fixture','absent') is None;print('writer-ready')"
                 )
-                run = subprocess.run([sys.executable, "-I", "-c", code, str(installed), tmp],
-                                     env=env, capture_output=True, text=True, timeout=5)
-                self.assertEqual((run.returncode, run.stdout.strip()), (0, "writer-ready"), run.stderr)
+                run = subprocess.run(
+                    [sys.executable, "-I", "-c", code, str(installed), tmp],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                self.assertEqual(
+                    (run.returncode, run.stdout.strip()), (0, "writer-ready"), run.stderr
+                )
                 (installed / "simple_tools/operator_github_state.py").unlink()
                 missing = (
                     "import sys;sys.path.insert(0,sys.argv[1]);import fleet_infisical_cli as cli;"
@@ -40,8 +51,13 @@ class InstallerTests(unittest.TestCase):
                     "\nexcept cli.core.SecretsError as exc: assert exc.message=='write-state-unavailable'"
                     "\nelse: raise AssertionError('missing ledger was accepted')"
                 )
-                run = subprocess.run([sys.executable, "-I", "-c", missing, str(installed), tmp],
-                                     env=env, capture_output=True, text=True, timeout=5)
+                run = subprocess.run(
+                    [sys.executable, "-I", "-c", missing, str(installed), tmp],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
                 self.assertEqual((run.returncode, run.stdout, run.stderr), (0, "", ""))
 
     def _run_installer(self, env, extra_args=(), uname="Linux", uid="0"):

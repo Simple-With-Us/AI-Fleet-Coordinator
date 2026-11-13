@@ -1,7 +1,7 @@
 """Hermetic durable writer tests; no credential store or real provider is available."""
 
-import json
 import contextlib
+import json
 import secrets
 import subprocess
 import sys
@@ -12,10 +12,10 @@ import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest import mock
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlsplit
+from unittest import mock
 from urllib.error import URLError
+from urllib.parse import parse_qs, urlsplit
 
 import fleet_infisical as core
 
@@ -44,14 +44,19 @@ class WriteIntentTests(unittest.TestCase):
         self.read_status = 200
         self.no_ack = False
         self.crash = None
-        self.metadata = dict(workspace=PROJECT, permissions=["read", "write"],
-                             scopes=[dict(environment="prod", secretPath=PATH)],
-                             expiresAt="2099-01-01T00:00:00Z")
+        self.metadata = dict(
+            workspace=PROJECT,
+            permissions=["read", "write"],
+            scopes=[dict(environment="prod", secretPath=PATH)],
+            expiresAt="2099-01-01T00:00:00Z",
+        )
         self.transport = mock.patch.object(core, "_api_json", self.api)
         self.actual_api = core._api_json
         self.transport.start()
         self.addCleanup(self.transport.stop)
-        guard = mock.patch.object(core.subprocess, "run", side_effect=AssertionError("no CLI fallback"))
+        guard = mock.patch.object(
+            core.subprocess, "run", side_effect=AssertionError("no CLI fallback")
+        )
         guard.start()
         self.addCleanup(guard.stop)
 
@@ -94,13 +99,25 @@ class WriteIntentTests(unittest.TestCase):
             self.assertEqual(query["viewSecretValue"], ["false"])
             return 200, {"secrets": []}
         self.assertEqual(query["viewSecretValue"], ["true"])
-        return self.read_status, {"secret": dict(secretKey=NAME, secretValue=self.stored,
-                                                type="shared", workspace=PROJECT,
-                                                environment="prod", secretPath=PATH)}
+        return self.read_status, {
+            "secret": dict(
+                secretKey=NAME,
+                secretValue=self.stored,
+                type="shared",
+                workspace=PROJECT,
+                environment="prod",
+                secretPath=PATH,
+            )
+        }
 
     def put(self, intent=None, value=None):
-        return core.put_secret(NAME, PATH, self.value if value is None else value,
-                               self.env, intent=intent or self.intent)
+        return core.put_secret(
+            NAME,
+            PATH,
+            self.value if value is None else value,
+            self.env,
+            intent=intent or self.intent,
+        )
 
     def reconcile(self, intent=None):
         return core.reconcile_secret(NAME, PATH, self.env, intent=intent or self.intent)
@@ -115,7 +132,9 @@ class WriteIntentTests(unittest.TestCase):
 
     def test_success_requires_ack_and_named_exact_readback_then_duplicate_never_dispatches(self):
         receipt = self.put()
-        self.assertEqual((receipt.result, receipt.outcome, receipt.replayed), ("updated", "ok", False))
+        self.assertEqual(
+            (receipt.result, receipt.outcome, receipt.replayed), ("updated", "ok", False)
+        )
         self.assertEqual(receipt.request_id, self.intent.request_id)
         self.assertEqual(self.row()[0:1], ("ok",))
         self.assertEqual(self.row()[1]["ack_status"], 200)
@@ -146,7 +165,9 @@ class WriteIntentTests(unittest.TestCase):
                 before = list(self.calls)
                 self.assert_outcome("outcome_unknown", self.reconcile)
                 self.assert_outcome("outcome_unknown", self.put)
-                self.assert_outcome("prior_outcome_unknown", lambda: self.put(self.new_intent("another-purpose")))
+                self.assert_outcome(
+                    "prior_outcome_unknown", lambda: self.put(self.new_intent("another-purpose"))
+                )
                 self.assertEqual(self.calls, before)
 
     def test_unknown_survives_restart_and_age_and_equal_provider_value_is_not_causal_proof(self):
@@ -154,7 +175,9 @@ class WriteIntentTests(unittest.TestCase):
         self.assert_outcome("outcome_unknown", self.put)
         self.assertEqual(self.stored, self.value)
         before = list(self.calls)
-        with mock.patch.object(core.time, "time_ns", return_value=time.time_ns() + 3 * 86_400 * 1_000_000_000):
+        with mock.patch.object(
+            core.time, "time_ns", return_value=time.time_ns() + 3 * 86_400 * 1_000_000_000
+        ):
             self.assert_outcome("outcome_unknown", self.reconcile)
             self.assert_outcome("prior_outcome_unknown", lambda: self.put(self.new_intent()))
         self.assertEqual(self.calls, before)
@@ -163,7 +186,10 @@ class WriteIntentTests(unittest.TestCase):
         self.read_status = 503
         self.assert_outcome("accepted_unverified", self.put)
         outcome, record = self.row()
-        self.assertEqual((outcome, record["phase"], record["ack_status"]), ("outcome_unknown", "acknowledged", 200))
+        self.assertEqual(
+            (outcome, record["phase"], record["ack_status"]),
+            ("outcome_unknown", "acknowledged", 200),
+        )
         self.assert_outcome("prior_outcome_unknown", lambda: self.put(self.new_intent()))
         self.read_status = 200
         self.assertEqual(self.reconcile().result, "updated")
@@ -196,40 +222,62 @@ class WriteIntentTests(unittest.TestCase):
             return outer(method, *args, **kwargs)
 
         self.read_status = 503
-        with mock.patch.object(core, "_api_json", transport), mock.patch.object(
-            core, "_opener", return_value=SimpleNamespace(open=lambda *args, **kwargs: Response())
+        with (
+            mock.patch.object(core, "_api_json", transport),
+            mock.patch.object(
+                core,
+                "_opener",
+                return_value=SimpleNamespace(open=lambda *args, **kwargs: Response()),
+            ),
         ):
             self.assert_outcome("accepted_unverified", self.put)
         self.assertEqual(self.row()[1]["ack_status"], 200)
         self.assertIs(core._api_json, original)
 
-    def test_actual_failed_connect_is_unsent_but_timeouts_resets_and_generic_oserrors_stay_unknown(self):
-        for failure, outcome in ((URLError(ConnectionRefusedError()), "refused"),
-                                 (ConnectionRefusedError(), "refused"),
-                                 (URLError(TimeoutError()), "outcome_unknown"),
-                                 (ConnectionResetError(), "outcome_unknown"),
-                                 (OSError("synthetic provider text"), "outcome_unknown")):
+    def test_actual_failed_connect_is_unsent_but_timeouts_resets_and_generic_oserrors_stay_unknown(
+        self,
+    ):
+        for failure, outcome in (
+            (URLError(ConnectionRefusedError()), "refused"),
+            (ConnectionRefusedError(), "refused"),
+            (URLError(TimeoutError()), "outcome_unknown"),
+            (ConnectionResetError(), "outcome_unknown"),
+            (OSError("synthetic provider text"), "outcome_unknown"),
+        ):
             with self.subTest(kind=type(failure).__name__), tempfile.TemporaryDirectory() as root:
                 self.directory = Path(root) / "writer"
                 self.intent = self.new_intent()
                 outer = self.api
 
                 def transport(method, *args, **kwargs):
-                    return self.actual_api(method, *args, **kwargs) if method == "PATCH" else outer(method, *args, **kwargs)
+                    return (
+                        self.actual_api(method, *args, **kwargs)
+                        if method == "PATCH"
+                        else outer(method, *args, **kwargs)
+                    )
 
-                with mock.patch.object(core, "_api_json", transport), mock.patch.object(
-                    core, "_opener", return_value=SimpleNamespace(open=mock.Mock(side_effect=failure))
+                with (
+                    mock.patch.object(core, "_api_json", transport),
+                    mock.patch.object(
+                        core,
+                        "_opener",
+                        return_value=SimpleNamespace(open=mock.Mock(side_effect=failure)),
+                    ),
                 ):
                     error = self.assert_outcome(outcome, self.put)
-                self.assertEqual((error.request_may_have_been_sent, error.retryable),
-                                 (outcome == "outcome_unknown", outcome == "refused"))
+                self.assertEqual(
+                    (error.request_may_have_been_sent, error.retryable),
+                    (outcome == "outcome_unknown", outcome == "refused"),
+                )
 
     def test_acknowledged_mismatch_remains_held_and_cannot_clear_from_old_value_or_aba(self):
         self.read_status = 503
         self.assert_outcome("accepted_unverified", self.put)
         self.read_status, self.stored = 200, "another-value"
         self.assert_outcome("readback_conflict", self.reconcile)
-        self.assert_outcome("prior_outcome_unknown", lambda: self.put(self.new_intent(), "another-value"))
+        self.assert_outcome(
+            "prior_outcome_unknown", lambda: self.put(self.new_intent(), "another-value")
+        )
         self.assertEqual(self.row()[0], "outcome_unknown")
         self.assertEqual(self.mutations, ["PATCH"])
 
@@ -265,8 +313,10 @@ class WriteIntentTests(unittest.TestCase):
         self.assert_outcome("outcome_unknown", self.put)
         fresh = self.new_intent("another-purpose")
         error = self.assert_outcome("prior_outcome_unknown", lambda: self.put(fresh))
-        self.assertEqual((error.request_id, error.created_at_ms, error.purpose, error.name),
-                         (self.intent.request_id, self.intent.created_at_ms, self.intent.purpose, NAME))
+        self.assertEqual(
+            (error.request_id, error.created_at_ms, error.purpose, error.name),
+            (self.intent.request_id, self.intent.created_at_ms, self.intent.purpose, NAME),
+        )
         self.assertNotEqual(error.request_id, fresh.request_id)
 
     def test_absent_reconcile_cannot_add_a_second_pending_row_behind_existing_unknown(self):
@@ -284,9 +334,17 @@ class WriteIntentTests(unittest.TestCase):
         namespace = core._write_namespace(core.API_BASE, PROJECT, PATH)
         ledger = core._write_ledger(self.directory)
         for intent in (self.intent, self.new_intent()):
-            record = core._write_record(intent, core.API_BASE, PROJECT, PATH, NAME, core._write_digest(self.value))
-            ledger.begin(namespace, intent.request_id, time.time() + 60, time.time(), 1000,
-                         response=core._write_json(record))
+            record = core._write_record(
+                intent, core.API_BASE, PROJECT, PATH, NAME, core._write_digest(self.value)
+            )
+            ledger.begin(
+                namespace,
+                intent.request_id,
+                time.time() + 60,
+                time.time(),
+                1000,
+                response=core._write_json(record),
+            )
         self.assert_outcome("state_unavailable", lambda: self.put(self.new_intent()))
         self.assertEqual(self.calls, [])
 
@@ -312,8 +370,12 @@ class WriteIntentTests(unittest.TestCase):
     def test_id_collision_binds_value_and_time_and_never_dispatches(self):
         self.put()
         self.assert_outcome("intent_conflict", lambda: self.put(value="changed"))
-        other = core.WriteIntent(self.directory, self.intent.purpose, self.intent.request_id,
-                                 self.intent.created_at_ms + 1)
+        other = core.WriteIntent(
+            self.directory,
+            self.intent.purpose,
+            self.intent.request_id,
+            self.intent.created_at_ms + 1,
+        )
         error = self.assert_outcome("state-invalid", lambda: self.put(other))
         self.assertTrue(error.request_may_have_been_sent)
         self.assertEqual(self.mutations, ["PATCH"])
@@ -322,17 +384,26 @@ class WriteIntentTests(unittest.TestCase):
         self.put()
         ledger = core._write_ledger(self.directory)
         namespace = core._write_namespace(core.API_BASE, PROJECT, PATH)
-        ledger.settle(namespace, self.intent.request_id, "ok", json.dumps({"secretValue": self.value}))
+        ledger.settle(
+            namespace, self.intent.request_id, "ok", json.dumps({"secretValue": self.value})
+        )
         before = list(self.calls)
         error = self.assert_outcome("state_unavailable", self.reconcile)
         self.assertTrue(error.request_may_have_been_sent)
         self.assertEqual(self.calls, before)
 
     def test_scope_expiry_and_writer_binding_refuse_before_mutation(self):
-        for change in ({"expiresAt": None}, {"permissions": ["read"]},
-                       {"scopes": [{"environment": "prod", "secretPath": "/"}]},
-                       {"scopes": [{"environment": "prod", "secretPath": PATH},
-                                   {"environment": "prod", "secretPath": "/"}]}):
+        for change in (
+            {"expiresAt": None},
+            {"permissions": ["read"]},
+            {"scopes": [{"environment": "prod", "secretPath": "/"}]},
+            {
+                "scopes": [
+                    {"environment": "prod", "secretPath": PATH},
+                    {"environment": "prod", "secretPath": "/"},
+                ]
+            },
+        ):
             with self.subTest(change=change):
                 self.metadata.update(change)
                 self.assert_outcome("refused", lambda: self.put(self.new_intent()))
@@ -353,11 +424,15 @@ class WriteIntentTests(unittest.TestCase):
                 self.directory = Path(root) / "writer"
                 self.intent, self.statuses = self.new_intent(), [status]
                 error = self.assert_outcome("refused", self.put)
-                self.assertEqual((error.provider_status, error.retryable, error.request_may_have_been_sent),
-                                 (status, status == 429, False))
+                self.assertEqual(
+                    (error.provider_status, error.retryable, error.request_may_have_been_sent),
+                    (status, status == 429, False),
+                )
                 before = list(self.calls)
                 repeated = self.assert_outcome("refused", self.reconcile)
-                self.assertEqual((repeated.provider_status, repeated.retryable), (status, status == 429))
+                self.assertEqual(
+                    (repeated.provider_status, repeated.retryable), (status, status == 429)
+                )
                 self.assertEqual(self.calls, before)
                 self.intent, self.statuses = self.new_intent(), [200]
                 self.assertEqual(self.put().outcome, "ok")
@@ -365,18 +440,30 @@ class WriteIntentTests(unittest.TestCase):
     def test_preflight_outage_is_definitely_unsent_retryable_and_durable(self):
         with mock.patch.object(core, "_api_json", return_value=(503, None)):
             error = self.assert_outcome("refused", self.put)
-        self.assertEqual((error.retryable, error.request_may_have_been_sent, error.provider_status), (True, False, 503))
+        self.assertEqual(
+            (error.retryable, error.request_may_have_been_sent, error.provider_status),
+            (True, False, 503),
+        )
         repeated = self.assert_outcome("refused", self.reconcile)
         self.assertEqual((repeated.retryable, repeated.provider_status), (True, 503))
         self.assertEqual(self.mutations, [])
 
     def test_shared_verifier_distinguishes_provider_outage_from_auth_scope_and_expiry_refusal(self):
-        for status, metadata, kind in ((0, None, "unavailable"), (408, {}, "unavailable"),
-                                       (429, {}, "unavailable"), (503, {}, "unavailable"),
-                                       (200, None, "unavailable"), (401, {}, "refused"),
-                                       (403, {}, "refused"), (200, dict(self.metadata, expiresAt=None), "refused"),
-                                       (200, dict(self.metadata, workspace="foreign"), "refused")):
-            with self.subTest(status=status, kind=kind), mock.patch.object(core, "_api_json", return_value=(status, metadata)):
+        for status, metadata, kind in (
+            (0, None, "unavailable"),
+            (408, {}, "unavailable"),
+            (429, {}, "unavailable"),
+            (503, {}, "unavailable"),
+            (200, None, "unavailable"),
+            (401, {}, "refused"),
+            (403, {}, "refused"),
+            (200, dict(self.metadata, expiresAt=None), "refused"),
+            (200, dict(self.metadata, workspace="foreign"), "refused"),
+        ):
+            with (
+                self.subTest(status=status, kind=kind),
+                mock.patch.object(core, "_api_json", return_value=(status, metadata)),
+            ):
                 with self.assertRaises(core.SecretsError) as raised:
                     core.verify_service_token(self.token, PROJECT, PATH, {}, writer=True)
                 self.assertEqual(raised.exception.failure_kind, kind)
@@ -384,9 +471,14 @@ class WriteIntentTests(unittest.TestCase):
         self.assertFalse(self.directory.exists())
 
     def test_poisoned_writer_dependency_origin_refuses_without_provider_access(self):
-        with mock.patch.dict(sys.modules, {"_fleet_infisical_write_ledger": SimpleNamespace(__file__="/wrong/origin.py")}):
-            with self.assertRaisesRegex(core.SecretsError, "write-state-unavailable"):
-                self.put()
+        with (
+            mock.patch.dict(
+                sys.modules,
+                {"_fleet_infisical_write_ledger": SimpleNamespace(__file__="/wrong/origin.py")},
+            ),
+            self.assertRaisesRegex(core.SecretsError, "write-state-unavailable"),
+        ):
+            self.put()
         self.assertFalse(self.directory.exists())
         self.assertEqual(self.calls, [])
 
@@ -406,8 +498,11 @@ class WriteIntentTests(unittest.TestCase):
         self.statuses, self.no_ack = [0], True
         self.assert_outcome("outcome_unknown", self.put)
         before = list(self.calls)
-        for provider in ("https://APP.INFISICAL.COM/api", "https://app.infisical.com:443/api/",
-                         "https://app.infisical.com./api"):
+        for provider in (
+            "https://APP.INFISICAL.COM/api",
+            "https://app.infisical.com:443/api/",
+            "https://app.infisical.com./api",
+        ):
             self.env[core.ENV_API] = provider
             self.assert_outcome("prior_outcome_unknown", lambda: self.put(self.new_intent()))
         self.env[core.ENV_PROJECT] = PROJECT.upper()
@@ -416,12 +511,18 @@ class WriteIntentTests(unittest.TestCase):
 
     def test_same_uuid_cannot_bind_a_second_folder_provider_or_project(self):
         self.put()
-        for key, value in ((core.ENV_PROJECT, str(uuid.uuid4())),
-                           (core.ENV_API, "https://another.example/api")):
+        for key, value in (
+            (core.ENV_PROJECT, str(uuid.uuid4())),
+            (core.ENV_API, "https://another.example/api"),
+        ):
             with self.subTest(key=key), mock.patch.dict(self.env, {key: value}):
                 self.assert_outcome("intent_conflict", self.put)
-        self.assert_outcome("intent_conflict", lambda: core.put_secret(
-            "GH_TOKEN", "/cli-logins/CODEX", self.value, self.env, intent=self.intent))
+        self.assert_outcome(
+            "intent_conflict",
+            lambda: core.put_secret(
+                "GH_TOKEN", "/cli-logins/CODEX", self.value, self.env, intent=self.intent
+            ),
+        )
         self.assertEqual(self.mutations, ["PATCH"])
 
     def test_shortened_terminal_expiry_cannot_prune_tombstone_or_allow_old_id_to_write(self):
@@ -444,10 +545,15 @@ class WriteIntentTests(unittest.TestCase):
             return original(method, *args, **kwargs)
 
         self.statuses, self.no_ack = [0], True
-        with mock.patch.object(core, "_api_json", blocked), ThreadPoolExecutor(max_workers=2) as pool:
+        with (
+            mock.patch.object(core, "_api_json", blocked),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
             first = pool.submit(self.assert_outcome, "outcome_unknown", self.put)
             self.assertTrue(sending.wait(3))
-            second = pool.submit(self.assert_outcome, "prior_outcome_unknown", lambda: self.put(self.new_intent()))
+            second = pool.submit(
+                self.assert_outcome, "prior_outcome_unknown", lambda: self.put(self.new_intent())
+            )
             release.set()
             first.result(timeout=5)
             second.result(timeout=5)
@@ -481,8 +587,14 @@ class WriteIntentTests(unittest.TestCase):
         metadata = dict(self.metadata, permissions=["read"])
         for hidden in (1, 0, "true", "false", None):
             for names_only in (False, True):
-                record = dict(secretKey=NAME, type="shared", workspace=PROJECT, environment="prod",
-                              secretPath=PATH, secretValueHidden=hidden)
+                record = dict(
+                    secretKey=NAME,
+                    type="shared",
+                    workspace=PROJECT,
+                    environment="prod",
+                    secretPath=PATH,
+                    secretValueHidden=hidden,
+                )
                 if not names_only:
                     record["secretValue"] = self.value
 
@@ -491,7 +603,10 @@ class WriteIntentTests(unittest.TestCase):
                         return 200, metadata
                     return 200, {"secrets": [record]} if names_only else {"secret": record}
 
-                with self.subTest(hidden=hidden, names_only=names_only), mock.patch.object(core, "_api_json", respond):
+                with (
+                    self.subTest(hidden=hidden, names_only=names_only),
+                    mock.patch.object(core, "_api_json", respond),
+                ):
                     with self.assertRaisesRegex(core.SecretsError, "unverified-source"):
                         if names_only:
                             core.list_project_names(PROJECT, PATH, {}, token=self.token)
@@ -506,21 +621,32 @@ class ReadOnlyInstallTests(unittest.TestCase):
             directory = Path(root)
             (directory / "fleet_infisical.py").write_bytes(Path(core.__file__).read_bytes())
             entry = directory / "linux-entrypoint.py"
-            entry.write_bytes((Path(core.__file__).parent / "fleet_secrets" / "linux-entrypoint.py").read_bytes())
+            entry.write_bytes(
+                (Path(core.__file__).parent / "fleet_secrets" / "linux-entrypoint.py").read_bytes()
+            )
             delegate = directory / "fleet-secrets-cli"
             delegate.write_text("#!/bin/sh\nprintf 'isolated help succeeded\\n'\n")
             delegate.chmod(0o700)
-            run = subprocess.run([sys.executable, "-I", "-B", str(entry), "--help"],
-                                 capture_output=True, text=True, env={}, timeout=10)
-            self.assertEqual((run.returncode, run.stdout, run.stderr), (0, "isolated help succeeded\n", ""))
-            self.assertEqual(sorted(path.name for path in directory.iterdir()),
-                             ["fleet-secrets-cli", "fleet_infisical.py", "linux-entrypoint.py"])
+            run = subprocess.run(
+                [sys.executable, "-I", "-B", str(entry), "--help"],
+                capture_output=True,
+                text=True,
+                env={},
+                timeout=10,
+            )
+            self.assertEqual(
+                (run.returncode, run.stdout, run.stderr), (0, "isolated help succeeded\n", "")
+            )
+            self.assertEqual(
+                sorted(path.name for path in directory.iterdir()),
+                ["fleet-secrets-cli", "fleet_infisical.py", "linux-entrypoint.py"],
+            )
 
     def test_fi_only_install_reads_without_importing_sqlite_or_creating_writer_state(self):
         with tempfile.TemporaryDirectory() as root:
             target = Path(root) / "fleet_infisical.py"
             target.write_bytes(Path(core.__file__).read_bytes())
-            program = r'''
+            program = r"""
 import builtins, sys, uuid
 sys.path.insert(0, sys.argv[1])
 original = builtins.__import__
@@ -538,9 +664,14 @@ def api(method, path, token, body, env, **kwargs):
 f._api_json = api
 assert f.fetch_project(project, '/', {}, token='st.' + 'x' * 32, names=('EXAMPLE',)) == {'EXAMPLE':'synthetic'}
 assert 'sqlite3' not in sys.modules
-'''
-            run = subprocess.run([sys.executable, "-I", "-B", "-c", program, root],
-                                 capture_output=True, text=True, env={}, timeout=10)
+"""
+            run = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", program, root],
+                capture_output=True,
+                text=True,
+                env={},
+                timeout=10,
+            )
             self.assertEqual((run.returncode, run.stdout, run.stderr), (0, "", ""))
             self.assertEqual([entry.name for entry in Path(root).iterdir()], ["fleet_infisical.py"])
 
