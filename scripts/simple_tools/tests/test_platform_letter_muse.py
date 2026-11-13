@@ -132,6 +132,9 @@ class ProcessTests(Tree):
         # macOS has no /proc.  `ps` joins the arguments with spaces, so a prompt that opens with a subcommand word
         # (muse "login page redirects to the wrong host") looked like the subcommand `login`; the kernel keeps it whole.
         def runner(argv, **kw):
+            self.assertEqual(kw["env"], MR.host_env({}, os.environ))
+            self.assertNotIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN", kw["env"])
+            self.assertNotIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY", kw["env"])
             flat = "/opt/homebrew/bin/muse login page redirects to the wrong host"
             if argv[:3] == ["ps", "-o", "ppid=,comm="]:
                 return SimpleNamespace(stdout="  4242 /opt/homebrew/bin/muse\n")
@@ -141,7 +144,9 @@ class ProcessTests(Tree):
 
         kernel = ("/opt/homebrew/bin/muse", ("/opt/homebrew/bin/muse", "login page redirects to the wrong host"),
                   ["PATH=/bin", "SESSION_LETTER=0", "GITHUB_TOKEN=" + "x" * 12])
-        with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: kernel):
+        credentials = {"SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "fake.bootstrap",
+                       "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "fake.signing"}
+        with mock.patch.dict(os.environ, credentials), mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: kernel):
             proc = MR.read_proc(9999, None, runner)
         self.assertEqual((proc.pid, proc.ppid, proc.exe), (9999, 4242, "/opt/homebrew/bin/muse"))
         self.assertEqual(proc.argv, kernel[1])
@@ -149,7 +154,7 @@ class ProcessTests(Tree):
         self.assertEqual(dict(proc.env), {"SESSION_LETTER": "0"})
         self.assertNotIn("x" * 12, repr(proc))
         # Where the kernel will not say, `ps` alone answers, with the words flattened as before.
-        with mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: None):
+        with mock.patch.dict(os.environ, credentials), mock.patch.object(MR, "default_proc_root", lambda: None), mock.patch.object(MR, "kernel_args", lambda pid: None):
             flat = MR.read_proc(9999, None, runner)
         self.assertEqual(flat.argv[:2], ("/opt/homebrew/bin/muse", "login"))
         self.assertEqual(dict(flat.env), {"SESSION_LETTER": "0"})
