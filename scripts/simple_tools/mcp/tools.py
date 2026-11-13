@@ -2591,6 +2591,7 @@ class Tools:
             request_source=args["request"],
             action_taken=args["action_taken"],
             result=args["result"],
+            known=self.known,
         )
         structured = PEER_ACTIONS.log_row(entry, dry_run=bool(args.get("dry_run")))
         header = "peer_actions_log:  %s" % (
