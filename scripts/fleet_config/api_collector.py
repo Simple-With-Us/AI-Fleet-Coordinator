@@ -24,6 +24,7 @@ import ipaddress
 import json
 import re
 import socket
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -302,12 +303,48 @@ def validate_observer_url(
     return url
 
 
+def _resolve_addrinfo_bounded(
+    host: str,
+    port: int,
+    timeout: float | None,
+) -> list[Any]:
+    """Run ``socket.getaddrinfo`` with a daemon thread timeout so a hung resolver cannot stall."""
+    if timeout is None or timeout <= 0:
+        return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    result: list[Any] = []
+    error: list[BaseException] = []
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            result.extend(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
+        except BaseException as exc:  # noqa: BLE001 - propagate exact lookup failure
+            error.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_worker, name="api-dns-lookup", daemon=True)
+    thread.start()
+    if not done.wait(timeout):
+        raise CheckError(
+            "the api observer timed out resolving host %s after %.1fs" % (host, float(timeout)),
+            ReasonCode.TIMEOUT,
+        )
+    if error:
+        exc = error[0]
+        if isinstance(exc, OSError):
+            raise exc
+        raise RuntimeError(str(exc)) from exc
+    return result
+
+
 def _verify_dns_targets(
     url: str,
     *,
     allowed_hosts: frozenset[str],
     allow_insecure_loopback: bool = False,
     allow_private_ips: bool = False,
+    timeout: float | None = None,
 ) -> tuple[str, ...]:
     """Resolve and validate target IPs, returning deduplicated numeric IPs to pin connections."""
     parsed = urllib.parse.urlsplit(url)
@@ -322,7 +359,7 @@ def _verify_dns_targets(
     del allowed_hosts
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
     try:
-        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        records = _resolve_addrinfo_bounded(host, port, timeout)
     except OSError as exc:
         raise CheckError(
             "the api observer cannot resolve host %s: %s" % (host, exc),
@@ -458,15 +495,18 @@ def _build_safe_opener(
     pinned_host: str,
     pinned_ips: tuple[str, ...],
 ) -> urllib.request.OpenerDirector:
-    """Build a fresh OpenerDirector with redirects blocked and DNS rebinding prevented."""
+    """Build a fresh OpenerDirector with redirects blocked, ambient proxies cleared, and DNS pinned."""
     if opener is not None and type(opener).open is not urllib.request.OpenerDirector.open:
-        return opener
+        raise TypeError("custom opener must use OpenerDirector.open")
     clean = urllib.request.OpenerDirector()
     ssl_context = None
     debuglevel = 0
     if opener is not None:
         for handler in getattr(opener, "handlers", ()):
-            if isinstance(handler, urllib.request.HTTPRedirectHandler):
+            if isinstance(
+                handler,
+                (urllib.request.HTTPRedirectHandler, urllib.request.ProxyHandler),
+            ):
                 continue
             if isinstance(handler, urllib.request.HTTPSHandler):
                 ssl_context = getattr(handler, "_context", ssl_context)
@@ -478,7 +518,6 @@ def _build_safe_opener(
             clean.add_handler(handler)
     else:
         for default_cls in (
-            urllib.request.ProxyHandler,
             urllib.request.UnknownHandler,
             urllib.request.HTTPDefaultErrorHandler,
             urllib.request.HTTPErrorProcessor,
@@ -487,7 +526,9 @@ def _build_safe_opener(
         if not pinned_ips:
             clean.add_handler(urllib.request.HTTPHandler())
             clean.add_handler(urllib.request.HTTPSHandler())
-    if pinned_ips:
+    if not pinned_ips:
+        clean.add_handler(urllib.request.ProxyHandler({}))
+    else:
         clean.add_handler(_PinnedHTTPHandler(pinned_host, pinned_ips, debuglevel=debuglevel))
         clean.add_handler(_PinnedHTTPSHandler(pinned_host, pinned_ips, debuglevel=debuglevel, context=ssl_context))
     clean.add_handler(_NoRedirectHandler())
@@ -552,6 +593,7 @@ def http_fetch_observer(
         allow_insecure_loopback=allow_insecure_loopback,
         allow_private_ips=allow_private_ips,
     )
+    limit = max(1, int(timeout))
     pinned_host = (urllib.parse.urlsplit(safe_url).hostname or "").lower().rstrip(".")
     pinned_ips: tuple[str, ...] = ()
     if resolve_dns:
@@ -560,8 +602,8 @@ def http_fetch_observer(
             allowed_hosts=allowed_hosts,
             allow_insecure_loopback=allow_insecure_loopback,
             allow_private_ips=allow_private_ips,
+            timeout=limit,
         )
-    limit = max(1, int(timeout))
     transport = _build_safe_opener(opener, pinned_host=pinned_host, pinned_ips=pinned_ips)
     request_headers = dict(headers)
     if not any(key.lower() == "user-agent" for key in request_headers):
@@ -1433,7 +1475,7 @@ def api_collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
                 ctx,
                 collector=Collector.API,
             )
-        if batch is not None:
+        if batch is not None and target.batch_by_host:
             keys = _index_batch_keys(
                 raw,
                 expected_nonce=nonce,
