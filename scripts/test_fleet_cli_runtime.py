@@ -267,22 +267,33 @@ class ActualRuntime(unittest.TestCase):
         self.assertIn(relative, self.receiver.EXACT)
         self.assertIn(relative, self.receiver.TOOL_REQUIRED)
         self.assertNotIn(relative, self.receiver.BASE_REQUIRED)
-        program = AUDIT + "\n" + (
-            "import json,sys\n"
-            "from types import SimpleNamespace\n"
-            "sys.path.insert(0,sys.argv[1])\n"
-            "from simple_tools import cli\n"
-            "agent=SimpleNamespace(seat='CODEX',tag_prefix='[CODEX·deadbeef')\n"
-            "body=cli._compose(agent,'[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] status',"
-            "labels=['AG'],mentions=[],no_tag=False)\n"
-            "print(json.dumps({'content':body},ensure_ascii=False))\n"
+        program = (
+            AUDIT
+            + "\n"
+            + (
+                "import json,sys\n"
+                "from types import SimpleNamespace\n"
+                "sys.path.insert(0,sys.argv[1])\n"
+                "from simple_tools import cli\n"
+                "agent=SimpleNamespace(seat='CODEX',tag_prefix='[CODEX·deadbeef')\n"
+                "body=cli._compose(agent,'[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] status',"
+                "labels=['AG'],mentions=[],no_tag=False)\n"
+                "print(json.dumps({'content':body},ensure_ascii=False))\n"
+            )
         )
-        result = RUN([sys.executable, "-I", "-B", "-c", program, str(self.release / "scripts")],
-                     env=self.env, cwd=self.home, capture_output=True, timeout=15)
+        result = RUN(
+            [sys.executable, "-I", "-B", "-c", program, str(self.release / "scripts")],
+            env=self.env,
+            cwd=self.home,
+            capture_output=True,
+            timeout=15,
+        )
         self.assert_exit(result, 0)
-        self.assertEqual(json.loads(result.stdout)["content"],
-                         "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS"
-                         " → CODEX EE,\u200a\u200aAG] status")
+        self.assertEqual(
+            json.loads(result.stdout)["content"],
+            "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS"
+            " → CODEX EE,\u200a\u200aAG] status",
+        )
         module = self.release / relative
         held = module.with_suffix(".withheld")
         module.rename(held)
