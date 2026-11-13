@@ -160,9 +160,7 @@ class PublicActivityTests(unittest.TestCase):
             "[OPENCODE/ZC\u200a\u200a📁\u200aAFC]",
         ):
             with self.subTest(header=header):
-                agents, clean = digest.extract_agents_and_clean(
-                    f"{header} Refresh public feed"
-                )
+                agents, clean = digest.extract_agents_and_clean(f"{header} Refresh public feed")
                 self.assertEqual(agents, ["opencode", "zcode"])
                 self.assertEqual(clean, "Refresh public feed")
 
