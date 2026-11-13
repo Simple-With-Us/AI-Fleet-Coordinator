@@ -8,6 +8,7 @@ from unittest import mock
 
 import fleet_infisical as core
 import fleet_infisical_cli as cli
+
 import fleet_secrets.tests.test_run_named_reads as transport_fixture
 
 
@@ -36,7 +37,9 @@ class DoctorDiagnosticsTests(unittest.TestCase):
         )
         self.assertEqual(report["failure_reason"], "unresolved-reference")
         self.assertFalse(report["ok"])
-        self.assertTrue(all(type(value) in (bool, int, str, type(None)) for value in report.values()))
+        self.assertTrue(
+            all(type(value) in (bool, int, str, type(None)) for value in report.values())
+        )
         for secret in (self.transport.token, *self.transport.values.values()):
             self.assertNotIn(secret, emitted)
         self.assertNotIn("SECOND_REFERENCE", emitted)
@@ -44,7 +47,9 @@ class DoctorDiagnosticsTests(unittest.TestCase):
 
     def test_default_doctor_preserves_primary_diagnostic_counts(self):
         code, report, _ = self.doctor()
-        self.assertEqual((code, report["names_count"], report["unresolved_reference_count"]), (1, 4, 2))
+        self.assertEqual(
+            (code, report["names_count"], report["unresolved_reference_count"]), (1, 4, 2)
+        )
         self.assertFalse(report["ok"])
         self.assertIn("ai_fleet_coordinator_fetch_ok", report)
 
@@ -81,7 +86,9 @@ class DoctorDiagnosticsTests(unittest.TestCase):
             response.status = 200
             return response
 
-        with mock.patch.object(core, "_opener", return_value=SimpleNamespace(open=corrupt_response)):
+        with mock.patch.object(
+            core, "_opener", return_value=SimpleNamespace(open=corrupt_response)
+        ):
             code, report, _ = self.doctor("--path", "/")
         self.assertEqual(code, 1)
         self.assertEqual(report["failure_reason"], "unverified-source")
@@ -90,7 +97,12 @@ class DoctorDiagnosticsTests(unittest.TestCase):
 
     def test_count_metadata_rejects_unbounded_and_noninteger_values(self):
         for total, unresolved in (
-            (True, 1), (2, True), (2.0, 1), (-1, 1), (1, 2), (core.MAX_JSON_NODES + 1, 1)
+            (True, 1),
+            (2, True),
+            (2.0, 1),
+            (-1, 1),
+            (1, 2),
+            (core.MAX_JSON_NODES + 1, 1),
         ):
             with self.subTest(total=total, unresolved=unresolved):
                 with self.assertRaisesRegex(core.SecretsError, "diagnostic-count-invalid"):

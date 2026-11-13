@@ -397,7 +397,9 @@ def doctor_report(
         secrets = core.fetch_all(path, env, primary_project)
         rep["fetch_names_ok"] = True
         rep["names_count"] = len(secrets)
-        rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.search(v))
+        rep["unresolved_reference_count"] = sum(
+            1 for v in secrets.values() if core.REF_RE.search(v)
+        )
     except core.UnresolvedReferenceError as exc:
         # The shared strict reader validated every row before refusing unresolved values.
         rep["fetch_names_ok"] = True
