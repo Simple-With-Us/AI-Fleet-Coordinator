@@ -506,29 +506,67 @@ export const HEADER_AFTER_FOLDER = HEADER_HAIR;
 export const HEADER_REPO_SEPARATOR = `,${HEADER_HAIR}`;
 export const HEADER_RECIPIENT_SEPARATOR = `,${HEADER_HAIR.repeat(2)}`;
 
+/** At most 32 lines/8 KiB of flat criteria may precede a blank-separated, column-zero PR body envelope. */
+function prBodyPrefix(text) {
+  let cursor = 0, size = 0;
+  let sawBullet = false, separated = false;
+  for (let count = 0; count < 32; count += 1) {
+    const chunk = text.slice(cursor, cursor + 8193);
+    const newline = chunk.indexOf("\n");
+    const line = (newline < 0 ? chunk : chunk.slice(0, newline)).replace(/\r$/u, "");
+    const bullet = /^[-*+] ([^\r\n]+)$/u.exec(line);
+    if (bullet) {
+      const payload = bullet[1].replace(/^[ \t]*/u, "").replace(/^\[[ xX]\][ \t]+/u, "");
+      if (newline < 0 || !payload || /^(?:>|<|`{3}|~{3})/u.test(payload)) return null;
+      sawBullet = true;
+      separated = false;
+    } else if (line.replace(/[ \t]/gu, "")) {
+      return sawBullet && !separated ? null : cursor;
+    } else if (newline < 0) {
+      return cursor;
+    } else {
+      separated = true;
+    }
+    const consumed = chunk.slice(0, newline + 1);
+    size += new TextEncoder().encode(consumed).length;
+    if (size > 8192) return null;
+    cursor += consumed.length;
+  }
+  return sawBullet && !separated ? null : cursor;
+}
+
 /** The Python post_header.normalize_header contract: only the first complete header changes. */
 export function normalizeHeader(text, { seat = null, context = "message" } = {}) {
-  if (!["message", "github-pr"].includes(context)) throw new TypeError("unknown header context");
-  const prefix = context === "github-pr" ? /^@kody start-review\r?\n/u.exec(text)?.[0] ?? "" : "";
+  if (!["message", "github-pr", "github-pr-body"].includes(context)) throw new TypeError("unknown header context");
+  const isPr = context !== "message";
+  let prefix = isPr ? /^@kody start-review\r?\n/u.exec(text)?.[0] ?? "" : "";
+  if (context === "github-pr-body" && !prefix) {
+    const end = prBodyPrefix(text);
+    if (end === null) return text;
+    prefix = text.slice(0, end);
+  }
   const content = text.slice(prefix.length);
-  const match = /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u.exec(content);
+  const pattern = context === "github-pr-body"
+    ? /^(?<lead>(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u
+    : /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;
+  const match = pattern.exec(content);
   if (!match) return text;
   const parts = match.groups.inner.split(/\s*(?:→|->)\s*/u);
   if (parts.length > 2) return text;
   const peers = parts.length > 1 ? parts[1].split(",").map((part) => part.trim()) : [];
   const folder = parts[0].split("📁");
-  if (folder.length > 2) return text;
+  if (folder.length > 2 && !isPr) return text;
   const sender = /^(?<seat>[A-Z0-9][A-Z0-9_-]*)(?<transport>·[^\s:→\]]+)?(?:\s*:\s*(?<thread>[A-Za-z0-9][A-Za-z0-9.-]*))?$/u.exec(folder[0].trim());
   if (!sender || (seat !== null && sender.groups.seat !== seat)) return text;
   const repos = folder.length > 1 ? folder[1].split(",").map((part) => part.trim()) : [];
-  if ((folder.length > 1 && repos.some((part) => !part)) || (parts.length > 1 && peers.some((part) => !part))) return text;
+  if ((!isPr && folder.length > 1 && repos.some((part) => !part)) || (parts.length > 1 && peers.some((part) => !part))) return text;
   const thread = sender.groups.thread ?? "";
   let transport = sender.groups.transport ?? "";
-  // The Operator letter identifies the thread; transport session fragments never accompany it.
-  if (/^[A-Z]{1,2}[.-]\d+[.-][MSC]$/u.test(thread)) transport = "";
+  // PRs omit private transport; an Operator letter also identifies ordinary message threads without it.
+  if (isPr || /^[A-Z]{1,2}[.-]\d+[.-][MSC]$/u.test(thread)) transport = "";
   let inner = sender.groups.seat + transport;
   if (thread) inner += `:${HEADER_AFTER_COLON}${thread}`;
-  if (repos.length && context !== "github-pr") inner += `${HEADER_BEFORE_FOLDER}📁${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
+  if (repos.length && !isPr) inner += `${HEADER_BEFORE_FOLDER}📁${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
   if (peers.length) inner += ` → ${peers.join(HEADER_RECIPIENT_SEPARATOR)}`;
   return `${prefix}${match.groups.lead}[${inner}]${content.slice(match[0].length)}`;
 }

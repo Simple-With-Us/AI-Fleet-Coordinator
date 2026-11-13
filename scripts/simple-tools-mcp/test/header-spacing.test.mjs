@@ -9,7 +9,7 @@ if (!Array.isArray(fixtures) || fixtures.length === 0 || !fixtures.every((entry)
   entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
   ["name", "input", "expected"].every((key) => typeof entry[key] === "string") &&
   (entry.seat === undefined || entry.seat === null || typeof entry.seat === "string") &&
-  (entry.context === undefined || ["message", "github-pr"].includes(entry.context)) &&
+  (entry.context === undefined || ["message", "github-pr", "github-pr-body"].includes(entry.context)) &&
   ["repos", "peers"].every((key) => entry[key] === undefined || (Array.isArray(entry[key]) && entry[key].every((v) => typeof v === "string")))
 )) throw new Error("Invalid header-spacing.json fixture shape");
 
@@ -21,6 +21,20 @@ test("OPS-1086 golden headers survive JSON and UTF-8 without changing body gaps"
     assert.equal(normalizeHeader(actual, options), actual, entry.name);
     const wire = Buffer.from(JSON.stringify({ content: actual }), "utf8");
     assert.equal(JSON.parse(wire.toString("utf8")).content, entry.expected, entry.name);
+  }
+});
+
+test("PR body readiness prefix has the same exact line and UTF-8 byte bounds as Python", () => {
+  const full = "[CODEX: EE.1.S 📁AFC] Body";
+  const compact = "[CODEX:\u200a\u200a\u200aEE.1.S] Body";
+  for (const [prefix, accepted] of [
+    ["- Wait\n".repeat(31) + "\n", true],
+    ["- Wait\n".repeat(32) + "\n", false],
+    ["- " + "é".repeat(4094) + "\n\n", true],
+    ["- " + "é".repeat(4094) + "x\n\n", false],
+  ]) {
+    assert.equal(normalizeHeader(prefix + full, { context: "github-pr-body" }),
+      prefix + (accepted ? compact : full), `prefix bytes=${Buffer.byteLength(prefix)}`);
   }
 });
 

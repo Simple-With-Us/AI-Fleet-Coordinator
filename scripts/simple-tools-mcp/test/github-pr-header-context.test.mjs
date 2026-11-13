@@ -51,6 +51,67 @@ test("actual hosted PR title/body/comment/reply writes use compact context witho
   assert.equal(sent.at(-1).args.body, "[CODEX:\u200a\u200a\u200aGG.1.S] supplied attribution");
 });
 
+test("actual hosted PR descriptions compact only the envelope after initial readiness bullets", async () => {
+  const { tools, sent } = harness();
+  const prefix = "- Pass Required CI\n- Keep The Draft Hold\n\n";
+  const body = `${prefix}${full}\nSummary\n${full} quoted later`;
+  const expected = `${prefix}${compact}\nSummary\n${full} quoted later`;
+  for (const [action, extra] of [
+    ["gr_open_pr", { base: "main", head: "feature", title: `${full} Title`, draft: true }],
+    ["gr_edit_pr", { number: 1, title: `${full} Title` }],
+    ["gr_wf_pr_create", { base: "main", head: "feature", title: `${full} Title`, expected_head_sha: sha }],
+    ["gr_wf_pr_edit", { number: 1, expected_head_sha: sha, expected_base_ref: "main" }],
+  ]) {
+    const result = await tools.call(action, { repo: "example/header-fixture", body, ...extra });
+    assert.ok(!result.isError, `${action}: ${result.content?.[0]?.text}`);
+    assert.equal(sent.at(-1).args.body, expected, action);
+    if (extra.title) assert.equal(sent.at(-1).args.title, `${compact} Title`);
+  }
+  for (const action of ["comment_pr", "reply_thread", "wf_review_submit", "wf_issue_comment"]) {
+    assert.equal(gapGitHubArgs(action, { body }, { seat: "CODEX" }).body, body, action);
+  }
+  assert.equal(gapGitHubArgs("edit_pr", { title: body }, { seat: "CODEX" }).title, body);
+});
+
+test("actual hosted description edits preserve quoted, fenced and arbitrary later samples", async () => {
+  const { tools, sent } = harness();
+  for (const body of [
+    `- Pass Required CI\n\nExample:\n${full}`,
+    `- Pass Required CI\n\n> ${full}`,
+    `- Pass Required CI\n\n\`\`\`text\n${full}\n\`\`\``,
+    `- Pass Required CI\n\n    ${full}`,
+    `- Pass Required CI\n\n  ${full}`,
+    `- Pass Required CI\n${full}`,
+    `- \`\`\`text\n\n${full}\n  \`\`\``,
+  ]) {
+    const result = await tools.call("gr_edit_pr", { repo: "example/header-fixture", number: 1, body });
+    assert.ok(!result.isError, result.content?.[0]?.text);
+    assert.equal(sent.at(-1).args.body, body);
+  }
+});
+
+test("actual hosted PR writes discard unused repo defects and transport while preserving recipient refusal", async () => {
+  const { tools, sent } = harness();
+  const prefix = "- Pass Required CI\n\n";
+  for (const [header, expectedHeader] of [
+    ["[CODEX·deadbeef 📁AFC → CODEX GG]", "[CODEX → CODEX GG]"],
+    ["[CODEX: EE.1.S 📁,OPS → CODEX GG, AG]", compact],
+    ["[CODEX 📁AFC📁OPS]", "[CODEX]"],
+    ["[CODEX 📁AFC → CODEX GG, ,AG]", "[CODEX 📁AFC → CODEX GG, ,AG]"],
+  ]) {
+    for (const [action, extra] of [
+      ["gr_open_pr", { base: "main", head: "feature" }],
+      ["gr_edit_pr", { number: 1 }],
+    ]) {
+      const result = await tools.call(action, { repo: "example/header-fixture", ...extra,
+        title: `${header} Title`, body: `${prefix}${header}\nSummary` });
+      assert.ok(!result.isError, result.content?.[0]?.text);
+      assert.equal(sent.at(-1).args.title, `${expectedHeader} Title`);
+      assert.equal(sent.at(-1).args.body, `${prefix}${expectedHeader}\nSummary`);
+    }
+  }
+});
+
 test("workflow PR writes compact while ordinary issue and Linear contexts retain repository names", async () => {
   const { tools, sent } = harness();
   const args = { repo: "example/header-fixture", number: 1, body: `${full} body` };

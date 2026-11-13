@@ -105,5 +105,136 @@
     "context": "github-pr",
     "input": "```text\n[CODEX: EE.1.S 📁AFC] quoted\n```",
     "expected": "```text\n[CODEX: EE.1.S 📁AFC] quoted\n```"
+  },
+  {
+    "name": "GitHub PR Removes Letterless Transport Metadata",
+    "context": "github-pr",
+    "input": "[CODEX·deadbeef 📁AFC → CODEX GG] Body",
+    "expected": "[CODEX → CODEX GG] Body"
+  },
+  {
+    "name": "GitHub PR Drops An Invalid Unused Repository List",
+    "context": "github-pr",
+    "input": "[CODEX·deadbeef: GG.1.S 📁,OPS → CODEX EE, AG] Body",
+    "expected": "[CODEX:\u200a\u200a\u200aGG.1.S → CODEX EE,\u200a\u200aAG] Body"
+  },
+  {
+    "name": "GitHub PR Drops Repeated Unused Folder Markers",
+    "context": "github-pr",
+    "input": "[CODEX 📁AFC📁OPS] Body",
+    "expected": "[CODEX] Body"
+  },
+  {
+    "name": "Ordinary Message Still Rejects Repeated Folder Markers",
+    "input": "[CODEX 📁AFC📁OPS] Body",
+    "expected": "[CODEX 📁AFC📁OPS] Body"
+  },
+  {
+    "name": "GitHub PR Never Drops An Empty Recipient",
+    "context": "github-pr",
+    "input": "[CODEX 📁AFC → CODEX GG, ,AG] Body",
+    "expected": "[CODEX 📁AFC → CODEX GG, ,AG] Body"
+  },
+  {
+    "name": "PR Body Criteria Do Not Change Malformed Recipient Refusal",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n\n[CODEX 📁AFC → ] Body",
+    "expected": "- Pass required checks\n\n[CODEX 📁AFC → ] Body"
+  },
+  {
+    "name": "PR Body Criteria Drop Invalid Repositories And Private Transport",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n\n[CODEX·deadbeef 📁,OPS → CODEX GG] Body",
+    "expected": "- Pass required checks\n\n[CODEX → CODEX GG] Body"
+  },
+  {
+    "name": "PR Body Readiness Criteria Preserve Attribution And Later Quotes",
+    "context": "github-pr-body",
+    "seat": "CODEX",
+    "input": "- Pass required checks\n- [ ] Preserve the hold\n\n[CODEX·deadbeef: GG.1.S 📁AFC, OPS → CODEX EE, AG] Body\n[AG: AA.1.M 📁OPS] quoted",
+    "expected": "- Pass required checks\n- [ ] Preserve the hold\n\n[CODEX:\u200a\u200a\u200aGG.1.S → CODEX EE,\u200a\u200aAG] Body\n[AG: AA.1.M 📁OPS] quoted"
+  },
+  {
+    "name": "PR Body CRLF Criteria And Quiet Marker",
+    "context": "github-pr-body",
+    "input": "* Pass required checks\r\n+ Preserve the hold\r\n\r\n👀[CODEX: EE.1.S 📁AFC] Body",
+    "expected": "* Pass required checks\r\n+ Preserve the hold\r\n\r\n👀[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+  },
+  {
+    "name": "Criteria Prefix Is Not A PR Comment Or Title Envelope",
+    "context": "github-pr",
+    "input": "- Pass required checks\n\n[CODEX: EE.1.S 📁AFC] example",
+    "expected": "- Pass required checks\n\n[CODEX: EE.1.S 📁AFC] example"
+  },
+  {
+    "name": "Criteria Prefix Does Not Change Ordinary Message Context",
+    "input": "- Pass required checks\n\n[CODEX: EE.1.S 📁AFC] example",
+    "expected": "- Pass required checks\n\n[CODEX: EE.1.S 📁AFC] example"
+  },
+  {
+    "name": "PR Body Rejects A Quoted Bullet Block",
+    "context": "github-pr-body",
+    "input": "> - Pass required checks\n\n[CODEX: EE.1.S 📁AFC] example",
+    "expected": "> - Pass required checks\n\n[CODEX: EE.1.S 📁AFC] example"
+  },
+  {
+    "name": "PR Body Does Not Skip Prose Before A Later Sample",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n\nExample:\n[CODEX: EE.1.S 📁AFC] quoted",
+    "expected": "- Pass required checks\n\nExample:\n[CODEX: EE.1.S 📁AFC] quoted"
+  },
+  {
+    "name": "PR Body Does Not Normalize A Blockquoted Sample",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n\n> [CODEX: EE.1.S 📁AFC] quoted",
+    "expected": "- Pass required checks\n\n> [CODEX: EE.1.S 📁AFC] quoted"
+  },
+  {
+    "name": "PR Body Does Not Normalize A Fenced Sample",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n\n```text\n[CODEX: EE.1.S 📁AFC] quoted\n```",
+    "expected": "- Pass required checks\n\n```text\n[CODEX: EE.1.S 📁AFC] quoted\n```"
+  },
+  {
+    "name": "PR Body Does Not Skip A Fence Opened In A Bullet",
+    "context": "github-pr-body",
+    "input": "- ```text\n\n[CODEX: EE.1.S 📁AFC] quoted\n  ```",
+    "expected": "- ```text\n\n[CODEX: EE.1.S 📁AFC] quoted\n  ```"
+  },
+  {
+    "name": "PR Body Does Not Skip A Task List Fence",
+    "context": "github-pr-body",
+    "input": "- [ ] ```text\n\n[CODEX: EE.1.S 📁AFC] quoted\n  ```",
+    "expected": "- [ ] ```text\n\n[CODEX: EE.1.S 📁AFC] quoted\n  ```"
+  },
+  {
+    "name": "PR Body Does Not Skip A Raw HTML Block",
+    "context": "github-pr-body",
+    "input": "- <pre>\n\n[CODEX: EE.1.S 📁AFC] quoted\n</pre>",
+    "expected": "- <pre>\n\n[CODEX: EE.1.S 📁AFC] quoted\n</pre>"
+  },
+  {
+    "name": "PR Body Does Not Normalize An Indented Code Sample",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n\n    [CODEX: EE.1.S 📁AFC] quoted",
+    "expected": "- Pass required checks\n\n    [CODEX: EE.1.S 📁AFC] quoted"
+  },
+  {
+    "name": "PR Body Does Not Normalize A Nested List Paragraph",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n\n  [CODEX: EE.1.S 📁AFC] quoted",
+    "expected": "- Pass required checks\n\n  [CODEX: EE.1.S 📁AFC] quoted"
+  },
+  {
+    "name": "PR Body Requires Separation From The Bullet Paragraph",
+    "context": "github-pr-body",
+    "input": "- Pass required checks\n[CODEX: EE.1.S 📁AFC] quoted continuation",
+    "expected": "- Pass required checks\n[CODEX: EE.1.S 📁AFC] quoted continuation"
+  },
+  {
+    "name": "PR Body Preserves The Literal Kody First Line",
+    "context": "github-pr-body",
+    "input": "@kody start-review\n[CODEX: EE.1.S 📁AFC] Review",
+    "expected": "@kody start-review\n[CODEX:\u200a\u200a\u200aEE.1.S] Review"
   }
 ]
