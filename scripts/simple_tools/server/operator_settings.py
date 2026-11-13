@@ -40,7 +40,9 @@ class SettingsError(Exception):
     def __init__(self, code, *, required_binding=None):
         super().__init__(code)
         self.code = code
-        self.required_binding = required_binding if required_binding in (READ_BINDING, WRITE_BINDING, PROJECT) else None
+        self.required_binding = (
+            required_binding if required_binding in (READ_BINDING, WRITE_BINDING, PROJECT) else None
+        )
 
 
 def encode(document):
@@ -98,7 +100,9 @@ def overlay_text(text, allowlist, settings):
     keys = sorted(settings)
     for offset in range(0, len(keys), editor.MAX_CHANGES):
         batch = {key: settings[key] for key in keys[offset : offset + editor.MAX_CHANGES]}
-        result, _ = editor.build_plan(result, allowlist, batch, remove=_canonical_removals(result, batch))
+        result, _ = editor.build_plan(
+            result, allowlist, batch, remove=_canonical_removals(result, batch)
+        )
     return result
 
 
@@ -124,7 +128,9 @@ def _manifest():
 def _copy_parent(path):
     """Open the protected parent by descriptors; never traverse a symbolic link."""
     parts = Path(os.path.abspath(path.parent)).parts
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    )
     descriptor = os.open(parts[0], flags)
     try:
         for index, part in enumerate(parts[1:], 1):
@@ -132,10 +138,14 @@ def _copy_parent(path):
             os.close(descriptor)
             descriptor = child
             info = os.fstat(descriptor)
-            sticky_ancestor = index < len(parts) - 1 and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            sticky_ancestor = (
+                index < len(parts) - 1 and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            )
             if (
-                not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid())
-                or info.st_mode & 0o022 and not sticky_ancestor
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in (0, os.getuid())
+                or info.st_mode & 0o022
+                and not sticky_ancestor
             ):
                 raise SettingsError("verified_copy_unavailable")
         return descriptor
@@ -146,8 +156,10 @@ def _copy_parent(path):
 
 def _copy_file_safe(info):
     return (
-        stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-        and not info.st_mode & 0o077 and info.st_nlink == 1
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.getuid()
+        and not info.st_mode & 0o077
+        and info.st_nlink == 1
     )
 
 
@@ -156,7 +168,9 @@ def _verified_copy(path, environ, *, now=None):
     try:
         parent = _copy_parent(path)
         descriptor = os.open(
-            VERIFIED_COPY_NAME, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent,
+            VERIFIED_COPY_NAME,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent,
         )
         with os.fdopen(descriptor, "rb") as handle:
             info = os.fstat(handle.fileno())
@@ -168,11 +182,23 @@ def _verified_copy(path, environ, *, now=None):
         stored = json.loads(raw, object_pairs_hook=_unique_pairs)
         if (
             not isinstance(stored, dict)
-            or set(stored) != {"projectId", "environment", "folder", "key", "schemaVersion", "verifiedAtEpoch", "revision", "document"}
+            or set(stored)
+            != {
+                "projectId",
+                "environment",
+                "folder",
+                "key",
+                "schemaVersion",
+                "verifiedAtEpoch",
+                "revision",
+                "document",
+            }
             or stored["projectId"] != (environ.get(PROJECT) or "").strip()
             or stored["environment"] != "prod"
-            or stored["folder"] != FOLDER or stored["key"] != KEY
-            or type(stored["schemaVersion"]) is not int or stored["schemaVersion"] != SCHEMA_VERSION
+            or stored["folder"] != FOLDER
+            or stored["key"] != KEY
+            or type(stored["schemaVersion"]) is not int
+            or stored["schemaVersion"] != SCHEMA_VERSION
             or type(stored["verifiedAtEpoch"]) not in (int, float)
             or revision(stored["document"]) != stored["revision"]
         ):
@@ -190,12 +216,21 @@ def _verified_copy(path, environ, *, now=None):
 
 def remember_verified(path, value, environ, *, now=None):
     """Cache only an actually verified canonical document, never a write guess."""
-    payload = json.dumps({
-        "projectId": (environ.get(PROJECT) or "").strip(),
-        "environment": "prod", "folder": FOLDER, "key": KEY, "schemaVersion": SCHEMA_VERSION,
-        "verifiedAtEpoch": time.time() if now is None else now,
-        "revision": revision(value), "document": value,
-    }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    payload = json.dumps(
+        {
+            "projectId": (environ.get(PROJECT) or "").strip(),
+            "environment": "prod",
+            "folder": FOLDER,
+            "key": KEY,
+            "schemaVersion": SCHEMA_VERSION,
+            "verifiedAtEpoch": time.time() if now is None else now,
+            "revision": revision(value),
+            "document": value,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
     parent = _copy_parent(path)
     temporary = ".operator-settings-copy-" + secrets.token_hex(12)
     try:
@@ -237,14 +272,20 @@ def load_runtime(raw, path, *, environ=None, store=None):
     source = "infisical"
     try:
         current = (store or InfisicalStore(env)).read()
-        candidate = editor._parse(overlay_text(text, allowlist, current["settings"]), "canonical settings")
+        candidate = editor._parse(
+            overlay_text(text, allowlist, current["settings"]), "canonical settings"
+        )
         from .. import config
+
         if config.from_dict(candidate).errors:
             raise SettingsError("canonical_config_invalid")
     except (SettingsError, editor.Refusal):
         current = _verified_copy(path, env)
-        candidate = editor._parse(overlay_text(text, allowlist, current["settings"]), "verified settings copy")
+        candidate = editor._parse(
+            overlay_text(text, allowlist, current["settings"]), "verified settings copy"
+        )
         from .. import config
+
         if config.from_dict(candidate).errors:
             raise SettingsError("verified_copy_invalid")
         source = "verified-copy"
@@ -286,8 +327,13 @@ class InfisicalStore:
     def read(self, *, missing_ok=False):
         try:
             values = self.client.fetch_project(
-                self.project, FOLDER, self.env, token=self.token, writer=self.writer,
-                names=(KEY,), timeout=self._remaining(),
+                self.project,
+                FOLDER,
+                self.env,
+                token=self.token,
+                writer=self.writer,
+                names=(KEY,),
+                timeout=self._remaining(),
             )
         except (self.client.SecretsError, TimeoutError):
             raise SettingsError("provider_read_failed") from None
@@ -309,16 +355,29 @@ class InfisicalStore:
         raw = encode(value)
         try:
             self.client.verify_service_token(
-                self.token, self.project, FOLDER, self.env, writer=True, deadline=self.deadline,
+                self.token,
+                self.project,
+                FOLDER,
+                self.env,
+                writer=True,
+                deadline=self.deadline,
             )
             body = {
-                "workspaceId": self.project, "environment": "prod", "secretPath": FOLDER,
-                "type": "shared", "secretValue": raw,
+                "workspaceId": self.project,
+                "environment": "prod",
+                "secretPath": FOLDER,
+                "type": "shared",
+                "secretValue": raw,
             }
             path = "/v3/secrets/raw/" + quote(KEY, safe="")
             self._remaining()
             status, _ = self.client._api_json(
-                method, path, self.token, body, self.env, deadline=self.deadline,
+                method,
+                path,
+                self.token,
+                body,
+                self.env,
+                deadline=self.deadline,
             )
         except (self.client.SecretsError, TimeoutError):
             raise SettingsError("provider_write_failed") from None
@@ -330,12 +389,20 @@ class InfisicalStore:
 
 def _base_answer(action, current, path):
     return {
-        "tool": "eavesdropper-settings", "action": action, "ok": False,
-        "result": "failed", "source": "infisical", "persisted": False,
-        "readback": False, "runtimeApplied": False, "settings": copy.deepcopy(current["settings"]),
-        "revision": revision(current), "baseSHA256": revision(current),
+        "tool": "eavesdropper-settings",
+        "action": action,
+        "ok": False,
+        "result": "failed",
+        "source": "infisical",
+        "persisted": False,
+        "readback": False,
+        "runtimeApplied": False,
+        "settings": copy.deepcopy(current["settings"]),
+        "revision": revision(current),
+        "baseSHA256": revision(current),
         "runtimeSHA256": editor.sha256(editor.read_live(path)[0]),
-        "channelNames": channel_names(), "channelNamesSource": "daemon-Zulip-cache",
+        "channelNames": channel_names(),
+        "channelNamesSource": "daemon-Zulip-cache",
     }
 
 
@@ -345,8 +412,11 @@ def accepted_snapshot(raw, allowlist):
     for key, value in values.items():
         table, name = editor.split_key(key)
         editor.check_value(
-            editor.spec_for(allowlist, table, name), value, key,
-            seat=table[1] if table[0] == "seat" else None, current=value,
+            editor.spec_for(allowlist, table, name),
+            value,
+            key,
+            seat=table[1] if table[0] == "seat" else None,
+            current=value,
         )
     return document(values)
 
@@ -361,8 +431,11 @@ def _accepted_by_daemon(wanted, *, now=None):
         updated = status.get("updated")
         age = (time.time() if now is None else now) - updated
         return (
-            type(updated) in (int, float) and math.isfinite(age) and -300 <= age <= 120
-            and status.get("instance") == "server" and status.get("config_errors") == []
+            type(updated) in (int, float)
+            and math.isfinite(age)
+            and -300 <= age <= 120
+            and status.get("instance") == "server"
+            and status.get("config_errors") == []
             and status.get("operator_settings_snapshot_revision") == wanted
         )
     except (OSError, ValueError, TypeError, AttributeError):
@@ -372,32 +445,49 @@ def _accepted_by_daemon(wanted, *, now=None):
 def initialize(path, allowlist, expected, *, store=None, checker=None, accepted=None):
     """Explicit one-time migration, never an autosave or an overwrite/upsert."""
     if not isinstance(expected, str) or not editor.SHA256_RE.fullmatch(expected):
-        raise editor.Refusal("version_required", "initialize requires the current runtime-file revision")
+        raise editor.Refusal(
+            "version_required", "initialize requires the current runtime-file revision"
+        )
     store = store or InfisicalStore(writer=True)
     checker = checker or editor.daemon_check
     accepted = accepted or _accepted_by_daemon
     with editor._FolderLock(path.parent):
         raw, _ = editor.read_live(path)
         if editor.sha256(raw) != expected:
-            raise editor.Refusal("version_conflict", "the runtime file changed before initialization")
+            raise editor.Refusal(
+                "version_conflict", "the runtime file changed before initialization"
+            )
         initial = accepted_snapshot(editor._parse(editor._decode(raw), "runtime file"), allowlist)
         answer = _base_answer("initialize", initial, path)
         if not accepted(revision(initial)):
-            answer.update(errorCode="runtime_not_accepted", detail="The active daemon has not accepted this settings snapshot")
+            answer.update(
+                errorCode="runtime_not_accepted",
+                detail="The active daemon has not accepted this settings snapshot",
+            )
             return answer
         with tempfile.TemporaryDirectory(prefix="operator-settings-init-") as scratch:
             candidate = Path(scratch) / "candidate.toml"
             candidate.write_bytes(raw)
             checked = checker(candidate, path)
         if not checked.get("ok"):
-            answer.update(errorCode="check_failed", check=checked, detail="The daemon checker refused initialization")
+            answer.update(
+                errorCode="check_failed",
+                check=checked,
+                detail="The daemon checker refused initialization",
+            )
             return answer
         if editor.read_live(path)[0] != raw or not accepted(revision(initial)):
-            answer.update(errorCode="version_conflict", detail="The accepted runtime snapshot changed during validation")
+            answer.update(
+                errorCode="version_conflict",
+                detail="The accepted runtime snapshot changed during validation",
+            )
             return answer
         existing = store.read(missing_ok=True)
         if existing is not None:
-            answer.update(errorCode="already_initialized", detail="Canonical settings already exist; no create was attempted")
+            answer.update(
+                errorCode="already_initialized",
+                detail="Canonical settings already exist; no create was attempted",
+            )
             return answer
         answer["writeAttempted"] = True
         try:
@@ -406,19 +496,32 @@ def initialize(path, allowlist, expected, *, store=None, checker=None, accepted=
             # existing shared key; the exact readback is a separate receipt.
             store.create(initial)
         except SettingsError:
-            answer.update(errorCode="initialization_conflict", detail="Canonical initialization was refused or has no definite create receipt")
+            answer.update(
+                errorCode="initialization_conflict",
+                detail="Canonical initialization was refused or has no definite create receipt",
+            )
             return answer
         try:
             verified = store.read()
         except SettingsError:
-            answer.update(errorCode="readback_failed", detail="Initialization has no verified canonical readback; do not repeat the create")
+            answer.update(
+                errorCode="readback_failed",
+                detail="Initialization has no verified canonical readback; do not repeat the create",
+            )
             return answer
         if revision(verified) != revision(initial):
-            answer.update(errorCode="readback_conflict", detail="Initialization did not read back the accepted snapshot")
+            answer.update(
+                errorCode="readback_conflict",
+                detail="Initialization did not read back the accepted snapshot",
+            )
             return answer
         answer.update(
-            ok=True, result="initialized", persisted=True, readback=True,
-            revision=revision(verified), baseSHA256=revision(verified),
+            ok=True,
+            result="initialized",
+            persisted=True,
+            readback=True,
+            revision=revision(verified),
+            baseSHA256=revision(verified),
             settings=copy.deepcopy(verified["settings"]),
             detail="Canonical settings initialized and read back; runtime source is not activated",
         )
@@ -450,7 +553,9 @@ def get(path, allowlist, *, store=None):
     return answer
 
 
-def save(path, allowlist, requested, expected, *, remove=None, store=None, checker=None, reloader=None):
+def save(
+    path, allowlist, requested, expected, *, remove=None, store=None, checker=None, reloader=None
+):
     """Persist canonically, reread exactly, then synchronize the runtime copy.
 
     A caller retains a failed response's canonical revision/settings when
@@ -466,7 +571,10 @@ def save(path, allowlist, requested, expected, *, remove=None, store=None, check
         current = store.read()
         answer = _base_answer("save", current, path)
         if revision(current) != expected:
-            answer.update(errorCode="version_conflict", detail="Settings changed; read the current values before saving")
+            answer.update(
+                errorCode="version_conflict",
+                detail="Settings changed; read the current values before saving",
+            )
             return answer
         raw, _ = editor.read_live(path)
         canonical_text = overlay_text(editor._decode(raw), allowlist, current["settings"])
@@ -479,13 +587,19 @@ def save(path, allowlist, requested, expected, *, remove=None, store=None, check
             candidate.write_text(new_text, encoding="utf-8")
             checked = checker(candidate, path)
         if not checked.get("ok"):
-            answer.update(errorCode="check_failed", check=checked, detail="The daemon refused the proposed settings")
+            answer.update(
+                errorCode="check_failed",
+                check=checked,
+                detail="The daemon refused the proposed settings",
+            )
             return answer
         before_write = store.read()
         if revision(before_write) != expected:
             answer.update(
-                errorCode="version_conflict", detail="Settings changed while the candidate was checked",
-                revision=revision(before_write), baseSHA256=revision(before_write),
+                errorCode="version_conflict",
+                detail="Settings changed while the candidate was checked",
+                revision=revision(before_write),
+                baseSHA256=revision(before_write),
                 settings=copy.deepcopy(before_write["settings"]),
             )
             return answer
@@ -500,21 +614,29 @@ def save(path, allowlist, requested, expected, *, remove=None, store=None, check
         try:
             verified = store.read()
         except SettingsError:
-            answer.update(errorCode="readback_failed", detail="The provider write has no verified readback")
+            answer.update(
+                errorCode="readback_failed", detail="The provider write has no verified readback"
+            )
             return answer
         if revision(verified) != revision(new_doc):
             # No cache patch, rollback write, or retry can turn a different
             # authoritative document into proof of this request.
             answer.update(
-                errorCode="readback_conflict", detail="Canonical settings changed during the save",
-                revision=revision(verified), baseSHA256=revision(verified),
+                errorCode="readback_conflict",
+                detail="Canonical settings changed during the save",
+                revision=revision(verified),
+                baseSHA256=revision(verified),
                 settings=copy.deepcopy(verified["settings"]),
             )
             return answer
         answer.update(
-            persisted=True, readback=True, revision=revision(verified),
-            baseSHA256=revision(verified), settings=copy.deepcopy(verified["settings"]),
+            persisted=True,
+            readback=True,
+            revision=revision(verified),
+            baseSHA256=revision(verified),
+            settings=copy.deepcopy(verified["settings"]),
         )
+
         def canonical_reload(live_path):
             if reloader is not None:
                 return reloader(live_path)
@@ -526,9 +648,15 @@ def save(path, allowlist, requested, expected, *, remove=None, store=None, check
             copy_allowlist = dict(allowlist, applyEnabled=True)
             copied, _ = editor.read_live(path)
             runtime = editor.apply(
-                path, copy_allowlist, verified["settings"], checker=checker,
+                path,
+                copy_allowlist,
+                verified["settings"],
+                checker=checker,
                 remove=_canonical_removals(editor._decode(copied), verified["settings"]),
-                reloader=canonical_reload, reload="always", _lock_held=True, _max_changes=512,
+                reloader=canonical_reload,
+                reload="always",
+                _lock_held=True,
+                _max_changes=512,
             )
             after, _ = editor.read_live(path)
             wanted = overlay_text(editor._decode(after), allowlist, verified["settings"])
@@ -538,13 +666,16 @@ def save(path, allowlist, requested, expected, *, remove=None, store=None, check
                 reload_result = canonical_reload(path)
             answer.update(runtimeSHA256=editor.sha256(after), reload=reload_result)
             if (
-                not file_matches or not reload_result.get("ok") or not reload_result.get("confirmed")
+                not file_matches
+                or not reload_result.get("ok")
+                or not reload_result.get("confirmed")
                 or reload_result.get("revision") != revision(verified)
             ):
                 raise SettingsError("runtime_pending")
             answer.update(ok=True, result="saved", runtimeApplied=True, detail="Saved and verified")
         except (editor.Refusal, editor.StepFailed, OSError, SettingsError):
             answer.update(
-                errorCode="runtime_pending", detail="Saved to Infisical; runtime acceptance remains pending",
+                errorCode="runtime_pending",
+                detail="Saved to Infisical; runtime acceptance remains pending",
             )
         return answer
