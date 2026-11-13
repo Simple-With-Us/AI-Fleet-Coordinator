@@ -67,6 +67,23 @@ class World:
                 raise core.SecretsError("fetch-failed: bad-output") from None
         return {key: value for key, value in self.secrets.items() if core.NAME_RE.fullmatch(key)}
 
+    def list_names(self, project, path, env, *, token=None, timeout=None):
+        refusal = core.environment_refusal(env)
+        if refusal:
+            raise core.SecretsError(refusal, 2)
+        if self.export_rc:
+            message = "timeout" if self.export_rc == 124 else "fetch-failed"
+            raise core.SecretsError(message)
+        project_name = core.project_name_for_id(project, env)
+        token = token or core.resolve_token(env, project_name=project_name)
+        self.fetches.append((project, path, dict(env), token, False, (), timeout))
+        if self.export_stdout is not None:
+            try:
+                json.loads(self.export_stdout.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                raise core.SecretsError("fetch-failed: bad-output") from None
+        return tuple(sorted(key for key in self.secrets if core.NAME_RE.fullmatch(key)))
+
     def run(self, argv, **kw):
         argv = list(argv)
         env = dict(kw.get("env") or {})
@@ -152,6 +169,9 @@ class Base(unittest.TestCase):
         fetch = mock.patch.object(core, "fetch_project", world.fetch_project)
         fetch.start()
         self.addCleanup(fetch.stop)
+        names = mock.patch.object(core, "list_project_names", world.list_names)
+        names.start()
+        self.addCleanup(names.stop)
         return world
 
     def call(self, *argv, env=None):
@@ -167,9 +187,10 @@ class Base(unittest.TestCase):
 
 class GetTests(Base):
     def test_get_prints_exact_value_without_newline(self):
-        self.use(World())
+        world = self.use(World())
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches[0][5], ("ALPHA",))
 
     def test_get_several_names_prints_one_json_object(self):
         w = self.use(World())
@@ -446,6 +467,18 @@ class RunTests(Base):
 
 
 class NamesTests(Base):
+    def test_names_never_exports_secret_values(self):
+        world = self.use(World())
+        with mock.patch.object(core, "fetch_project", side_effect=AssertionError("value export")):
+            code, out, err = self.call("names", "--path", "/metadata")
+        self.assertEqual((code, out, err), (0, "ALPHA\nBETA\n", ""))
+        self.assertEqual((world.fetches[0][1], world.fetches[0][5]), ("/metadata", ()))
+
+    def test_legacy_import_uses_the_shared_command_implementation(self):
+        import fleet_infisical_cli
+
+        self.assertIs(cli, fleet_infisical_cli)
+
     def test_names_sorted_one_per_line_and_no_values(self):
         self.use(World(secrets={"ZED": VAL_B, "ALPHA": VAL_A}))
         code, out, err = self.call("names")
