@@ -148,7 +148,9 @@ def _scoped_fetch(
         )
     except TimeoutError:
         raise FetchFailed("timeout") from None
-    except Exception:
+    except Exception as exc:
+        if getattr(exc, "reason", None) == "token-expired-or-invalid":
+            raise FetchFailed("token-expired-or-invalid") from None
         raise FetchFailed("scoped-read-failed") from None
     return _pick(result, wanted)
 
@@ -157,9 +159,7 @@ def _load_helper() -> ModuleType | None:
     """The packaged shared REST client; no application install or path override is consulted."""
     try:
         import fleet_infisical
-    except ModuleNotFoundError as exc:
-        if exc.name != "fleet_infisical":
-            raise
+    except Exception:
         return None
     return fleet_infisical
 
