@@ -689,6 +689,25 @@ class OwnerTopicTests(unittest.TestCase):
         self.assertEqual(self.route(msg(sender=10, content=tagged_arrow, flags=MENTION_CODEX, topic=OWNER_TOPIC,
                                         email="claude-bot@zulip.test"), me=CODEX_ME)[1].wake, "peer")
 
+    def test_actual_formatted_note_keeps_owner_topic_notification_eligible(self) -> None:
+        from types import SimpleNamespace
+        from simple_tools import cli
+
+        agent = SimpleNamespace(seat="CLAUDE", tag_prefix="[CLAUDE·needsown")
+        for arrow in ("→", "->"):
+            legacy = NOTE.replace("→", arrow)
+            formatted = cli._compose(agent, legacy, labels=["CODEX"], mentions=[], no_tag=False)
+            self.assertTrue(formatted.startswith("[CLAUDE·needsown → CODEX]"))
+            for content in (legacy, formatted):
+                with self.subTest(content=content):
+                    note = msg(sender=10, content=content, flags=MENTION_CODEX, topic=OWNER_TOPIC,
+                               email="claude-bot@zulip.test")
+                    classified, decision = self.route(note, me=CODEX_ME)
+                    self.assertTrue(classified.owner_note and classified.eligible)
+                    self.assertFalse(classified.owner_topic_peer)
+                    self.assertEqual((decision.seat_inbox, decision.wake, decision.wake_block),
+                                     (True, "peer", None))
+
     def test_the_note_needs_claudes_bot_and_the_notifiers_tag(self) -> None:
         # Another seat's bot copying the notifier's tag.
         copied = msg(sender=CURSOR, content=NOTE, flags=MENTION_CODEX, topic=OWNER_TOPIC, email="cursor-bot@zulip.test")
