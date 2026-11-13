@@ -478,6 +478,7 @@ class EntryScriptTests(Base):
     def test_the_installed_command_runs_end_to_end(self) -> None:
         """`platform-letter hook --platform antigravity`, as hooks.json runs it, with the payload on stdin."""
         env = dict(os.environ, **self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=self.assigner.serve(self.state)))
+        env.update(self.assigner.bootstrap_env(env["SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"]))
         for name in ("AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "SESSION_LETTER"):
             env.pop(name, None)
         proc = subprocess.run(
@@ -492,6 +493,11 @@ class EntryScriptTests(Base):
         answer = json.loads(proc.stdout.strip().splitlines()[-1])
         self.assertIn("Operator session letter: Antigravity", self.said(answer))
         self.assertRegex(self.note()["label"], PAIR)
+        self.assertCountEqual(self.assigner.bootstrap_requests, [
+            "/api/v2/service-token",
+            "/api/v3/secrets/raw/SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+            "/api/v3/secrets/raw/SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        ])
         again = subprocess.run(
             [sys.executable, str(ENTRY), "hook", "--platform", "antigravity"],
             input="{}", capture_output=True, text=True, env=env, timeout=60,

@@ -620,8 +620,8 @@ class NoLetterTitles(Base):
 
 class ServerShapedHome(Base):
     """A server's home:  the managed `platform-letter` wrapper (the one `fleet-cli-git-update` writes), a `zc-letter`
-    wrapper from before, and the host's registry env script.  `install --platform zcode --location server` replaces the
-    ZCode entry, and the hook it writes must go on registering, because the managed wrapper sources the env script."""
+    wrapper from before, and its own scoped bootstrap.  The current wrapper reads that protected store
+    and never sources the superseded registry env script."""
 
     FAKE = False
 
@@ -654,13 +654,13 @@ class ServerShapedHome(Base):
         # The release the wrapper runs:  this checkout.
         (home / ".local" / "share" / "fleet-cli").mkdir(parents=True)
         (home / ".local" / "share" / "fleet-cli" / "current").symlink_to(scripts.parent)
-        # The host's env script (fake values):  it points the hook at the registry served on loopback.
+        # The host's own narrow bootstrap reaches the registry served on loopback.
         self.assigner.install()
         self.addCleanup(self.assigner.uninstall)
         url = self.assigner.serve(os.path.join(self.tmp.name, "listener-state"))
-        values = {**self.assigner.env(), "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL": url}
+        bootstrap = self.assigner.bootstrap_env(url, home=self.home)
         (bin_dir / "operator-registry-env").write_text(
-            "".join("export %s=%s\n" % (k, shlex.quote(v)) for k, v in values.items())
+            "echo obsolete-registry-helper-sourced >&2\nexit 92\n"
         )
         # An entry an earlier install pointed at the zc-letter wrapper:  install replaces it in place.
         old = "%s hook --platform zcode --location server" % (bin_dir / "zc-letter" / "platform-letter")
@@ -674,7 +674,7 @@ class ServerShapedHome(Base):
         written = json.loads(config.read_text())["hooks"]["events"]["SessionStart"]
         commands = [h["command"] for group in written for h in group["hooks"]]
         self.assertEqual(commands, ["%s hook --platform zcode --location server" % managed])
-        # The hook, as a process with no profile and none of the registry settings, registers the chat.
+        # No profile, signing-key env or old helper is required; the real bootstrap reads its store.
         sid = sess(31)
         self.add_session(sid, title="Fix the wake path")
         done = subprocess.run(
@@ -683,7 +683,7 @@ class ServerShapedHome(Base):
             capture_output=True,
             text=True,
             timeout=120,
-            env={"HOME": self.home, "PATH": "/usr/bin:/bin", "SIMPLE_TOOLS_STATE_DIR": self.state},
+            env={"HOME": self.home, "PATH": "/usr/bin:/bin", "SIMPLE_TOOLS_STATE_DIR": self.state, **bootstrap},
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         record = OR.SessionRegistry(self.db).lookup("zcode", "server", "default", sid)

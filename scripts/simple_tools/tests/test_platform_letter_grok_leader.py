@@ -1106,6 +1106,7 @@ class EntryScriptTests(Base):
         self.session(sid)
         env = self.env(GROK_SESSION_ID=sid, GROK_HOOK_EVENT="session_start", GROK_LETTER_BIN=os.path.join(self.tmp.name, "none"),
                        SIMPLE_TOOLS_OPERATOR_REGISTRY_URL=self.assigner.serve(self.state))
+        env.update(self.assigner.bootstrap_env(env["SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"]))
         proc = self.run_entry({"hook_event_name": "SessionStart", "sessionId": sid, "session_id": sid, "source": "new"}, env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertRegex(self.lookup(sid)["label"], PAIR)
