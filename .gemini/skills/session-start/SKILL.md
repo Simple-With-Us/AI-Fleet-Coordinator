@@ -11,7 +11,7 @@ description: >-
 
 This pack is for **AG** (Antigravity / Gemini).  Session tag `[AG·session8]`.  Notes name `Antigravity`.  Branches `ag/<slug>` (keep `agent/antigravity` only if the lane already uses it).  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Never sign as Monet, Cursor, or Claude.  `AG` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

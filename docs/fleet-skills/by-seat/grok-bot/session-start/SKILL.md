@@ -11,7 +11,7 @@ description: >-
 
 This pack is for **Grok Bot** roles driving Cursor cloud agents.  Chat tag is `[GB-<NAME>]` — one of `[GB-DIRECTOR]`, `[GB-FIXER]`, `[GB-DESIGNER]`, `[GB-COMPILER]` (Compiler), `[GB-HOUSEKEEPER]`, `[GB-PUBLISHER]`, `[GB-DEPLOYER]`, `[GB-MONITOR]`, `[GB-PLUMBER]`, `[GB-ORACLE]`, `[GB-TRADER]`, `[GB-ENGINEER]`.  Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  Notes name is the role in Title Case.  Cloud branches are often `cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or `simple-board --by`, and a `simple-board` write needs your bearer-verified seat and nothing else.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI is `[GROK]`.
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

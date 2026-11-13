@@ -13,7 +13,7 @@ description: >-
 
 This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).  Session tag `[ZC·session8]`.  Notes name `ZCode`.  Branches `zcode/<slug>` only.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  `ZC` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

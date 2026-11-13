@@ -13,7 +13,7 @@ description: >-
 
 This pack is for the **GROK** seat in its Grok Build TUI / App Builder runtime: Grok Build and the Mac Grok TUI / CLI are ONE seat, and GROK-BUILD (in any spelling) is only an alias for it.  Session tag `[GROK·session8]`.  Notes name `Grok`.  Branches `grok/<slug>` only.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Never sign as Monet or Grok Bot.  `GROK` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

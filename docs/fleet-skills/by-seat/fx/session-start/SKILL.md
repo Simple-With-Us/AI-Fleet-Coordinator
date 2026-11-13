@@ -13,7 +13,7 @@ description: >-
 
 This pack is for the **FX** terminal agent (`fx` / `fx.sh`).  Session tag `[FX·session8]`.  Notes name `Fx`.  Branches `fx/<slug>` only.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  This is not Cursor, not Codex, and not Monet.  `FX` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

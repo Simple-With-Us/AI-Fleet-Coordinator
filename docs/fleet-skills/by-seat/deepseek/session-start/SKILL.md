@@ -10,7 +10,7 @@ description: DSH is retired.  Do not start a DeepSeek Harness session.  Do not
 
 This pack is for the retired **DSH** (DeepSeek Harness) seat.  Use **CLUTCH** for `Simple-With-Us/Clutch` (DSH plus MiniMax, formerly Harness).  Notes name `DeepSeek Harness`.  Branches `deepseek/<slug>` stay readable.  A DeepSeek *model* inside Cursor is `[CURSOR]`.  Former tag `DEEPSEEK` is retired.  DSH has no Zulip bot.  Do not take new work as DSH.
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

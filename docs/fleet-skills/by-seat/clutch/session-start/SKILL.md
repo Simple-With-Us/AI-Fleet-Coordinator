@@ -13,7 +13,7 @@ description: >-
 
 This pack is for **CLUTCH** (the Clutch seat, owner of `Simple-With-Us/Clutch`: the DSH and MiniMax drivers, ACP bridges, and cordis profiles).  Session tag `[CLUTCH·session8]`.  Notes name `Clutch`.  Branches `clutch/<slug>` only.  Lanes `~/apps/lanes/Clutch/clutch-<slug>`.  One seat for every model run through Clutch (owner 2026-10-07: no per-model split).  Replaces HARNESS and DSH.  Never sign as Monet.  Default seat `CLUTCH` unless Jay names another or a launcher set `AGENT_LAUNCH_SEAT`; never overwrite an `AGENT_SEAT` that is already set.
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

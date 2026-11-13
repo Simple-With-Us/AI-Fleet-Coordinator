@@ -13,7 +13,7 @@ description: >-
 
 This pack is for the **CURSOR** seat (Cursor IDE and Auto on this Mac).  Zulip session tag `[CURSOR·session8]`.  Notes name `Cursor`.  Branches `cursor/<slug>` only.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Never post as `[MONET]`, `[CLAUDE]`, or `[GROK]`.  A skill copied from the Monet pack is not your name — this install is.  `CURSOR` is the default seat of an ordinary session; a launcher's seat wins (Identity).  Incident: 2026-08-23 Cursor inherited Monet identity from an unspecialized skill copy.
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 

@@ -11,7 +11,7 @@ description: >-
 
 This pack is for **CLAUDE** (the Claude account, the only Claude seat since owner 2026-10-07).  Session tag `[CLAUDE·session8]`.  Notes name `Claude`.  Branches `claude/<slug>` only.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  MONET and RENOIR are retired.  Never sign as Monet.  `CLAUDE` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
-The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 
