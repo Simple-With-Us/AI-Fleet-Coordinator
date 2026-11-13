@@ -2144,7 +2144,6 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual(users, ["simpletools"], "the daemon runs as a non-root user")
         self.assertIn("COPY scripts/simple_tools /app/scripts/simple_tools", lines)
         self.assertIn("COPY scripts/simple-chat /app/scripts/simple-chat", lines)
-        self.assertIn("COPY scripts/fleet_infisical.py /app/scripts/", lines)
         self.assertIn(
             "COPY docs/protocols/simple-tools-partition.toml /app/docs/protocols/simple-tools-partition.toml",
             lines,
@@ -2177,7 +2176,6 @@ class ContainerTests(unittest.TestCase):
         for keep in (
             "!scripts/simple-chat",
             "!scripts/simple_tools/",
-            "!scripts/fleet_infisical.py",
             "!docs/protocols/simple-tools-partition.toml",
             "!fleet-apps.json",
             "scripts/simple_tools/tests/",
