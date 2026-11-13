@@ -21,7 +21,7 @@ class SharedClientTests(unittest.TestCase):
         self.assertIs(core.SecretsError, fleet_infisical.SecretsError)
 
     def test_real_scoped_read_runs_without_legacy_application_or_executable(self):
-        scripts = str(Path(__file__).resolve().parent)
+        scripts = str(Path(__file__).resolve().parents[2])
         boot = """
 import json,sys
 sys.path.insert(0, sys.argv[1])
