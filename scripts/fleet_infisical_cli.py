@@ -5,7 +5,7 @@
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
   get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]
         print one value, exactly, with no trailing newline.  With several names, print a JSON
-        object of name to value instead (one folder export for the whole batch).  Exit 3 when
+        object of name to value instead (only the requested named reads).  Exit 3 when
         any NAME is absent;  nothing is printed then.
   names [--path /] [--project fleet-ops|ai-fleet-coordinator]
         key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
