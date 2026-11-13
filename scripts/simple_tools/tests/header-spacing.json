@@ -21,6 +21,13 @@
     "peers": ["CODEX EE", "AG"]
   },
   {
+    "name": "Quiet Operator Header",
+    "input": ":eyes: [CODEX·deadbeef: EE.1.S 📁AFC,OPS → CODEX EE,AG] Body",
+    "expected": ":eyes: [CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX EE,\u200a\u200aAG] Body",
+    "repos": ["AFC", "OPS"],
+    "peers": ["CODEX EE", "AG"]
+  },
+  {
     "name": "Legacy Hyphens And Arrow",
     "input": "[MM: HH-1-M 📁AFC -> CODEX EE, AG] body",
     "expected": "[MM:\u200a\u200a\u200aHH-1-M\u200a\u200a📁\u200aAFC → CODEX EE,\u200a\u200aAG] body",
