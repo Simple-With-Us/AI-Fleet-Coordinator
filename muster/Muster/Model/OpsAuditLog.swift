@@ -75,20 +75,94 @@ struct OpsAuditEntry: Decodable, Identifiable, Equatable {
     }
 }
 
+/// Host filter for Action History.
+enum OpsAuditHostFilter: String, CaseIterable, Identifiable {
+    case all
+    case mac
+    case server
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "All Hosts"
+        case .mac: return "Mac"
+        case .server: return "Server"
+        }
+    }
+}
+
+/// Result filter for Action History.
+enum OpsAuditResultFilter: String, CaseIterable, Identifiable {
+    case all
+    case succeeded
+    case problems
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .succeeded: return "Succeeded"
+        case .problems: return "Problems"
+        }
+    }
+}
+
 /// The last rows of the log,  and what could not be read.
 struct OpsAuditReading: Equatable {
     var path: String = ""
     /// The rows,  newest first.
     var entries: [OpsAuditEntry] = []
+    /// Total valid rows present in the read tail before applying `limit`.
+    var totalParsed: Int = 0
     /// Lines that were there and were not a row this app can read.
     var unreadable: Int = 0
     /// Why the log could not be read at all,  when it could not.
     var problem: String?
+
+    /// Valid rows present in the tail beyond the returned `entries` slice.
+    var moreCount: Int {
+        max(0, totalParsed - entries.count)
+    }
+
+    /// Filter loaded entries by host, result outcome, and search text.
+    func filteredEntries(
+        host: OpsAuditHostFilter = .all,
+        result: OpsAuditResultFilter = .all,
+        search: String = ""
+    ) -> [OpsAuditEntry] {
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return entries.filter { entry in
+            switch host {
+            case .all:
+                break
+            case .mac:
+                guard entry.host?.lowercased() == "mac" else { return false }
+            case .server:
+                guard entry.host?.lowercased() == "server" else { return false }
+            }
+            switch result {
+            case .all:
+                break
+            case .succeeded:
+                guard entry.state == .passed else { return false }
+            case .problems:
+                guard entry.state != .passed else { return false }
+            }
+            guard !needle.isEmpty else { return true }
+            let fields = [entry.host, entry.verb, entry.target, entry.result, entry.via, entry.clockText]
+                .compactMap { $0 }
+            return fields.contains { $0.localizedCaseInsensitiveContains(needle) }
+        }
+    }
 }
 
 enum OpsAuditLog {
-    /// How many rows the Operations tab shows.
+    /// How many rows the Operations tab shows by default.
     static let defaultLimit = 50
+    /// Expanded row cap within the 256 KB tail.
+    static let expandedLimit = 10_000
     /// The most of the file's tail this app reads,  in bytes.  Fifty rows are a few
     /// kilobytes,  so a log that has grown large costs only its tail.
     static let maximumTailBytes = 256 * 1024
@@ -169,6 +243,7 @@ enum OpsAuditLog {
             entry.line = index
             entries.append(entry)
         }
+        reading.totalParsed = entries.count
         reading.entries = Array(entries.suffix(max(limit, 0)).reversed())
         return reading
     }

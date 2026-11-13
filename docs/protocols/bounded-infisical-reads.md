@@ -2,6 +2,8 @@
 
 `fleet_infisical.bounded_fetch_project` runs one logical named-read operation in a disposable process using the same canonical client.  The child performs the existing grant metadata checks, bounded concurrent named GETs, record provenance validation and decoding.  It can select only `named-fetch`; no mutation, arbitrary callable or source dispatch is available.
 
+Consumers replacing `fetch_verified` pass `strict_records=True`.  That option reaches the shared verifier inside the child and requires explicit matching workspace, prod environment and folder, a shared row, `secretValueHidden` exactly false and a nonempty string value for every requested key.  The ordinary single-scope reader contract remains available for existing consumers; an exact token grant alone does not supply the additional row proof required by a verified credential read.
+
 The parent starts a monotonic budget before launch, reserves the smaller of 100 ms or one fifth of the remaining budget for cleanup, and caps both private pipe directions independently.  Requests are limited to 128 KiB; the serialized whole-batch result defaults to 1 MiB and callers can select a narrower cap.  The parent accepts only a complete version-one result from an exited child before expiry.  Partial, malformed, excessive or late output fails closed and cannot update the caller's cache.
 
 Only the explicit consumer binding and selected provider/prod/path metadata enter private stdin.  The token is absent from argv, inherited environment, files and diagnostics.  The child uses the current absolute Python in isolated mode and the same reviewed module, with a minimal environment and discarded stderr.  Provider text and arbitrary exception strings are excluded from errors.

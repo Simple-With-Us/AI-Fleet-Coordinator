@@ -1224,6 +1224,7 @@ def _named_secret_source(
         case.assertIsInstance(kwargs["names"], tuple)
         case.assertEqual(kwargs["timeout"], 30)
         case.assertEqual(kwargs["max_output_bytes"], 1048576)
+        case.assertIs(kwargs["strict_records"], True)
         if calls is not None:
             calls.append((project_id, folder, dict(env), dict(kwargs)))
         if reader is not None:
@@ -2763,6 +2764,35 @@ class TestOwnerTokenFromCli(unittest.TestCase):
 
 
 class TestVerifiedSecret(unittest.TestCase):
+    def test_typed_reader_refusals_keep_only_closed_safe_diagnostics_without_caching(self):
+        from git_relay import app_tokens
+
+        client = app_tokens._shared_client()
+        for reason, kind, expected_reason in (
+            ("token-expired-or-invalid", "refused", "token-expired-or-invalid"),
+            ("token-verification-failed", "unavailable", None),
+            ("fixture-value-must-not-appear", "refused", None),
+        ):
+            calls = []
+
+            def broken(*args, **kwargs):
+                raise client.SecretsError(reason, failure_kind=kind)
+
+            source = _named_secret_source(self, reader=broken, calls=calls)
+            with self.subTest(reason=reason):
+                for _ in range(2):
+                    with self.assertRaises(app_tokens.AppTokenError) as raised:
+                        source.verified_secret("GITHUB_TOKEN")
+                    error = raised.exception
+                    self.assertEqual(error.reason, expected_reason)
+                    self.assertEqual(error.failure_kind, kind)
+                    self.assertIn(kind, str(error))
+                    self.assertNotIn("fixture-value-must-not-appear", str(error))
+                    self.assertFalse(app_tokens.missing_app_credential(error))
+                    self.assertFalse(source._cache)
+                    self.assertFalse(source._missing)
+                self.assertEqual(len(calls), 2)
+
     def test_uses_named_reader_at_the_source_folder(self):
         calls = []
         source = _named_secret_source(

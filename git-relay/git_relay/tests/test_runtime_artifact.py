@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 import uuid
 from pathlib import Path
 from unittest import mock
@@ -48,7 +49,9 @@ class ArtifactTests(unittest.TestCase):
 
     def git(self, *args):
         return (
-            subprocess.check_output(["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL)
+            subprocess.check_output(
+                ["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL, timeout=60
+            )
             .decode()
             .strip()
         )
@@ -146,6 +149,31 @@ class ArtifactTests(unittest.TestCase):
                 target.symlink_to(destination / "git-relay/git_relay/app_tokens.py")
             with self.subTest(problem=problem), self.assertRaises(builder.ArtifactError):
                 builder.verify_artifact(destination, manifest)
+
+
+class GitDeadlineTests(unittest.TestCase):
+    def test_hung_source_child_is_reaped_and_reports_only_the_fixed_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_file = root / "child-pid"
+            child = root / "git"
+            child.write_text(
+                "#!" + sys.executable + "\n"
+                "import os, pathlib, time\n"
+                f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
+            child.chmod(0o700)
+            with (
+                mock.patch.dict(os.environ, {"PATH": str(root)}),
+                mock.patch.object(builder, "GIT_TIMEOUT_SECONDS", 0.2),
+                self.assertRaises(builder.ArtifactError) as raised,
+            ):
+                builder._git("fixture-sensitive-argument")
+            self.assertEqual(str(raised.exception), "source-object-timeout")
+            self.assertTrue(pid_file.exists())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
 
 
 class SourceImportBoundaryTests(unittest.TestCase):
@@ -306,7 +334,7 @@ class CopiedReaderTests(unittest.TestCase):
     def setUpClass(cls):
         # Build Git objects, never the working tree or an installed service's configuration.
         cls.commit = subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, timeout=60
         ).strip()
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temporary.name)
@@ -318,7 +346,60 @@ class CopiedReaderTests(unittest.TestCase):
             from fleet_knobs.tests._fake import ScopedReadAPI
         finally:
             sys.path.remove(scripts)
-        cls.API = ScopedReadAPI
+
+        class StrictReadAPI(ScopedReadAPI):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.row_changes = {}
+                self.row_omissions = ()
+                fake = self
+                original = self.server.RequestHandlerClass
+
+                class Handler(original):
+                    def do_GET(self):
+                        parsed = urllib.parse.urlsplit(self.path)
+                        prefix = "/api/v3/secrets/raw/"
+                        if not parsed.path.startswith(prefix):
+                            return super().do_GET()
+                        name = urllib.parse.unquote(parsed.path[len(prefix):])
+                        if name not in fake.values:
+                            return super().do_GET()
+                        fake.requests.append(self.path)
+                        expected = {
+                            "workspaceId": [fake.project],
+                            "environment": ["prod"],
+                            "secretPath": [fake.path],
+                            "viewSecretValue": ["true"],
+                            "expandSecretReferences": ["false"],
+                            "recursive": ["false"],
+                            "include_imports": ["false"],
+                        }
+                        valid = (
+                            self.headers.get("Authorization") == "Bearer " + fake.token
+                            and urllib.parse.parse_qs(parsed.query) == expected
+                        )
+                        row = {
+                            "secretKey": name,
+                            "secretValue": fake.values[name],
+                            "workspace": fake.project,
+                            "environment": "prod",
+                            "secretPath": fake.path,
+                            "type": "shared",
+                            "secretValueHidden": False,
+                        }
+                        row.update(fake.row_changes)
+                        for field in fake.row_omissions:
+                            row.pop(field, None)
+                        raw = json.dumps({"secret": row} if valid else {}).encode()
+                        self.send_response(200 if valid else 400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(raw)))
+                        self.end_headers()
+                        self.wfile.write(raw)
+
+                self.server.RequestHandlerClass = Handler
+
+        cls.API = StrictReadAPI
 
     @classmethod
     def tearDownClass(cls):
@@ -327,7 +408,7 @@ class CopiedReaderTests(unittest.TestCase):
     def test_payload_contains_exact_canonical_source_without_app_or_writer_ledger(self):
         path = "scripts/fleet_infisical.py"
         expected = subprocess.check_output(
-            ["git", "-C", str(ROOT), "show", self.commit + ":" + path]
+            ["git", "-C", str(ROOT), "show", self.commit + ":" + path], timeout=60
         )
         self.assertEqual((self.payload / path).read_bytes(), expected)
         self.assertEqual(
@@ -371,6 +452,7 @@ def read(project_arg, path_arg, env, **options):
     assert env == {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": folder}
     assert options["names"] == tuple(request["names"])
     assert options["timeout"] == 30 and options["max_output_bytes"] == 1048576
+    assert options["strict_records"] is True
     calls.append(tuple(options["names"]))
     return client.bounded_fetch_project(project_arg, path_arg, {**env, "FLEET_SECRETS_API": endpoint}, **options)
 source = app_tokens.FleetSecretsSource(path=folder, credential_file=binding,
@@ -461,6 +543,32 @@ print(json.dumps({"ok": True, "reads": len(calls)}))
                 api.metadata_override = metadata
                 self.read_payload(api, "/github-apps", ["WANTED"], expect_failure=True)
                 self.assertEqual(api.requests, ["/api/v2/service-token"])
+
+    def test_actual_copied_worker_refuses_missing_and_wrong_credential_row_proof(self):
+        omissions = ("workspace", "environment", "secretPath", "secretValueHidden")
+        changes = (
+            {"workspace": str(uuid.uuid4())},
+            {"environment": "dev"},
+            {"secretPath": "/tools"},
+            {"type": "personal"},
+            {"secretKey": "OTHER"},
+            {"secretValueHidden": True},
+            {"secretValueHidden": "false"},
+            {"secretValue": ""},
+        )
+        for omitted, changed in [(field, {}) for field in omissions] + [
+            (None, item) for item in changes
+        ]:
+            with (
+                self.subTest(omitted=omitted, changed=changed),
+                self.API(
+                    {"WANTED": "public fixture"}, project=str(uuid.uuid4()), path="/github-apps"
+                ) as api,
+            ):
+                api.row_omissions = () if omitted is None else (omitted,)
+                api.row_changes = changed
+                self.read_payload(api, "/github-apps", ["WANTED"], expect_failure=True)
+                self.assertEqual(len(api.requests), 2)
 
 
 if __name__ == "__main__":

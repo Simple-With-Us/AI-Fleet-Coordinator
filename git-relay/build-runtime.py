@@ -61,6 +61,7 @@ FILES.update({f"git-relay/git_relay/{name}.py": "100644" for name in MODULES})
 MANIFEST = "relay-runtime.json"
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
+GIT_TIMEOUT_SECONDS = 30
 
 
 class ArtifactError(Exception):
@@ -70,8 +71,12 @@ class ArtifactError(Exception):
 def _git(*arguments: str) -> bytes:
     try:
         return subprocess.check_output(
-            ["git", "-C", str(REPOSITORY), *arguments], stderr=subprocess.DEVNULL
+            ["git", "-C", str(REPOSITORY), *arguments],
+            stderr=subprocess.DEVNULL,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        raise ArtifactError("source-object-timeout") from None
     except (OSError, subprocess.CalledProcessError):
         raise ArtifactError("source-object-unavailable") from None
 
