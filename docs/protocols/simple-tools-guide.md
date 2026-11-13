@@ -27,7 +27,7 @@ Three tools stand alone and need no identity:
 | `guide` | This guide, or one `##` section by name (case and punctuation ignored).  Needs no credential.  A wrong name lists the section names. |
 | `catalog` | This connection's own tool catalog in bounded pages:  names and one-line descriptions only (full schemas come from `tools/list`, which accepts the same cursor).  Call with no arguments for the first page;  pass the returned `nextCursor` as `cursor` for the next page.  Hosted only. |
 
-Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #sandbox.
+Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #Sandbox.
 
 ## Which Connection a Client Gets
 
