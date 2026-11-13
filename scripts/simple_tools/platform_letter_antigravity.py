@@ -68,7 +68,6 @@ SOURCE = "antigravity-letter-hook"
 DISPLAY = "Antigravity"
 
 ENV_CONVERSATION = "ANTIGRAVITY_CONVERSATION_ID"
-ENV_OFF = "ANTIGRAVITY_LETTER"
 HOOKS_FILE = os.path.join(".gemini", "config", "hooks.json")
 GROUP = "session-letter"
 HOOK_TIMEOUTS = {"SessionStart": 20, "PreInvocation": 15}
@@ -394,7 +393,6 @@ SPEC = PL.PlatformSpec(
     title_writer=antigravity_rename,
     output="json",
     locations=("mac", "server"),
-    env_off=ENV_OFF,
 )
 
 
@@ -454,10 +452,8 @@ def hook_main(
     stdin: TextIO,
     stdout: TextIO,
     *,
-    runner: PL.Runner = subprocess.run,
     transport: PL.Transport | None = None,
     location_flag: str = "",
-    remote_flag: str = "",
     stderr: TextIO | None = None,
     now: float | None = None,
     platform: str = sys.platform,
@@ -474,12 +470,10 @@ def hook_main(
                 env,
                 io.StringIO(json.dumps(data)),
                 printed,
-                runner=runner,
                 now=now,
                 platform=platform,
                 transport=transport,
                 location_flag=location_flag,
-                remote_flag=remote_flag,
                 stderr=stderr,
             )
             answer = injection(printed.getvalue(), env, data["session_id"])
@@ -655,159 +649,3 @@ def install(options: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) 
             answer["enabled_group"] = GROUP
             answer["enable_backup"] = backup
     return PL._emit(stdout, answer, code)
-
-
-def sweep_main(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`sweep [--apply] [--db FILE] [--location server|mac]`: close the registrations of conversations the summaries
-    store has marked `killed` (or dropped), which fire no SessionEnd hook of their own.  Without --apply it only
-    reports."""
-    import argparse
-    import concurrent.futures
-
-    parser = argparse.ArgumentParser(prog="platform-letter-antigravity sweep")
-    parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--db", default="")
-    parser.add_argument("--location", default="server", choices=PL.LOCATIONS)
-    args = parser.parse_args(argv)
-    home = str(env.get("HOME") or os.path.expanduser("~"))
-    dbs = (
-        [args.db]
-        if args.db
-        else [
-            os.path.join(home, ".gemini", product, "conversation_summaries.db")
-            for product in STORE_PRODUCTS
-            if os.path.isfile(os.path.join(home, ".gemini", product, "conversation_summaries.db"))
-        ]
-    )
-    if not dbs or not all(os.path.isfile(p) for p in dbs):
-        stdout.write(
-            json.dumps({"error": "no Antigravity summaries database at %s" % (args.db or home)})
-            + "\n"
-        )
-        return 2
-    shape = _SAFE_CID_RE
-    gone: list[str] = []
-    known: set[str] = set()
-    for path in dbs:
-        try:
-            conn = sqlite3.connect("%s?mode=ro" % Path(path).as_uri(), uri=True, timeout=5)
-            try:
-                cols = {
-                    str(r[1])
-                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
-                }
-                if "conversation_id" not in cols:
-                    rows, every = [], []
-                elif "killed" in cols:
-                    rows = conn.execute(
-                        "SELECT conversation_id FROM conversation_summaries WHERE COALESCE(killed, 0) != 0"
-                    ).fetchall()
-                    every = conn.execute(
-                        "SELECT conversation_id FROM conversation_summaries WHERE COALESCE(killed, 0) = 0"
-                    ).fetchall()
-                else:
-                    rows = []
-                    every = conn.execute(
-                        "SELECT conversation_id FROM conversation_summaries"
-                    ).fetchall()
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
-            stdout.write(
-                json.dumps({"error": "the store could not be read (%s)" % type(exc).__name__})
-                + "\n"
-            )
-            return 2
-        for r in rows:
-            if isinstance(r[0], str) and shape.fullmatch(r[0]) and r[0] not in gone:
-                gone.append(r[0])
-        for r in every:
-            if isinstance(r[0], str) and shape.fullmatch(r[0]):
-                known.add(r[0])
-    from . import registry_api as RA
-
-    env = PL.with_registry_env(env)
-    if RA.base_url(env) and known:
-        answer = RA.call(env, "history", {"platform": PLATFORM, "limit": 1000})
-        history = answer.get("items") if isinstance(answer, dict) else None
-        if isinstance(history, list):
-            for row in history:
-                sid = str((row or {}).get("native_session_id") or "")
-                host = str((row or {}).get("verified_host") or "")
-                if (
-                    shape.fullmatch(sid)
-                    and (not host or host == args.location)
-                    and not (row or {}).get("closed_at")
-                    and str((row or {}).get("state") or "") != "closed"
-                    and sid not in known
-                    and sid not in gone
-                ):
-                    gone.append(sid)
-    closed = []
-    failed = []
-    absent = []
-    if not args.apply:
-        for sid in gone:
-            closed.append({"session_id": sid, "would_close": True})
-    elif gone:
-
-        def _close_one(sid: str) -> tuple[str, int, str]:
-            buf = io.StringIO()
-            code = PL.registry_main(
-                ["close", "--platform", PLATFORM, "--location", args.location, "--session-id", sid],
-                env=env,
-                stdout=buf,
-            )
-            return sid, code, buf.getvalue()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(gone))) as pool:
-            results = list(pool.map(_close_one, gone))
-        for sid, code, raw in results:
-            line = PL._last_json(raw)
-            text = str((line or {}).get("error") or "")
-            if (
-                code != 0
-                and PL._NOT_REGISTERED_MARK not in text
-                and "no session with this identity" not in text
-                and text != PL.NO_REGISTRATION
-            ):
-                stdout.write(raw)
-                failed.append(sid)
-            elif code != 0:
-                absent.append(sid)
-            else:
-                closed.append({"session_id": sid, "closed": True})
-    stdout.write(
-        json.dumps(
-            {
-                "platform": PLATFORM,
-                "found": len(gone),
-                "closed": closed,
-                "absent": absent,
-                "failed": failed,
-            }
-        )
-        + "\n"
-    )
-    return 0 if not failed else 1
-
-
-def main(
-    argv: list[str] | None = None,
-    *,
-    env: Mapping[str, str] | None = None,
-    stdout: TextIO | None = None,
-) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    env = os.environ if env is None else env
-    out = stdout or sys.stdout
-    if argv[:1] == ["sweep"]:
-        return sweep_main(argv[1:], env, out)
-    out.write(
-        "usage: python3 -m simple_tools.platform_letter_antigravity sweep [--apply] [--db FILE] [--location server|mac]\n"
-    )
-    return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main())

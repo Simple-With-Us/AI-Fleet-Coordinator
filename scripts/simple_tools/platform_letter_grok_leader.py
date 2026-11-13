@@ -55,13 +55,13 @@ seen: the hook cannot tell those from a headless run.
 
 Whose environment.  A hook gets the environment of the Grok process that hosts the chat.  For a chat the shared leader
 hosts (the Mac's TUI runs with `use_leader = true`, and the leader is a pm2 child) that is the LEADER's environment, not
-that of the process that asked for the chat.  So AGENT_LAUNCHER, AGENT_LAUNCH_SEAT, GROK_LETTER=0 and SESSION_LETTER=0
+that of the process that asked for the chat.  So AGENT_LAUNCHER, AGENT_LAUNCH_SEAT and SESSION_LETTER=0
 reach the hook only when they are in the leader's own environment, or the chat runs in its own process (`grok
 --no-leader`).  Seen live on the Mac (grok 1.0.70, a private leader, with the TUI and with an ACP client): each of them
-set only in the client was absent from the hook and the chat took a pair, and the same GROK_LETTER=0 in the leader's own
+set only in the client was absent from the hook and the chat took a pair, and the same SESSION_LETTER=0 in the leader's own
 environment kept the hook out.  Three consequences.  A chat a launcher asks the shared leader for takes a letter (a
 launcher that wants none runs its own GROK_HOME or `--no-leader`, as the ACP runtime and Conductor do).
-`GROK_LETTER=0 grok` in a terminal does not stop the hook of a leader-hosted chat.  And a leader started from a launcher
+`SESSION_LETTER=0 grok` in a terminal does not stop the hook of a leader-hosted chat.  And a leader started from a launcher
 session would keep every chat on it from taking a letter.  The switch that reaches every chat on the leader at once is a
 file, `$GROK_HOME/session-letter.off`: `touch` it to pause the hook and delete it to resume (a paused hook neither
 registers, titles, touches nor closes, and `install --check` says so).  `install --remove` is the other way.
@@ -76,12 +76,11 @@ a letter of its own, `grok_current_title` reads the title without a letter in fr
 
 The Claude hook in Grok.  Grok imports the hooks of `~/.claude/settings.json` while `[compat.claude] hooks` is on in its
 config (the default is on; the Mac's `~/.grok/config.toml` says false today, and something else has rewritten that file
-before).  `claude_letter` gates on the environment alone (CLAUDE_CODE_ENTRYPOINT) and takes the session id from the
-payload, which Grok's payload carries too, so a Grok run that inherits CLAUDE_CODE_ENTRYPOINT (started from a Claude Code
-Bash tool, or under a leader that was) registers as a Claude chat once the Claude letter hook is installed.  Seen live
-with a stand-in for that hook: with `hooks = true` and the entrypoint set all three events ran and a Claude row was made,
-with `hooks = false` none ran.  The guard belongs in `claude_letter` (refuse when GROK_HOOK_EVENT or GROK_SESSION_ID is
-set), which is another change's file; here `install` and `install --check` warn while the cell is not false.
+before).  The Claude row of the letter table (`platform_letter_claude`) reads its scope from the environment
+(CLAUDE_CODE_ENTRYPOINT), which a Grok run that inherits it (started from a Claude Code Bash tool, or under a leader that
+was) carries too.  Seen live with a stand-in for that hook: with `hooks = true` and the entrypoint set all three events
+ran and a Claude row was made, with `hooks = false` none ran.  So the Claude row refuses a run whose environment carries
+GROK_HOOK_EVENT or GROK_SESSION_ID, and `install` and `install --check` here still warn while the cell is not false.
 
 Sub-agents take no letter.  A sub-agent's session (the explore and plan workers a chat starts) is not a chat the leader
 hosts: asked to rename one, the leader answered "session not found" on every one of about 90 tries over the 36 seconds
@@ -132,7 +131,6 @@ from . import platform_letter as PL
 PLATFORM = "grok-leader"
 SEAT = "GROK"
 SOURCE = "grok-letter-hook"
-ENV_OFF = "GROK_LETTER"
 ENV_BIN = "GROK_LETTER_BIN"  # the grok binary to ask, when it is not on the hook's PATH
 ENV_HOME = "GROK_HOME"
 ENV_SOCKET = "GROK_LEADER_SOCKET"
@@ -251,7 +249,7 @@ def grok_session_id(payload: Mapping[str, Any], env: Mapping[str, str]) -> str:
 
 def switched_off(env: Mapping[str, str]) -> bool:
     """Whether the Grok home holds the off file.  A hook of a leader-hosted chat runs in the leader's environment, so
-    GROK_LETTER=0 in a terminal never reaches it; a file under the Grok home does."""
+    SESSION_LETTER=0 in a terminal never reaches it; a file under the Grok home does."""
     try:
         return os.path.lexists(os.path.join(grok_home(env), OFF_FILE))
     except (OSError, ValueError):
@@ -539,7 +537,6 @@ SPEC = PL.PlatformSpec(
     close_reasons=(),
     title_writer=grok_rename,
     locations=("mac",),
-    env_off=ENV_OFF,
 )
 
 
@@ -606,11 +603,11 @@ def host_warnings(env: Mapping[str, str]) -> list[str]:
 
 def install(opts: PL.InstallOptions, env: Mapping[str, str], stdout: TextIO) -> int:
     """`install --platform grok-leader [--check | --remove]`: add (or take out, or check) this adapter's hooks in
-    `~/.grok/hooks/session-letter.json`.  Grok runs on the Mac only, and the Mac registers in process, so a location
-    or a registry host is refused, and so is an install on a host with no Grok home (it would leave a stray folder) and
+    `~/.grok/hooks/session-letter.json`.  Grok runs on the Mac only, so a server location
+    is refused, and so is an install on a host with no Grok home (it would leave a stray folder) and
     one where the program the hooks run is not there.  The answer of an install or a check carries that program, whether
     it is ready (a check that finds it missing exits 1), and the `host_warnings`."""
-    if opts.location == "server" or opts.remote:
+    if opts.location == "server":
         return _emit(
             stdout,
             {"error": "Grok runs on the Mac only; there is nothing to install on a server"},
