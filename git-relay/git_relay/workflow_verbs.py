@@ -1258,11 +1258,15 @@ class WorkflowVerbs:
             ):
                 raise Refused("PR head not matched")
             base_ref = quote(pr["base"]["ref"], safe="/")
-            base_sha = pr["base"]["sha"]
+            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+            tip_obj = tip.get("object") if isinstance(tip, dict) else None
+            base_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
+            if not isinstance(base_sha, str) or not _SHA.fullmatch(base_sha):
+                raise Refused("PR base not matched")
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
-            # The proof input is the immutable base sha from the PR snapshot, not the
-            # mutable ref.  When the compare cannot prove the workflow-touch answer -
+            # Freeze the actual named ref tip, since the PR's base snapshot may lag it.
+            # When the compare cannot prove the workflow-touch answer -
             # too large to read, no files array, or a possibly-truncated full page
             # without a touch - fall back to a complete two-tree diff.
             try:
