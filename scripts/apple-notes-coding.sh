@@ -2566,7 +2566,7 @@ def _one_space_gaps(segment, gap_entity=False):
         _changes['gaps'] += 1
         #  The note body is HTML, so the gap is the numeric reference for a no-break space,
         #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
-        #  The mobile quick view is plain text that is embedded with html.escape, so
+        #  The summary block is plain text that is embedded with html.escape, so
         #  a reference there would reach the owner as the literal five characters.
         #  It carries the no-break space itself.
         return m.group(1) + ('&#160; ' if gap_entity else '\xa0 ')
@@ -2575,6 +2575,58 @@ def _one_space_gaps(segment, gap_entity=False):
 inner = fleet_dates(inner, gap_entity=True)
 if summary_text:
     summary_text = fleet_dates(summary_text)
+
+#  Summary rules (owner direction 2026-11-12): the block is a readable 'Summary:' paragraph for
+#  long notes only, and the note still writes when a summary breaks one of the rules - the block
+#  is left off and the reason goes to stderr.  A summary is skipped when it would mostly restate
+#  the title, run past five sentences, or exceed APPLE_NOTES_SUMMARY_MAX_PCT percent of the note
+#  body (default 20).  The share is measured in characters of plain text on both sides - an
+#  implementation choice; the owner gave the percentage, not the unit.  The restatement check
+#  looks at the summary's own words: a summary that mentions the title's terms while adding real
+#  context stays; one whose content words are mostly the title's (60% threshold, common English
+#  stopwords aside) is a restatement.  The block is for long notes only, so a note under
+#  APPLE_NOTES_SUMMARY_MIN_BODY_CHARS of body text (default 800 characters, about a screenful)
+#  gets none no matter how small the share; all three thresholds are documented implementation
+#  choices, and each knob is adjustable.
+_SUMMARY_STOPWORDS = frozenset(
+    'the and for are was were with this that from have has had not but all can its our your their '
+    'they them then than when will would about into over under per via out any each his her she him '
+    'you your yours mine ours note notes cover covers covered covering'.split()
+)
+if summary_text:
+    try:
+        _sum_pct = int(os.environ.get('APPLE_NOTES_SUMMARY_MAX_PCT', '20'))
+    except ValueError:
+        _sum_pct = 20
+    try:
+        _sum_min = int(os.environ.get('APPLE_NOTES_SUMMARY_MIN_BODY_CHARS', '800'))
+    except ValueError:
+        _sum_min = 800
+    _sum_body = ' '.join(html.unescape(re.sub(r'<[^>]+>', ' ', inner)).split())
+    _sum_title = re.sub(r'^[\[\(][^\]\)]+[\]\)]', '', title)
+    _sum_title_words = set(
+        w for w in re.findall(r'[a-z0-9]+', _sum_title.lower())
+        if len(w) > 2 and w not in _SUMMARY_STOPWORDS
+    )
+    _sum_words = set(
+        w for w in re.findall(r'[a-z0-9]+', summary_text.lower())
+        if len(w) > 2 and w not in _SUMMARY_STOPWORDS
+    )
+    _sum_sentences = len([s for s in re.split(r'[.!?]+\s+', summary_text.strip()) if s.strip()])
+    _sum_skip = ''
+    if not _sum_body:
+        _sum_skip = 'the note has no body text to summarize'
+    elif len(_sum_body) < _sum_min:
+        _sum_skip = 'at ' + str(len(_sum_body)) + ' characters of text the note is too short for a summary block (summaries are for long notes; APPLE_NOTES_SUMMARY_MIN_BODY_CHARS adjusts the ' + str(_sum_min) + '-character floor)'
+    elif _sum_sentences > 5:
+        _sum_skip = str(_sum_sentences) + ' sentences is over the five-sentence limit'
+    elif len(summary_text) * 100 > _sum_pct * len(_sum_body):
+        _sum_skip = 'at ' + str(len(summary_text)) + ' characters it is over ' + str(_sum_pct) + '% of the note body (' + str(len(_sum_body)) + ' characters of text)'
+    elif _sum_words and _sum_title_words and len(_sum_title_words & _sum_words) * 100 >= 60 * len(_sum_words):
+        _sum_skip = 'it mostly restates the title'
+    if _sum_skip:
+        sys.stderr.write('notes: summary skipped:  ' + _sum_skip + ';  the note was written without it - shorten it, add context beyond the title, or drop --summary' + chr(10))
+        summary_text = ''
 
 # Tell the writer what was reformatted, on stderr, so the agent learns the fleet format (owner 2026-10-19).
 if _changes['dates']:
@@ -2596,7 +2648,7 @@ extra_blocks = ''
 if needs_owner:
     extra_blocks += '<div style=\"background-color: #FFF3CD; border-left: 5px solid #FFC107; color: #856404; padding: 10px 14px; margin-bottom: 12px; border-radius: 4px; font-family: -apple-system, sans-serif;\"><b>⚠️ NEEDS OWNER REVIEW / ACTION</b></div>'
 if summary_text:
-    extra_blocks += '<div style=\"background-color: #F8F9FA; border-left: 4px solid #0D6EFD; color: #212529; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-family: -apple-system, sans-serif;\"><b>📌 Mobile Quick View:</b> ' + html.escape(summary_text) + '</div>'
+    extra_blocks += '<div style=\"background-color: #F8F9FA; border-left: 4px solid #0D6EFD; color: #212529; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-family: -apple-system, sans-serif; font-size: 16px;\"><b>Summary:</b> ' + html.escape(summary_text) + '</div>'
 
 sys.stdout.write('<div>' + stamp_p + extra_blocks + inner + '</div>')
 ")

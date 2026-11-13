@@ -18,6 +18,18 @@ DEFAULT_ORG = "Simple-With-Us"
 DEFAULT_MAX_RUNS = 15
 
 
+def _repo_access_error(owner: str, repo: str, exc: github.GitHubError, *, context: str) -> str:
+    full = f"{owner}/{repo}"
+    status = exc.status
+    if status == 404:
+        return f"{full}: not found (404) while reading {context}"
+    if status == 403:
+        # GitHub uses 403 for both missing permission and exhausted rate limits.
+        return f"{full}: HTTP 403 (forbidden or rate limited) while reading {context}"
+    # Only allow-listed fields: never interpolate the exception text or body.
+    return f"{full}: cannot read {context} ({type(exc).__name__}, status {status})"
+
+
 @dataclass(frozen=True)
 class RedWorkflow:
     repo: str
@@ -85,7 +97,7 @@ def scan_repo(
     try:
         meta = client.get_json(repo_path)
     except github.GitHubError as exc:
-        errors.append(f"{owner}/{repo}: cannot read repo ({exc})")
+        errors.append(_repo_access_error(owner, repo, exc, context="repo"))
         return [], 0
     if not isinstance(meta, dict):
         errors.append(f"{owner}/{repo}: repo metadata is not an object")
@@ -100,7 +112,7 @@ def scan_repo(
     try:
         wf_list = client.get_json(f"{repo_path}/actions/workflows", params={"per_page": "100"})
     except github.GitHubError as exc:
-        errors.append(f"{owner}/{repo}: cannot list workflows ({exc})")
+        errors.append(_repo_access_error(owner, repo, exc, context="workflows"))
         return [], 0
     workflows = wf_list.get("workflows") if isinstance(wf_list, dict) else None
     if not isinstance(workflows, list):

@@ -2,7 +2,7 @@ import { assertPublicInputs } from "./linear-public-inputs.js";
 import { parse, Kind } from 'graphql';
 import { ToolError, scanSecret } from './contract.js';
 import { apiQuery, apiMutation } from './linear-api.js';
-import { linearClean } from './linear.js';
+import { linearClean, linearFieldErrors } from './linear.js';
 import { LINEAR_NAMED_BY_NAME } from './linear-named-specs.js';
 import {
   COMPACT_DEFAULT_LIMIT,
@@ -10,15 +10,32 @@ import {
   splitFullArg,
 } from './list-presentation.js';
 
+function selectionDocument(value) {
+  return parse(`fragment NamedSelection on NamedResource { ${value} }`, { maxTokens: 4000 });
+}
+
+function acceptSelection(document) {
+  return document.definitions.length === 1 && document.definitions[0].kind === Kind.FRAGMENT_DEFINITION && document.definitions[0].name.value === 'NamedSelection';
+}
+
 function selectedFields(value) {
   // A field selection cannot escape its wrapper and append operations/roots.
-  let document;
-  try { document = parse(`fragment NamedSelection on NamedResource { ${value} }`, { maxTokens: 4000 }); }
-  catch { throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.'); }
-  if (document.definitions.length !== 1 || document.definitions[0].kind !== Kind.FRAGMENT_DEFINITION || document.definitions[0].name.value !== 'NamedSelection') {
-    throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.');
+  // One pair of wrapping braces is the selection set itself.
+  const source = String(value).trim();
+  let chosen = source;
+  if (source.startsWith('{') && source.endsWith('}')) {
+    const inner = source.slice(1, -1).trim();
+    if (inner) {
+      try {
+        if (acceptSelection(selectionDocument(inner))) chosen = inner;
+      } catch { /* the caller's text is checked below */ }
+    }
   }
-  return value;
+  let document;
+  try { document = selectionDocument(chosen); }
+  catch { throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.'); }
+  if (!acceptSelection(document)) throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.');
+  return chosen;
 }
 
 export function buildNamedOperation(name, args) {
@@ -78,7 +95,10 @@ function sliceDocumentContent(tools, offset, length) {
             const full = scanSecret(scrubbed, target.known) ? "[redacted secret]" : linearClean(scrubbed)[0];
             const total = full.length;
             const slice = length === undefined ? full.slice(offset) : full.slice(offset, offset + length);
-            return { ...data, document: { ...doc, content: slice, content_total: total, content_offset: offset } };
+            const next = { ...data, document: { ...doc, content: slice, content_total: total, content_offset: offset } };
+            const partial = data?.[linearFieldErrors];
+            if (partial) Object.defineProperty(next, linearFieldErrors, { value: partial, enumerable: false });
+            return next;
           }
           return data;
         };

@@ -585,6 +585,8 @@ Last inventory: Sat, Oct 10, 2026 3:39pm (CLUTCH).  **Added LaunchAgent `com.ja
 
 Last inventory: Fri, Nov 6, 2026 ~9:35am (GB-HOUSEKEEPER, AFC-512 Mac leg).  Confirmed live callers of retired Slack channel id `C0BEZDJDNKV`:  `com.jay.provider-knob-sync` is loaded every 30 min but its apply post already uses `simple-tools-fleet-post.sh` (Zulip);  `~/apps/cloud-runner-director.py --notify` was redirected to `simple-chat` Zulip (on-demand only, no schedule);  `~/apps/slack-sync.sh` remains on disk with that default channel id and is not itself scheduled.  Process-list rows for those three updated to match.  No processes killed; scripts not deleted.
 
+Last inventory: Fri, Nov 6, 2026 ~9:35am (GB-HOUSEKEEPER, AFC-512 Mac leg).  Confirmed live callers of retired Slack channel id `C0BEZDJDNKV`:  `com.jay.provider-knob-sync` is loaded every 30 min but its apply post already uses `simple-tools-fleet-post.sh` (Zulip);  `~/apps/cloud-runner-director.py --notify` was redirected to `simple-chat` Zulip (on-demand only, no schedule);  `~/apps/slack-sync.sh` remains on disk with that default channel id and is not itself scheduled.  Process-list rows for those three updated to match.  No processes killed; scripts not deleted.
+
 **pm2 `grok-leader`** is the shared Grok backend (`~/.grok/leader.sock`).  **pm2 `grok-acp`** is
 `127.0.0.1:12419` for new sessions started with `acp-client.py` (`--no-leader serve` — `--leader serve`
 does not bind).  Shellular Grok + new TUI join the leader.  List/load:

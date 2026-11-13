@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { verifyWake, wakeSignature, wakePathSeat, readBodyBytes, WAKE_MAX_BODY } from "../src/wake.js";
 import { classifyPath } from "../src/policy.js";
+import { SYNTHETIC_STREAM_ID } from "./helpers.mjs";
 
 const KEY = "k".repeat(64);
 const NOW = Date.UTC(2026, 9, 9, 15, 0, 0);
@@ -21,14 +22,14 @@ export function wakeBody(overrides = {}) {
     dm: false,
     channel: "work-in-progress",
     topic: "AFC Jet Zulip bridge",
-    stream_id: 642232,
+    stream_id: SYNTHETIC_STREAM_ID,
     dm_recipient_ids: [],
     sender_user_id: 1211974,
     sender_full_name: "Jay",
     is_bot: false,
     owner: true,
     excerpt: "<<<BEGIN nonce=abc\n@**Jet** hello\n>>>END nonce=abc",
-    zulip_link: "https://simplewithus.zulipchat.com/#narrow/channel/642232-work-in-progress/topic/x/near/4242",
+    zulip_link: `https://simplewithus.zulipchat.com/#narrow/channel/${SYNTHETIC_STREAM_ID}-work-in-progress/topic/x/near/4242`,
     reply_to: { type: "stream", channel: "work-in-progress", topic: "AFC Jet Zulip bridge" },
     reply_prefix: "[JET·wake] re=4242",
     sent_at: Math.floor(NOW / 1000),
@@ -89,16 +90,16 @@ test("stream_id is a positive safe integer or null, and may be absent (an older 
     const bytes = wakeBody(overrides);
     return verifyWake({ bytes, signature: pySig(KEY, bytes), key: KEY, seat: "JET", now: NOW });
   };
-  for (const ok of [642232, 1, Number.MAX_SAFE_INTEGER, null, undefined]) {
+  for (const ok of [SYNTHETIC_STREAM_ID, 1, Number.MAX_SAFE_INTEGER, null, undefined]) {
     assert.equal((await check({ stream_id: ok })).ok, true, String(ok));
   }
   const dm = await check({ dm: true, channel: null, topic: null, stream_id: null, reply_to: { type: "direct", to: [1211974] } });
   assert.equal(dm.ok, true);
-  for (const bad of ["642232", 642232.5, true, false, 0, -7, 2 ** 53, 1e300, [642232], { id: 642232 }]) {
+  for (const bad of [String(SYNTHETIC_STREAM_ID), SYNTHETIC_STREAM_ID + 0.5, true, false, 0, -7, 2 ** 53, 1e300, [SYNTHETIC_STREAM_ID], { id: SYNTHETIC_STREAM_ID }]) {
     assert.deepEqual(await check({ stream_id: bad }), { ok: false, status: 400, reason: "bad_stream_id" }, JSON.stringify(bad));
   }
   // A huge integer in the raw JSON parses to an unsafe number and is refused too.
-  const raw = new TextEncoder().encode(new TextDecoder().decode(wakeBody()).replace('"stream_id":642232', '"stream_id":123456789012345678901'));
+  const raw = new TextEncoder().encode(new TextDecoder().decode(wakeBody()).replace(`"stream_id":${SYNTHETIC_STREAM_ID}`, '"stream_id":123456789012345678901'));
   assert.equal((await verifyWake({ bytes: raw, signature: pySig(KEY, raw), key: KEY, seat: "JET", now: NOW })).reason, "bad_stream_id");
 });
 
@@ -118,9 +119,9 @@ function heldItem(overrides = {}) {
     dm: false,
     channel: "work-in-progress",
     topic: "budget",
-    stream_id: 642232,
+    stream_id: SYNTHETIC_STREAM_ID,
     sender_full_name: "Codex",
-    zulip_link: "https://simplewithus.zulipchat.com/#narrow/channel/642232-work-in-progress/topic/budget/near/4100",
+    zulip_link: `https://simplewithus.zulipchat.com/#narrow/channel/${SYNTHETIC_STREAM_ID}-work-in-progress/topic/budget/near/4100`,
     reason: "wakes_per_hour",
     at: Math.floor(NOW / 1000) - 600,
     ...overrides,
@@ -175,10 +176,10 @@ test("a malformed held_back is 400 bad_held_back", async () => {
     "message_id a string": { count: 1, items: [heldItem({ message_id: "4100" })] },
     "message_id unsafe": { count: 1, items: [heldItem({ message_id: 2 ** 53 })] },
     "dm a string": { count: 1, items: [heldItem({ dm: "false" })] },
-    "channel a number": { count: 1, items: [heldItem({ channel: 642232 })] },
+    "channel a number": { count: 1, items: [heldItem({ channel: SYNTHETIC_STREAM_ID })] },
     "topic missing": { count: 1, items: [heldItem({ topic: undefined })] },
     "stream_id 0": { count: 1, items: [heldItem({ stream_id: 0 })] },
-    "stream_id a string": { count: 1, items: [heldItem({ stream_id: "642232" })] },
+    "stream_id a string": { count: 1, items: [heldItem({ stream_id: String(SYNTHETIC_STREAM_ID) })] },
     "sender missing": { count: 1, items: [heldItem({ sender_full_name: undefined })] },
     "sender null": { count: 1, items: [heldItem({ sender_full_name: null })] },
     "link missing": { count: 1, items: [heldItem({ zulip_link: undefined })] },

@@ -19,7 +19,7 @@ from simple_tools import live as L
 from simple_tools import router as R
 from simple_tools import operator_post as OPV
 from simple_tools import zulip as Z
-from simple_tools.tests.listener_harness import OPERATOR_USER_ID
+from simple_tools.tests.listener_harness import OPERATOR_USER_ID, SYNTHETIC_STREAM_ID
 from simple_tools.tests.test_heldback import HeldBackRoutineTests, HeldMixin
 from simple_tools.tests.test_router import ctx as router_ctx
 from simple_tools.tests.test_router import lease as router_lease
@@ -51,7 +51,7 @@ class HeldAlertTests(HeldBackRoutineTests):
         """One held-back record for `seat`, as the budget refusals write it."""
         HELD.hold(L.SeatPaths(self.root, seat), [{"message_id": message_id, "reason": reason,
                                                   "at": self.clock.time(), "channel": "work-in-progress", "topic": "t",
-                                                  "stream_id": 642232, "sender_full_name": "Codex"}],
+                                                  "stream_id": SYNTHETIC_STREAM_ID, "sender_full_name": "Codex"}],
                   cap=kw.pop("cap", 200), overflow_cap=kw.pop("overflow_cap", 1000), now=self.clock.time())
 
     def hold_one(self, daemon, topic: str = "batch") -> None:
@@ -336,7 +336,7 @@ class HeldAlertTests(HeldBackRoutineTests):
     def test_every_hold_reason_is_named_with_its_count(self) -> None:
         daemon = self.alert_daemon()
         records = [{"message_id": 700 + n, "reason": reason, "at": self.clock.time(), "channel": "work-in-progress",
-                    "topic": "t", "stream_id": 642232, "sender_full_name": "Codex"}
+                    "topic": "t", "stream_id": SYNTHETIC_STREAM_ID, "sender_full_name": "Codex"}
                    for n, reason in enumerate(["wakes_per_day", "wakes_per_day", "usd_per_day", "overflow"])]
         HELD.hold(self.seat_paths(SEAT), records, cap=200, now=self.clock.time())
         self.step(daemon, 31)
@@ -526,7 +526,7 @@ class HeldAlertMultiSeatTests(HeldMixin, CloudSeatHarness):
     def hold_for(self, seat: str, message_id: int, reason: str = "wakes_per_day", **kw) -> None:
         HELD.hold(L.SeatPaths(self.root, seat), [{"message_id": message_id, "reason": reason,
                                                   "at": self.clock.time(), "channel": "work-in-progress", "topic": "t",
-                                                  "stream_id": 642232, "sender_full_name": "Codex"}],
+                                                  "stream_id": SYNTHETIC_STREAM_ID, "sender_full_name": "Codex"}],
                   cap=kw.pop("cap", 200), overflow_cap=kw.pop("overflow_cap", 1000), now=self.clock.time())
 
     def connected(self, daemon):
