@@ -241,6 +241,8 @@ TOOL_REQUIRED = frozenset(
         # Shared scoped client and direct command used by knobs, recall and other consumers.
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
+        # The direct command's writer requires the same retained intent ledger.
+        "scripts/simple_tools/operator_github_state.py",
         *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
