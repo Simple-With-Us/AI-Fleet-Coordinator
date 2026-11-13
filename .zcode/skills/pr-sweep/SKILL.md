@@ -5,7 +5,7 @@ description: Sweep the open PRs across the fleet repos and land them — invento
 
 # PR sweep (ZC)
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
 `pr-sweep` (`scripts/pr-sweep` in AI-Fleet-Coordinator, docs `docs/PR-SWEEP.md`) is the fleet's PR sweep for every platform.  The worker rules have ONE home, `scripts/pr_sweep/rules.md`, and `pr-sweep prompt` prints them filled in for a PR and your seat.  Never retype them into a chat or a script; print them.
