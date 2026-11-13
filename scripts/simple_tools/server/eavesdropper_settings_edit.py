@@ -76,7 +76,9 @@ from pathlib import Path
 TOOL = "eavesdropper-settings"
 SCHEMA_VERSION = 1
 CANONICAL_HOME = {
-    "key": "OPERATOR_SETTINGS", "environment": "prod", "folder": "/operator-settings",
+    "key": "OPERATOR_SETTINGS",
+    "environment": "prod",
+    "folder": "/operator-settings",
     "writer": "eavesdropper-settings save",
 }
 DEFAULT_LIVE = "/data/listener.toml"
@@ -273,7 +275,9 @@ def validate_allowlist(doc):
     refuses the whole allowlist:  a file that asks for one is wrong, and is not half trusted."""
     if not isinstance(doc, dict) or doc.get("schemaVersion") != SCHEMA_VERSION:
         raise Refusal("allowlist_invalid", "the allowlist needs schemaVersion %d" % SCHEMA_VERSION)
-    unknown = sorted(set(doc) - {"schemaVersion", "applyEnabled", "seat", "tables", "notes", "canonicalHome"})
+    unknown = sorted(
+        set(doc) - {"schemaVersion", "applyEnabled", "seat", "tables", "notes", "canonicalHome"}
+    )
     if unknown:
         raise Refusal(
             "allowlist_invalid", "the allowlist has unknown field(s): %s" % ", ".join(unknown)
@@ -1068,7 +1072,14 @@ def _status_path(environ=None):
     return os.path.join(root, "listener", "status.json")
 
 
-def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sleep=time.sleep, expected_revision=None):
+def daemon_reload(
+    live_path,
+    scripts_dir=None,
+    environ=None,
+    clock=time.time,
+    sleep=time.sleep,
+    expected_revision=None,
+):
     """Tell the Eavesdropper to re-read its config and read back what it made of it.
 
     `{"ok", "confirmed", "code"}`.  `ok` False with `reload_not_sent` when the SIGHUP could not be
@@ -1102,9 +1113,18 @@ def daemon_reload(live_path, scripts_dir=None, environ=None, clock=time.time, sl
                 if expected_revision is None:
                     return {"ok": True, "confirmed": True, "code": "reloaded"}
                 if document.get("operator_settings_revision") == expected_revision:
-                    return {"ok": True, "confirmed": True, "code": "reloaded", "revision": expected_revision}
+                    return {
+                        "ok": True,
+                        "confirmed": True,
+                        "code": "reloaded",
+                        "revision": expected_revision,
+                    }
         if clock() >= deadline:
-            return {"ok": True, "confirmed": False, "code": "reload_revision_mismatch" if expected_revision else "reload_unconfirmed"}
+            return {
+                "ok": True,
+                "confirmed": False,
+                "code": "reload_revision_mismatch" if expected_revision else "reload_unconfirmed",
+            }
         sleep(RELOAD_POLL_SECONDS)
 
 
@@ -1339,7 +1359,8 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
         if action not in ("get", "plan", "apply", "save", "initialize"):
             raise Refusal("usage", "the action is get, plan, apply, save or initialize")
         unknown = sorted(
-            set(request) - {"action", "allowlist", "set", "remove", "expectPlanSHA256", "expectBaseSHA256"}
+            set(request)
+            - {"action", "allowlist", "set", "remove", "expectPlanSHA256", "expectBaseSHA256"}
         )
         if unknown:
             raise Refusal("usage", "unknown request field(s): %s" % ", ".join(unknown))
@@ -1359,17 +1380,35 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                 if action == "get":
                     answer = operator_settings.get(live, allowlist)
                 elif action == "initialize":
-                    if request.get("set") or request.get("remove") or request.get("expectPlanSHA256") is not None:
-                        raise Refusal("usage", "initialize reads accepted settings; no supplied values are accepted")
+                    if (
+                        request.get("set")
+                        or request.get("remove")
+                        or request.get("expectPlanSHA256") is not None
+                    ):
+                        raise Refusal(
+                            "usage",
+                            "initialize reads accepted settings; no supplied values are accepted",
+                        )
                     answer = operator_settings.initialize(
-                        live, allowlist, request.get("expectBaseSHA256"), checker=checker,
+                        live,
+                        allowlist,
+                        request.get("expectBaseSHA256"),
+                        checker=checker,
                     )
                 else:
                     if request.get("expectPlanSHA256") is not None:
-                        raise Refusal("usage", "save accepts a typed patch, explicit removals and a canonical revision")
+                        raise Refusal(
+                            "usage",
+                            "save accepts a typed patch, explicit removals and a canonical revision",
+                        )
                     answer = operator_settings.save(
-                        live, allowlist, request.get("set"), request.get("expectBaseSHA256"),
-                        remove=request.get("remove"), checker=checker, reloader=reloader,
+                        live,
+                        allowlist,
+                        request.get("set"),
+                        request.get("expectBaseSHA256"),
+                        remove=request.get("remove"),
+                        checker=checker,
+                        reloader=reloader,
                     )
                 return answer, 0 if answer.get("ok") else 1
             except operator_settings.SettingsError as exc:
@@ -1377,19 +1416,32 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                 if exc.required_binding:
                     diagnostic["requiredBinding"] = exc.required_binding
                 return _answer(
-                    action, live, ok=False, result="failed", errorCode=exc.code,
-                    persisted=False, readback=False, runtimeApplied=False,
-                    detail=("Configure the required binding " + exc.required_binding) if exc.required_binding else
-                    "The canonical settings operation did not return a verified receipt",
+                    action,
+                    live,
+                    ok=False,
+                    result="failed",
+                    errorCode=exc.code,
+                    persisted=False,
+                    readback=False,
+                    runtimeApplied=False,
+                    detail=("Configure the required binding " + exc.required_binding)
+                    if exc.required_binding
+                    else "The canonical settings operation did not return a verified receipt",
                     **diagnostic,
                 ), 1
             except operator_settings.editor.Refusal as exc:
-                raise Refusal(exc.code, "The settings patch failed schema validation", check=exc.check) from None
+                raise Refusal(
+                    exc.code, "The settings patch failed schema validation", check=exc.check
+                ) from None
         if action == "get":
             answer = get(live, allowlist)
             answer.update(
-                source="runtime-copy", persisted=False, readback=False, runtimeApplied=False,
-                autosaveEnabled=False, revision=answer["baseSHA256"],
+                source="runtime-copy",
+                persisted=False,
+                readback=False,
+                runtimeApplied=False,
+                autosaveEnabled=False,
+                revision=answer["baseSHA256"],
             )
             return answer, 0
         if action == "plan":
