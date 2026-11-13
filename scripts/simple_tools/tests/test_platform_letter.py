@@ -2398,6 +2398,128 @@ class HookTests(Base):
         self.assertEqual(self.request("--bogus")[0], 2)
 
 
+class UnletteredRepairTests(Base):
+    """Chats that still show "??: " (an app-driven chat's hook never runs, so a letter lost between the assigner
+    and the note would stay lost):  a chat's start replays the start of each, at most once a window, the chat
+    itself is never a candidate, and nothing the pass does can fail the start."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.unlettered: list[str] = []
+        self.listed = 0
+        self.payloaded: list[str] = []
+
+        def unlettered_sessions(env):
+            self.listed += 1
+            return list(self.unlettered)
+
+        def chat_payload(sid):
+            self.payloaded.append(sid)
+            return {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid}
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=unlettered_sessions,
+            chat_payload=chat_payload,
+        )
+
+    def hook(
+        self,
+        payload: dict,
+        *,
+        env: dict | None = None,
+        spec: PL.PlatformSpec | None = None,
+        **flags,
+    ) -> dict | None:
+        out = io.StringIO()
+        env = env if env is not None else self.server_env()
+        code = PL.hook(
+            spec or self.spec, env, io.StringIO(json.dumps(payload)), out,
+            platform="linux", transport=Calls(self), **flags,
+        )
+        self.assertEqual(code, 0)
+        text = out.getvalue().strip()
+        return json.loads(text)["hookSpecificOutput"] if text else None
+
+    def start(self, sid: str, source: str = "startup", **extra) -> dict | None:
+        return self.hook(dict({"hook_event_name": "SessionStart", "session_id": sid, "source": source}, **extra))
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def label(self, sid: str) -> str:
+        return self.note(sid)["label"]
+
+    def note_path(self, sid: str) -> str:
+        return os.path.join(self.state, "CODEX", "letters", sid + ".json")
+
+    def test_a_chat_the_assigner_still_knows_resumes_its_own_letter(self) -> None:
+        # The register landed but the hook died before saving:  the assigner holds the letter, the host does not.
+        held = self.register("s-0100", title="Resolve CodeCaps PR 520 And 521", platform="faux", seat="CODEX")
+        self.unlettered.append("s-0100")
+        self.start("s-0001")
+        self.assertEqual(self.label("s-0100"), held["label"])
+        self.assertEqual(self.note("s-0100")["record_id"], held["record_id"])
+        self.assertEqual(self.lookup("s-0100", platform="faux")["label"], held["label"])
+
+    def test_a_chat_the_assigner_never_saw_registers(self) -> None:
+        self.unlettered.append("s-0101")
+        self.start("s-0001")
+        self.assertRegex(self.label("s-0101"), PAIR)
+        self.assertIsNotNone(self.lookup("s-0101", platform="faux"))
+
+    def test_the_pass_runs_at_most_once_a_window(self) -> None:
+        self.unlettered.extend(["s-0102", "s-0103"])
+        self.start("s-0001")
+        self.assertEqual(self.listed, 1)
+        self.start("s-0002")
+        self.assertEqual(self.listed, 1)  # still inside the window:  no second pass
+
+    def test_the_chat_whose_start_it_rides_on_is_never_a_candidate(self) -> None:
+        self.unlettered.append("s-0004")
+        self.start("s-0004")
+        self.assertNotIn("s-0004", self.payloaded)
+        self.assertRegex(self.label("s-0004"), PAIR)
+
+    def test_one_pass_repairs_at_most_REPAIR_MAX_CHATS(self) -> None:
+        self.unlettered.extend("s-9%03d" % n for n in range(PL.REPAIR_MAX_CHATS + 3))
+        self.start("s-0001")
+        asked = [sid for sid in self.unlettered if os.path.exists(self.note_path(sid))]
+        self.assertEqual(len(asked), PL.REPAIR_MAX_CHATS)
+
+    def test_an_adapter_that_raises_fails_no_start(self) -> None:
+        def boom(env):
+            raise RuntimeError("store locked")
+
+        spec = make_spec(
+            platform="faux2",
+            source="faux2-hook",
+            display="Faux2",
+            unlettered_sessions=boom,
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "session_id": sid},
+        )
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0005", "source": "startup"},
+                        spec=spec)
+        self.assertIsNotNone(out)
+        note = json.load(open(os.path.join(self.state, "CODEX", "letters", "s-0005.json")))
+        self.assertRegex(note["label"], PAIR)
+
+    def test_a_platform_with_no_adapter_surface_is_skipped(self) -> None:
+        done = PL.repair_unlettered(
+            make_spec(), self.server_env(), "CODEX", "server", now=time.time()
+        )
+        self.assertIn("skipped", done)
+
+    def test_the_pass_rides_a_start_without_touching_its_answer(self) -> None:
+        self.unlettered.append("s-0106")
+        out = self.start("s-0006")
+        # The rider's own answer names its own letter only:  the repaired chat's context goes nowhere.
+        self.assertNotIn("s-0106", json.dumps(out))
+
+
 class GoneReportTests(Base):
     """Chats that are gone for good (a platform's app archived them) release their letters:  a chat's start reports
     them to the assigner in one `report-gone` call per host and platform, at most once a window, and nothing it does
