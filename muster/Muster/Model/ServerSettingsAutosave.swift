@@ -266,7 +266,9 @@ struct ServerListenerSettingsSaver {
         let outer = candidates.compactMap { ServerSettingJSON.parse($0)?.tableEntries }
             .first { $0["eavesdropperSettings"]?.tableEntries != nil }
         let document = outer?["eavesdropperSettings"]?.tableEntries
-        let protocolOK = document?["schemaVersion"] == .int(1) && document?["tool"] == .text("eavesdropper-settings")
+        // Current shared receipts have no version field; a supplied incompatible version still refuses.
+        let versionOK = document?["schemaVersion"] == nil || document?["schemaVersion"] == .int(1)
+        let protocolOK = versionOK && document?["tool"] == .text("eavesdropper-settings")
             && answer.isWellFormed && answer.requestID == request.attempt.requestID
             && answer.action == (reconciling ? "reconcile" : "save")
             && (reconciling ? ["save", "cancelled"].contains(answer.operation ?? "")
