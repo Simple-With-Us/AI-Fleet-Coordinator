@@ -42,6 +42,9 @@ if __name__ == "__main__":
 import fleet_infisical as core
 from fleet_infisical import SecretsError, UsageError
 
+# The total named-response budget must not exceed the existing folder-response budget.
+MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
+
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
@@ -101,9 +104,13 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
 def _only_names(raw: object | None) -> list[str] | None:
     if raw is None:
         return None
-    names = [core.check_name(n.strip()) for n in str(raw).split(",") if n.strip()]
+    names = list(
+        dict.fromkeys(core.check_name(n.strip()) for n in str(raw).split(",") if n.strip())
+    )
     if not names:
         raise UsageError("--only needs at least one key name")
+    if len(names) > MAX_RUN_NAMES:
+        raise UsageError(f"--only accepts at most {MAX_RUN_NAMES} distinct key names")
     return names
 
 
@@ -281,6 +288,12 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
         return 0
     value = stdin.read(core.MAX_VALUE_BYTES + 1)
     value = value.removesuffix("\n")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError:
+        raise UsageError("set value must be UTF-8") from None
+    if size > core.MAX_VALUE_BYTES:
+        raise UsageError("set value exceeds the maximum size")
     if not value:
         raise UsageError("set reads the value from standard input and it was empty")
     try:
@@ -324,13 +337,16 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
                 f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
                 "variables are never injected);  read it with `get` if you really need the value"
             )
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
+    path = core.check_path(str(opts["path"]))
     if only is not None:
+        project = core.infisical_project_id(env, core.home_dir(env), core.DEFAULT_PROJECT)
+        secrets = core.fetch_project(project, path, env, names=tuple(only))
         for name in only:
             if name not in secrets:
                 raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
         chosen = {n: secrets[n] for n in only}
     else:
+        secrets = core.fetch_all(path, env)
         chosen = {n: v for n, v in secrets.items() if core.injectable(n)}
     core.reject_unresolved(chosen)
     child_env = {k: v for k, v in env.items() if k not in core.AUTH_ENV_VARS}
@@ -381,7 +397,13 @@ def doctor_report(
         secrets = core.fetch_all(path, env, primary_project)
         rep["fetch_names_ok"] = True
         rep["names_count"] = len(secrets)
-        rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.match(v))
+        rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.search(v))
+    except core.UnresolvedReferenceError as exc:
+        # The shared strict reader validated every row before refusing unresolved values.
+        rep["fetch_names_ok"] = True
+        rep["names_count"] = exc.names_count
+        rep["unresolved_reference_count"] = exc.unresolved_reference_count
+        rep["failure_reason"] = "unresolved-reference"
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
     # The unqualified legacy doctor also probes the read-only FleetLink folder.
