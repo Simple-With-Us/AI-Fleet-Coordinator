@@ -10,22 +10,51 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import stat
 import subprocess
 import sys
+from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 MODULES = (
-    "__init__", "app_tokens", "assertion", "audit", "deploy_entry_prep", "deploy_guard",
-    "deploy_host", "deploy_journal", "deploy_manifest", "deploy_proof", "deploy_recovery",
-    "deploy_runner", "deploy_supervisor", "deploy_transaction", "echo_review_read",
-    "fleet_admin_read", "git_read", "github_client", "mcp_server", "outcomes", "patch_policy",
-    "patch_secretscan", "policy", "policy_input", "provenance_patch", "provider_scan",
-    "reviewed_fixtures", "reviewed_preservation", "same_path_reuse", "seat_add_policy",
-    "secret_scan", "server", "shared_bearer", "typed_disarm", "typed_gateway", "workflow_verbs",
+    "__init__",
+    "app_tokens",
+    "assertion",
+    "audit",
+    "deploy_entry_prep",
+    "deploy_guard",
+    "deploy_host",
+    "deploy_journal",
+    "deploy_manifest",
+    "deploy_proof",
+    "deploy_recovery",
+    "deploy_runner",
+    "deploy_supervisor",
+    "deploy_transaction",
+    "echo_review_read",
+    "fleet_admin_read",
+    "git_read",
+    "github_client",
+    "mcp_server",
+    "outcomes",
+    "patch_policy",
+    "patch_secretscan",
+    "policy",
+    "policy_input",
+    "provenance_patch",
+    "provider_scan",
+    "reviewed_fixtures",
+    "reviewed_preservation",
+    "same_path_reuse",
+    "seat_add_policy",
+    "secret_scan",
+    "server",
+    "shared_bearer",
+    "typed_disarm",
+    "typed_gateway",
+    "workflow_verbs",
 )
 FILES = {"git-relay/bin/git-relay": "100755", "scripts/fleet_infisical.py": "100644"}
 FILES.update({f"git-relay/git_relay/{name}.py": "100644" for name in MODULES})
@@ -166,14 +195,20 @@ def build_runtime(commit: str, raw_destination: str | Path) -> dict:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print("usage: build-runtime.py FULL_SOURCE_COMMIT ABSOLUTE_NEW_DESTINATION", file=sys.stderr)
+        print(
+            "usage: build-runtime.py FULL_SOURCE_COMMIT ABSOLUTE_NEW_DESTINATION", file=sys.stderr
+        )
         return 2
     try:
         manifest = build_runtime(argv[0], argv[1])
     except (ArtifactError, OSError, ValueError, KeyError, UnicodeError):
         print("relay-runtime: code artifact preparation refused", file=sys.stderr)
         return 2
-    print(json.dumps({"sourceCommit": manifest["sourceCommit"], "codeFiles": len(FILES), "verified": True}))
+    print(
+        json.dumps(
+            {"sourceCommit": manifest["sourceCommit"], "codeFiles": len(FILES), "verified": True}
+        )
+    )
     return 0
 
 

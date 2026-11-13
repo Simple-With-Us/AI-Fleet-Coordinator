@@ -1201,7 +1201,9 @@ class TestAuditSecretHashing(unittest.TestCase):
         self.assertNotIn("note", row)
 
 
-def _named_secret_source(case, values=None, *, reader=None, calls=None, path="/github-apps", environ=None):
+def _named_secret_source(
+    case, values=None, *, reader=None, calls=None, path="/github-apps", environ=None
+):
     """Bind this adapter to the test's own protected synthetic reader token."""
     from git_relay.app_tokens import FleetSecretsSource
 
@@ -1228,7 +1230,9 @@ def _named_secret_source(case, values=None, *, reader=None, calls=None, path="/g
             return reader(project_id, folder, env, **kwargs)
         return {name: values[name] for name in kwargs["names"] if name in values}
 
-    return FleetSecretsSource(path=path, credential_file=str(credential), environ=source_env, reader=scoped_reader)
+    return FleetSecretsSource(
+        path=path, credential_file=str(credential), environ=source_env, reader=scoped_reader
+    )
 
 
 class TestFleetSecretsSource(unittest.TestCase):
@@ -1252,7 +1256,9 @@ class TestFleetSecretsSource(unittest.TestCase):
         self._source({"GH_APP_SWU_ECHO_ID": "v"}, calls=calls).secret("GH_APP_SWU_ECHO_ID")
         self.assertEqual(calls[0][1], "/github-apps")
         calls.clear()
-        self._source({"GH_APP_SWU_ECHO_ID": "v"}, calls=calls, path="/ghr").secret("GH_APP_SWU_ECHO_ID")
+        self._source({"GH_APP_SWU_ECHO_ID": "v"}, calls=calls, path="/ghr").secret(
+            "GH_APP_SWU_ECHO_ID"
+        )
         self.assertEqual(calls[0][1], "/ghr")
         with self.assertRaises(AppTokenError):
             FleetSecretsSource(path="github-apps")
@@ -1261,11 +1267,16 @@ class TestFleetSecretsSource(unittest.TestCase):
         calls = []
         environ = {
             "INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4()),
-            "GH_APP_SWU_ECHO_ID": "from-env", "INFISICAL_TOKEN": "ambient-must-not-leak",
-            "HOME": "/untrusted-home", "GIT_RELAY_SEATS_JSON": "co-located-must-not-leak",
+            "GH_APP_SWU_ECHO_ID": "from-env",
+            "INFISICAL_TOKEN": "ambient-must-not-leak",
+            "HOME": "/untrusted-home",
+            "GIT_RELAY_SEATS_JSON": "co-located-must-not-leak",
         }
         source = self._source({"GH_APP_SWU_ECHO_ID": "from-reader\n"}, calls=calls, environ=environ)
-        with unittest.mock.patch("git_relay.app_tokens.subprocess.run", side_effect=AssertionError("no application subprocess")):
+        with unittest.mock.patch(
+            "git_relay.app_tokens.subprocess.run",
+            side_effect=AssertionError("no application subprocess"),
+        ):
             self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "from-reader")
         self.assertEqual(len(calls), 1)
         self.assertEqual(set(calls[0][2]), {"INFISICAL_ENVIRONMENT", "INFISICAL_READ_PATHS"})
@@ -1276,12 +1287,18 @@ class TestFleetSecretsSource(unittest.TestCase):
 
         with self.assertRaises(AppTokenError) as ctx:
             self._source().secret("GH_APP_SWU_ECHO_PRIVATE_KEY")
-        self.assertEqual(str(ctx.exception), "Infisical has no value for GH_APP_SWU_ECHO_PRIVATE_KEY")
+        self.assertEqual(
+            str(ctx.exception), "Infisical has no value for GH_APP_SWU_ECHO_PRIVATE_KEY"
+        )
 
     def test_timeout_and_reader_failure_are_fixed_named_errors(self):
         from git_relay.app_tokens import AppTokenError
 
-        for failure, message in ((TimeoutError("SENTINEL_UPSTREAM"), "timed out"), (OSError("SENTINEL_UPSTREAM"), "failed")):
+        for failure, message in (
+            (TimeoutError("SENTINEL_UPSTREAM"), "timed out"),
+            (OSError("SENTINEL_UPSTREAM"), "failed"),
+        ):
+
             def broken(*args, **kwargs):
                 raise failure
 
@@ -1340,6 +1357,7 @@ class TestFleetSecretsSource(unittest.TestCase):
         from git_relay.app_tokens import AppTokenError
 
         calls = []
+
         def transient(*args, **kwargs):
             if len(calls) == 1:
                 raise OSError("backend detail")
@@ -1360,14 +1378,23 @@ class TestFleetSecretsSource(unittest.TestCase):
             source = self._source(reader=lambda *a, **k: values, calls=calls)
             with self.assertRaises(AppTokenError) as ctx:
                 source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
-            self.assertEqual(str(ctx.exception), "Infisical returned unreadable output for GH_APP_X_ID")
+            self.assertEqual(
+                str(ctx.exception), "Infisical returned unreadable output for GH_APP_X_ID"
+            )
             self.assertNotIn("SENTINEL_OUT", str(ctx.exception))
             self.assertEqual(len(calls), 1)
 
     def test_path_guard_preserves_exact_folder_rules(self):
         from git_relay.app_tokens import AppTokenError, FleetSecretsSource
 
-        for bad in ("github-apps", "", "/github apps", "/github-apps/../linear", "/github-apps/..", "/github-apps\n"):
+        for bad in (
+            "github-apps",
+            "",
+            "/github apps",
+            "/github-apps/../linear",
+            "/github-apps/..",
+            "/github-apps\n",
+        ):
             with self.assertRaises(AppTokenError, msg=bad):
                 FleetSecretsSource(path=bad)
         FleetSecretsSource(path="/github-apps")
@@ -2738,7 +2765,9 @@ class TestOwnerTokenFromCli(unittest.TestCase):
 class TestVerifiedSecret(unittest.TestCase):
     def test_uses_named_reader_at_the_source_folder(self):
         calls = []
-        source = _named_secret_source(self, {"GITHUB_TOKEN": "v\n"}, calls=calls, path="/git-relay-owner")
+        source = _named_secret_source(
+            self, {"GITHUB_TOKEN": "v\n"}, calls=calls, path="/git-relay-owner"
+        )
         self.assertEqual(source.verified_secret("GITHUB_TOKEN"), "v")
         self.assertEqual(calls[0][1], "/git-relay-owner")
         self.assertEqual(calls[0][3]["names"], ("GITHUB_TOKEN",))
@@ -2760,6 +2789,7 @@ class TestVerifiedSecret(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
         calls = []
+
         def broken(*args, **kwargs):
             raise OSError("backend detail")
 
@@ -2780,22 +2810,32 @@ class TestVerifiedSecret(unittest.TestCase):
     def test_credential_file_scopes_reader_inputs(self):
         calls = []
         environ = {
-            "PATH": "/usr/bin", "HOME": "/home/x",
+            "PATH": "/usr/bin",
+            "HOME": "/home/x",
             "INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4()),
             "INFISICAL_TOKEN": "ambient-must-not-leak",
             "GIT_RELAY_SEATS_JSON": "co-located-must-not-leak",
         }
-        source = _named_secret_source(self, {"GITHUB_TOKEN": "v"}, calls=calls, path="/git-relay-owner", environ=environ)
+        source = _named_secret_source(
+            self, {"GITHUB_TOKEN": "v"}, calls=calls, path="/git-relay-owner", environ=environ
+        )
         source.verified_secret("GITHUB_TOKEN")
-        self.assertEqual(calls[0][2], {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/git-relay-owner"})
+        self.assertEqual(
+            calls[0][2],
+            {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/git-relay-owner"},
+        )
         self.assertNotEqual(calls[0][3]["token"], environ["INFISICAL_TOKEN"])
 
     def test_unreadable_credential_file_fails_closed_before_reader(self):
         from git_relay.app_tokens import AppTokenError, FleetSecretsSource
 
         reader = unittest.mock.Mock(side_effect=AssertionError("reader must not run"))
-        source = FleetSecretsSource(reader=reader, path="/git-relay-owner", credential_file="/nonexistent/credential",
-                                    environ={"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())})
+        source = FleetSecretsSource(
+            reader=reader,
+            path="/git-relay-owner",
+            credential_file="/nonexistent/credential",
+            environ={"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())},
+        )
         with self.assertRaises(AppTokenError) as ctx:
             source.verified_secret("GITHUB_TOKEN")
         self.assertIn("credential file unreadable", str(ctx.exception))
@@ -2803,10 +2843,14 @@ class TestVerifiedSecret(unittest.TestCase):
 
     def test_scoped_inputs_apply_to_app_key_reads_too(self):
         calls = []
-        source = _named_secret_source(self, {"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"}, calls=calls)
+        source = _named_secret_source(
+            self, {"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"}, calls=calls
+        )
         source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
         self.assertEqual(calls[0][3]["names"], ("GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"))
-        self.assertEqual(calls[0][2], {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/github-apps"})
+        self.assertEqual(
+            calls[0][2], {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/github-apps"}
+        )
 
 
 class TestProductionCredentialBinding(unittest.TestCase):

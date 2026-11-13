@@ -6,19 +6,21 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import secrets
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 import uuid
+from pathlib import Path
+from unittest import mock
 
 from git_relay import app_tokens
 
 ROOT = Path(__file__).resolve().parents[3]
-spec = importlib.util.spec_from_file_location("relay_runtime_builder", ROOT / "git-relay/build-runtime.py")
+spec = importlib.util.spec_from_file_location(
+    "relay_runtime_builder", ROOT / "git-relay/build-runtime.py"
+)
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 
@@ -45,14 +47,23 @@ class ArtifactTests(unittest.TestCase):
         self.addCleanup(self.selected.stop)
 
     def git(self, *args):
-        return subprocess.check_output(
-            ["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL
-        ).decode().strip()
+        return (
+            subprocess.check_output(["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL)
+            .decode()
+            .strip()
+        )
 
     def commit_source(self):
         self.git("add", "-A")
-        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                 "commit", "-qm", "Public artifact fixture")
+        self.git(
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Public artifact fixture",
+        )
         return self.git("rev-parse", "HEAD")
 
     def test_immutable_finite_inventory_ignores_working_changes_and_unselected_data(self):
@@ -62,10 +73,16 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(set(manifest["files"]), set(builder.FILES))
         self.assertEqual(len(manifest["files"]), 38)
         self.assertEqual(manifest["sourceCommit"], self.commit)
-        self.assertEqual((destination / "scripts/fleet_infisical.py").read_text(), "# Public fixture code\n")
+        self.assertEqual(
+            (destination / "scripts/fleet_infisical.py").read_text(), "# Public fixture code\n"
+        )
         self.assertFalse((destination / "git-relay/deploy").exists())
-        self.assertEqual(set(p.relative_to(destination).as_posix() for p in destination.rglob("*")
-                             if p.is_file()), set(builder.FILES) | {builder.MANIFEST})
+        self.assertEqual(
+            set(
+                p.relative_to(destination).as_posix() for p in destination.rglob("*") if p.is_file()
+            ),
+            set(builder.FILES) | {builder.MANIFEST},
+        )
         builder.verify_artifact(destination, manifest)
 
     def test_requires_a_full_immutable_commit(self):
@@ -99,8 +116,16 @@ class ArtifactTests(unittest.TestCase):
         marker.write_text("keep")
         link = self.root / "link"
         link.symlink_to(present, target_is_directory=True)
-        for destination in (present, "relative-artifact", str(self.root / "present/../new"), link / "new"):
-            with self.subTest(destination=str(destination)), self.assertRaises(builder.ArtifactError):
+        for destination in (
+            present,
+            "relative-artifact",
+            str(self.root / "present/../new"),
+            link / "new",
+        ):
+            with (
+                self.subTest(destination=str(destination)),
+                self.assertRaises(builder.ArtifactError),
+            ):
                 builder.build_runtime(self.commit, destination)
         self.assertEqual(marker.read_text(), "keep")
         self.assertFalse((present / "new").exists())
@@ -132,22 +157,34 @@ class SourceImportBoundaryTests(unittest.TestCase):
         self.token_file.write_text("st." + secrets.token_urlsafe(32))
         self.token_file.chmod(0o600)
         self.source = app_tokens.FleetSecretsSource(
-            credential_file=str(self.token_file), environ={"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())}
+            credential_file=str(self.token_file),
+            environ={"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())},
         )
 
     def test_default_source_pins_the_code_before_opening_or_passing_its_token(self):
         order = []
+
         def read(*args, **kwargs):
             order.append("read")
             return {"WANTED": "public fixture"}
+
         def load():
             order.append("code")
-            return mock.Mock(bounded_fetch_project=read, infisical_project_id=lambda env, home: env["INFISICAL_FLEET_OPS_PROJECT_ID"])
+            return mock.Mock(
+                bounded_fetch_project=read,
+                infisical_project_id=lambda env, home: env["INFISICAL_FLEET_OPS_PROJECT_ID"],
+            )
+
         original = self.source._token
+
         def token():
             order.append("binding")
             return original()
-        with mock.patch.object(app_tokens, "_shared_client", side_effect=load), mock.patch.object(self.source, "_token", side_effect=token):
+
+        with (
+            mock.patch.object(app_tokens, "_shared_client", side_effect=load),
+            mock.patch.object(self.source, "_token", side_effect=token),
+        ):
             self.assertEqual(self.source.secret("WANTED"), "public fixture")
         self.assertEqual(order, ["code", "binding", "read"])
 
@@ -155,7 +192,10 @@ class SourceImportBoundaryTests(unittest.TestCase):
         self.source._environ = {"INFISICAL_FLEET_OPS_PROJECT_ID": "invalid-project-marker"}
         reader = mock.Mock()
         self.source._reader = reader
-        with mock.patch.object(self.source, "_token") as token, mock.patch.object(Path, "read_text", side_effect=AssertionError("project-file lookup")):
+        with (
+            mock.patch.object(self.source, "_token") as token,
+            mock.patch.object(Path, "read_text", side_effect=AssertionError("project-file lookup")),
+        ):
             with self.assertRaisesRegex(app_tokens.AppTokenError, "must be a UUID") as raised:
                 self.source.secret("WANTED")
         self.assertNotIn("invalid-project-marker", str(raised.exception))
@@ -171,16 +211,29 @@ class SourceImportBoundaryTests(unittest.TestCase):
                 scripts = self.root / "scripts"
                 scripts.mkdir()
                 (scripts / "fleet_infisical.py").symlink_to(ROOT / "scripts/fleet_infisical.py")
-            with self.subTest(linked=linked), mock.patch.object(app_tokens, "__file__", str(origin)), mock.patch.object(app_tokens, "_CLIENT_CACHE", None), mock.patch.object(self.source, "_token") as token:
-                with self.assertRaisesRegex(app_tokens.AppTokenError, "canonical Infisical reader unavailable"):
+            with (
+                self.subTest(linked=linked),
+                mock.patch.object(app_tokens, "__file__", str(origin)),
+                mock.patch.object(app_tokens, "_CLIENT_CACHE", None),
+                mock.patch.object(self.source, "_token") as token,
+            ):
+                with self.assertRaisesRegex(
+                    app_tokens.AppTokenError, "canonical Infisical reader unavailable"
+                ):
                     self.source.secret("WANTED")
                 token.assert_not_called()
 
     def test_private_handle_ignores_foreign_canonical_and_private_module_cache(self):
         import types
+
         foreign = types.ModuleType("fleet_infisical")
         foreign.bounded_fetch_project = mock.Mock(side_effect=AssertionError("foreign code"))
-        with mock.patch.dict(sys.modules, {"fleet_infisical": foreign, app_tokens._CLIENT_NAME: foreign}), mock.patch.object(app_tokens, "_CLIENT_CACHE", None):
+        with (
+            mock.patch.dict(
+                sys.modules, {"fleet_infisical": foreign, app_tokens._CLIENT_NAME: foreign}
+            ),
+            mock.patch.object(app_tokens, "_CLIENT_CACHE", None),
+        ):
             client = app_tokens._shared_client()
             self.assertIsNot(client, foreign)
             self.assertEqual(Path(client.__file__), ROOT / "scripts/fleet_infisical.py")
@@ -194,8 +247,14 @@ class SourceImportBoundaryTests(unittest.TestCase):
         origin.parent.mkdir(parents=True)
         origin.write_text("# Public fixture origin\n")
         (self.root / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
-        with mock.patch.object(app_tokens, "__file__", str(origin)), mock.patch.object(app_tokens, "_CLIENT_CACHE", None), mock.patch.object(self.source, "_token") as token:
-            with self.assertRaisesRegex(app_tokens.AppTokenError, "canonical Infisical reader unavailable"):
+        with (
+            mock.patch.object(app_tokens, "__file__", str(origin)),
+            mock.patch.object(app_tokens, "_CLIENT_CACHE", None),
+            mock.patch.object(self.source, "_token") as token,
+        ):
+            with self.assertRaisesRegex(
+                app_tokens.AppTokenError, "canonical Infisical reader unavailable"
+            ):
                 self.source.secret("WANTED")
             token.assert_not_called()
 
@@ -207,22 +266,31 @@ class SourceImportBoundaryTests(unittest.TestCase):
             elif problem == "fifo":
                 os.mkfifo(binding, 0o600)
             else:
-                binding.write_bytes({"oversize": b"x" * 8195, "encoding": b"\xff", "empty": b""}.get(problem, b"public fixture"))
+                binding.write_bytes(
+                    {"oversize": b"x" * 8195, "encoding": b"\xff", "empty": b""}.get(
+                        problem, b"public fixture"
+                    )
+                )
                 binding.chmod(0o644 if problem == "mode" else 0o600)
             reader = mock.Mock()
             source = app_tokens.FleetSecretsSource(
                 credential_file=str(binding), environ=self.source._environ, reader=reader
             )
-            with self.subTest(problem=problem), self.assertRaises(app_tokens.AppTokenError) as raised:
+            with (
+                self.subTest(problem=problem),
+                self.assertRaises(app_tokens.AppTokenError) as raised,
+            ):
                 source.secret("WANTED")
             self.assertNotIn("public fixture", str(raised.exception))
             reader.assert_not_called()
 
     def test_own_file_rotation_applies_only_to_uncached_named_reads(self):
         seen = []
+
         def read(project, path, env, *, token, names, **options):
             seen.append(token)
             return {name: "public fixture" for name in names}
+
         self.source._reader = read
         before = self.token_file.read_text()
         self.source.secret("CACHED")
@@ -237,7 +305,9 @@ class CopiedReaderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Build Git objects, never the working tree or an installed service's configuration.
-        cls.commit = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        cls.commit = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True
+        ).strip()
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temporary.name)
         cls.payload = cls.root / "payload"
@@ -256,20 +326,29 @@ class CopiedReaderTests(unittest.TestCase):
 
     def test_payload_contains_exact_canonical_source_without_app_or_writer_ledger(self):
         path = "scripts/fleet_infisical.py"
-        expected = subprocess.check_output(["git", "-C", str(ROOT), "show", self.commit + ":" + path])
+        expected = subprocess.check_output(
+            ["git", "-C", str(ROOT), "show", self.commit + ":" + path]
+        )
         self.assertEqual((self.payload / path).read_bytes(), expected)
-        self.assertEqual(hashlib.sha256(expected).hexdigest(), self.manifest["files"][path]["sha256"])
+        self.assertEqual(
+            hashlib.sha256(expected).hexdigest(), self.manifest["files"][path]["sha256"]
+        )
         self.assertFalse((self.payload / "scripts/fleet_secrets").exists())
         self.assertFalse((self.payload / "scripts/simple_tools/operator_github_state.py").exists())
-        result = subprocess.run([sys.executable, "-I", "-B", str(self.payload / "git-relay/bin/git-relay"), "help"],
-                                env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", str(self.payload / "git-relay/bin/git-relay"), "help"],
+            env={"PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def read_payload(self, api, path, names, *, expect_failure=False):
         token_file = self.root / ("binding-" + uuid.uuid4().hex)
         token_file.write_text(api.token + "\n")
         token_file.chmod(0o600)
-        script = r'''
+        script = r"""
 import importlib, json, pathlib, sys, types
 root, binding, project, folder, endpoint = sys.argv[1:]
 sys.path.insert(0, str(pathlib.Path(root) / "git-relay"))
@@ -307,16 +386,36 @@ except app_tokens.AppTokenError as error:
     assert "lookup failed" in str(error)
     assert not source._cache and not source._missing
 print(json.dumps({"ok": True, "reads": len(calls)}))
-'''
+"""
         hostile = self.root / ("hostile-" + uuid.uuid4().hex)
         hostile.mkdir()
-        (hostile / "fleet_infisical.py").write_text("raise AssertionError('ambient module executed')\n")
+        (hostile / "fleet_infisical.py").write_text(
+            "raise AssertionError('ambient module executed')\n"
+        )
         result = subprocess.run(
-            [sys.executable, "-I", "-B", "-c", script, str(self.payload), str(token_file), api.project,
-             path, api.env["FLEET_SECRETS_API"]],
-            input=json.dumps({"names": names, "expected": {n: api.values[n].strip() for n in names},
-                              "expect_failure": expect_failure}),
-            text=True, capture_output=True, timeout=10, cwd=hostile,
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                script,
+                str(self.payload),
+                str(token_file),
+                api.project,
+                path,
+                api.env["FLEET_SECRETS_API"],
+            ],
+            input=json.dumps(
+                {
+                    "names": names,
+                    "expected": {n: api.values[n].strip() for n in names},
+                    "expect_failure": expect_failure,
+                }
+            ),
+            text=True,
+            capture_output=True,
+            timeout=10,
+            cwd=hostile,
             env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(hostile)},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -324,11 +423,17 @@ print(json.dumps({"ok": True, "reads": len(calls)}))
 
     def test_each_existing_purpose_crosses_real_worker_with_own_exact_scope(self):
         for path, values in (
-            ("/github-apps", {"GH_APP_FIXTURE_ID": "42", "GH_APP_FIXTURE_PRIVATE_KEY": "public fixture"}),
+            (
+                "/github-apps",
+                {"GH_APP_FIXTURE_ID": "42", "GH_APP_FIXTURE_PRIVATE_KEY": "public fixture"},
+            ),
             ("/tools", {"GR_BEARER_VERIFY_KEY": secrets.token_urlsafe(32)}),
             ("/git-relay-owner", {"GITHUB_TOKEN": secrets.token_urlsafe(32)}),
         ):
-            with self.subTest(path=path), self.API(values, project=str(uuid.uuid4()), path=path) as api:
+            with (
+                self.subTest(path=path),
+                self.API(values, project=str(uuid.uuid4()), path=path) as api,
+            ):
                 self.read_payload(api, path, list(values))
                 self.assertEqual(len(api.requests), 1 + len(values))
                 self.assertTrue(all("/raw?" not in request for request in api.requests))
@@ -340,11 +445,19 @@ print(json.dumps({"ok": True, "reads": len(calls)}))
             {"workspace": str(uuid.uuid4())},
             {"scopes": [{"environment": "prod", "secretPath": "/tools"}]},
             {"scopes": [{"environment": "dev", "secretPath": "/github-apps"}]},
-            {"scopes": [{"environment": "prod", "secretPath": "/github-apps"},
-                        {"environment": "prod", "secretPath": "/tools"}]},
+            {
+                "scopes": [
+                    {"environment": "prod", "secretPath": "/github-apps"},
+                    {"environment": "prod", "secretPath": "/tools"},
+                ]
+            },
         ):
-            with self.subTest(metadata=metadata), self.API({"WANTED": "public fixture"},
-                                                         project=str(uuid.uuid4()), path="/github-apps") as api:
+            with (
+                self.subTest(metadata=metadata),
+                self.API(
+                    {"WANTED": "public fixture"}, project=str(uuid.uuid4()), path="/github-apps"
+                ) as api,
+            ):
                 api.metadata_override = metadata
                 self.read_payload(api, "/github-apps", ["WANTED"], expect_failure=True)
                 self.assertEqual(api.requests, ["/api/v2/service-token"])
