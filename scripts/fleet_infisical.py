@@ -415,13 +415,14 @@ def validate_service_metadata(
     if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
         raise SecretsError("token-scope-mismatch")
     expiry = metadata.get("expiresAt")
-    if expiry is not None:
-        try:
-            parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-            if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
-                raise ValueError()
-        except (ValueError, TypeError, AttributeError):
-            raise SecretsError("token-expired-or-invalid") from None
+    try:
+        if not isinstance(expiry, str):
+            raise ValueError()
+        parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise SecretsError("token-expired-or-invalid") from None
 
 
 def check_service_token(token: str) -> str:
