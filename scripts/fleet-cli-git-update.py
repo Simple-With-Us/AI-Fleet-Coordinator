@@ -434,7 +434,12 @@ def main(argv: list[str] | None = None) -> int:
     # pass;  a failure here never fails the update.
     try:
         subprocess.run(
-            [str(args.home / ".local" / "bin" / "platform-letter"), "repair", "--location", "server"],
+            [
+                str(args.home / ".local" / "bin" / "platform-letter"),
+                "repair",
+                "--location",
+                "server",
+            ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=90,
