@@ -43,7 +43,7 @@ import {
 import * as state from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { ChannelSet } from "../src/channels.js";
-import { testEnv } from "./helpers.mjs";
+import { testEnv, SYNTHETIC_STREAM_ID } from "./helpers.mjs";
 
 const SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 const SECRET2 = `whsec_${Buffer.alloc(32, 9).toString("base64")}`;
@@ -52,7 +52,7 @@ const config = loadConfig(testEnv());
 // The seat's channels as src/channels.js reads them from users/me/subscriptions:
 // three public streams and one private one (secret-plans) the bot is also in.
 const SUBSCRIPTIONS = [
-  { stream_id: 642232, name: "work-in-progress", invite_only: false },
+  { stream_id: SYNTHETIC_STREAM_ID, name: "work-in-progress", invite_only: false },
   { stream_id: 642167, name: "sandbox", invite_only: false },
   { stream_id: 700001, name: "design", invite_only: false },
   { stream_id: 999001, name: "secret-plans", invite_only: true },
@@ -79,7 +79,7 @@ function wake(overrides = {}) {
     dm: false,
     channel: "work-in-progress",
     topic: "t",
-    stream_id: 642232,
+    stream_id: SYNTHETIC_STREAM_ID,
     sender_full_name: "Jay",
     sender_user_id: 1211974,
     is_bot: false,
@@ -241,7 +241,7 @@ test("a channel filter resolves the name to its current stream id and matches th
   const sandbox = (over) => wake({ channel: "sandbox", reply_to: { type: "stream", channel: "sandbox", topic: "t" }, stream_id: 642167, ...over });
   assert.ok(wakeMatches({ channel: "sandbox" }, sandbox(), allowed));
   // The name says sandbox but the id is work-in-progress's (or another stream's, or missing):  no match.
-  assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 642232 }), allowed));
+  assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: SYNTHETIC_STREAM_ID }), allowed));
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 999001 }), allowed));
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: undefined }), allowed));
   // The id decides, not the eavesdropper's display name.
@@ -263,7 +263,7 @@ test("a channel wake needs a stream the seat may use;  a DM needs none and carri
   assert.equal(wakeChannelRefusal(wake(), null), "no_channel_set", "no set (no key, refused bot) refuses every channel wake");
   assert.equal(wakeChannelRefusal(wake({ stream_id: undefined }), allowed), "no_stream_id", "an older eavesdropper's body fails closed");
   assert.equal(wakeChannelRefusal(wake({ stream_id: null }), allowed), "no_stream_id");
-  assert.equal(wakeChannelRefusal(wake({ stream_id: "642232" }), allowed), "no_stream_id");
+  assert.equal(wakeChannelRefusal(wake({ stream_id: String(SYNTHETIC_STREAM_ID) }), allowed), "no_stream_id");
   // dm alone is not enough:  a stream reply_to makes it a channel wake.
   assert.equal(wakeChannelRefusal(wake({ dm: true, stream_id: undefined }), allowed), "no_stream_id");
   const fenced = "<<<BEGIN nonce=ab\nsecret plans\n>>>END nonce=ab";
@@ -298,9 +298,9 @@ function heldItem(overrides = {}) {
     dm: false,
     channel: "work-in-progress",
     topic: "budget",
-    stream_id: 642232,
+    stream_id: SYNTHETIC_STREAM_ID,
     sender_full_name: "Codex",
-    zulip_link: "https://simplewithus.zulipchat.com/#narrow/channel/642232-work-in-progress/topic/budget/near/70",
+    zulip_link: `https://simplewithus.zulipchat.com/#narrow/channel/${SYNTHETIC_STREAM_ID}-work-in-progress/topic/budget/near/70`,
     reason: "wakes_per_hour",
     at: 1_790_000_000,
     ...overrides,

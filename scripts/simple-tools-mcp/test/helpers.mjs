@@ -114,3 +114,5 @@ export function browserPostOrigin({ policy, document = ISSUER, target = ISSUER }
 
 /** A gbBearerCheck answer without its expires_at, for pins on the other fields. */
 export const withoutExpiry = ({ expires_at: _expiresAt, ...rest }) => rest;
+
+export const SYNTHETIC_STREAM_ID = 900642;
