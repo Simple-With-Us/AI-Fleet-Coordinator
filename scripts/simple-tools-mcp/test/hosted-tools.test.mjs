@@ -185,7 +185,7 @@ test("fixtures:  mentions (user mentions and wildcards kept, groups removed), an
     assert.equal(fake.messages.at(-1).content, `[GROK-WEB] ${c.expect}`, c.case);
   }
   structured(await tools.call("zulip_post", { channel: "sandbox", topic: "to", text: "please look", to: ["codex"] }), "zulip_post");
-  assert.equal(fake.messages.at(-1).content, "[GROK-WEB→CODEX] @**Codex** please look");
+  assert.equal(fake.messages.at(-1).content, "[GROK-WEB → CODEX] @**Codex** please look");
   const before = fake.requestsTo("POST", "messages").length;
   const error = toolError(await tools.call("zulip_post", { channel: "sandbox", topic: "to", text: "x", to: ["Codex", "Nobody At All"] }), "invalid_argument");
   assert.match(error.message, /to\[1\]/);
