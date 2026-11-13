@@ -2585,7 +2585,9 @@ class Tools:
 
     def _tool_peer_actions_log(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if getattr(self, "known", None) is None:
-            raise ToolError("not_configured", "peer-actions credential scan list Tools.known is not configured")
+            raise ToolError(
+                "not_configured", "peer-actions credential scan list Tools.known is not configured"
+            )
         acting = args.get("acting_seat") or self.seat
         entry = PEER_ACTIONS.build_entry(
             acting_seat=acting,
