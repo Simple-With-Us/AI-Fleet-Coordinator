@@ -929,9 +929,9 @@ enum ServerSettingsCopy {
 
     /// A typed value with a credential's shape is never sent.  The sentence names the row and
     /// never the value or any part of it.
-    static func credentialShaped(_ field: String) -> String {
+    static func credentialShaped(_ field: String, verifiedFields: Set<String> = []) -> String {
         ServerSettingsValidationProblem(code: "secret_refused", field: field,
-                                        reason: "looks like a credential; the edit was not sent.").sentence
+                                        reason: "looks like a credential; the edit was not sent.", verifiedFields: verifiedFields).sentence
     }
 
     /// An edit whose row is not among the settings last read, so it is never sent or dropped quietly.
@@ -1153,8 +1153,10 @@ enum ServerSettingsBuilder {
     /// The value a field's text stands for, by the row's control, or a sentence saying why not.
     static func value(_ text: String, for row: ServerSettingRow) -> Result<ServerSettingValue, EditProblem> {
         guard let control = row.control else { return .failure(.readOnly(row.title)) }
+        let verified = diagnosticFields(rows: [row])
         func invalid(_ reason: String) -> Result<ServerSettingValue, EditProblem> {
-            .failure(.notAValue(ServerSettingsValidationProblem(code: "invalid_settings", field: row.id, reason: reason).sentence))
+            .failure(.notAValue(ServerSettingsValidationProblem(code: "invalid_settings", field: row.id, reason: reason,
+                                                               verifiedFields: verified).sentence))
         }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         // Parse typed containers before scanning their leaves; only verified routine-name choices
@@ -1166,7 +1168,7 @@ enum ServerSettingsBuilder {
         let structuredPairs: Bool
         if case .pairs = control { structuredPairs = true } else { structuredPairs = false }
         guard reference || structuredPairs || !looksLikeCredential(trimmed) else {
-            return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.id)))
+            return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.id, verifiedFields: verified)))
         }
         switch control {
         case .toggle:
@@ -1202,7 +1204,7 @@ enum ServerSettingsBuilder {
                 }
                 for (fieldIndex, field) in fields.enumerated() {
                     if case .text(let value) = field, looksLikeCredential(value) {
-                        return .failure(.notAValue(ServerSettingsCopy.credentialShaped("\(row.id)[\(pairIndex)][\(fieldIndex)]")))
+                        return .failure(.notAValue(ServerSettingsCopy.credentialShaped("\(row.id)[\(pairIndex)][\(fieldIndex)]", verifiedFields: verified)))
                     }
                     guard case .text(let value) = field, !value.isEmpty, value.count <= 60,
                           !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
@@ -1241,6 +1243,18 @@ enum ServerSettingsBuilder {
             }
         }
         return result
+    }
+
+    /// Known schema paths may be long; an opaque seat label or unknown read-only row is not trusted.
+    static func diagnosticFields(rows: [ServerSettingRow]) -> Set<String> {
+        var fields: Set<String> = []
+        for row in rows where row.isEditable {
+            let parts = row.id.split(separator: ".").map(String.init)
+            if parts.count > 1, parts[0] == "seat", looksLikeCredential(parts[1]) { continue }
+            fields.insert(row.id)
+            fields.insert(row.settingKey)
+        }
+        return fields
     }
 
     /// The request for a set of edits, by row id.  A table's setting is sent as the table the
@@ -1662,6 +1676,7 @@ final class ServerListenerSettingsStore: ObservableObject {
             request = ServerSettingsSaveRequest(set: typed.set, expectBaseSHA256: revision,
                                                 expectedKeys: Set(baseline.settings.keys), remove: typed.remove,
                                                 referenceNames: ServerSettingsBuilder.referenceNames(rows: groups.flatMap(\.rows)),
+                                                diagnosticFields: ServerSettingsBuilder.diagnosticFields(rows: groups.flatMap(\.rows)),
                                                 attempt: makeAttempt())
         }
         let attempt = SaveAttempt(request: request, ids: ids, snapshot: snapshot, removed: removed,
