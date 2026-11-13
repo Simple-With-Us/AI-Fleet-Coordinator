@@ -5,6 +5,7 @@ CLI and import contract without another reader implementation.
 """
 
 import sys
+
 import fleet_infisical as _client
 
 _compat_name = __name__
