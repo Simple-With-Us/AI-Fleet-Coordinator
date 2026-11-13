@@ -936,3 +936,9 @@ The script calls `GET /api/ops/snapshot` (token via `x-ops-token`).  See
 ## Fleet recall (shared agent memory)
 
 Search before re-deriving.  **Contribute every reusable lesson** (owner 2026-09-02) — the seat that just burned tokens is the only one that knows.  Mac: MCP `recall_search` / `recall_contribute` / `recall_stats` or CLI `recall "query"`.  Cloud / phone: `https://agents.simplewithus.com/mcp` or REST `/recall/*`.  A hit is a lead, not a verdict.  Do not bulk-ingest chat transcripts as lessons.  Canonical: `AI-Fleet-Coordinator/docs/RAG-FLEET-INFRA.md`.
+
+## Fleet Recall At Every Turn
+
+At the start of every turn, run one targeted Fleet Recall search (`recall "<topic>"` or MCP `recall_search`) before substantive action or reply, including continuations and mechanical tasks.  A hit is a lead, not authority: open its source before relying on it.  Use only the configured own-seat route; if retrieval is unavailable, record that limitation once and continue independent work without changing credentials, trust or services.
+
+At the end of every turn, consider whether newly learned durable knowledge would help the fleet.  If appropriate, search for duplicates and contribute one useful paragraph with `recall contribute` or MCP `recall_contribute`; otherwise add nothing.  Do not force filler, require a public “no lesson” reply, duplicate existing knowledge, or dump transcripts or secrets.  Keep source facts in their existing home and contribute only the reusable lesson.

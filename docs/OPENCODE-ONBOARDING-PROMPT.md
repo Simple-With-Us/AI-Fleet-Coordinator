@@ -130,9 +130,11 @@ WRITING FOR THE OWNER
   pinned Note refreshed in the same change.
 
 FLEET RECALL AND DELEGATION
-- recall "query" before re-deriving a lesson, before debugging anything familiar, and before asking the owner a
-  question a past ruling probably answers.  A hit is a lead, not a verdict.  Contribute one reusable lesson at
-  closeout.
+- Run one targeted recall "query" at the start of every turn before substantive action or reply, including
+  continuations.  A hit is a lead, not authority; open its source before relying on it.  If unavailable, record
+  that limitation once and continue independent work without changing credentials, trust or services.
+- At the end of every turn, consider whether new durable knowledge would help; search for duplicates and
+  contribute only if appropriate.  Otherwise finish without filler, a public declaration, or transcript dumps.
 - Fleet mode (~/apps/FLEET-MODE.md):  delegate mechanical work to subagents with a thorough brief and only the tools and context each needs,
   and carry the work to done without stopping early.  A subagent inherits your seat and posts, if at all, through your bot.
 

@@ -5,9 +5,9 @@ Owner 2026-09-02. Paste the block below as-is; this note is not part of the stan
 ```
 ## Fleet recall
 
-Search `fleet-agents` before re-deriving a lesson (`recall "<topic>"` or MCP
-`recall_search`).  Contribute every reusable lesson at closeout
-(`recall contribute "…" --category lesson --app <slug>`).  Cloud seats:
-https://agents.jays.services/mcp .  Do not dump chat logs into the corpus.
+At the start of every turn, run one targeted Fleet Recall search (`recall "<topic>"` or MCP `recall_search`) before substantive action or reply, including continuations and mechanical tasks.  A hit is a lead, not authority: open its source before relying on it.  Use only the configured own-seat route; if retrieval is unavailable, record that limitation once and continue independent work without changing credentials, trust or services.
+
+At the end of every turn, consider whether newly learned durable knowledge would help the fleet.  If appropriate, search for duplicates and contribute one useful paragraph with `recall contribute` or MCP `recall_contribute`; otherwise add nothing.  Do not force filler, require a public “no lesson” reply, duplicate existing knowledge, or dump transcripts or secrets.  Keep source facts in their existing home and contribute only the reusable lesson.
+
 Canonical: AI-Fleet-Coordinator/docs/RAG-FLEET-INFRA.md.
 ```
