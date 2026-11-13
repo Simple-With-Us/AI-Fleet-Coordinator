@@ -2,15 +2,57 @@
 
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 from simple_tools.operator_github_state import LedgerError, NonceLedger
 
 
 class SerializationTests(unittest.TestCase):
+    def test_kernel_lock_excludes_an_actual_second_process_until_release(self):
+        program = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from simple_tools.operator_github_state import NonceLedger, LedgerError
+try:
+    with NonceLedger(sys.argv[2], retain_unsettled=True).serialized(timeout=0.03):
+        print('entered')
+except LedgerError:
+    print('held')
+"""
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "outcomes"
+            ledger = NonceLedger(directory, retain_unsettled=True)
+            command = [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                program,
+                str(Path(__file__).resolve().parents[2]),
+                str(directory),
+            ]
+
+            def probe():
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    env={"PATH": os.defpath},
+                    timeout=3,
+                    check=True,
+                )
+                return result.stdout.strip()
+
+            with ledger.serialized():
+                self.assertEqual(probe(), "held")
+            self.assertEqual(probe(), "entered")
+
     def test_a_competing_caller_times_out_then_can_enter_after_release(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root) / "outcomes"
@@ -107,6 +149,34 @@ class SerializationTests(unittest.TestCase):
                     NonceLedger(directory, retain_unsettled=True)
                 self.assertFalse((directory / "nonces.sqlite3").exists())
                 self.assertEqual(target.read_bytes(), NonceLedger.INITIALIZED_BYTES)
+
+    def test_short_marker_write_never_publishes_partial_initialization_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "outcomes"
+            real_write = os.write
+
+            def short_write(fd, value):
+                return real_write(fd, value[:2])
+
+            with mock.patch.object(os, "write", short_write), self.assertRaises(LedgerError):
+                NonceLedger(directory, retain_unsettled=True)
+            self.assertEqual(list(directory.iterdir()), [])
+            ledger = NonceLedger(directory, retain_unsettled=True)
+            self.assertEqual((directory / ledger.INITIALIZED_NAME).read_bytes(), ledger.INITIALIZED_BYTES)
+
+    def test_existing_torn_marker_is_never_repaired_over_lost_history(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "outcomes"
+            ledger = NonceLedger(directory, retain_unsettled=True)
+            ledger.begin("namespace", "old-unknown", 10, 1, 10)
+            ledger.settle("namespace", "old-unknown", "outcome_unknown")
+            marker = directory / ledger.INITIALIZED_NAME
+            marker.write_bytes(b"torn")
+            ledger.path.unlink()
+            with self.assertRaises(LedgerError):
+                NonceLedger(directory, retain_unsettled=True)
+            self.assertEqual(marker.read_bytes(), b"torn")
+            self.assertFalse(ledger.path.exists())
 
     def test_default_constructor_validates_ancestors_before_creating_any_child(self):
         for kind in ("symlink", "writable"):

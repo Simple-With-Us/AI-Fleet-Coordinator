@@ -281,6 +281,12 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
         return 0
     value = stdin.read(core.MAX_VALUE_BYTES + 1)
     value = value.removesuffix("\n")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError:
+        raise UsageError("set value must be UTF-8") from None
+    if size > core.MAX_VALUE_BYTES:
+        raise UsageError("set value exceeds the maximum size")
     if not value:
         raise UsageError("set reads the value from standard input and it was empty")
     try:

@@ -1,6 +1,7 @@
 """The shared client works without the legacy application and preserves the verified scope boundary."""
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,6 @@ class SharedClientTests(unittest.TestCase):
         boot = """
 import sys
 sys.path.insert(0, sys.argv[1])
-sys.modules['fleet_infisical'] = None
 from fleet_knobs import source
 try:
     source.fetch({'OPERATOR_API_URL'})
@@ -30,8 +30,14 @@ else:
     raise AssertionError('missing client allowed a read')
 """
         with tempfile.TemporaryDirectory() as home:
+            payload = Path(home) / "payload"
+            shutil.copytree(
+                Path(scripts) / "fleet_knobs",
+                payload / "fleet_knobs",
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
             proc = subprocess.run(
-                [sys.executable, "-I", "-B", "-c", boot, scripts],
+                [sys.executable, "-I", "-B", "-c", boot, str(payload)],
                 env={"HOME": home, "PATH": "/unavailable"},
                 cwd=home,
                 capture_output=True,
@@ -61,13 +67,18 @@ else:
     def test_real_scoped_read_runs_without_legacy_application_or_executable(self):
         scripts = str(Path(__file__).resolve().parents[2])
         boot = """
-import json,sys
+import json,sys,types
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
 sys.modules['fleet_secrets'] = None
 sys.modules['fleet_secrets.core'] = None
+poison = types.ModuleType('fleet_infisical')
+poison.fetch_project = lambda *a, **k: (_ for _ in ()).throw(AssertionError('untrusted helper received binding'))
+sys.modules['fleet_infisical'] = poison
+sys.modules['_fleet_knobs_fleet_infisical'] = poison
 from fleet_knobs import source
-import fleet_infisical
-assert source._load_helper() is fleet_infisical
+assert Path(source._load_helper().__file__).resolve() == Path(sys.argv[1]) / 'fleet_infisical.py'
 result = source.fetch({'OPERATOR_API_URL'})
 assert result == {'OPERATOR_API_URL': 'https://operator.invalid'}
 print(json.dumps(sorted(result)))
@@ -77,13 +88,18 @@ print(json.dumps(sorted(result)))
             ScopedReadAPI({"OPERATOR_API_URL": "https://operator.invalid"}) as api,
         ):
             env = {"HOME": home, "PATH": "/unavailable", **api.env}
+            poison = Path(home) / "untrusted"
+            poison.mkdir()
+            (poison / "fleet_infisical.py").write_text(
+                "raise AssertionError('untrusted path loaded')\n"
+            )
             for wrong_scope in (False, True):
                 with self.subTest(wrong_scope=wrong_scope):
                     api.requests.clear()
                     if wrong_scope:
                         api.metadata_override["permissions"] = ["read", "write"]
                     proc = subprocess.run(
-                        [sys.executable, "-I", "-B", "-c", boot, scripts],
+                        [sys.executable, "-I", "-B", "-c", boot, scripts, str(poison)],
                         env=env,
                         cwd=home,
                         capture_output=True,
