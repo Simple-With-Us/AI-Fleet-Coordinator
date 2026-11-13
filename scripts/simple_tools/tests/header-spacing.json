@@ -61,5 +61,49 @@
     "name": "Malformed Repo List",
     "input": "[CODEX 📁,OPS] body",
     "expected": "[CODEX 📁,OPS] body"
+  },
+  {
+    "name": "GitHub PR Preserves Writing Session And Recipients",
+    "context": "github-pr",
+    "seat": "CODEX",
+    "input": "[CODEX·deadbeef: EE.1.S 📁AFC, OPS → CODEX GG, AG] Body.\u00a0 Next.",
+    "expected": "[CODEX:\u200a\u200a\u200aEE.1.S → CODEX GG,\u200a\u200aAG] Body.\u00a0 Next."
+  },
+  {
+    "name": "GitHub PR Plain Seat",
+    "context": "github-pr",
+    "input": "[JET 📁ST, CTS] Body",
+    "expected": "[JET] Body"
+  },
+  {
+    "name": "GitHub PR Keeps Existing Session Attribution",
+    "context": "github-pr",
+    "input": "[CODEX: GG.1.S 📁AFC, OPS] Body",
+    "expected": "[CODEX:\u200a\u200a\u200aGG.1.S] Body"
+  },
+  {
+    "name": "GitHub PR Kody Command First",
+    "context": "github-pr",
+    "input": "@kody start-review\n[CODEX: EE.1.S 📁AFC] Review this head.\u00a0 Keep prose.\n[AG: AA.1.M 📁OPS] quoted",
+    "expected": "@kody start-review\n[CODEX:\u200a\u200a\u200aEE.1.S] Review this head.\u00a0 Keep prose.\n[AG: AA.1.M 📁OPS] quoted"
+  },
+  {
+    "name": "GitHub PR CRLF And Quiet Marker",
+    "context": "github-pr",
+    "input": "@kody start-review\r\n👀[CODEX: EE.1.S 📁AFC, OPS] Body",
+    "expected": "@kody start-review\r\n👀[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+  },
+  {
+    "name": "GitHub PR Foreign Quotation Is Unchanged",
+    "context": "github-pr",
+    "seat": "CODEX",
+    "input": "[AG: AA.1.M 📁OPS] quoted",
+    "expected": "[AG: AA.1.M 📁OPS] quoted"
+  },
+  {
+    "name": "GitHub PR Fenced Header Is Content",
+    "context": "github-pr",
+    "input": "```text\n[CODEX: EE.1.S 📁AFC] quoted\n```",
+    "expected": "```text\n[CODEX: EE.1.S 📁AFC] quoted\n```"
   }
 ]

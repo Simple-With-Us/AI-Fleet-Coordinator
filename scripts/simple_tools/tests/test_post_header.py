@@ -14,6 +14,7 @@ if not isinstance(FIXTURES, list) or not FIXTURES or not all(
     isinstance(case, dict)
     and all(isinstance(case.get(key), str) for key in ("name", "input", "expected"))
     and (case.get("seat") is None or isinstance(case["seat"], str))
+    and case.get("context", "message") in ("message", "github-pr")
     and all(key not in case or (isinstance(case[key], list) and all(isinstance(v, str) for v in case[key]))
             for key in ("repos", "peers"))
     for case in FIXTURES
@@ -25,9 +26,10 @@ class HeaderSpacingTests(unittest.TestCase):
     def test_shared_golden_headers_survive_json_utf8_and_legacy_parsing(self):
         for case in FIXTURES:
             with self.subTest(case=case["name"]):
-                result = post_header.normalize_header(case["input"], seat=case.get("seat"))
+                options = {"seat": case.get("seat"), "context": case.get("context", "message")}
+                result = post_header.normalize_header(case["input"], **options)
                 self.assertEqual(result, case["expected"])
-                self.assertEqual(post_header.normalize_header(result, seat=case.get("seat")), result)
+                self.assertEqual(post_header.normalize_header(result, **options), result)
                 wire = json.dumps({"content": result}, ensure_ascii=False).encode("utf-8")
                 self.assertEqual(json.loads(wire)["content"], case["expected"])
                 if "repos" in case:

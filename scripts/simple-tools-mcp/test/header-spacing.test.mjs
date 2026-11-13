@@ -9,12 +9,13 @@ if (!Array.isArray(fixtures) || fixtures.length === 0 || !fixtures.every((entry)
   entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
   ["name", "input", "expected"].every((key) => typeof entry[key] === "string") &&
   (entry.seat === undefined || entry.seat === null || typeof entry.seat === "string") &&
+  (entry.context === undefined || ["message", "github-pr"].includes(entry.context)) &&
   ["repos", "peers"].every((key) => entry[key] === undefined || (Array.isArray(entry[key]) && entry[key].every((v) => typeof v === "string")))
 )) throw new Error("Invalid header-spacing.json fixture shape");
 
 test("OPS-1086 golden headers survive JSON and UTF-8 without changing body gaps", () => {
   for (const entry of fixtures) {
-    const options = entry.seat ? { seat: entry.seat } : {};
+    const options = { ...(entry.seat ? { seat: entry.seat } : {}), ...(entry.context ? { context: entry.context } : {}) };
     const actual = normalizeHeader(entry.input, options);
     assert.equal(actual, entry.expected, entry.name);
     assert.equal(normalizeHeader(actual, options), actual, entry.name);
@@ -59,10 +60,11 @@ test("quiet marker survives hosted composition with the same header bytes", () =
   assert.equal(composeBody(tagPrefix("CODEX", "deadbeef"), input), ":eyes: " + fixtures[0].expected);
 });
 
-test("GitHub prose verbs preserve all exact header spaces through gap handling and JSON", () => {
+test("GitHub PR prose omits repository context while ordinary issues retain it", () => {
   const body = fixtures[0].expected;
-  for (const verb of ["open_pr", "edit_pr", "comment_pr", "reply_thread", "wf_pr_edit", "wf_issue_comment"]) {
+  for (const verb of ["open_pr", "edit_pr", "comment_pr", "reply_thread", "wf_pr_edit"]) {
     const wire = JSON.parse(JSON.stringify(gapGitHubArgs(verb, { body })));
-    assert.equal(wire.body, body, verb);
+    assert.equal(wire.body, normalizeHeader(body, { context: "github-pr" }), verb);
   }
+  assert.equal(gapGitHubArgs("wf_issue_comment", { body }).body, body);
 });

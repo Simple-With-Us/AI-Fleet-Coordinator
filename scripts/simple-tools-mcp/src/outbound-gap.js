@@ -13,8 +13,25 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { houseGap } from "./textfmt.js";
+import { normalizeHeader } from "./contract.js";
 
 export const SENTENCE_GAP_ARG = "sentence_gap";
+
+/** Only explicit PR routes supply PR context; ordinary issue routes keep their repository headers. */
+export const GITHUB_PR_HEADER_FIELDS = Object.freeze({
+  open_pr: ["title", "body"],
+  edit_pr: ["title", "body"],
+  comment_pr: ["body"],
+  reply_thread: ["body"],
+  wf_pr_create: ["title", "body"],
+  wf_pr_edit: ["title", "body"],
+  wf_review_submit: ["body"],
+  wf_review_inline: ["body"],
+  wf_review_update: ["body"],
+  wf_review_dismiss: ["message"],
+  wf_review_comment_reply: ["body"],
+  wf_review_comment_update: ["body"],
+});
 
 /** The text fields each GitHub verb persists, keyed by the relay action name. */
 export const GITHUB_GAP_FIELDS = Object.freeze({
@@ -107,7 +124,23 @@ export function outboundGap(text) {
  * A copy of `args` with the house gap written into `action`'s text fields (unless the call opted out).  With
  * `byteCap`, a field that fit the cap as typed and would not once gapped keeps its typed text, with a notice.
  */
-export function gapGitHubArgs(action, args, { byteCap = null } = {}) {
+export function compactGitHubArgs(action, args, { seat = null } = {}) {
+  const fields = GITHUB_PR_HEADER_FIELDS[action];
+  if (!fields || !args || typeof args !== "object" || !gapEnabled()) return args;
+  let out = args;
+  for (const field of fields) {
+    if (typeof args[field] !== "string") continue;
+    const header = normalizeHeader(args[field], { seat, context: "github-pr" });
+    if (header !== args[field]) {
+      if (out === args) out = { ...args };
+      out[field] = header;
+    }
+  }
+  return out;
+}
+
+export function gapGitHubArgs(action, args, { byteCap = null, seat = null } = {}) {
+  args = compactGitHubArgs(action, args, { seat });
   const fields = GITHUB_GAP_FIELDS[action];
   if (!fields || !args || typeof args !== "object" || !gapEnabled()) return args;
   let out = args;

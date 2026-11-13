@@ -24,13 +24,19 @@ _SENDER = re.compile(
 _OPERATOR_THREAD = re.compile(r"[A-Z]{1,2}[.-]\d+[.-][MSC]")
 
 
-def normalize_header(text: str, *, seat: str | None = None) -> str:
+def normalize_header(text: str, *, seat: str | None = None, context: str = "message") -> str:
     """Normalize one complete leading header, optionally only this seat's own.
 
     Repo commas take one hair space; recipient/platform commas take two.  A real Operator
     letter identifies the thread, so its sender never carries a runtime session suffix.
-    Legacy transport-only tags remain readable and keep their correlation fragment."""
-    match = _HEADER.match(text)
+    Legacy transport-only tags remain readable and keep their correlation fragment.  GitHub PR
+    context omits repositories and preserves the literal Kody command line."""
+    if context not in ("message", "github-pr"):
+        raise ValueError("unknown header context")
+    command = re.match(r"^@kody start-review\r?\n", text) if context == "github-pr" else None
+    prefix = command.group(0) if command else ""
+    content = text[len(prefix) :]
+    match = _HEADER.match(content)
     if not match:
         return text
     parts = re.split(r"\s*(?:→|->)\s*", match.group("inner"), maxsplit=1)
@@ -54,8 +60,8 @@ def normalize_header(text: str, *, seat: str | None = None) -> str:
     inner = sender.group("seat") + transport
     if thread:
         inner += ":" + AFTER_COLON + thread
-    if repos:
+    if repos and context != "github-pr":
         inner += BEFORE_FOLDER + "📁" + AFTER_FOLDER + REPO_SEPARATOR.join(repos)
     if peers:
         inner += ARROW + RECIPIENT_SEPARATOR.join(peers)
-    return match.group("lead") + "[" + inner + "]" + text[match.end() :]
+    return prefix + match.group("lead") + "[" + inner + "]" + content[match.end() :]
