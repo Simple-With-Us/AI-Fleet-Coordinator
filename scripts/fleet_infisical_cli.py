@@ -330,13 +330,16 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
                 f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
                 "variables are never injected);  read it with `get` if you really need the value"
             )
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
+    path = core.check_path(str(opts["path"]))
     if only is not None:
+        project = core.infisical_project_id(env, core.home_dir(env), core.DEFAULT_PROJECT)
+        secrets = core.fetch_project(project, path, env, names=tuple(only))
         for name in only:
             if name not in secrets:
                 raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
         chosen = {n: secrets[n] for n in only}
     else:
+        secrets = core.fetch_all(path, env)
         chosen = {n: v for n, v in secrets.items() if core.injectable(n)}
     core.reject_unresolved(chosen)
     child_env = {k: v for k, v in env.items() if k not in core.AUTH_ENV_VARS}
