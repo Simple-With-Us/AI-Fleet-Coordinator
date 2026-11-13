@@ -17,16 +17,29 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "docs/fleet-skills/service-tokens/SKILL.md"
 NODE = shutil.which("node")
 HEADERS = [
-    "Token", "Token ID", "Project", "Project ID", "Environment", "Folders",
-    "Permission", "Purpose", "Owner", "Runtime consumer", "Status",
-    "Expires (UTC)", "Metadata verified (UTC)", "Evidence", "Audit coverage",
-    "Secure storage reference", "Screenshot comparison 2026-11-03",
-    "Discrepancy / evidence limits", "Created By",
+    "Token",
+    "Token ID",
+    "Project",
+    "Project ID",
+    "Environment",
+    "Folders",
+    "Permission",
+    "Purpose",
+    "Owner",
+    "Runtime consumer",
+    "Status",
+    "Expires (UTC)",
+    "Metadata verified (UTC)",
+    "Evidence",
+    "Audit coverage",
+    "Secure storage reference",
+    "Screenshot comparison 2026-11-03",
+    "Discrepancy / evidence limits",
+    "Created By",
 ]
 METADATA = {
     "id": "fixture-token-id",
@@ -100,14 +113,17 @@ export async function api(path, init = {}) {
 
 def recipe_source() -> str:
     text = SKILL.read_text(encoding="utf-8")
-    start = 'node --input-type=module - "$metadata_file" <<\'JS\'\n'
+    start = "node --input-type=module - \"$metadata_file\" <<'JS'\n"
     if text.count(start) != 1:
         raise AssertionError("canonical registration heredoc must occur exactly once")
     tail = text.split(start, 1)[1]
     if "\nJS\n" not in tail:
         raise AssertionError("canonical registration heredoc is not terminated")
     # This guard is deliberately outside the recipe, and never makes a request.
-    return "globalThis.fetch = () => { throw new Error('fixture network forbidden'); };\n" + tail.split("\nJS\n", 1)[0]
+    return (
+        "globalThis.fetch = () => { throw new Error('fixture network forbidden'); };\n"
+        + tail.split("\nJS\n", 1)[0]
+    )
 
 
 def expected_row(metadata: dict) -> list[str]:
@@ -115,12 +131,25 @@ def expected_row(metadata: dict) -> list[str]:
     scope = metadata["scopes"][0]
     permission = "/".join(value for value in ("read", "write") if value in scope["permissions"])
     return [
-        metadata["name"], metadata["id"], metadata["project"], metadata["projectId"],
-        scope["environment"], scope["folder"], permission, metadata["purpose"],
-        metadata["owner"], metadata["consumer"], metadata["status"], metadata["expiresAt"],
-        metadata["verifiedAt"], metadata["evidence"], metadata.get("auditCoverage", ""),
-        metadata["secureStorageReference"], metadata.get("screenshotComparison", ""),
-        metadata.get("discrepancyEvidenceLimits", ""), metadata.get("createdBy", ""),
+        metadata["name"],
+        metadata["id"],
+        metadata["project"],
+        metadata["projectId"],
+        scope["environment"],
+        scope["folder"],
+        permission,
+        metadata["purpose"],
+        metadata["owner"],
+        metadata["consumer"],
+        metadata["status"],
+        metadata["expiresAt"],
+        metadata["verifiedAt"],
+        metadata["evidence"],
+        metadata.get("auditCoverage", ""),
+        metadata["secureStorageReference"],
+        metadata.get("screenshotComparison", ""),
+        metadata.get("discrepancyEvidenceLimits", ""),
+        metadata.get("createdBy", ""),
     ]
 
 
@@ -142,7 +171,9 @@ class Fixture:
         self.metadata_path = self.private / "metadata.json"
         self.write_metadata()
         self.state_path = self.root / "sheet-state.json"
-        self.write_state({"headers": HEADERS, "rows": [], "appendCount": 0, "calls": [], "mode": "normal"})
+        self.write_state(
+            {"headers": HEADERS, "rows": [], "appendCount": 0, "calls": [], "mode": "normal"}
+        )
         self.source = recipe_source()
 
     def close(self) -> None:
@@ -158,7 +189,9 @@ class Fixture:
         return self.marker.with_suffix(".lock")
 
     def write_metadata(self, raw: str | None = None) -> None:
-        self.metadata_path.write_text(raw if raw is not None else json.dumps(self.metadata), encoding="utf-8")
+        self.metadata_path.write_text(
+            raw if raw is not None else json.dumps(self.metadata), encoding="utf-8"
+        )
         self.metadata_path.chmod(0o600)
 
     def state(self) -> dict:
@@ -186,8 +219,13 @@ class Fixture:
             del env[omit]
         return subprocess.run(
             [NODE, "--input-type=module", "-", str(self.metadata_path)],
-            input=self.source, text=True, capture_output=True, env=env,
-            cwd=self.root, timeout=15, check=False,
+            input=self.source,
+            text=True,
+            capture_output=True,
+            env=env,
+            cwd=self.root,
+            timeout=15,
+            check=False,
         )
 
 
@@ -217,7 +255,9 @@ class ServiceTokenRecipeTests(unittest.TestCase):
         self.assertIn("already registered", second.stdout)
         self.assertEqual(fixture.state()["appendCount"], 1)
         self.assertEqual(len(fixture.state()["rows"]), 1)
-        self.assertEqual(json.loads(fixture.metadata_path.read_text())["createdAt"], METADATA["createdAt"])
+        self.assertEqual(
+            json.loads(fixture.metadata_path.read_text())["createdAt"], METADATA["createdAt"]
+        )
 
     def test_committed_but_thrown_append_is_unknown_and_never_replayed(self) -> None:
         fixture = self.fixture()
@@ -326,10 +366,14 @@ class ServiceTokenRecipeTests(unittest.TestCase):
     def test_provider_secret_forms_report_column_without_echoing_value(self) -> None:
         # Explicitly synthetic credential-shaped strings, never live credentials.
         examples = [
-            "ghp_" + "fixture" * 6, "github_pat_" + "fixture" * 6,
-            "sk-proj-" + "fixture" * 6, "sk-ant-" + "fixture" * 6,
-            "sk_live_" + "fixture" * 6, "xoxb-" + "fixture-" * 6,
-            ".".join(("st", "fixture", "fixture")), '"private_key": "fixture"',
+            "ghp_" + "fixture" * 6,
+            "github_pat_" + "fixture" * 6,
+            "sk-proj-" + "fixture" * 6,
+            "sk-ant-" + "fixture" * 6,
+            "sk_live_" + "fixture" * 6,
+            "xoxb-" + "fixture-" * 6,
+            ".".join(("st", "fixture", "fixture")),
+            '"private_key": "fixture"',
         ]
         for value in examples:
             with self.subTest(provider=value.split("fixture", 1)[0]):
@@ -345,7 +389,8 @@ class ServiceTokenRecipeTests(unittest.TestCase):
 
     def test_only_one_prod_scope_and_unique_read_write_permissions_are_accepted(self) -> None:
         invalid_scopes = [
-            [], [METADATA["scopes"][0], METADATA["scopes"][0]],
+            [],
+            [METADATA["scopes"][0], METADATA["scopes"][0]],
             [{"environment": "dev", "folder": "/fixture", "permissions": ["read"]}],
             [{"environment": "prod", "folder": "/a, /b", "permissions": ["read"]}],
         ]
@@ -364,7 +409,11 @@ class ServiceTokenRecipeTests(unittest.TestCase):
                 self.assert_no_mutation(fixture)
 
     def test_accepted_permissions_use_mirror_compatible_labels(self) -> None:
-        for permissions, cell in ((["read"], "read"), (["write"], "write"), (["write", "read"], "read/write")):
+        for permissions, cell in (
+            (["read"], "read"),
+            (["write"], "write"),
+            (["write", "read"], "read/write"),
+        ):
             with self.subTest(permissions=permissions):
                 fixture = self.fixture()
                 fixture.metadata["scopes"][0]["permissions"] = permissions
