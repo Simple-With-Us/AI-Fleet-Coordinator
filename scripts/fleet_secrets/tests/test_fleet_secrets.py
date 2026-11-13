@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -21,8 +22,8 @@ OTHER_PROJECT = (
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
-CLIENT_SECRET = "SENTINEL_CLIENT_SECRET_5ec7"
-ACCESS_TOKEN = "SENTINEL_ACCESS_TOKEN_a11"
+CLIENT_SECRET = str(uuid.uuid4())
+ACCESS_TOKEN = str(uuid.uuid4())
 ALL_SENTINELS = (VAL_A, VAL_B, CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN)
 KEYCHAIN_FULL = {"infisical-client-id": CLIENT_ID, "infisical-client-secret": CLIENT_SECRET}
 
