@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import fleet_infisical
+
 from fleet_knobs.tests._fake import ScopedReadAPI
 
 
