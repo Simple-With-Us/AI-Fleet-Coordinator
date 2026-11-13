@@ -141,6 +141,7 @@ def process_row(pid: int) -> tuple[int, list[str]]:
             text=True,
             timeout=PS_WAIT,
             stdin=subprocess.DEVNULL,
+            env=PL.child_process_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return 0, []
