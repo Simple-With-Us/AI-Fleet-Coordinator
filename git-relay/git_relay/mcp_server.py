@@ -29,6 +29,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .github_client import intent_branch_ref
+
 
 def _validate_relay_url(relay_url: str) -> None:
     parsed = urllib.parse.urlparse(relay_url)
@@ -396,13 +398,14 @@ def _validate_args(name: str, args: dict) -> str | None:
         return "thread_id must be a PRRT_ review-thread id"
     if name == "workflow_dispatch":
         intent, expected = args.get("intent_id"), args.get("expected_head_sha")
-        if (intent is None) != (expected is None):
-            return "intent_id and expected_head_sha must be supplied together"
-        if intent is not None and (
-            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent)
-            or not re.fullmatch(r"[0-9a-f]{40}", expected)
-        ):
+        if expected is not None and intent is None:
+            return "expected_head_sha requires intent_id"
+        if intent is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent):
             return "invalid dispatch intent or expected source"
+        if expected is not None and not re.fullmatch(r"[0-9a-f]{40}", expected):
+            return "invalid dispatch intent or expected source"
+        if intent is not None and not intent_branch_ref(args.get("ref")):
+            return "intent dispatch requires a canonical branch name"
         inputs = args.get("inputs")
         if inputs is not None:
             if len(inputs) > MAX_DISPATCH_INPUTS:

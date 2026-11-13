@@ -211,7 +211,7 @@ FRAGMENT_RE = re.compile(
 )
 # A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
 HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·(?:%s)?[0-9a-f-]{8,})?(.*)" % SESSION_PREFIX, re.DOTALL)
-HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
+HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}[.-][0-9]+[.-][A-Z]\b")
 # A chat written plainly, as the fleet writes one:  the name (filled in where it is used), a gap,
 # and the letter, which is exactly two capitals.  `Claude cc`, `Claude C`, `Claude CCC`,
 # `Claude Code` and `CLAUDE-CC` are not one.
@@ -511,7 +511,7 @@ def header_letters(excerpt: str, names: str) -> list[str]:
     listed = addressing.partition("\n")[0] or sender.partition("->")[2]
     name = "(?ai:%s)" % names
     item = re.compile(
-        r"[ \t]*(?:@_?\*\*%s(?:\|\d+)?\*\*|@?%s)[ \t]+([A-Z]{2})(?:\.[0-9]+\.[A-Z])?[ \t]*"
+        r"[ \t\u200a]*(?:@_?\*\*%s(?:\|\d+)?\*\*|@?%s)[ \t]+([A-Z]{2})(?:\.[0-9]+\.[A-Z])?[ \t\u200a]*"
         % (name, name)
     )
     return [found.group(1) for found in map(item.fullmatch, listed.split(",")) if found]
@@ -685,7 +685,7 @@ def split_excerpt(excerpt: str) -> tuple[str, str]:
     trusted text is read (`trusted_text`).  Text after the header's arrow names an addressee, so it
     stays with the body;  the rest of the header is the sender's."""
     body = trusted_text(excerpt).lstrip()
-    header = re.match(r"(?:\U0001F440\s*)?\[([^\]\n]*)\]", body)
+    header = re.match(r"(?:(?:\U0001F440|:eyes:)\s*)?\[([^\]\n]*)\]", body)
     if header is None or not _is_post_header(header.group(1)):
         return "", body
     sender, _, addressee = header.group(1).partition("→")

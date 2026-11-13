@@ -337,6 +337,37 @@ class CodexThreadMetaTests(McpHarness):
                         ]["ids"],
                     )
 
+    def test_lettered_posts_keep_private_self_and_sibling_identity_without_visible_tag(self):
+        tools = self.direct()
+        topic = "lettered-private-identity"
+        text = "[CODEX: EE.1.S 📁AFC → AG] Lettered body."
+        own = tools.call("zulip_post", {"topic": topic, "text": text}, meta={"threadId": A})[
+            "structuredContent"
+        ]["id"]
+        sibling = tools.call("zulip_post", {"topic": topic, "text": text}, meta={"threadId": B})[
+            "structuredContent"
+        ]["id"]
+        for message in self.fake.messages[-2:]:
+            self.assertTrue(message["content"].startswith("[CODEX:\u200a\u200a\u200aEE.1.S"))
+            self.assertNotIn("·", message["content"].split("]", 1)[0])
+        for thread, posted, visible in ((A, own, sibling), (B, sibling, own)):
+            state = State(self.state_dir, "CODEX", "codex-thread-" + thread)
+            self.assertIn(posted, state.posted())
+            self.assertEqual(json.loads(state.path.read_text())["session"], thread)
+            for reader in (tools, self.direct()):
+                self.assertEqual(
+                    reader.call("zulip_read_topic", {"topic": topic}, meta={"threadId": thread})[
+                        "structuredContent"
+                    ]["ids"],
+                    [visible],
+                )
+                self.assertEqual(
+                    reader.call(
+                        "zulip_read_topic", {"topic": topic, "include_self": True}, meta={"threadId": thread}
+                    )["structuredContent"]["ids"],
+                    [own, sibling],
+                )
+
     def test_unknown_native_write_does_not_adopt_sibling_body_or_resend(self):
         real_sha = T._sha
 

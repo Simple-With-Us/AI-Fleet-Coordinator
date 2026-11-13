@@ -246,7 +246,7 @@ def zcode_rename(request: Any) -> bool:
             finally:
                 conn.close()
             if done:
-                _record_thread_link(env, sid)
+                _record_thread_link(env, sid, record=getattr(request, "record_thread_link", None))
                 return True
             return False
         except sqlite3.Error:
@@ -256,7 +256,7 @@ def zcode_rename(request: Any) -> bool:
     return False
 
 
-def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
+def _record_thread_link(env: Mapping[str, str], sid: str, *, record: Any = None) -> None:
     """Put this chat's thread link on its registry row (one update op, failures swallowed).
 
     The registry's Sessions tab carries a Thread Link column and the Sheets drain exports
@@ -266,23 +266,27 @@ def _record_thread_link(env: Mapping[str, str], sid: str) -> None:
     (SESSION_LETTER_LOCATION, else the platform), the same way the hook command carries it."""
     from . import registry_api as RA
 
-    if not RA.base_url(env):
+    if record is None and not RA.base_url(env):
         return
     location = str(env.get("SESSION_LETTER_LOCATION") or "").strip() or (
         "mac" if sys.platform == "darwin" else "server"
     )
     try:
-        answer = RA.call(
-            env,
-            "update",
-            {
-                "platform": PLATFORM,
-                "location": location,
-                "scope": "default",
-                "session_id": sid,
-                "thread_link": THREAD_LINK_FORM.format(sid=sid),
-            },
-            timeout=2,
+        answer = (
+            record(THREAD_LINK_FORM.format(sid=sid))
+            if record is not None
+            else RA.call(
+                env,
+                "update",
+                {
+                    "platform": PLATFORM,
+                    "location": location,
+                    "scope": "default",
+                    "session_id": sid,
+                    "thread_link": THREAD_LINK_FORM.format(sid=sid),
+                },
+                timeout=2,
+            )
         )
     except Exception as exc:  # noqa: BLE001 - a link that cannot be recorded never blocks a chat
         print(
