@@ -17,18 +17,18 @@ const TEXT_MAX = 4000;
 const SEAT_RE = /^[A-Z0-9][A-Z0-9_-]{0,31}$/;
 const MAX_ATTEMPTS = 5;
 
-function cleanLine(name, value, max = TEXT_MAX) {
+function cleanLine(name, value, max = TEXT_MAX, known = []) {
   if (typeof value !== "string") throw new ToolError("invalid_argument", `${name} must be a string`);
   const text = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   if (!text) throw new ToolError("invalid_argument", `${name} is required`);
   if (text.length > max) throw new ToolError("invalid_argument", `${name} must be at most ${max} characters`);
   if (text.includes("\n")) throw new ToolError("invalid_argument", `${name} must be a single line`);
-  if (scanSecret(text)) throw new ToolError("refused_secret", `${name} contains credential-shaped text`);
+  if (scanSecret(text, known)) throw new ToolError("refused_secret", `${name} contains credential-shaped text`);
   return text;
 }
 
-function cleanSeat(name, value) {
-  const text = canonicalSeatName(cleanLine(name, value, 32));
+function cleanSeat(name, value, known = []) {
+  const text = canonicalSeatName(cleanLine(name, value, 32, known));
   if (!SEAT_RE.test(text)) throw new ToolError("invalid_argument", `${name} must be a fleet seat tag`);
   return text;
 }
@@ -191,22 +191,22 @@ async function appendRow(env, row, fetchImpl) {
   throw new ToolError("sheets_write_failed", "Google Sheets quota retries exhausted", { retryable: true });
 }
 
-export function buildPeerActionsRow(args, seat) {
-  const acting = args.acting_seat ? cleanSeat("acting_seat", args.acting_seat) : cleanSeat("identity", seat);
+export function buildPeerActionsRow(args, seat, known = []) {
+  const acting = args.acting_seat ? cleanSeat("acting_seat", args.acting_seat, known) : cleanSeat("identity", seat, known);
   const row = [
     centralTimestamp(),
     acting,
-    cleanSeat("requesting_seat", args.requesting_seat),
-    cleanLine("request", args.request),
-    cleanLine("action_taken", args.action_taken),
-    cleanLine("result", args.result),
+    cleanSeat("requesting_seat", args.requesting_seat, known),
+    cleanLine("request", args.request, TEXT_MAX, known),
+    cleanLine("action_taken", args.action_taken, TEXT_MAX, known),
+    cleanLine("result", args.result, TEXT_MAX, known),
   ];
   return { row, dry_run: Boolean(args.dry_run) };
 }
 
 export const PEER_ACTIONS_METHODS = {
   async tool_peer_actions_log(args, audit) {
-    const { row, dry_run } = buildPeerActionsRow(args, this.seat);
+    const { row, dry_run } = buildPeerActionsRow(args, this.seat, this.known ?? []);
     const env = this.workerEnv;
     if (!env) throw new ToolError("not_configured", "peer-actions logging is not bound on this Worker");
     const structured = {
