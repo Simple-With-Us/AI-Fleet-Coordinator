@@ -12,7 +12,9 @@ Every fleet agent logs peer-request work to the **Peer-Actions Registry** Google
 
 `When` uses the owner's `America/Chicago` clock.  Human prose uses a 12-hour time such as `1:28 AM`; the existing registry timestamp format is an implementation detail.
 
-**Existing runtime boundary.**  Both current transports still contain a legacy default spreadsheet identifier and use it when the setting is absent.  This doc removes the direct identifier from human-facing links; it does not claim that runtime fallback was removed.  An explicit replacement binding has not been verified, and its authoritative settings folder is not declared here.  Preserve the working route until that replacement is live, then migrate the source and deployments together through a separate reviewed change.
+**Required runtime migration.**  Both transports must stop carrying the private default spreadsheet identifier, resolve `PEER_ACTIONS_SPREADSHEET_ID` from the runtime's authoritative configuration, and fail closed with an error naming that variable when it is absent.  Remove the source default and migrate deployed bindings together through a separate reviewed change.
+
+**Existing unmet boundary.**  Both current transports still contain the legacy default and use it when the setting is absent; this is not compliant completion of the required migration.  This doc removes the direct identifier from human-facing links without claiming the source fallback was removed.  An explicit replacement binding has not been verified, and its authoritative settings folder is not declared here.  Preserve the working route under the owner's transition rule until its scoped replacement is live and verified, then complete the source/deployment migration above.
 
 ## Credentials
 
