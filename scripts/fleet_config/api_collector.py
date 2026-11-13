@@ -19,6 +19,7 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import re
@@ -60,6 +61,7 @@ __all__ = [
     "API_OBSERVER_CACHE_KEY",
     "API_SIDECAR_CACHE_KEY",
     "DEFAULT_MAX_RETRIES",
+    "DEFAULT_USER_AGENT",
     "MAX_API_JSON_DEPTH",
     "MAX_API_JSON_NODES",
     "MAX_API_RESPONSE_BYTES",
@@ -83,6 +85,8 @@ __all__ = [
 API_OBSERVATION_SCHEMA_VERSION = 1
 API_OBSERVER_CACHE_KEY = "api_observer"
 API_SIDECAR_CACHE_KEY = "api_evidence_sidecars"
+_API_BATCH_CACHE_KEY = "_api_observer_batch_cache"
+DEFAULT_USER_AGENT = "fleet-config-api-collector/1.0 (+ops)"
 
 MAX_API_RESPONSE_BYTES = 262_144
 MAX_API_ROWS = 256
@@ -145,6 +149,7 @@ class ApiObserverTarget:
     allow_insecure_loopback: bool = False
     allow_private_ips: bool = False
     header_provider: Callable[[], Mapping[str, str]] | None = None
+    batch_by_host: bool = False
 
 
 @dataclass(frozen=True)
@@ -303,15 +308,15 @@ def _verify_dns_targets(
     allowed_hosts: frozenset[str],
     allow_insecure_loopback: bool = False,
     allow_private_ips: bool = False,
-) -> None:
-    """Ensure DNS resolution for a hostname does not target metadata or unapproved private IPs."""
+) -> tuple[str, ...]:
+    """Resolve and validate target IPs, returning deduplicated numeric IPs to pin connections."""
     parsed = urllib.parse.urlsplit(url)
     host = (parsed.hostname or "").lower().rstrip(".")
     if not host:
-        return
+        return ()
     try:
-        ipaddress.ip_address(host)
-        return
+        ip_literal = ipaddress.ip_address(host)
+        return (str(ip_literal),)
     except ValueError:
         pass
     del allowed_hosts
@@ -319,7 +324,12 @@ def _verify_dns_targets(
     try:
         records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as exc:
-        raise CheckError("the api observer cannot resolve host %s: %s" % (host, exc), ReasonCode.ERROR) from None
+        raise CheckError(
+            "the api observer cannot resolve host %s: %s" % (host, exc),
+            ReasonCode.ERROR,
+        ) from None
+    verified_ips: list[str] = []
+    seen_ips: set[str] = set()
     for family, _socktype, _proto, _canonname, sockaddr in records:
         if family not in (socket.AF_INET, socket.AF_INET6) or not sockaddr:
             continue
@@ -334,6 +344,154 @@ def _verify_dns_targets(
             allow_private_ips=allow_private_ips,
             raw_host=host,
         )
+        normalized_ip = str(ip_obj)
+        if normalized_ip not in seen_ips:
+            seen_ips.add(normalized_ip)
+            verified_ips.append(normalized_ip)
+    if not verified_ips:
+        raise CheckError(
+            "the api observer resolved no usable addresses for host %s" % host,
+            ReasonCode.ERROR,
+        )
+    return tuple(verified_ips)
+
+
+def _connect_pinned_ip(
+    ip_str: str,
+    port: int,
+    timeout: float | None,
+    source_address: tuple[str, int] | None,
+) -> socket.socket:
+    """Open a TCP socket to one pre-verified IP literal without DNS resolution."""
+    ip_obj = ipaddress.ip_address(ip_str)
+    family = socket.AF_INET6 if ip_obj.version == 6 else socket.AF_INET
+    sockaddr: tuple[Any, ...] = (ip_str, port, 0, 0) if ip_obj.version == 6 else (ip_str, port)
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if timeout is not None:
+            sock.settimeout(timeout)
+        if source_address is not None:
+            sock.bind(source_address)
+        sock.connect(sockaddr)
+        return sock
+    except OSError:
+        sock.close()
+        raise
+
+
+def _make_pinned_create_connection(
+    pinned_host: str,
+    pinned_ips: tuple[str, ...],
+) -> Callable[..., socket.socket]:
+    """Create a connection factory pinned to pre-verified IPs for one hostname."""
+
+    def _pinned_create_connection(
+        address: tuple[str, int],
+        timeout: float | None = socket._GLOBAL_DEFAULT_TIMEOUT,  # type: ignore[assignment]
+        source_address: tuple[str, int] | None = None,
+    ) -> socket.socket:
+        host, port = address
+        normalized = (host or "").lower().rstrip(".")
+        if normalized != pinned_host:
+            raise OSError("refused unpinned host connection to %s" % host)
+        actual_timeout = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+        last_err: OSError | None = None
+        for ip_str in pinned_ips:
+            try:
+                return _connect_pinned_ip(ip_str, int(port), actual_timeout, source_address)
+            except OSError as exc:
+                last_err = exc
+        if last_err is not None:
+            raise last_err
+        raise OSError("no pinned addresses succeeded for %s" % host)
+
+    return _pinned_create_connection
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    """HTTP handler pinning TCP connections to validated IPs while preserving Host headers."""
+
+    def __init__(self, pinned_host: str, pinned_ips: tuple[str, ...], debuglevel: int = 0) -> None:
+        super().__init__(debuglevel=debuglevel)
+        self._pinned_host = pinned_host
+        self._pinned_ips = pinned_ips
+
+    def http_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        create_conn = _make_pinned_create_connection(self._pinned_host, self._pinned_ips)
+
+        class _PinnedHTTPConnection(http.client.HTTPConnection):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                self._create_connection = create_conn
+
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler pinning TCP connections to validated IPs while preserving TLS SNI."""
+
+    def __init__(
+        self,
+        pinned_host: str,
+        pinned_ips: tuple[str, ...],
+        debuglevel: int = 0,
+        context: Any = None,
+    ) -> None:
+        super().__init__(debuglevel=debuglevel, context=context)
+        self._pinned_host = pinned_host
+        self._pinned_ips = pinned_ips
+
+    def https_open(self, req: urllib.request.Request) -> http.client.HTTPResponse:
+        create_conn = _make_pinned_create_connection(self._pinned_host, self._pinned_ips)
+
+        class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                self._create_connection = create_conn
+
+        return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
+
+
+def _build_safe_opener(
+    opener: urllib.request.OpenerDirector | None,
+    *,
+    pinned_host: str,
+    pinned_ips: tuple[str, ...],
+) -> urllib.request.OpenerDirector:
+    """Build a fresh OpenerDirector with redirects blocked and DNS rebinding prevented."""
+    if opener is not None and type(opener).open is not urllib.request.OpenerDirector.open:
+        return opener
+    clean = urllib.request.OpenerDirector()
+    ssl_context = None
+    debuglevel = 0
+    if opener is not None:
+        for handler in getattr(opener, "handlers", ()):
+            if isinstance(handler, urllib.request.HTTPRedirectHandler):
+                continue
+            if isinstance(handler, urllib.request.HTTPSHandler):
+                ssl_context = getattr(handler, "_context", ssl_context)
+                if pinned_ips:
+                    continue
+            elif isinstance(handler, urllib.request.HTTPHandler) and pinned_ips:
+                debuglevel = getattr(handler, "_debuglevel", 0)
+                continue
+            clean.add_handler(handler)
+    else:
+        for default_cls in (
+            urllib.request.ProxyHandler,
+            urllib.request.UnknownHandler,
+            urllib.request.HTTPDefaultErrorHandler,
+            urllib.request.HTTPErrorProcessor,
+        ):
+            clean.add_handler(default_cls())
+        if not pinned_ips:
+            clean.add_handler(urllib.request.HTTPHandler())
+            clean.add_handler(urllib.request.HTTPSHandler())
+    if pinned_ips:
+        clean.add_handler(_PinnedHTTPHandler(pinned_host, pinned_ips, debuglevel=debuglevel))
+        clean.add_handler(_PinnedHTTPSHandler(pinned_host, pinned_ips, debuglevel=debuglevel, context=ssl_context))
+    clean.add_handler(_NoRedirectHandler())
+    return clean
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -394,18 +552,23 @@ def http_fetch_observer(
         allow_insecure_loopback=allow_insecure_loopback,
         allow_private_ips=allow_private_ips,
     )
+    pinned_host = (urllib.parse.urlsplit(safe_url).hostname or "").lower().rstrip(".")
+    pinned_ips: tuple[str, ...] = ()
     if resolve_dns:
-        _verify_dns_targets(
+        pinned_ips = _verify_dns_targets(
             safe_url,
             allowed_hosts=allowed_hosts,
             allow_insecure_loopback=allow_insecure_loopback,
             allow_private_ips=allow_private_ips,
         )
     limit = max(1, int(timeout))
-    transport = opener if opener is not None else urllib.request.build_opener(_NoRedirectHandler())
+    transport = _build_safe_opener(opener, pinned_host=pinned_host, pinned_ips=pinned_ips)
+    request_headers = dict(headers)
+    if not any(key.lower() == "user-agent" for key in request_headers):
+        request_headers["User-Agent"] = DEFAULT_USER_AGENT
     attempts = 1 + max(0, int(max_retries))
     for attempt in range(attempts):
-        request = urllib.request.Request(safe_url, headers=dict(headers), method="GET")
+        request = urllib.request.Request(safe_url, headers=request_headers, method="GET")
         try:
             with transport.open(request, timeout=limit) as response:
                 return _read_bounded_http(response, max_bytes)
@@ -487,14 +650,25 @@ def _parse_utc_iso(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _row_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
-    """Extract canonical duplicate-check key ``(ruleId, seat, platform, hostId)``."""
-    return (
-        str(row.get("ruleId") or ""),
-        str(row.get("seat") or ""),
-        str(row.get("platform") or ""),
-        str(row.get("hostId") or ""),
-    )
+def _valid_row_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str] | None:
+    """Extract validated ``(ruleId, seat, platform, hostId)`` or ``None`` if omitted/malformed.
+
+    Fleet-wide compliance rules carry ``seat == ""`` intentionally; seat-scoped rules carry
+    a non-empty seat string.  Missing keys or non-string identity fields fail closed.
+    """
+    rule_id = row.get("ruleId")
+    seat = row.get("seat")
+    platform_val = row.get("platform")
+    host_id = row.get("hostId")
+    if not all(isinstance(v, str) for v in (rule_id, seat, platform_val, host_id)):
+        return None
+    assert isinstance(rule_id, str)
+    assert isinstance(seat, str)
+    assert isinstance(platform_val, str)
+    assert isinstance(host_id, str)
+    if not (rule_id and platform_val and host_id):
+        return None
+    return (rule_id, seat, platform_val, host_id)
 
 
 def build_evidence_sidecar(
@@ -514,9 +688,9 @@ def build_evidence_sidecar(
     """Build a scrubbed provenance sidecar record for one API observation."""
     scope_raw = row.get("scope")
     if isinstance(scope_raw, list) and all(isinstance(item, str) for item in scope_raw):
-        scope = tuple(scope_raw)
+        scope = tuple(scrub_secrets(item, secret_canaries) for item in scope_raw)
     elif rule.scope:
-        scope = rule.scope
+        scope = tuple(scrub_secrets(item, secret_canaries) for item in rule.scope)
     else:
         scope = ("cloud",)
     return EvidenceSidecar(
@@ -714,7 +888,8 @@ def evaluate_api_observation(
                 rule,
                 platform,
                 CheckState.UNKNOWN,
-                "unsupported api observation schemaVersion %r" % (schema_ver,),
+                "unsupported api observation schemaVersion %s"
+                % scrub_secrets(repr(schema_ver), secret_canaries),
                 ReasonCode.UNPARSEABLE,
                 ObservedState(),
                 ctx,
@@ -783,8 +958,8 @@ def evaluate_api_observation(
                 ),
                 None,
             )
-        key = _row_identity(item)
-        if not all(key):
+        key = _valid_row_identity(item)
+        if key is None or (key[0] == rule.id and bool(rule.seat) and not key[1]):
             return (
                 build_result(
                     rule,
@@ -840,7 +1015,8 @@ def evaluate_api_observation(
                 rule,
                 platform,
                 CheckState.UNKNOWN,
-                "unknown observerClass %r is refused" % (observer_raw,),
+                "unknown observerClass %s is refused"
+                % scrub_secrets(repr(observer_raw), secret_canaries),
                 ReasonCode.ERROR,
                 ObservedState(),
                 ctx,
@@ -1047,19 +1223,111 @@ def evaluate_api_observation(
     )
 
 
-def _query_url(base_url: str, *, nonce: str, rule: Rule, platform: str, host_id: str) -> str:
-    """Build the read-only GET query string for one observer check."""
-    query = urllib.parse.urlencode(
-        {
-            "ruleId": rule.id,
-            "seat": rule.seat,
-            "platform": platform,
-            "hostId": host_id,
-            "nonce": nonce,
-        }
+@dataclass
+class _CachedHostBatch:
+    """Per-run cache of validated multi-row host payloads or terminal host fetch failure."""
+
+    entries: list[tuple[str, bytes, frozenset[tuple[str, str, str, str]]]] = field(
+        default_factory=list
     )
+    error: tuple[str, ReasonCode] | None = None
+
+
+def _query_url(
+    base_url: str,
+    *,
+    nonce: str,
+    rule: Rule,
+    platform: str,
+    host_id: str,
+    include_rule_id: bool = True,
+) -> str:
+    """Build the read-only GET query string for a single rule or host-batch fetch."""
+    params: dict[str, str] = {
+        "platform": platform,
+        "hostId": host_id,
+        "nonce": nonce,
+    }
+    if include_rule_id:
+        params["ruleId"] = rule.id
+        params["seat"] = rule.seat
+    query = urllib.parse.urlencode(params)
     separator = "&" if "?" in base_url else "?"
     return base_url + separator + query
+
+
+def _index_batch_keys(
+    raw: bytes,
+    *,
+    expected_nonce: str,
+    max_bytes: int,
+    max_rows: int,
+) -> frozenset[tuple[str, str, str, str]]:
+    """Index verified identity keys from a valid envelope so matching rules skip extra GETs."""
+    try:
+        doc = _parse_strict_json_bytes(raw, max_bytes=max_bytes)
+    except CheckError:
+        return frozenset()
+    if not isinstance(doc, Mapping):
+        return frozenset()
+    schema_ver = doc.get("schemaVersion")
+    if isinstance(schema_ver, bool) or schema_ver != API_OBSERVATION_SCHEMA_VERSION:
+        return frozenset()
+    if not expected_nonce or doc.get("nonce") != expected_nonce:
+        return frozenset()
+    rows = doc.get("rows")
+    if not isinstance(rows, list) or len(rows) > max_rows:
+        return frozenset()
+    keys: set[tuple[str, str, str, str]] = set()
+    for item in rows:
+        if not isinstance(item, Mapping):
+            return frozenset()
+        key = _valid_row_identity(item)
+        if key is None or key in keys:
+            return frozenset()
+        keys.add(key)
+    return frozenset(keys)
+
+
+def _fetch_runtime_payload(
+    runtime: ApiObserverRuntime,
+    rule: Rule,
+    platform: str,
+    timeout: int,
+    *,
+    include_rule_id: bool,
+) -> tuple[str, bytes]:
+    """Perform one read-only observer GET for a rule or host batch."""
+    target = runtime.target
+    nonce = runtime.nonce_factory() if runtime.nonce_factory is not None else uuid.uuid4().hex
+    headers = dict(target.header_provider()) if target.header_provider is not None else {}
+    request_url = validate_observer_url(
+        _query_url(
+            target.base_url,
+            nonce=nonce,
+            rule=rule,
+            platform=platform,
+            host_id=target.expected_host_id,
+            include_rule_id=include_rule_id,
+        ),
+        allowed_hosts=target.allowed_hosts,
+        allow_insecure_loopback=target.allow_insecure_loopback,
+        allow_private_ips=target.allow_private_ips,
+    )
+    if runtime.fetcher is not None:
+        raw = runtime.fetcher(request_url, headers, timeout, target.max_bytes)
+    else:
+        raw = http_fetch_observer(
+            request_url,
+            headers,
+            timeout,
+            target.max_bytes,
+            allowed_hosts=target.allowed_hosts,
+            allow_insecure_loopback=target.allow_insecure_loopback,
+            allow_private_ips=target.allow_private_ips,
+            resolve_dns=runtime.resolve_dns,
+        )
+    return nonce, raw
 
 
 def api_collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
@@ -1067,6 +1335,10 @@ def api_collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
 
     When no observer runtime is configured in ``ctx.cache[API_OBSERVER_CACHE_KEY]``,
     return ``UNSUPPORTED`` honestly instead of inventing compliance outcomes.
+
+    Multi-row payloads returned for ``(host_id, platform)`` and terminal host transport
+    failures are cached in ``ctx.cache`` for the duration of the run so N rules against
+    one host do not exhaust ``RUN_DEADLINE_SECONDS`` with redundant sequential GETs.
     """
     runtime = ctx.cache.get(API_OBSERVER_CACHE_KEY)
     if not isinstance(runtime, ApiObserverRuntime):
@@ -1082,57 +1354,93 @@ def api_collect(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
         )
 
     target = runtime.target
-    nonce = runtime.nonce_factory() if runtime.nonce_factory is not None else uuid.uuid4().hex
-    headers = dict(target.header_provider()) if target.header_provider is not None else {}
-    timeout = max(1, min(int(ctx.timeout), int(target.timeout_seconds)))
-    try:
-        request_url = validate_observer_url(
-            _query_url(
-                target.base_url,
-                nonce=nonce,
-                rule=rule,
-                platform=platform,
-                host_id=target.expected_host_id,
-            ),
-            allowed_hosts=target.allowed_hosts,
-            allow_insecure_loopback=target.allow_insecure_loopback,
-            allow_private_ips=target.allow_private_ips,
-        )
-        if runtime.fetcher is not None:
-            raw = runtime.fetcher(request_url, headers, timeout, target.max_bytes)
+    target_key = (rule.id, rule.seat, platform, target.expected_host_id)
+    run_cache = ctx.cache.setdefault(_API_BATCH_CACHE_KEY, {})
+    batch_key = (
+        id(runtime),
+        target.service_id,
+        target.base_url,
+        platform,
+        target.expected_host_id,
+    )
+    batch: _CachedHostBatch | None = None
+    if isinstance(run_cache, dict):
+        cached = run_cache.get(batch_key)
+        if isinstance(cached, _CachedHostBatch):
+            batch = cached
         else:
-            raw = http_fetch_observer(
-                request_url,
-                headers,
+            batch = _CachedHostBatch()
+            run_cache[batch_key] = batch
+
+    if batch is not None and batch.error is not None:
+        err_msg, err_code = batch.error
+        return build_result(
+            rule,
+            platform,
+            CheckState.UNKNOWN,
+            err_msg,
+            err_code,
+            ObservedState(),
+            ctx,
+            collector=Collector.API,
+        )
+
+    nonce: str | None = None
+    raw: bytes | None = None
+    if batch is not None:
+        for cached_nonce, cached_raw, keys in batch.entries:
+            if target_key in keys:
+                nonce, raw = cached_nonce, cached_raw
+                break
+        if raw is None and target.batch_by_host and batch.entries:
+            nonce, raw, _ = batch.entries[0]
+
+    if raw is None or nonce is None:
+        timeout = max(1, min(int(ctx.timeout), int(target.timeout_seconds)))
+        try:
+            nonce, raw = _fetch_runtime_payload(
+                runtime,
+                rule,
+                platform,
                 timeout,
-                target.max_bytes,
-                allowed_hosts=target.allowed_hosts,
-                allow_insecure_loopback=target.allow_insecure_loopback,
-                allow_private_ips=target.allow_private_ips,
-                resolve_dns=runtime.resolve_dns,
+                include_rule_id=not target.batch_by_host,
             )
-    except CheckError as exc:
-        return build_result(
-            rule,
-            platform,
-            CheckState.UNKNOWN,
-            scrub_secrets(str(exc), runtime.secret_canaries),
-            exc.reason_code,
-            ObservedState(),
-            ctx,
-            collector=Collector.API,
-        )
-    except Exception as exc:  # noqa: BLE001 - fail closed on unexpected transport error
-        return build_result(
-            rule,
-            platform,
-            CheckState.UNKNOWN,
-            scrub_secrets("the api observer transport failed: %s" % exc, runtime.secret_canaries),
-            ReasonCode.ERROR,
-            ObservedState(),
-            ctx,
-            collector=Collector.API,
-        )
+        except CheckError as exc:
+            msg = scrub_secrets(str(exc), runtime.secret_canaries)
+            if batch is not None:
+                batch.error = (msg, exc.reason_code)
+            return build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                msg,
+                exc.reason_code,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed on unexpected transport error
+            msg = scrub_secrets("the api observer transport failed: %s" % exc, runtime.secret_canaries)
+            if batch is not None:
+                batch.error = (msg, ReasonCode.ERROR)
+            return build_result(
+                rule,
+                platform,
+                CheckState.UNKNOWN,
+                msg,
+                ReasonCode.ERROR,
+                ObservedState(),
+                ctx,
+                collector=Collector.API,
+            )
+        if batch is not None:
+            keys = _index_batch_keys(
+                raw,
+                expected_nonce=nonce,
+                max_bytes=target.max_bytes,
+                max_rows=target.max_rows,
+            )
+            batch.entries.append((nonce, raw, keys))
 
     result, sidecar = evaluate_api_observation(
         rule,
@@ -1182,6 +1490,7 @@ def build_first_cloud_seat_rules(
     Callers must supply real registered targets and digests; never invent endpoints.
     """
     prefix = "%s-%s" % (seat.lower(), host_id.lower())
+    hooks_ttl = max(int(ttl_seconds), 86400) if hook_proof_level is ProofLevel.L2 else int(ttl_seconds)
     return (
         Rule(
             id="%s-instructions" % prefix,
@@ -1223,7 +1532,7 @@ def build_first_cloud_seat_rules(
             owner_seat=owner_seat,
             autofix_allowed=False,
             collector=Collector.API,
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=hooks_ttl,
             seat=seat,
             source=source,
         ),
