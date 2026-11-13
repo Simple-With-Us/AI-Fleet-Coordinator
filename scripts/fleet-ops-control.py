@@ -1806,8 +1806,9 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
     return document, (status if status in (0, 1, 2) else 1)
 
 
-def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=None,
-                         request_id=None, created_at=None):
+def eavesdropper_settings(
+    ctx, action, changes, expect=None, file=None, remove=None, request_id=None, created_at=None
+):
     """(answer fields, exit status) of one eavesdropper-settings request, or Refused / Failed.
 
     `file` runs the editor in this process on that file;  without it the editor runs in the
@@ -1936,15 +1937,23 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
                 raise ValueError()
         except (ValueError, AttributeError):
-            raise Refused("a canonical requestID is required", error_code="request_id_required") from None
+            raise Refused(
+                "a canonical requestID is required", error_code="request_id_required"
+            ) from None
         if type(created_at) is not int or created_at <= 0:
             raise Refused("requestCreatedAt is required", error_code="request_time_required")
     if isinstance(request, dict) and request.get("action") == "reconcile":
         if set(request) != {"action", "requestID", "requestCreatedAt"} or mode != "yes":
-            raise Refused("reconcile requires --yes and the original request identity only", error_code="usage")
+            raise Refused(
+                "reconcile requires --yes and the original request identity only",
+                error_code="usage",
+            )
         return "reconcile", None, None, None, request_id, created_at
     if isinstance(request, dict) and request.get("action") == "initialize":
-        if set(request) != {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"} or mode != "yes":
+        if (
+            set(request) != {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"}
+            or mode != "yes"
+        ):
             raise Refused(
                 "initialize requires --yes and the runtime-file revision only", error_code="usage"
             )
@@ -1956,7 +1965,16 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
         return "initialize", None, None, expected, request_id, created_at
     if (
         not isinstance(request, dict)
-        or set(request) - {"action", "set", "remove", "expectPlanSHA256", "expectBaseSHA256", "requestID", "requestCreatedAt"}
+        or set(request)
+        - {
+            "action",
+            "set",
+            "remove",
+            "expectPlanSHA256",
+            "expectBaseSHA256",
+            "requestID",
+            "requestCreatedAt",
+        }
         or not isinstance(request.get("set"), dict)
         or not request["set"]
         or not isinstance(request.get("remove", []), list)
@@ -3618,15 +3636,20 @@ def handle(
             _server_only(ctx)
             if target != EAVESDROPPER_SETTINGS_TARGET:
                 raise Refused("only the server's Eavesdropper has settings here")
-            edit_action, changes, remove, expect, request_id, created_at = eavesdropper_settings_request_from_stdin(
-                ctx, mode
+            edit_action, changes, remove, expect, request_id, created_at = (
+                eavesdropper_settings_request_from_stdin(ctx, mode)
             )
             with contextlib.ExitStack() as held:
                 if mode == "yes" and not lock_held:
                     held.enter_context(action_lock(ctx))
                 fields, code = eavesdropper_settings(
-                    ctx, edit_action, changes, expect, remove=remove,
-                    request_id=request_id, created_at=created_at,
+                    ctx,
+                    edit_action,
+                    changes,
+                    expect,
+                    remove=remove,
+                    request_id=request_id,
+                    created_at=created_at,
                 )
             answer.update(fields)
             if mode == "yes":
