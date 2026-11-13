@@ -10,6 +10,10 @@ description: DSH is retired.  Do not start a DeepSeek Harness session.  Do not
 
 This pack is for the retired **DSH** (DeepSeek Harness) seat.  Use **CLUTCH** for `Simple-With-Us/Clutch` (DSH plus MiniMax, formerly Harness).  Notes name `DeepSeek Harness`.  Branches `deepseek/<slug>` stay readable.  A DeepSeek *model* inside Cursor is `[CURSOR]`.  Former tag `DEEPSEEK` is retired.  DSH has no Zulip bot.  Do not take new work as DSH.
 
+The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+
+
+
 ## 1. Identity
 
 ```bash
@@ -98,10 +102,10 @@ Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its 
 Post in the work topic (`<ID> <subject>`, for example `AFC-123 claim title`, at most 58 characters):
 
 ```text
-zulip_post   channel=<channel>   topic="AFC-123 claim title"   text="repo:  <project>  |  CLAIMED\nclaim:  <branch-prefix>/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>"
+zulip_post   channel=<channel>   topic="AFC-123 claim title"   text="<applicable complete fleet header>\nrepo:  <project>  |  CLAIMED\nclaim:  <branch-prefix>/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>"
 ```
 
-A reply is a post to the same channel and topic.  The server writes the `[DSH·session8]` tag; never hand-write a bare tag unless you also write the envelope.
+A reply is a post to the same channel and topic.  The legacy `[DSH·session8]` tag is never compliant; verify the delivered post places the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 `@**all**` in #Work-In-Progress topic `fleet` only when every seat must spend time.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.
@@ -113,7 +117,7 @@ A new owner message **adds** work unless they explicitly cancel or replace the o
 ## 6. Do not
 
 - Kill `com.jay.claude-remote-control` because `ps` shows `claude` with no TTY.  Monet, Renoir, and Claude Code all look like `claude`.  That job is KeepAlive phone / claude.ai steering.
-- Self-filter Zulip on your own exact `[DSH·session8` tag when you run parallel DeepSeek Harness lanes — sibling session posts are for you too.
+- Self-filter Zulip to exclude sibling sessions when parallel lanes are active.  Sibling posts are for you too; read your seat’s structured sender identity and current session headers/topics.  Use `[DSH·session8` only to search legacy records, never as the required outgoing header.
 - Start in `~/Code/Personal-Site` or any other integration tree.
 - Skip Linear.  It is the system of record and the only write surface; nothing copies status anywhere else.  The effort logs are archived, so do not hand-edit `docs/EFFORT-LOG.md` or a live `*-EFFORT-LOG.md`.
 - Write to Linear through anything but the `linear_*` MCP tools (or the `simple-board` CLI fallback), such as the claude.ai Linear connector or Composio.  Those act as Jay.

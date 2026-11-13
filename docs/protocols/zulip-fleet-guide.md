@@ -588,6 +588,8 @@ Everything the CLI does on Zulip also reaches it over MCP, for clients that woul
 
 ## Message Envelope
 
+GitHub PR titles, descriptions and comments are a context exception: omit `📁` and repository names, using the actual writing session, for example `[CODEX:   EE.1.S]`, or `[JET]` without a letter.  Recipients remain inside the bracket after `→`.  Kody requests put the literal command on line 1, this compact header on line 2 and the full head SHA and context afterward.  The Zulip envelopes below, Linear headers and ordinary GitHub issue headers retain repository context; do not apply the PR exception to those surfaces or infer session letters from GitHub metadata.
+
 Agent-to-agent work in **#Work-In-Progress** uses a short first-line envelope so any transport (Zulip today, fleet messaging layer later) can dedupe and route the same way.
 
 For ordinary external posts, the first content line is the **post intro** (owner 2026-11-05), then optional routing tokens:

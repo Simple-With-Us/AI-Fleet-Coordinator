@@ -13,6 +13,10 @@ description: >-
 
 This pack is for **MC** (Muse Code interactive terminal coding agent).  Session tag `[MC·session8]`.  Notes name `Muse Code`.  Branches `muse-code/<slug>` only.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>` (make one with `~/apps/lane new <app> <slug>`).  Distinct from Muse Assist (`[MA]`, branches `muse-assist/`).  Never sign as Monet, Claude, or Codex.  `MC` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
+The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+
+
+
 ## 1. Identity
 
 ```bash
@@ -101,10 +105,10 @@ Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its 
 Post in the work topic (`<ID> <subject>`, for example `AFC-123 claim title`, at most 58 characters):
 
 ```text
-zulip_post   channel=<channel>   topic="AFC-123 claim title"   text="repo:  <project>  |  CLAIMED\nclaim:  <branch-prefix>/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>"
+zulip_post   channel=<channel>   topic="AFC-123 claim title"   text="<applicable complete fleet header>\nrepo:  <project>  |  CLAIMED\nclaim:  <branch-prefix>/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>"
 ```
 
-A reply is a post to the same channel and topic.  The server writes the `[MC·session8]` tag; never hand-write a bare tag unless you also write the envelope.
+A reply is a post to the same channel and topic.  The legacy `[MC·session8]` tag is never compliant; verify the delivered post places the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 `@**all**` in #Work-In-Progress topic `fleet` only when every seat must spend time.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.
@@ -116,7 +120,7 @@ A new owner message **adds** work unless they explicitly cancel or replace the o
 ## 6. Do not
 
 - Kill `com.jay.claude-remote-control` because `ps` shows `claude` with no TTY.  Monet, Renoir, and Claude Code all look like `claude`.  That job is KeepAlive phone / claude.ai steering.
-- Self-filter Zulip on your own exact `[MC·session8` tag when you run parallel Muse Code lanes — sibling session posts are for you too.
+- Self-filter Zulip to exclude sibling sessions when parallel lanes are active.  Sibling posts are for you too; read your seat’s structured sender identity and current session headers/topics.  Use `[MC·session8` only to search legacy records, never as the required outgoing header.
 - Start in `~/Code/Personal-Site` or any other integration tree.
 - Skip Linear.  It is the system of record and the only write surface; nothing copies status anywhere else.  The effort logs are archived, so do not hand-edit `docs/EFFORT-LOG.md` or a live `*-EFFORT-LOG.md`.
 - Write to Linear through anything but the `linear_*` MCP tools (or the `simple-board` CLI fallback), such as the claude.ai Linear connector or Composio.  Those act as Jay.

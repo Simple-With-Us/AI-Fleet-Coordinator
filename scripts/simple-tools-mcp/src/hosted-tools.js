@@ -155,7 +155,7 @@ import {
   STATUS_WORDS,
 } from "./linear.js";
 import { GAP, fixOutbound } from "./textfmt.js";
-import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
+import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, compactGitHubArgs, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
@@ -1715,10 +1715,10 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
@@ -2535,13 +2535,14 @@ for (const action of WF_V1_ACTIONS) {
     // AFC-722:  the gap is written before the relay's own checks, so they see the bytes that will land.  A
     // gapped body that no longer fits a byte cap (U+00A0 is two UTF-8 bytes) is sent as written instead, and the
     // result says so.
-    const gapped = gapGitHubArgs(action, args);
+    const compacted = compactGitHubArgs(action, args, { seat: seatTagForSeat(this.seat) });
+    const gapped = gapGitHubArgs(action, compacted, { seat: seatTagForSeat(this.seat) });
     let parsedArgs = parseWfV1Args(action, gapped);
-    if (parsedArgs === null && gapped !== args) {
-      parsedArgs = parseWfV1Args(action, args);
+    if (parsedArgs === null && gapped !== compacted) {
+      parsedArgs = parseWfV1Args(action, compacted);
       if (parsedArgs !== null) {
         for (const field of GITHUB_GAP_FIELDS[action] ?? []) {
-          if (gapped[field] !== args[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
+          if (gapped[field] !== compacted[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
         }
       }
     }

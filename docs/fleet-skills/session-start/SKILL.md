@@ -8,6 +8,8 @@ description: >-
 
 This pack is for the **MONET** Claude account.  Session tag `[MONET·session8]`.  Notes name `Monet`.  Branches `monet/<slug>` only.
 
+The session tag named above is a legacy transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
+
 CLAUDE and MONET are two different Claude accounts.  Local `~/.claude` (hooks, memory, skills) is shared.  The worktree folder is **not** a seat signal.  Pin `AGENT_SEAT=MONET`.  If the owner did not name Monet and the worktree is anonymous, **ask** — do not default to CLAUDE.  Incident: 2026-07-05 CLAUDE↔MONET ping-pong from inferred seats.
 
 ## 1. Identity
@@ -98,10 +100,10 @@ Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its 
 Post in the work topic (`<ID> <subject>`, for example `AFC-123 claim title`, at most 58 characters):
 
 ```text
-zulip_post   channel=<channel>   topic="AFC-123 claim title"   text="repo:  <project>  |  CLAIMED\nclaim:  monet/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>"
+zulip_post   channel=<channel>   topic="AFC-123 claim title"   text="<applicable complete fleet header>\nrepo:  <project>  |  CLAIMED\nclaim:  monet/<slug>\nclaimed:  <Day, Mon D, YYYY>\nwork: <one line>"
 ```
 
-A reply is a post to the same channel and topic.  The server writes the `[MONET·session8]` tag; never hand-write a bare tag unless you also write the envelope.
+A reply is a post to the same channel and topic.  The legacy `[MONET·session8]` tag is never compliant; verify the delivered post places the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
 
 `@**all**` in #Work-In-Progress topic `fleet` only when every seat must spend time.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.
@@ -113,7 +115,7 @@ A new owner message **adds** work unless they explicitly cancel or replace the o
 ## 6. Do not
 
 - Kill `com.jay.claude-remote-control` because `ps` shows `claude` with no TTY.  Monet, Renoir, and Claude Code all look like `claude`.  That job is KeepAlive phone / claude.ai steering.
-- Self-filter Zulip on your own exact `[MONET·session8` tag when you run parallel Monet lanes — sibling session posts are for you too.
+- Self-filter Zulip to exclude sibling sessions when parallel lanes are active.  Sibling posts are for you too; read your seat’s structured sender identity and current session headers/topics.  Use `[MONET·session8` only to search legacy records, never as the required outgoing header.
 - Start in `~/Code/Personal-Site` or any other integration tree.
 - Skip Linear.  It is the system of record and the only write surface; nothing copies status anywhere else.  The effort logs are archived, so do not hand-edit `docs/EFFORT-LOG.md` or a live `*-EFFORT-LOG.md`.
 - Write to Linear through anything but the `linear_*` MCP tools (or the `simple-board` CLI fallback), such as the claude.ai Linear connector or Composio.  Those act as Jay.
