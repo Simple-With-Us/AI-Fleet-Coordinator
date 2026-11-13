@@ -55,7 +55,7 @@ test("general query preserves variables and fences arbitrary API resources", asy
   const result = await tools.call("linear_query", { query, variables: { after: "cursor" } });
   assert.equal(payload(result).projects.nodes[0].id, "p1");
   assert.deepEqual(requests[0].variables, { after: "cursor" });
-  assert.deepEqual(result.structuredContent, {});
+  assert.equal(result.structuredContent, undefined);
 });
 
 test("read tool rejects mutations before any API call", async () => {

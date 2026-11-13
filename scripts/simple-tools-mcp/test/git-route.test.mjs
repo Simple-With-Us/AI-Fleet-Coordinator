@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { isGitPath, serveGit } from "../src/git-route.js";
+import { GR_UNAVAILABLE_REASON } from "../src/gr-tools.js";
 
 const ENV = { GR_UPSTREAM_URL: "https://relay.example" };
 const SECRETS = async () => ({ accessId: "access-id", accessSecret: "access-secret" });
@@ -82,18 +83,18 @@ test("a missing setting is named, never valued", async () => {
   const { fetchImpl } = upstream();
   const noUrl = await serveGit(new Request(ADV, { headers: AUTH }), {}, { fetchImpl, secrets: SECRETS });
   assert.equal(noUrl.status, 503);
-  const noUrlText = await noUrl.text();
-  assert.match(noUrlText, /GR_UPSTREAM_URL/);
-  assert.doesNotMatch(noUrlText, /accessId|accessSecret/);
+  const noUrlBody = await noUrl.json();
+  assert.equal(noUrlBody.error, "not_configured");
+  assert.equal(noUrlBody.reason, GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING);
+  assert.deepEqual(noUrlBody.missing, ["GR_UPSTREAM_URL"]);
+  assert.doesNotMatch(JSON.stringify(noUrlBody), /accessId|accessSecret/);
   const noPair = async () => ({ accessId: "", accessSecret: "" });
-  const noPairResp = await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: noPair });
-  const noPairText = await noPairResp.text();
-  assert.match(noPairText, /accessId/);
-  assert.match(noPairText, /accessSecret/);
+  const noPairBody = await (await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: noPair })).json();
+  assert.deepEqual(noPairBody.missing.sort(), ["GR_ACCESS_CLIENT_ID", "GR_ACCESS_CLIENT_SECRET"].sort());
   const halfPair = async () => ({ accessId: "access-id", accessSecret: "" });
-  const halfText = await (await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: halfPair })).text();
-  assert.match(halfText, /accessSecret/);
-  assert.doesNotMatch(halfText, /access-id/);
+  const halfBody = await (await serveGit(new Request(ADV, { headers: AUTH }), ENV, { fetchImpl, secrets: halfPair })).json();
+  assert.deepEqual(halfBody.missing, ["GR_ACCESS_CLIENT_SECRET"]);
+  assert.doesNotMatch(JSON.stringify(halfBody), /access-id/);
 });
 
 test("an upstream redirect is refused, never relayed", async () => {

@@ -133,8 +133,8 @@ FLEET RECALL AND DELEGATION
 - recall "query" before re-deriving a lesson, before debugging anything familiar, and before asking the owner a
   question a past ruling probably answers.  A hit is a lead, not a verdict.  Contribute one reusable lesson at
   closeout.
-- Fleet mode (~/apps/FLEET-MODE.md):  delegate mechanical work to subagents with a thorough brief, keep turns short,
-  stay reachable.  A subagent inherits your seat and posts, if at all, through your bot.
+- Fleet mode (~/apps/FLEET-MODE.md):  delegate mechanical work to subagents with a thorough brief and only the tools and context each needs,
+  and carry the work to done without stopping early.  A subagent inherits your seat and posts, if at all, through your bot.
 
 YOUR FIRST UNIT, NOW
 1. Prove the surfaces and report each result:  simple-chat whoami --as OPENCODE;  simple-board stats;
