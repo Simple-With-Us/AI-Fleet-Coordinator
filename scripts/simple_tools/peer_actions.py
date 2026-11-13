@@ -21,7 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -217,7 +217,10 @@ def load_service_account_json(env: Mapping[str, str] | None = None) -> dict[str,
         raise PeerActionsError("invalid_secret", "GOOGLE_SHEETS_SA is not valid JSON") from exc
 
 
-def _clean_field(name: str, value: str, *, min_len: int = TEXT_MIN, max_len: int = TEXT_MAX) -> str:
+def _clean_field(
+    name: str, value: str, *, min_len: int = TEXT_MIN, max_len: int = TEXT_MAX,
+    known: Iterable[str] = (),
+) -> str:
     if not isinstance(value, str):
         raise PeerActionsError("invalid_argument", f"{name} must be a string")
     text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -227,13 +230,13 @@ def _clean_field(name: str, value: str, *, min_len: int = TEXT_MIN, max_len: int
         raise PeerActionsError("invalid_argument", f"{name} must be at most {max_len} characters")
     if "\n" in text:
         raise PeerActionsError("invalid_argument", f"{name} must be a single line")
-    if secretscan.scan(text):
+    if secretscan.scan(text, known):
         raise PeerActionsError("refused_secret", f"{name} contains credential-shaped text")
     return text
 
 
-def _clean_seat(name: str, value: str) -> str:
-    text = _clean_field(name, value, max_len=32)
+def _clean_seat(name: str, value: str, known: Iterable[str] = ()) -> str:
+    text = _clean_field(name, value, max_len=32, known=known)
     seat = I.canonical_seat(text)
     if not SEAT_PATTERN.match(seat):
         raise PeerActionsError("invalid_argument", f"{name} must be a fleet seat tag")
@@ -277,14 +280,16 @@ def build_entry(
     action_taken: str,
     result: str,
     now: datetime | None = None,
+    known: Iterable[str] = (),
 ) -> LogEntry:
+    known = tuple(known)
     return LogEntry(
         when=central_timestamp(now),
-        acting_seat=_clean_seat("acting_seat", acting_seat),
-        requesting_seat=_clean_seat("requesting_seat", requesting_seat),
-        request_source=_clean_field("request", request_source),
-        action_taken=_clean_field("action_taken", action_taken),
-        result=_clean_field("result", result),
+        acting_seat=_clean_seat("acting_seat", acting_seat, known),
+        requesting_seat=_clean_seat("requesting_seat", requesting_seat, known),
+        request_source=_clean_field("request", request_source, known=known),
+        action_taken=_clean_field("action_taken", action_taken, known=known),
+        result=_clean_field("result", result, known=known),
     )
 
 
