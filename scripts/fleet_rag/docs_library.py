@@ -19,7 +19,14 @@ import stat
 import subprocess
 import tempfile
 
-MAX_BYTES = 400 * 1024
+MAX_BYTES = 1024 * 1024
+MAX_PDF_OUTPUT_BYTES = 400 * 1024
+
+
+class DocumentTooLarge(ValueError):
+    """A bounded content exclusion, independent of collection integrity."""
+
+
 APPROVED_OWNERS = frozenset({'simple-with-us', 'jaywedgeworth22'})
 TEXT_SUFFIXES = frozenset({'.md', '.txt', '.html', '.htm'})
 HUMAN_SUFFIXES = TEXT_SUFFIXES | {'.pdf'}
@@ -60,7 +67,9 @@ def safe_file(root, relative, maximum=MAX_BYTES):
         os.close(directory_fd)
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+        if before.st_size > maximum and stat.S_ISREG(before.st_mode):
+            raise DocumentTooLarge('document-input-too-large')
+        if not stat.S_ISREG(before.st_mode):
             raise ValueError('document-type-or-size-refused')
         data = stream.read(maximum + 1)
         after = os.fstat(stream.fileno())
@@ -170,7 +179,7 @@ def _pdf_text(data):
     if len(data) > MAX_PDF_BYTES:
         raise ValueError('pdf-input-too-large')
     def limits():
-        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_BYTES, MAX_BYTES))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_PDF_OUTPUT_BYTES, MAX_PDF_OUTPUT_BYTES))
         resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
     with tempfile.TemporaryDirectory(prefix='fleet-rag-pdf-') as temporary:
         source = Path(temporary) / 'document.pdf'
@@ -185,8 +194,8 @@ def _pdf_text(data):
                 raise ValueError('pdf-extraction-failed') from None
             if result.returncode != 0:
                 raise ValueError('pdf-extraction-failed')
-            output.seek(0); extracted = output.read(MAX_BYTES + 1)
-    if not extracted.strip() or len(extracted) > MAX_BYTES:
+            output.seek(0); extracted = output.read(MAX_PDF_OUTPUT_BYTES + 1)
+    if not extracted.strip() or len(extracted) > MAX_PDF_OUTPUT_BYTES:
         raise ValueError('pdf-output-empty-or-too-large')
     return extracted.decode('utf-8')
 
@@ -267,7 +276,11 @@ def library_documents(root, repositories, canonical, make_doc, excluded, warn, k
                         continue
                     if excluded(Path(source)):
                         continue
-                    data = safe_file(child, output, maximum=MAX_PDF_BYTES if Path(source).suffix.casefold() == '.pdf' else MAX_BYTES)
+                    try:
+                        data = safe_file(child, output, maximum=MAX_PDF_BYTES if Path(source).suffix.casefold() == '.pdf' else MAX_BYTES)
+                    except DocumentTooLarge:
+                        warn('doc: unreadable-or-excluded generated document input above bounded size cap')
+                        continue
                     digest = hashlib.sha256(data).hexdigest()
                     if digest != record.get('sha256'):
                         raise ValueError('generated-content-hash-mismatch')

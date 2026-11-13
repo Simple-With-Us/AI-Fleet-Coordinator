@@ -63,6 +63,32 @@ class LibraryTests(unittest.TestCase):
         self.assertIn('previous authoritative version',result[0].text_markdown)
         self.assertNotIn('source_aliases',self.document.extra)
 
+    def test_large_tracked_generated_text_is_canonical_and_oversize_does_not_quarantine(self):
+        raw = ('A supported human document paragraph.\n' * 15000).encode()
+        self.assertGreater(len(raw), 400 * 1024)
+        self.assertLess(len(raw), library.MAX_BYTES)
+        (self.repo/'docs/current.md').write_bytes(raw)
+        self.run_git('add', '.'); self.run_git('commit', '-q', '-m', 'large human document')
+        self.repositories = library.discover_repositories(self.code)
+        self.canonical = {}
+        child, manifest = self.collection(raw)
+        huge = b'A' * (library.MAX_BYTES + 1)
+        (child/'documents/docs/oversize.md').write_bytes(huge)
+        manifest['files']['documents/docs/oversize.md'] = {'source_path':'docs/oversize.md', 'sha256':hashlib.sha256(huge).hexdigest()}
+        (child/'manifest.json').write_text(json.dumps(manifest))
+        self.read()
+        document, actual = self.canonical['doc/Clutch/docs/current.md']
+        self.assertEqual(actual, raw)
+        self.assertEqual(document.text_markdown.encode(), raw)
+        self.assertEqual(document.extra['source_sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertEqual(document.extra['source_aliases'], [str(child/'documents/docs/current.md')])
+        self.assertTrue(any('above bounded size cap' in warning for warning in self.warnings))
+        self.assertFalse(any('no aliases trusted' in warning for warning in self.warnings))
+        with mock.patch.object(sources.mirror, 'configured_root', return_value=None):
+            selected = list(sources.iter_docs(fleet_repo=self.root/'absent',fleet_ops=self.root/'absent-ops',extra=[],code_dir=self.code,apps_dir=None,grok_home=None))
+        self.assertEqual(sum(doc.doc_id == document.doc_id for doc in selected), 1)
+        self.assertFalse(sources.take_source_read_receipt('doc')['source_complete'])
+
     def test_missing_generated_content_marks_source_incomplete_but_absent_manifest_does_not(self):
         child,_=self.collection()
         missing=child/'documents/docs/current.md'
