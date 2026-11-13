@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fast-forward clean clones in the Code root to origin's main branch.  Never touches dirty work.
 
-The tracked source of the server's `code-main-sync` job, which until AFC-618 lived only on the host.  The Mac's equivalent
-is the pm2 job `code-main-keeper` (`~/apps/code-main-keeper.sh`), which is left as it is.
+The shared implementation of the server's `code-main-sync` job and the Mac's existing `code-main-keeper` schedule.  The
+Mac's compatibility shell entrypoint delegates here; synchronization behavior is implemented only once.
 
     python3 code_main_sync.py [--dry-run]
 
@@ -383,7 +383,7 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         return
     clear_stale_index_lock(repo, time.time(), False)
     # The merge may fetch missing blobs of a partial clone, so it takes the same route as the fetch.
-    code, _, err = git_full(repo, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--no-overwrite-ignore",
+    code, _, err = git_full(repo, "merge", "--ff-only", "--no-overwrite-ignore",
                               "--quiet", "origin/main", extra_env=relay_env)
     if code != 0:
         counters["failed"] += 1
