@@ -990,7 +990,9 @@ def fake_named_reader(test, values, codes=None):
     test.secret_reads = []
 
     def fetch(project, path, env, *, token, names, timeout, max_output_bytes):
-        test.secret_reads.append((project, path, dict(env), token, names, timeout, max_output_bytes))
+        test.secret_reads.append(
+            (project, path, dict(env), token, names, timeout, max_output_bytes)
+        )
         (name,) = names
         code = (codes or {}).get(name, 0 if name in values else 3)
         if code == 3:
@@ -1001,8 +1003,11 @@ def fake_named_reader(test, values, codes=None):
 
     patch = mock.patch.dict(
         sys.modules,
-        {"fleet_infisical": SimpleNamespace(
-            __file__=str(HERE.parent / "fleet_infisical.py"), bounded_fetch_project=fetch)},
+        {
+            "fleet_infisical": SimpleNamespace(
+                __file__=str(HERE.parent / "fleet_infisical.py"), bounded_fetch_project=fetch
+            )
+        },
     )
     patch.start()
     test.addCleanup(patch.stop)
@@ -1315,8 +1320,13 @@ class DirectCredentialTests(unittest.TestCase):
         self.api.metadata_override = self.metadata
         # The adapter receives no API override; this test adds loopback only after that assertion.
         return self.actual_bounded(
-            project, path, {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]},
-            token=token, names=names, timeout=timeout, max_output_bytes=max_output_bytes,
+            project,
+            path,
+            {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]},
+            token=token,
+            names=names,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
         )
 
     def test_real_exact_scope_named_read_uses_only_own_token_and_preserves_cache(self):
@@ -1449,7 +1459,9 @@ print('preloaded-reader-refused')
                 timeout=10,
             )
         self.assertEqual(
-            (result.returncode, result.stdout.strip()), (0, "preloaded-reader-refused"), result.stderr
+            (result.returncode, result.stdout.strip()),
+            (0, "preloaded-reader-refused"),
+            result.stderr,
         )
 
     def test_isolated_managed_payload_ignores_hostile_import_paths(self):
