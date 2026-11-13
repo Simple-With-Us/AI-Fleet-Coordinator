@@ -23,9 +23,7 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import stat
-import subprocess
 import sys
 import time
 import urllib.error
@@ -34,6 +32,8 @@ import urllib.request
 import uuid
 from collections.abc import Iterable
 from typing import Any
+
+import fleet_infisical as FI
 
 from .storage_guard import StorageGuard, StorageGuardError
 
@@ -47,7 +47,8 @@ SHARED_ENV = "prod"
 NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
-INFISICAL_READ_TOKEN = "FLEET_RECALL_INFISICAL_TOKEN"
+TOKEN_ENV = "FLEET_RECALL_INFISICAL_TOKEN"
+INFISICAL_READ_TOKEN = TOKEN_ENV  # Public compatibility name; this is an environment name, never a value.
 # The same binding kept in a file of the caller's own, so every caller of recall (the CLI, the MCP servers, the
 # nightly) gets it without the value sitting in a config file or a shell profile.  FLEET_RECALL_INFISICAL_TOKEN_FILE
 # names it;  otherwise ~/.secrets/fleet-recall-infisical.env is used when it exists.  The variable always wins.
@@ -254,66 +255,38 @@ def _identity(prefix: str) -> tuple[None, None]:
     return None, None
 
 
-FLEET_SECRETS_TIMEOUT = 60
-_FLEET_SECRETS_PICK = (
-    "import json,os,sys;"
-    "print(json.dumps({n:os.environ[n] for n in sys.argv[1:] if os.environ.get(n)}))"
-)
-
-
-def _fleet_secrets_bin() -> str | None:
-    """The `fleet-secrets` command (OPS-818) on PATH or in ~/.local/bin, or None."""
-    found = shutil.which("fleet-secrets")
-    if found:
-        return found
-    local = pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    return str(local) if local.is_file() and os.access(local, os.X_OK) else None
+OPTIONAL_SECRET_TIMEOUT = 60
 
 
 def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
-    """Values of `names` that `fleet-secrets` can supply, from one fetch.  Missing command,
-    a failure or an absent name just leaves that name out;  values are never logged.
+    """Optional named reads in Fleet-OPS prod root through this consumer's own explicit binding.
 
-    One `fleet-secrets run` fetches Fleet-OPS once and starts a tiny child that prints only the
-    wanted names as JSON on a pipe, so N names cost one fetch rather than N `get` calls.
-    """
-    wanted = [n for n in names if n]
-    binary = _fleet_secrets_bin()
-    if not wanted or not binary:
+    The legacy name is compatibility only.  No app, CLI login, recall-project token or credential
+    file is consulted; a missing binding, refused grant or failed read leaves names absent."""
+    wanted = tuple(dict.fromkeys(n for n in names if n))
+    if not wanted:
         return {}
     try:
-        proc = subprocess.run(
-            [binary, "run", "--", sys.executable, "-c", _FLEET_SECRETS_PICK, *wanted],
-            capture_output=True,
-            text=True,
-            timeout=FLEET_SECRETS_TIMEOUT,
+        env = dict(os.environ)
+        env[FI.ENV_READ_PATHS] = "/"
+        project = FI.infisical_project_id(env, FI.home_dir(env))
+        binding = FI.resolve_token(env)
+        got = FI.fetch_project(
+            project, "/", env, token=binding, names=wanted, timeout=OPTIONAL_SECRET_TIMEOUT
         )
-        if proc.returncode != 0:
-            return {}
-        got = json.loads(proc.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (FI.SecretsError, TimeoutError, OSError, ValueError):
         return {}
     return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
 
 
 def fleet_secret(name: str) -> str | None:
-    """One value via `fleet-secrets`, or None."""
+    """One optional direct Fleet-OPS value, or None."""
     return fleet_secrets_many([name]).get(name)
 
 
 def fleet_secret_get(name: str) -> str | None:
-    """One value via `fleet-secrets get NAME` (works for INFISICAL_* names that `run` refuses),
-    or None for a missing command, a failure or an absent name.  The value is never logged."""
-    binary = _fleet_secrets_bin()
-    if not name or not binary:
-        return None
-    try:
-        proc = subprocess.run(
-            [binary, "get", name], capture_output=True, text=True, timeout=FLEET_SECRETS_TIMEOUT
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    value = proc.stdout.strip() if proc.returncode == 0 else ""
+    """Compatibility name for a direct named read; no child process receives the value."""
+    value = (fleet_secret(name) or "").strip()
     return value or None
 
 
@@ -386,39 +359,39 @@ def read_token_binding() -> str | None:
 
 def infisical_login() -> str | None:
     """The explicit read-only service-token binding, without a login."""
-    from fleet_secrets import core as secrets
-
     env = dict(os.environ)
     token = (read_token_binding() or "").strip()
     if not token:
         if any(
             (env.get(name) or "").strip()
             for name in (
-                secrets.ENV_TOKEN,
-                secrets.ENV_AI_FLEET_COORDINATOR_TOKEN,
-                secrets.ENV_WRITE_TOKEN,
+                FI.ENV_TOKEN,
+                FI.ENV_AI_FLEET_COORDINATOR_TOKEN,
+                FI.ENV_WRITE_TOKEN,
             )
         ):
             raise FleetRagError(f"bind the recall reader as {INFISICAL_READ_TOKEN}")
         return None
     try:
-        return secrets.check_service_token(token)
-    except secrets.SecretsError:
+        return FI.check_service_token(token)
+    except FI.SecretsError:
         raise FleetRagError("invalid scoped Infisical read-token binding") from None
 
 
 def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     """Read this configured project's root; never borrow Fleet-OPS credentials."""
-    from fleet_secrets import core as secrets
-
     infisical_env()
     env = dict(os.environ)
-    env[secrets.ENV_API] = infisical_api()
+    env[FI.ENV_API] = infisical_api()
+    env[FI.ENV_READ_PATHS] = "/"
+    binding = infisical_login()
+    if not binding:
+        raise FleetRagError(f"bind the recall reader as {INFISICAL_READ_TOKEN}")
     try:
-        return secrets.fetch_project(
-            infisical_project(), "/", env, token=read_token_binding(), names=wanted
+        return FI.fetch_project(
+            infisical_project(), "/", env, token=binding, names=wanted, timeout=30.0
         )
-    except secrets.SecretsError as exc:
+    except FI.SecretsError as exc:
         raise FleetRagError("Infisical scoped read failed: " + exc.message) from None
 
 
