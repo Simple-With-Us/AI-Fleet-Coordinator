@@ -168,6 +168,23 @@ class SecretsError(Exception):
         )
 
 
+class UnresolvedReferenceError(SecretsError):
+    """Strict read refusal with nonsecret counts for masked diagnostics only."""
+
+    def __init__(self, first_name: str, names_count: int, unresolved_count: int) -> None:
+        if (
+            type(names_count) is not int
+            or type(unresolved_count) is not int
+            or not 1 <= unresolved_count <= names_count <= MAX_JSON_NODES
+        ):
+            raise SecretsError("diagnostic-count-invalid")
+        super().__init__(
+            f"unresolved-reference:  {first_name} came back as an unexpanded Infisical reference", 5
+        )
+        self.names_count = names_count
+        self.unresolved_reference_count = unresolved_count
+
+
 class UsageError(SecretsError):
     """The command line is wrong.  The CLI prints the usage text after the message."""
 
@@ -752,12 +769,13 @@ def fetch_verified(
 
 def reject_unresolved(secrets: Mapping[str, str], names: Iterable[str] | None = None) -> None:
     """Fail closed when a value is still an unresolved reference.  Names the key, never the value."""
-    for key in sorted(names if names is not None else secrets):
-        val = secrets.get(key)
-        if val is not None and REF_RE.search(val):
-            raise SecretsError(
-                f"unresolved-reference:  {key} came back as an unexpanded Infisical reference", 5
-            )
+    unresolved = [
+        key
+        for key in sorted(set(names) if names is not None else secrets)
+        if secrets.get(key) is not None and REF_RE.search(secrets[key])
+    ]
+    if unresolved:
+        raise UnresolvedReferenceError(unresolved[0], len(secrets), len(unresolved))
 
 
 def injectable(name: str) -> bool:
