@@ -3725,7 +3725,7 @@ def repair_unlettered(
     where: str,
     *,
     now: float,
-    transport: "Transport | None" = None,
+    transport: Transport | None = None,
     force: bool = False,
     exclude: str = "",
 ) -> dict[str, Any]:
@@ -3739,7 +3739,12 @@ def repair_unlettered(
     chat lettered meanwhile is left alone (its start reads the title fresh).  What the repaired chats' starts
     print goes nowhere:  only the chat whose own start the pass rides on gets an answer.  The chat itself is
     never a candidate (`exclude`), and one pass replays at most REPAIR_MAX_CHATS."""
-    if spec.unlettered_sessions is None or spec.chat_payload is None or not seat or where not in LOCATIONS:
+    if (
+        spec.unlettered_sessions is None
+        or spec.chat_payload is None
+        or not seat
+        or where not in LOCATIONS
+    ):
         return {"skipped": "this platform names no unlettered chats on this host"}
     path = repair_stamp_path(env, seat, spec.platform, where)
     stamp = _read_json(path)
@@ -3749,7 +3754,9 @@ def repair_unlettered(
         # No stamp, no throttle:  nothing is replayed.
         return {"skipped": "the stamp could not be saved"}
     try:
-        found = [sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid]
+        found = [
+            sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid
+        ]
     except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
         return {"skipped": "the adapter could not list them"}
     home = str(env.get("HOME") or os.path.expanduser("~"))
@@ -3789,8 +3796,13 @@ def _repair_unlettered_after_start(chat: Chat, stdout: TextIO) -> None:
         pass
     try:
         repair_unlettered(
-            spec, chat.env, chat.seat, chat.location, now=chat.now,
-            transport=chat.transport, exclude=chat.session_id,
+            spec,
+            chat.env,
+            chat.seat,
+            chat.location,
+            now=chat.now,
+            transport=chat.transport,
+            exclude=chat.session_id,
         )
     except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
         pass
