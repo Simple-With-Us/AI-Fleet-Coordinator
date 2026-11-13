@@ -857,20 +857,21 @@ Full local gates (`land.sh`, or `tsc` plus the full vitest run plus `next build`
   - **Everyone:**  per platform, only chats active in the last six hours.  Four or fewer:  all of them.  More:  the window shrinks toward now until two to four remain, cut at the longest pause in activity.
   - **One app:**  `@**all** for ST: message`, `ST @**all** message`, `@**all** for Socratic Trade, UM:`, a PR link, or an `@**all**` posted in a work topic (`ST-123 subject`) reaches every chat on that repo active in the last six hours, with no cap.  A chat's repo is its folder's git origin (a Cursor cloud agent's repo URL).
   - **One issue:**  `@**all** for SWU-32: message` (or `SWU-32 @**all**`) reaches the chats whose title, folder or git branch carries the id;  if none does, the issue's repo instead.
-  - The body is never scanned for app names, so a passing mention never widens an alert.  Today only Grok and Cursor cloud chats can receive the reminder;  Claude, Codex, Muse, MiniMax and Fx chats are picked and counted in the listener log (`fanout`) until each has a transport.
+  - The body is never scanned for app names, so a passing mention never widens an alert.  Delivery depends on the receiver’s installed transport; a fanout count proves route selection, not native delivery.
 - Never for routine claims or work-in-progress that only same-repo seats need:  post in the work topic and @-mention the peer.
-- `fleet` is a recipient only.  It is never a sender, a signature, or an app acronym.  The coordinator is CLAUDE and posts as `[CLAUDE·session8]`; `AFC` (AI-Fleet-Coordinator) and `OPS` (Fleet-OPS) are repo acronyms, never senders or signatures ([Decisions](#decisions-pending-jay), row 18).
+- `fleet` is a recipient only.  It is never a sender, a signature, or an app acronym.  The coordinator is CLAUDE; its posts still require the applicable complete header.  `AFC` (AI-Fleet-Coordinator) and `OPS` (Fleet-OPS) are repo acronyms, never senders or signatures ([Decisions](#decisions-pending-jay), row 18).
 - **Every member bot can send it.**  The realm setting `can_mention_many_users_group` ("Who can notify a large number of users with a wildcard mention") is `role:members`, and `wildcard_mention_policy` is 2 (members), checked live Fri, Oct 9.  Every seat's bot is a member, so each can send `@**all**` in #Work-In-Progress › `fleet`, and nothing is left for Jay to change.  If Zulip ever refuses it ("You do not have permission to use channel wildcard mentions in this channel."  ), the CLI's `--fleet` exits 5 and names the setting.  Then fall back to posting in #Work-In-Progress › `fleet` and @-mentioning each bot that must act (`--to NAME`, repeatable), and for an emergency use `simple-chat dm --owner`.  Zulip applies the setting only to a channel with more than 15 subscribers, so a success in a small channel such as #Sandbox proves nothing about it, and a test post to #Work-In-Progress › `fleet` wakes the fleet, so never test there.
 - **MCP tools can send it too.**  A typed `@**all**` in `zulip_post` text stays real (owner, Nov 10 2026), so the rules above apply to it on every path.
 
 ```
-[CLAUDE·1a2b3c4d] @**all** HALT
+<applicable complete fleet header>
+@**all** HALT
 repo:  Socratic.Trade
 main is red after ST#2990.  Do not merge to ST until gate clear.
 ```
 
 ```
-simple-chat post --topic fleet --fleet $'HALT\nrepo:  Socratic.Trade\nmain is red after ST#2990.  Do not merge to ST until gate clear.'
+simple-chat post --topic fleet --fleet $'<applicable complete fleet header>\nHALT\nrepo:  Socratic.Trade\nmain is red after ST#2990.  Do not merge to ST until gate clear.'
 ```
 
 ## Approvals
