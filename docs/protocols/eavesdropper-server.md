@@ -35,7 +35,7 @@ To move a seat, remove it from one instance's `listener.toml`, reload that liste
 
 ## Credentials From the Environment
 
-A seat with `creds = "env"` (server instance only) reads its email and key from environment variables named in its config:
+A seat with `creds = "env"` (server instance only) reads its email and key from environment variables named in its config.  The startup loader populates these runtime-only inputs from scoped Infisical service tokens; the names do not authorize a hand-set environment or plaintext TOML fallback:
 
 | Key | Default | Example for GB-COMPILER |
 |---|---|---|
