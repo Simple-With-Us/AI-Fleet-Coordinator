@@ -54,6 +54,11 @@ test("quiet own headers retain one no-wake marker and all addressed peers", () =
     "[CODEX·deadbeef → AG,\u200a\u200aCURSOR] hi");
 });
 
+test("quiet marker survives hosted composition with the same header bytes", () => {
+  const input = ":eyes: " + fixtures[0].input;
+  assert.equal(composeBody(tagPrefix("CODEX", "deadbeef"), input), ":eyes: " + fixtures[0].expected);
+});
+
 test("GitHub prose verbs preserve all exact header spaces through gap handling and JSON", () => {
   const body = fixtures[0].expected;
   for (const verb of ["open_pr", "edit_pr", "comment_pr", "reply_thread", "wf_pr_edit", "wf_issue_comment"]) {
