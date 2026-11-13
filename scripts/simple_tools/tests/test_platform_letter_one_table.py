@@ -391,6 +391,39 @@ class SharedBehaviour(Base):
 
     spec = make_spec()
 
+    def test_advice_receives_only_the_child_environment_and_preserves_parent_context(self) -> None:
+        seen = []
+
+        def advise(request):
+            seen.append(request)
+            return "Keep the assigned title."
+
+        spec = make_spec(title_advice=advise)
+        private = {
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "fake.bootstrap",
+            "FLEET_KNOBS_INFISICAL_TOKEN": "fake.knobs",
+            "FLEET_KNOBS_WRITE_TOKEN": "fake.writer",
+            "INFISICAL_TOKEN": "fake.project",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "fake.afc",
+            "FLEET_RECALL_INFISICAL_TOKEN": "fake.recall",
+        }
+        env = self.env(AGENT_LAUNCHER="platform-launcher", **private)
+        original = dict(env)
+        chat = PL.Chat(spec, env, "server", "advice-1", now=1.0)
+        note = {"state": "open", "label": "AA", "title": "Words"}
+        self.assertEqual(PL.advice(chat, note, "Words", {}, "start"), "Keep the assigned title.")
+        request = seen[-1]
+        self.assertEqual(request.env["AGENT_LAUNCHER"], "platform-launcher")
+        for name in (*private, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+            self.assertNotIn(name, request.env)
+        self.assertTrue(callable(request.record_thread_link))
+        self.assertEqual(env, original)
+        self.assertNotIn("fake.bootstrap", repr(request))
+        from dataclasses import asdict
+        serialized = json.dumps(asdict(request), default=str)
+        for value in private.values():
+            self.assertNotIn(value, serialized)
+
     def hook(self, payload: dict, *, now: float, transport=None) -> dict:
         return hook_answer(self.run_hook(self.spec, payload, env=self.env(SESSION_LETTER_LOCATION="server"),
                                          now=now, transport=transport or Calls(self)))
