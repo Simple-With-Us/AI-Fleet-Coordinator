@@ -11,15 +11,21 @@ class CompactPrHeaderTests(unittest.TestCase):
     def test_direct_pr_writes_preserve_compact_header_and_kody_first_line(self):
         header = "[CODEX:\u200a\u200a\u200aEE.1.S]"
         body = "@kody start-review\n" + header + "\nFull SHA " + "a" * 40
-        reply = {"number": 7, "id": 9, "html_url": "https://github.com/example/fixture-repo/pull/7",
-                 "base": {"ref": "main", "repo": {"full_name": "example/fixture-repo"}},
-                 "head": {"ref": "feature", "label": "example:feature"}}
+        reply = {
+            "number": 7,
+            "id": 9,
+            "html_url": "https://github.com/example/fixture-repo/pull/7",
+            "base": {"ref": "main", "repo": {"full_name": "example/fixture-repo"}},
+            "head": {"ref": "feature", "label": "example:feature"},
+        }
         for operation in ("open", "edit", "comment", "reply"):
             with self.subTest(operation=operation):
                 opener = FakeOpener(reply)
                 client = GitHubClient("synthetic", base_url="https://api.test", opener=opener)
                 if operation == "open":
-                    client.open_pr("example/fixture-repo", "main", "feature", header + " Title", body)
+                    client.open_pr(
+                        "example/fixture-repo", "main", "feature", header + " Title", body
+                    )
                 elif operation == "edit":
                     client.edit_pr("example/fixture-repo", 7, header + " Title", body)
                 elif operation == "comment":
