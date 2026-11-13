@@ -1737,20 +1737,20 @@ class OwnIntroTagTests(unittest.TestCase):
     def test_tagged_passes_a_multi_threaded_body_through(self):
         cli = load_cli()
         for seat in ("CLAUDE", "CURSOR", "CODEX"):
-            for text in (
-                f"[{seat} 📁AFC] PR opened",
-                f"👀 [{seat} 📁AFC, OPS] quiet",
-                f"[{seat}] PR opened",
-                f"[{seat}: HH.1.C 📁AFC] status",
-                "PR opened",
-                "[GB-DIRECTOR 📁AFC] spoof",
-                f"[{seat}X] x",
+            for text, want in (
+                (f"[{seat} 📁AFC] PR opened", f"[{seat}\u200a\u200a📁\u200aAFC] PR opened"),
+                (f"👀 [{seat} 📁AFC, OPS] quiet", f"👀 [{seat}\u200a\u200a📁\u200aAFC,\u200aOPS] quiet"),
+                (f"[{seat}] PR opened", f"[{seat}] PR opened"),
+                (f"[{seat}: HH.1.C 📁AFC] status", f"[{seat}:\u200a\u200a\u200aHH.1.C\u200a\u200a📁\u200aAFC] status"),
+                ("PR opened", "PR opened"),
+                ("[GB-DIRECTOR 📁AFC] spoof", "[GB-DIRECTOR 📁AFC] spoof"),
+                (f"[{seat}X] x", f"[{seat}X] x"),
             ):
                 with self.subTest(seat=seat, text=text):
                     self.assertFalse(cli.single_thread(seat))
-                    self.assertEqual(cli.tagged(seat, None, text), text)
-                    self.assertEqual(cli.tagged(seat, ["abcd-1234-ffff"], text), text)
-                    self.assertTrue(cli.comment_body(seat, None, text).startswith(text))
+                    self.assertEqual(cli.tagged(seat, None, text), want)
+                    self.assertEqual(cli.tagged(seat, ["abcd-1234-ffff"], text), want)
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith(want))
                     self.assertNotIn(f"[{seat}]", cli.comment_body(seat, None, "PR opened"))
                     self.assertNotIn("Reported by:", cli.comment_body(seat, None, text))
 
@@ -1783,7 +1783,7 @@ class OwnIntroTagTests(unittest.TestCase):
                     cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof"
                 )
                 self.assertEqual(cli.tagged(seat, None, f"[{seat}X] x"), f"[{seat}X] x")
-                self.assertEqual(cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat} 📁AFC]")
+                self.assertEqual(cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat}\u200a\u200a📁\u200aAFC]")
 
     def test_reporter_falls_back_to_the_creating_seat_app(self):
         """A single-thread seat's filed issue has no Reported by line, so show reads the creating app."""
