@@ -79,6 +79,20 @@ class SyncCase(unittest.TestCase):
 
 
 class Basics(SyncCase):
+    def test_status_does_not_refresh_the_index_even_if_the_host_enables_optional_locks(self) -> None:
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        tracked = self.repo / "new.txt"
+        info = tracked.stat()
+        os.utime(tracked, ns=(info.st_atime_ns, info.st_mtime_ns + 2_000_000_000))
+        index = self.repo / ".git" / "index"
+        before = index.read_bytes()
+        with mock.patch.dict(os.environ, {"GIT_OPTIONAL_LOCKS": "1"}):
+            code, out, err = S.git_full(self.repo, "status", "--porcelain=v1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "")
+        self.assertEqual(index.read_bytes(), before, "a background status must not rewrite the index")
+
     def test_fast_forward_runs_the_existing_post_merge_hook(self) -> None:
         marker = self.home / "post-merge-ran"
         hook = self.repo / ".git" / "hooks" / "post-merge"
