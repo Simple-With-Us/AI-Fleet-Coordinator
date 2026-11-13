@@ -86,6 +86,11 @@ test("fleet build number format", () => {
   assert.ok(!isFleetBuildNumber(SHORT));
   assert.ok(!isFleetBuildNumber("1.0.2358"));
   assert.ok(!isFleetBuildNumber(""));
+  assert.ok(!isFleetBuildNumber("202613011200")); // month 13 is not a timestamp
+  assert.ok(!isFleetBuildNumber("202602291200")); // 2026 is not a leap year
+  assert.ok(isFleetBuildNumber("202402291200")); // leap day is a real timestamp
+  assert.ok(!isFleetBuildNumber("202611092400")); // hour 24 is not a timestamp
+  assert.ok(!isFleetBuildNumber("202611092360")); // minute 60 is not a timestamp
   assert.ok(!isFleetBuildNumber(null));
   assert.ok(FLEET_BUILD_TIMESTAMP_RE.test(VALID));
   assert.ok(!FLEET_BUILD_TIMESTAMP_RE.test(COUNTER));

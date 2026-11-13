@@ -94,9 +94,23 @@ export function parseAuditArgs(argv) {
   return opts;
 }
 
+/** Calendar validity for a YYYYMMDDHHMM stamp: a fleet build is a real Central
+ * clock time, so month, day, hour and minute must exist (leap days included). */
+export function isValidTimestampBuild(build) {
+  const s = String(build ?? "");
+  if (!FLEET_BUILD_TIMESTAMP_RE.test(s)) return false;
+  const year = Number(s.slice(0, 4));
+  const month = Number(s.slice(4, 6));
+  const day = Number(s.slice(6, 8));
+  const hour = Number(s.slice(8, 10));
+  const minute = Number(s.slice(10, 12));
+  if (month < 1 || month > 12 || hour > 23 || minute > 59) return false;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return day >= 1 && day <= daysInMonth;
+}
+
 export function isFleetBuildNumber(build) {
-  const s = build == null ? "" : String(build);
-  return FLEET_BUILD_TIMESTAMP_RE.test(s);
+  return isValidTimestampBuild(build);
 }
 
 export function invalidBuildDetail(build) {
