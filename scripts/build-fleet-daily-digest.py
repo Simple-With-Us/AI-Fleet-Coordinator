@@ -527,9 +527,9 @@ _AGENT_ALT = _AGENT_IMPLICIT_ALT + (
 _AGENT_CHAIN = rf"(?:{_AGENT_ALT})(?:\s*/\s*(?:{_AGENT_ALT}))*"
 # Match [GROK], [AG], [CURSOR/AG], [CODEX/AG], [Claude Code], etc.
 _AGENT_BRACKET = re.compile(rf"\[({_AGENT_CHAIN})\]", re.IGNORECASE)
-# Current fleet envelopes include a session and repository folder after the seat.
+# Accept historical chains as well as single-seat session/folder envelopes.
 _AGENT_ENVELOPE = re.compile(
-    rf"(?:👀)?\[({_AGENT_ALT})(?:"
+    rf"(?:👀)?\[({_AGENT_CHAIN})(?:"
     rf":\s*[A-Z]{{2}}\.\d+\.[MSC](?:\s*📁[^\]\n]*)?"
     rf"|\s*📁[^\]\n]*"
     rf")\]",
@@ -651,7 +651,7 @@ def extract_agents_and_clean(text: str, repo: str = "") -> tuple[list[str], str]
             add_agent(part)
 
     for m in _AGENT_ENVELOPE.finditer(s):
-        add_agent(m.group(1))
+        add_chain(m.group(1))
     s = _AGENT_ENVELOPE.sub(" ", s)
 
     # Collect all bracketed agents (incl. multi-seat), then remove them

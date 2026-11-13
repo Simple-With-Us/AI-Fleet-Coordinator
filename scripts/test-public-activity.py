@@ -152,6 +152,20 @@ class PublicActivityTests(unittest.TestCase):
         ):
             self.assertEqual(digest.extract_agents_and_clean(title), ([], title))
 
+    def test_historical_chained_envelopes_are_cleaned_as_one_header(self) -> None:
+        for header in (
+            "[OPENCODE/ZC: HH.1.S]",
+            "[OPENCODE/ZC: HH.1.S 📁AFC]",
+            "👀[OPENCODE/ZC:\u200a\u200a\u200aHH.1.S\u200a\u200a📁\u200aAFC]",
+            "[OPENCODE/ZC\u200a\u200a📁\u200aAFC]",
+        ):
+            with self.subTest(header=header):
+                agents, clean = digest.extract_agents_and_clean(
+                    f"{header} Refresh public feed"
+                )
+                self.assertEqual(agents, ["opencode", "zcode"])
+                self.assertEqual(clean, "Refresh public feed")
+
     def test_numeric_bot_family_issue_refs_are_not_agent_attribution(self) -> None:
         for issue in ("BF-2419", "GB-123456"):
             for title in (
