@@ -1195,8 +1195,9 @@ class SessionFragments(Base):
         self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), "aaaaaaaa"))
 
     def test_the_header_is_found_after_the_no_wake_mark(self) -> None:
-        wake = self.from_excerpt("\U0001F440" + self.HEADER + "hello")
-        self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), "aaaaaaaa"))
+        for marker in ("\U0001F440", ":eyes: "):
+            wake = self.from_excerpt(marker + self.HEADER + "hello")
+            self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), "aaaaaaaa"))
 
     def test_text_after_the_headers_arrow_is_an_addressee(self) -> None:
         wake = self.from_excerpt("[CLAUDE·aaaaaaaa: AA.4.S → bbbbbbbb] hello")
