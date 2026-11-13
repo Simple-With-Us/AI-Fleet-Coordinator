@@ -54,7 +54,10 @@ What the hook does.
 Chats that are gone for good.  A platform's app can end a chat with no hook event of its own (a desktop app that
 archives one), so its letter would stay taken until the assigner's idle sweep.  An adapter that can tell names
 those chats, and a chat's start reports them:  one `report-gone` call to the assigner for the platform and a
-location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  `gone_sessions` answers for this
+location, at most once per GONE_REPORT_SECONDS (a stamp beside the notes).  A chat's start also replays the
+start of this host's chats still showing "??: " (an app-driven chat's hook never runs, so a letter lost between
+the assigner and the note would otherwise stay lost), at most once per REPAIR_SWEEP_SECONDS (`repair_unlettered`).
+`gone_sessions` answers for this
 host's own chats whose hook has been quiet for an hour, however long ago that was.  `gone_elsewhere` answers for
 chats the platform's app on this host runs at another location, whose notes this host does not hold;  they go in
 a report of their own for that location.  The assigner closes the open rows named, and refuses a report that
@@ -146,6 +149,13 @@ GONE_REPORT_IDS = 500
 #: The most bytes of the `--gone` JSON that are parsed (500 ids of a session id's length are about 40 KB).
 GONE_JSON_BYTES = 256 * 1024
 GONE_SENT_IDS = 2000
+# The unlettered repair (`repair_unlettered`):  a chat's start replays the start of this host's chats that still
+# show the "??: " placeholder, at most this often (a stamp beside the notes).  An app-driven chat's hook never
+# runs, so a letter whose hook run died after the register - or an ask that never reached the assigner - would
+# otherwise keep a chat "??: " until its next CLI or Desktop event;  the pass is the way back for those chats.
+REPAIR_SWEEP_SECONDS = 3600
+#: The most chats one pass replays:  the repair is real work on a live chat's start budget.
+REPAIR_MAX_CHATS = 5
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
 #: label themselves ??: Title whenever no letters are received".
 UNLETTERED = "??"
@@ -364,6 +374,10 @@ GoneSessions = Callable[[Mapping[str, str], frozenset[str]], Iterable[str] | Non
 #: of chats that run there and are gone for good, as this host's own records of them say (a platform's app on
 #: one host can run chats on another).  Ids only, bounded by the adapter, and any doubt leaves a chat out.
 GoneElsewhere = Callable[[Mapping[str, str], str], Iterable[str] | None]
+#: An adapter's `unlettered_sessions`:  from the environment, the session ids of this host's chats that still
+#: carry the "??: " placeholder title, newest first.  Ids only, bounded by the adapter, and any doubt leaves a
+#: chat out.
+UnletteredSessions = Callable[[Mapping[str, str]], Iterable[str] | None]
 
 
 @dataclass(frozen=True)
@@ -434,6 +448,7 @@ class PlatformSpec:
     title_advice: TitleAdvice | None = None
     gone_sessions: GoneSessions | None = None
     gone_elsewhere: GoneElsewhere | None = None
+    unlettered_sessions: UnletteredSessions | None = None
     retired_note: Callable[[Mapping[str, str], str], Mapping[str, Any] | None] | None = None
     retired_env: Mapping[str, str] = field(default_factory=dict)
     retired_files: tuple[str, ...] = ()
@@ -2886,6 +2901,7 @@ def _run_hook(
         code = on_start(chat, data, out, home)
         if _text(data.get("source")) != "compact":
             _report_gone_after_start(chat, stdout)
+            _repair_unlettered_after_start(chat, stdout)
         return code
     if event == "prompt":
         return on_prompt(chat, data, out)
@@ -3296,6 +3312,13 @@ def gone_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: str
     return os.path.join(folder, ".gone-%s-%s" % (platform, where))
 
 
+def repair_stamp_path(env: Mapping[str, str], seat: str, platform: str, where: str) -> str:
+    """Where a host keeps the time of its last unlettered repair for one platform and location:  beside the
+    seat's letter notes, under a name no session id can have (a session id never starts with a dot)."""
+    folder = os.path.dirname(note_path(env, seat, "stamp"))
+    return os.path.join(folder, ".repair-%s-%s" % (platform, where))
+
+
 def _read_json(path: str) -> dict[str, Any]:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -3693,6 +3716,84 @@ def report_gone_elsewhere(
         label = labels.get(row["session_id"]) if isinstance(labels, Mapping) else ""
         row["label"] = label if isinstance(label, str) and LABEL_RE.fullmatch(label) else ""
     return {"gone": fresh, "closed": closed, "kept": sorted(in_use)}
+
+
+def repair_unlettered(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    seat: str,
+    where: str,
+    *,
+    now: float,
+    transport: "Transport | None" = None,
+    force: bool = False,
+    exclude: str = "",
+) -> dict[str, Any]:
+    """Replay the start of each of this host's chats that still shows the "??: " placeholder, at most once per
+    REPAIR_SWEEP_SECONDS (the stamp beside the notes;  `force` repairs whatever the stamp says).  The stamp is
+    written before anything else, so a pass that fails, or a hook killed inside it, is tried again after the
+    window and never on every start.
+
+    A repair is the chat's own start flow on the resume payload the adapter makes for it:  a chat the assigner
+    still knows resumes the letter it holds (nothing re-allocates), one it does not know registers again, and a
+    chat lettered meanwhile is left alone (its start reads the title fresh).  What the repaired chats' starts
+    print goes nowhere:  only the chat whose own start the pass rides on gets an answer.  The chat itself is
+    never a candidate (`exclude`), and one pass replays at most REPAIR_MAX_CHATS."""
+    if spec.unlettered_sessions is None or spec.chat_payload is None or not seat or where not in LOCATIONS:
+        return {"skipped": "this platform names no unlettered chats on this host"}
+    path = repair_stamp_path(env, seat, spec.platform, where)
+    stamp = _read_json(path)
+    if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
+        return {"skipped": "not due"}
+    if not _save_json(path, {"at": now}):
+        # No stamp, no throttle:  nothing is replayed.
+        return {"skipped": "the stamp could not be saved"}
+    try:
+        found = [sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid]
+    except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
+        return {"skipped": "the adapter could not list them"}
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    asked: list[str] = []
+    repaired: list[str] = []
+    for sid in found:
+        if sid == exclude or len(asked) >= REPAIR_MAX_CHATS:
+            continue
+        try:
+            payload = dict(spec.chat_payload(sid))
+            sid = _text(payload.get("session_id")) or sid
+            chat = Chat(spec, env, where, sid, now=now, transport=transport, seat=seat)
+            on_start(chat, payload, Out(io.StringIO(), spec, ""), home)
+        except Exception:  # noqa: BLE001 - one chat's repair never stops the pass, or any chat
+            continue
+        asked.append(sid)
+        try:
+            if lettered(chat.read()):
+                repaired.append(sid)
+        except Exception:  # noqa: BLE001 - the note read is a report detail only
+            pass
+    return {"asked": asked, "repaired": repaired}
+
+
+def _repair_unlettered_after_start(chat: Chat, stdout: TextIO) -> None:
+    """The unlettered repair a chat's start makes, after the chat's own answer is out:  this host's own chats
+    only.  Nothing here reaches the chat:  whatever goes wrong is swallowed, and the stamp holds the next try
+    back for the window."""
+    spec = chat.spec
+    if spec.unlettered_sessions is None or spec.chat_payload is None:
+        return
+    if chat.location not in LOCATIONS:
+        return
+    try:
+        stdout.flush()
+    except (OSError, ValueError):
+        pass
+    try:
+        repair_unlettered(
+            spec, chat.env, chat.seat, chat.location, now=chat.now,
+            transport=chat.transport, exclude=chat.session_id,
+        )
+    except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
+        pass
 
 
 def _report_gone_after_start(chat: Chat, stdout: TextIO) -> None:
