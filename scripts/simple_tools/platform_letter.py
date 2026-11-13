@@ -1547,6 +1547,13 @@ def _thread_link_recorder(chat: Chat) -> Callable[[str], dict[str, Any]]:
     def record(link: str) -> dict[str, Any]:
         from . import registry_api
 
+        if not isinstance(link, str):
+            return {"code": "thread_link_invalid", "error": "thread_link_invalid"}
+        known = tuple(chat.env.get(name, "") for name in _OPERATOR_CHILD_SECRETS)
+        if secretscan.scan(link, known):
+            return {"code": "thread_link_secret_detected", "error": "thread_link_secret_detected"}
+        if not registry_api.base_url(chat.env):
+            return {}
         return registry_api.call(
             chat.env,
             "update",

@@ -391,6 +391,56 @@ class SharedBehaviour(Base):
 
     spec = make_spec()
 
+    def test_thread_link_capability_scans_before_registry_configuration_or_transport(self) -> None:
+        import secrets
+        from unittest import mock
+        from simple_tools import registry_api as RA
+
+        private = "synthetic-" + secrets.token_hex(20)
+        env = self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=private)
+        original = dict(env)
+        record = PL._thread_link_recorder(PL.Chat(self.spec, env, "server", "scan-1", now=1.0))
+        unsafe = "sk-" + secrets.token_urlsafe(32)  # Fresh synthetic shape, never a credential.
+        for case, value in (("pattern", unsafe), ("parent binding", private)):
+            link = "https://example.test/thread?key=" + value
+            with self.subTest(case=case), mock.patch.object(RA, "base_url") as configured, mock.patch.object(RA, "call") as call:
+                answer = record(link)
+                self.assertEqual(answer, {"code": "thread_link_secret_detected", "error": "thread_link_secret_detected"})
+                self.assertNotIn(link, json.dumps(answer))
+                self.assertNotIn(private, json.dumps(answer))
+                configured.assert_not_called()
+                call.assert_not_called()
+        self.assertEqual(env, original)
+
+    def test_thread_link_capability_uses_parent_configuration_and_bound_location(self) -> None:
+        from unittest import mock
+        from simple_tools import registry_api as RA
+
+        env = self.env(SESSION_LETTER_LOCATION="mac")
+        chat = PL.Chat(self.spec, env, "server", "bound-1", now=1.0)
+        record = PL._thread_link_recorder(chat)
+        with mock.patch.object(RA, "call", return_value={"ok": True}) as call:
+            self.assertEqual(record("zcode://session/bound-1"), {"ok": True})
+        self.assertIs(call.call_args.args[0], env)
+        self.assertEqual(call.call_args.args[2]["location"], "server")
+        self.assertNotIn(RA.KEY_VAR, PL.child_process_env(env))
+
+    def test_optional_thread_link_callback_without_parent_url_is_quiet(self) -> None:
+        import contextlib
+        from unittest import mock
+        from simple_tools import platform_letter_zcode as PZ, registry_api as RA
+
+        env = self.env()
+        env.pop(RA.URL_ENV)
+        original = dict(env)
+        record = PL._thread_link_recorder(PL.Chat(self.spec, env, "server", "optional-1", now=1.0))
+        error = io.StringIO()
+        with mock.patch.object(RA, "call") as call, contextlib.redirect_stderr(error):
+            PZ._record_thread_link(PL.child_process_env(env), "optional-1", record=record)
+        call.assert_not_called()
+        self.assertEqual(error.getvalue(), "")
+        self.assertEqual(env, original)
+
     def test_advice_receives_only_the_child_environment_and_preserves_parent_context(self) -> None:
         seen = []
 
