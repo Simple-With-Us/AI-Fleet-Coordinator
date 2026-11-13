@@ -1033,7 +1033,7 @@ def _cli(scripts_dir, args, env, timeout):
     return done.returncode, done.stdout.decode("utf-8", "replace")
 
 
-def daemon_check(candidate, live_path, scripts_dir=None, environ=None):
+def daemon_check(candidate, live_path, scripts_dir=None, environ=None, *, timeout=CHECK_TIMEOUT):
     """The Eavesdropper's own verdict on a candidate:  `{"ok", "problems", "warnings"}`.
 
     This is `simple-chat daemon check-config --file CANDIDATE --json` with the live file as the
@@ -1043,7 +1043,7 @@ def daemon_check(candidate, live_path, scripts_dir=None, environ=None):
         scripts_dir or _scripts_dir(),
         ["daemon", "check-config", "--file", str(candidate), "--json"],
         _child_env(live_path, environ),
-        CHECK_TIMEOUT,
+        min(CHECK_TIMEOUT, timeout),
     )
     try:
         answer = json.loads(out)
@@ -1079,6 +1079,7 @@ def daemon_reload(
     clock=time.time,
     sleep=time.sleep,
     expected_revision=None,
+    timeout=None,
 ):
     """Tell the Eavesdropper to re-read its config and read back what it made of it.
 
@@ -1091,12 +1092,13 @@ def daemon_reload(
         scripts_dir or _scripts_dir(),
         ["daemon", "reload"],
         _child_env(live_path, environ),
-        RELOAD_TIMEOUT,
+        RELOAD_TIMEOUT if timeout is None else min(RELOAD_TIMEOUT, timeout),
     )
     if status != 0:
         return {"ok": False, "confirmed": False, "code": "reload_not_sent"}
     path = _status_path(environ)
-    deadline = started + RELOAD_READBACK_SECONDS
+    deadline = started + (RELOAD_READBACK_SECONDS if timeout is None else
+                          min(RELOAD_READBACK_SECONDS, timeout))
     while True:
         try:
             with open(path, "rb") as handle:
@@ -1125,7 +1127,8 @@ def daemon_reload(
                 "confirmed": False,
                 "code": "reload_revision_mismatch" if expected_revision else "reload_unconfirmed",
             }
-        sleep(RELOAD_POLL_SECONDS)
+        sleep(RELOAD_POLL_SECONDS if timeout is None else
+              min(RELOAD_POLL_SECONDS, max(0, deadline - clock())))
 
 
 # MARK: - The three verbs
@@ -1356,18 +1359,21 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
     live = Path(path or os.environ.get(ENV_CONFIG) or DEFAULT_LIVE)
     action = request.get("action") if isinstance(request, dict) else None
     try:
-        if action not in ("get", "plan", "apply", "save", "initialize"):
-            raise Refusal("usage", "the action is get, plan, apply, save or initialize")
+        if action not in ("get", "plan", "apply", "save", "initialize", "reconcile"):
+            raise Refusal("usage", "the settings action is not supported")
         unknown = sorted(
             set(request)
-            - {"action", "allowlist", "set", "remove", "expectPlanSHA256", "expectBaseSHA256"}
+            - {"action", "allowlist", "set", "remove", "expectPlanSHA256", "expectBaseSHA256",
+               "requestID", "requestCreatedAt"}
         )
         if unknown:
-            raise Refusal("usage", "unknown request field(s): %s" % ", ".join(unknown))
+            raise Refusal("usage", "unknown request fields are not accepted")
         allowlist = validate_allowlist(request.get("allowlist"))
         if action not in ("save", "initialize") and "expectBaseSHA256" in request:
             raise Refusal("usage", "expectBaseSHA256 belongs to save or initialize")
-        if action in ("save", "initialize") or (
+        if action not in ("save", "initialize", "reconcile") and set(request) & {"requestID", "requestCreatedAt"}:
+            raise Refusal("usage", "request identity belongs to a canonical settings operation")
+        if action in ("save", "initialize", "reconcile") or (
             action == "get" and os.environ.get("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN")
         ):
             # The isolated entry imports only its own trusted scripts tree.
@@ -1382,6 +1388,12 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                 allowlist = operator_settings._manifest()
                 if action == "get":
                     answer = operator_settings.get(live, allowlist)
+                elif action == "reconcile":
+                    if set(request) - {"action", "allowlist", "requestID", "requestCreatedAt"}:
+                        raise Refusal("usage", "reconcile accepts the original request identity only")
+                    answer = operator_settings.reconcile(
+                        live, allowlist, request.get("requestID"), request.get("requestCreatedAt"),
+                    )
                 elif action == "initialize":
                     if (
                         request.get("set")
@@ -1397,6 +1409,8 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                         allowlist,
                         request.get("expectBaseSHA256"),
                         checker=checker,
+                        request_id=request.get("requestID"),
+                        created_at=request.get("requestCreatedAt"),
                     )
                 else:
                     if request.get("expectPlanSHA256") is not None:
@@ -1412,12 +1426,18 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
                         remove=request.get("remove"),
                         checker=checker,
                         reloader=reloader,
+                        request_id=request.get("requestID"),
+                        created_at=request.get("requestCreatedAt"),
                     )
                 return answer, 0 if answer.get("ok") else 1
             except operator_settings.SettingsError as exc:
                 diagnostic = {}
                 if exc.required_binding:
                     diagnostic["requiredBinding"] = exc.required_binding
+                if exc.field:
+                    diagnostic["field"] = exc.field
+                if exc.request_id:
+                    diagnostic.update(requestID=exc.request_id, outcome=exc.outcome)
                 return _answer(
                     action,
                     live,

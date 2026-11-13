@@ -7,13 +7,17 @@ import io
 import json
 import os
 import secrets
+import stat
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
+from concurrent.futures import ThreadPoolExecutor
 
 from simple_tools.server import eavesdropper_settings_edit as editor
 from simple_tools.server import operator_settings as settings
@@ -48,6 +52,13 @@ class Store:
 
 
 class AutosaveTests(unittest.TestCase):
+    def identity(self):
+        return {"requestID": str(uuid.uuid4()), "requestCreatedAt": int(time.time() * 1000)}
+
+    def identity_args(self):
+        value = self.identity()
+        return {"request_id": value["requestID"], "created_at": value["requestCreatedAt"]}
+
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
@@ -89,6 +100,8 @@ class AutosaveTests(unittest.TestCase):
             )
             return code, json.dumps(answer).encode(), b"", False
 
+        if request is not None and request.get("action") in ("save", "initialize", "reconcile"):
+            request = dict(self.identity(), **request)
         stdin = b"" if request is None else json.dumps(request).encode()
         ctx = control.Context(
             platform="linux", uid=os.getuid(), home=home, environ={"PATH": "/usr/bin:/bin"},
@@ -159,6 +172,8 @@ class AutosaveTests(unittest.TestCase):
         self.assertFalse(answer["runtimeApplied"])
 
     def save(self, patch=None, **kwargs):
+        identity = self.identity_args()
+        identity.update({key: kwargs.pop(key) for key in ("request_id", "created_at") if key in kwargs})
         return settings.save(
             self.path, self.allowlist, patch or {"daemon.coalesce_seconds": 2.0},
             settings.revision(self.document), store=self.store,
@@ -167,6 +182,7 @@ class AutosaveTests(unittest.TestCase):
                 "ok": True, "confirmed": True, "code": "reloaded",
                 "revision": settings.revision(self.store.document),
             }),
+            **identity,
             **kwargs,
         )
 
@@ -218,9 +234,11 @@ class AutosaveTests(unittest.TestCase):
             "action": "save", "allowlist": dict(self.allowlist, schemaVersion=1),
             "set": {"daemon.coalesce_seconds": 2.0},
             "expectBaseSHA256": settings.revision(self.document),
+            **self.identity(),
         }
         for current in (invalid, settings.document({private: 1})):
             with self.subTest(secret_is_key=private in current["settings"]):
+                request.update(self.identity())
                 self.store.document = current
                 with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store):
                     answer, code = editor.run_request(request, path=self.path)
@@ -336,6 +354,7 @@ class AutosaveTests(unittest.TestCase):
         widened["tables"]["daemon"]["coalesce_seconds"]["max"] = 5000
         request = {
             "action": "save", "allowlist": dict(widened, schemaVersion=1),
+            **self.identity(),
             "set": {"daemon.coalesce_seconds": 4000.0},
             "expectBaseSHA256": settings.revision(self.document),
         }
@@ -459,7 +478,7 @@ class AutosaveTests(unittest.TestCase):
         absent = Store(None)
         answer = settings.initialize(
             self.path, self.allowlist, editor.sha256(self.path.read_bytes()), store=absent,
-            checker=lambda *_: {"ok": True}, accepted=lambda _: True,
+            checker=lambda *_: {"ok": True}, accepted=lambda _: True, **self.identity_args(),
         )
         self.assertTrue(answer["ok"])
         self.assertEqual(answer["result"], "initialized")
@@ -468,7 +487,7 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(len(absent.writes), 1)
         again = settings.initialize(
             self.path, self.allowlist, editor.sha256(self.path.read_bytes()), store=absent,
-            checker=lambda *_: {"ok": True}, accepted=lambda _: True,
+            checker=lambda *_: {"ok": True}, accepted=lambda _: True, **self.identity_args(),
         )
         self.assertEqual(again["errorCode"], "already_initialized")
         self.assertEqual(len(absent.writes), 1)
@@ -482,7 +501,7 @@ class AutosaveTests(unittest.TestCase):
         absent.create = concurrent_create
         answer = settings.initialize(
             self.path, self.allowlist, editor.sha256(self.path.read_bytes()), store=absent,
-            checker=lambda *_: {"ok": True}, accepted=lambda _: True,
+            checker=lambda *_: {"ok": True}, accepted=lambda _: True, **self.identity_args(),
         )
         self.assertEqual(answer["errorCode"], "initialization_conflict")
         self.assertEqual(absent.document, competing)
@@ -492,7 +511,7 @@ class AutosaveTests(unittest.TestCase):
         absent = Store(None)
         answer = settings.initialize(
             self.path, self.allowlist, editor.sha256(self.path.read_bytes()), store=absent,
-            checker=lambda *_: {"ok": True}, accepted=lambda _: False,
+            checker=lambda *_: {"ok": True}, accepted=lambda _: False, **self.identity_args(),
         )
         self.assertEqual(answer["errorCode"], "runtime_not_accepted")
         self.assertEqual(absent.writes, [])
@@ -502,7 +521,7 @@ class AutosaveTests(unittest.TestCase):
         absent.read_error_after_write = True
         answer = settings.initialize(
             self.path, self.allowlist, editor.sha256(self.path.read_bytes()), store=absent,
-            checker=lambda *_: {"ok": True}, accepted=lambda _: True,
+            checker=lambda *_: {"ok": True}, accepted=lambda _: True, **self.identity_args(),
         )
         self.assertEqual(answer["errorCode"], "readback_failed")
         self.assertTrue(answer["writeAttempted"])
@@ -539,6 +558,7 @@ class AutosaveTests(unittest.TestCase):
                 request = {"action": action, "allowlist": dict(self.allowlist, schemaVersion=1)}
                 if action == "save":
                     request.update(set={"daemon.coalesce_seconds": 2.0}, expectBaseSHA256=settings.revision(self.document))
+                    request.update(self.identity())
                 answer, code = editor.run_request(request, path=self.path)
                 self.assertEqual(code, 1)
                 self.assertEqual(answer["requiredBinding"], name)
@@ -570,6 +590,261 @@ class AutosaveTests(unittest.TestCase):
         self.assertNotIn("wakes_per_day", self.path.read_text())
         self.assertIn("board_per_day = 0", self.path.read_text())
         self.assertIn("owner_user_id = 12", self.path.read_text())
+
+    def confirm(self, value=None, *, activated=True):
+        value = value or self.store.document
+        status = {"updated": time.time(), "instance": "server", "config_errors": [],
+                  "operator_settings_snapshot_revision": settings.revision(value)}
+        if activated:
+            status["operator_settings_revision"] = settings.revision(value)
+        self.status_path.write_text(json.dumps(status))
+
+    def test_embedded_credentials_are_refused_before_checker_or_persistence(self):
+        private = "gh" + "p_" + secrets.token_hex(20)
+        checker = mock.Mock(return_value={"ok": True})
+        with self.assertRaises(settings.SettingsError) as caught:
+            self.save({"daemon.presence_topics": [["Alerts", "Use " + private]]}, checker=checker)
+        self.assertEqual((caught.exception.code, caught.exception.field), ("secret_detected", "daemon.presence_topics"))
+        self.assertNotIn(private, str(caught.exception))
+        checker.assert_not_called()
+        self.assertEqual(self.store.writes, [])
+        self.assertEqual(self.path.read_text(), self.original)
+
+    def test_only_the_own_loaded_binding_is_also_scanned_exactly(self):
+        self.store.token = "st." + secrets.token_urlsafe(32)
+        with self.assertRaises(settings.SettingsError) as caught:
+            self.save({"daemon.presence_topics": [["Alerts", "Use " + self.store.token + " here"]]})
+        self.assertEqual(caught.exception.code, "secret_detected")
+        self.assertEqual(self.store.writes, [])
+
+    def test_canonical_json_has_depth_and_node_limits_below_byte_limit(self):
+        nested = []
+        for _ in range(settings.MAX_DOCUMENT_DEPTH + 1):
+            nested = [nested]
+        for value, code in ((nested, "document_too_deep"),
+                            ([0] * settings.MAX_DOCUMENT_NODES, "document_too_complex")):
+            raw = json.dumps({"schemaVersion": 1, "settings": {"daemon.presence_topics": value}})
+            self.assertLess(len(raw), settings.MAX_DOCUMENT_BYTES)
+            with self.assertRaises(settings.SettingsError) as caught:
+                settings.decode(raw)
+            self.assertEqual(caught.exception.code, code)
+        cyclic = []
+        cyclic.append(cyclic)
+        with self.assertRaises(settings.SettingsError):
+            settings.encode(cyclic)
+
+    def test_duplicate_success_only_reads_and_preserves_known_success_when_superseded(self):
+        identity = self.identity_args()
+        first = self.save(**identity)
+        self.confirm()
+        second = self.save(**identity)
+        self.assertTrue(second["ok"])
+        self.assertEqual((second["requestID"], second["outcome"]), (first["requestID"], "ok"))
+        self.assertEqual(len(self.store.writes), 1)
+        self.store.document["settings"]["daemon.coalesce_seconds"] = 3.0
+        self.path.write_text(settings.overlay_text(self.original, self.allowlist, self.store.document["settings"]))
+        self.confirm()
+        changed = self.save(**identity)
+        self.assertEqual((changed["errorCode"], changed["outcome"]), ("request_superseded", "ok"))
+        self.assertFalse(changed["ok"])
+        self.assertEqual(len(self.store.writes), 1)
+        ledger = settings._ledger(self.path)
+        self.assertEqual(ledger.lookup(settings.REQUEST_NAMESPACE, identity["request_id"])[0], "ok")
+        with mock.patch.object(self.store, "read", side_effect=settings.SettingsError("provider_read_failed")):
+            failed_read = self.save(**identity)
+        self.assertEqual(failed_read["outcome"], "ok")
+        self.assertFalse(failed_read["ok"])
+        self.assertEqual(ledger.lookup(settings.REQUEST_NAMESPACE, identity["request_id"])[0], "ok")
+
+    def test_same_id_with_changed_fingerprint_cannot_write_or_read_credentials(self):
+        identity = self.identity_args()
+        self.save(**identity)
+        reader = mock.Mock(side_effect=AssertionError("collision must stop before provider access"))
+        with mock.patch.object(self.store, "read", reader), self.assertRaises(settings.SettingsError) as caught:
+            self.save({"daemon.coalesce_seconds": 3.0}, **identity)
+        self.assertEqual(caught.exception.code, "request_id_conflict")
+        reader.assert_not_called()
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_unknown_persistence_never_replays_and_requires_accepted_target_to_reconcile(self):
+        identity = self.identity_args()
+        first = self.save(**identity, reloader=lambda _: {"ok": True, "confirmed": False})
+        self.assertEqual((first["errorCode"], first["outcome"]), ("runtime_pending", "unknown"))
+        second = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+        self.assertEqual(second["outcome"], "unknown")
+        self.assertFalse(second["ok"])
+        self.confirm()
+        final = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+        self.assertTrue(final["ok"] and final["runtimeApplied"])
+        self.assertEqual((final["action"], final["operation"], final["result"], final["outcome"]), ("reconcile", "save", "saved", "ok"))
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_old_base_value_does_not_refuse_an_unknown_late_write(self):
+        identity = self.identity_args()
+        self.store.after_write = self.document
+        first = self.save(**identity)
+        self.assertEqual(first["outcome"], "unknown")
+        self.confirm(self.document)
+        result = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+        self.assertEqual((result["outcome"], result["errorCode"]), ("unknown", "outcome_unknown"))
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_absent_reconcile_durably_cancels_a_late_original_without_provider_access(self):
+        identity = self.identity_args()
+        store = mock.Mock(side_effect=AssertionError("no provider is needed for a cancellation"))
+        result = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=store)
+        self.assertEqual((result["outcome"], result["errorCode"]), ("refused", "request_cancelled"))
+        self.assertIs(result["cancelled"], True)
+        late = self.save(**identity)
+        self.assertEqual((late["outcome"], late["errorCode"]), ("refused", "request_cancelled"))
+        store.read.assert_not_called()
+        self.assertEqual(self.store.writes, [])
+
+    def test_expired_write_identity_cannot_rearm_after_terminal_eviction(self):
+        identity = self.identity_args()
+        self.save(**identity)
+        future = time.time() + settings.REQUEST_TTL_SECONDS + 2
+        with self.assertRaises(settings.SettingsError) as caught:
+            self.save(**identity, now=future)
+        self.assertEqual(caught.exception.code, "request_expired")
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_fresh_id_allows_an_intentional_aba_toggle(self):
+        for value in (2.0, 1.0, 2.0):
+            before = settings.revision(self.store.document)
+            answer = settings.save(self.path, self.allowlist, {"daemon.coalesce_seconds": value}, before,
+                                   store=self.store, checker=lambda *_: {"ok": True},
+                                   reloader=lambda _: {"ok": True, "confirmed": True, "revision": settings.revision(self.store.document)},
+                                   **self.identity_args())
+            self.assertTrue(answer["ok"])
+        self.assertEqual(len(self.store.writes), 3)
+
+    def test_corrupt_cached_metadata_never_reflects_or_rearms(self):
+        identity = self.identity_args()
+        self.save(**identity)
+        private = "private corruption fixture"
+        settings._ledger(self.path).settle(settings.REQUEST_NAMESPACE, identity["request_id"], "ok", json.dumps({"bad": private}))
+        with self.assertRaises(settings.SettingsError) as caught:
+            self.save(**identity)
+        self.assertEqual(caught.exception.code, "request_record_invalid")
+        self.assertNotIn(private, str(caught.exception))
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_initialization_reconciles_without_activating_the_reader(self):
+        identity = self.identity_args()
+        absent = Store(None)
+        absent.read_error_after_write = True
+        answer = settings.initialize(self.path, self.allowlist, editor.sha256(self.path.read_bytes()),
+                                     store=absent, checker=lambda *_: {"ok": True}, accepted=lambda _: True,
+                                     **identity)
+        self.assertEqual(answer["outcome"], "unknown")
+        absent.read_error_after_write = False
+        self.confirm(absent.document, activated=False)
+        result = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=absent)
+        self.assertEqual((result["result"], result["operation"], result["outcome"]), ("initialized", "initialize", "ok"))
+        self.assertTrue(result["persisted"] and result["readback"])
+        self.assertFalse(result["runtimeApplied"] or result["autosaveEnabled"])
+        self.assertEqual(len(absent.writes), 1)
+
+    def abandon(self, phase):
+        identity = self.identity_args()
+        base = settings.revision(self.document)
+        target = copy.deepcopy(self.document)
+        target["settings"]["daemon.coalesce_seconds"] = 2.0
+        with editor._FolderLock(self.path.parent):
+            intent = settings._Intent(self.path, "save", identity["request_id"], identity["created_at"],
+                                      {"set": {"daemon.coalesce_seconds": 2.0}, "remove": [], "base": base})
+            intent.begin(base, "0" * 64)
+            intent.prepare(base, settings.revision(target))
+            if phase == "sending":
+                intent.mark("sending")
+        return identity, target
+
+    def test_abandoned_prepared_cancels_without_a_provider_read_and_fences_late_original(self):
+        identity, _ = self.abandon("prepared")
+        with mock.patch.object(self.store, "read", side_effect=AssertionError("Prepared never entered mutation")):
+            cancelled = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+            late = self.save(**identity)
+        self.assertEqual((cancelled["outcome"], cancelled["errorCode"]), ("refused", "request_cancelled"))
+        self.assertEqual(late["errorCode"], "request_cancelled")
+        self.assertTrue(self.save()["ok"])
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_abandoned_sending_blocks_other_ids_and_noops_until_exact_reconciliation(self):
+        identity, target = self.abandon("sending")
+        for patch in ({"daemon.coalesce_seconds": 3.0}, {"daemon.coalesce_seconds": 1.0}):
+            blocked = self.save(patch)
+            self.assertEqual((blocked["outcome"], blocked["errorCode"]), ("refused", "prior_outcome_unknown"))
+        self.assertEqual(self.store.writes, [])
+        unknown = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+        self.assertEqual(unknown["outcome"], "unknown")
+        self.store.document = target
+        self.path.write_text(settings.overlay_text(self.original, self.allowlist, target["settings"]))
+        self.confirm()
+        settled = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+        self.assertEqual(settled["outcome"], "ok")
+        self.document = copy.deepcopy(target)
+        self.assertTrue(self.save({"daemon.coalesce_seconds": 3.0})["ok"])
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_actual_mutation_entry_observes_durable_sending_checkpoint(self):
+        identity = self.identity_args()
+        original = self.store.write
+        def crash(document):
+            state, raw = settings._ledger(self.path).lookup(settings.REQUEST_NAMESPACE, identity["request_id"])
+            self.assertEqual(state, "pending")
+            self.assertEqual(json.loads(raw)["phase"], "sending")
+            original(document)
+            raise SystemExit("synthetic abrupt process exit after persistence")
+        with mock.patch.object(self.store, "write", side_effect=crash), self.assertRaises(SystemExit):
+            self.save(**identity)
+        blocked = self.save({"daemon.coalesce_seconds": 3.0})
+        self.assertEqual(blocked["errorCode"], "prior_outcome_unknown")
+        unknown = settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+        self.assertEqual(unknown["outcome"], "unknown")
+        self.assertEqual(len(self.store.writes), 1)
+
+    def test_reconciliation_cannot_cancel_an_active_lock_owner(self):
+        identity = self.identity_args()
+        with editor._FolderLock(self.path.parent), self.assertRaises(editor.Refusal):
+            settings.reconcile(self.path, self.allowlist, identity["request_id"], identity["created_at"], store=self.store)
+        self.assertIsNone(settings._ledger(self.path).lookup(settings.REQUEST_NAMESPACE, identity["request_id"]))
+
+    def test_new_journal_directory_must_be_durable_before_provider_access(self):
+        parent = self.path.parent.stat()
+        original = os.fsync
+        def fail_parent(descriptor):
+            info = os.fstat(descriptor)
+            if stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == (parent.st_dev, parent.st_ino):
+                raise OSError("synthetic parent fsync failure")
+            return original(descriptor)
+        reader = mock.Mock(side_effect=AssertionError("no provider access before durable state"))
+        with mock.patch.object(os, "fsync", side_effect=fail_parent), mock.patch.object(self.store, "read", reader):
+            with self.assertRaises(settings.SettingsError) as caught:
+                self.save()
+        self.assertEqual(caught.exception.code, "request_storage_unavailable")
+        reader.assert_not_called()
+        self.assertEqual(self.store.writes, [])
+
+    def test_two_callers_cannot_validate_or_write_under_the_same_folder_lock(self):
+        entered, release = threading.Event(), threading.Event()
+        def checker(*_):
+            if not entered.is_set():
+                entered.set()
+                self.assertTrue(release.wait(5), "test did not release the first caller")
+            return {"ok": True}
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            first = workers.submit(self.save, checker=checker)
+            try:
+                self.assertTrue(entered.wait(5), "first caller did not enter validation")
+                with self.assertRaises(editor.Refusal) as caught:
+                    self.save({"daemon.coalesce_seconds": 3.0})
+                self.assertEqual(caught.exception.code, "busy")
+                self.assertEqual(self.store.writes, [])
+            finally:
+                release.set()
+            self.assertTrue(first.result(timeout=5)["ok"])
+        self.assertEqual(len(self.store.writes), 1)
 
 
 class TransportTests(unittest.TestCase):
@@ -627,7 +902,9 @@ class TransportTests(unittest.TestCase):
         store = settings.InfisicalStore(self.env, writer=True)
         with self.assertRaises(settings.SettingsError) as caught:
             store.write(settings.document({"daemon.coalesce_seconds": 1.0}))
-        self.assertEqual(str(caught.exception), "provider_write_failed")
+        self.assertEqual(str(caught.exception), "provider_write_refused")
+        self.assertEqual(caught.exception.status, 404)
+        self.assertFalse(caught.exception.sent or caught.exception.retryable)
         self.assertEqual(self.core._api_json.call_count, 1)
 
     def test_initializer_transport_is_create_only_and_never_falls_back_to_patch(self):
@@ -638,6 +915,49 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(self.core._api_json.call_count, 1)
         self.assertEqual(self.core._api_json.call_args.args[0], "POST")
 
+    def test_mutation_statuses_distinguish_refusal_from_possible_persistence(self):
+        private = "private provider diagnostic fixture"
+        for status, unknown, retryable in ((401, False, False), (403, False, False), (409, False, False),
+                                           (408, True, True), (429, True, True), (503, True, True), (0, True, True)):
+            with self.subTest(status=status):
+                self.core._api_json.return_value = (status, {"message": private})
+                store = settings.InfisicalStore(self.env, writer=True)
+                with self.assertRaises(settings.MutationError) as caught:
+                    store.write(settings.document({"daemon.coalesce_seconds": 1.0}))
+                error = caught.exception
+                self.assertEqual((error.sent, error.retryable), (unknown, retryable))
+                self.assertEqual(error.status, status or None)
+                self.assertNotIn(private, str(error))
+
+    def test_failed_writer_verification_proves_mutation_was_not_sent(self):
+        self.core.verify_service_token.side_effect = self.core.SecretsError("private validation fixture")
+        store = settings.InfisicalStore(self.env, writer=True)
+        with self.assertRaises(settings.MutationError) as caught:
+            store.write(settings.document({"daemon.coalesce_seconds": 1.0}))
+        self.assertFalse(caught.exception.sent)
+        self.core._api_json.assert_not_called()
+
+    def test_slow_local_check_gets_fresh_io_phase_under_one_total_deadline(self):
+        clock = [100.0]
+        with mock.patch.object(settings.time, "monotonic", side_effect=lambda: clock[0]):
+            store = settings.InfisicalStore(self.env, writer=True)
+            budget = settings._Budget()
+            budget.phase(store)
+            store.read()
+            budget.check(lambda *_: clock.__setitem__(0, 145.0) or {"ok": True}, None, None)
+            budget.phase(store)
+            store.read()
+            self.assertEqual(self.core.fetch_project.call_args.kwargs["timeout"], 20.0)
+            self.assertLessEqual(store.deadline, 100 + settings.MAX_TRANSACTION_SECONDS)
+            clock[0] = 249.0
+            with mock.patch.object(editor, "daemon_check", return_value={"ok": True}) as checker:
+                budget.check(None, None, None)
+                self.assertEqual(checker.call_args.kwargs["timeout"], 1.0)
+            clock[0] = 251.0
+            with self.assertRaises(settings.SettingsError) as caught:
+                budget.phase(store)
+            self.assertEqual(caught.exception.code, "transaction_timeout")
+
 
 class RequestContractTests(unittest.TestCase):
     @classmethod
@@ -646,8 +966,28 @@ class RequestContractTests(unittest.TestCase):
         cls.control = load_control()
 
     def parse(self, value, mode="yes"):
+        if value.get("action") in ("save", "initialize", "reconcile"):
+            value = dict({"requestID": str(uuid.uuid4()), "requestCreatedAt": int(time.time() * 1000)}, **value)
         ctx = types.SimpleNamespace(stdin=lambda: json.dumps(value).encode())
         return self.control.eavesdropper_settings_request_from_stdin(ctx, mode)
+
+    def test_direct_cli_cannot_reach_canonical_writes_without_server_guards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for action in ("save", "initialize"):
+                with self.subTest(action=action):
+                    reader = mock.Mock(side_effect=AssertionError("no container call allowed"))
+                    ctx = self.control.Context(
+                        platform="linux", uid=os.getuid(), home=Path(directory),
+                        environ={"PATH": "/usr/bin:/bin"}, reader=reader, stdin=lambda: b"",
+                    )
+                    argv = ["eavesdropper-settings", action, "--expect", "0" * 64, "--json"]
+                    if action == "save":
+                        argv += ["--set", "daemon.coalesce_seconds=2.0"]
+                    out = io.StringIO()
+                    code = self.control.main(argv, ctx=ctx, out=out)
+                    self.assertEqual(code, 2)
+                    self.assertEqual(json.loads(out.getvalue())["result"], "refused")
+                    reader.assert_not_called()
 
     def test_save_and_initialization_require_revision_and_write_mode(self):
         expected = "0" * 64
@@ -767,6 +1107,7 @@ class InstalledPayloadTests(unittest.TestCase):
         import test_fleet_cli_release as fixtures
         required = (
             "scripts/simple_tools/server/operator_settings.py",
+            "scripts/simple_tools/operator_github_state.py",
             "scripts/simple_tools/server/eavesdropper_settings_edit.py",
             "scripts/fleet-ops-eavesdropper-settings.json",
         )

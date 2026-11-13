@@ -131,6 +131,7 @@ EXACT = frozenset(
         "scripts/fleet-ops-eavesdropper-settings.json",
         "scripts/simple_tools/server/eavesdropper_settings_edit.py",
         "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         "scripts/simple_tools/mcp/tools.json",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
@@ -223,6 +224,7 @@ TOOL_REQUIRED = frozenset(
         "scripts/fleet-ops-eavesdropper-settings.json",
         "scripts/simple_tools/server/eavesdropper_settings_edit.py",
         "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         # The CLI entry points:  a new bundle must carry them, but a retained older release may not and
         # stays a valid rollback target.
         "scripts/simple-chat",

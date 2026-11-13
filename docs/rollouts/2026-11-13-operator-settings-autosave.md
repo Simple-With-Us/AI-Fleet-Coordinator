@@ -7,12 +7,14 @@ Refs AFC-789.  The existing server editor becomes the one shared autosave write
 The existing owner-authenticated forced-command route remains `fleet-ops-control.py server eavesdropper-settings server --yes`.  One request travels on standard input:
 
 ```json
-{"action":"save","set":{"daemon.coalesce_seconds":20.0},"expectBaseSHA256":"<previous canonical revision>"}
+{"action":"save","set":{"daemon.coalesce_seconds":20.0},"expectBaseSHA256":"<previous canonical revision>","requestID":"<fresh canonical UUID>","requestCreatedAt":1794556800000}
 ```
 
 The ordinary `--plan` request with empty input is still GET.  A configured canonical GET returns `source=infisical`, `revision` and `baseSHA256`, the complete typed settings map, and separate runtime-file metadata.  Before a reader is configured, a legacy GET explicitly says `source=runtime-copy` and has false canonical persistence/readback flags; it is not an Infisical receipt.
 
-Only `ok=true`, `result=saved`, `persisted=true`, `readback=true` and `runtimeApplied=true`, with matching returned requested values and a valid revision, permits Saved in the UI.  The reload receipt also carries the exact accepted canonical revision.  Source control, CLI exit status and a reload timestamp alone do not prove that receipt.
+The example creation time is illustrative; generate the current integer epoch milliseconds with each fresh UUID.  Retain that exact identity for one coalesced intent, including transport uncertainty.  Reusing an ID with a different typed patch, removals, base or creation time is refused.  A new intent uses a fresh ID even when it intentionally returns to a prior value.
+
+Only `ok=true`, `result=saved`, `outcome=ok`, the exact original `requestID`, `autosaveEnabled=true`, `persisted=true`, `readback=true` and `runtimeApplied=true`, with matching returned requested values and a valid revision, permits Saved in the UI.  The reload receipt also carries the exact accepted canonical revision.  Source control, CLI exit status and a reload timestamp alone do not prove that receipt.
 
 | Outcome | Canonical Persistence | Runtime | UI Meaning |
 | --- | --- | --- | --- |
@@ -20,6 +22,14 @@ Only `ok=true`, `result=saved`, `persisted=true`, `readback=true` and `runtimeAp
 | `readback_conflict` or `readback_failed` | Unverified outcome | No copy written | Failed; inspect current state before retry |
 | `runtime_pending` with persistence/readback true | Exact canonical reread succeeded | Copy/reload incomplete | Failed with the canonical revision retained; do not replay blindly |
 | `saved` with every flag true | Exact canonical reread succeeded | Matching revision accepted | Saved |
+
+Reconcile through the same `--yes` route with only `action=reconcile`, `requestID` and `requestCreatedAt`; it never writes to Infisical, copies TOML or reloads the daemon.  A successful save reconciliation returns `action=reconcile`, `operation=save`, `result=saved` and the same complete proof.  Initialization reconciliation uses `operation=initialize`, `result=initialized` and keeps runtime/autosave false, preserving initialization before reader activation.
+
+The existing protected Operator nonce ledger stores only fixed metadata and typed digests/revisions, never settings or credentials.  Terminal `ok`/`refused` receipts last 24 hours, capacity is 1,000 requests, and pending/unknown/replay records never expire or get evicted.  Old write identities are refused after 24 hours, so expiry cannot rearm a delayed retry.  All platforms share this one purpose and folder lock.  A known successful request later superseded by another edit remains terminal `outcome=ok`, but returns `ok=false` and `request_superseded`; it is not current Saved proof.
+
+Before either provider mutation, a Sending checkpoint is durably committed under the folder lock.  Reconciliation of an absent ID writes a non-rearming cancellation tombstone, fencing a late original.  An abandoned Prepared record can likewise be cancelled because it never entered mutation.  Sending/persisted unknown outcomes stay held until exact target and accepted runtime proof; current base values or age never establish refusal.  Any unsettled request blocks all newer IDs, including no-op edits, until the original is terminal.  A new edit then needs a fresh GET and fresh identity.
+
+Provider diagnostics contain only fixed codes, numeric status and retryability/possible-send flags.  Permanent 4xx refusals are distinct from timeouts, 408/429/5xx and unknown transport outcomes; a retryable condition never authorizes replaying a mutation.  The entire operation shares a 150-second I/O deadline below the existing 180-second helper limit, including both local checks and runtime reload; the provider phase receives a fresh bounded budget after local validation.
 
 The server folder lock and revision checks serialize editor clients.  They do not provide provider-level CAS against an unrelated direct Infisical writer.  A canonical reread mismatch is explicitly a conflict, never a patched cache success.
 
@@ -36,7 +46,7 @@ Seat instance/credential/bot/bearer/administrator pins and daemon owner/eligible
 1. Merge/review the shared client foundation and this backend source, and prepare/review the matching Muster UI while preserving its draft hold until step 5's backend live acceptance succeeds.  Ship the editor, canonical module, allowlist and `fleet_infisical.py` together; the container build context includes the manifest.
 2. Read the current service-token registry and a names-only inventory of the proposed `prod:/operator-settings` folder.  Verify existing grants before asking for or issuing any new purpose.  No empty-folder or grant-compliance claim is made by this source.
 3. Use this consumer's own finite-expiry read-only and read/write grants only.  The exact bindings are recorded in INFISICAL.md.  Do not borrow Notes, letter, seat, deployment or ambient credentials.  Store/token registration and actual installation are separate rollout work.
-4. Install the reviewed source while retaining the working TOML source and leaving the new daemon reader binding inactive.  The daemon must report a fresh, error-free snapshot revision for the existing TOML.  Use the existing forced-command route's explicit `initialize` action with the runtime-file hash, through this consumer's own writer binding.  It validates that accepted snapshot and the daemon checker, rechecks both after validation, reads the named key for absence, and makes one create-only POST.  It never PATCHes an existing or concurrently initialized document and never replays an uncertain create.  The exact canonical readback proves initialization; it does not activate a new runtime source.
+4. Install the reviewed source while retaining the working TOML source and leaving the new daemon reader binding inactive.  Verify the actual installed forced-command helper and schema, container module dependencies and persistent protected ledger, rather than inferring installation from a checkout.  The daemon must report a fresh, error-free snapshot revision for the existing TOML.  Use the existing forced-command route's explicit `initialize` action with the runtime-file hash and stable request identity, through this consumer's own writer binding.  It validates that accepted snapshot and the daemon checker, rechecks both after validation, reads the named key for absence, and makes one create-only POST.  It never PATCHes an existing or concurrently initialized document and never replays an uncertain create.  The exact canonical readback proves initialization; it does not activate a new runtime source.
 5. Enable the daemon reader binding only after initialization and its own read-only grant are verified.  Verify GET reports the canonical source/revision, perform the authorized presence-channel casing canary below, and verify exact provider reread, runtime-file state and accepted daemon revision.  Verify stale revisions, invalid grants and a refused reload give the documented failed/partial outcomes.  This document does not claim any of those live actions occurred.
 
 ## Initialization And Casing Canary
@@ -47,9 +57,9 @@ First read the still-active TOML source through the same owner-authenticated edi
 
 ```sh
 python3 scripts/fleet-ops-control.py server eavesdropper-settings server --plan --json </dev/null > operator-settings-before.json
-python3 -c 'import json; d=json.load(open("operator-settings-before.json"))["eavesdropperSettings"]; assert d["source"] == "runtime-copy"; print(json.dumps({"action":"initialize","expectBaseSHA256":d["baseSHA256"]}))' > operator-settings-initialize.json
+python3 -c 'import json,time,uuid; d=json.load(open("operator-settings-before.json"))["eavesdropperSettings"]; assert d["source"] == "runtime-copy"; print(json.dumps({"action":"initialize","expectBaseSHA256":d["baseSHA256"],"requestID":str(uuid.uuid4()),"requestCreatedAt":int(time.time()*1000)}))' > operator-settings-initialize.json
 python3 scripts/fleet-ops-control.py server eavesdropper-settings server --yes --json < operator-settings-initialize.json > operator-settings-initialized.json
-python3 -c 'import json; d=json.load(open("operator-settings-initialized.json"))["eavesdropperSettings"]; assert d["ok"] and d["result"] == "initialized" and d["persisted"] and d["readback"] and not d["runtimeApplied"]; print("Canonical initialization read back; runtime source remains unchanged")'
+python3 -c 'import json; r=json.load(open("operator-settings-initialize.json")); d=json.load(open("operator-settings-initialized.json"))["eavesdropperSettings"]; assert d["requestID"] == r["requestID"] and d["outcome"] == "ok"; assert d["ok"] and d["result"] == "initialized" and d["persisted"] and d["readback"] and not d["runtimeApplied"] and not d["autosaveEnabled"]; print("Canonical initialization read back; runtime source remains unchanged")'
 ```
 
 After the separately gated reader installation/restart, read again.  Build a patch changing only the spelling of the three known presence channels to `Work-In-Progress`, `Builds` and `Alerts`, with every topic preserved byte for byte.  A pre-existing canonical spelling refuses the canary rather than claiming a no-op as live-write proof:
@@ -58,6 +68,8 @@ After the separately gated reader installation/restart, read again.  Build a pa
 python3 scripts/fleet-ops-control.py server eavesdropper-settings server --plan --json </dev/null > operator-settings-canonical.json
 python3 - <<'PY'
 import json
+import time
+import uuid
 d = json.load(open("operator-settings-canonical.json"))["eavesdropperSettings"]
 assert d["source"] == "infisical" and d["persisted"] and d["readback"]
 names = {"work-in-progress": "Work-In-Progress", "builds": "Builds", "alerts": "Alerts"}
@@ -65,7 +77,8 @@ old = d["settings"]["daemon.presence_topics"]
 new = [[names.get(channel.casefold(), channel), topic] for channel, topic in old]
 assert new != old, "No casing change remains; this is not a write canary"
 assert [topic for _, topic in new] == [topic for _, topic in old]
-request = {"action": "save", "set": {"daemon.presence_topics": new}, "expectBaseSHA256": d["revision"]}
+request = {"action": "save", "set": {"daemon.presence_topics": new}, "expectBaseSHA256": d["revision"],
+           "requestID": str(uuid.uuid4()), "requestCreatedAt": int(time.time() * 1000)}
 with open("operator-settings-canary.json", "w") as handle:
     json.dump(request, handle)
 PY
@@ -82,7 +95,8 @@ expected = dict(before["settings"], **request["set"])
 expected_document = {"schemaVersion": 1, "settings": expected}
 expected_revision = hashlib.sha256(json.dumps(expected_document, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 assert saved["ok"] and saved["result"] == "saved"
-assert all(saved[key] is True for key in ("persisted", "readback", "runtimeApplied"))
+assert saved["requestID"] == request["requestID"] and saved["outcome"] == "ok"
+assert all(saved[key] is True for key in ("persisted", "readback", "runtimeApplied", "autosaveEnabled"))
 assert saved["source"] == after["source"] == "infisical"
 assert saved["settings"] == after["settings"] == expected
 assert saved["revision"] == after["revision"] == saved["reload"]["revision"] == expected_revision
@@ -91,7 +105,12 @@ print("Verified canonical write, exact reread and matching daemon revision; only
 PY
 ```
 
-The current presence matcher casefolds channel and topic when matching.  This spelling-only canary leaves routing semantics, topics, caps and spend unchanged.  Do not substitute another knob if no authorized casing change remains.  A `runtime_pending`, timeout or readback conflict requires reading the current canonical state and diagnosing the incomplete step; never replay either command blindly.
+The current presence matcher casefolds channel and topic when matching.  This spelling-only canary leaves routing semantics, topics, caps and spend unchanged.  Do not substitute another knob if no authorized casing change remains.  On a `runtime_pending`, timeout or readback conflict, retain the exact request file and reconcile its identity read-only before any new edit; a fresh GET alone never settles an unknown write:
+
+```sh
+python3 -c 'import json; r=json.load(open("operator-settings-canary.json")); print(json.dumps({"action":"reconcile","requestID":r["requestID"],"requestCreatedAt":r["requestCreatedAt"]}))' > operator-settings-reconcile.json
+python3 scripts/fleet-ops-control.py server eavesdropper-settings server --yes --json < operator-settings-reconcile.json > operator-settings-reconciled.json
+```
 
 ## Verified Runtime Copy
 
