@@ -173,6 +173,7 @@ SHIPPED_EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
+        "scripts/fleet_infisical_bootstrap.py",
         "scripts/simple_tools/mcp/tools.json",
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         "scripts/simple_tools/mcp/renamed-tools.json",
