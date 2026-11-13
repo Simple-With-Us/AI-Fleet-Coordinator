@@ -218,7 +218,11 @@ def load_service_account_json(env: Mapping[str, str] | None = None) -> dict[str,
 
 
 def _clean_field(
-    name: str, value: str, *, min_len: int = TEXT_MIN, max_len: int = TEXT_MAX,
+    name: str,
+    value: str,
+    *,
+    min_len: int = TEXT_MIN,
+    max_len: int = TEXT_MAX,
     known: Iterable[str] = (),
 ) -> str:
     if not isinstance(value, str):
