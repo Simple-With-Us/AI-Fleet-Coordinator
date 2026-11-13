@@ -11,6 +11,7 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 from fleet_secrets import cli, core
 
@@ -67,6 +68,23 @@ class World:
             except (ValueError, UnicodeDecodeError):
                 raise core.SecretsError("fetch-failed: bad-output") from None
         return {key: value for key, value in self.secrets.items() if core.NAME_RE.fullmatch(key)}
+
+    def list_names(self, project, path, env, *, token=None, timeout=None):
+        refusal = core.environment_refusal(env)
+        if refusal:
+            raise core.SecretsError(refusal, 2)
+        if self.export_rc:
+            message = "timeout" if self.export_rc == 124 else "fetch-failed"
+            raise core.SecretsError(message)
+        project_name = core.project_name_for_id(project, env)
+        token = token or core.resolve_token(env, project_name=project_name)
+        self.fetches.append((project, path, dict(env), token, False, (), timeout))
+        if self.export_stdout is not None:
+            try:
+                json.loads(self.export_stdout.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                raise core.SecretsError("fetch-failed: bad-output") from None
+        return tuple(sorted(key for key in self.secrets if core.NAME_RE.fullmatch(key)))
 
     def run(self, argv, **kw):
         argv = list(argv)
@@ -153,6 +171,9 @@ class Base(unittest.TestCase):
         fetch = mock.patch.object(core, "fetch_project", world.fetch_project)
         fetch.start()
         self.addCleanup(fetch.stop)
+        names = mock.patch.object(core, "list_project_names", world.list_names)
+        names.start()
+        self.addCleanup(names.stop)
         return world
 
     def call(self, *argv, env=None):
@@ -168,9 +189,10 @@ class Base(unittest.TestCase):
 
 class GetTests(Base):
     def test_get_prints_exact_value_without_newline(self):
-        self.use(World())
+        world = self.use(World())
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(world.fetches[0][5], ("ALPHA",))
 
     def test_get_several_names_prints_one_json_object(self):
         w = self.use(World())
@@ -307,7 +329,7 @@ class RunTests(Base):
                 self.assertEqual(world.fetches, [])
                 self.assertEqual(self.exec_calls, [])
 
-    def test_interactive_get_requires_its_own_scoped_token(self):
+    def test_interactive_get_requires_its_own_scoped_token_before_any_read(self):
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
@@ -451,6 +473,18 @@ class RunTests(Base):
 
 
 class NamesTests(Base):
+    def test_names_never_exports_secret_values(self):
+        world = self.use(World())
+        with mock.patch.object(core, "fetch_project", side_effect=AssertionError("value export")):
+            code, out, err = self.call("names", "--path", "/metadata")
+        self.assertEqual((code, out, err), (0, "ALPHA\nBETA\n", ""))
+        self.assertEqual((world.fetches[0][1], world.fetches[0][5]), ("/metadata", ()))
+
+    def test_legacy_import_uses_the_shared_command_implementation(self):
+        import fleet_infisical_cli
+
+        self.assertIs(cli, fleet_infisical_cli)
+
     def test_names_sorted_one_per_line_and_no_values(self):
         self.use(World(secrets={"ZED": VAL_B, "ALPHA": VAL_A}))
         code, out, err = self.call("names")
@@ -556,18 +590,83 @@ class ConfigTests(Base):
 
 class DoctorTests(Base):
     def test_doctor_checks_the_second_project_with_its_scoped_token(self):
-        self.use(World())
+        world = World()
+        self.use(world)
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 0)
         self.assertTrue(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertTrue(rep["ai_fleet_coordinator_fetch_ok"])
+        self.assertEqual(
+            [(row[0], row[1]) for row in world.fetches],
+            [(PROJECT, "/"), (OTHER_PROJECT, "/fleetlink")],
+        )
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 1)
         self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertFalse(rep["ok"])
+
+    def test_selected_doctor_reads_only_the_default_project_root(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
+        self.env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        code, out, err = self.call("doctor", "--json", "--project", "fleet-ops", "--path", "/")
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
+        self.assertNoSentinel(out, err)
+
+    def test_selected_doctor_uses_only_the_selected_project_and_path(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.ENV_TOKEN)
+        code, out, err = self.call(
+            "doctor", "--json", "--project=ai-fleet-coordinator", "--path=/catalog"
+        )
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(rep["auth_mode"], "token")
+        self.assertTrue(rep["reader_configured"])
+        self.assertFalse(rep["writer_configured"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")])
+        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertNoSentinel(out, err)
+
+    def test_direct_doctor_path_selection_does_not_probe_the_other_project(self):
+        world = World()
+        self.use(world)
+        rep = cli.doctor_report(self.env, path="/catalog")
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/catalog")])
+
+    def test_selected_doctor_validates_the_route_before_fetching(self):
+        world = World()
+        self.use(world)
+        for args in (("--project=unknown",), ("--project=fleet-ops", "--path=/../private")):
+            with self.subTest(args=args):
+                code, out, _ = self.call("doctor", "--json", *args)
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertEqual(world.fetches, [])
+
+    def test_selected_doctor_preserves_value_validation_without_returning_values(self):
+        world = World(secrets={"ALPHA": "${UNRESOLVED_EXAMPLE}"})
+        self.use(world)
+        code, out, err = self.call("doctor", "--json", "--path", "/")
+        rep = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(rep["names_count"], 1)
+        self.assertEqual(rep["unresolved_reference_count"], 1)
+        self.assertFalse(rep["ok"])
+        self.assertNotIn("UNRESOLVED_EXAMPLE", out + err)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
 
     def test_doctor_reports_booleans_and_counts_only(self):
         self.use(World(keychain=KEYCHAIN_FULL))
@@ -634,13 +733,14 @@ class UsageTests(Base):
 
 
 class SetTests(Base):
-    """`set` writes one secret over REST with the machine identity's token.  _api is faked, so no network."""
+    """`set` uses the scoped writer and retained intent against fake REST, never a network."""
 
     def setUp(self):
         super().setUp()
         self.api = []
         self.statuses = {}
         self.bodies = {}
+        self.stored = {}
 
     def fake_api(self, method, path, token, body, env):
         self.api.append((method, path, token, dict(body or {})))
@@ -651,6 +751,22 @@ class SetTests(Base):
 
     def fake_api_json(self, method, path, token, body, env, **kwargs):
         status = self.fake_api(method, path, token, body, env)
+        if method in ("PATCH", "POST"):
+            kwargs["on_status"](status)
+            if status in (200, 201, 202):
+                self.stored[path.rsplit("/", 1)[-1]] = body["secretValue"]
+        if method == "GET" and "/v3/secrets/raw/" in path:
+            name = path.split("/v3/secrets/raw/", 1)[1].split("?", 1)[0]
+            return status, {
+                "secret": dict(
+                    secretKey=name,
+                    secretValue=self.stored[name],
+                    type="shared",
+                    workspace=PROJECT,
+                    environment="prod",
+                    secretPath="/linear",
+                )
+            }
         return status, self.bodies.get((method, path), None)
 
     def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
@@ -665,8 +781,13 @@ class SetTests(Base):
     def test_update_path_sends_the_value_in_the_body_only_and_strips_one_newline(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         code, out, err = self.run_set("CACHE_MY_APP", "--path", "/linear")
-        self.assertEqual((code, out, err), (0, "updated CACHE_MY_APP at /linear\n", ""))
-        method, path, token, body = self.api[-1]
+        self.assertEqual((code, err), (0, ""))
+        receipt = json.loads(out)
+        self.assertEqual(
+            (receipt["result"], receipt["name"], receipt["outcome"]),
+            ("updated", "CACHE_MY_APP", "ok"),
+        )
+        method, path, token, body = next(row for row in self.api if row[0] == "PATCH")
         self.assertEqual(
             (method, path, token),
             ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", self.env[core.ENV_WRITE_TOKEN]),
@@ -681,22 +802,73 @@ class SetTests(Base):
         self.use(World(keychain=KEYCHAIN_FULL))
         self.statuses["PATCH"] = 404
         code, out, _ = self.run_set("CACHE_NEW_APP", "--path", "/linear")
-        self.assertEqual((code, out), (0, "created CACHE_NEW_APP at /linear\n"))
-        self.assertEqual([a[0] for a in self.api if "/v3/secrets/raw/" in a[1]], ["PATCH", "POST"])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (json.loads(out)["result"], json.loads(out)["name"]), ("created", "CACHE_NEW_APP")
+        )
+        self.assertEqual([a[0] for a in self.api if a[0] in ("PATCH", "POST")], ["PATCH", "POST"])
 
     def test_set_never_creates_a_folder_and_checks_it_exists_first(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         self.run_set("CACHE_K", "--path", "/linear")
         self.assertEqual([a for a in self.api if a[1] == "/v1/folders"], [])
         self.assertEqual(self.api[0][0], "GET")
-        self.assertIn("secretPath=/linear", self.api[0][1])
+        self.assertEqual(parse_qs(urlsplit(self.api[0][1]).query)["secretPath"], ["/linear"])
+
+    def test_same_identity_replays_known_receipt_and_never_rewrites(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        intent = cli.write_intent_for_cli(self.env, "fleet-infisical-cli")
+        args = (
+            "CACHE_K",
+            "--path",
+            "/linear",
+            "--request-id",
+            intent.request_id,
+            "--request-created-at",
+            str(intent.created_at_ms),
+        )
+        self.assertEqual(self.run_set(*args)[0], 0)
+        count = len(self.api)
+        code, out, err = self.run_set(*args)
+        self.assertEqual((code, err, len(self.api)), (0, "", count))
+        self.assertTrue(json.loads(out)["replayed"])
+        code, out, err = self.run_set(*args, stdin="different-synthetic-value")
+        self.assertEqual((code, len(self.api)), (4, count))
+        self.assertEqual(json.loads(out)["outcome"], "intent_conflict")
+
+    def test_unknown_blocks_same_and_fresh_ids_and_reports_original(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["PATCH"] = 0
+        code, out, err = self.run_set("CACHE_K", "--path", "/linear")
+        self.assertEqual(code, 4)
+        original = json.loads(out)
+        self.assertEqual(original["outcome"], "outcome_unknown")
+        count = len(self.api)
+        for suffix in (
+            (
+                "--request-id",
+                original["request_id"],
+                "--request-created-at",
+                str(original["created_at_ms"]),
+            ),
+            (),
+        ):
+            code, out, err = self.run_set("CACHE_K", "--path", "/linear", *suffix)
+            self.assertEqual((code, len(self.api)), (4, count))
+            held = json.loads(out)
+            self.assertEqual(
+                (held["request_id"], held["created_at_ms"]),
+                (original["request_id"], original["created_at_ms"]),
+            )
+            self.assertTrue(held["request_may_have_been_sent"])
 
     def test_a_missing_folder_fails_with_folder_missing_and_writes_nothing(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         self.statuses["GET"] = 404
         code, out, err = self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_A)
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("folder-missing", err)
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["outcome"], "refused")
+        self.assertIn("write-refused", err)
         self.assertEqual([a[0] for a in self.api], ["GET"])
         self.assertNoSentinel(err)
 
@@ -705,7 +877,7 @@ class SetTests(Base):
         self.statuses["GET"] = 500
         code, _, err = self.run_set("CACHE_K", "--path", "/linear")
         self.assertEqual(code, 4)
-        self.assertIn("folder-check http-500", err)
+        self.assertIn("write-refused", err)
         self.assertEqual([a[0] for a in self.api], ["GET"])
 
     def test_names_and_folders_off_the_allowlist_are_refused_before_any_login_or_call(self):
@@ -789,7 +961,8 @@ class SetTests(Base):
         self.statuses["PATCH"] = 403
         code, out, err = self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_A + "\n")
         self.assertEqual(code, 4)
-        self.assertIn("http-403", err)
+        self.assertEqual(json.loads(out)["provider_status"], 403)
+        self.assertIn("write-refused", err)
         self.assertNoSentinel(out, err)
 
     def test_set_requires_separate_write_token(self):
