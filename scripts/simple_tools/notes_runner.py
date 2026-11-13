@@ -597,6 +597,8 @@ class Runner:
                 self.log("notes-runner: %s" % _error_text(exc, "log"))
             try:
                 self.once(wait)
+                delivery = N.retry_rag_outbox(self.env)
+                self._note(rag_delivery=delivery)
                 failures = 0
             except Exception as exc:  # noqa: BLE001 - nothing unexpected ends the runner:  it backs off
                 self._note(last_error_at=N.iso_now(self.clock), last_error=_error_text(exc))

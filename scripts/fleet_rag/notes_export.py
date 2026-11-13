@@ -17,6 +17,7 @@ raises NotesUnavailable; the ingest orchestrator logs it and skips the source.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -39,6 +40,8 @@ OSA_TIMEOUT = 600
 CACHE_VERSION = 2     # v1 records carried the raw "html" body and unscrubbed text; never served
 CACHE_DIR_MODE = 0o700
 CACHE_FILE_MODE = 0o600
+MAX_CODING_NOTES = 10000
+MAX_CODING_METADATA_BYTES = 2 * 1024 * 1024
 
 
 class NotesUnavailable(RuntimeError):
@@ -50,8 +53,13 @@ class NotesUnavailable(RuntimeError):
 _META_SCRIPT = """
 set US to (ASCII character 31)
 set RS to (ASCII character 30)
+set metadataLimit to %(maximum_notes)d
+set outputLimit to %(maximum_output)d
 tell application "Notes"
   set f to folder "%(folder)s" of account "%(account)s"
+  if metadataLimit > 0 then
+    if (count of notes of f) > metadataLimit then error "coding-metadata-too-large"
+  end if
   set ids to id of every note of f
   set names to name of every note of f
   set mods to modification date of every note of f
@@ -66,6 +74,9 @@ repeat with i from 1 to count of ids
   if m is not missing value then set ms to ((m as «class isot») as string)
   if c is not missing value then set cs to ((c as «class isot») as string)
   set out to out & (item i of ids) & US & (item i of names) & US & ms & US & cs & RS
+  if outputLimit > 0 then
+    if (length of out) > outputLimit then error "coding-metadata-too-large"
+  end if
 end repeat
 return out
 """
@@ -115,7 +126,7 @@ return out
 """
 
 
-def _osascript(script: str, env: dict[str, str] | None = None) -> str:
+def _osascript(script: str, env: dict[str, str] | None = None, *, timeout: int = OSA_TIMEOUT, isolated_env: bool = False) -> str:
     exe = shutil.which("osascript")
     if not exe:
         raise NotesUnavailable("osascript not on PATH (not macOS?)")
@@ -123,8 +134,9 @@ def _osascript(script: str, env: dict[str, str] | None = None) -> str:
         fh.write(script)
         path = fh.name
     try:
-        proc = subprocess.run([exe, path], capture_output=True, timeout=OSA_TIMEOUT,
-                              env={**os.environ, **(env or {})}, check=False)
+        base = {'HOME': str(pathlib.Path.home()), 'PATH': '/usr/bin:/bin', 'LANG': 'en_US.UTF-8'} if isolated_env else dict(os.environ)
+        proc = subprocess.run([exe, path], capture_output=True, timeout=timeout,
+                              env={**base, **(env or {})}, check=False)
     except (subprocess.TimeoutExpired, OSError) as e:
         raise NotesUnavailable(f"osascript failed: {type(e).__name__}") from None
     finally:
@@ -138,13 +150,53 @@ def _osascript(script: str, env: dict[str, str] | None = None) -> str:
     return proc.stdout.decode("utf-8", errors="replace")
 
 
+_CURRENT_CODING_SCRIPT = '''
+set requestedId to system attribute "NOTE_ID"
+set US to ASCII character 31
+tell application "Notes"
+  set f to folder "Coding" of account "iCloud"
+  set matches to every note of f whose id is requestedId
+  if (count of matches) is not 1 then error "coding-note-unavailable"
+  set n to item 1 of matches
+  set beforeModified to ((modification date of n) as «class isot») as string
+  set noteTitle to name of n
+  set noteBody to body of n
+  set afterModified to ((modification date of n) as «class isot») as string
+  if beforeModified is not afterModified then error "coding-note-changed"
+  if (length of noteBody) > 409600 then error "coding-note-too-large"
+  if (length of noteTitle) > 4096 then error "coding-note-too-large"
+  return (id of n) & US & noteTitle & US & afterModified & US & noteBody
+end tell
+'''
+
+
+def read_current_coding_note(doc_id: str) -> dict:
+    """Fresh bounded read of one canonical ID, restricted inside Coding by the provider."""
+    if not isinstance(doc_id, str) or not re.fullmatch(r'note/[A-Za-z0-9./_-]{1,220}', doc_id):
+        raise NotesUnavailable('invalid-canonical-note-id')
+    raw_id = 'x-coredata://' + doc_id[len('note/'):]
+    try:
+        answer = _osascript(_CURRENT_CODING_SCRIPT, {'NOTE_ID': raw_id}, timeout=30, isolated_env=True)
+    except Exception:
+        raise NotesUnavailable('coding-note-read-unavailable') from None
+    fields = answer.split(US, 3)
+    if len(fields) != 4 or fields[0] != raw_id or not fields[2] or len(answer.encode()) > 2 * 1024 * 1024:
+        raise NotesUnavailable('coding-note-read-invalid')
+    text = strip_title_line(html_to_text(fields[3]), fields[1])
+    if len(text.encode()) > 400 * 1024:
+        raise NotesUnavailable('coding-note-too-large')
+    fingerprint = hashlib.sha256(json.dumps({'id': fields[0], 'title': fields[1], 'modified': fields[2], 'body': fields[3]}, sort_keys=True).encode()).hexdigest()
+    return {'id': raw_id, 'name': fields[1], 'modified': fields[2], 'text': text, 'revision': fingerprint}
+
+
 def _records(raw: str) -> list[list[str]]:
     return [rec.split(US) for rec in raw.split(RS) if rec.strip()]
 
 
 def list_notes(folder: str = FOLDER, account: str = ACCOUNT) -> list[dict]:
     """Metadata for every note in the folder, in Notes' own order: id, name, modified, created."""
-    raw = _osascript(_META_SCRIPT % {"folder": folder, "account": account})
+    raw = _osascript(_META_SCRIPT % {"folder": folder, "account": account,
+                                    "maximum_notes": 0, "maximum_output": 0})
     out = []
     for rec in _records(raw):
         if len(rec) < 4:
@@ -152,6 +204,27 @@ def list_notes(folder: str = FOLDER, account: str = ACCOUNT) -> list[dict]:
         nid, name, mod, cre = rec[0].strip(), rec[1], rec[2].strip(), rec[3].strip()
         out.append({"id": nid, "name": name.strip(), "modified": mod, "created": cre})
     return out
+
+
+def list_current_coding_metadata() -> list[dict]:
+    """Bounded metadata only, for changed-note reconciliation in the existing runner."""
+    script = _META_SCRIPT % {'folder': 'Coding', 'account': 'iCloud',
+                            'maximum_notes': MAX_CODING_NOTES,
+                            'maximum_output': MAX_CODING_METADATA_BYTES}
+    try:
+        raw = _osascript(script, timeout=15, isolated_env=True)
+    except Exception:
+        raise NotesUnavailable('coding-metadata-unavailable') from None
+    if len(raw.encode()) > MAX_CODING_METADATA_BYTES:
+        raise NotesUnavailable('coding-metadata-too-large')
+    result = []
+    for record in _records(raw):
+        if len(record) != 4:
+            raise NotesUnavailable('coding-metadata-invalid')
+        result.append(dict(zip(('id', 'name', 'modified', 'created'), record)))
+        if len(result) > MAX_CODING_NOTES:
+            raise NotesUnavailable('coding-metadata-too-large')
+    return result
 
 
 def _fetch_bodies_range(start: int, end: int, folder: str, account: str) -> dict[str, str]:

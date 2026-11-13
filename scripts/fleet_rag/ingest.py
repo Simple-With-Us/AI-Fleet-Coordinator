@@ -460,6 +460,13 @@ def _payload(doc: sources.Doc, ch, text: str, kinds: list[str], count: int, run_
     }
     if kinds:
         p["scrubbed"] = kinds
+    for field in ("source_commit", "source_sha256", "library_relative_path", "library_source_path", "library_source_commit", "extractor", "text_kind"):
+        if isinstance(doc.extra.get(field), str):
+            p[field] = doc.extra[field]
+    aliases = doc.extra.get("source_aliases")
+    if isinstance(aliases, list):
+        p["source_aliases"] = sorted(set(a for a in aliases if isinstance(a, str)))[:ALSO_PATHS_CAP]
+        p["source_alias_count"] = len(set(a for a in aliases if isinstance(a, str)))
     return p
 
 
@@ -665,17 +672,21 @@ def _claim_chunk(
     body_hash = content_hash(_chunk_body(row["payload"]["text"]))
     entry = seen.get(body_hash)
     if entry is None:
-        seen[body_hash] = {
+        entry = seen[body_hash] = {
             "id": row["id"],
             "payload": row["payload"],
             "labels": [label] if label else [],
             "primary": label,
             "written": False,
         }
+        for alias in row['payload'].get('source_aliases', []):
+            _remember_label(entry, alias, pending)
         return row["id"]
     if stats is not None:
         stats["chunks_deduped"] = stats.get("chunks_deduped", 0) + 1
     _remember_label(entry, label, pending)
+    for alias in row['payload'].get('source_aliases', []):
+        _remember_label(entry, alias, pending)
     return entry["id"]
 
 
@@ -695,6 +706,33 @@ def _flush_also_paths(writer: Writer, pending: list[dict]) -> None:
             },
         )
     pending.clear()
+
+
+def _sync_provenance(doc, rows, adopted, writer, stats):
+    """Refresh metadata only after receiver body and primary owner match the canonical doc."""
+    if writer.dry_run or writer.qd is None or not rows:
+        return
+    fields = ('source_commit', 'source_sha256', 'library_relative_path', 'library_source_path',
+              'library_source_commit', 'extractor', 'text_kind', 'source_aliases', 'source_alias_count')
+    annotation = {name: rows[0]['payload'][name] for name in fields if name in rows[0]['payload']}
+    if not annotation:
+        return
+    expected = {pid: content_hash(_chunk_body(row['payload']['text'])) for row, pid in zip(rows, adopted)}
+    ids = list(expected)
+    for start in range(0, len(ids), 256):
+        response = writer.qd._call(writer.qd._cpath('/points'),
+                                  {'ids': ids[start:start + 256], 'with_payload': True, 'with_vector': False})
+        points = {point['id']: point for point in response.get('result', [])}
+        for point_id in ids[start:start + 256]:
+            point = points.get(point_id)
+            payload = point.get('payload') if isinstance(point, dict) else None
+            if not isinstance(payload, dict) or not isinstance(payload.get('text'), str) or content_hash(_chunk_body(payload['text'])) != expected[point_id]:
+                raise FleetRagError('unchanged document receiver content verification failed')
+            if payload.get('doc_id') != doc.doc_id or payload.get('source') != doc.source:
+                continue  # Shared chunks keep their actual primary document and its provenance.
+            if any(payload.get(name) != value for name, value in annotation.items()):
+                writer.annotate(point_id, annotation)
+                stats['chunks_provenance_updated'] = stats.get('chunks_provenance_updated', 0) + 1
 
 
 def _sync_unchanged_chunks(
@@ -727,13 +765,15 @@ def _sync_unchanged_chunks(
             if row["id"] not in old_set:
                 return False
             label = _chunk_label(row)
-            seen[body_hash] = {
+            entry = seen[body_hash] = {
                 "id": row["id"],
                 "payload": row["payload"],
                 "labels": [label] if label else [],
                 "primary": label,
                 "written": True,
             }
+            for alias in row['payload'].get('source_aliases', []):
+                _remember_label(entry, alias, pending)
             adopted.append(row["id"])
             continue
         if not entry.get("written") and entry["id"] not in old_set:
@@ -742,10 +782,13 @@ def _sync_unchanged_chunks(
         if entry["id"] != row["id"] and row["id"] in old_set:
             replaced_ids.append(row["id"])
         _remember_label(entry, _chunk_label(row), pending)
+        for alias in row['payload'].get('source_aliases', []):
+            _remember_label(entry, alias, pending)
     # Ids credited to this doc that no recomputed chunk replaced stay.  An orphan
     # shared with another document is not a duplicate body.
     extras = [i for i in old_ids if i not in adopted and i not in replaced_ids]
     new_ids = adopted + extras
+    _sync_provenance(doc, rows, adopted, writer, stats)
     if new_ids == old_ids:
         return False
     others: set[str] = set()
@@ -1174,6 +1217,7 @@ def _run_locked(
     pending_prunes: list[tuple[str, set[str], dict, set[str]]] = []
 
     for name in names:
+        sources.take_source_read_receipt(name)
         stats = _empty_stats()
         report["per_source"][name] = stats
         seen_chunks: dict[str, dict] = {}
@@ -1340,6 +1384,12 @@ def _run_locked(
                 # A later source failure must not roll it back: the Linear read
                 # itself finished, and the next run's overlap covers the gap.
                 save_state(state, state_path)
+        read_receipt = sources.take_source_read_receipt(name)
+        if read_receipt is not None:
+            read_receipt['source_ok'] = source_ok
+            read_receipt['source_complete'] = bool(read_receipt.get('source_complete') and source_ok and since_ms is None and limit is None)
+            read_receipt['state_hash_verified_count'] = sum(not dry_run and state.get(did, {}).get('doc_hash') == row.get('body_sha256') for did, row in read_receipt.get('documents', {}).items())
+            report.setdefault('source_read_receipts', {})[name] = read_receipt
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")
@@ -1479,6 +1529,8 @@ def _prune_candidates(name: str, yielded: set[str], state: dict) -> list[str]:
         did
         for did, rec in state.items()
         if isinstance(rec, dict) and rec.get("source") == name and did not in yielded
+        # Coverage work supplies no authority to delete preserved library history.
+        and not (name == 'doc' and did.startswith('doc/library/'))
     )
 
 
