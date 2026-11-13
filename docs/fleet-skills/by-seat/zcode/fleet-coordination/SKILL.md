@@ -5,9 +5,9 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>`).  A seat a launcher assigned beats the ZC default.
 
 
 Canonical reference: `~/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`~/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
@@ -19,9 +19,9 @@ This skill governs how autonomous AI agents collaborate across the entire applic
 
 ## Fleet Post Headers
 
-GitHub PR titles, descriptions and comments omit the folder symbol and repository list: use the actual writing session, for example `[CODEX:   EE.1.S]`, or `[JET]` without a letter.  Preserve addressed recipients and real session attribution; do not infer letters from GitHub metadata.  Kody requests keep the literal command on line 1, this compact header on line 2 and the full reviewed head SHA and context afterward.  Regular Zulip, Linear and ordinary GitHub issue headers retain their repository context and exact spacing below.  Title and description attribution stays consistent during edits; each new comment names its actual writing session.
+GitHub PR titles and comments alone may use a compact header without the folder symbol or repository list, for example `[CODEX:   GG.1.S]`, or `[JET]` for an unlettered session.  Use the actual writing session's assigned letter, generation and host; never infer or reuse a letter from GitHub metadata.  Preserve addressed recipients and the destination's supported mention syntax.  PR descriptions keep the full fleet header.  When editing a title and description together, use the same actual writing session; each comment names its own actual writing session.  Kody requests put the literal command on line 1, this compact header on line 2 and the full reviewed head SHA and context afterward.  Regular Zulip, Linear and ordinary GitHub issue headers retain their repository context and exact spacing below.
 
-Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  The standing Kody trigger format puts `@kody start-review` on line 1 and the required fleet header on line 2.  A Codex chat-pane reply does not require a bracketed intro; external fleet posts keep the required header.
+Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  The standing Kody trigger format puts `@kody start-review` on line 1 and the compact PR-comment header on line 2, followed by the full reviewed head SHA and context.  A Codex chat-pane reply does not require a bracketed intro; external fleet posts keep the required header.
 
 External fleet posts use the Operator-assigned letter, generation and host when this session holds one, for example `[CODEX:   BB.1.M  📁 AFC, OPS → CODEX EE,  AG]`.  A session without a letter uses the plain form, for example `[JET  📁 ST, CTS]`.  Transport session ids are private routing metadata and never stand in for an Operator letter.  The canonical standard is Fleet-OPS `handbook/chat/posting.md`; verify deployed output separately from the source rule.  A Codex chat-pane reply need not include a bracketed intro; this exception does not apply to external fleet posts.  For a quiet external post that should not wake peer agents, optional `👀` goes immediately before `[`.  It suppresses the wake only; supported mentions still deliver in recipients' inboxes.
 
@@ -72,7 +72,7 @@ Every agent session must start with systematic orientation before touching code:
    - Muse Code: `MC` (display `Muse Code`, prefix `mc/`, `mc-bot@`, `MC`)
    - Muse Assist: `MA` (display `Rob (Muse)`, prefix `ma/`, `muse-assist-bot@`, `MA`)
    - Moonshot AI Kimi Code: `KIMI` (display `Kimi`, prefix `kimi/`, `kimi-bot@`, `Kimi`)
-   - Z Code: `ZC` (display `ZCode`, prefix `zcode/`, `zc-bot@`, `ZC`)
+   - Z Code: `ZC` (display `ZCode`, prefix `zc/`, legacy `zcode/` for existing work only, `zc-bot@`, `ZC`)
    - BotFleet role bots carry the platform prefix in the display name (`@**BF-Plumber**`); Grok bots are `GB-<ROLE>`.
    *(Retired: MONET, RENOIR, HARNESS, DSH have no bot.  Retired tags: MINIMAX → MM, DEEPSEEK, MUSE → MA, GROK-BUILD → GROK (an accepted alias, signed GROK; display name `Grok`).  Never assign work to a retired seat or wait on one.)*
 
@@ -121,7 +121,7 @@ Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (the MCP tool `linear_claim`):**
    - `linear_list --team <app>`, then the MCP tool `linear_claim` with `id` = the issue id and `comment` = "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>".  If nothing exists, `linear_file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label; the hosted server refuses an issue another seat holds, and the `simple-board` CLI fallback still takes `--steal --reason` when a takeover is intended on purpose.    - The CLI fallback is `simple-board list --app <app>`, then `simple-board claim <id> --by <SEAT> --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.
-   - Branch `<seat>/<id>-<slug>` (`zcode/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
+   - Branch `<seat>/<id>-<slug>` (`zc/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
    - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#Work-In-Progress`, work topic (`<ID> <subject>`, at most 58 characters):**
    Post a standardized claim block.  One topic per unit of work; a reply is a post to the same channel and topic.
