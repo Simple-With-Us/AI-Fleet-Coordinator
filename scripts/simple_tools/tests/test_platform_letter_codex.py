@@ -834,6 +834,40 @@ class RenameTests(Base):
             self.assertTrue(C.codex_rename(request))
         self.assertEqual((self.stored_name(child), self.stored_name(chat)), ("AB: Pong", None))
 
+    def test_shared_parent_registry_capability_never_enters_child_env_or_rpc_payload(self) -> None:
+        sid = self.add(3)
+        env = self.env(CODEX_LETTER_BIN=self.binary, AGENT_LAUNCHER="platform-launcher", OPENAI_API_KEY="fake.app-auth")
+        for name in PL._OPERATOR_CHILD_SECRETS:
+            env[name] = "fake.private." + name.lower()
+        original = dict(env)
+        child_envs, messages = [], []
+
+        def handler(server, message):
+            messages.append(message)
+            self.writes_the_name(server, message)
+
+        def capture_popen(argv, **options):
+            child_envs.append(dict(options["env"]))
+            return FakeServer("lines", handler)
+
+        open_rpc = C.open_rpc
+        with mock.patch.object(C, "open_rpc", side_effect=lambda child, budget, *, daemon, popen=None:
+                               open_rpc(child, budget, daemon=daemon, popen=capture_popen)):
+            chat = PL.Chat(C.SPEC, env, "server", sid, now=1.0)
+            self.assertTrue(PL._write_title(chat, {"label": "AA"}, "AA: Words", "", {}, "start"))
+        self.assertTrue(child_envs)
+        for child in child_envs:
+            self.assertEqual(child["AGENT_LAUNCHER"], "platform-launcher")
+            self.assertEqual(child["OPENAI_API_KEY"], "fake.app-auth")
+            for name in PL._OPERATOR_CHILD_SECRETS:
+                self.assertNotIn(name, child)
+        wire = json.dumps(messages)
+        for name in PL._OPERATOR_CHILD_SECRETS:
+            self.assertNotIn(env[name], wire)
+        self.assertNotIn("record_thread_link", wire)
+        self.assertEqual(env, original)
+        self.assertEqual(self.stored_name(sid), "AA: Words")
+
 
 # --------------------------------------------------------------------------------------------
 # The hook, end to end in process
