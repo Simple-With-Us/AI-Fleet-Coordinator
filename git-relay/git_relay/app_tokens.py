@@ -193,15 +193,15 @@ def _shared_client():
                 current = os.stat(expected.name, dir_fd=directory_fd, follow_symlinks=False)
                 current_directory = expected.parent.lstat()
                 if (directory.st_dev, directory.st_ino) != (
-                    current_directory.st_dev, current_directory.st_ino
+                    current_directory.st_dev,
+                    current_directory.st_ino,
                 ):
                     raise ValueError()
             finally:
                 os.close(directory_fd)
             fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
             identities = [
-                tuple(getattr(info, key) for key in fields)
-                for info in (before, after, current)
+                tuple(getattr(info, key) for key in fields) for info in (before, after, current)
             ]
             if len(raw) > _MAX_CLIENT_BYTES or not identities[0] == identities[1] == identities[2]:
                 raise ValueError()
