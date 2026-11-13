@@ -948,6 +948,7 @@ class BootstrapTests(unittest.TestCase):
             **{"AI-Fleet-Coordinator-main/scripts/fleet_secrets/" + name:
                (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
                for name in ("__init__.py", "core.py")},
+            "AI-Fleet-Coordinator-main/scripts/simple_tools/secretscan.py": (SERVICE_DIR.parent / "simple_tools/secretscan.py").read_bytes(),
             "AI-Fleet-Coordinator-main/scripts/fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
             "AI-Fleet-Coordinator-main/README.md": b"not extracted\n",
         })
@@ -995,10 +996,11 @@ class BootstrapTests(unittest.TestCase):
     def test_installs_gitleaks_from_release_tarball(self):
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("bootstrap: extracted 4 files", proc.stdout)
+        self.assertIn("bootstrap: extracted 5 files", proc.stdout)
         self.assertEqual(sorted(p.name for p in (work / "app/fleet_secrets").iterdir()), ["__init__.py", "core.py"])
         self.assertTrue((work / "app" / "fleet-recall-service" / "server.py").is_file())
         self.assertTrue((work / "app" / "fleet_rag" / "__init__.py").is_file())
+        self.assertEqual((work / "app/simple_tools/secretscan.py").read_bytes(), (SERVICE_DIR.parent / "simple_tools/secretscan.py").read_bytes())
         self.assertFalse((work / "app" / "README.md").exists())
         exe = work / "bin" / "gitleaks"
         self.assertTrue(exe.is_file())
@@ -1032,6 +1034,7 @@ class BootstrapTests(unittest.TestCase):
             prefix + "fleet-recall-service/server.py": b"# bootstrap fixture\n",
             **{prefix + "fleet_secrets/" + name: (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
                for name in ("__init__.py", "core.py")},
+            prefix + "simple_tools/secretscan.py": (SERVICE_DIR.parent / "simple_tools/secretscan.py").read_bytes(),
             prefix + "fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
             prefix + "fleet_secrets/__main__.py": b"raise AssertionError('must not ship')\n",
             prefix + "fleet-secrets": b"must not ship\n",
@@ -1080,6 +1083,22 @@ class BootstrapTests(unittest.TestCase):
         docker = (SERVICE_DIR / "Dockerfile").read_text()
         copies = [line for line in docker.splitlines() if line.startswith("COPY ") and "fleet_secrets" in line]
         self.assertEqual(copies, ["COPY fleet_secrets/__init__.py fleet_secrets/core.py /app/fleet_secrets/"])
+
+    def test_missing_scanner_fails_even_when_an_old_scanner_exists(self):
+        source = self.www / "missing-scanner.tgz"
+        prefix = "fixture/scripts/"
+        _tgz(source, {
+            prefix + "fleet-recall-service/server.py": b"# stub\n",
+            **{prefix + "fleet_secrets/" + name: (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
+               for name in ("__init__.py", "core.py")},
+        })
+        work = pathlib.Path(tempfile.mkdtemp(prefix="missing-scanner-", dir=self.tmp.name))
+        package = work / "app/simple_tools"
+        package.mkdir(parents=True)
+        (package / "secretscan.py").write_text("# stale scanner must not satisfy a source package\n")
+        proc, _ = self.run_bootstrap(None, RECALL_GITLEAKS_SKIP="1", RECALL_TARBALL=str(source), RECALL_APP_DIR=str(work / "app"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("credential scanner missing from source; aborting", proc.stdout)
 
     def test_download_failure_continues_only_with_explicit_opt_out(self):
         proc, work = self.run_bootstrap(self.base + "/missing.tgz", RECALL_GITLEAKS_REQUIRED="0")
