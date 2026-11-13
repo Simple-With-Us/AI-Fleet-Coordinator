@@ -27,7 +27,7 @@ def bind_private_token(
     marker selects this consumer's route without an ambient credential fallback.
     """
     if token_env in environ:
-        return "explicit-binding"
+        return "explicit-binding-empty" if not environ[token_env] else "explicit-binding"
     environ[token_env] = ""
     directory = os.fspath(store_directory)
     if (
