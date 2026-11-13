@@ -134,7 +134,7 @@ _SEAT_TAG_PREFIX_RE = re.compile(
     r"(?:"
     r"(?P<session>\u00b7[^\]]*?)(?:\u2192[^\]]*)?\]"
     r"|"
-    r"(?:\u2192[^\]]*)?\]"
+    r"(?:\s*\u2192[^\]]*)?\]"
     r"|"
     r"(?P<thread>\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]))?\s+📁[^\]]*\]"
     r")"
@@ -149,7 +149,7 @@ _COMPACT_INTRO_RE = re.compile(
     r"\s+📁(?P<after>[^\]]*)\]"
 )
 _FOLDER_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t")
+_SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t", "\u200a")
 
 # Reply wakes.  A loud mention:  `@**Name**`, `@**Name|id**` or a user group `@*group*`.  A silent one
 # (`@_**Name**`) has the underscore between the at sign and the stars, so it matches neither pattern.
