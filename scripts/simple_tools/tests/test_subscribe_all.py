@@ -65,7 +65,7 @@ class SubscribeAllTests(unittest.TestCase):
     def test_infisical_uses_scoped_service_token_and_never_logs_in(self) -> None:
         from unittest import mock
         import os
-        from fleet_secrets import core as scoped_secrets
+        import fleet_infisical as scoped_secrets
 
         token_name = S.INFISICAL_TOKEN_ENV
         previous = os.environ.get(token_name)
@@ -101,7 +101,7 @@ class SubscribeAllTests(unittest.TestCase):
     def test_infisical_wrong_scope_fails_before_secret_fetch(self) -> None:
         import os
         from unittest import mock
-        from fleet_secrets import core as scoped_secrets
+        import fleet_infisical as scoped_secrets
 
         scoped_token = "st." + secrets.token_urlsafe(32)
         calls = []
