@@ -271,6 +271,13 @@ struct ApplyReportStep: Equatable {
     var kind: String
     var platform: String
     var detail: String
+    /// The `file:` lines the engine printed under the step, relative to the home folder.
+    var files: [String] = []
+
+    /// The engine wrote this step.
+    var isApplied: Bool { outcome == "applied" }
+    /// The engine did not write this step because it failed or was refused.
+    var isNotWritten: Bool { outcome == "failed" || outcome == "refused" }
 }
 
 struct ApplyReport: Equatable {
@@ -292,19 +299,26 @@ struct ApplyReport: Equatable {
         guard let first = lines.first, first.hasPrefix("Applied ") else { return nil }
         var steps: [ApplyReportStep] = []
         var details: [String] = []
+        var stepFiles: [String] = []
         var refusal: String?
         var verdict: String?
 
         func closeStep() {
             guard !steps.isEmpty else { return }
             steps[steps.count - 1].detail = details.last ?? ""
+            steps[steps.count - 1].files = stepFiles
             details = []
+            stepFiles = []
         }
 
         for line in lines.dropFirst() {
             if line.hasPrefix("      ") {
                 let body = line.trimmingCharacters(in: .whitespaces)
-                if !body.hasPrefix("command:"), !body.hasPrefix("file:") { details.append(body) }
+                if let path = ApplyReport.writtenFilePath(from: line) {
+                    stepFiles.append(path)
+                } else if !body.hasPrefix("command:") {
+                    details.append(body)
+                }
             } else if line.hasPrefix("  ") {
                 let body = line.trimmingCharacters(in: .whitespaces)
                 if body.hasPrefix("REFUSED:") {
@@ -325,6 +339,17 @@ struct ApplyReport: Equatable {
         }
         closeStep()
         return ApplyReport(steps: steps, refusalReason: refusal, verdictAfter: verdict)
+    }
+
+    /// The engine prints each written path as `      file:  <path>` (two spaces after the
+    /// label, and a nonempty path with no whitespace).  Other indented `file:` lines are
+    /// installer text and stay in `details`.
+    static func writtenFilePath(from line: String) -> String? {
+        let prefix = "      file:  "
+        guard line.hasPrefix(prefix) else { return nil }
+        let value = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, value.rangeOfCharacter(from: .whitespaces) == nil else { return nil }
+        return value
     }
 }
 
@@ -362,11 +387,58 @@ enum ApplyRefusalKind: Equatable {
     }
 }
 
+/// An apply where the engine wrote some steps and failed or refused others.  The apply loop keeps
+/// going after a failed or refused entry, so one run can do both.
+struct ApplyPartialResult: Equatable {
+    var written: [ApplyReportStep]
+    var notWritten: [ApplyReportStep]
+    var reproved: FleetConfigResult?
+
+    /// Multi-line text for the sheet:  what was written and what was not.
+    var detail: String {
+        var lines: [String] = []
+        if written.isEmpty {
+            lines.append("Nothing was written.")
+        } else {
+            lines.append("Written:")
+            for step in written {
+                var line = "  \(step.ruleID)"
+                if !step.files.isEmpty {
+                    let names = step.files.map { "~/" + $0 }
+                    line += " (" + names.joined(separator: ", ") + ")"
+                }
+                lines.append(line)
+            }
+        }
+        if !notWritten.isEmpty {
+            lines.append("Not written:")
+            for step in notWritten {
+                let why = step.detail.isEmpty ? step.outcome : step.detail
+                lines.append("  \(step.ruleID): " + ApplyCopy.normalize(why))
+            }
+        }
+        if let sentence = reproofSentence {
+            lines.append(sentence)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// A sentence about the target cell's re-proof.  Nil when the cell proved green, so a
+    /// partial sheet does not hide a still-red or missing re-proof behind the written list.
+    var reproofSentence: String? {
+        guard let reproved else { return "The cell could not be re-proved." }
+        if reproved.isProven { return nil }
+        return "The cell is still \(reproved.state.label.lowercased())."
+    }
+}
+
 enum ApplyOutcome: Equatable {
     /// Apply ran and the re-proof of the rule is PASS.
     case green(FleetConfigResult)
     /// Apply ran but the re-proof is not PASS.
     case stillFailing(FleetConfigResult?)
+    /// The engine wrote some steps and failed or refused others.
+    case partlyApplied(ApplyPartialResult)
     /// The engine or the Touch ID gate refused.  The cell stays as it was.
     case refused(ApplyRefusalKind, String)
     /// An installer failed, the run timed out, or the output was not understood.
@@ -384,6 +456,18 @@ enum ApplyOutcome: Equatable {
         case .stillFailing(let result):
             if let result { return "Apply finished but the cell is still \(result.state.label.lowercased())." }
             return "Apply finished but the cell could not be re-proved."
+        case .partlyApplied(let partial):
+            if let sentence = partial.reproofSentence {
+                return ApplyCopy.join(
+                    "Apply was partial, with \(partial.written.count) written and \(partial.notWritten.count) not written.",
+                    "Nothing was retried.",
+                    sentence
+                )
+            }
+            return ApplyCopy.join(
+                "Apply was partial, with \(partial.written.count) written and \(partial.notWritten.count) not written.",
+                "Nothing was retried."
+            )
         case .refused(let kind, _): return ApplyCopy.join("\(kind.title).", "Nothing was retried.")
         case .failed: return ApplyCopy.join("Apply failed.", "Nothing was retried.")
         }
@@ -420,7 +504,21 @@ enum ApplyOutcome: Equatable {
             return .failed(tail.isEmpty ? "The engine output was not an apply report." : tail)
         }
 
+        // Judge every step, not only the target:  the engine keeps going after a failed or refused
+        // entry, so a run can write the target and fail a sibling, or the reverse.
+        let written = report.steps.filter { $0.isApplied }
+        let notWritten = report.steps.filter { $0.isNotWritten }
         let step = report.step(ruleID: targetRuleID)
+        let targetDone = step.map { $0.isApplied || $0.outcome == "already-current" } ?? false
+        var unwritten = notWritten
+        if !targetDone, let step, !step.isNotWritten { unwritten.append(step) }
+        let isPartial = targetDone ? !notWritten.isEmpty : (!written.isEmpty && !unwritten.isEmpty)
+        if isPartial {
+            return .partlyApplied(ApplyPartialResult(
+                written: written, notWritten: unwritten, reproved: reproved
+            ))
+        }
+
         if let step, step.outcome == "refused" || (report.refusalReason != nil && step.outcome != "applied") {
             let message = report.refusalReason ?? step.detail
             return .refused(ApplyRefusalKind.classify(message: message), message)
