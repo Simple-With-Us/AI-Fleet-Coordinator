@@ -43,7 +43,7 @@ private let generatedSettingsCases: [String: ServerSettingValue] = {
           let root = ServerSettingJSON.parse(String(decoding: data, as: UTF8.self))?.tableEntries,
           root["synthetic"] == .bool(true), let cases = root["cases"]?.tableEntries,
           ["get", "save1", "save2", "runtime_pending", "reconcile_unknown", "reconcile_saved",
-           "superseded", "known_ok_read_failed", "cancelled", "initialized", "unactivated_get"].allSatisfy({ cases[$0]?.tableEntries != nil }) else {
+           "superseded", "known_ok_read_failed", "cancelled", "early_refused", "initialized", "unactivated_get"].allSatisfy({ cases[$0]?.tableEntries != nil }) else {
         preconditionFailure("The generated Operator settings wire fixture is missing or malformed")
     }
     return cases
@@ -329,6 +329,20 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
             request: original, reconciling: true) else {
             return XCTFail("Durable cancellation did not settle the old request without Saved")
         }
+    }
+
+    func test_actual_early_backend_refusal_releases_only_the_attempt_without_inventing_canonical_state() throws {
+        let wire = generatedSettingsCase("early_refused")
+        let document = try XCTUnwrap(wire.response["eavesdropperSettings"]?.tableEntries)
+        XCTAssertEqual(document["errorCode"], .text("request_refused"))
+        XCTAssertEqual(document["refusalCode"], .text("writer_not_configured"))
+        for key in ["source", "revision", "autosaveEnabled"] { XCTAssertNil(document[key]) }
+        guard case .failed(_, let canonical) = ServerListenerSettingsSaver.receipt(
+            OpsProcessResult(exitCode: wire.exitCode, stdout: wire.stdout, stderr: ""),
+            request: try generatedSaveRequest("early_refused")) else {
+            return XCTFail("An identity-bound definite refusal kept the attempt uncertain")
+        }
+        XCTAssertNil(canonical, "An early refusal cannot replace the verified canonical baseline")
     }
 
     func test_missing_save_availability_is_a_protocol_failure_instead_of_first_saved() throws {
