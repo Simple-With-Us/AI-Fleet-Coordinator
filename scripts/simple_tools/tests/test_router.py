@@ -378,6 +378,22 @@ class LeaseRoutingTests(unittest.TestCase):
         c, d = R.route(msg(sender=10, content="[CLAUDE·aaaa1111 📁OPS] status"), ME, ctx(), [own, sibling])
         self.assertEqual(d.lease_items, [("other", "passive", "sibling")])
 
+    def test_lettered_post_uses_private_posted_ids_and_delivers_only_to_sibling(self) -> None:
+        from simple_tools.post_header import normalize_header
+
+        content = normalize_header("[CLAUDE: HH.1.M 📁OPS → CODEX EE, AG] working")
+        own = lease("own", topics=[("simple-tools", "t")], posted=[500], prefix="[CLAUDE·aaaa1111")
+        sibling = lease("other", topics=[("simple-tools", "t")], prefix="[CLAUDE·bbbb2222")
+        message = msg(sender=10, content=content, mid=500)
+        self.assertNotIn("·", content)
+        self.assertTrue(own.posted_this(message))
+        self.assertFalse(sibling.posted_this(message))
+        classified, decision = R.route(message, ME, ctx(), [own, sibling])
+        self.assertTrue(classified.own)
+        self.assertEqual(decision.lease_items, [("other", "passive", "sibling")])
+        self.assertFalse(decision.seat_inbox)
+        self.assertIsNone(decision.wake)
+
     def test_own_posts_go_to_sibling_leases_only(self) -> None:
         poster = lease("A", topics=[("simple-tools", "t")], posted=[500])
         tagged = lease("B", topics=[("simple-tools", "t")], prefix="[CLAUDE·aaaa1111")
