@@ -507,8 +507,11 @@ export const HEADER_REPO_SEPARATOR = `,${HEADER_HAIR}`;
 export const HEADER_RECIPIENT_SEPARATOR = `,${HEADER_HAIR.repeat(2)}`;
 
 /** The Python post_header.normalize_header contract: only the first complete header changes. */
-export function normalizeHeader(text, { seat = null } = {}) {
-  const match = /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u.exec(text);
+export function normalizeHeader(text, { seat = null, context = "message" } = {}) {
+  if (!["message", "github-pr"].includes(context)) throw new TypeError("unknown header context");
+  const prefix = context === "github-pr" ? /^@kody start-review\r?\n/u.exec(text)?.[0] ?? "" : "";
+  const content = text.slice(prefix.length);
+  const match = /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u.exec(content);
   if (!match) return text;
   const parts = match.groups.inner.split(/\s*(?:→|->)\s*/u);
   if (parts.length > 2) return text;
@@ -525,9 +528,9 @@ export function normalizeHeader(text, { seat = null } = {}) {
   if (/^[A-Z]{1,2}[.-]\d+[.-][MSC]$/u.test(thread)) transport = "";
   let inner = sender.groups.seat + transport;
   if (thread) inner += `:${HEADER_AFTER_COLON}${thread}`;
-  if (repos.length) inner += `${HEADER_BEFORE_FOLDER}📁${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
+  if (repos.length && context !== "github-pr") inner += `${HEADER_BEFORE_FOLDER}📁${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
   if (peers.length) inner += ` → ${peers.join(HEADER_RECIPIENT_SEPARATOR)}`;
-  return `${match.groups.lead}[${inner}]${text.slice(match[0].length)}`;
+  return `${prefix}${match.groups.lead}[${inner}]${content.slice(match[0].length)}`;
 }
 
 /** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
