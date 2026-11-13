@@ -57,7 +57,22 @@ class SyncCase(unittest.TestCase):
         run(["push", "-q", "origin", "HEAD:main"], seed)
         self.vars = {"HOME": str(self.home), "FLEET_CODE_ROOT": str(self.code), "FLEET_HOST_KIND": "mac",
                      "FLEET_LANE_GUARD_STATE_DIR": str(self.home / "state"), "GITHUB_TOKEN": "x",
+                     "FLEET_SYNC_RELAY_URL": str(self.upstream),
                      "FLEET_PLACEMENT_EXCEPTIONS": str(self.home / "no-rows.json")}
+        # Transport seam for the real local bare fixture; explicit relay tests still call the real builders.
+        relay_env, relay_url = S.relay_git_env, S.relay_fetch_url
+        def fixture_env(env, remote):
+            if env.get("FLEET_SYNC_RELAY_URL") == str(self.upstream) and remote == str(self.upstream):
+                return {"GIT_TERMINAL_PROMPT": "0"}
+            return relay_env(env, remote)
+        def fixture_url(env, repo):
+            if env.get("FLEET_SYNC_RELAY_URL") == str(self.upstream):
+                return str(self.upstream)
+            return relay_url(env, repo)
+        for attribute, replacement in (("relay_git_env", fixture_env), ("relay_fetch_url", fixture_url)):
+            patcher = mock.patch.object(S, attribute, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         (self.home / "no-rows.json").write_text('{"exceptions": []}\n', encoding="utf-8")
         self.lock = self.repo / ".git" / "index.lock"
 
@@ -390,7 +405,7 @@ class RelayRoute(SyncCase):
                 mock.patch.object(S, "git_full", fake):
             code, out = self.sync()
         self.assertEqual(code, 0, out)
-        self.assertIn("github token: none (relay route)", out)
+        self.assertIn("github route: own-seat relay", out)
 
     def test_every_accepted_origin_form_resolves_to_the_route_in_real_git(self) -> None:
         """Including the forms a list of URL patterns misses:  an embedded login, a case-variant host, an explicit port."""
@@ -427,18 +442,21 @@ class RelayRoute(SyncCase):
                     self.assertEqual(S.origin_repo(origin), f"{canonical}/Some-Repo", origin)
         self.assertEqual(S.origin_repo("https://github.com/Other-Org/Some-Repo.git"), "Other-Org/Some-Repo")
 
-    def test_without_the_relay_a_failed_fetch_still_fails(self) -> None:
+    def test_without_the_relay_no_fetch_or_credential_lookup_can_start(self) -> None:
+        self.vars.pop("FLEET_SYNC_RELAY_URL")
         real = S.git_full
 
         def fake(repo, *args, **kwargs):
-            if args[0] == "fetch":
-                return 128, "", "fatal: could not read Username for 'https://github.com'"
+            self.assertNotEqual(args[0], "fetch")
             return real(repo, *args, **kwargs)
 
-        with mock.patch.object(S, "git_full", fake):
+        with mock.patch.object(S, "git_full", fake), mock.patch.object(
+            S, "resolve_github_token", side_effect=AssertionError("credential lookup")
+        ):
             code, out = self.sync()
         self.assertEqual(code, 1)
-        self.assertIn("could not read Username", out)
+        self.assertIn("required own-seat relay route is not configured", out)
+        self.assertNotEqual(self.head(), self.origin())
 
 
 class Source(unittest.TestCase):
