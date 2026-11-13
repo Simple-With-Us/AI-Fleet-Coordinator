@@ -10,6 +10,8 @@ Provision the shared host consumer a read-only service token for AI Fleet Coordi
 
 During migration, preserve the existing registry values and grants used by other consumers.  A synchronized unchanged-value copy in the narrower folder bridges this rollout; migrate the remaining registry consumers before retiring the old values.  Install the narrower host grant only after this source and its shared-library dependency are available for acceptance, then prove an assignment or touch in the intended session before revoking its superseded grant.
 
+A refused file leaves an empty binding marker in the process environment so registry reads fail closed instead of consulting another consumer's generic token.  Presence alone does not mean that a token was bound; the safe bootstrap reason and registry diagnostic distinguish that failure.
+
 Deploy the reviewed source through the normal fleet CLI release path.  Run the shared letter request in the intended interactive session and verify the registry's assignment and persisted title.  A loader test or a successful health check alone does not prove assignment.
 
 Rollback the source through the fleet CLI release path if needed.  Preserve the consumer token until the replacement path is live and verified; remove obsolete helpers and signing-key caches only after auditing their remaining callers.

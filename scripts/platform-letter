@@ -154,6 +154,8 @@ def start():
         from simple_tools.platform_letter_bootstrap import bind, report
         from simple_tools.platform_letter import main  # noqa: E402
     except Exception:  # noqa: BLE001 - a hook never blocks a chat, even from a checkout that cannot be imported
+        sys.stderr.write("platform-letter: SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN "
+                         "unavailable (bootstrap or client module unavailable)\n")
         if sys.argv[1:2] == ["hook"]:
             say_nothing(raw)
             sys.exit(0)

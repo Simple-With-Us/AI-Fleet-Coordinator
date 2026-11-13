@@ -43,14 +43,14 @@ if (
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
     try:
         from simple_tools.platform_letter_bootstrap import bind, report
-    except ImportError:
+        from simple_tools.platform_letter import main as letter_main  # noqa: E402
+    except Exception:  # noqa: BLE001 - a partial runtime must never block chat startup
         # A partial managed release must not prevent an interactive chat from starting.
         sys.stderr.write("platform-letter: SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN "
-                         "unavailable (bootstrap module missing)\n")
+                         "unavailable (bootstrap or client module unavailable)\n")
         sys.exit(0 if sys.argv[2:3] == ["hook"] else 1)
     else:
         report(bind())
-    from simple_tools.platform_letter import main as letter_main  # noqa: E402
 
     # The name it was run under goes along:  `simple-chat letter hook` with no --platform is the command the retired
     # Claude client installed, and it must go on working until someone runs `install`.

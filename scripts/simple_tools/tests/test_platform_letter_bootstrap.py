@@ -110,9 +110,26 @@ class BootstrapTests(unittest.TestCase):
         package = self.home / "simple_tools"
         package.mkdir()
         (package / "__init__.py").touch()
-        (package / "claude_letter.py").write_text("raise AssertionError('partial client ran')\n")
+        (package / "platform_letter.py").write_text("raise AssertionError('partial client ran')\n")
         result = subprocess.run([sys.executable, str(entry), "letter", "hook"],
                                 capture_output=True, timeout=5, env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(TOKEN_ENV.encode(), result.stderr)
         self.assertNotIn(b"Traceback", result.stderr)
+
+    def test_present_bootstrap_and_missing_client_keeps_both_hooks_usable(self):
+        scripts = Path(__file__).resolve().parents[2]
+        package = self.home / "simple_tools"
+        package.mkdir()
+        (package / "__init__.py").touch()
+        shutil.copyfile(scripts / "simple_tools/platform_letter_bootstrap.py",
+                        package / "platform_letter_bootstrap.py")
+        for name, args in (("simple-chat", ["letter", "hook"]),
+                           ("platform-letter", ["hook", "--platform", "codex"])):
+            entry = self.home / name
+            shutil.copyfile(scripts / name, entry)
+            result = subprocess.run([sys.executable, str(entry), *args],
+                                    capture_output=True, timeout=5, env=self.env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(TOKEN_ENV.encode(), result.stderr)
+            self.assertNotIn(b"Traceback", result.stderr)
