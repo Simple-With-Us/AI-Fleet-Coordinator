@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -21,8 +22,8 @@ OTHER_PROJECT = (
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
-CLIENT_SECRET = "SENTINEL_CLIENT_SECRET_5ec7"
-ACCESS_TOKEN = "SENTINEL_ACCESS_TOKEN_a11"
+CLIENT_SECRET = str(uuid.uuid4())
+ACCESS_TOKEN = str(uuid.uuid4())
 ALL_SENTINELS = (VAL_A, VAL_B, CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN)
 KEYCHAIN_FULL = {"infisical-client-id": CLIENT_ID, "infisical-client-secret": CLIENT_SECRET}
 
@@ -306,8 +307,8 @@ class RunTests(Base):
                 self.assertEqual(world.fetches, [])
                 self.assertEqual(self.exec_calls, [])
 
-    def test_interactive_get_keeps_the_manual_cli_session_route(self):
-        self.use(World())
+    def test_interactive_get_requires_its_own_scoped_token(self):
+        world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
         env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
@@ -321,7 +322,11 @@ class RunTests(Base):
             mock.patch.object(cli.sys, "stderr", TTY()),
         ):
             code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn(core.ENV_TOKEN, err)
+        self.assertEqual(world.fetches, [])
+        self.assertEqual(world.calls, [])
+        self.assertEqual(self.exec_calls, [])
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
