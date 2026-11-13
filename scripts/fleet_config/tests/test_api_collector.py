@@ -10,6 +10,7 @@ from __future__ import annotations
 import builtins
 import io
 import json
+import os
 import socket
 import threading
 import unittest
@@ -19,11 +20,13 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import mock
 
 from fleet_config import aggregator, collectors, contract
 from fleet_config import manifest as manifest_mod
 from fleet_config.api_collector import (
+    _API_BATCH_CACHE_KEY,
     API_OBSERVATION_SCHEMA_VERSION,
     API_OBSERVER_CACHE_KEY,
     API_SIDECAR_CACHE_KEY,
@@ -31,6 +34,7 @@ from fleet_config.api_collector import (
     ApiObserverRuntime,
     ApiObserverTarget,
     ObserverClass,
+    _build_safe_opener,
     api_collect,
     build_first_cloud_seat_rules,
     evaluate_api_observation,
@@ -126,8 +130,18 @@ def _payload(
 
 
 class _FakeHTTPResponse:
+    code = 200
+    msg = "OK"
+
     def __init__(self, data: bytes) -> None:
         self._stream = io.BytesIO(data)
+        self.headers: dict[str, str] = {}
+
+    def info(self) -> dict[str, str]:
+        return self.headers
+
+    def geturl(self) -> str:
+        return "https://observer.example.com/v1"
 
     def read(self, n: int = -1) -> bytes:
         return self._stream.read(n)
@@ -219,19 +233,25 @@ class ApiCollectorSecurityTests(unittest.TestCase):
                     )
                 self.assertIs(cm.exception.reason_code, ReasonCode.ERROR)
 
+    def _handler_opener(self, handler_fn: Any) -> urllib.request.OpenerDirector:
+        class _StubHTTPSHandler(urllib.request.HTTPSHandler):
+            def https_open(self, req: urllib.request.Request) -> Any:  # noqa: N802
+                return handler_fn(req)
+
+        return urllib.request.build_opener(_StubHTTPSHandler())
+
     def test_http_fetch_refuses_redirects_and_never_retries_auth_or_404(self) -> None:
         calls = {"n": 0}
 
-        class _RedirectOpener(urllib.request.OpenerDirector):
-            def open(self, fullurl, data=None, timeout=None):  # noqa: ANN001
-                calls["n"] += 1
-                raise urllib.error.HTTPError(
-                    "https://observer.example.com/v1",
-                    302,
-                    "Found",
-                    None,
-                    io.BytesIO(b"secret-body-should-not-leak"),
-                )
+        def _redirect_handler(_req: urllib.request.Request) -> Any:
+            calls["n"] += 1
+            raise urllib.error.HTTPError(
+                "https://observer.example.com/v1",
+                302,
+                "Found",
+                None,
+                io.BytesIO(b"secret-body-should-not-leak"),
+            )
 
         with self.assertRaises(CheckError) as cm:
             http_fetch_observer(
@@ -240,7 +260,7 @@ class ApiCollectorSecurityTests(unittest.TestCase):
                 5,
                 1024,
                 allowed_hosts=frozenset({"observer.example.com"}),
-                opener=_RedirectOpener(),
+                opener=self._handler_opener(_redirect_handler),
                 resolve_dns=False,
             )
         self.assertIs(cm.exception.reason_code, ReasonCode.ERROR)
@@ -249,16 +269,15 @@ class ApiCollectorSecurityTests(unittest.TestCase):
         for code in (401, 403, 404):
             calls["n"] = 0
 
-            class _StatusOpener(urllib.request.OpenerDirector):
-                def open(self, fullurl, data=None, timeout=None):  # noqa: ANN001
-                    calls["n"] += 1
-                    raise urllib.error.HTTPError(
-                        "https://observer.example.com/v1",
-                        code,
-                        "err",
-                        None,
-                        io.BytesIO(b"RAW-UPSTREAM-ERROR-BODY-DO-NOT-COPY"),
-                    )
+            def _status_handler(_req: urllib.request.Request, _code: int = code) -> Any:
+                calls["n"] += 1
+                raise urllib.error.HTTPError(
+                    "https://observer.example.com/v1",
+                    _code,
+                    "err",
+                    None,
+                    io.BytesIO(b"RAW-UPSTREAM-ERROR-BODY-DO-NOT-COPY"),
+                )
 
             with self.subTest(code=code), self.assertRaises(CheckError) as cm2:
                 http_fetch_observer(
@@ -267,7 +286,7 @@ class ApiCollectorSecurityTests(unittest.TestCase):
                     5,
                     1024,
                     allowed_hosts=frozenset({"observer.example.com"}),
-                    opener=_StatusOpener(),
+                    opener=self._handler_opener(_status_handler),
                     resolve_dns=False,
                 )
             self.assertIs(cm2.exception.reason_code, ReasonCode.ERROR)
@@ -277,12 +296,11 @@ class ApiCollectorSecurityTests(unittest.TestCase):
     def test_http_fetch_retries_once_on_429_and_5xx_and_rejects_oversized_and_timeouts(self) -> None:
         calls = {"n": 0}
 
-        class _TransientThenOk(urllib.request.OpenerDirector):
-            def open(self, fullurl, data=None, timeout=None):  # noqa: ANN001
-                calls["n"] += 1
-                if calls["n"] == 1:
-                    raise urllib.error.HTTPError("https://observer.example.com/v1", 503, "busy", None, None)
-                return _FakeHTTPResponse(b'{"ok":true}')
+        def _transient_then_ok(_req: urllib.request.Request) -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise urllib.error.HTTPError("https://observer.example.com/v1", 503, "busy", None, None)
+            return _FakeHTTPResponse(b'{"ok":true}')
 
         data = http_fetch_observer(
             "https://observer.example.com/v1",
@@ -290,15 +308,11 @@ class ApiCollectorSecurityTests(unittest.TestCase):
             5,
             1024,
             allowed_hosts=frozenset({"observer.example.com"}),
-            opener=_TransientThenOk(),
+            opener=self._handler_opener(_transient_then_ok),
             resolve_dns=False,
         )
         self.assertEqual(calls["n"], 2)
         self.assertEqual(data, b'{"ok":true}')
-
-        class _OversizedOpener(urllib.request.OpenerDirector):
-            def open(self, fullurl, data=None, timeout=None):  # noqa: ANN001
-                return _FakeHTTPResponse(b"x" * 65)
 
         with self.assertRaises(CheckError) as cm_big:
             http_fetch_observer(
@@ -307,14 +321,13 @@ class ApiCollectorSecurityTests(unittest.TestCase):
                 5,
                 64,
                 allowed_hosts=frozenset({"observer.example.com"}),
-                opener=_OversizedOpener(),
+                opener=self._handler_opener(lambda _req: _FakeHTTPResponse(b"x" * 65)),
                 resolve_dns=False,
             )
         self.assertIs(cm_big.exception.reason_code, ReasonCode.UNPARSEABLE)
 
-        class _TimeoutOpener(urllib.request.OpenerDirector):
-            def open(self, fullurl, data=None, timeout=None):  # noqa: ANN001
-                raise TimeoutError("timed out")
+        def _timeout_handler(_req: urllib.request.Request) -> Any:
+            raise TimeoutError("timed out")
 
         with self.assertRaises(CheckError) as cm_to:
             http_fetch_observer(
@@ -323,7 +336,7 @@ class ApiCollectorSecurityTests(unittest.TestCase):
                 2,
                 64,
                 allowed_hosts=frozenset({"observer.example.com"}),
-                opener=_TimeoutOpener(),
+                opener=self._handler_opener(_timeout_handler),
                 resolve_dns=False,
             )
         self.assertIs(cm_to.exception.reason_code, ReasonCode.TIMEOUT)
@@ -971,6 +984,100 @@ class ApiCollectorSecurityTests(unittest.TestCase):
         self.assertEqual(len(report.results), 1)
         self.assertIs(report.results[0].state, CheckState.UNKNOWN)
         self.assertIs(report.results[0].reason_code, ReasonCode.ERROR)
+
+    def test_custom_opener_open_override_rejected_and_ambient_proxies_neutralized(self) -> None:
+        class _CustomOpenOpener(urllib.request.OpenerDirector):
+            def open(self, fullurl, data=None, timeout=None):  # noqa: ANN001
+                raise AssertionError("custom open override must be refused")
+
+        with self.assertRaises(TypeError):
+            http_fetch_observer(
+                "https://observer.example.com/v1",
+                {},
+                5,
+                1024,
+                allowed_hosts=frozenset({"observer.example.com"}),
+                opener=_CustomOpenOpener(),
+                resolve_dns=False,
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {"https_proxy": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9"},
+            clear=False,
+        ):
+            unpinned = _build_safe_opener(None, pinned_host="observer.example.com", pinned_ips=())
+            self.assertFalse(
+                any(isinstance(h, urllib.request.ProxyHandler) for h in unpinned.handlers)
+            )
+            self.assertFalse(
+                any(
+                    isinstance(h, urllib.request.ProxyHandler)
+                    for h in unpinned.process_request.get("https", [])
+                )
+            )
+            self.assertFalse(
+                any(
+                    isinstance(h, urllib.request.ProxyHandler)
+                    for h in unpinned.process_request.get("http", [])
+                )
+            )
+
+            copied = _build_safe_opener(
+                urllib.request.build_opener(urllib.request.ProxyHandler({"https": "http://127.0.0.1:9"})),
+                pinned_host="observer.example.com",
+                pinned_ips=("93.184.216.34",),
+            )
+            self.assertFalse(
+                any(isinstance(h, urllib.request.ProxyHandler) for h in copied.handlers)
+            )
+
+    def test_non_batched_api_collect_skips_host_batch_payload_caching_and_dns_timeout_fails_closed(self) -> None:
+        rule = _cloud_rule()
+        target = ApiObserverTarget(
+            service_id="obs",
+            base_url="https://observer.example.com/v1/obs",
+            expected_host_id="cloud-host-1",
+            allowed_hosts=frozenset({"observer.example.com"}),
+            batch_by_host=False,
+        )
+        raw = _payload(rule_id=rule.id, observed={"present": True, "names": ["simple-chat"]})
+        runtime = ApiObserverRuntime(
+            target=target,
+            fetcher=lambda *_args: raw,
+            nonce_factory=lambda: "nonce-123",
+        )
+        ctx = CheckContext(
+            home=Path(self.tmp.name),
+            now=self.now,
+            timeout=5,
+            cache={API_OBSERVER_CACHE_KEY: runtime},
+        )
+        res = api_collect(rule, "cursor-cloud", ctx)
+        self.assertIs(res.state, CheckState.PASS)
+        batch_map = ctx.cache.get(_API_BATCH_CACHE_KEY, {})
+        self.assertTrue(all(not batch.entries for batch in batch_map.values()))
+
+        gate = threading.Event()
+
+        def _slow_getaddrinfo(*_args: object, **_kwargs: object) -> list[Any]:
+            gate.wait(2.0)
+            return []
+
+        try:
+            with mock.patch("fleet_config.api_collector.socket.getaddrinfo", side_effect=_slow_getaddrinfo):
+                with self.assertRaises(CheckError) as cm:
+                    http_fetch_observer(
+                        "https://observer.example.com/v1/obs",
+                        {},
+                        timeout=0.05,
+                        max_bytes=1024,
+                        allowed_hosts=frozenset({"observer.example.com"}),
+                        resolve_dns=True,
+                    )
+            self.assertIs(cm.exception.reason_code, ReasonCode.TIMEOUT)
+        finally:
+            gate.set()
 
 
 if __name__ == "__main__":
