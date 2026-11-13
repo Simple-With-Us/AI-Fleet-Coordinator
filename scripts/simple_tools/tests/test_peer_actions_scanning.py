@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -134,6 +135,40 @@ class PeerActionScanTests(unittest.TestCase):
                 Tools._tool_peer_actions_log(context, {})
         append.assert_not_called()
         self.assertEqual(caught.exception.code, "not_configured")
+        self.assertIn("Tools.known", caught.exception.message)
+
+    def test_compact_private_key_body_is_refused_for_local_and_fetched_credentials(self):
+        openssl = shutil.which("openssl")
+        if not openssl:
+            self.skipTest("OpenSSL is required for the synthetic PEM fixture")
+        # Fresh test-only key material stays captured in memory and never authenticates.
+        generated = subprocess.run(
+            [openssl, "genpkey", "-algorithm", "ED25519"],
+            env={"PATH": os.defpath}, capture_output=True, timeout=5, check=True,
+        )
+        key = generated.stdout.decode("ascii")
+        compact = "".join(line for line in key.splitlines() if not line.startswith("-----"))
+        raw = json.dumps({"private_key": key})
+        entry = peer_actions.build_entry(**dict(self.fields, request_source=compact))
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run), mock.patch.object(peer_actions, "_http_opener") as network:
+                with self.assertRaises(peer_actions.PeerActionsError) as caught:
+                    peer_actions.log_row(entry, dry_run=dry_run, env={peer_actions.ENV_SA_JSON: raw})
+                network.assert_not_called()
+                self.assertEqual(caught.exception.code, "refused_secret")
+                self.assertIn("request", caught.exception.message)
+                self.assertNotIn(compact, caught.exception.message)
+        env = {peer_actions.ENV_INFISICAL_TOKEN: "synthetic own reader", peer_actions.ENV_INFISICAL_PROJECT: "project-test"}
+        with mock.patch.object(peer_actions, "_infisical_get_secret", return_value=raw) as read:
+            with mock.patch.object(peer_actions, "_google_access_token") as oauth:
+                with mock.patch.object(peer_actions, "SheetsClient") as sheets:
+                    with self.assertRaises(peer_actions.PeerActionsError) as caught:
+                        peer_actions.log_row(entry, env=env)
+        read.assert_called_once()
+        oauth.assert_not_called()
+        sheets.assert_not_called()
+        self.assertEqual(caught.exception.code, "refused_secret")
+        self.assertNotIn(compact, caught.exception.message)
 
     def test_offline_dry_run_needs_no_alternative_auth_configuration(self):
         entry = peer_actions.build_entry(**self.fields)

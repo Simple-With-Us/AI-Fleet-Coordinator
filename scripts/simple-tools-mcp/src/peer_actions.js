@@ -165,6 +165,10 @@ async function appendRow(env, row, fetchImpl, known) {
   const sa = await loadServiceAccount(env);
   const fields = ["private_key", "private_key_id", "client_secret", "access_token", "refresh_token"];
   const loaded = [...known, ...fields.map(field => sa[field]).filter(value => typeof value === "string")];
+  if (sa.private_key.includes("-----BEGIN ") && sa.private_key.includes("-----END ")) {
+    const compact = sa.private_key.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+    if (compact) loaded.push(compact);
+  }
   scanRow(row, loaded);
   const token = await googleAccessToken(sa, fetchImpl);
   scanRow(row, [...loaded, token]);
@@ -217,7 +221,7 @@ export function buildPeerActionsRow(args, seat, known = []) {
 
 export const PEER_ACTIONS_METHODS = {
   async tool_peer_actions_log(args, audit) {
-    if (!Array.isArray(this.known)) throw new ToolError("not_configured", "peer-actions logging requires known credentials");
+    if (!Array.isArray(this.known)) throw new ToolError("not_configured", "peer-actions credential scan list this.known is not configured");
     const env = this.workerEnv;
     const known = [...this.known, env?.[SHEETS_SA_TOKEN_BINDING]].filter(value => typeof value === "string");
     const { row, dry_run } = buildPeerActionsRow(args, this.seat, known);
