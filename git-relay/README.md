@@ -49,6 +49,12 @@ the owner's cutover decision.
 
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
 
+### PR Headers
+
+PR titles, descriptions and comments use compact fleet headers, for example `[CODEX:   EE.1.S]`, without `📁` or repository names.  Keep the actual writing session and any recipients; do not derive a session letter from the GitHub author or repository.  Kody trigger comments start with the literal `@kody start-review`, put the compact header on line 2 and include the full reviewed head SHA and context afterward.
+
+The hosted Fleet Tools front normalizes supplied headers on explicit PR title/body/comment/review routes.  Direct HTTP and GR-MCP callers supply the compact form themselves; the independently packaged relay preserves it without importing another formatter.  Generic workflow issue-comment verbs retain ordinary issue context because their target may be an issue rather than a PR; use the explicit PR comment verb for PR context.  The existing `sentence_gap: false` option preserves supplied bytes, so those callers also supply the compact form.  Ordinary GitHub issue, Zulip and Linear headers retain repository names.  Source publication does not establish a deployed formatter or delivered-message receipt.
+
 `open_pr` never reports a number for a pull request it has not seen.  After the create answers,
 the relay reads the pull request back by number with the same owner token and checks the number,
 the repository, the base branch and the head branch (and the owner, for an `owner:branch` or
