@@ -80,6 +80,7 @@ class NamesOnlyTests(unittest.TestCase):
         return {
             "secretKey": name,
             "secretValueHidden": True,
+            "secretValue": fleet_infisical.HIDDEN_VALUE_MASK,
             "workspace": self.project,
             "environment": "prod",
             "secretPath": self.path,
@@ -119,6 +120,10 @@ class NamesOnlyTests(unittest.TestCase):
     def test_values_duplicates_and_foreign_record_provenance_fail_closed(self):
         for change in (
             {"secretValue": "unexpected-value"},
+            {"secretValueHidden": False},
+            {"secretValueHidden": 1},
+            {"secretValueHidden": "true"},
+            {"secretValueHidden": None},
             {"workspace": "foreign-project"},
             {"environment": "dev"},
             {"secretPath": "/other"},
@@ -131,6 +136,12 @@ class NamesOnlyTests(unittest.TestCase):
                 with self.assertRaises(fleet_infisical.SecretsError) as caught:
                     self.listing()
                 self.assertNotIn("unexpected-value", str(caught.exception))
+
+    def test_absent_or_empty_values_need_no_mask(self):
+        for value in (None, ""):
+            with self.subTest(value=value):
+                self.records[0] = self.record("B_KEY", secretValue=value)
+                self.assertEqual(self.listing()[0], ("A_KEY", "B_KEY"))
 
     def test_ambient_multifolder_and_writer_grants_never_reach_values(self):
         for wider in ("folder", "writer"):
