@@ -115,6 +115,55 @@ class AutosaveTests(unittest.TestCase):
         self.assertEqual(self.path.read_text(), self.original)
         self.assertEqual(len(self.store.writes), 1)
 
+    def invalid_provider_document(self):
+        private = "gh" + "p_" + secrets.token_hex(20)
+        value = copy.deepcopy(self.document)
+        value["settings"]["daemon.presence_topics"] = [["Alerts", private]]
+        return value, private
+
+    def test_stale_revision_cannot_reflect_unvalidated_provider_values(self):
+        invalid, private = self.invalid_provider_document()
+        request = {
+            "action": "save", "allowlist": dict(self.allowlist, schemaVersion=1),
+            "set": {"daemon.coalesce_seconds": 2.0},
+            "expectBaseSHA256": settings.revision(self.document),
+        }
+        for current in (invalid, settings.document({private: 1})):
+            with self.subTest(secret_is_key=private in current["settings"]):
+                self.store.document = current
+                with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store):
+                    answer, code = editor.run_request(request, path=self.path)
+                self.assertEqual(code, 1)
+                self.assertEqual(answer["errorCode"], "canonical_document_invalid")
+                self.assertNotIn(private, json.dumps(answer))
+                self.assertNotIn("settings", answer)
+                self.assertEqual(self.store.writes, [])
+                self.assertEqual(self.path.read_text(), self.original)
+
+    def test_late_invalid_document_returns_no_unvalidated_map_or_write(self):
+        invalid, private = self.invalid_provider_document()
+        def check(*_):
+            self.store.document = invalid
+            return {"ok": True}
+        answer = self.save(checker=check)
+        self.assertEqual(answer["errorCode"], "readback_invalid")
+        self.assertNotIn(private, json.dumps(answer))
+        self.assertEqual(answer["settings"], self.document["settings"])
+        self.assertFalse(answer["persisted"] or answer["readback"] or answer["ok"])
+        self.assertEqual(self.store.writes, [])
+        self.assertEqual(self.path.read_text(), self.original)
+
+    def test_invalid_write_readback_never_reaches_response_or_runtime(self):
+        invalid, private = self.invalid_provider_document()
+        self.store.after_write = invalid
+        answer = self.save()
+        self.assertEqual(answer["errorCode"], "readback_invalid")
+        self.assertNotIn(private, json.dumps(answer))
+        self.assertTrue(answer["writeAttempted"])
+        self.assertFalse(answer["persisted"] or answer["readback"] or answer["ok"])
+        self.assertEqual(len(self.store.writes), 1)
+        self.assertEqual(self.path.read_text(), self.original)
+
     def test_missing_readback_never_reports_success_or_replays(self):
         self.store.read_error_after_write = True
         answer = self.save()

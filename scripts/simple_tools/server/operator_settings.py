@@ -117,6 +117,14 @@ def _canonical_removals(text, settings):
     return sorted(removed)
 
 
+def _validated_overlay(text, allowlist, current):
+    """Provider values must pass the nonsecret schema before any response map."""
+    try:
+        return overlay_text(text, allowlist, current["settings"])
+    except editor.Refusal:
+        raise SettingsError("canonical_document_invalid") from None
+
+
 def _manifest():
     path = Path(__file__).resolve().parents[2] / "fleet-ops-eavesdropper-settings.json"
     try:
@@ -547,7 +555,7 @@ def get(path, allowlist, *, store=None):
     store = store or InfisicalStore()
     current = store.read()
     raw, _ = editor.read_live(path)
-    overlay_text(editor._decode(raw), allowlist, current["settings"])
+    _validated_overlay(editor._decode(raw), allowlist, current)
     answer = _base_answer("get", current, path)
     answer.update(ok=True, result="read", persisted=True, readback=True, autosaveEnabled=True)
     return answer
@@ -569,6 +577,8 @@ def save(
     checker = checker or editor.daemon_check
     with editor._FolderLock(path.parent):
         current = store.read()
+        raw, _ = editor.read_live(path)
+        canonical_text = _validated_overlay(editor._decode(raw), allowlist, current)
         answer = _base_answer("save", current, path)
         if revision(current) != expected:
             answer.update(
@@ -576,8 +586,6 @@ def save(
                 detail="Settings changed; read the current values before saving",
             )
             return answer
-        raw, _ = editor.read_live(path)
-        canonical_text = overlay_text(editor._decode(raw), allowlist, current["settings"])
         new_text, _ = editor.build_plan(canonical_text, allowlist, requested, remove=remove)
         new_settings = copy.deepcopy(current["settings"])
         new_settings.update(copy.deepcopy(requested))
@@ -594,6 +602,14 @@ def save(
             )
             return answer
         before_write = store.read()
+        try:
+            _validated_overlay(canonical_text, allowlist, before_write)
+        except SettingsError:
+            answer.update(
+                errorCode="readback_invalid",
+                detail="Canonical settings failed schema validation; no current values were returned",
+            )
+            return answer
         if revision(before_write) != expected:
             answer.update(
                 errorCode="version_conflict",
@@ -619,6 +635,14 @@ def save(
             )
             return answer
         if revision(verified) != revision(new_doc):
+            try:
+                _validated_overlay(new_text, allowlist, verified)
+            except SettingsError:
+                answer.update(
+                    errorCode="readback_invalid",
+                    detail="Canonical readback failed schema validation; no current values were returned",
+                )
+                return answer
             # No cache patch, rollback write, or retry can turn a different
             # authoritative document into proof of this request.
             answer.update(
