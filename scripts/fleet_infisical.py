@@ -531,8 +531,11 @@ def fetch_project(
     writer: bool = False,
     names: Iterable[str] | None = None,
     timeout: float = EXPORT_TIMEOUT,
+    strict_records: bool = False,
 ) -> dict[str, str]:
-    """Explicit project route shared with standalone recall and knobs consumers."""
+    """Explicit project route; strict_records preserves folder-proven row checks."""
+    if type(strict_records) is not bool:
+        raise UsageError("strict-records-invalid")
     check_path(path)
     if token is None:
         project_name = project_name_for_id(project, env)
@@ -572,7 +575,11 @@ def fetch_project(
             raise SecretsError("fetch-failed: bad-output")
         pairs = []
         for record in records:
-            key, value = validate_secret_record(record, project, path, single_scope=len(paths) == 1)
+            key, value = validate_secret_record(
+                record, project, path, single_scope=not strict_records and len(paths) == 1
+            )
+            if strict_records and (record.get("secretValueHidden") is not False or not value):
+                raise SecretsError("unverified-source")
             if name is not None and key != name:
                 raise SecretsError("unverified-source")
             pairs.append((key, value))
@@ -750,6 +757,7 @@ def bounded_fetch_project(
     timeout: float,
     writer: bool = False,
     max_output_bytes: int | None = None,
+    strict_records: bool = False,
 ) -> dict[str, str]:
     """A small named read batch with a parent-enforced operation deadline.
 
@@ -765,6 +773,7 @@ def bounded_fetch_project(
         max_output_bytes = MAX_VERIFIED_BYTES
     if (
         type(writer) is not bool
+        or type(strict_records) is not bool
         or type(max_output_bytes) is not int
         or not 1024 <= max_output_bytes <= MAX_OUTPUT_BYTES
     ):
@@ -795,6 +804,7 @@ def bounded_fetch_project(
         timeout=timeout,
         writer=writer,
         max_output_bytes=max_output_bytes,
+        strict_records=strict_records,
     )
     deadline = time.monotonic() + timeout
     values = _bounded_read_request(request, deadline)
@@ -831,6 +841,7 @@ def _bounded_read_worker() -> int:
             "timeout",
             "writer",
             "max_output_bytes",
+            "strict_records",
         }
         if (
             not isinstance(request, dict)
@@ -845,6 +856,7 @@ def _bounded_read_worker() -> int:
             not isinstance(request["names"], list)
             or not 1 <= len(request["names"]) <= 1024
             or type(request["writer"]) is not bool
+            or type(request["strict_records"]) is not bool
             or type(request["timeout"]) not in (int, float)
             or not math.isfinite(request["timeout"])
             or request["timeout"] <= 0
@@ -871,6 +883,7 @@ def _bounded_read_worker() -> int:
             names=request["names"],
             writer=request["writer"],
             timeout=request["timeout"],
+            strict_records=request["strict_records"],
         )
         reply = {"schema": 1, "ok": True, "values": values}
     except SecretsError as exc:
