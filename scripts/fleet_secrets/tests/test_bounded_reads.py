@@ -24,6 +24,8 @@ class BoundedReadTests(unittest.TestCase):
         self.mode = "normal"
         self.calls = []
         self.children = []
+        self.omitted_fields = ()
+        self.record_changes = {}
         self.mixed = threading.Barrier(2)
         case = self
 
@@ -62,8 +64,12 @@ class BoundedReadTests(unittest.TestCase):
                             "workspace": case.project,
                             "environment": "prod",
                             "secretPath": "/operator-registry",
+                            "secretValueHidden": False,
                         }
                     }
+                    for field in case.omitted_fields:
+                        payload["secret"].pop(field, None)
+                    payload["secret"].update(case.record_changes)
                 raw = json.dumps(payload).encode()
                 try:
                     failed = case.mode == "slow-error" or (
@@ -102,7 +108,7 @@ class BoundedReadTests(unittest.TestCase):
             core.ENV_API: "http://127.0.0.1:%d/api" % self.server.server_address[1],
             core.ENV_READ_PATHS: "/operator-registry",
             "INFISICAL_ENVIRONMENT": "prod",
-            "INFISICAL_TOKEN": "another-consumer",
+            "INFISICAL_TOKEN": "test-token",
             "PYTHONPATH": "/untrusted",
         }
         real = core.subprocess.Popen
@@ -148,6 +154,43 @@ class BoundedReadTests(unittest.TestCase):
             self.fetch()
         self.assertEqual(caught.exception.failure_kind, "refused")
         self.assertEqual(len(self.calls), 1)
+
+    def test_strict_records_survive_real_worker_and_require_explicit_provenance(self):
+        self.assertEqual(
+            self.fetch(strict_records=True),
+            {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"},
+        )
+        for field in ("workspace", "environment", "secretPath", "secretValueHidden"):
+            with self.subTest(missing=field):
+                self.omitted_fields = (field,)
+                with self.assertRaises(core.SecretsError):
+                    self.fetch(strict_records=True)
+        self.omitted_fields = ()
+        for changes in (
+            {"workspace": str(uuid.uuid4())},
+            {"environment": "staging"},
+            {"secretPath": "/"},
+            {"secretValueHidden": True},
+            {"secretValueHidden": 0},
+            {"secretValue": ""},
+            {"secretValue": None},
+            {"type": "personal"},
+        ):
+            with self.subTest(changed=tuple(changes)):
+                self.record_changes = changes
+                with self.assertRaises(core.SecretsError):
+                    self.fetch(strict_records=True)
+
+    def test_legacy_single_scope_record_contract_is_preserved(self):
+        self.omitted_fields = ("workspace", "environment", "secretPath", "secretValueHidden")
+        self.assertEqual(self.fetch(), {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"})
+
+    def test_strict_record_option_is_a_boolean_before_any_child_or_provider(self):
+        for value in (None, 0, 1, "true"):
+            with self.subTest(value=value), self.assertRaises(core.UsageError):
+                self.fetch(strict_records=value)
+        self.assertEqual(self.children, [])
+        self.assertEqual(self.calls, [])
 
     def test_trickle_success_error_headers_and_chunk_framing_share_one_budget(self):
         for mode in ("slow-body", "slow-error", "slow-headers", "slow-chunk", "mixed"):
@@ -263,6 +306,7 @@ class BoundedReadTests(unittest.TestCase):
             token=self.sample,
             names=["A_KEY"],
             writer=False,
+            strict_records=False,
             timeout=1.0,
             max_output_bytes=4096,
         )
