@@ -21,7 +21,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from fleet_config import aggregator, collectors, contract, manifest as manifest_mod
+from fleet_config import aggregator, collectors, contract
+from fleet_config import manifest as manifest_mod
 from fleet_config.api_collector import (
     API_OBSERVATION_SCHEMA_VERSION,
     API_OBSERVER_CACHE_KEY,
