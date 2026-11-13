@@ -498,6 +498,38 @@ export function tagPrefix(seat, tag) {
   return tag ? `[${seat}·${tag}` : `[${seat}`;
 }
 
+// Exact numeric owner contract (OPS-1086); sentence gaps remain NBSP plus ASCII space.
+export const HEADER_HAIR = "\u200a";
+export const HEADER_AFTER_COLON = HEADER_HAIR.repeat(3);
+export const HEADER_BEFORE_FOLDER = HEADER_HAIR.repeat(2);
+export const HEADER_AFTER_FOLDER = HEADER_HAIR;
+export const HEADER_REPO_SEPARATOR = `,${HEADER_HAIR}`;
+export const HEADER_RECIPIENT_SEPARATOR = `,${HEADER_HAIR.repeat(2)}`;
+
+/** The Python post_header.normalize_header contract: only the first complete header changes. */
+export function normalizeHeader(text, { seat = null } = {}) {
+  const match = /^(?<lead>(?:👀\s*)?\s*)\[(?<inner>[^\r\n\[\]]+)\]/u.exec(text);
+  if (!match) return text;
+  const parts = match.groups.inner.split(/\s*(?:→|->)\s*/u);
+  if (parts.length > 2) return text;
+  const peers = parts.length > 1 ? parts[1].split(",").map((part) => part.trim()) : [];
+  const folder = parts[0].split("📁");
+  if (folder.length > 2) return text;
+  const sender = /^(?<seat>[A-Z0-9][A-Z0-9_-]*)(?<transport>·[^\s:→\]]+)?(?:\s*:\s*(?<thread>[A-Za-z0-9][A-Za-z0-9.-]*))?$/u.exec(folder[0].trim());
+  if (!sender || (seat !== null && sender.groups.seat !== seat)) return text;
+  const repos = folder.length > 1 ? folder[1].split(",").map((part) => part.trim()) : [];
+  if ((folder.length > 1 && repos.some((part) => !part)) || (parts.length > 1 && peers.some((part) => !part))) return text;
+  const thread = sender.groups.thread ?? "";
+  let transport = sender.groups.transport ?? "";
+  // The Operator letter identifies the thread; transport session fragments never accompany it.
+  if (/^[A-Z]{1,2}[.-]\d+[.-][MSC]$/u.test(thread)) transport = "";
+  let inner = sender.groups.seat + transport;
+  if (thread) inner += `:${HEADER_AFTER_COLON}${thread}`;
+  if (repos.length) inner += `${HEADER_BEFORE_FOLDER}📁${HEADER_AFTER_FOLDER}${repos.join(HEADER_REPO_SEPARATOR)}`;
+  if (peers.length) inner += ` → ${peers.join(HEADER_RECIPIENT_SEPARATOR)}`;
+  return `${match.groups.lead}[${inner}]${text.slice(match[0].length)}`;
+}
+
 /** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
 export function ownIntro(prefix, text) {
   const seat = prefix.slice(1).split("·", 1)[0];
@@ -512,9 +544,7 @@ export function ownIntro(prefix, text) {
   if (!folder && !["]", " ", ":", "·", "→", "\t"].includes(text.charAt(after))) return null;
   const end = text.indexOf("]", start);
   if (end < 0 || /[\r\n\[]/.test(text.slice(start + 1, end))) return null;
-  let intro = text.slice(0, end);
-  // Exactly one ASCII space before 📁, the Policy shape the router parses.
-  if (folder) intro = intro.slice(0, after) + " " + intro.slice(after).replace(/^\s*/u, "");
+  const intro = text.slice(0, end);
   return { end, intro, rest: text.slice(end + 1) };
 }
 
@@ -571,17 +601,17 @@ export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
     const session = prefix.includes("·") ? prefix.slice(prefix.indexOf("·")) : "";
     // Supplied session is operational attribution and overrides a stale text session.
     if (session) intro = intro.slice(0, seatEnd) + session + suffix;
-    const arrow = intro.indexOf("→");
-    const existing = arrow < 0 ? [] : intro.slice(arrow + 1).split(",").map((v) => v.trim());
+    const arrow = /→|->/u.exec(intro);
+    const existing = arrow === null ? [] : intro.slice(arrow.index + arrow[0].length).split(",").map((v) => v.trim());
     const added = [...new Set(labels)].filter((label) => !existing.includes(label));
-    if (added.length) intro += `${arrow < 0 ? " →" : ","}${added.join(",")}`;
+    if (added.length) intro += `${arrow === null ? " →" : ","}${added.join(",")}`;
     const tail = own.rest && !/^\s/u.test(own.rest) ? ` ${own.rest}` : own.rest;
     const addedMentions = mentionsMissingFrom(tail, mentions);
     parts = [`${intro}]${addedMentions.length ? ` ${addedMentions.join(" ")}` : ""}${tail}`];
   } else {
     parts = [`${prefix}${labels.length ? `→${labels.join(",")}` : ""}]`, ...mentionsMissingFrom(text, mentions), text];
   }
-  const body = parts.filter(Boolean).join(" ");
+  const body = normalizeHeader(parts.filter(Boolean).join(" "));
   const length = codePoints(body).length;
   if (length > MAX_CONTENT_LENGTH) throw new UsageError(`the message is ${length} characters; Zulip allows at most ${MAX_CONTENT_LENGTH}`);
   return body;
