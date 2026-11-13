@@ -35,7 +35,7 @@ To move a seat, remove it from one instance's `listener.toml`, reload that liste
 
 ## Credentials From the Environment
 
-A seat with `creds = "env"` (server instance only) reads its email and key from environment variables named in its config:
+A seat with `creds = "env"` (server instance only) reads its email and key from environment variables named in its config.  The startup loader populates these runtime-only inputs from scoped Infisical service tokens; the names do not authorize a hand-set environment or plaintext TOML fallback:
 
 | Key | Default | Example for GB-COMPILER |
 |---|---|---|
@@ -62,7 +62,7 @@ Each bot's own queue already receives the DMs sent to its bot.  The router captu
 - An owner DM (the owner's user id from a human Zulip app) wakes the routine with `"dm": true`.  Owner coalescing is 5 seconds, and owner caps apply.
 - Owner ruling, Fri, Oct 9:  "everyone should be able to DM to wake anyone else or tag to wake anyone else".  Eligible senders are the owner (his user id AND a human Zulip client) plus every fleet bot:  an active generic Zulip bot, owned by Jay (`bot_owner_id`), whose email maps to a fleet seat tag.  The daemon computes this at runtime from the realm user list, so a new seat needs no `daemon init` re-run, and `eligible_user_ids` in `listener.toml` is only an optional extra list of pins.
 - A DM from an eligible fleet bot wakes the bot like a direct @-mention:  the same non-owner budgets (the server's sample `listener.toml` sets no wake-count limit on JET or the Grok Bots, and a seat that sets none has no limit), coalescing, stale rule and single flight.  A DM from an integration or webhook bot (Sentry, PagerDuty, Linear), an unknown sender, or an API post made with the owner's key (flagged `owner_api`) is captured and never wakes, and neither does a seat's own message.
-- A peer wake is peer data, never owner authority.  The woken bot screens the request as for a peer @-mention (FLEET-PROTOCOL Precedence rule 3).
+- A peer wake is peer data, never owner authority.  The woken bot handles the request as for a peer @-mention:  act, then notify Jay and log it (FLEET-PROTOCOL Precedence rule 3, the Nov 5 peer trust policy).
 - `simple-chat dm` sends to the owner by default and to any active realm user with `--to NAME` (a peer or a group of up to 8), and `simple-chat dm-read --with NAME` reads the thread.  Bots without the CLI DM a peer through their own Zulip client (GB routines, BotFleet bots, the hosted MCP server's `zulip_dm_send`, or the Zulip API).
 - Loop guard:  a `·wake`-tagged reply never wakes any seat, whatever the setting, so two bots cannot ping-pong on wake replies.  The counting guard is off unless `[daemon] wake_loop_prevention = true` (the code's default and the sample leave it off;  owner, Nov 10, 2026).  When it is on, in a DM thread the owner is not in, the count is rolling:  3 wake replies within 6 hours stop that DM thread waking, and it wakes again once the oldest of them is 6 hours old.  An owner post in a DM he is in still resets it.
 - The daemon never posts for an `http` seat.  The DM-only reply rule therefore belongs to the routine, and the body spells it out:  for a DM trigger, `reply_to` is `{"type": "direct", "to": [<the DM's other members>]}`, never a channel.
@@ -336,7 +336,7 @@ wake = "inbox"
 
 Added Oct 11 2026 (AFC-257).  The held-back records of this instance used to be durable and invisible:  the daemon wrote each seat's digest to `/data/<SEAT>/owner-queue.jsonl`, which nothing on this instance reads, so a held wake sat unread in a seat's inbox with no wake to read it, and an eviction was written to that same unread place.  The Mac side is visible since AFC-255/256 (PR #498).  This is the server half.
 
-**The owner decision.**  A post in `#alerts > held-back wakes`, the channel that already carries watchdogs and CI failures (no new channel, no DM), firing on ANY hold-back and not only on an eviction.  Jay chose the louder trigger knowingly, after being told that a seat one under its daily cap posts the same way as one that has lost a message.
+**The owner decision.**  A post in `#Alerts > held-back wakes`, the channel that already carries watchdogs and CI failures (no new channel, no DM), firing on ANY hold-back and not only on an eviction.  Jay chose the louder trigger knowingly, after being told that a seat one under its daily cap posts the same way as one that has lost a message.
 
 **What keeps that loud trigger from being noise.**
 
@@ -353,8 +353,8 @@ Added Oct 11 2026 (AFC-257).  The held-back records of this instance used to be 
 
 **Three things it will not do, and one bound it must keep.**
 
-1. **It never wakes a seat.**  `#alerts` is already a presence topic (`presence_topics`), so `router.route` classifies the post PASSIVE for every seat, and the composer writes bold names, never `@**Seat**`.  An alert that woke its own subjects would hold back more wakes, in the very channel meant to report that.
-2. **It does not let a record expire.**  `told_seq` (heldback.py) is what lets a hold expire, and it is still set only by a Mac banner the owner actually saw.  A `#alerts` post the owner has not opened is not the same promise, so records here keep AFC-253's no-TTL behaviour:  an entry leaves only when a delivered wake surfaced it, or when it is lost past the caps.
+1. **It never wakes a seat.**  `#Alerts` is already a presence topic (`presence_topics`), so `router.route` classifies the post PASSIVE for every seat, and the composer writes bold names, never `@**Seat**`.  An alert that woke its own subjects would hold back more wakes, in the very channel meant to report that.
+2. **It does not let a record expire.**  `told_seq` (heldback.py) is what lets a hold expire, and it is still set only by a Mac banner the owner actually saw.  A `#Alerts` post the owner has not opened is not the same promise, so records here keep AFC-253's no-TTL behaviour:  an entry leaves only when a delivered wake surfaced it, or when it is lost past the caps.
 3. **It cannot be flooded by its own failure.**  A failed post or edit is an ATTEMPT, and an attempt consumes the window, so a key that stays broken costs one post an hour rather than one per held tick (which is 120 an hour).  The hold stays in `held-back.json` and the digest retries at the next window, so the signal survives without becoming the noise it was built to avoid.  The one case that does not consume the window is having no seat able to post at all:  nothing was sent, so waiting is free and the digest goes out as soon as a usable key returns.
 
 Code:  `scripts/simple_tools/heldalert.py` (the state, the composer and the rules), `daemon._held_alert` and `daemon._held_alert_edit` (the post or the edit, called once per held tick after every seat's own upkeep), tests in `scripts/simple_tools/tests/test_heldalert.py`.
