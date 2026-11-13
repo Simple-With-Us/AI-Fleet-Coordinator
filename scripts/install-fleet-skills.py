@@ -15,6 +15,7 @@ Usage:
     python3 scripts/install-fleet-skills.py              # repo trees AND tool homes
     python3 scripts/install-fleet-skills.py --repo-only  # repo trees only
     python3 scripts/install-fleet-skills.py --home-only  # tool homes only
+    python3 scripts/install-fleet-skills.py --home-only --skill fleet-recall --skill session-start --skill closeout
 
 --repo-only re-renders everything tracked or catalogued inside this checkout
 (skills/, docs/fleet-skills zips, .claude/.cursor/.grok skills, by-seat) and
@@ -25,6 +26,10 @@ pack, so a session started in this repo loads the same text the pack says.
 --home-only is the inverse: it writes tool homes that already exist and does
 not re-render the checkout.  The reconciler uses it so a host apply cannot
 dirty the git tree it was launched from.
+
+--skill NAME limits writes to the named skills (repeatable).  A selected refresh
+never purges retired or disallowed skills, copies always-on rules, or rewrites
+unrelated descriptions; the ordinary full install keeps its existing cleanup.
 """
 
 from __future__ import annotations
@@ -160,13 +165,16 @@ def _purge_retired(dest_base: str) -> None:
 
 
 def _install_skill_set(
-    dest_base: str, sources: dict[str, str], seat, *, zip_each: bool = False
+    dest_base: str, sources: dict[str, str], seat, *, zip_each: bool = False, cleanup: bool = True
 ) -> list[str]:
     written: list[str] = []
     os.makedirs(dest_base, exist_ok=True)
-    _purge_retired(dest_base)
+    if cleanup:
+        _purge_retired(dest_base)
     for name, monet_src in sources.items():
         if not skill_allowed_for_seat(name, seat):
+            if not cleanup:
+                continue
             leftover = os.path.join(dest_base, name)
             if os.path.isdir(leftover):
                 shutil.rmtree(leftover)
@@ -195,11 +203,21 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="write tool homes that already exist; do not re-render this checkout",
     )
+    parser.add_argument(
+        "--skill", action="append", default=[], metavar="NAME",
+        help="refresh only this skill (repeatable); skip all unrelated cleanup and rule writes",
+    )
     args = parser.parse_args(argv)
     if args.repo_only and args.home_only:
         parser.error("--home-only and --repo-only cannot be combined")
 
     skill_names = catalog_skill_names(DOCS_SKILLS)
+    selected = set(args.skill)
+    unknown = selected - set(skill_names)
+    if unknown:
+        parser.error("unknown or retired skill: " + ", ".join(sorted(unknown)))
+    if selected:
+        skill_names = [name for name in skill_names if name in selected]
     print(f"Found {len(skill_names)} installable fleet skills in {DOCS_SKILLS}:")
     for name in skill_names:
         print(f"  - {name}")
@@ -220,8 +238,9 @@ def main(argv: list[str] | None = None) -> None:
     if not args.home_only:
         os.makedirs(ROOT_SKILLS, exist_ok=True)
         os.makedirs(BY_SEAT, exist_ok=True)
-        _purge_retired(DOCS_SKILLS)
-        _purge_retired(ROOT_SKILLS)
+        if not selected:
+            _purge_retired(DOCS_SKILLS)
+            _purge_retired(ROOT_SKILLS)
         for name, body in sources.items():
             src_md = os.path.join(DOCS_SKILLS, name, "SKILL.md")
             root_dest = os.path.join(ROOT_SKILLS, name)
@@ -232,7 +251,7 @@ def main(argv: list[str] | None = None) -> None:
 
         print("\nRepo-tracked platform copies:")
         for dest, seat in repo_platform_copies(REPO_ROOT):
-            written = _install_skill_set(dest, sources, seat)
+            written = _install_skill_set(dest, sources, seat, cleanup=not selected)
             print(f"  {seat.tag:12}  {dest}  ({len(written)} skills)")
 
         print("\nUpload packs: docs/fleet-skills/by-seat/<seat>/")
@@ -242,7 +261,7 @@ def main(argv: list[str] | None = None) -> None:
             #  comes from the renderer (it reads the seat's own retired block), not from a hand edit.
             key = seat.seat_key or seat.tag.lower()
             seat_root = os.path.join(BY_SEAT, key)
-            written = _install_skill_set(seat_root, sources, seat, zip_each=True)
+            written = _install_skill_set(seat_root, sources, seat, zip_each=True, cleanup=not selected)
             note = "  (retired)" if seat.retired else ""
             print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills){note}")
 
@@ -255,8 +274,12 @@ def main(argv: list[str] | None = None) -> None:
         if not tool_home_exists(dest):
             print(f"  {seat.tag:12}  skip (no tool home)  {dest}")
             continue
-        written = _install_skill_set(dest, sources, seat)
+        written = _install_skill_set(dest, sources, seat, cleanup=not selected)
         print(f"  {seat.tag:12}  {dest}  ({len(written)} skills)")
+
+    if selected:
+        print("\nSelected refresh: skipped unrelated rules, cleanup and description rewrites")
+        return
 
     rules = _install_always_on_rules()
     print(f"  {'':12}  always-on rule files  ({len(rules)} rules)")
