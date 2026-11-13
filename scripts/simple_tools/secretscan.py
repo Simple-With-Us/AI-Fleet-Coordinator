@@ -173,16 +173,43 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
 )
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
 
+# Immutable public package-integrity reviews, not a general SRI exemption.
+# The complete files and public artifact bytes were independently verified.
+# See docs/security/reviewed-public-integrities.md for provenance and authority.
+_REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/package-lock.json",
+            "72462e4c39a4a9a2ba6927214072e0f607565db11c3aa1be034e31eb197af7b9",
+        ),
+        (
+            "Simple-With-Us/Congress.Trade",
+            "app/package-lock.json",
+            "eb44b787f36b8149d5173d84e39d23d5c2b235721cc8c6eab9a6970d5ade5bd1",
+        ),
+    }
+)
+
 
 def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str | None:
-    """Normal scan, except exact reviewed full-file generic assignment fixtures.
+    """Normal scan, except the separately reviewed exact full-file subtypes.
 
-    Dedicated shapes and every loaded value remain absolute, even if short.
+    Generic fixtures waive generic assignments only.  Public-integrity reviews
+    waive only the Zulip-shape result for their two immutable files; all other
+    patterns and every loaded value remain absolute, even if short.
     No basename/path prefix, caller approval flag or renamed/corrupt-file waiver.
     """
     import hashlib
 
     key = (repo, path, hashlib.sha256(text.encode("utf-8")).hexdigest())
+    if key in _REVIEWED_PUBLIC_INTEGRITIES:
+        known = tuple(known)
+        for value in known:
+            if value and value in text:
+                return "a loaded credential"
+        kind = scan(text, known)
+        return None if kind == "a Zulip-shaped API key" else kind
     if key not in _REVIEWED_GENERIC_FIXTURES:
         return scan(text, known)
     for value in known:
