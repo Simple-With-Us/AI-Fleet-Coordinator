@@ -26,7 +26,7 @@ except LedgerError:
     print('held')
 """
         with tempfile.TemporaryDirectory() as root:
-            directory = Path(root) / "outcomes"
+            directory = Path(root).resolve() / "outcomes"
             ledger = NonceLedger(directory, retain_unsettled=True)
             command = [
                 sys.executable,
@@ -55,7 +55,7 @@ except LedgerError:
 
     def test_a_competing_caller_times_out_then_can_enter_after_release(self):
         with tempfile.TemporaryDirectory() as root:
-            directory = Path(root) / "outcomes"
+            directory = Path(root).resolve() / "outcomes"
             first = NonceLedger(directory, retain_unsettled=True)
             second = NonceLedger(directory, retain_unsettled=True)
             entered = []
@@ -78,9 +78,9 @@ except LedgerError:
     def test_symlink_hardlink_or_writable_lock_is_refused_before_entry(self):
         for kind in ("symlink", "hardlink", "writable"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
-                directory = Path(root) / "outcomes"
+                directory = Path(root).resolve() / "outcomes"
                 ledger = NonceLedger(directory, retain_unsettled=True)
-                target, lock = Path(root) / "untouched", directory / "journal.lock"
+                target, lock = Path(root).resolve() / "untouched", directory / "journal.lock"
                 target.write_text("unchanged")
                 target.chmod(0o600)
                 if kind == "symlink":
@@ -97,7 +97,7 @@ except LedgerError:
 
     def test_the_new_serialization_is_opt_in_and_legacy_calls_stay_unchanged(self):
         with tempfile.TemporaryDirectory() as root:
-            legacy = NonceLedger(Path(root) / "legacy")
+            legacy = NonceLedger(Path(root).resolve() / "legacy")
             with self.assertRaises(LedgerError):
                 with legacy.serialized():
                     self.fail("legacy mode acquired a retained mutation lock")
@@ -107,7 +107,7 @@ except LedgerError:
 
     def test_caller_failure_is_not_reclassified_as_a_lock_failure(self):
         with tempfile.TemporaryDirectory() as root:
-            ledger = NonceLedger(Path(root) / "outcomes", retain_unsettled=True)
+            ledger = NonceLedger(Path(root).resolve() / "outcomes", retain_unsettled=True)
             failure = OSError("external mutator failed")
             with self.assertRaises(OSError) as raised:
                 with ledger.serialized():
@@ -118,7 +118,7 @@ except LedgerError:
 
     def test_lost_database_with_initialization_evidence_is_never_recreated(self):
         with tempfile.TemporaryDirectory() as root:
-            directory = Path(root) / "outcomes"
+            directory = Path(root).resolve() / "outcomes"
             ledger = NonceLedger(directory, retain_unsettled=True)
             ledger.begin("namespace", "nonce", 10, 1, 10)
             ledger.settle("namespace", "nonce", "outcome_unknown", "synthetic metadata")
@@ -132,9 +132,9 @@ except LedgerError:
     def test_invalid_initialization_evidence_refuses_without_creating_a_database(self):
         for kind in ("symlink", "hardlink", "writable", "truncated"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
-                directory = Path(root) / "outcomes"
+                directory = Path(root).resolve() / "outcomes"
                 directory.mkdir(mode=0o700)
-                target = Path(root) / "untouched"
+                target = Path(root).resolve() / "untouched"
                 target.write_bytes(NonceLedger.INITIALIZED_BYTES)
                 target.chmod(0o600)
                 marker = directory / NonceLedger.INITIALIZED_NAME
@@ -152,7 +152,7 @@ except LedgerError:
 
     def test_short_marker_write_never_publishes_partial_initialization_evidence(self):
         with tempfile.TemporaryDirectory() as root:
-            directory = Path(root) / "outcomes"
+            directory = Path(root).resolve() / "outcomes"
             real_write = os.write
 
             def short_write(fd, value):
@@ -166,7 +166,7 @@ except LedgerError:
 
     def test_existing_torn_marker_is_never_repaired_over_lost_history(self):
         with tempfile.TemporaryDirectory() as root:
-            directory = Path(root) / "outcomes"
+            directory = Path(root).resolve() / "outcomes"
             ledger = NonceLedger(directory, retain_unsettled=True)
             ledger.begin("namespace", "old-unknown", 10, 1, 10)
             ledger.settle("namespace", "old-unknown", "outcome_unknown")
@@ -181,10 +181,10 @@ except LedgerError:
     def test_default_constructor_validates_ancestors_before_creating_any_child(self):
         for kind in ("symlink", "writable"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
-                target = Path(root) / "target"
+                target = Path(root).resolve() / "target"
                 target.mkdir(mode=0o700)
                 if kind == "symlink":
-                    parent = Path(root) / "linked"
+                    parent = Path(root).resolve() / "linked"
                     parent.symlink_to(target, target_is_directory=True)
                 else:
                     parent = target

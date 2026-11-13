@@ -62,7 +62,7 @@ class AutosaveTests(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
-        self.path = Path(self.scratch.name) / "listener.toml"
+        self.path = Path(self.scratch.name).resolve() / "listener.toml"
         self.original = (
             '# unrelated comment survives\n[daemon]\ninstance = "server"\n'
             'owner_user_id = 12\ncoalesce_seconds = 1.0\n'
