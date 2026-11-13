@@ -542,6 +542,9 @@ struct ServerSettingsAnswer: Equatable {
     var ok: Bool
     var applyEnabled: Bool?
     var action: String?
+    var operation: String?
+    var outcome: String?
+    var requestID: String?
     var source: String?
     var revision: String?
     var persisted: Bool?
@@ -559,6 +562,8 @@ struct ServerSettingsAnswer: Equatable {
     var checkProblems: [String] = []
     var errorCode: String?
     var detail: String?
+    /// A malformed reserved receipt field; unknown settings keys remain forward-compatible.
+    var invalidReceiptField: String?
     /// The reload's code after an apply, such as `reloaded` or `reload_unconfirmed`.
     var reloadCode: String?
     var rolledBack: Bool?
@@ -636,6 +641,9 @@ struct ServerSettingsAnswer: Equatable {
         }
         applyEnabled = flag("applyEnabled", in: document)
         action = text("action", in: document)
+        operation = text("operation", in: document)
+        outcome = text("outcome", in: document)
+        requestID = text("requestID", in: document).flatMap { ServerSettingsAttempt.validID($0) ? $0 : nil }
         source = text("source", in: document)
         revision = text("revision", in: document).flatMap { Self.isHash($0) ? $0 : nil }
         persisted = flag("persisted", in: document)
@@ -652,11 +660,15 @@ struct ServerSettingsAnswer: Equatable {
         baseSHA256 = text("baseSHA256", in: document).flatMap { Self.isHash($0) ? $0 : nil }
         planSHA256 = text("planSHA256", in: document).flatMap { Self.isHash($0) ? $0 : nil }
         settings = document["settings"]?.tableEntries ?? [:]
-        if document["settings"] != nil, document["settings"]?.tableEntries == nil { wellFormed = false }
-        if document["source"] != nil, source == nil { wellFormed = false }
-        if document["revision"] != nil, revision == nil { wellFormed = false }
+        if document["settings"] != nil, document["settings"]?.tableEntries == nil { wellFormed = false; invalidReceiptField = "settings" }
+        if document["source"] != nil, source == nil { wellFormed = false; invalidReceiptField = "source" }
+        if document["revision"] != nil, revision == nil { wellFormed = false; invalidReceiptField = "revision" }
+        if document["baseSHA256"] != nil, baseSHA256 == nil { wellFormed = false; invalidReceiptField = "baseSHA256" }
+        if document["requestID"] != nil, requestID == nil { wellFormed = false; invalidReceiptField = "requestID" }
+        if document["operation"] != nil, operation == nil { wellFormed = false; invalidReceiptField = "operation" }
+        if document["outcome"] != nil, outcome == nil { wellFormed = false; invalidReceiptField = "outcome" }
         for key in ["persisted", "readback", "runtimeApplied", "autosaveEnabled"] {
-            if document[key] != nil, flag(key, in: document) == nil { wellFormed = false }
+            if document[key] != nil, flag(key, in: document) == nil { wellFormed = false; invalidReceiptField = key }
         }
         if let raw = document["changes"] {
             if case .list(let items) = raw {
@@ -917,8 +929,9 @@ enum ServerSettingsCopy {
 
     /// A typed value with a credential's shape is never sent.  The sentence names the row and
     /// never the value or any part of it.
-    static func credentialShaped(_ title: String) -> String {
-        "\(title) has the shape of a credential, so Muster did not send it.\(gap)The server's listener file holds names and settings only, never a secret."
+    static func credentialShaped(_ field: String) -> String {
+        ServerSettingsValidationProblem(code: "secret_refused", field: field,
+                                        reason: "looks like a credential; the edit was not sent.").sentence
     }
 
     /// An edit whose row is not among the settings last read, so it is never sent or dropped quietly.
@@ -965,11 +978,8 @@ enum ServerSettingsCopy {
 }
 
 enum ServerSettingsBuilder {
-    /// A seat's routing structure:  whether the seat is on and how it is woken.  These have no
-    /// Infisical home, and they are the only settings Muster sends.  Every other allowlisted setting
-    /// (every sub-key of a seat's routine, budget and live tables, and every key of the daemon and
-    /// feature tables) is shown read only:  a timing or a cap is a knob (`ServerSettingsCopy.knobHome`),
-    /// and the rest says its own reason.
+    /// Legacy plan callers offer only these routing keys.  The Operator's editable rows and
+    /// autosave request use the complete nonsecret allowlist and canonical Infisical document.
     static let seatStructureKeys: Set<String> = ["enabled", "wake"]
 
     /// The value the daemon takes for a structure key the file does not set
@@ -1058,14 +1068,11 @@ enum ServerSettingsBuilder {
                 switch spec {
                 case .pairs: return .pairs
                 case .seatEnv:
-                    let parts = key.split(separator: ".")
-                    guard parts.count == 3, parts[0] == "seat", let sub else { return nil }
-                    let seat = String(parts[1]).replacingOccurrences(of: "-", with: "_")
-                    var names = sub == "url_env"
-                        ? [seat + "_ROUTINE_URL", "ZULIP_ALERT_" + seat + "_ENDPOINT"]
-                        : [seat + "_ROUTINE_KEY", "ZULIP_ALERT_" + seat + "_KEY"]
-                    if case .text(let existing)? = current, !names.contains(existing) { names.insert(existing, at: 0) }
-                    return .choice(names)
+                    guard let sub else { return nil }
+                    let existing: String?
+                    if case .text(let name)? = current { existing = name } else { existing = nil }
+                    let names = ServerSettingsReferences.names(path: key + "." + sub, existing: existing)
+                    return names.isEmpty ? nil : .choice(names)
                 default: return control(spec)
                 }
             }
@@ -1146,49 +1153,60 @@ enum ServerSettingsBuilder {
     /// The value a field's text stands for, by the row's control, or a sentence saying why not.
     static func value(_ text: String, for row: ServerSettingRow) -> Result<ServerSettingValue, EditProblem> {
         guard let control = row.control else { return .failure(.readOnly(row.title)) }
+        func invalid(_ reason: String) -> Result<ServerSettingValue, EditProblem> {
+            .failure(.notAValue(ServerSettingsValidationProblem(code: "invalid_settings", field: row.id, reason: reason).sentence))
+        }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
-        // Defence in depth, before any control reads the text:  no row takes free text today, and
-        // a value with a credential's shape is refused whatever the row, by the app's own detectors.
-        guard !looksLikeCredential(trimmed) else {
-            return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.title)))
+        // Parse typed containers before scanning their leaves; only verified routine-name choices
+        // bypass the opaque-value detector, never arbitrary text or an unknown variable name.
+        let reference: Bool
+        if !ServerSettingsReferences.names(path: row.id).isEmpty, case .choice(let names) = control {
+            reference = ServerSettingsReferences.isName(trimmed) && names.contains(trimmed)
+        } else { reference = false }
+        let structuredPairs: Bool
+        if case .pairs = control { structuredPairs = true } else { structuredPairs = false }
+        guard reference || structuredPairs || !looksLikeCredential(trimmed) else {
+            return .failure(.notAValue(ServerSettingsCopy.credentialShaped(row.id)))
         }
         switch control {
         case .toggle:
             switch trimmed {
             case "true", "On": return .success(.bool(true))
             case "false", "Off": return .success(.bool(false))
-            default: return .failure(.notAValue("\(row.title) must be on or off."))
+            default: return invalid("must be on or off.")
             }
         case .choice(let values):
             guard values.contains(trimmed) else {
-                return .failure(.notAValue("\(row.title) must be one of \(values.joined(separator: ", "))."))
+                return invalid("must be one of the offered choices.")
             }
             return .success(.text(trimmed))
         case .whole(let low, let high):
             guard let whole = Int(trimmed), Double(whole) >= low, Double(whole) <= high else {
-                return .failure(.notAValue("\(row.title) must be a whole number from \(Int(low)) to \(Int(high))."))
+                return invalid("must be a whole number from \(Int(low)) to \(Int(high)).")
             }
             return .success(.int(whole))
         case .number(let low, let high):
             guard let number = Double(trimmed), number.isFinite, number >= low, number <= high else {
-                return .failure(.notAValue("\(row.title) must be a number from \(low.cleanText) to \(high.cleanText)."))
+                return invalid("must be a number from \(low.cleanText) to \(high.cleanText).")
             }
             let isWhole = !trimmed.contains(".") && !trimmed.lowercased().contains("e")
             if isWhole, let whole = Int(trimmed) { return .success(.int(whole)) }
             return .success(.number(number))
         case .pairs:
             guard case .list(let pairs)? = ServerSettingJSON.parse(trimmed), pairs.count <= 32 else {
-                return .failure(.notAValue("\(row.title) needs at most 32 channel and topic pairs."))
+                return invalid("needs at most 32 channel and topic pairs.")
             }
-            for pair in pairs {
+            for (pairIndex, pair) in pairs.enumerated() {
                 guard case .list(let fields) = pair, fields.count == 2 else {
-                    return .failure(.notAValue("\(row.title) needs a channel and a topic in every pair."))
+                    return invalid("needs a channel and a topic in every pair.")
                 }
-                for field in fields {
+                for (fieldIndex, field) in fields.enumerated() {
+                    if case .text(let value) = field, looksLikeCredential(value) {
+                        return .failure(.notAValue(ServerSettingsCopy.credentialShaped("\(row.id)[\(pairIndex)][\(fieldIndex)]")))
+                    }
                     guard case .text(let value) = field, !value.isEmpty, value.count <= 60,
-                          !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-                          !looksLikeCredential(value) else {
-                        return .failure(.notAValue("\(row.title) needs nonsecret channel and topic names of 1 to 60 characters."))
+                          !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                        return invalid("needs nonsecret channel and topic names of 1 to 60 characters.")
                     }
                 }
             }
@@ -1197,7 +1215,7 @@ enum ServerSettingsBuilder {
             guard trimmed.count <= limit,
                   let expression = try? NSRegularExpression(pattern: "^(?:\(pattern))$"),
                   expression.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) != nil else {
-                return .failure(.notAValue("\(row.title) does not have the form the server allows."))
+                return invalid("does not have the form the server allows.")
             }
             return .success(.text(trimmed))
         }
@@ -1215,12 +1233,22 @@ enum ServerSettingsBuilder {
             || FleetViewFailure.scrub(text).contains(ConfigFileReader.redactionMark)
     }
 
+    static func referenceNames(rows: [ServerSettingRow]) -> [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        for row in rows where !ServerSettingsReferences.names(path: row.id).isEmpty {
+            if case .choice(let names)? = row.control {
+                result[row.id] = Set(names.filter(ServerSettingsReferences.isName))
+            }
+        }
+        return result
+    }
+
     /// The request for a set of edits, by row id.  A table's setting is sent as the table the
     /// server answered with, the edits laid over it, so no sub-key is dropped.  An edit that holds
     /// the value the row already has is not sent.  An edit whose row is not among `rows` (a seat
     /// gone since the last read) plans nothing, so no edit is ever dropped from a plan quietly.
     static func request(edits: [String: String], rows: [ServerSettingRow], forAutosave: Bool = false,
-                        removing: Set<String> = []) -> Result<ServerListenerSettingsRequest, EditProblem> {
+                        removing: Set<String> = [], includeUnchanged: Set<String> = []) -> Result<ServerListenerSettingsRequest, EditProblem> {
         let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var set: [String: ServerSettingValue] = [:]
         var tables: [String: [String: ServerSettingValue]] = [:]
@@ -1237,7 +1265,7 @@ enum ServerSettingsBuilder {
             }
             // Against the daemon's default when the file sets none, so On on a seat that is on by
             // default plans nothing.
-            if let current = row.effective, sameValue(current, value) { continue }
+            if let current = row.effective, sameValue(current, value), !includeUnchanged.contains(id) { continue }
             if let sub = row.subKey {
                 // A table is sent whole, the edit laid over what the server answered.  No row can
                 // reach this until AFC-773 registers the knobs:  every table's sub-key is read only.
@@ -1253,7 +1281,10 @@ enum ServerSettingsBuilder {
                   row.settingKey.hasPrefix("seat."), let current = row.table else {
                 return .failure(.notAValue(ServerSettingsCopy.notRead(id)))
             }
-            guard current[sub] != nil else { continue }
+            guard current[sub] != nil else {
+                if includeUnchanged.contains(id) { tables[row.settingKey] = tables[row.settingKey] ?? current }
+                continue
+            }
             var table = tables[row.settingKey] ?? current
             table.removeValue(forKey: sub)
             tables[row.settingKey] = table
@@ -1262,7 +1293,14 @@ enum ServerSettingsBuilder {
         for (key, table) in tables { set[key] = .table(table) }
         guard !set.isEmpty else { return .failure(.nothingChanged) }
         let request = ServerListenerSettingsRequest(set: set, remove: remove)
-        guard forAutosave ? (ServerSettingsSaveRequest.validSet(set) && ServerSettingsSaveRequest.validRemovals(remove, set: set)) : request.isSendable else { return .failure(.notSendable) }
+        if forAutosave {
+            if let problem = ServerSettingsSaveRequest.setProblem(set, references: referenceNames(rows: rows)) {
+                return .failure(.notAValue(problem.sentence))
+            }
+            guard ServerSettingsSaveRequest.validRemovals(remove, set: set) else {
+                return .failure(.notAValue("invalid_settings: remove must explicitly match omitted table overrides."))
+            }
+        } else if !request.isSendable { return .failure(.notSendable) }
         return .success(request)
     }
 
@@ -1318,7 +1356,10 @@ struct ServerListenerSettingsReader {
             let words = OpsResultParser.decode(result.stdout)?.detail.map(OpsResultParser.sanitizedForDisplay)
             return .unavailable("The server gave no settings" + (words.map { ":  \($0)" } ?? ".") )
         }
-        guard answer.isWellFormed, answer.ok, answer.result == "read" else {
+        guard answer.isWellFormed else {
+            return .unavailable("invalid_receipt: \(answer.invalidReceiptField ?? "response") has an invalid shape.")
+        }
+        guard answer.ok, answer.result == "read" else {
             return .unavailable("The server refused the read:  \(answer.detail ?? answer.errorCode ?? answer.result)")
         }
         return .read(answer)
@@ -1342,11 +1383,25 @@ final class ServerListenerSettingsStore: ObservableObject {
     @Published var drafts: [String: String] = [:]
     @Published private(set) var removalDrafts: Set<String> = []
     private var pendingIDs: Set<String> { Set(drafts.keys).union(removalDrafts) }
+    private var removalOriginals: [String: String] = [:]
+    private var unconfirmedIDs: Set<String> = []
+    private var requiresFreshRead = false
+    private struct SaveAttempt {
+        let request: ServerSettingsSaveRequest
+        let ids: Set<String>
+        let snapshot: [String: String]
+        let removed: Set<String>
+        let versions: [String: UInt64]
+        let channelNames: [String]
+    }
+    /// Kept until the server proves this exact operation terminal; a GET cannot settle it.
+    private var uncertainAttempt: SaveAttempt?
 
     private let reader: ServerListenerSettingsReader
     private let saver: ServerListenerSettingsSaver?
     private let debounceNanoseconds: UInt64
     private let waitForDebounce: (UInt64) async throws -> Void
+    private let makeAttempt: () -> ServerSettingsAttempt
     private var debounceTask: Task<Void, Never>?
     private var editVersions: [String: UInt64] = [:]
     @Published private(set) var isSaving = false
@@ -1364,6 +1419,7 @@ final class ServerListenerSettingsStore: ObservableObject {
         saver: ServerListenerSettingsSaver? = nil,
         debounceNanoseconds: UInt64 = 450_000_000,
         waitForDebounce: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
+        makeAttempt: @escaping () -> ServerSettingsAttempt = { .fresh() },
         readAllowlist: (() -> ServerSettingsAllowlist?)? = nil,
         loadAllowlist: @escaping () -> ServerSettingsAllowlistLoad = { ServerSettingsAllowlistLoader.standard() },
         controller: OpsController = .shared
@@ -1372,6 +1428,7 @@ final class ServerListenerSettingsStore: ObservableObject {
         self.saver = saver
         self.debounceNanoseconds = debounceNanoseconds
         self.waitForDebounce = waitForDebounce
+        self.makeAttempt = makeAttempt
         if let readAllowlist {
             self.loadAllowlist = {
                 let list = readAllowlist()
@@ -1441,6 +1498,10 @@ final class ServerListenerSettingsStore: ObservableObject {
             } else {
                 reading = result
                 refreshProblem = nil
+                if case .read(let answer) = result, answer.source == "infisical",
+                   answer.persisted == true, answer.readback == true, answer.autosaveEnabled == true,
+                   answer.revision != nil,
+                   answer.baseSHA256 == nil || answer.baseSHA256 == answer.revision { requiresFreshRead = false }
             }
         } while readAgain
     }
@@ -1454,9 +1515,12 @@ final class ServerListenerSettingsStore: ObservableObject {
         debounceTask?.cancel()
         debounceTask = nil
         saveStates = [:]
-        editVersions = [:]
+        // Generations stay monotonic even if a visible draft is discarded during an uncertain write.
         drafts = [:]
         removalDrafts = []
+        removalOriginals = [:]
+        // Discarding visible drafts cannot cancel an operation that may already be writing.
+        unconfirmedIDs = uncertainAttempt?.ids ?? []
         message = nil
     }
 
@@ -1465,7 +1529,9 @@ final class ServerListenerSettingsStore: ObservableObject {
         guard let row = groups.flatMap(\.rows).first(where: { $0.id == id }), row.isEditable else { return }
         editVersions[id, default: 0] += 1
         removalDrafts.remove(id)
-        if !isSaving, text == row.editText {
+        removalOriginals[id] = nil
+        if uncertainAttempt != nil || requiresFreshRead { unconfirmedIDs.insert(id) }
+        if !isSaving, !unconfirmedIDs.contains(id), text == row.editText {
             drafts[id] = nil
             saveStates[id] = nil
         } else {
@@ -1480,9 +1546,12 @@ final class ServerListenerSettingsStore: ObservableObject {
     func removeOverride(_ id: String) {
         guard let row = groups.flatMap(\.rows).first(where: { $0.id == id }), row.isEditable, row.isLimit else { return }
         editVersions[id, default: 0] += 1
+        if uncertainAttempt != nil || requiresFreshRead { unconfirmedIDs.insert(id) }
+        if removalOriginals[id] == nil { removalOriginals[id] = drafts[id] ?? row.editText }
         drafts[id] = nil
-        if row.current == nil, !isSaving {
+        if row.current == nil, !isSaving, !unconfirmedIDs.contains(id) {
             removalDrafts.remove(id)
+            removalOriginals[id] = nil
             saveStates[id] = nil
         } else {
             removalDrafts.insert(id)
@@ -1490,6 +1559,21 @@ final class ServerListenerSettingsStore: ObservableObject {
         }
         message = nil
         scheduleSave()
+    }
+
+    /// Restore the prior edit, including when an in-flight unset may already have reached the server.
+    func cancelRemoval(_ id: String) {
+        guard removalDrafts.contains(id), let row = groups.flatMap(\.rows).first(where: { $0.id == id }) else { return }
+        let restore = removalOriginals[id] ?? row.editText
+        if isSaving || unconfirmedIDs.contains(id) || restore != row.editText {
+            edit(id, text: restore)
+        } else {
+            editVersions[id, default: 0] += 1
+            removalDrafts.remove(id)
+            removalOriginals[id] = nil
+            saveStates[id] = nil
+            scheduleSave()
+        }
     }
 
     private func scheduleSave() {
@@ -1509,74 +1593,132 @@ final class ServerListenerSettingsStore: ObservableObject {
               pendingIDs.contains(where: { saveStates[$0] == .saving }) else { return }
         debounceTask?.cancel()
         debounceTask = nil
-        let snapshot = drafts
-        let removed = removalDrafts
-        let ids = pendingIDs
-        let versions = editVersions
-        func fail(_ why: String) {
-            debounceTask?.cancel()
-            debounceTask = nil
-            message = why
-            // Also stop edits queued behind an uncertain write: none is blindly replayed.
-            for id in pendingIDs { saveStates[id] = .failed(why) }
-        }
         guard let saver else {
-            fail("Settings saving is unavailable in this instance, so the edit was not sent.")
+            failPending("Settings saving is unavailable in this instance, so the edit was not sent.")
             return
         }
+        if let prior = uncertainAttempt {
+            isSaving = true
+            let result = await saver.reconcile(prior.request)
+            isSaving = false
+            switch result {
+            case .saved(let answer):
+                uncertainAttempt = nil
+                acceptSaved(answer, attempt: prior)
+            case .failed(let why, let canonical):
+                uncertainAttempt = nil
+                if let canonical { adoptCanonical(canonical, channels: prior.channelNames) }
+                for id in prior.ids where editVersions[id] == prior.versions[id] && pendingIDs.contains(id) {
+                    saveStates[id] = .failed(why)
+                }
+                message = why
+            case .outcomeUnknown(let why, let canonical):
+                if let canonical { adoptCanonical(canonical, channels: prior.channelNames) }
+                failPending(why)
+                if readAgain { await refresh() }
+                return
+            }
+            // A terminal old operation permits a new intent only against a fresh canonical read.
+            requiresFreshRead = true
+        }
+        guard pendingIDs.contains(where: { saveStates[$0] == .saving }) else {
+            if readAgain { await refresh() }
+            return
+        }
+        if requiresFreshRead {
+            await refresh()
+            if requiresFreshRead {
+                let why = "The Operator could not confirm its settings.\(ServerStatusCopy.sentenceGap)The edit is retained and has not been sent again."
+                failPending(why)
+                return
+            }
+        }
+        // A fresh edit never rebatches another field whose earlier save failed.
+        let ids = Set(pendingIDs.filter { saveStates[$0] == .saving })
+        guard !ids.isEmpty else { return }
+        let snapshot = drafts.filter { ids.contains($0.key) }
+        let removed = removalDrafts.intersection(ids)
+        let versions = editVersions
         guard case .read(let baseline)? = reading, baseline.source == "infisical",
               baseline.persisted == true, baseline.readback == true, baseline.autosaveEnabled == true,
               let revision = baseline.revision ?? baseline.baseSHA256 else {
-            fail("The server has not confirmed its canonical settings revision, so the edit was not sent.")
+            failPending("The server has not confirmed its canonical settings revision, so the edit was not sent.")
             return
         }
         let request: ServerSettingsSaveRequest
-        switch ServerSettingsBuilder.request(edits: snapshot, rows: groups.flatMap(\.rows), forAutosave: true, removing: removed) {
+        switch ServerSettingsBuilder.request(edits: snapshot, rows: groups.flatMap(\.rows), forAutosave: true,
+                                             removing: removed, includeUnchanged: unconfirmedIDs.intersection(ids)) {
         case .failure(.nothingChanged):
             // A matching value is a read, not a successful write receipt.
             for id in ids where editVersions[id] == versions[id] {
                 drafts[id] = nil
                 removalDrafts.remove(id)
+                removalOriginals[id] = nil
                 saveStates[id] = nil
             }
             return
-        case .failure(let problem): fail(problem.sentence); return
+        case .failure(let problem): failPending(problem.sentence); return
         case .success(let typed):
             request = ServerSettingsSaveRequest(set: typed.set, expectBaseSHA256: revision,
-                                                expectedKeys: Set(baseline.settings.keys), remove: typed.remove)
+                                                expectedKeys: Set(baseline.settings.keys), remove: typed.remove,
+                                                referenceNames: ServerSettingsBuilder.referenceNames(rows: groups.flatMap(\.rows)),
+                                                attempt: makeAttempt())
         }
+        let attempt = SaveAttempt(request: request, ids: ids, snapshot: snapshot, removed: removed,
+                                  versions: versions, channelNames: baseline.channelNames)
         isSaving = true
         let result = await saver.save(request)
         isSaving = false
         switch result {
         case .saved(let answer):
-            var canonical = answer
-            canonical.result = "read"
-            if canonical.channelNames.isEmpty { canonical.channelNames = baseline.channelNames }
-            reading = .read(canonical)
-            refreshProblem = nil
-            for id in ids {
-                if editVersions[id] == versions[id], drafts[id] == snapshot[id],
-                   removalDrafts.contains(id) == removed.contains(id) {
-                    drafts[id] = nil
-                    removalDrafts.remove(id)
-                    saveStates[id] = .saved
-                } else {
-                    saveStates[id] = pendingIDs.contains(id) ? .saving : nil
-                }
-            }
-            message = nil
-            if !pendingIDs.isEmpty { scheduleSave() }
+            acceptSaved(answer, attempt: attempt)
+            if pendingIDs.contains(where: { saveStates[$0] == .saving }) { scheduleSave() }
         case .failed(let why, let canonical):
-            if var canonical {
-                canonical.result = "read"
-                if canonical.channelNames.isEmpty { canonical.channelNames = baseline.channelNames }
-                reading = .read(canonical)
-                refreshProblem = nil
-            }
-            fail(why)
+            if let canonical { adoptCanonical(canonical, channels: baseline.channelNames) }
+            unconfirmedIDs.formUnion(ids)
+            requiresFreshRead = true
+            failPending(why)
+        case .outcomeUnknown(let why, let canonical):
+            uncertainAttempt = attempt
+            if let canonical { adoptCanonical(canonical, channels: baseline.channelNames) }
+            unconfirmedIDs.formUnion(ids)
+            requiresFreshRead = true
+            failPending(why)
         }
         if readAgain { await refresh() }
+    }
+
+    private func failPending(_ why: String) {
+        debounceTask?.cancel()
+        debounceTask = nil
+        message = why
+        // Neither an older failed edit nor a newer edit queued behind uncertainty is replayed.
+        for id in pendingIDs { saveStates[id] = .failed(why) }
+    }
+
+    private func adoptCanonical(_ answer: ServerSettingsAnswer, channels: [String]) {
+        var canonical = answer
+        canonical.result = "read"
+        if canonical.channelNames.isEmpty { canonical.channelNames = channels }
+        reading = .read(canonical)
+        refreshProblem = nil
+    }
+
+    private func acceptSaved(_ answer: ServerSettingsAnswer, attempt: SaveAttempt) {
+        adoptCanonical(answer, channels: attempt.channelNames)
+        for id in attempt.ids {
+            if editVersions[id] == attempt.versions[id], drafts[id] == attempt.snapshot[id],
+               removalDrafts.contains(id) == attempt.removed.contains(id) {
+                drafts[id] = nil
+                removalDrafts.remove(id)
+                removalOriginals[id] = nil
+                unconfirmedIDs.remove(id)
+                saveStates[id] = .saved
+            } else if !pendingIDs.contains(id) {
+                saveStates[id] = nil
+            }
+        }
+        message = nil
     }
 
     /// Shows the plan for the edits in the shared action sheet, which asks for Touch ID before it
