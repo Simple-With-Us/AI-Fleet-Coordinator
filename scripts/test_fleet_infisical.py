@@ -143,13 +143,15 @@ class NamesOnlyTests(unittest.TestCase):
                     ]
                 else:
                     metadata["permissions"] = ["read", "write"]
-                with mock.patch.object(
-                    fleet_infisical, "_api_json", return_value=(200, metadata)
-                ) as api:
-                    with self.assertRaises(fleet_infisical.SecretsError):
-                        fleet_infisical.list_project_names(
-                            self.project, self.path, self.env, token=self.token
-                        )
+                with (
+                    mock.patch.object(
+                        fleet_infisical, "_api_json", return_value=(200, metadata)
+                    ) as api,
+                    self.assertRaises(fleet_infisical.SecretsError),
+                ):
+                    fleet_infisical.list_project_names(
+                        self.project, self.path, self.env, token=self.token
+                    )
                 self.assertEqual(api.call_count, 1)
 
     def test_bad_binding_and_nonprod_fail_before_network(self):
