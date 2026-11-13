@@ -39,8 +39,10 @@ if (
 # turns remote mode on for every seat, so the hook must run whether or not SIMPLE_CHAT_REMOTE is set:  skipped, it
 # would fall through to the CLI's argument parser and exit 2, which blocks the prompt.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
+    from simple_tools.platform_letter_bootstrap import bind
     from simple_tools.claude_letter import main as letter_main  # noqa: E402
 
+    bind()
     sys.exit(letter_main(sys.argv[2:]))
 
 # Deterministic handbook service is not a roster seat or an admin API escape hatch.
