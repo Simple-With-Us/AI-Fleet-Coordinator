@@ -66,6 +66,24 @@ final class KnobFolderTests: XCTestCase {
 
     // MARK: Reading each folder's copy
 
+    func test_declared_catalog_needs_no_live_read_or_configuration_receipt() throws {
+        let (root, home) = try makeRepo()
+        var registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
+        let expected = [
+            KnobRegistry.DeclaredNameGroup(path: "/", names: ["FLEET_AUTOPUSH_MODE"]),
+            KnobRegistry.DeclaredNameGroup(path: "/wake-router", names: ["WAKE_ROUTER_WORKERS"]),
+        ]
+        XCTAssertNil(registry.live)
+        XCTAssertFalse(registry.copyIsReadable)
+        XCTAssertEqual(registry.declaredNonsecretNames, expected)
+        XCTAssertTrue(try knob(registry, "WAKE_ROUTER_CLAUDE_KEY").isSecret)
+        XCTAssertFalse(registry.declaredNonsecretNames.flatMap(\.names).contains("WAKE_ROUTER_CLAUDE_KEY"))
+        // A current reading changes the table, never the declared catalog or its meaning.
+        registry.knobs[0].current = .current("report")
+        XCTAssertEqual(registry.declaredNonsecretNames, expected)
+        XCTAssertEqual(registry.rows.first?.now, "report")
+    }
+
     /// A `/wake-router` knob is read from `lkg-wake-router.json`,  never from the root copy.
     func test_a_wake_router_knob_is_read_from_its_own_copy() throws {
         let (root, home) = try makeRepo()
