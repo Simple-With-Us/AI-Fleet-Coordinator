@@ -16,7 +16,7 @@ class HostedTests(unittest.TestCase):
             row=["server time",who,args["requesting_seat"],args["request"],args["action_taken"],args["result"]]
             if bad_receipt: row[1]="OTHER"
             return {"structuredContent":{"dry_run":args["dry_run"],"tab":"Peer-Actions Registry","row":row}}
-        with mock.patch.dict(os.environ, env or {"AGENT_SEAT":"WISE"},clear=True), \
+        with mock.patch.dict(os.environ, env if env is not None else {"AGENT_SEAT":"WISE", "SIMPLE_TOOLS_BEARER":"test-bearer"},clear=True), \
              mock.patch.object(T,"_remote_write_identity",return_value=who) as identity, \
              mock.patch.object(T,"_remote_call",side_effect=call), \
              mock.patch.object(C.P,"log_row",side_effect=AssertionError("direct fallback")), \
@@ -47,5 +47,13 @@ class HostedTests(unittest.TestCase):
     def test_bom_only_field_refused_before_identity(self):
         rc,calls,_,identity=self.run_cli(["--request","\ufeff \ufeff"])
         self.assertEqual(rc,2);identity.assert_not_called()
+
+    def test_missing_bearer_is_not_configured_before_network(self):
+        for value in (None, "", "   "):
+            env={"AGENT_SEAT":"WISE"}
+            if value is not None: env["SIMPLE_TOOLS_BEARER"]=value
+            rc,calls,out,identity=self.run_cli(env=env)
+            self.assertEqual(rc,3);self.assertIn("not_configured",out)
+            identity.assert_not_called();self.assertEqual(calls,[])
 
 if __name__=="__main__": unittest.main()

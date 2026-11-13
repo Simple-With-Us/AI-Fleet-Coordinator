@@ -74,6 +74,10 @@ def _hosted_log(entry: P.LogEntry, *, dry_run: bool) -> dict:
         action_taken=entry.action_taken.strip(trim_chars),
         result=entry.result.strip(trim_chars),
     )
+    if not os.environ.get("SIMPLE_TOOLS_BEARER", "").strip():
+        raise P.PeerActionsError(
+            "not_configured", "hosted mode needs this bot's own SIMPLE_TOOLS_BEARER"
+        )
     try:
         who = _remote_write_identity(os.environ)
         if I.canonical_seat(who) != entry.acting_seat:
