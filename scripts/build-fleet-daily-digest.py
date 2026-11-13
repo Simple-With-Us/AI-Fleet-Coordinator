@@ -250,6 +250,8 @@ REPO_BADGE: dict[str, tuple[str, str]] = {
     "HogHunter": ("HH", "repo-hh"),
     "Clutch": ("C", "repo-clutch"),
     "codecaps": ("CC", "repo-cc"),
+    "FleetLink": ("FL", "repo-fl"),
+    "Simple-With-Us": ("SWU", "repo-swu"),
 }
 
 # Latest product app icons (copied into site/agent-logos/ with agent marks)
@@ -266,6 +268,7 @@ REPO_APP_ICON: dict[str, str] = {
     "HogHunter": "agent-logos/app-hh.png",
     "Clutch": "agent-logos/app-clutch.png",
     "codecaps": "agent-logos/app-cc.png",
+    "AI-Fleet-Coordinator": "agent-logos/app-afc.png",
 }
 
 # Aliases used only to strip *redundant leading* labels that duplicate the badge.
@@ -479,6 +482,18 @@ AGENT_LOGO: dict[str, tuple[str, str]] = {
     "ma": ("muse-assist", "Muse Assist"),
     "muse-assist": ("muse-assist", "Muse Assist"),
     "sentry": ("sentry", "Sentry"),
+    "opencode": ("opencode", "OpenCode"),
+    "echo": ("instinct", "Instinct"),
+    "wise": ("instinct", "Instinct"),
+    "instinct": ("instinct", "Instinct"),
+    "zc": ("zcode", "Z Code"),
+    "zcode": ("zcode", "Z Code"),
+    "fx": ("fx", "Fx"),
+    "clutch": ("app-clutch", "Clutch"),
+    "amp": ("amp", "Amp"),
+    "jet": ("chatgpt", "ChatGPT"),
+    "chatgpt": ("chatgpt", "ChatGPT"),
+    "botfleet": ("app-bf", "BotFleet"),
     # Monet / Renoir / Fable seats collapse to Claude logo + label
     "monet": ("claude", "Claude"),
     "renoir": ("claude", "Claude"),
@@ -490,29 +505,42 @@ AGENT_LOGO: dict[str, tuple[str, str]] = {
 
 # Core seat names; optional version/wave suffixes: GROK4, GROK3-B7, CODEX-REVIEW
 # OWNER is deliberately omitted — keep "OWNER ACTION" text, no person/Jay chip.
-_AGENT_ALT = (
-    r"GROK\s+BOT|GROK-BOT"
+_AGENT_IMPLICIT_ALT = (
+    r"GB-[A-Za-z0-9]+|BF-[A-Za-z0-9]+"
+    r"|GROK\s+BOT|GROK-BOT|GROK-WEB|GROK-BUILD"
     r"|GROK\d*(?:-[A-Za-z0-9]+)?"
     r"|CODEX(?:-[A-Za-z0-9]+)?"
     r"|CLAUDE(?:\s+CODE)?"
     r"|CURSOR"
-    r"|MINIMAX|MM"
+    r"|MINIMAX(?:\s+CODE)?|MM"
     r"|DEEPSEEK|DSH"
-    r"|KIMI|MUSE|MC|MA"
+    r"|KIMI(?:\s+CODE)?|MUSE(?:[ -](?:CODE|ASSIST))?|MC|MA"
     r"|SENTRY"
     r"|AG|ANTIGRAVITY|GEMINI|MONET|RENOIR|FABLE"
+)
+# New product names are attribution only inside explicit tags.  For example,
+# "Fix Clutch connection settings" describes the product, not the author.
+_AGENT_ALT = _AGENT_IMPLICIT_ALT + (
+    r"|OPENCODE|ECHO|WISE|INSTINCT|Z[ -]?CODE|ZC|FX|CLUTCH|AMP|JET(?:-CHAT)?|CHATGPT"
 )
 # One or more slash-separated seat tokens (CURSOR/AG, Codex/Claude/Monet/AG/Cursor)
 _AGENT_CHAIN = rf"(?:{_AGENT_ALT})(?:\s*/\s*(?:{_AGENT_ALT}))*"
 # Match [GROK], [AG], [CURSOR/AG], [CODEX/AG], [Claude Code], etc.
 _AGENT_BRACKET = re.compile(rf"\[({_AGENT_CHAIN})\]", re.IGNORECASE)
+# Current fleet envelopes include a session and repository folder after the seat.
+_AGENT_ENVELOPE = re.compile(
+    rf"(?:👀)?\[({_AGENT_ALT})(?:"
+    rf":\s*[A-Z]{{2}}\.\d+\.[MSC](?:\s*📁[^\]\n]*)?"
+    rf"|\s*📁[^\]\n]*"
+    rf")\]", re.IGNORECASE
+)
 _AGENT_BARE_PREFIX = re.compile(
-    rf"^(?:by\s+)?({_AGENT_ALT})\b[,:\s\-–—]*",
+    rf"^(?:by\s+)?({_AGENT_IMPLICIT_ALT})\b[,:\s\-–—]*",
     re.IGNORECASE,
 )
 # Issue titles: "2026-08-03 — GROK — COMPLETED …"
 _AGENT_EMDASH = re.compile(
-    rf"(?:\s*[\-–—]\s*|\s+)({_AGENT_ALT})(?:\s*[\-–—]\s*|\s+)",
+    rf"(?:\s*[\-–—]\s*|\s+)({_AGENT_IMPLICIT_ALT})(?:\s*[\-–—]\s*|\s+)",
     re.IGNORECASE,
 )
 # Effort trailers: (CODEX/HERSCHEL, L) or (CODEX-REVIEW, S) or truncated (CODEX...
@@ -530,13 +558,21 @@ _AGENT_SLASH_CHAIN = re.compile(
 # Standalone seat words. Allow trailing punctuation (AG... / AG.) but not path
 # continuations (ag/client, .codex/). Lookbehind blocks mid-identifier matches.
 _AGENT_STANDALONE = re.compile(
-    rf"(?<![A-Za-z0-9_./])({_AGENT_ALT})(?![A-Za-z0-9_/])",
+    rf"(?<![A-Za-z0-9_./])({_AGENT_IMPLICIT_ALT})(?![A-Za-z0-9_/])",
     re.IGNORECASE,
 )
 
 
 def _normalize_agent_token(raw: str) -> str:
     t = re.sub(r"\s+", " ", raw.strip().lower())
+    if t.startswith("bf-"):
+        return "botfleet"
+    if t.startswith("gb-"):
+        return "grok-bot"
+    if t in ("jet", "jet-chat"):
+        return "jet"
+    if t in ("z code", "z-code"):
+        return "zcode"
     # strip wave/version suffixes: grok4, grok3-b7, codex-review → base seat
     if t.startswith("grok-bot") or t == "grok bot":
         return "grok-bot"
@@ -565,9 +601,9 @@ def _normalize_agent_token(raw: str) -> str:
         return "deepseek"
     if t.startswith("kimi"):
         return "kimi"
-    if t in ("mc", "muse-code") or t.startswith("muse-code"):
+    if t in ("mc", "muse-code", "muse code") or t.startswith("muse-code"):
         return "mc"
-    if t in ("ma", "muse-assist") or t.startswith("muse-assist"):
+    if t in ("ma", "muse-assist", "muse assist") or t.startswith("muse-assist"):
         return "ma"
     if t.startswith("muse"):
         return "ma"
@@ -612,6 +648,10 @@ def extract_agents_and_clean(text: str, repo: str = "") -> tuple[list[str], str]
     def add_chain(raw: str) -> None:
         for part in _split_agent_chain(raw):
             add_agent(part)
+
+    for m in _AGENT_ENVELOPE.finditer(s):
+        add_agent(m.group(1))
+    s = _AGENT_ENVELOPE.sub(" ", s)
 
     # Collect all bracketed agents (incl. multi-seat), then remove them
     for m in _AGENT_BRACKET.finditer(s):
@@ -678,13 +718,13 @@ def logo_file(slug: str) -> str:
     """<slug>.svg if present, else <slug>.png.
 
     Most seat marks are SVG, but Cursor and Grok Bot are supplied as PNGs, so
-    the filename cannot be assumed.  Falls back to .svg so a missing asset
-    still produces a stable (if broken) path rather than an exception.
+    the filename cannot be assumed.  An empty result uses a readable text
+    badge when an authentic platform mark is not available.
     """
     for ext in ("svg", "png"):
         if (LOGO_DIR / f"{slug}.{ext}").is_file():
             return f"{slug}.{ext}"
-    return f"{slug}.svg"
+    return ""
 
 
 def agent_icons_html(agents: list[str]) -> str:
@@ -696,8 +736,12 @@ def agent_icons_html(agents: list[str]) -> str:
     for slug in agents:
         label = _agent_label(slug)
         labels.append(label)
-        src = html.escape(f"agent-logos/{logo_file(slug)}")
         lab = html.escape(label)
+        filename = logo_file(slug)
+        if not filename:
+            parts.append(f'<span class="agent agent-text" title="{lab}">{lab}</span>')
+            continue
+        src = html.escape(f"agent-logos/{filename}")
         parts.append(
             f'<span class="agent" title="{lab}">'
             f'<img src="{src}" alt="{lab}" width="14" height="14" loading="lazy" decoding="async" />'
@@ -705,6 +749,48 @@ def agent_icons_html(agents: list[str]) -> str:
         )
     aria = html.escape(", ".join(labels))
     return f'<span class="agents" aria-label="Agents: {aria}">' + "".join(parts) + "</span>"
+
+
+def agent_legend_html() -> str:
+    """Use the activity-row platform table for the legend too."""
+    items = []
+    for slug in dict.fromkeys(slug for slug, _label in AGENT_LOGO.values()):
+        label = html.escape(_agent_label(slug))
+        chip = agent_icons_html([slug])
+        # A text badge already carries its full label.
+        suffix = f'<span class="legend-label">{label}</span>' if logo_file(slug) else ""
+        items.append(f'<span class="legend-item">{chip}{suffix}</span>')
+    return "".join(items)
+
+
+def repo_legend_html() -> str:
+    """Describe each allowlisted public surface from the shared repository list."""
+    display = {
+        "Socratic-Trade": "Socratic.Trade",
+        "Usage-Monitor": "Usage Monitor",
+        "DealDex": "DealDex.net",
+        "Autorotate": "Autorotate.Codes",
+        "Personal-Site": "Personal Site",
+        "AI-Fleet-Coordinator": "Muster / AI Fleet Coordinator",
+        "BotFleet": "BotFleet.app",
+        "HogHunter": "Hog Hunter",
+        "codecaps": "CodeCaps",
+        "Simple-With-Us": "Simple With Us",
+    }
+    items = []
+    for repo in PUBLIC_REPOS:
+        label = html.escape(display.get(repo, repo))
+        short, css = repo_badge(repo)
+        icon = REPO_APP_ICON.get(repo)
+        if icon:
+            badge = (
+                f'<span class="repo repo-with-icon repo-icon-only {css}" title="{label}">'
+                f'<img class="repo-app-icon" src="{icon}" alt="{label}" width="14" height="14" /></span>'
+            )
+        else:
+            badge = f'<span class="repo {css}">{html.escape(short)}</span>'
+        items.append(f'<span class="legend-item">{badge}<span class="legend-label">{label}</span></span>')
+    return "".join(items)
 
 
 def agent_icons_md(agents: list[str]) -> str:
@@ -919,6 +1005,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Jay's Daily Log</title>
+  <link rel="icon" type="image/png" href="agent-logos/app-afc.png" />
+  <link rel="icon" type="image/webp" href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)" />
   <style>
     :root {{
       --bg: #f4f6f9;
@@ -941,6 +1029,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       --hh: #92400e;
       --clutch: #0e7490;
       --cc: #0f766e;
+      --fl: #155e75;
+      --swu: #4b5563;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -992,6 +1082,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
       gap: 0.2rem;
       flex-shrink: 0;
       min-width: 1.5rem;
+      max-width: 100%;
     }}
     .item-body {{
       flex: 1 1 14rem;
@@ -1023,6 +1114,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     .repo-hh {{ background: var(--hh); }}
     .repo-clutch {{ background: var(--clutch); }}
     .repo-cc {{ background: var(--cc); }}
+    .repo-fl {{ background: var(--fl); }}
+    .repo-swu {{ background: var(--swu); }}
     .repo.repo-with-icon {{
       gap: 0;
       padding: 0.1rem;
@@ -1046,6 +1139,8 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     }}
     .agents {{
       display: inline-flex;
+      flex-wrap: wrap;
+      max-width: 100%;
       align-items: center;
       justify-content: center;
       gap: 0.2rem;
@@ -1108,6 +1203,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     }}
     .legend-item .legend-label {{ color: var(--muted); }}
     .legend .agent {{ width: 1.15rem; height: 1.15rem; }}
+    .agent.agent-text {{ width: auto; min-width: 1.15rem; padding: 0 0.3rem; font-size: 0.65rem; color: var(--text); }}
     @media (prefers-color-scheme: dark) {{
       :root {{
         --bg: #0f172a;
@@ -1134,37 +1230,13 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
     <div class="legend-section" aria-label="Repositories">
       <span class="legend-heading">Repos</span>
       <div class="legend-items">
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic.Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic.Trade" width="14" height="14" /></span><span class="legend-label">Socratic.Trade</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ct" title="Congress.Trade"><img class="repo-app-icon" src="agent-logos/app-ct.png" alt="Congress.Trade" width="14" height="14" /></span><span class="legend-label">Congress.Trade</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-um" title="Usage Monitor"><img class="repo-app-icon" src="agent-logos/app-um.png" alt="Usage Monitor" width="14" height="14" /></span><span class="legend-label">Usage Monitor</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-dd" title="DealDex.net"><img class="repo-app-icon" src="agent-logos/app-dd.png" alt="DealDex.net" width="14" height="14" /></span><span class="legend-label">DealDex.net</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ar" title="Autorotate.Codes"><img class="repo-app-icon" src="agent-logos/app-ar.png" alt="Autorotate.Codes" width="14" height="14" /></span><span class="legend-label">Autorotate.Codes</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cl" title="ContactLogo"><img class="repo-app-icon" src="agent-logos/app-cl.png" alt="ContactLogo" width="14" height="14" /></span><span class="legend-label">ContactLogo</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ps" title="Personal Site"><img class="repo-app-icon" src="agent-logos/app-ps.png" alt="Personal Site" width="14" height="14" /></span><span class="legend-label">Personal Site</span></span>
-        <span class="legend-item"><span class="repo repo-shared">CTS</span><span class="legend-label">congress-trading-shared</span></span>
-        <span class="legend-item"><span class="repo repo-fleet">AFC</span><span class="legend-label">AI Fleet Coordinator</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet.app"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet.app" width="14" height="14" /></span><span class="legend-label">BotFleet.app</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-hh" title="Hog Hunter"><img class="repo-app-icon" src="agent-logos/app-hh.png" alt="Hog Hunter" width="14" height="14" /></span><span class="legend-label">Hog Hunter</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="14" height="14" /></span><span class="legend-label">Clutch</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cc" title="CodeCaps"><img class="repo-app-icon" src="agent-logos/app-cc.png" alt="CodeCaps" width="14" height="14" /></span><span class="legend-label">CodeCaps</span></span>
+        {repo_legend_html()}
       </div>
     </div>
     <div class="legend-section" aria-label="Agents">
       <span class="legend-heading">Agents</span>
       <div class="legend-items">
-        <span class="legend-item"><span class="agent" title="Grok"><img src="agent-logos/grok.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok</span></span>
-        <span class="legend-item"><span class="agent" title="Grok Bot"><img src="agent-logos/grok-bot.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok Bot</span></span>
-        <span class="legend-item"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="" width="12" height="12" /></span><span class="legend-label">Codex</span></span>
-        <span class="legend-item"><span class="agent" title="Claude"><img src="agent-logos/claude.svg" alt="" width="12" height="12" /></span><span class="legend-label">Claude</span></span>
-        <span class="legend-item"><span class="agent" title="Cursor"><img src="agent-logos/cursor.png" alt="" width="12" height="12" /></span><span class="legend-label">Cursor</span></span>
-        <span class="legend-item"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="" width="12" height="12" /></span><span class="legend-label">Antigravity</span></span>
-        <span class="legend-item"><span class="agent" title="Gemini"><img src="agent-logos/gemini.svg" alt="" width="12" height="12" /></span><span class="legend-label">Gemini</span></span>
-        <span class="legend-item"><span class="agent" title="Kimi"><img src="agent-logos/kimi.svg" alt="" width="12" height="12" /></span><span class="legend-label">Kimi</span></span>
-        <span class="legend-item"><span class="agent" title="DeepSeek"><img src="agent-logos/deepseek.svg" alt="" width="12" height="12" /></span><span class="legend-label">DeepSeek</span></span>
-        <span class="legend-item"><span class="agent" title="MiniMax"><img src="agent-logos/minimax.png" alt="" width="12" height="12" /></span><span class="legend-label">MiniMax</span></span>
-        <span class="legend-item"><span class="agent" title="Muse Code"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Code</span></span>
-        <span class="legend-item"><span class="agent" title="Muse Assist"><img src="agent-logos/muse-assist.png" alt="" width="12" height="12" /></span><span class="legend-label">Muse Assist</span></span>
-        <span class="legend-item"><span class="agent" title="Sentry"><img src="agent-logos/sentry.svg" alt="" width="12" height="12" /></span><span class="legend-label">Sentry</span></span>
+        {agent_legend_html()}
       </div>
     </div>
   </div>
@@ -1177,7 +1249,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
   <footer>
     Built by <code>scripts/build-fleet-daily-digest.py</code> in
     <code>AI-Fleet-Coordinator</code>. Agent seat names (Grok/Codex/Claude/…) are
-    shown as logos only. Owner/Jay is not badged (not a coding seat). Subscribe
+    shown with platform marks or text badges. Owner/Jay is not badged (not a coding seat). Subscribe
     to the daily ICS in Apple Calendar (Add Subscription Calendar) or Google
     Calendar (From URL).
 

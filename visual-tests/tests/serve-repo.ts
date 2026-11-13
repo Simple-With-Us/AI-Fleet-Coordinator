@@ -26,6 +26,7 @@ const MIME: Record<string, string> = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
 };

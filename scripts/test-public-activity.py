@@ -75,6 +75,76 @@ def assert_public_artifact_boundary(root: Path, names: tuple[str, ...]) -> None:
 
 
 class PublicActivityTests(unittest.TestCase):
+    def test_current_public_surfaces_keep_visibility_checks(self) -> None:
+        def api(request: object, timeout: int) -> Reply:
+            repo = request.full_url.rsplit("/", 1)[-1]  # type: ignore[attr-defined]
+            return Reply({
+                "private": repo == "FleetLink",
+                "visibility": "private" if repo == "FleetLink" else "public",
+                "owner": {"login": "Simple-With-Us"},
+            })
+
+        with patch("public_activity_repos.urllib.request.urlopen", side_effect=api) as get:
+            selected = select_public_repos(
+                "Simple-With-Us", ["FleetLink", "Simple-With-Us", "Fleet-OPS", "fleetlink-legacy"], "fixture"
+            )
+        self.assertEqual(selected, ["Simple-With-Us"])
+        # Private inventory is rejected before even querying its visibility.
+        self.assertEqual(get.call_count, 2)
+
+    def test_workflows_use_shared_repository_defaults(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for name in ("fleet-activity-site.yml", "agent-calendar.yml"):
+            workflow = (root / ".github" / "workflows" / name).read_text()
+            self.assertNotIn("FLEET_REPOS:", workflow)
+        self.assertEqual(digest.DEFAULT_REPOS, PUBLIC_REPOS)
+        self.assertEqual(agent_calendar.DEFAULT_REPOS, PUBLIC_REPOS)
+
+    def test_live_seats_render_attribution_without_missing_marks(self) -> None:
+        registry = json.loads((Path(__file__).resolve().parents[1] / "fleet-apps.json").read_text())
+        for seat in registry["seats"]:
+            if seat.get("retired"):
+                continue
+            with self.subTest(seat=seat["tag"]):
+                agents, clean = digest.extract_agents_and_clean(f'[{seat["tag"]}] Refresh public feed')
+                self.assertTrue(agents)
+                self.assertEqual(clean, "Refresh public feed")
+                rendered = digest.agent_icons_html(agents)
+                for filename in re.findall(r'agent-logos/([^"<>]+)', rendered):
+                    self.assertTrue((digest.LOGO_DIR / filename).is_file(), filename)
+
+    def test_new_platforms_and_current_envelopes(self) -> None:
+        cases = {
+            "[OPENCODE/ZC] Refresh public feed": ["opencode", "zcode"],
+            "[ECHO/WISE] Refresh public feed": ["instinct"],
+            "[BF-ENGINEER/GB-FIXER] Refresh public feed": ["app-bf", "grok-bot"],
+            "[JET-CHAT] Refresh public feed": ["chatgpt"],
+            "[MiniMax Code/Muse Code/Kimi Code/Z Code] Refresh public feed": ["minimax", "muse", "kimi", "zcode"],
+            "[OPENCODE:\u200a\u200a\u200aHH.1.S\u200a\u200a📁\u200aAFC] Refresh public feed": ["opencode"],
+            "👀[CODEX:\u200a\u200a\u200aHH.1.S] Refresh public feed": ["codex"],
+            "👀[ECHO\u200a\u200a📁\u200aAFC] Refresh public feed": ["instinct"],
+        }
+        for title, expected in cases.items():
+            with self.subTest(title=title):
+                agents, clean = digest.extract_agents_and_clean(title)
+                self.assertEqual(agents, expected)
+                self.assertEqual(clean, "Refresh public feed")
+        fallback = digest.agent_icons_html(["opencode"])
+        self.assertIn("OpenCode</span>", fallback)
+        self.assertNotIn("<img", fallback)
+        for title in ("Fix Clutch connection settings", "Clutch remote sessions", "Support OpenCode and ChatGPT clients"):
+            self.assertEqual(digest.extract_agents_and_clean(title), ([], title))
+
+    def test_legend_and_favicon_use_current_public_sources(self) -> None:
+        rendered = digest.build_html([], datetime(2026, 11, 13, tzinfo=UTC), ZoneInfo("America/Chicago"), "https://example.com")
+        self.assertIn("Muster / AI Fleet Coordinator", rendered)
+        self.assertIn("FleetLink", rendered)
+        self.assertIn("Simple With Us", rendered)
+        self.assertIn('href="agent-logos/app-afc.png"', rendered)
+        self.assertIn('href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)"', rendered)
+        for filename in re.findall(r'(?:src|href)="agent-logos/([^"<>]+)"', rendered):
+            self.assertTrue((digest.LOGO_DIR / filename).is_file(), filename)
+
     def test_built_public_artifacts_contain_only_allowlisted_links(self) -> None:
         """Published snapshots live on published/fleet-activity, not stale main copies."""
         day = date(2026, 9, 26)
@@ -271,6 +341,8 @@ class PublicActivityTests(unittest.TestCase):
             self.assertIn("codex.svg", copied)
             # the legend references every repo icon, so app-dd.png ships too
             self.assertIn("app-dd.png", copied)
+            self.assertIn("app-afc.png", copied)
+            self.assertIn("app-afc-dark.webp", copied)
             # non-image extras and unused seat marks stay out of the published tree
             self.assertNotIn("README.md", copied)
             self.assertNotIn("badges", copied)
@@ -292,11 +364,11 @@ class PublicActivityTests(unittest.TestCase):
         )
         palette = dict(
             re.findall(
-                r"--(st|ct|um|dd|ps|ar|cl|shared|fleet|bf|hh|clutch|cc):\s*(#[0-9a-fA-F]{6})",
+                r"--(st|ct|um|dd|ps|ar|cl|shared|fleet|bf|hh|clutch|cc|fl|swu):\s*(#[0-9a-fA-F]{6})",
                 rendered,
             )
         )
-        self.assertEqual(len(palette), 13)
+        self.assertEqual(len(palette), 15)
         white = lum("#ffffff")
         for name, bg in sorted(palette.items()):
             ratio = (white + 0.05) / (lum(bg) + 0.05)

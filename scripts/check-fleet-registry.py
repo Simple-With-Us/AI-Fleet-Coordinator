@@ -517,9 +517,8 @@ def main() -> int:
             errors.append(f"missing .github/workflows/{wf_name}")
             continue
         lists = re.findall(r"FLEET_REPOS:\s*(\S+)", wf.read_text())
-        if not lists:
-            errors.append(f"{wf_name} missing FLEET_REPOS")
-            continue
+        # No override uses the generators' shared PUBLIC_REPOS default.  An
+        # explicit override must still preserve the publication boundary.
         for lst in lists:
             configured = set(lst.split(","))
             if configured != public_repos:
