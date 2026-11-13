@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +16,7 @@ from simple_tools import peer_actions, peer_actions_cli, secretscan
 
 class PeerActionScanTests(unittest.TestCase):
     def setUp(self):
+        # Synthetic scanner fixture assembled at runtime; never a credential.
         self.unsafe = "gh" + "p_" + "A" * 40
         self.fields = dict(acting_seat="CODEX", requesting_seat="CLAUDE",
                            request_source="message 123", action_taken="reviewed code", result="complete")
@@ -30,6 +32,53 @@ class PeerActionScanTests(unittest.TestCase):
                 self.assertIn(label, caught.exception.message)
                 self.assertNotIn(self.unsafe, caught.exception.message)
                 self.assertNotIn("gh" + "p_", caught.exception.message)
+
+    def test_loaded_credentials_are_refused_in_every_builder_field(self):
+        known = "synthetic loaded credential"
+        for field in ("request_source", "action_taken", "result"):
+            with self.subTest(field=field):
+                fields = dict(self.fields, **{field: known})
+                with self.assertRaises(peer_actions.PeerActionsError) as caught:
+                    peer_actions.build_entry(**fields, known=[known])
+                self.assertEqual(caught.exception.code, "refused_secret")
+                self.assertNotIn(known, caught.exception.message)
+
+    def test_stdio_passes_its_loaded_credentials_before_any_registry_call(self):
+        from simple_tools.mcp.tools import Tools
+
+        known = "synthetic loaded credential"
+        context = SimpleNamespace(seat="CODEX", known=[known])
+        args = dict(requesting_seat="CLAUDE", request=known, action_taken="reviewed code", result="complete")
+        with mock.patch.object(peer_actions, "log_row") as append:
+            with self.assertRaises(peer_actions.PeerActionsError) as caught:
+                Tools._tool_peer_actions_log(context, args)
+        append.assert_not_called()
+        self.assertEqual(caught.exception.code, "refused_secret")
+        self.assertNotIn(known, caught.exception.message)
+
+    def test_cli_refuses_its_loaded_binding_before_dry_run_output(self):
+        known = "synthetic loaded credential"
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {peer_actions.ENV_INFISICAL_TOKEN: known}):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                result = peer_actions_cli.main([
+                    "log", "--acting", "CODEX", "--requesting", "CLAUDE", "--request", known,
+                    "--action", "reviewed code", "--result", "complete", "--dry-run", "--json",
+                ])
+        self.assertEqual(result, 5)
+        self.assertNotIn(known, out.getvalue() + err.getvalue())
+        self.assertEqual(json.loads(out.getvalue())["error"], "refused_secret")
+
+    def test_missing_and_closed_stdin_return_safe_invalid_input(self):
+        closed = io.BytesIO()
+        closed.close()
+        for stream in (None, closed):
+            with self.subTest(stream=stream):
+                out = io.StringIO()
+                with mock.patch.object(sys, "stdin", stream):
+                    result = secretscan.main([], stdout=out)
+                self.assertEqual(result, 2)
+                self.assertEqual(json.loads(out.getvalue())["code"], "invalid_input")
 
     def test_cli_dry_run_cannot_print_an_unscanned_row(self):
         out, err = io.StringIO(), io.StringIO()
