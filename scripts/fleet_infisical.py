@@ -330,7 +330,9 @@ def project_name_for_id(project_id: str, env: Mapping[str, str]) -> str:
             unavailable.append(f"{env_name} or ~/{project_file}")
             continue
     detail = "; unavailable or malformed sources: " + ", ".join(unavailable) if unavailable else ""
-    raise SecretsError("project-token-binding-missing: project id has no configured token binding" + detail)
+    raise SecretsError(
+        "project-token-binding-missing: project id has no configured token binding" + detail
+    )
 
 
 def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> dict[str, str]:
@@ -776,8 +778,11 @@ def _invalid_json_constant(value):
 
 def _decode_json(raw: bytes):
     """Bound external JSON before any consumer observes its graph."""
-    value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object,
-                       parse_constant=_invalid_json_constant)
+    value = json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_unique_json_object,
+        parse_constant=_invalid_json_constant,
+    )
     pending = [(value, 0)]
     nodes = 0
     while pending:
