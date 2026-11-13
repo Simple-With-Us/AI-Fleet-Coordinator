@@ -149,7 +149,7 @@ install_files() {
   cp -p "$SRC/fleet-recall-mcp.py" "$DST/fleet-recall-mcp.py"
   cp -p "$SRC/fleet-rag.py" "$DST/fleet-rag.py"
   chmod +x "$DST/recall" "$DST/recall-tunnel" "$DST/fleet-recall-mcp.py" "$DST/fleet-rag.py"
-  say "installed $DST (fleet_rag/, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
+  say "installed $DST (fleet_rag/, fleet_secrets/, fleet_infisical.py, linear-board/, simple_tools/secretscan.py, recall, recall-tunnel, fleet-recall-mcp.py, fleet-rag.py, state/ cache/ logs/)"
   note "$DST" "installed"
 }
 
