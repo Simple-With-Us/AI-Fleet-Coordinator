@@ -33,7 +33,8 @@ class InstalledFixtureFailureTests(unittest.TestCase):
                 [str(Path(tmp) / "absent-fixture")], cwd=tmp, env={"PATH": os.defpath}
             )
         self.assertEqual(
-            (result.returncode, result.stdout, result.stderr), (127, "", "fixture-executable-missing")
+            (result.returncode, result.stdout, result.stderr),
+            (127, "", "fixture-executable-missing"),
         )
 
 

@@ -104,7 +104,9 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
 def _only_names(raw: object | None) -> list[str] | None:
     if raw is None:
         return None
-    names = list(dict.fromkeys(core.check_name(n.strip()) for n in str(raw).split(",") if n.strip()))
+    names = list(
+        dict.fromkeys(core.check_name(n.strip()) for n in str(raw).split(",") if n.strip())
+    )
     if not names:
         raise UsageError("--only needs at least one key name")
     if len(names) > MAX_RUN_NAMES:
