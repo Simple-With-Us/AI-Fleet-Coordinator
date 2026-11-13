@@ -72,17 +72,20 @@ PY
 python3 scripts/fleet-ops-control.py server eavesdropper-settings server --yes --json < operator-settings-canary.json > operator-settings-canary-receipt.json
 python3 scripts/fleet-ops-control.py server eavesdropper-settings server --plan --json </dev/null > operator-settings-after.json
 python3 - <<'PY'
+import hashlib
 import json
 before = json.load(open("operator-settings-canonical.json"))["eavesdropperSettings"]
 request = json.load(open("operator-settings-canary.json"))
 saved = json.load(open("operator-settings-canary-receipt.json"))["eavesdropperSettings"]
 after = json.load(open("operator-settings-after.json"))["eavesdropperSettings"]
 expected = dict(before["settings"], **request["set"])
+expected_document = {"schemaVersion": 1, "settings": expected}
+expected_revision = hashlib.sha256(json.dumps(expected_document, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 assert saved["ok"] and saved["result"] == "saved"
 assert all(saved[key] is True for key in ("persisted", "readback", "runtimeApplied"))
 assert saved["source"] == after["source"] == "infisical"
 assert saved["settings"] == after["settings"] == expected
-assert saved["revision"] == after["revision"] == saved["reload"]["revision"]
+assert saved["revision"] == after["revision"] == saved["reload"]["revision"] == expected_revision
 assert saved["revision"] != before["revision"]
 print("Verified canonical write, exact reread and matching daemon revision; only channel casing changed")
 PY
