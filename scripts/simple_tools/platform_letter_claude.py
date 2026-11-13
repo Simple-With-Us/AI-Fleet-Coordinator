@@ -443,6 +443,7 @@ def _run_ssh(cmd: list[str], timeout: float) -> Any:
         text=True,
         timeout=timeout,
         check=False,
+        env=PL.child_process_env(),
     )
 
 
