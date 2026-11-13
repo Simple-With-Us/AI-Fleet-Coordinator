@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import re
 import threading
 import urllib.error
@@ -118,10 +117,18 @@ def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
         scoped[FI.ENV_READ_PATHS] = INFISICAL_DSN_PATH
         project = FI.infisical_project_id(scoped, Path(home))
         binding = FI.resolve_token(scoped)
-        values = FI.fetch_project(project, INFISICAL_DSN_PATH, scoped, token=binding,
-                                  names=("SENTRY_FLEET_DSN",), timeout=DSN_FETCH_TIMEOUT)
+        values = FI.fetch_project(
+            project,
+            INFISICAL_DSN_PATH,
+            scoped,
+            token=binding,
+            names=("SENTRY_FLEET_DSN",),
+            timeout=DSN_FETCH_TIMEOUT,
+        )
         return values.get("SENTRY_FLEET_DSN", "").strip()
-    except Exception:  # The optional heartbeat must not fail the listener or expose an external error.
+    except (
+        Exception
+    ):  # The optional heartbeat must not fail the listener or expose an external error.
         return ""
 
 

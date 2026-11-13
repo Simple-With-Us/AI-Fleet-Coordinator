@@ -139,9 +139,14 @@ def _hook_argv(template: str, seat: str, item: dict) -> list[str]:
 def _hook_env(item: dict) -> dict:
     # The seat's routine HMAC key authorizes the read API;  the hook never needs it.
     auth_names = _infisical_reader().AUTH_ENV_VARS
-    env = {k: v for k, v in os.environ.items()
-           if not k.endswith("_ROUTINE_KEY") and k not in auth_names
-           and not k.endswith("_INFISICAL_TOKEN") and k != "FLEET_KNOBS_WRITE_TOKEN"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.endswith("_ROUTINE_KEY")
+        and k not in auth_names
+        and not k.endswith("_INFISICAL_TOKEN")
+        and k != "FLEET_KNOBS_WRITE_TOKEN"
+    }
     key_name = os.environ.get("OPERATOR_ROUTINE_KEY_NAME")
     if key_name:
         env.pop(key_name, None)
@@ -344,8 +349,9 @@ def _read_key(name: str, run=None) -> tuple[str, str]:
         scoped[FI.ENV_READ_PATHS] = path
         project = FI.infisical_project_id(scoped, FI.home_dir(scoped), project_name)
         binding = FI.resolve_token(scoped, project_name=project_name)
-        values = FI.fetch_project(project, path, scoped, token=binding,
-                                  names=(name,), timeout=SECRET_TIMEOUT_SECONDS)
+        values = FI.fetch_project(
+            project, path, scoped, token=binding, names=(name,), timeout=SECRET_TIMEOUT_SECONDS
+        )
     except TimeoutError:
         return "", f"Infisical timed out after {SECRET_TIMEOUT_SECONDS}s"
     except Exception:
