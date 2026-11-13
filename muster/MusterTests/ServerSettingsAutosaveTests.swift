@@ -219,6 +219,26 @@ final class ServerSettingsAutosaveReceiptTests: XCTestCase {
             }
         }
     }
+
+    func test_explicit_subkey_removal_preserves_other_caps_and_requires_absence() throws {
+        let schema = try settingsSchema()
+        var before = settingsBaseline
+        before["seat.CODEX.budget"] = .table(["wakes_per_day": .int(40), "board_per_day": .int(20)])
+        let rows = ServerSettingsBuilder.groups(settings: before, allowlist: schema, editable: true).flatMap(\.rows)
+        let typed = try ServerSettingsBuilder.request(edits: [:], rows: rows, forAutosave: true,
+                                                      removing: ["seat.CODEX.budget.wakes_per_day"]).get()
+        XCTAssertEqual(typed.remove, ["seat.CODEX.budget.wakes_per_day"])
+        XCTAssertEqual(typed.set["seat.CODEX.budget"], .table(["board_per_day": .int(20)]))
+        let request = ServerSettingsSaveRequest(set: typed.set, expectBaseSHA256: settingsRevisionA,
+                                               expectedKeys: Set(before.keys), remove: typed.remove)
+        let input = try XCTUnwrap(request.standardInput)
+        XCTAssertEqual(ServerSettingJSON.parse(String(decoding: input, as: UTF8.self))?.tableEntries?["remove"],
+                       .list([.text("seat.CODEX.budget.wakes_per_day")]))
+        let unchanged = OpsProcessResult(exitCode: 0, stdout: settingsEnvelope(before, revision: settingsRevisionB, result: "saved"), stderr: "")
+        guard case .failed = ServerListenerSettingsSaver.receipt(unchanged, request: request) else {
+            return XCTFail("A still-present limit passed for an unset receipt")
+        }
+    }
 }
 
 @MainActor
@@ -342,6 +362,84 @@ final class ServerSettingsAutosaveStoreTests: XCTestCase {
         await runner.finish(settingsEnvelope(current, revision: settingsRevisionB, result: "saved"))
         await save.value
         XCTAssertEqual(store.saveStates["daemon.coalesce_seconds"], .saved)
+        store.revert(); await clock.advance()
+    }
+
+    func test_failed_queued_read_keeps_rows_and_pending_drafts_visible() async throws {
+        let runner = SettingsSaveRunner(), clock = SettingsDebounceClock()
+        let store = try makeStore(runner, clock)
+        await store.refresh()
+        store.edit("daemon.coalesce_seconds", text: "21")
+        let save = Task { await store.savePending() }
+        await runner.untilWrites(1)
+        await store.refresh()
+        await runner.setRead(#"{"ok":false,"result":"failed","detail":"Read unavailable"}"#)
+        await runner.finish("", exit: 124, timedOut: true)
+        await save.value
+        XCTAssertNotNil(store.refreshProblem)
+        XCTAssertNotNil(store.groups.flatMap(\.rows).first { $0.id == "daemon.coalesce_seconds" })
+        XCTAssertEqual(store.drafts["daemon.coalesce_seconds"], "21")
+        guard case .failed? = store.saveStates["daemon.coalesce_seconds"] else { return XCTFail("Uncertain write was not failed") }
+        await store.savePending()
+        let writes = await runner.writes
+        XCTAssertEqual(writes.count, 1)
+        store.revert(); await clock.advance()
+    }
+
+    func test_runtime_pending_retains_removal_intent_without_replay() async throws {
+        let runner = SettingsSaveRunner(), clock = SettingsDebounceClock()
+        var before = settingsBaseline
+        before["seat.CODEX.budget"] = .table(["wakes_per_day": .int(40), "board_per_day": .int(20)])
+        await runner.setRead(settingsEnvelope(before))
+        let store = try makeStore(runner, clock)
+        await store.refresh()
+        store.removeOverride("seat.CODEX.budget.wakes_per_day")
+        let save = Task { await store.savePending() }
+        await runner.untilWrites(1)
+        before["seat.CODEX.budget"] = .table(["board_per_day": .int(20)])
+        await runner.finish(settingsEnvelope(before, revision: settingsRevisionB, result: "failed",
+            overrides: ["runtimeApplied": .bool(false), "errorCode": .text("runtime_pending")], outerOK: false), exit: 1)
+        await save.value
+        XCTAssertTrue(store.removalDrafts.contains("seat.CODEX.budget.wakes_per_day"))
+        guard case .failed? = store.saveStates["seat.CODEX.budget.wakes_per_day"] else {
+            return XCTFail("A partially applied unset appeared successful")
+        }
+        await clock.advance()
+        await store.savePending()
+        let writes = await runner.writes
+        XCTAssertEqual(writes.count, 1)
+        XCTAssertNotNil(store.groups.flatMap(\.rows).first { $0.id == "seat.CODEX.budget.wakes_per_day" })
+        store.revert(); await clock.advance()
+    }
+
+    func test_unset_is_distinct_from_zero_and_receipts_clear_only_confirmed_intent() async throws {
+        let runner = SettingsSaveRunner(), clock = SettingsDebounceClock()
+        var before = settingsBaseline
+        before["seat.CODEX.budget"] = .table(["wakes_per_day": .int(40), "board_per_day": .int(20)])
+        await runner.setRead(settingsEnvelope(before))
+        let store = try makeStore(runner, clock)
+        await store.refresh()
+        store.removeOverride("seat.CODEX.budget.wakes_per_day")
+        let unset = Task { await store.savePending() }
+        await runner.untilWrites(1)
+        XCTAssertTrue(store.removalDrafts.contains("seat.CODEX.budget.wakes_per_day"))
+        before["seat.CODEX.budget"] = .table(["board_per_day": .int(20)])
+        await runner.finish(settingsEnvelope(before, revision: settingsRevisionB, result: "saved"))
+        await unset.value
+        XCTAssertTrue(store.removalDrafts.isEmpty)
+        XCTAssertEqual(store.saveStates["seat.CODEX.budget.wakes_per_day"], .saved)
+        store.edit("seat.CODEX.budget.wakes_per_day", text: "0")
+        let zero = Task { await store.savePending() }
+        await runner.untilWrites(2)
+        let writes = await runner.writes
+        let input = try XCTUnwrap(writes.last?.standardInput)
+        let document = try XCTUnwrap(ServerSettingJSON.parse(String(decoding: input, as: UTF8.self))?.tableEntries)
+        XCTAssertNil(document["remove"])
+        XCTAssertEqual(document["set"]?.tableEntries?["seat.CODEX.budget"]?.tableEntries?["wakes_per_day"], .int(0))
+        before["seat.CODEX.budget"] = .table(["board_per_day": .int(20), "wakes_per_day": .int(0)])
+        await runner.finish(settingsEnvelope(before, revision: settingsRevisionC, result: "saved"))
+        await zero.value
+        XCTAssertEqual(store.saveStates["seat.CODEX.budget.wakes_per_day"], .saved)
         store.revert(); await clock.advance()
     }
 }
