@@ -311,6 +311,9 @@ _OPERATOR_CHILD_SECRETS = frozenset(
         "FLEET_KNOBS_INFISICAL_TOKEN",
         "FLEET_KNOBS_WRITE_TOKEN",
         "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+        "INFISICAL_TOKEN",
+        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+        "FLEET_RECALL_INFISICAL_TOKEN",
     }
 )
 
@@ -344,6 +347,8 @@ class TitleRequest:
     env: Mapping[str, str]
     shown: str = ""
     held: tuple[str, ...] = ()
+    # Parent-only registry capability; no credential mapping is part of the request.
+    record_thread_link: Callable[[str], dict[str, Any]] | None = field(default=None, repr=False, compare=False)
 
 
 TitleWriter = Callable[[TitleRequest], bool]
@@ -1534,6 +1539,28 @@ def _join(*parts: str) -> str:
     return "  ".join(part for part in parts if part)
 
 
+def _thread_link_recorder(chat: Chat) -> Callable[[str], dict[str, Any]]:
+    """Keep the parent's registry credentials behind one identity-bound in-process update."""
+
+    def record(link: str) -> dict[str, Any]:
+        from . import registry_api
+
+        return registry_api.call(
+            chat.env,
+            "update",
+            {
+                "platform": chat.spec.platform,
+                "location": chat.location,
+                "scope": SCOPE,
+                "session_id": chat.session_id,
+                "thread_link": link,
+            },
+            timeout=2,
+        )
+
+    return record
+
+
 def advice(
     chat: Chat, note: dict[str, Any], current: str, data: Mapping[str, Any], reason: str
 ) -> str:
@@ -1562,6 +1589,7 @@ def advice(
         reason=reason,
         data=data,
         env=child_process_env(chat.env),
+        record_thread_link=_thread_link_recorder(chat),
         shown=str(note.get("shown") or ""),
         held=held(note),
     )
@@ -2304,6 +2332,7 @@ def _write_title(
         reason=reason,
         data=data,
         env=child_process_env(chat.env),
+        record_thread_link=_thread_link_recorder(chat),
         shown=str(note.get("shown") or ""),
         held=held(note),
     )
