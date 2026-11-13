@@ -48,7 +48,7 @@ class Install(unittest.TestCase):
                     "fleet_facts/interfaces.py", "fleet_facts/safety.py", "fleet_facts/runner.py", "fleet_facts/gather.py",
                     "fleet_facts/signing.py", "fleet_facts/publish.py", "fleet_facts/repo.py", "fleet_facts/minimize.py", "fleet_facts/localtime.py",
                     "fleet_knobs/__init__.py", "fleet_knobs/knobs.py", "fleet_knobs/registry.py", "fleet_knobs/source.py",
-                    "simple_tools/__init__.py", "simple_tools/textsafe.py", "simple_tools/secretscan.py"):
+                    "simple_tools/__init__.py", "simple_tools/textsafe.py", "simple_tools/secretscan.py", "fleet_infisical.py"):
             self.assertTrue((self.stable / rel).is_file(), rel)
         self.assertEqual((self.stable / "simple_tools" / "__init__.py").read_text(), "")
         self.assertEqual(sorted(p.name for p in (self.stable / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])

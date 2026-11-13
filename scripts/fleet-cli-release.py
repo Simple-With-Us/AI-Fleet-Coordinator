@@ -132,6 +132,7 @@ EXACT = frozenset(
         "scripts/simple_tools/server/eavesdropper_settings_edit.py",
         "scripts/simple_tools/server/operator_settings.py",
         "scripts/simple_tools/operator_github_state.py",
+        "scripts/fleet_infisical.py",
         "scripts/simple_tools/mcp/tools.json",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok bots).
@@ -247,6 +248,7 @@ TOOL_REQUIRED = frozenset(
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         # Required scoped verifier dependency for new knobs/recall bundles, without the generic CLI.
+        "scripts/fleet_infisical.py",
         *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.

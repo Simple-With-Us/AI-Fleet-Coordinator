@@ -959,6 +959,48 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "transaction_timeout")
 
 
+class SharedClientIntegrationTests(unittest.TestCase):
+    def test_real_shared_verifier_and_named_reader_enforce_the_settings_writer_grant(self):
+        import fleet_infisical
+        project = "00000000-0000-4000-8000-000000000042"
+        own_binding = "st." + secrets.token_urlsafe(32)
+        env = {settings.PROJECT: project, settings.WRITE_BINDING: own_binding}
+        value = settings.document({"daemon.coalesce_seconds": 1.0})
+        permissions = ["read", "write"]
+        calls = []
+        def api(method, path, supplied, body, source, **kwargs):
+            nonlocal value
+            self.assertEqual(supplied, own_binding)
+            self.assertEqual(source["INFISICAL_READ_PATHS"], settings.FOLDER)
+            self.assertEqual(source["INFISICAL_WRITE_PATHS"], settings.FOLDER)
+            calls.append((method, path))
+            if path == "/v2/service-token":
+                return 200, {"workspace": project, "permissions": permissions,
+                             "scopes": [{"environment": "prod", "secretPath": settings.FOLDER}],
+                             "expiresAt": "2099-01-01T00:00:00Z"}
+            if method == "PATCH":
+                value = settings.decode(body["secretValue"])
+                return 200, {}
+            self.assertIn("/raw/OPERATOR_SETTINGS?", path)
+            self.assertIn("recursive=false", path)
+            return 200, {"secret": {"secretKey": settings.KEY, "secretValue": settings.encode(value),
+                                    "type": "shared", "workspace": project, "environment": "prod",
+                                    "secretPath": settings.FOLDER}}
+        with mock.patch.object(fleet_infisical, "_api_json", side_effect=api):
+            store = settings.InfisicalStore(env, writer=True)
+            self.assertEqual(store.read(), value)
+            proposed = settings.document({"daemon.coalesce_seconds": 2.0})
+            store.write(proposed)
+            self.assertEqual(store.read(), proposed)
+            self.assertEqual(sum(method == "PATCH" for method, _ in calls), 1)
+            permissions[:] = ["read"]
+            calls.clear()
+            with self.assertRaises(settings.MutationError) as caught:
+                store.write(proposed)
+            self.assertFalse(caught.exception.sent)
+            self.assertEqual(calls, [("GET", "/v2/service-token")])
+
+
 class RequestContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
