@@ -181,7 +181,10 @@ def add_parsers(
             help="mark as needing the owner",
         )
         q.add_argument(
-            "--summary", metavar="TEXT", default=None, help="optional Summary paragraph for a long note (max 5 sentences, real context beyond the title)"
+            "--summary",
+            metavar="TEXT",
+            default=None,
+            help="optional Summary paragraph for a long note (max 5 sentences, real context beyond the title)",
         )
         q.add_argument(
             "--pr", metavar="N", default=None, help="pull request numbers for the date line"

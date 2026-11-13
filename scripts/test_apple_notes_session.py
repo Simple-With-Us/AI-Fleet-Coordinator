@@ -885,7 +885,9 @@ class SentenceGapMarkupTests(unittest.TestCase):
         p = self.run_script(body, extra_args=("--summary", summary))
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertIn("notes: summary skipped:", p.stderr, "over 20% of the body")
-        p = self.run_script(body, env_extra={"APPLE_NOTES_SUMMARY_MAX_PCT": "25"}, extra_args=("--summary", summary))
+        p = self.run_script(
+            body, env_extra={"APPLE_NOTES_SUMMARY_MAX_PCT": "25"}, extra_args=("--summary", summary)
+        )
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertIn("<b>Summary:</b>", p.stdout, "fits 25% of the body: " + p.stderr[-200:])
 
@@ -914,7 +916,10 @@ class SentenceGapMarkupTests(unittest.TestCase):
         #  the title's is a restatement.  The class title is "[AFC, MM] Gap probe".
         p = self.run_script(
             self.LONG_BODY,
-            extra_args=("--summary", "The gap probe ran clean overnight:  every seat answered inside the window and the drift table is empty."),
+            extra_args=(
+                "--summary",
+                "The gap probe ran clean overnight:  every seat answered inside the window and the drift table is empty.",
+            ),
         )
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertIn("<b>Summary:</b>", p.stdout, p.stderr[-200:])
