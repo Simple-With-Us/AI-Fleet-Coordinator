@@ -19,6 +19,7 @@ import tempfile
 import unittest
 import urllib.error
 import urllib.request
+import uuid
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
@@ -32,7 +33,7 @@ with (
     tempfile.TemporaryDirectory() as fixture_home,
     mock.patch.object(pathlib.Path, "home", return_value=pathlib.Path(fixture_home)),
     mock.patch.dict(
-        os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": "00000000-0000-4000-8000-000000000099"}
+        os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())}
     ),
 ):
     spec.loader.exec_module(psf)
@@ -173,6 +174,37 @@ class TestMapping(Base):
 
 
 class TestGate(Base):
+    def test_invalid_expiry_refuses_dry_run_and_apply_before_any_copy(self):
+        original_metadata = self.fake.default_metadata
+        missing = object()
+        roles = ("AFC read", "FleetOPS read", "FleetOPS write")
+        for role, bad_token in zip(roles, (*self.read_tokens.values(), self.write_token)):
+            for expiry in (
+                missing,
+                None,
+                "",
+                "not-a-timestamp",
+                "2000-01-01T00:00:00Z",
+                "2099-01-01T00:00:00",
+            ):
+                for args in ((), ("--apply",)):
+                    with self.subTest(role=role, expiry=expiry, args=args):
+                        def metadata(token):
+                            data = original_metadata(token)
+                            if token == bad_token:
+                                if expiry is missing:
+                                    data.pop("expiresAt")
+                                else:
+                                    data["expiresAt"] = expiry
+                            return data
+
+                        with mock.patch.object(self.fake, "default_metadata", side_effect=metadata):
+                            code, out = self.run_main(*args)
+                        self.assertEqual(code, 1)
+                        self.assertIn("token-expired-or-invalid", out)
+                        self.assertEqual(self.fake.reads, [])
+                        self.assertEqual(self.fake.upserts, [])
+
     def test_full_coverage_passes(self):
         reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
         self.assertTrue(psf.check_scoped_tokens(reads, self.write_token))
@@ -471,8 +503,13 @@ class TestApply(Base):
     def test_values_are_not_taken_from_the_environment(self):
         # A same-named variable in the shell must never be copied in place of the source.
         seeded(self.fake)
-        _sws, _spath, sname, dpath, dname = psf.MAPPING[4]
+        sws, spath, sname, dpath, dname = psf.MAPPING[4]
         os.environ[sname] = "VALUE-shell-shadow"
+        qualified = (
+            f"INFISICAL_SCOPED_{sws.replace('-', '_').upper()}_"
+            f"{spath.strip('/').replace('/', '_').upper() or 'ROOT'}_{sname}"
+        )
+        os.environ[qualified] = "VALUE-qualified-shell-shadow"
         code, out = self.run_main("--apply")
         self.assertIsNone(code)
         self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-" + sname)

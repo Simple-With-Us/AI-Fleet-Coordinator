@@ -365,7 +365,7 @@ def parse_scopes(data):
 
 
 def check_token_scope(st, project, needed, label, permissions):
-    """Fail-safe gate: the token proves its exact project, grant, and folder set."""
+    """Fail-safe gate: exact project, grant, folder set and finite future expiry."""
     try:
         data = token_data(st)
     except urllib.error.HTTPError as e:
@@ -395,6 +395,19 @@ def check_token_scope(st, project, needed, label, permissions):
     if granted != needed:
         print(
             f"GATE: {label} folder scope differs from the exact required set.\u00a0 Aborting; broadening scope is the owner's call."
+        )
+        return False
+    try:
+        FI.validate_service_metadata(data, project, {path for _, path in needed}, permissions)
+    except FI.SecretsError as error:
+        reason = (
+            "token-expired-or-invalid"
+            if error.message == "token-expired-or-invalid"
+            else "token-scope-mismatch"
+        )
+        print(
+            f"GATE: {label} {reason}; an exact scoped grant with a finite future expiry is required.\u00a0 "
+            "Aborting (fail safe)."
         )
         return False
     print(f"GATE: {label} covers all {len(needed)} required paths.")
