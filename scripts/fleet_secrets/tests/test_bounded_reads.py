@@ -215,6 +215,37 @@ class BoundedReadTests(unittest.TestCase):
             self.fetch(timeout=0.2)
         child.kill.assert_called()
 
+    def test_interruption_keeps_its_type_and_surfaces_combined_cleanup_failure(self):
+        for interrupt in (KeyboardInterrupt(), SystemExit(7)):
+            for failed in ("kill", "wait"):
+                with self.subTest(interrupt=type(interrupt).__name__, failed=failed):
+                    child = mock.Mock(stdin=io.BytesIO(), stdout=io.BytesIO())
+                    child.poll.return_value = None
+                    if failed == "kill":
+                        child.kill.side_effect = OSError("private-os-detail")
+                    else:
+                        child.wait.side_effect = subprocess.TimeoutExpired("owned child", 0)
+                    with (
+                        mock.patch.object(core.subprocess, "Popen", return_value=child),
+                        mock.patch.object(core, "_read_worker_pipes", side_effect=interrupt),
+                        self.assertRaises(type(interrupt)) as caught,
+                    ):
+                        self.fetch(timeout=0.2)
+                    self.assertIs(caught.exception, interrupt)
+                    cause = caught.exception.__cause__
+                    self.assertIsInstance(cause, core.SecretsError)
+                    self.assertEqual(str(cause), "bounded-read-cleanup-failed")
+                    self.assertEqual(cause.failure_kind, "unavailable")
+                    self.assertNotIn("private-os-detail", str(cause))
+
+    def test_local_result_validation_cannot_return_success_after_deadline(self):
+        with (
+            mock.patch.object(core, "_bounded_read_request", return_value={"A_KEY": "fixture"}),
+            mock.patch.object(core, "reject_unresolved", side_effect=lambda *_: time.sleep(0.08)),
+            self.assertRaisesRegex(core.SecretsError, "bounded-read-timeout"),
+        ):
+            self.fetch(timeout=0.05)
+
     def test_invalid_input_is_refused_before_any_worker_or_provider(self):
         for timeout in (0, -1, float("inf"), True):
             with self.subTest(timeout=timeout), self.assertRaises(core.UsageError):
