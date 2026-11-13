@@ -478,13 +478,12 @@ class WorkflowPrElevation(unittest.TestCase):
         self.assertEqual(len(minter.calls), 1)
 
     def test_update_branch_refuses_unverifiable_base_tip(self):
-        from git_relay.github_client import RelayGitHubError
-
         files = [{"filename": f"src/f{i}.py"} for i in range(300)]
         client, minter, handle, args = self.update_branch_trees(files)
         client.replies[1] = {"object": {"sha": "main"}}
-        with self.assertRaises((Refused, RelayGitHubError)):
+        with self.assertRaises(Refused) as raised:
             handle.run("wf_update_branch", args)
+        self.assertEqual(str(raised.exception), "PR base tip unverifiable")
         self.assertNotIn("PUT", [c[0] for c in client.calls])
 
     def test_update_branch_trees_fallback_refuses_malformed_workflow_row(self):
