@@ -685,7 +685,7 @@ def split_excerpt(excerpt: str) -> tuple[str, str]:
     trusted text is read (`trusted_text`).  Text after the header's arrow names an addressee, so it
     stays with the body;  the rest of the header is the sender's."""
     body = trusted_text(excerpt).lstrip()
-    header = re.match(r"(?:\U0001F440\s*)?\[([^\]\n]*)\]", body)
+    header = re.match(r"(?:(?:\U0001F440|:eyes:)\s*)?\[([^\]\n]*)\]", body)
     if header is None or not _is_post_header(header.group(1)):
         return "", body
     sender, _, addressee = header.group(1).partition("→")
