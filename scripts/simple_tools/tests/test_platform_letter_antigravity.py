@@ -552,10 +552,11 @@ class QuickAnswerTests(Base):
         os.chmod(self.entry, 0o755)
         Path(package, "__init__.py").write_text("")
         Path(package, "platform_letter.py").write_text(STUB_LIBRARY)
+        shutil.copy(SCRIPTS / "simple_tools" / "platform_letter_bootstrap.py", package)
         self.imported = os.path.join(self.checkout, "imported")
 
     def child_env(self) -> dict[str, str]:
-        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUTF8": "1"}
+        return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUTF8": "1", "HOME": self.tmp.name}
 
     def run_entry(self, payload: str, *argv: str) -> subprocess.CompletedProcess:
         words = argv or ("--platform", "antigravity")
