@@ -76,3 +76,24 @@ class InstalledRuntimeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 installer.install(SCRIPTS.parent,dest,"1"*40)
             self.assertEqual(unknown.read_text(),"preserve")
+
+    def test_backup_maintenance_failure_restores_complete_active_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            dest=root/"installed"
+            installer.install(SCRIPTS.parent,dest,"0"*40)
+            manifest=(dest/"manifest.json").read_bytes()
+            before={p.relative_to(dest).as_posix():(p.read_bytes(),stat.S_IMODE(p.stat().st_mode)) for p in dest.rglob("*") if p.is_file()}
+            chmod=os.chmod
+            def fail_backup(path,mode,*args,**kwargs):
+                if Path(path).name.startswith("installed.backup-"):
+                    raise PermissionError("fixture backup maintenance failure")
+                return chmod(path,mode,*args,**kwargs)
+            with mock.patch.object(installer.os,"chmod",side_effect=fail_backup),self.assertRaises(PermissionError):
+                installer.install(SCRIPTS.parent,dest,"1"*40)
+            self.assertTrue(dest.is_dir())
+            self.assertEqual((dest/"manifest.json").read_bytes(),manifest)
+            self.assertEqual({p.relative_to(dest).as_posix():(p.read_bytes(),stat.S_IMODE(p.stat().st_mode)) for p in dest.rglob("*") if p.is_file()},before)
+            self.assertTrue(os.access(dest/"scripts/code-main-keeper.sh",os.X_OK))
+            self.assertFalse(list(root.glob(".code-mirrors-stage-*")))
+            self.assertFalse(list(root.glob("installed.backup-*")))

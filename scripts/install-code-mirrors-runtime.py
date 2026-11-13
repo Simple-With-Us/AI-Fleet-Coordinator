@@ -98,9 +98,10 @@ def install(source, destination, source_commit):
         if destination.exists():
             backup = destination.with_name(destination.name + ".backup-" + uuid.uuid4().hex)
             os.rename(destination, backup)
-            for root, dirs, files in os.walk(backup):
-                os.chmod(root, 0o700)
         try:
+            if backup is not None:
+                for root, dirs, files in os.walk(backup):
+                    os.chmod(root, 0o700)
             os.rename(stage, destination)
         except BaseException:
             if backup is not None:
