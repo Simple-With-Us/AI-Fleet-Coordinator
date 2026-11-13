@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
+
 
 class IsolatedCommandTests(unittest.TestCase):
     def test_coding_memory_installer_payload_can_run_its_delegate_in_isolation(self):
@@ -40,6 +42,12 @@ class IsolatedCommandTests(unittest.TestCase):
             self.assertEqual(installed.returncode, 0, installed.stderr)
             for name in ("fleet_infisical.py", "fleet_infisical_cli.py"):
                 self.assertEqual((settings / name).read_bytes(), (scripts / name).read_bytes())
+            for name in ("__init__.py", "operator_github_state.py"):
+                self.assertEqual(
+                    (settings / "simple_tools" / name).read_bytes(),
+                    (scripts / "simple_tools" / name).read_bytes(),
+                )
+            assert_installed_writer(self, settings, root)
             result = subprocess.run(
                 [sys.executable, "-I", str(settings / "linux-entrypoint.py"), "--help"],
                 cwd=hostile,

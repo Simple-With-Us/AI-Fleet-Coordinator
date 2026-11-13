@@ -125,15 +125,20 @@ def _direct_values(env: Mapping[str, str]) -> dict[str, str]:
         try:
             import fleet_infisical as FI
 
+            expected_reader = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                           "fleet_infisical.py")
+            if os.path.realpath(getattr(FI, "__file__", "")) != expected_reader:
+                raise ImportError("foreign shared reader")
             scoped_env = dict(env)
             scoped_env[FI.ENV_READ_PATHS] = REGISTRY_PATH
-            values = FI.fetch_project(
+            values = FI.bounded_fetch_project(
                 REGISTRY_PROJECT_ID,
                 REGISTRY_PATH,
                 scoped_env,
                 token=token,
                 names=(URL_ENV, KEY_VAR),
                 timeout=REGISTRY_FETCH_TIMEOUT,
+                max_output_bytes=8192,
             )
             url, key = values.get(URL_ENV, ""), values.get(KEY_VAR, "")
             missing = [name for name in (URL_ENV, KEY_VAR) if not values.get(name)]

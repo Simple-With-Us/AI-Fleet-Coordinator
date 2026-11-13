@@ -1,5 +1,6 @@
 """The interactive registry reader cannot inherit a different consumer's grant."""
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +12,14 @@ import unittest
 from unittest import mock
 
 from simple_tools import registry_api as API
+from fleet_knobs.tests._fake import ScopedReadAPI
+from fleet_knobs.source import PROJECT_ID as SHARED_PROJECT_ID
+
+
+class RegistryProjectContractTests(unittest.TestCase):
+    def test_registry_project_metadata_cannot_drift_from_the_shared_catalog(self):
+        # The minimal listener payload excludes knobs; enforce metadata parity in CI.
+        self.assertEqual(API.REGISTRY_PROJECT_ID, SHARED_PROJECT_ID)
 
 
 class DirectRegistryTests(unittest.TestCase):
@@ -27,7 +36,9 @@ class DirectRegistryTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
         self.fetch = mock.Mock(return_value={API.URL_ENV: "https://registry.example.test",
                                             API.KEY_VAR: "synthetic-signing-key-" * 3})
-        provider = types.SimpleNamespace(ENV_READ_PATHS="INFISICAL_READ_PATHS", fetch_project=self.fetch)
+        provider = types.SimpleNamespace(ENV_READ_PATHS="INFISICAL_READ_PATHS",
+                                         __file__=str(Path(API.__file__).resolve().parents[1] / "fleet_infisical.py"),
+                                         bounded_fetch_project=self.fetch)
         self.modules = mock.patch.dict(sys.modules, {"fleet_infisical": provider,
                                                      "fleet_knobs": None, "fleet_knobs.source": None})
         self.modules.start()
@@ -46,6 +57,14 @@ class DirectRegistryTests(unittest.TestCase):
         self.assertEqual(kwargs["token"], os.environ[API.TOKEN_ENV])
         self.assertEqual(set(kwargs["names"]), {API.URL_ENV, API.KEY_VAR})
         self.assertEqual(kwargs["timeout"], 3.0)
+        self.assertEqual(kwargs["max_output_bytes"], 8192)
+
+    def test_foreign_preloaded_reader_receives_neither_binding_nor_values(self):
+        foreign = types.SimpleNamespace(__file__="/foreign/fleet_infisical.py",
+                                        bounded_fetch_project=self.fetch)
+        with mock.patch.dict(sys.modules, {"fleet_infisical": foreign}):
+            self.assertEqual(API.base_url(), "")
+        self.fetch.assert_not_called()
 
     def test_missing_binding_cannot_fall_back_to_knobs_or_cached_key(self):
         os.environ[API.TOKEN_ENV] = ""
@@ -64,31 +83,26 @@ class DirectRegistryTests(unittest.TestCase):
             shutil.copyfile(source / "simple_tools/registry_api.py", package / "registry_api.py")
             shutil.copyfile(source / "fleet_infisical.py", root / "fleet_infisical.py")
             program = r'''
-import secrets, sys
+import json, sys
 sys.path.insert(0, sys.argv[1])
 sys.modules['fleet_knobs'] = None
 sys.modules['fleet_knobs.source'] = None
-import fleet_infisical as FI
 from simple_tools import registry_api as API
-seen = []
-def read(method, path, token, body, env, **options):
-    seen.append(path)
-    if path == '/v2/service-token':
-        return 200, dict(workspace=API.REGISTRY_PROJECT_ID, permissions=['read'],
-            scopes=[dict(environment='prod', secretPath=API.REGISTRY_PATH)], expiresAt='2099-01-01T00:00:00Z')
-    name = API.URL_ENV if '/raw/' + API.URL_ENV + '?' in path else API.KEY_VAR
-    value = 'https://registry.example.test' if name == API.URL_ENV else 'synthetic-key-' * 4
-    return 200, dict(secret=dict(secretKey=name, secretValue=value, type='shared',
-        workspace=API.REGISTRY_PROJECT_ID, environment='prod', secretPath=API.REGISTRY_PATH))
-FI._api_json = read
-answer = API._direct_values({API.TOKEN_ENV: 'st.' + secrets.token_urlsafe(32)})
+config = json.load(sys.stdin)
+env = {API.TOKEN_ENV: config['token'], 'FLEET_SECRETS_API': config['api']}
+answer = API._direct_values(env)
 assert answer[API.URL_ENV] == 'https://registry.example.test'
-assert len(seen) == 3
-assert all(any('/raw/' + name + '?' in path for path in seen[1:]) for name in (API.URL_ENV, API.KEY_VAR))
+assert answer[API.KEY_VAR] == 'synthetic-key-' * 4
+assert API._direct_values(env) == answer
 print('listener-reader-ok')
 '''
-            result = subprocess.run([sys.executable, "-I", "-B", "-c", program, str(root)],
-                                    capture_output=True, text=True, timeout=10, env={"PATH": os.defpath})
+            with ScopedReadAPI({API.URL_ENV: "https://registry.example.test", API.KEY_VAR: "synthetic-key-" * 4},
+                               project=API.REGISTRY_PROJECT_ID, path=API.REGISTRY_PATH) as api:
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", program, str(root)],
+                                        input=json.dumps({"token": api.token, "api": api.env["FLEET_SECRETS_API"]}),
+                                        capture_output=True, text=True, timeout=10, env={"PATH": os.defpath})
+                self.assertEqual(len(api.requests), 3, result.stderr)
+                self.assertNotIn(api.token, result.stdout + result.stderr)
         self.assertEqual((result.returncode, result.stdout.strip()), (0, "listener-reader-ok"), result.stderr)
 
     def test_provider_failure_is_cached_and_payload_is_not_reported(self):

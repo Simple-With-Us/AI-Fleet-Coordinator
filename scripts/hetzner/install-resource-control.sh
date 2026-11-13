@@ -169,6 +169,10 @@ def install(source_directory):
             raise RuntimeError('the broker secrets package is incomplete')
         for name in names:
             payload['fleet_secrets/' + name] = read_source(package, name)
+        ledger = os.open('simple_tools', DIRECTORY_FLAGS, dir_fd=source)
+        stack.callback(os.close, ledger)
+        for name in ('__init__.py', 'operator_github_state.py'):
+            payload['simple_tools/' + name] = read_source(ledger, name)
         hetzner = os.open('hetzner', DIRECTORY_FLAGS, dir_fd=source)
         stack.callback(os.close, hetzner)
         for name in ('fleet_coding_memory.py', 'coding_resources.py'):
@@ -184,7 +188,7 @@ def install(source_directory):
             stack.callback(os.close, parent)
         os.fchmod(parent, 0o755)
         packages = {}
-        for name in ('fleet_secrets', 'hetzner'):
+        for name in ('fleet_secrets', 'hetzner', 'simple_tools'):
             packages[name] = open_directory(parent, name, owner)
             stack.callback(os.close, packages[name])
             os.fchmod(packages[name], 0o755)

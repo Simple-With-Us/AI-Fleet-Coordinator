@@ -6,6 +6,7 @@ import os
 import sqlite3
 import stat
 import time
+import uuid
 from pathlib import Path
 
 
@@ -108,20 +109,8 @@ class NonceLedger:
         except FileNotFoundError:
             if not create:
                 return False
-            fd = os.open(
-                self.INITIALIZED_NAME,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
-                0o600,
-                dir_fd=parent,
-            )
-            try:
-                if os.write(fd, self.INITIALIZED_BYTES) != len(self.INITIALIZED_BYTES):
-                    raise LedgerError("replay storage unavailable")
-                os.fsync(fd)
-                os.fsync(parent)
-            finally:
-                os.close(fd)
-            return True
+            self._create_retained_marker(parent)
+            return self._retained_marker(parent)
         try:
             info = os.fstat(fd)
             if (
@@ -133,6 +122,33 @@ class NonceLedger:
             return True
         finally:
             os.close(fd)
+
+    def _create_retained_marker(self, parent):
+        """Publish complete evidence atomically without replacing existing history."""
+        temporary = ".retained-initialized-" + uuid.uuid4().hex + ".tmp"
+        fd = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+        )
+        try:
+            if os.write(fd, self.INITIALIZED_BYTES) != len(self.INITIALIZED_BYTES):
+                raise LedgerError("replay storage unavailable")
+            os.fsync(fd)
+            try:
+                # Atomic no-overwrite publication; a concurrent winner is validated
+                # by the caller, never repaired or replaced.
+                os.link(
+                    temporary,
+                    self.INITIALIZED_NAME,
+                    src_dir_fd=parent,
+                    dst_dir_fd=parent,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                pass
+        finally:
+            os.close(fd)
+            os.unlink(temporary, dir_fd=parent)
+            os.fsync(parent)
 
     def _private_parent(self, *, create=False):
         """The retained journal never traverses a symlink or an untrusted writable ancestor."""
@@ -416,7 +432,7 @@ class NonceLedger:
             raise LedgerError("replay storage unavailable") from None
 
     def release(self, seat, nonce):
-        """Free a nonce after a definite refusal, so a corrected request may retry."""
+        """Legacy release; retained identities are immutable even after definite refusal."""
         if self.retain_unsettled:
             raise LedgerError("retained replay rows cannot be released")
         try:
