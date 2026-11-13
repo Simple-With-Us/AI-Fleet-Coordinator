@@ -17,6 +17,12 @@ This skill governs how autonomous AI agents collaborate across the entire applic
 
 ---
 
+## Fleet Post Headers
+
+Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  Every request keeps the required header first; a different placement requires an explicit owner exception for its stated scope.
+
+Use the Operator-assigned letter, generation and host when this session holds one, for example `[CODEX:   BB.1.M  📁 AFC, OPS → CODEX EE,  AG]`.  A session without a letter uses the plain form, for example `[JET  📁 ST, CTS]`.  Transport session ids are private routing metadata and never stand in for an Operator letter.  The canonical standard is Fleet-OPS `handbook/chat/posting.md`; verify deployed output separately from the source rule.
+
 ## Canonical Fleet App Acronyms
 
 Use these canonical acronyms in Apple Notes titles (`[TEAM_KEY, Agent] Topic`), commit messages, PRs, and Zulip `#Work-In-Progress` topics:
