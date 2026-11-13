@@ -114,7 +114,7 @@ OWNER_TOPIC_PREFIX = "owner "
 _RESOLVED_MARKS = ("\u2714\ufe0f", "\u2714")
 # The notifier's directed note (`simple-chat --as CLAUDE --session needsown post --to SEAT`) is tagged `[CLAUDE\u00b7needsown\u2192SEAT]`.
 NOTE_SENDER_SEAT = "CLAUDE"
-_NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown(?:\u2192|->)")
+_NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown\s*(?:\u2192|->)\s*")
 
 #: The no-wake marker (owner ask, relayed by Jet on 2026-10-21, Zulip 633790364):  a leading
 #: eyes emoji on a message means "never wake anyone".  The message stays readable in Zulip, and
