@@ -935,6 +935,16 @@ struct SeatActivitySection: Identifiable, Equatable, Sendable {
     let rows: [SeatActivityRow]
 
     var id: String { kind.id }
+
+    /// Preserves holder classification within a family section so server-held seats never
+    /// render under Mac-specific table column headings.
+    var groups: [SeatActivityGroup] {
+        SeatPlaceGroup.allCases.compactMap { place in
+            let match = rows.filter { $0.place.group == place }
+            guard !match.isEmpty else { return nil }
+            return SeatActivityGroup(kind: place, rows: match)
+        }
+    }
 }
 
 /// One group of rows,  under one heading.

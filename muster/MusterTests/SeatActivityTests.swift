@@ -1268,7 +1268,7 @@ final class SeatActivityTests: XCTestCase {
             place: .mac,
             openSessions: .known(2),
             sessions: [deadClaude, liveCodex, liveClaude],
-            listener: .known(.connected(pending: 0)),
+            listener: .known(.connected(jobs: 0)),
             lastPost: .known(.none)
         )
         let gbRow = SeatActivityRow(
@@ -1282,7 +1282,7 @@ final class SeatActivityTests: XCTestCase {
             seat: "BF-ONE",
             place: .noEavesdropper,
             openSessions: .known(0),
-            listener: .known(.connected(pending: 0)),
+            listener: .known(.connected(jobs: 0)),
             lastPost: .known(.post(at: Date(timeIntervalSince1970: 100), channel: "Work-In-Progress", label: "#Work-In-Progress > demo", isAtQuota: false))
         )
 

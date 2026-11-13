@@ -591,7 +591,7 @@ struct ServerStatusPanel: View {
 
     private func coolifySection(_ reading: ServerStatusReading) -> some View {
         let containers = reading.coolifyProblemsFirst.filter { resource in
-            (!problemsOnly || resource.resourceStatus != .running)
+            (!problemsOnly || resource.signalText() != nil)
                 && matchesSearch(resource.name, resource.container)
         }
         return VStack(alignment: .leading, spacing: 8) {
@@ -711,6 +711,11 @@ struct ServerStatusPanel: View {
             collapsibleSectionHeader("processes", "Top Processes", nil, processesDetail(reading))
             if !collapsedSections.contains("processes") {
                 collectionNote(reading.collection?.processes)
+                if problemsOnly {
+                    Text("Top busy processes are not health-checked.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if reading.processes.isEmpty {
                     Text("The report names no processes.")
                         .font(.callout)
@@ -775,6 +780,7 @@ struct ServerStatusPanel: View {
     private func configSection(_ reading: ServerStatusReading) -> some View {
         let drifted = reading.driftedFiles.filter { matchesSearch($0.fileName, $0.path) }
         let noticed: [WatchedFile] = problemsOnly ? [] : reading.noticedFiles.filter { matchesSearch($0.fileName, $0.path) }
+        let removedCheckouts: [ServerRemovedCheckout] = problemsOnly ? [] : reading.removedCheckouts.filter { matchesSearch($0.text) }
         return VStack(alignment: .leading, spacing: 8) {
             collapsibleSectionHeader(
                 "files",
@@ -794,7 +800,7 @@ struct ServerStatusPanel: View {
                 } else {
                     collectionNote(reading.collection?.files)
                 }
-                ForEach(reading.removedCheckouts) { checkout in
+                ForEach(removedCheckouts) { checkout in
                     Text(checkout.text)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -802,6 +808,12 @@ struct ServerStatusPanel: View {
                 }
                 if reading.files.isEmpty {
                     Text("The report watches no files.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if problemsOnly && reading.driftedFiles.isEmpty {
+                    Text(reading.noticedFiles.isEmpty
+                        ? "No watched file changed since the last report."
+                        : "No drifted watched files (informational changes hidden by Problems Only).")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else if reading.driftedFiles.isEmpty {

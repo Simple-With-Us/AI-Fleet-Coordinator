@@ -92,9 +92,12 @@ struct SeatActivityView: View {
                                 }
                             }
                         }
+                        let hasFamilyServerGroup = grouping == .byFamily && model.rows.contains { $0.place.group == .server }
                         if (grouping == .byFamily || model.groups.allSatisfy({ $0.kind != .server })),
                            let note = model.otherServerSeatsNote {
-                            groupHeading(.server)
+                            if !hasFamilyServerGroup {
+                                groupHeading(.server)
+                            }
                             Text(SeatActivityText.display(note))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -430,9 +433,17 @@ struct SeatActivityView: View {
                 }
             }
             if !isCollapsed {
-                tableHeader(nil)
-                ForEach(section.rows) { row in
-                    rowView(row, readAt: model.readAt, now: now)
+                ForEach(section.groups) { subGroup in
+                    if section.groups.count > 1 || subGroup.kind == .server {
+                        Text(subGroup.kind.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 2)
+                    }
+                    tableHeader(subGroup.kind)
+                    ForEach(subGroup.rows) { row in
+                        rowView(row, readAt: model.readAt, now: now)
+                    }
                 }
             }
         }

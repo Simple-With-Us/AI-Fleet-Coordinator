@@ -413,7 +413,9 @@ struct OperationsView: View {
             sectionHeader(
                 "Actions",
                 state: nil,
-                detail: auditExpanded ? "all loaded rows, newest first" : "last \(OpsAuditLog.defaultLimit) rows, newest first"
+                detail: auditExpanded
+                    ? "all parsed rows in recent 256 KB tail, newest first"
+                    : "last \(OpsAuditLog.defaultLimit) rows of recent 256 KB tail, newest first"
             )
             if let audit {
                 if let problem = audit.problem {
@@ -443,19 +445,21 @@ struct OperationsView: View {
                         }
                     } else {
                         GridRowHeader(labels: ["Time", "Machine", "Verb", "Target", "Result"])
-                        ForEach(visible) { entry in
-                            auditRow(entry)
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(visible) { entry in
+                                auditRow(entry)
+                            }
                         }
                     }
                     if !auditExpanded && audit.moreCount > 0 {
-                        Button("Show All \(audit.totalParsed) Rows (\(audit.moreCount) More)") {
+                        Button("Show All \(audit.totalParsed) Recent Tail Rows (\(audit.moreCount) More)") {
                             auditExpanded = true
                             Task { await load(collectAgents: false) }
                         }
                         .font(.caption.weight(.medium))
                         .buttonStyle(.link)
                     } else if auditExpanded && audit.totalParsed > OpsAuditLog.defaultLimit {
-                        Button("Show First \(OpsAuditLog.defaultLimit)") {
+                        Button("Show First \(OpsAuditLog.defaultLimit) Rows") {
                             auditExpanded = false
                             Task { await load(collectAgents: false) }
                         }
@@ -499,7 +503,7 @@ struct OperationsView: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            Text("Loaded \(audit.entries.count) of \(audit.totalParsed) rows")
+            Text("Loaded \(audit.entries.count) of \(audit.totalParsed) rows from recent 256 KB tail")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

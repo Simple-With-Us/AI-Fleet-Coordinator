@@ -1191,36 +1191,64 @@ enum OperatorPanelPresentation {
             default: return a.offset < b.offset
             }
         }
-        let allRows = ordered.map { index, session in
-            let cleanedIssues = session.issues
+        var routerCache: [String: OperatorCell] = [:]
+        func cachedRouter(for seat: String) -> OperatorCell {
+            if let cached = routerCache[seat] { return cached }
+            let computed = routerCell(seat: seat, status: status, now: now)
+            routerCache[seat] = computed
+            return computed
+        }
+        func cleanedIssues(for session: OperatorSession) -> [String] {
+            session.issues
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .map { $0.contains(" ") ? $0 : OperatorPanelText.humanized($0) }
-            return OperatorSeatRow(
+        }
+
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchingSessions: [(offset: Int, element: OperatorSession)]
+        if filter == .all && needle.isEmpty {
+            matchingSessions = ordered
+        } else {
+            matchingSessions = ordered.filter { _, session in
+                let state = stateCell(session.status)
+                let wake = wakeCell(session.wake)
+                let router = cachedRouter(for: session.seat)
+                let issues = session.issues.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                let hasProblem = (state.tone == .warning) || (wake.tone == .warning) || (router.tone == .warning) || issues
+                switch filter {
+                case .all: break
+                case .live: guard state.text == "Live" else { return false }
+                case .problems: guard hasProblem else { return false }
+                }
+                guard !needle.isEmpty else { return true }
+                let fields = [
+                    session.seat,
+                    letterText(letter: session.letter, generation: session.generation),
+                    platformLabel(session.platform),
+                    hostLabel(code: session.hostCode, host: session.host),
+                    state.text,
+                    wake.text,
+                    router.text,
+                ] + cleanedIssues(for: session)
+                return fields.contains { $0.localizedCaseInsensitiveContains(needle) }
+            }
+        }
+        let visibleSessions = limit < Int.max ? Array(matchingSessions.prefix(max(0, limit))) : matchingSessions
+        let rows = visibleSessions.map { index, session in
+            OperatorSeatRow(
                 id: "\(index)|\(session.seat)|\(session.letter ?? "-")|\(session.generation ?? 0)",
                 seat: session.seat,
                 letter: letterText(letter: session.letter, generation: session.generation),
                 host: hostLabel(code: session.hostCode, host: session.host),
                 state: stateCell(session.status),
                 wake: wakeCell(session.wake),
-                router: routerCell(seat: session.seat, status: status, now: now),
+                router: cachedRouter(for: session.seat),
                 lastSeen: OperatorPanelText.relative(session.lastSeen, now: now),
                 platform: platformLabel(session.platform),
-                issues: cleanedIssues
+                issues: cleanedIssues(for: session)
             )
         }
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matching = allRows.filter { row in
-            switch filter {
-            case .all: break
-            case .live: guard row.isLive else { return false }
-            case .problems: guard row.hasProblem else { return false }
-            }
-            guard !needle.isEmpty else { return true }
-            let fields = [row.seat, row.letter, row.platform, row.host, row.state.text, row.wake.text, row.router.text] + row.issues
-            return fields.contains { $0.localizedCaseInsensitiveContains(needle) }
-        }
-        let rows = limit < Int.max ? Array(matching.prefix(max(0, limit))) : matching
         let groups = buildSeatGroups(rows: rows, grouping: grouping)
 
         var notes: [String] = []
@@ -1230,9 +1258,9 @@ enum OperatorPanelPresentation {
         }
         return OperatorSeatsTable(
             rows: rows,
-            moreCount: max(0, matching.count - rows.count),
+            moreCount: max(0, matchingSessions.count - rows.count),
             note: notes.isEmpty ? nil : notes.joined(separator: gap),
-            totalMatchingCount: matching.count,
+            totalMatchingCount: matchingSessions.count,
             groups: groups
         )
     }
@@ -1280,9 +1308,6 @@ enum OperatorPanelPresentation {
             if lhs.liveCount != rhs.liveCount {
                 return lhs.liveCount > rhs.liveCount
             }
-            if lhs.problemCount != rhs.problemCount {
-                return lhs.problemCount > rhs.problemCount
-            }
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
         }
     }
@@ -1297,6 +1322,15 @@ enum OperatorPanelPresentation {
         let stopped: Set<String> = ["skipped", "dropped", "held_back", "surfaced", "expired", "evicted"]
         let tone: OperatorTone = stopped.contains(state) ? .warning : .neutral
         return OperatorCell(text: OperatorPanelText.humanized(state), tone: tone, help: "The wake record's own word is \(state).")
+    }
+
+    private static func wakeReasonText(_ wake: OperatorWake) -> String {
+        var parts: [String] = []
+        if let reason = wake.reason { parts.append(OperatorPanelText.humanized(reason)) }
+        if wake.owner == true { parts.append("Owner") }
+        if wake.dm == true { parts.append("DM") }
+        if wake.catchUp == true { parts.append("Catch-up") }
+        return parts.isEmpty ? OperatorPanelText.none : parts.joined(separator: ", ")
     }
 
     static func wakesTable(
@@ -1321,34 +1355,40 @@ enum OperatorPanelPresentation {
             default: return x.order < y.order
             }
         }
-        let allRows = ordered.map { item in
-            var parts: [String] = []
-            if let reason = item.wake.reason { parts.append(OperatorPanelText.humanized(reason)) }
-            if item.wake.owner == true { parts.append("Owner") }
-            if item.wake.dm == true { parts.append("DM") }
-            if item.wake.catchUp == true { parts.append("Catch-up") }
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchingItems: [Item]
+        if filter == .all && needle.isEmpty {
+            matchingItems = ordered
+        } else {
+            matchingItems = ordered.filter { item in
+                let stateCell = wakeStateCell(item.wake.state)
+                let isOwnerOrDM = (item.wake.owner == true) || (item.wake.dm == true)
+                switch filter {
+                case .all: break
+                case .problems: guard stateCell.tone == .warning else { return false }
+                case .ownerOrDM: guard isOwnerOrDM else { return false }
+                }
+                guard !needle.isEmpty else { return true }
+                let reason = wakeReasonText(item.wake)
+                if [item.seat, stateCell.text, reason].contains(where: { $0.localizedCaseInsensitiveContains(needle) }) {
+                    return true
+                }
+                let time = item.wake.at.map { FleetTime.when($0, now: now) } ?? OperatorPanelText.none
+                return time.localizedCaseInsensitiveContains(needle)
+            }
+        }
+        let visibleItems = limit < Int.max ? Array(matchingItems.prefix(max(0, limit))) : matchingItems
+        let rows = visibleItems.map { item in
             let isOwnerOrDM = (item.wake.owner == true) || (item.wake.dm == true)
             return OperatorWakeLine(
                 id: "\(item.order)|\(item.seat)|\(item.wake.wakeID ?? "-")",
                 time: item.wake.at.map { FleetTime.when($0, now: now) } ?? OperatorPanelText.none,
                 seat: item.seat,
                 state: wakeStateCell(item.wake.state),
-                reason: parts.isEmpty ? OperatorPanelText.none : parts.joined(separator: ", "),
+                reason: wakeReasonText(item.wake),
                 isOwnerOrDM: isOwnerOrDM
             )
         }
-        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matching = allRows.filter { line in
-            switch filter {
-            case .all: break
-            case .problems: guard line.isProblem else { return false }
-            case .ownerOrDM: guard line.isOwnerOrDM else { return false }
-            }
-            guard !needle.isEmpty else { return true }
-            return [line.seat, line.state.text, line.reason, line.time]
-                .contains { $0.localizedCaseInsensitiveContains(needle) }
-        }
-        let rows = limit < Int.max ? Array(matching.prefix(max(0, limit))) : matching
 
         var seatOrder: [String] = []
         var seatBuckets: [String: [OperatorWakeLine]] = [:]
@@ -1369,7 +1409,7 @@ enum OperatorPanelPresentation {
         // The server counts every wake and lists at most a few per seat, so the count is the
         // truth and the list is the newest of it.
         let counted = document.totals?.recent ?? ordered.count
-        let loadedMore = max(0, matching.count - rows.count)
+        let loadedMore = max(0, matchingItems.count - rows.count)
         let unloaded = max(0, counted - ordered.count)
         let isUnfiltered = (filter == .all) && needle.isEmpty
         let more = isUnfiltered ? max(0, max(counted, ordered.count) - rows.count) : loadedMore

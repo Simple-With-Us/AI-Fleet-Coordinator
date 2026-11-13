@@ -49,31 +49,8 @@ struct ResourceLimitsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                TimelineView(.periodic(from: .now, by: 5)) { context in
-                    VStack(alignment: .leading, spacing: 18) {
-                        receiptStatusLine(now: context.date)
-                        serverGateNote
-                        if let snapshot = reading.snapshot {
-                            summaryBody(snapshot, state: reading.state(at: context.date))
-                        } else {
-                            unknownCard
-                        }
-                    }
-                }
-                if let snapshot = reading.snapshot {
-                    cpuCard(snapshot)
-                    memoryCard(snapshot)
-                    borrowingCard(snapshot)
-                    receiptCard(snapshot)
-                }
-            }
-            .frame(maxWidth: 920, alignment: .leading)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .frame(maxWidth: .infinity, alignment: .center)
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            scrollContent(now: context.date)
         }
         .onAppear {
             polling.setActive(scenePhase == .active)
@@ -104,6 +81,29 @@ struct ResourceLimitsView: View {
         }
     }
 
+    private func scrollContent(now: Date) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                receiptStatus
+                serverGateNote
+                if let snapshot = reading.snapshot {
+                    summaryBody(snapshot, state: reading.state(at: now))
+                    cpuCard(snapshot)
+                    memoryCard(snapshot)
+                    borrowingCard(snapshot)
+                    receiptCard(snapshot)
+                } else {
+                    unknownCard
+                }
+            }
+            .frame(maxWidth: 920, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(MusterDestination.serverResourceLimits.title)
@@ -117,6 +117,9 @@ struct ResourceLimitsView: View {
     // MARK: - Where the values came from and how old they are
 
     /// Status line rendered from the parent `TimelineView` clock (RESOURCES-8).
+    private var receiptStatus: some View {
+        receiptStatusLine(now: Date())
+    }
 
     private func receiptStatusLine(now: Date) -> some View {
         let state = reading.state(at: now)

@@ -12,13 +12,23 @@ import SwiftUI
 /// machine the doctor could not reach,  a machine read only in part,  and a report past
 /// forty-five minutes all say Not Known,  never that nothing runs.
 ///
+private enum AppProcessesStateFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case seen = "Processes Seen"
+    case notKnown = "Not Known"
+
+    var id: String { rawValue }
+}
+
 /// The panel controls nothing:  starting and stopping services stays in Services and
 /// Server Status.
 struct AppProcessesView: View {
     @State private var reading: AppProcessesReading?
     @State private var loading = false
     @State private var showAppsWithoutProcesses = true
+    @State private var stateFilter: AppProcessesStateFilter = .all
     @State private var searchText = ""
+    @State private var collapsedHosts: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -93,7 +103,28 @@ struct AppProcessesView: View {
             if !reading.isCurrent {
                 problemBox("Not Known.\u{00A0} The report is older than 45 minutes, so nothing in it is current.\u{00A0} Every app reads Not Known until the doctor writes a fresh one.")
             }
-            MusterSearchField(prompt: "Filter app, process, executable, or state\u{2026}", text: $searchText)
+            let hostWords = Set(reading.hosts.map(\.hostWord))
+            let allCollapsed = !hostWords.isEmpty && hostWords.isSubset(of: collapsedHosts)
+            HStack(spacing: 8) {
+                MusterSearchField(prompt: "Filter app, process, executable, or state\u{2026}", text: $searchText)
+                Picker("State", selection: $stateFilter) {
+                    ForEach(AppProcessesStateFilter.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Button(allCollapsed ? "Expand Hosts" : "Collapse Hosts") {
+                    if allCollapsed {
+                        collapsedHosts.subtract(hostWords)
+                    } else {
+                        collapsedHosts.formUnion(hostWords)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
             ForEach(reading.hosts) { host in
                 hostCard(host)
             }
@@ -101,40 +132,43 @@ struct AppProcessesView: View {
     }
 
     private func hostCard(_ host: AppProcessesHostReading) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            hostHeader(host)
-            switch host.state {
-            case .notReached(let reason):
-                problemBox("Not Known:  the doctor could not read \(host.heading.lowercased()).\u{00A0} \(reason)")
-            case .partlyRead:
-                problemBox("Partly Read:  part of this machine's read failed or was cut, so an app with no process listed here reads Not Known.")
-            case .read, .reportOld:
-                EmptyView()
-            }
-            ForEach(host.numberedNotes) { note in
-                Text(note.text)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            let toggled = appsRespectingToggle(host)
-            let visible = visibleApps(from: toggled)
-            if visible.isEmpty && !toggled.isEmpty {
-                Text("No apps or processes match the current search.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(visible) { app in
-                        appRow(app)
+        let isExpanded = !collapsedHosts.contains(host.hostWord)
+        return VStack(alignment: .leading, spacing: 10) {
+            hostHeader(host, isExpanded: isExpanded)
+            if isExpanded {
+                switch host.state {
+                case .notReached(let reason):
+                    problemBox("Not Known:  the doctor could not read \(host.heading.lowercased()).\u{00A0} \(reason)")
+                case .partlyRead:
+                    problemBox("Partly Read:  part of this machine's read failed or was cut, so an app with no process listed here reads Not Known.")
+                case .read, .reportOld:
+                    EmptyView()
+                }
+                ForEach(host.numberedNotes) { note in
+                    Text(note.text)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                let toggled = appsRespectingToggle(host)
+                let visible = visibleApps(from: toggled)
+                if visible.isEmpty && !toggled.isEmpty {
+                    Text("No apps or processes match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(visible) { app in
+                            appRow(app)
+                        }
                     }
                 }
-            }
-            let hidden = host.apps.count - toggled.count
-            if hidden > 0 {
-                Text(hidden == 1 ? "1 app with no process seen is hidden." : "\(hidden) apps with no process seen are hidden.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                let hidden = host.apps.count - toggled.count
+                if hidden > 0 {
+                    Text(hidden == 1 ? "1 app with no process seen is hidden." : "\(hidden) apps with no process seen are hidden.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(14)
@@ -142,25 +176,41 @@ struct AppProcessesView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    private func hostHeader(_ host: AppProcessesHostReading) -> some View {
-        HStack(spacing: 10) {
-            Text(host.heading)
-                .font(.headline)
-            Text(host.state.words)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(hostTint(host.state))
-            if host.state.showsRows {
-                Text(host.appsSeen == 1 ? "1 app with processes" : "\(host.appsSeen) apps with processes")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+    private func hostHeader(_ host: AppProcessesHostReading, isExpanded: Bool) -> some View {
+        Button {
+            if collapsedHosts.contains(host.hostWord) {
+                collapsedHosts.remove(host.hostWord)
+            } else {
+                collapsedHosts.insert(host.hostWord)
             }
-            Spacer()
-            if let generated = host.generatedAt {
-                Text("Scanned at \(FleetTime.clock(generated))")
-                    .font(.system(size: 11, design: .monospaced))
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .frame(width: 10)
+                Text(host.heading)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text(host.state.words)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(hostTint(host.state))
+                if host.state.showsRows {
+                    MusterCountBadge(
+                        text: host.appsSeen == 1 ? "1 app seen" : "\(host.appsSeen) apps seen",
+                        color: host.appsSeen > 0 ? .green : .secondary
+                    )
+                }
+                Spacer()
+                if let generated = host.generatedAt {
+                    Text("Scanned at \(FleetTime.clock(generated))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     /// Only an app the full read found nothing for may be hidden:  a Not Known row stays.
@@ -169,9 +219,19 @@ struct AppProcessesView: View {
     }
 
     private func visibleApps(from apps: [AppProcessesAppReading]) -> [AppProcessesAppReading] {
+        let stateFiltered = apps.filter { app in
+            switch stateFilter {
+            case .all:
+                return true
+            case .seen:
+                return app.state.isSeen
+            case .notKnown:
+                return app.state == .notKnown
+            }
+        }
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return apps }
-        return apps.filter { app in
+        guard !needle.isEmpty else { return stateFiltered }
+        return stateFiltered.filter { app in
             var fields = [app.title, app.state.words]
             for process in app.processes {
                 fields.append(process.name)
