@@ -54,3 +54,11 @@ test("a required-mode Infisical refusal answers not_configured, not internal", a
     globalThis.fetch = realFetch;
   }
 });
+
+test("a GOOGLE_SHEETS_SA that is JSON but not a service-account object answers invalid_secret", async () => {
+  const args = { requesting_seat: "TEST-SEAT", request: "r", action_taken: "a", result: "x" };
+  for (const value of ["null", "[]", "{}", '{"client_email":"sa@example.test"}', '{"client_email":"","private_key":"k"}']) {
+    const ctx = { seat: "TEST-SEAT", workerEnv: { INFISICAL_MODE: "off", GOOGLE_SHEETS_SA: value }, reserve: async () => {} };
+    await assert.rejects(PEER_ACTIONS_METHODS.tool_peer_actions_log.call(ctx, args, {}), (error) => error.code === "invalid_secret", value);
+  }
+});

@@ -99,11 +99,7 @@ async function googleAccessToken(sa, fetchImpl) {
 async function loadServiceAccount(env, fetchImpl) {
   const direct = String(env.GOOGLE_SHEETS_SA ?? "").trim();
   if (direct) {
-    try {
-      return JSON.parse(direct);
-    } catch {
-      throw new ToolError("invalid_secret", "GOOGLE_SHEETS_SA is not valid JSON");
-    }
+    return parseServiceAccount(direct);
   }
   // Fallback mode answers "" when Infisical refuses (e.g. 403:  the read-tools token is not scoped to
   // /google-sheets-sa) and no binding is set;  required mode throws InfisicalError.  Name both as
@@ -128,11 +124,27 @@ async function loadServiceAccount(env, fetchImpl) {
       "GOOGLE_SHEETS_SA is unavailable: Infisical /google-sheets-sa served no value and no Worker binding is set",
     );
   }
+  return parseServiceAccount(raw);
+}
+
+// Parse and narrow GOOGLE_SHEETS_SA:  null, arrays, and objects without a usable client_email and
+// private_key answer invalid_secret here instead of failing later inside the JWT signer.
+function parseServiceAccount(raw) {
+  let parsed;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     throw new ToolError("invalid_secret", "GOOGLE_SHEETS_SA is not valid JSON");
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ToolError("invalid_secret", "GOOGLE_SHEETS_SA is not a JSON object");
+  }
+  for (const field of ["client_email", "private_key"]) {
+    if (typeof parsed[field] !== "string" || !parsed[field].trim()) {
+      throw new ToolError("invalid_secret", `GOOGLE_SHEETS_SA has no ${field}`);
+    }
+  }
+  return parsed;
 }
 
 function retryAfterMs(headers, attempt) {
