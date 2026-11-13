@@ -506,7 +506,7 @@ AGENT_LOGO: dict[str, tuple[str, str]] = {
 # Core seat names; optional version/wave suffixes: GROK4, GROK3-B7, CODEX-REVIEW
 # OWNER is deliberately omitted — keep "OWNER ACTION" text, no person/Jay chip.
 _AGENT_IMPLICIT_ALT = (
-    r"GB-[A-Za-z0-9]+|BF-[A-Za-z0-9]+"
+    r"GB-[A-Za-z][A-Za-z0-9]*|BF-[A-Za-z][A-Za-z0-9]*"
     r"|GROK\s+BOT|GROK-BOT|GROK-WEB|GROK-BUILD"
     r"|GROK\d*(?:-[A-Za-z0-9]+)?"
     r"|CODEX(?:-[A-Za-z0-9]+)?"

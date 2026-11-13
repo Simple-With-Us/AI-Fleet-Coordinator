@@ -152,6 +152,21 @@ class PublicActivityTests(unittest.TestCase):
         ):
             self.assertEqual(digest.extract_agents_and_clean(title), ([], title))
 
+    def test_numeric_bot_family_issue_refs_are_not_agent_attribution(self) -> None:
+        for issue in ("BF-2419", "GB-123456"):
+            for title in (
+                f"Fix {issue} runtime",
+                f"[{issue}] Refresh public feed",
+                f"{issue}: Refresh public feed",
+                f"Fix {issue}-followup runtime",
+            ):
+                with self.subTest(title=title):
+                    self.assertEqual(digest.extract_agents_and_clean(title), ([], title))
+            title = f"Fix {issue} runtime"
+            self.assertEqual(
+                digest.extract_agents_and_clean(f"[CODEX] {title}"), (["codex"], title)
+            )
+
     def test_legend_and_favicon_use_current_public_sources(self) -> None:
         rendered = digest.build_html(
             [],
