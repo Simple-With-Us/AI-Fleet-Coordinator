@@ -90,35 +90,6 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             release.decode_bundle(json.dumps(self.bundle).encode())
 
-    def test_consumer_bootstrap_is_required_before_a_new_bundle_writes_any_files(self):
-        path = "scripts/fleet_infisical_bootstrap.py"
-        self.assertIn(path, release.EXACT)
-        self.assertNotIn(path, release.BASE_REQUIRED)
-        self.bundle["files"].pop(path, None)
-        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
-        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
-            self.receive()
-        self.assertFalse(self.base.exists())
-
-    def test_retained_release_without_consumer_bootstrap_remains_a_rollback_target(self):
-        path = "scripts/fleet_infisical_bootstrap.py"
-        old = make_bundle("before-consumer-bootstrap")
-        old["files"].pop(path, None)
-        old["bundle_sha256"] = release.manifest_digest(old["files"])
-        with mock.patch.object(release, "REQUIRED", release.REQUIRED - {path}):
-            self.receive(old)
-        self.receive(make_bundle("with-consumer-bootstrap"), install=False)
-        retained = self.base / "releases" / old["bundle_sha256"]
-        self.assertFalse((retained / path).exists())
-        self.assertEqual(
-            release.verify_retained(retained)["bundle_sha256"], old["bundle_sha256"]
-        )
-        result = release.control(self.home, "rollback")
-        self.assertEqual(result["bundle_sha256"], old["bundle_sha256"])
-        self.assertEqual(
-            release.control(self.home, "status")["bundle_sha256"], old["bundle_sha256"]
-        )
-
     def test_bearer_gate_required_only_for_new_bundles(self):
         path = "scripts/simple_tools/mcp/bearer_gate.py"
         self.assertTrue(release.allowed_path(path))
@@ -1219,6 +1190,35 @@ class ReleaseTests(unittest.TestCase):
         ):
             self.assertEqual(release.main(["status", "--home", str(self.home)]), 2)
         self.assertIn("fleet-cli: internal_error", err.getvalue())
+
+    def test_consumer_bootstrap_is_required_before_a_new_bundle_writes_any_files(self):
+        path = "scripts/fleet_infisical_bootstrap.py"
+        self.assertIn(path, release.EXACT)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+        self.bundle["files"].pop(path, None)
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            self.receive()
+        self.assertFalse(self.base.exists())
+
+    def test_retained_release_without_consumer_bootstrap_remains_a_rollback_target(self):
+        path = "scripts/fleet_infisical_bootstrap.py"
+        old = make_bundle("before-consumer-bootstrap")
+        old["files"].pop(path, None)
+        old["bundle_sha256"] = release.manifest_digest(old["files"])
+        with mock.patch.object(release, "REQUIRED", release.REQUIRED - {path}):
+            self.receive(old)
+        self.receive(make_bundle("with-consumer-bootstrap"), install=False)
+        retained = self.base / "releases" / old["bundle_sha256"]
+        self.assertFalse((retained / path).exists())
+        self.assertEqual(
+            release.verify_retained(retained)["bundle_sha256"], old["bundle_sha256"]
+        )
+        result = release.control(self.home, "rollback")
+        self.assertEqual(result["bundle_sha256"], old["bundle_sha256"])
+        self.assertEqual(
+            release.control(self.home, "status")["bundle_sha256"], old["bundle_sha256"]
+        )
 
 
 class ShippedDataFilesTests(unittest.TestCase):
