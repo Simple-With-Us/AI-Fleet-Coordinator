@@ -109,6 +109,34 @@ class CoreTests(unittest.TestCase):
             "codex",
         )
 
+    def test_registered_suffix_and_legacy_alias_have_the_same_owner(self):
+        for suffix in ("zc", "zcode"):
+            path = "apps/lanes/BotFleet/%s-work/file.py" % suffix
+            with self.subTest(suffix=suffix):
+                self.assertIsNone(self.reason("Put", path, ctx=self.ctx(AGENT_SEAT="ZC")))
+                self.assertIn("another seat", self.reason("Put", path, ctx=self.ctx(AGENT_SEAT="CODEX")))
+                self.assertIn("identity is unavailable", self.reason("Put", path))
+                assigned = self.ctx(AGENT_SEAT="CODEX", AGENT_LAUNCH_SEAT="ZC")
+                self.assertIsNone(self.reason("Patch", path, ctx=assigned))
+                assigned = self.ctx(AGENT_SEAT="ZC", AGENT_LAUNCH_SEAT="CODEX")
+                self.assertIn("another seat", self.reason("Patch", path, ctx=assigned))
+        self.assertIn(
+            "another seat",
+            self.reason("Put", "apps/lanes/BotFleet/codex-work/file.py", ctx=self.ctx(AGENT_SEAT="ZC")),
+        )
+
+    def test_registered_peer_suffix_beats_a_legacy_alias_or_branch_prefix(self):
+        ctx = self.ctx(AGENT_SEAT="ZC")
+        ctx.registry = layout.parse_registry({
+            "apps": [{"repo": "BotFleet", "worktreePrefix": "botfleet", "codeDir": "BotFleet"}],
+            "seats": [
+                {"tag": "ZC", "worktreeSuffix": "zc", "branchPrefixes": ["zc/", "zcode/"]},
+                {"tag": "PEER", "worktreeSuffix": "zcode", "branchPrefixes": ["peer/"]},
+            ],
+        }, source="/synthetic.json")
+        self.assertIsNone(self.reason("Put", "apps/lanes/BotFleet/zc-work/f.py", ctx=ctx))
+        self.assertIn("another seat", self.reason("Put", "apps/lanes/BotFleet/zcode-work/f.py", ctx=ctx))
+
     def test_a_missing_registry_refuses_and_keeps_the_known_denials(self):
         ctx = self.ctx(FLEET_APPS_JSON=os.path.join(self.home, "missing.json"))
         self.assertEqual(ctx.registry.source, "fallback")

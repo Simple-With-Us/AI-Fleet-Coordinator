@@ -1,6 +1,6 @@
-"""The owner's clock for the publisher's log and status file:  Central, 12-hour, am or pm, never a zone name.
+"""The owner's clock for the publisher's log and status file: Central, 12-hour, spaced AM/PM, never a zone name.
 
-    stamp(utc)   "Sun, Oct 11, 7:00am"
+    stamp(utc)   "Sun, Oct 11, 7:00 AM"
 
 Daylight saving comes from the system time zone database.  If that is missing, the United States rule is applied
 by hand:  daylight time runs from the second Sunday of March (08:00 UTC) to the first Sunday of November (07:00 UTC).
@@ -40,4 +40,4 @@ def stamp(value: datetime, *, use_zoneinfo: bool = True) -> str:
     local = _local(value.astimezone(timezone.utc), use_zoneinfo)
     hour = local.hour % 12 or 12
     return "%s, %s %d, %d:%02d%s" % (_DAYS[local.weekday()], _MONTHS[local.month - 1], local.day, hour, local.minute,
-                                      "am" if local.hour < 12 else "pm")
+                                      " AM" if local.hour < 12 else " PM")
