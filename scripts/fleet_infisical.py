@@ -704,7 +704,7 @@ def _bounded_read_request(request: dict, deadline: float) -> dict:
     except OSError:
         raise SecretsError("bounded-read-unavailable", failure_kind="unavailable") from None
     finally:
-        primary_error = sys.exc_info()[0]
+        primary_error = sys.exc_info()[1]
         encoded = b""
         if child is not None:
             try:
@@ -713,10 +713,10 @@ def _bounded_read_request(request: dict, deadline: float) -> dict:
                 child.wait(timeout=max(0.001, deadline - time.monotonic()))
             except (OSError, subprocess.TimeoutExpired):
                 # Never wait indefinitely or hide an OS cleanup failure.
-                if primary_error not in (KeyboardInterrupt, SystemExit):
-                    raise SecretsError(
-                        "bounded-read-cleanup-failed", failure_kind="unavailable"
-                    ) from None
+                failure = SecretsError("bounded-read-cleanup-failed", failure_kind="unavailable")
+                if isinstance(primary_error, (KeyboardInterrupt, SystemExit)):
+                    raise primary_error from failure
+                raise failure from None
             finally:
                 for stream in (child.stdin, child.stdout):
                     if stream is not None:
@@ -779,10 +779,13 @@ def bounded_fetch_project(
         writer=writer,
         max_output_bytes=max_output_bytes,
     )
-    values = _bounded_read_request(request, time.monotonic() + timeout)
+    deadline = time.monotonic() + timeout
+    values = _bounded_read_request(request, deadline)
     if any(key not in wanted or not isinstance(value, str) for key, value in values.items()):
         raise SecretsError("bounded-read-failed", failure_kind="unavailable")
     reject_unresolved(values)
+    if time.monotonic() >= deadline:
+        raise SecretsError("bounded-read-timeout", failure_kind="unavailable")
     return values
 
 
@@ -1400,12 +1403,18 @@ def _write_provider(env):
         ):
             raise ValueError()
         host = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+        loopback = False
         try:
             address = ipaddress.ip_address(host)
+            loopback = address.is_loopback
             host = "[" + address.compressed + "]" if address.version == 6 else address.compressed
         except ValueError:
             if not re.fullmatch(r"[a-z0-9.-]+", host) or re.fullmatch(r"[0-9.]+", host):
                 raise ValueError() from None
+        # Plaintext is confined to literal loopback fixtures/local endpoints.
+        # A remote provider must never receive the token or value over HTTP.
+        if parsed.scheme != "https" and not loopback:
+            raise ValueError()
         port = parsed.port
         if port is not None and port != (443 if parsed.scheme == "https" else 80):
             host += ":" + str(port)
