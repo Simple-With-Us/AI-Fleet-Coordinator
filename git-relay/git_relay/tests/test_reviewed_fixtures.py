@@ -188,7 +188,8 @@ class RepoTreeConsistencyTests(TestCase):
     # Files whose bytes legitimately differ from the attested ones: the rename
     # that landed spells their credential-shaped test text in pieces, so the
     # files no longer contain anything the scanner refuses and need no
-    # attestation.  Every other existing path must digest-match.
+    # attestation.  Other drift must satisfy the exact scanner-clean binding
+    # below; otherwise the existing path must digest-match.
     KNOWN_PRE_RENAME_DRIFT = frozenset(
         {
             "scripts/fleet_lanes/tests/test_install_mcp.py",
@@ -202,16 +203,37 @@ class RepoTreeConsistencyTests(TestCase):
         }
     )
 
+    # Test-tree bookkeeping only: these reviewed replacement bytes need no
+    # runtime attestation and must still pass the real normal publication scan.
+    EXACT_SCANNER_CLEAN_DRIFT = frozenset(
+        {
+            (
+                "scripts/simple_tools/tests/test_operator_github.py",
+                "0f7244489b83d127f7b4bb5635a947f859b9072d14527e65fc81cec4db1eea5c",
+            )
+        }
+    )
+
+    @classmethod
+    def _exact_scanner_clean_drift(cls, path, raw):
+        return (
+            (path, sha256(raw).hexdigest()) in cls.EXACT_SCANNER_CLEAN_DRIFT
+            and unreviewed_file_secret(REPO, path, raw) is None
+        )
+
     def test_existing_attested_paths_carry_exactly_the_attested_bytes(self):
         for _repo, path, digest in sorted(_REVIEWED_FIXTURES):
             target = self.repo_root / path
             if not target.is_file():
                 continue  # future rename target: absent on main is expected
-            actual = sha256(target.read_bytes()).hexdigest()
+            raw = target.read_bytes()
+            actual = sha256(raw).hexdigest()
             if actual == digest:
                 self.assertIsNone(
-                    unreviewed_file_secret(REPO, path, target.read_bytes())
+                    unreviewed_file_secret(REPO, path, raw)
                 )  # the real registry accepts the live bytes
+                continue
+            if self._exact_scanner_clean_drift(path, raw):
                 continue
             self.assertIn(
                 path,
@@ -219,6 +241,30 @@ class RepoTreeConsistencyTests(TestCase):
                 f"{path} exists with bytes matching neither the attested "
                 "digest nor a declared pre-rename drift",
             )
+
+    def test_exact_scanner_clean_drift_refuses_changed_clean_bytes_and_other_paths(self):
+        path = "scripts/simple_tools/tests/test_operator_github.py"
+        raw = (self.repo_root / path).read_bytes()
+        self.assertEqual(len(self.EXACT_SCANNER_CLEAN_DRIFT), 1)
+        self.assertTrue(self._exact_scanner_clean_drift(path, raw))
+        changed = raw + b"\n# Different scanner-clean test source.\n"
+        self.assertIsNone(unreviewed_file_secret(REPO, path, changed))
+        self.assertFalse(self._exact_scanner_clean_drift(path, changed))
+        self.assertFalse(self._exact_scanner_clean_drift(path + ".copy", raw))
+
+    def test_exact_scanner_clean_drift_refuses_matching_bytes_when_normal_scan_rejects(self):
+        path = "scripts/simple_tools/tests/test_operator_github.py"
+        raw = (self.repo_root / path).read_bytes()
+        normal_scan = unreviewed_file_secret
+        known = ["test_credential_shaped_target_refused"]
+        self.assertIn(known[0].encode(), raw)
+        self.assertEqual(normal_scan(REPO, path, raw, known=known), "a loaded credential")
+        with patch(
+            __name__ + ".unreviewed_file_secret",
+            side_effect=lambda repo, path, raw: normal_scan(repo, path, raw, known=known),
+        ) as scan:
+            self.assertFalse(self._exact_scanner_clean_drift(path, raw))
+        scan.assert_called_once_with(REPO, path, raw)
 
     def test_absent_future_targets_still_refuse_changed_bytes(self):
         for _repo, path, _digest in sorted(_REVIEWED_FIXTURES):
