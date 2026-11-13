@@ -8,6 +8,7 @@
   "applyEnabled": false,
   "seat": {
     "enabled": {"type": "bool"},
+    "bracket_recipient_wakes": {"type": "bool"},
     "wake": {"type": "enum", "values": ["inbox", "http"]},
     "routine": {
       "type": "table",
