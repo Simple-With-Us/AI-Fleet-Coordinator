@@ -1388,7 +1388,18 @@ def tagged(seat: str, sessions: list[str] | None, text: str) -> str:
     seat's own typed intro is dropped too (Jay 2026-11-12);  a multi-threaded seat keeps its intro,
     which names the thread.  `sessions` stays on the signature because comment_body and
     parity_tagger still pass it."""
-    return strip_own_intro(norm_seat(seat), text) if seat and single_thread(seat) else text
+    if seat and single_thread(seat):
+        text = strip_own_intro(norm_seat(seat), text)
+    if seat and opens_with_own_intro(norm_seat(seat), text):
+        # The same standalone helper ships beside both native command line tools.
+        import importlib.util
+
+        path = Path(os.path.realpath(__file__)).parent.parent / "simple_tools" / "post_header.py"
+        spec = importlib.util.spec_from_file_location("_board_post_header", path)
+        formatter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(formatter)
+        text = formatter.normalize_header(text, seat=norm_seat(seat))
+    return text
 
 
 # ----------------------------------------------------------------- input files and flat labels
