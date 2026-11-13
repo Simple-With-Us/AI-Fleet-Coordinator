@@ -195,7 +195,13 @@ def _infisical_get_secret(
     return value.strip()
 
 
-SA_SECRET_FIELDS = ("private_key", "private_key_id", "client_secret", "access_token", "refresh_token")
+SA_SECRET_FIELDS = (
+    "private_key",
+    "private_key_id",
+    "client_secret",
+    "access_token",
+    "refresh_token",
+)
 
 
 def _service_account(raw: str) -> dict[str, Any]:
@@ -221,7 +227,9 @@ def local_known_credentials(env: Mapping[str, str] | None = None) -> list[str]:
         return _service_account_known(_service_account(direct))
     return [
         value
-        for value in [_secret_from_file_or_env(ENV_INFISICAL_TOKEN_FILE, ENV_INFISICAL_TOKEN, env=source)]
+        for value in [
+            _secret_from_file_or_env(ENV_INFISICAL_TOKEN_FILE, ENV_INFISICAL_TOKEN, env=source)
+        ]
         if value
     ]
 
