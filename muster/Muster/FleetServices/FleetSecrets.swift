@@ -196,7 +196,7 @@ public extension FleetSecrets {
     static let readerBindingNames: Set<String> = [
         "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
         "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
-        "INFISICAL_ENVIRONMENT", "INFISICAL_ENV", "INFISICAL_READ_PATHS", "INFISICAL_API_URL",
+        "INFISICAL_ENVIRONMENT", "INFISICAL_ENV", "INFISICAL_READ_PATHS", "FLEET_SECRETS_API",
     ]
 
     private var secretsEnvironment: [String: String] {

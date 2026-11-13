@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 
 // B3b: knob unset argv, secret names/doctor parsing, recall settings masking.
@@ -59,6 +60,8 @@ final class SecretNamesTests: XCTestCase {
         let secrets = FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot,
                                    interpreter: URL(fileURLWithPath: "/test/python3"),
                                    infisicalBindings: ["INFISICAL_TOKEN": "explicit-test-binding",
+                                                       "FLEET_SECRETS_API": "https://infisical.example.test/api",
+                                                       "INFISICAL_API_URL": "https://unused.example.test/api",
                                                        "INFISICAL_WRITE_TOKEN": "must-not-pass",
                                                        "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "must-not-borrow"])
         XCTAssertEqual(try secrets.secret(named: "A_KEY"), "synthetic-return-value")
@@ -66,6 +69,8 @@ final class SecretNamesTests: XCTestCase {
         XCTAssertEqual(fake.calls.first?.1, ["-I", "/tmp/example-repo/scripts/fleet_infisical_cli.py", "get", "A_KEY"])
         XCTAssertNil(fake.environments.first?["PYTHONPATH"])
         XCTAssertEqual(fake.environments.first?["INFISICAL_TOKEN"], "explicit-test-binding")
+        XCTAssertEqual(fake.environments.first?["FLEET_SECRETS_API"], "https://infisical.example.test/api")
+        XCTAssertNil(fake.environments.first?["INFISICAL_API_URL"])
         XCTAssertNil(fake.environments.first?["INFISICAL_WRITE_TOKEN"])
         XCTAssertNil(fake.environments.first?["SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN"])
         XCTAssertEqual(fake.timeouts, [20])
@@ -77,6 +82,22 @@ final class SecretNamesTests: XCTestCase {
             .secretNames(path: "/")
         XCTAssertNil(fake.environments.first?["INFISICAL_TOKEN"])
         XCTAssertNil(fake.environments.first?["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"])
+        XCTAssertNil(fake.environments.first?["FLEET_SECRETS_API"])
+        XCTAssertNil(fake.environments.first?["INFISICAL_API_URL"])
+    }
+
+    func test_reader_does_not_inherit_an_ambient_api_override() throws {
+        let name = "FLEET_SECRETS_API"
+        let previous = ProcessInfo.processInfo.environment[name]
+        XCTAssertEqual(setenv(name, "https://ambient.example.test/api", 1), 0)
+        defer {
+            if let previous { setenv(name, previous, 1) }
+            else { unsetenv(name) }
+        }
+        let fake = B3bCommands(); fake.replies["names"] = "A_KEY\n"
+        _ = try FleetSecrets(commands: fake, home: b3bHome, engineRoot: b3bRoot)
+            .secretNames(path: "/")
+        XCTAssertNil(fake.environments.first?[name])
     }
     func test_names_parse_grouped_and_fail_closed_on_value_shaped_line() throws {
         let grouped = try FleetSecrets.parseNamesByPath([("/", "B_KEY\nA_KEY\n"), ("/linear", "CACHE_X\n")])
