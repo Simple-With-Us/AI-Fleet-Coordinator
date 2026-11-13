@@ -15,6 +15,17 @@ from fleet_knobs.tests._fake import ScopedReadAPI
 
 
 class SharedClientTests(unittest.TestCase):
+    def test_listener_image_includes_shared_client_in_payload_and_build_context(self):
+        server = Path(__file__).resolve().parents[2] / "simple_tools" / "server"
+        self.assertIn(
+            "COPY scripts/fleet_infisical.py /app/scripts/",
+            (server / "Dockerfile").read_text().splitlines(),
+        )
+        self.assertIn(
+            "!scripts/fleet_infisical.py",
+            (server / "Dockerfile.dockerignore").read_text().splitlines(),
+        )
+
     def test_legacy_import_is_an_alias_to_one_client(self):
         from fleet_secrets import core
 
