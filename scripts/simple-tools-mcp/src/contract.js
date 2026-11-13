@@ -537,7 +537,7 @@ function prBodyPrefix(text) {
 
 /** The Python post_header.normalize_header contract: only the first complete header changes. */
 export function normalizeHeader(text, { seat = null, context = "message" } = {}) {
-  if (!["message", "github-pr", "github-pr-body"].includes(context)) throw new TypeError("unknown header context");
+  if (!["message", "github-pr", "github-pr-body", "github-pr-title"].includes(context)) throw new TypeError("unknown header context");
   const isPr = context !== "message";
   let prefix = isPr ? /^@kody start-review\r?\n/u.exec(text)?.[0] ?? "" : "";
   let criteria = "";
@@ -550,7 +550,7 @@ export function normalizeHeader(text, { seat = null, context = "message" } = {})
   }
   const content = text.slice(prefix.length);
   let pattern = /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;
-  if (context === "github-pr-body") {
+  if (context === "github-pr" || context === "github-pr-body") {
     pattern = criteria.replace(/[ \t\r\n]/gu, "")
       ? /^(?<lead>(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u
       : /^(?<lead> {0,3}(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;

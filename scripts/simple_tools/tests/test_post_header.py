@@ -14,7 +14,7 @@ if not isinstance(FIXTURES, list) or not FIXTURES or not all(
     isinstance(case, dict)
     and all(isinstance(case.get(key), str) for key in ("name", "input", "expected"))
     and (case.get("seat") is None or isinstance(case["seat"], str))
-    and case.get("context", "message") in ("message", "github-pr", "github-pr-body")
+    and case.get("context", "message") in ("message", "github-pr", "github-pr-body", "github-pr-title")
     and all(key not in case or (isinstance(case[key], list) and all(isinstance(v, str) for v in case[key]))
             for key in ("repos", "peers"))
     for case in FIXTURES

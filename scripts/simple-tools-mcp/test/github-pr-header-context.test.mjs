@@ -126,6 +126,40 @@ test("actual hosted descriptions compose command, finite ordered criteria and he
   }
 });
 
+test("actual hosted PR prose keeps indented samples literal while titles keep their existing matcher", async () => {
+  const { tools, sent } = harness();
+  for (const lead of ["\t", "\n", "    "]) {
+    for (const command of ["", "@kody start-review\r\n"]) {
+      const body = `${command}${lead}${full} sample`;
+      for (const [action, extra] of [
+        ["gr_comment_pr", { number: 1 }],
+        ["gr_reply_thread", { number: 1, comment_id: 2 }],
+        ["gr_wf_review_submit", { number: 1, commit_id: sha, event: "COMMENT" }],
+      ]) {
+        const result = await tools.call(action, { repo: "example/header-fixture", body, ...extra });
+        assert.ok(!result.isError, result.content?.[0]?.text);
+        assert.equal(sent.at(-1).args.body, body, action);
+      }
+    }
+    for (const [action, extra] of [
+      ["gr_open_pr", { base: "main", head: "feature" }],
+      ["gr_edit_pr", { number: 1 }],
+    ]) {
+      const title = `${lead}${full} Title`;
+      const result = await tools.call(action, { repo: "example/header-fixture", title, body: "Body", ...extra });
+      assert.ok(!result.isError, result.content?.[0]?.text);
+      assert.equal(sent.at(-1).args.title, `${lead}${compact} Title`, action);
+      assert.equal(sent.at(-1).args.body, "Body", action);
+    }
+  }
+  for (const lead of ["", " ", "   "]) {
+    const result = await tools.call("gr_comment_pr", { repo: "example/header-fixture", number: 1,
+      body: `@kody start-review\r\n${lead}${full} Body` });
+    assert.ok(!result.isError, result.content?.[0]?.text);
+    assert.equal(sent.at(-1).args.body, `@kody start-review\r\n${lead}${compact} Body`);
+  }
+});
+
 test("actual hosted PR writes discard unused repo defects and transport while preserving recipient refusal", async () => {
   const { tools, sent } = harness();
   const prefix = "- Pass Required CI\n\n";

@@ -23,7 +23,7 @@ _SENDER = re.compile(
 )
 _OPERATOR_THREAD = re.compile(r"[A-Z]{1,2}[.-]\d+[.-][MSC]")
 _BODY_HEADER = re.compile(r"^(?P<lead>(?:(?:👀|:eyes:)[ \t]*)?)\[(?P<inner>[^\r\n\[\]]+)\]")
-_BODY_FIRST_HEADER = re.compile(
+_PR_FIRST_HEADER = re.compile(
     r"^(?P<lead> {0,3}(?:(?:👀|:eyes:)[ \t]*)?)\[(?P<inner>[^\r\n\[\]]+)\]"
 )
 
@@ -66,8 +66,9 @@ def normalize_header(text: str, *, seat: str | None = None, context: str = "mess
     letter identifies the thread, so its sender never carries a runtime session suffix.
     Legacy transport-only tags remain readable; message context keeps their correlation fragment.  PR
     contexts omit repositories and private transport, preserving the literal Kody command line.  Only PR
-    body context permits a bounded initial list of readiness criteria before the envelope."""
-    if context not in ("message", "github-pr", "github-pr-body"):
+    body context permits a bounded initial list of readiness criteria before the envelope.
+    PR prose refuses code indentation; title context keeps its established prefix recognition."""
+    if context not in ("message", "github-pr", "github-pr-body", "github-pr-title"):
         raise ValueError("unknown header context")
     is_pr = context != "message"
     command = re.match(r"^@kody start-review\r?\n", text) if is_pr else None
@@ -82,8 +83,8 @@ def normalize_header(text: str, *, seat: str | None = None, context: str = "mess
         prefix += criteria
     content = text[len(prefix) :]
     pattern = _HEADER
-    if context == "github-pr-body":
-        pattern = _BODY_HEADER if criteria.strip(" \t\r\n") else _BODY_FIRST_HEADER
+    if context in ("github-pr", "github-pr-body"):
+        pattern = _BODY_HEADER if criteria.strip(" \t\r\n") else _PR_FIRST_HEADER
     match = pattern.match(content)
     if not match:
         return text

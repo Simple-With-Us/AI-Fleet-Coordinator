@@ -160,6 +160,59 @@
     "expected": "@kody start-review\n- Pass required checks\n\n[CODEX: EE.1.S 📁AFC] sample"
   },
   {
+    "name": "PR Prose Refuses Tab Indented Samples",
+    "context": "github-pr",
+    "input": "\t[CODEX: EE.1.S 📁AFC] sample",
+    "expected": "\t[CODEX: EE.1.S 📁AFC] sample"
+  },
+  {
+    "name": "PR Prose Refuses Newline Prefix Samples",
+    "context": "github-pr",
+    "input": "\n[CODEX: EE.1.S 📁AFC] sample",
+    "expected": "\n[CODEX: EE.1.S 📁AFC] sample"
+  },
+  {
+    "name": "PR Prose Refuses Four Space Code",
+    "context": "github-pr",
+    "input": "    [CODEX: EE.1.S 📁AFC] sample",
+    "expected": "    [CODEX: EE.1.S 📁AFC] sample"
+  },
+  {
+    "name": "PR Prose Accepts Three ASCII Spaces",
+    "context": "github-pr",
+    "input": "   [CODEX: EE.1.S 📁AFC] Body",
+    "expected": "   [CODEX:\u200a\u200a\u200aEE.1.S] Body"
+  },
+  {
+    "name": "PR Comment Command Does Not Open Indented Code",
+    "context": "github-pr",
+    "input": "@kody start-review\r\n\t[CODEX: EE.1.S 📁AFC] sample",
+    "expected": "@kody start-review\r\n\t[CODEX: EE.1.S 📁AFC] sample"
+  },
+  {
+    "name": "PR Titles Preserve Their Established Tab Prefix Matcher",
+    "context": "github-pr-title",
+    "input": "\t[CODEX: EE.1.S 📁AFC] Title",
+    "expected": "\t[CODEX:\u200a\u200a\u200aEE.1.S] Title"
+  },
+  {
+    "name": "PR Titles Preserve Their Established Newline Prefix Matcher",
+    "context": "github-pr-title",
+    "input": "\n[CODEX: EE.1.S 📁AFC] Title",
+    "expected": "\n[CODEX:\u200a\u200a\u200aEE.1.S] Title"
+  },
+  {
+    "name": "PR Titles Preserve Their Established Four Space Prefix Matcher",
+    "context": "github-pr-title",
+    "input": "    [CODEX: EE.1.S 📁AFC] Title",
+    "expected": "    [CODEX:\u200a\u200a\u200aEE.1.S] Title"
+  },
+  {
+    "name": "Ordinary Messages Keep Their Established Indented Header Matcher",
+    "input": "\t[CODEX: EE.1.S 📁AFC] Body",
+    "expected": "\t[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC] Body"
+  },
+  {
     "name": "PR Body Accepts Finite Flat Ordered Criteria",
     "context": "github-pr-body",
     "input": "1. Pass required checks\n999999999) Preserve hold\n\n[CODEX: EE.1.S 📁AFC] Body",

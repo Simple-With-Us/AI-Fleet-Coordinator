@@ -9,7 +9,7 @@ if (!Array.isArray(fixtures) || fixtures.length === 0 || !fixtures.every((entry)
   entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
   ["name", "input", "expected"].every((key) => typeof entry[key] === "string") &&
   (entry.seat === undefined || entry.seat === null || typeof entry.seat === "string") &&
-  (entry.context === undefined || ["message", "github-pr", "github-pr-body"].includes(entry.context)) &&
+  (entry.context === undefined || ["message", "github-pr", "github-pr-body", "github-pr-title"].includes(entry.context)) &&
   ["repos", "peers"].every((key) => entry[key] === undefined || (Array.isArray(entry[key]) && entry[key].every((v) => typeof v === "string")))
 )) throw new Error("Invalid header-spacing.json fixture shape");
 

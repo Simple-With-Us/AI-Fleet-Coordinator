@@ -131,7 +131,8 @@ export function compactGitHubArgs(action, args, { seat = null } = {}) {
   for (const field of fields) {
     if (typeof args[field] !== "string") continue;
     const description = field === "body" && ["open_pr", "edit_pr", "wf_pr_create", "wf_pr_edit"].includes(action);
-    const header = normalizeHeader(args[field], { seat, context: description ? "github-pr-body" : "github-pr" });
+    const context = field === "title" ? "github-pr-title" : description ? "github-pr-body" : "github-pr";
+    const header = normalizeHeader(args[field], { seat, context });
     if (header !== args[field]) {
       if (out === args) out = { ...args };
       out[field] = header;
