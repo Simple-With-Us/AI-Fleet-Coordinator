@@ -1211,9 +1211,7 @@ class ReleaseTests(unittest.TestCase):
         self.receive(make_bundle("with-consumer-bootstrap"), install=False)
         retained = self.base / "releases" / old["bundle_sha256"]
         self.assertFalse((retained / path).exists())
-        self.assertEqual(
-            release.verify_retained(retained)["bundle_sha256"], old["bundle_sha256"]
-        )
+        self.assertEqual(release.verify_retained(retained)["bundle_sha256"], old["bundle_sha256"])
         result = release.control(self.home, "rollback")
         self.assertEqual(result["bundle_sha256"], old["bundle_sha256"])
         self.assertEqual(
