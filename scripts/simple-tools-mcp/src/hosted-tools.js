@@ -43,6 +43,7 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
+  normalizeHeader,
   stripOwnIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
@@ -2040,6 +2041,7 @@ export class HostedTools {
   linearBody(text, session) {
     void session;
     if (isSingleThread(this.seat)) text = stripOwnIntro(seatTagForSeat(this.seat), text);
+    text = normalizeHeader(text, { seat: seatTagForSeat(this.seat) });
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
     // AFC-722:  the full house gap (one or more spaces), unless the call passed sentence_gap: false.
