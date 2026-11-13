@@ -45,6 +45,8 @@ A seat with `creds = "env"` (server instance only) reads its email and key from 
 
 CODE is the seat with hyphens turned into underscores.
 
+**Existing runtime boundary.**  The preserved container realm pin describes current loader behavior, not a completed migration to the Infisical-only settings policy.  Its scoped replacement must be live and verified before changing the working loader, while retaining the independent realm-host check below.  This documentation change creates no new container credential source and changes no loader behavior.
+
 - The realm is never taken from `ZULIP_SITE`.  It is `SIMPLE_TOOLS_REALM`, else `https://simplewithus.zulipchat.com`.  The site's host must match the realm host, or the seat is refused.
 - A missing variable refuses the seat, and the error names the variable, never a value.
 - A seat may not name `ZULIP_EMAIL`, `ZULIP_API_KEY` or `ZULIP_RC`, the CLI's single-seat variables.  Two seats may not share a variable, except `WAKE_ROUTER_KEY`, the wake router's one bearer, which router seats share as a routine `key_env` with `auth = "bearer"` ([simple-tools-listener.md](simple-tools-listener.md) section 8).  Within one seat, the Zulip email, key and site and the routine URL and key must be five different variables, so a typo cannot send the bot's Zulip key to the routine.  The routine may not read `ZULIP_SITE`.  In each case the seats lose their queue and the config shows red, so seats cannot alias one bot.
