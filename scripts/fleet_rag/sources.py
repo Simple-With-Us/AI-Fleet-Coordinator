@@ -81,7 +81,7 @@ EXTRA_DOCS = (
     APPS_DIR / "FLEET-UI-COPY.md",
     HOME / ".claude" / "CLAUDE.md",
 )
-SKILL_DIRS = tuple(HOME / directory / 'skills' for _name, directory in mirror.SKILL_TREES)
+SKILL_DIRS = tuple(HOME / directory / "skills" for _name, directory in mirror.SKILL_TREES)
 CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 CODEX_MEMORIES = HOME / ".codex" / "memories"
 DOC_MAX_BYTES = 400 * 1024
@@ -863,7 +863,11 @@ def doc_exclude_reason(p: pathlib.Path, data: bytes | None = None) -> str | None
     if size == 0:
         return None
     try:
-        text = data.decode('utf-8', errors='replace') if data is not None else p.read_text(encoding="utf-8", errors="replace")
+        text = (
+            data.decode("utf-8", errors="replace")
+            if data is not None
+            else p.read_text(encoding="utf-8", errors="replace")
+        )
     except OSError:
         return "unreadable"
     if not any(len(line) >= MINIFIED_LINE_CHARS for line in text.splitlines()):
@@ -1100,7 +1104,8 @@ def _dedupe_docs(files: Iterable[pathlib.Path], repositories=()) -> list[pathlib
                     continue
                 key = fs_key(f)
                 if key not in seen:
-                    seen.add(key); out.append(f)
+                    seen.add(key)
+                    out.append(f)
                 continue
             if repository_match:
                 continue
@@ -1177,11 +1182,12 @@ def _doc_files(
         for repo_dir in _unique_repo_dirs(code_dir):
             files += _collect_repo_docs(repo_dir, root_all_md=False)
         from .docs_library import discover_repositories
+
         repositories = discover_repositories(code_dir)
         for discovered in repositories:
-            broad = discovered.name.casefold() in ('ai-fleet-coordinator', 'fleet-ops')
+            broad = discovered.name.casefold() in ("ai-fleet-coordinator", "fleet-ops")
             files += _collect_repo_docs(discovered.root, root_all_md=broad)
-            if discovered.name.casefold() == 'fleet-ops':
+            if discovered.name.casefold() == "fleet-ops":
                 ops_repos.append(discovered.root)
                 files += _collect_handbook_pages(discovered.root)
     live: list[pathlib.Path] = [pathlib.Path(x) for x in extra if pathlib.Path(x).exists()]
@@ -1199,10 +1205,12 @@ def _doc_files(
             try:
                 child_name = normalized.relative_to(pathlib.Path(code_dir).resolve()).parts[0]
                 child = pathlib.Path(code_dir).resolve() / child_name
-                if (child / '.git').exists() and all(repository.root != child for repository in repositories):
+                if (child / ".git").exists() and all(
+                    repository.root != child for repository in repositories
+                ):
                     allowed = False
                     DOC_HELD_IDS.add(doc_id_for_path(path))
-                    DOC_SKIPS.append(('unapproved-repository-origin', str(path)))
+                    DOC_SKIPS.append(("unapproved-repository-origin", str(path)))
             except (ValueError, IndexError):
                 pass
         for repository in repositories:
@@ -1211,13 +1219,16 @@ def _doc_files(
             except ValueError:
                 continue
             from .docs_library import _tracked_tree, relative_path
+
             try:
-                allowed = relative_path(relative).as_posix() in _tracked_tree(repository.root, repository.commit)
+                allowed = relative_path(relative).as_posix() in _tracked_tree(
+                    repository.root, repository.commit
+                )
             except ValueError:
                 allowed = False
             if not allowed:
                 DOC_HELD_IDS.add(doc_id_for_path(path))
-                DOC_SKIPS.append(('untracked-or-unsafe-git-document', str(path)))
+                DOC_SKIPS.append(("untracked-or-unsafe-git-document", str(path)))
             break
         if allowed:
             filtered.append(path)
@@ -1363,6 +1374,7 @@ def iter_docs(
     LAST_DOC_WALK = {"kept": list(files), "excluded_new": list(DOC_EXCLUDED_NEW)}
     _log_doc_skips()
     from . import docs_library
+
     code_root = _configured_dir(code_dir, "FLEET_CODE_ROOT", CODE_DIR)
     repositories = docs_library.discover_repositories(code_root) if code_root else []
     canonical = {}
@@ -1383,73 +1395,136 @@ def iter_docs(
             if raw is not None:
                 text = docs_library.text_from_bytes(raw, p.suffix)
                 document = Doc(
-                    doc_id='doc/' + repository.name + '/' + relative,
-                    title=first_heading(text, p.name), text_markdown=text, source='doc',
+                    doc_id="doc/" + repository.name + "/" + relative,
+                    title=first_heading(text, p.name),
+                    text_markdown=text,
+                    source="doc",
                     app=app_slug(repository.name),
-                    category='doc', seat='FLEET', path=str(p),
-                    url='https://github.com/' + repository.owner + '/' + repository.name + '/blob/' + repository.commit + '/' + relative,
-                    created_at_ms=mtime_ms(p), updated_at_ms=mtime_ms(p),
+                    category="doc",
+                    seat="FLEET",
+                    path=str(p),
+                    url="https://github.com/"
+                    + repository.owner
+                    + "/"
+                    + repository.name
+                    + "/blob/"
+                    + repository.commit
+                    + "/"
+                    + relative,
+                    created_at_ms=mtime_ms(p),
+                    updated_at_ms=mtime_ms(p),
                 )
-                document.extra.update(source_commit=repository.commit,
-                                      source_sha256=hashlib.sha256(raw).hexdigest())
+                document.extra.update(
+                    source_commit=repository.commit, source_sha256=hashlib.sha256(raw).hexdigest()
+                )
                 canonical[document.doc_id] = (document, raw)
             break
         if document is not None:
             documents.append(document)
         elif repository_match:
             DOC_HELD_IDS.add(doc_id_for_path(p))
-            warn('doc: untracked or unsafe repository document excluded and held from prune')
+            warn("doc: untracked or unsafe repository document excluded and held from prune")
         else:
             documents.append(doc_from_file(p, app=app_from_path(p, fleet_ops=ops)))
     legacy = []
     library_hashes = {}
     if code_root:
+
         def library_doc(path):
-            return Doc(doc_id='', title=path.stem, text_markdown='', source='doc',
-                       app=app_from_path(path), category='doc', seat='FLEET', path=str(path),
-                       created_at_ms=mtime_ms(path), updated_at_ms=mtime_ms(path))
+            return Doc(
+                doc_id="",
+                title=path.stem,
+                text_markdown="",
+                source="doc",
+                app=app_from_path(path),
+                category="doc",
+                seat="FLEET",
+                path=str(path),
+                created_at_ms=mtime_ms(path),
+                updated_at_ms=mtime_ms(path),
+            )
+
         def library_excluded(path):
             # Path-only checks: library bytes are opened beneath a no-follow dirfd chain.
             folded = {part.casefold() for part in path.parts}
-            return (bool(folded & {part.casefold() for part in DOC_SKIP_DIR_NAMES})
-                    or _is_effort_log_name(path.name)
-                    or (path.name == 'SKILL.md' and bool(folded & {'skills', 'fleet-skills'}))
-                    or ('.min.' in path.name.casefold())
-                    or ('reviews' in folded and 'raw' in path.name.casefold()))
-        legacy = list(docs_library.library_documents(
-            pathlib.Path(code_root) / 'Docs', repositories, canonical,
-            library_doc, library_excluded, warn, known_library_hashes=library_hashes,
-        ))
+            return (
+                bool(folded & {part.casefold() for part in DOC_SKIP_DIR_NAMES})
+                or _is_effort_log_name(path.name)
+                or (path.name == "SKILL.md" and bool(folded & {"skills", "fleet-skills"}))
+                or (".min." in path.name.casefold())
+                or ("reviews" in folded and "raw" in path.name.casefold())
+            )
+
+        legacy = list(
+            docs_library.library_documents(
+                pathlib.Path(code_root) / "Docs",
+                repositories,
+                canonical,
+                library_doc,
+                library_excluded,
+                warn,
+                known_library_hashes=library_hashes,
+            )
+        )
         mirrored = mirror.configured_root()
         if mirrored is not None:
             status = mirror.mirror_status(mirrored, time.time(), mirror.max_age_s())
             if status.fresh:
-                if not (mirrored / 'docs' / 'legacy').is_dir():
-                    warn('doc: legacy Docs mirror tree missing from the otherwise fresh mirror')
-                legacy += list(docs_library.library_documents(
-                    mirrored / 'docs' / 'legacy', repositories, canonical,
-                    library_doc, library_excluded, warn, known_library_hashes=library_hashes,
-                ))
+                if not (mirrored / "docs" / "legacy").is_dir():
+                    warn("doc: legacy Docs mirror tree missing from the otherwise fresh mirror")
+                legacy += list(
+                    docs_library.library_documents(
+                        mirrored / "docs" / "legacy",
+                        repositories,
+                        canonical,
+                        library_doc,
+                        library_excluded,
+                        warn,
+                        known_library_hashes=library_hashes,
+                    )
+                )
             else:
-                warn('doc: legacy Docs mirror unavailable or stale; legacy prune must remain held')
+                warn("doc: legacy Docs mirror unavailable or stale; legacy prune must remain held")
     known = {document.doc_id for document in documents}
     documents += [entry[0] for did, entry in canonical.items() if did not in known]
     documents += legacy
     source_warnings = WARNINGS[warnings_before:]
-    incomplete = any(any(token in message for token in ('invalid or unreadable generated', 'symlink refused', 'PDF not indexed', 'pdf-extract', 'unavailable or stale', 'mirror tree missing', 'unreadable-or-excluded')) for message in source_warnings)
+    incomplete = any(
+        any(
+            token in message
+            for token in (
+                "invalid or unreadable generated",
+                "symlink refused",
+                "PDF not indexed",
+                "pdf-extract",
+                "unavailable or stale",
+                "mirror tree missing",
+                "unreadable-or-excluded",
+            )
+        )
+        for message in source_warnings
+    )
     selected = documents[:limit] if limit else documents
-    SOURCE_READ_RECEIPTS['doc'] = {
-        'source_complete': limit is None and not incomplete,
-        'deletion_authorized': False,
-        'selected_repositories': [repo.owner + '/' + repo.name for repo in repositories],
-        'repository_document_counts': {repo.name: sum(doc.doc_id.startswith('doc/' + repo.name + '/') for doc in selected) for repo in repositories},
-        'supported_library_types': sorted(docs_library.HUMAN_SUFFIXES),
-        'unsupported_library_types': 'JSON, JSONL, logs, code, archives, images and video; image-only PDFs receive no OCR',
-        'selected_document_count': len(selected),
-        'documents': {doc.doc_id: {'body_sha256': hashlib.sha256(doc.text_markdown.encode()).hexdigest(),
-                                  'source_sha256': doc.extra.get('source_sha256'),
-                                  'alias_count': len(doc.extra.get('source_aliases', []))} for doc in selected},
-        'receiver_coverage_verified': False,
+    SOURCE_READ_RECEIPTS["doc"] = {
+        "source_complete": limit is None and not incomplete,
+        "deletion_authorized": False,
+        "selected_repositories": [repo.owner + "/" + repo.name for repo in repositories],
+        "repository_document_counts": {
+            repo.name: sum(doc.doc_id.startswith("doc/" + repo.name + "/") for doc in selected)
+            for repo in repositories
+        },
+        "supported_library_types": sorted(docs_library.HUMAN_SUFFIXES),
+        "unsupported_library_types": "JSON, JSONL, logs, code, archives, images and video; image-only PDFs receive no OCR",
+        "selected_document_count": len(selected),
+        "documents": {
+            doc.doc_id: {
+                "body_sha256": hashlib.sha256(doc.text_markdown.encode()).hexdigest(),
+                "source_sha256": doc.extra.get("source_sha256"),
+                "alias_count": len(doc.extra.get("source_aliases", [])),
+            }
+            for doc in selected
+        },
+        "receiver_coverage_verified": False,
     }
     for index, document in enumerate(documents):
         if limit and index >= limit:
@@ -1525,11 +1600,12 @@ def iter_skills(
             if limit and n >= limit:
                 return
             from .docs_library import safe_file
+
             relative = p.relative_to(d).as_posix()
             try:
-                md = safe_file(d, relative).decode('utf-8')
+                md = safe_file(d, relative).decode("utf-8")
             except (OSError, ValueError, UnicodeError):
-                warn('skill: unsafe or unreadable skill file skipped')
+                warn("skill: unsafe or unreadable skill file skipped")
                 continue
             h = hashlib.sha256(md.encode("utf-8")).hexdigest()
             if h in seen_hash:
@@ -1656,15 +1732,20 @@ def iter_memory(
                 if limit and n >= limit:
                     return
                 from .docs_library import safe_file
+
                 relative = p.relative_to(mem_dir).as_posix()
                 try:
-                    text = safe_file(mem_dir, relative).decode('utf-8')
+                    text = safe_file(mem_dir, relative).decode("utf-8")
                 except (OSError, ValueError, UnicodeError):
-                    warn('memory: unsafe or unreadable memory file skipped')
+                    warn("memory: unsafe or unreadable memory file skipped")
                     continue
                 n += 1
                 yield _memory_doc(
-                    p, "CLAUDE", f"memory/claude/{slug}/{relative}", app_from_project(slug), text=text
+                    p,
+                    "CLAUDE",
+                    f"memory/claude/{slug}/{relative}",
+                    app_from_project(slug),
+                    text=text,
                 )
     cm = pathlib.Path(default_codex if codex_memories is None else codex_memories)
     if cm.exists():
@@ -1672,11 +1753,12 @@ def iter_memory(
             if limit and n >= limit:
                 return
             from .docs_library import safe_file
+
             relative = p.relative_to(cm).as_posix()
             try:
-                text = safe_file(cm, relative).decode('utf-8')
+                text = safe_file(cm, relative).decode("utf-8")
             except (OSError, ValueError, UnicodeError):
-                warn('memory: unsafe or unreadable memory file skipped')
+                warn("memory: unsafe or unreadable memory file skipped")
                 continue
             n += 1
             yield _memory_doc(p, "CODEX", f"memory/codex/{relative}", "fleet", text=text)

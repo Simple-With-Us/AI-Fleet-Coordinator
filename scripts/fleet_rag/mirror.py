@@ -54,15 +54,28 @@ CLAUDE_MEMORY_FILTERS = (
     "--exclude=*",
 )
 SKILL_TREES = (
-    ('claude', '.claude'), ('cursor', '.cursor'), ('grok', '.grok'),
-    ('codex', '.codex'), ('agents', '.agents'), ('gemini', '.gemini'),
+    ("claude", ".claude"),
+    ("cursor", ".cursor"),
+    ("grok", ".grok"),
+    ("codex", ".codex"),
+    ("agents", ".agents"),
+    ("gemini", ".gemini"),
 )
 LEGACY_DOC_FILTERS = (
-    '--no-links', '--prune-empty-dirs', '--exclude=Generated/', '--exclude=.*/',
-    '--exclude=credentials/', '--exclude=secrets/', '--exclude=backups/',
-    '--include=*/', '--include=*.[mM][dD]', '--include=*.[tT][xX][tT]',
-    '--include=*.[hH][tT][mM][lL]', '--include=*.[hH][tT][mM]',
-    '--include=*.[pP][dD][fF]', '--exclude=*',
+    "--no-links",
+    "--prune-empty-dirs",
+    "--exclude=Generated/",
+    "--exclude=.*/",
+    "--exclude=credentials/",
+    "--exclude=secrets/",
+    "--exclude=backups/",
+    "--include=*/",
+    "--include=*.[mM][dD]",
+    "--include=*.[tT][xX][tT]",
+    "--include=*.[hH][tT][mM][lL]",
+    "--include=*.[hH][tT][mM]",
+    "--include=*.[pP][dD][fF]",
+    "--exclude=*",
 )
 
 
@@ -88,7 +101,7 @@ class Tree:
     def filters(self) -> tuple[str, ...]:
         if self.kind == "claude-memory":
             return CLAUDE_MEMORY_FILTERS
-        if self.kind == 'legacy-docs':
+        if self.kind == "legacy-docs":
             return LEGACY_DOC_FILTERS
         return ()
 
@@ -175,7 +188,7 @@ def stale_record(root: Path | None, now: float, max_age: int) -> dict | None:
 
 
 def skill_dirs(root: Path) -> tuple[Path, ...]:
-    return tuple(root / 'skills' / name for name, _directory in SKILL_TREES)
+    return tuple(root / "skills" / name for name, _directory in SKILL_TREES)
 
 
 def memory_claude(root: Path) -> Path:
@@ -235,10 +248,13 @@ def format_push_summary(
 
 def default_trees(home: Path) -> tuple[Tree, ...]:
     return (
-        *(Tree('skills/' + name, 'tree', home / directory / 'skills') for name, directory in SKILL_TREES),
+        *(
+            Tree("skills/" + name, "tree", home / directory / "skills")
+            for name, directory in SKILL_TREES
+        ),
         Tree("memory/claude-projects", "claude-memory", home / ".claude" / "projects"),
         Tree("memory/codex", "tree", home / ".codex" / "memories"),
-        Tree('docs/legacy', 'legacy-docs', home / 'Code' / 'Docs'),
+        Tree("docs/legacy", "legacy-docs", home / "Code" / "Docs"),
     )
 
 
@@ -265,13 +281,23 @@ def count_files(root: Path) -> int:
 
 def count_local(tree: Tree) -> int:
     """The files a successful rsync of this tree would place in incoming."""
-    if tree.kind == 'legacy-docs':
+    if tree.kind == "legacy-docs":
         total = 0
         for directory, dirs, files in os.walk(tree.local, followlinks=False):
-            dirs[:] = [name for name in dirs if not name.startswith('.') and name not in ('Generated', 'credentials', 'secrets', 'backups') and not (Path(directory) / name).is_symlink()]
+            dirs[:] = [
+                name
+                for name in dirs
+                if not name.startswith(".")
+                and name not in ("Generated", "credentials", "secrets", "backups")
+                and not (Path(directory) / name).is_symlink()
+            ]
             for name in files:
                 path = Path(directory) / name
-                if path.suffix.casefold() in ('.md', '.txt', '.html', '.htm', '.pdf') and path.is_file() and not path.is_symlink():
+                if (
+                    path.suffix.casefold() in (".md", ".txt", ".html", ".htm", ".pdf")
+                    and path.is_file()
+                    and not path.is_symlink()
+                ):
                     total += 1
         return total
     if tree.kind == "claude-memory":

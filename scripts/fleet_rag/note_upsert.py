@@ -150,17 +150,27 @@ def _read_stdin() -> dict[str, Any]:
 
 def receiver_verified(doc, qd, chunk_ids):
     """Independently check the receiver's canonical ID and every expected chunk body."""
-    rows, _count = ingest.doc_rows(doc, 'note-receiver-proof')
-    expected = {content_hash(ingest._chunk_body(row['payload']['text'])) for row in rows}
+    rows, _count = ingest.doc_rows(doc, "note-receiver-proof")
+    expected = {content_hash(ingest._chunk_body(row["payload"]["text"])) for row in rows}
     if not expected or not chunk_ids:
         return False
     actual = set()
     for point_id in set(chunk_ids):
         point = qd.retrieve(point_id, with_payload=True)
-        payload = point.get('payload') if isinstance(point, dict) else None
-        if not isinstance(point, dict) or point.get('id') != point_id or not isinstance(payload, dict) or payload.get('doc_id') != doc.doc_id or payload.get('source') != 'apple-note' or payload.get('title') != doc.title or payload.get('app') != doc.app or payload.get('seat') != doc.seat or not isinstance(payload.get('text'), str):
+        payload = point.get("payload") if isinstance(point, dict) else None
+        if (
+            not isinstance(point, dict)
+            or point.get("id") != point_id
+            or not isinstance(payload, dict)
+            or payload.get("doc_id") != doc.doc_id
+            or payload.get("source") != "apple-note"
+            or payload.get("title") != doc.title
+            or payload.get("app") != doc.app
+            or payload.get("seat") != doc.seat
+            or not isinstance(payload.get("text"), str)
+        ):
             return False
-        actual.add(content_hash(ingest._chunk_body(payload['text'])))
+        actual.add(content_hash(ingest._chunk_body(payload["text"])))
     return actual == expected
 
 
@@ -168,53 +178,72 @@ def deliver_queued_note(record, root=None, lock_timeout_s=0, read_current=None):
     """Deliver provider-current Coding content; prove provider stability before ack."""
     from . import note_outbox
     from .notes_export import read_current_coding_note
+
     root = note_outbox.default_root() if root is None else root
     reader = read_current_coding_note if read_current is None else read_current
     try:
-        if record.get('schema') != 2 or record.get('cancelled'):
+        if record.get("schema") != 2 or record.get("cancelled"):
             return False
-        snapshot = reader(record['doc_id'])
-        text = snapshot['text'].strip()
-        text_kind = 'body' if text else 'title-only'
-        text = text or snapshot['name'].strip()
+        snapshot = reader(record["doc_id"])
+        text = snapshot["text"].strip()
+        text_kind = "body" if text else "title-only"
+        text = text or snapshot["name"].strip()
         if not text:
             return False
-        app, seat = sources.parse_note_title(snapshot['name'])
-        doc = sources.Doc(note_doc_id(snapshot['id']), snapshot['name'], text,
-                          'apple-note', app, 'note', seat,
-                          url='notes://' + snapshot['id'],
-                          updated_at_ms=sources.parse_ts_ms(snapshot.get('modified')) or now_ms(),
-                          extra={'text_kind': text_kind})
-        if doc.doc_id != record['doc_id']:
+        app, seat = sources.parse_note_title(snapshot["name"])
+        doc = sources.Doc(
+            note_doc_id(snapshot["id"]),
+            snapshot["name"],
+            text,
+            "apple-note",
+            app,
+            "note",
+            seat,
+            url="notes://" + snapshot["id"],
+            updated_at_ms=sources.parse_ts_ms(snapshot.get("modified")) or now_ms(),
+            extra={"text_kind": text_kind},
+        )
+        if doc.doc_id != record["doc_id"]:
             return False
         doc = sources.Doc(**note_outbox.prepare_document(doc))
-        doc.extra['text_kind'] = text_kind
+        doc.extra["text_kind"] = text_kind
         key = note_outbox._key(doc.doc_id)
         cfg = core.load_config(need_write=True)
         qd = core.Qdrant(cfg)
-        with IngestLock(STATE_PATH.parent / 'ingest.lock', timeout_s=lock_timeout_s):
-            if not note_outbox.current(root, key, record['version']):
+        with IngestLock(STATE_PATH.parent / "ingest.lock", timeout_s=lock_timeout_s):
+            if not note_outbox.current(root, key, record["version"]):
                 return False
             state = load_state(STATE_PATH)
             previous = state.get(doc.doc_id, {})
             digest = content_hash(doc.text_markdown)
-            if previous.get('doc_hash') == digest and receiver_verified(doc, qd, previous.get('chunk_ids', [])):
-                return reader(doc.doc_id)['revision'] == snapshot['revision']
+            if previous.get("doc_hash") == digest and receiver_verified(
+                doc, qd, previous.get("chunk_ids", [])
+            ):
+                return reader(doc.doc_id)["revision"] == snapshot["revision"]
             writer = ingest.Writer(cfg, qd, dry_run=False, log=lambda *_args: None)
             stats = ingest._empty_stats()
-            process_group([(doc, digest)], state, writer, 'note-outbox-' + uuid.uuid4().hex,
-                          stats, STATE_PATH, live_owners={doc.doc_id})
-            return (receiver_verified(doc, qd, state.get(doc.doc_id, {}).get('chunk_ids', []))
-                    and reader(doc.doc_id)['revision'] == snapshot['revision'])
+            process_group(
+                [(doc, digest)],
+                state,
+                writer,
+                "note-outbox-" + uuid.uuid4().hex,
+                stats,
+                STATE_PATH,
+                live_owners={doc.doc_id},
+            )
+            return (
+                receiver_verified(doc, qd, state.get(doc.doc_id, {}).get("chunk_ids", []))
+                and reader(doc.doc_id)["revision"] == snapshot["revision"]
+            )
     except Exception:
         return False
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--drain-outbox', action='store_true')
-    ap.add_argument('--outbox-key')
-    ap.add_argument('--reconcile-coding', action='store_true')
+    ap.add_argument("--drain-outbox", action="store_true")
+    ap.add_argument("--outbox-key")
+    ap.add_argument("--reconcile-coding", action="store_true")
     ap.add_argument(
         "--lock-timeout",
         type=float,
@@ -225,26 +254,30 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.drain_outbox:
         from . import note_outbox
+
         try:
             reconciliation = None
             if args.reconcile_coding:
                 try:
                     reconciliation = note_outbox.reconcile_coding()
                 except Exception:
-                    reconciliation = {'failed': True, 'reason': 'coding-metadata-unavailable'}
-            result = note_outbox.drain(lambda record: deliver_queued_note(record, lock_timeout_s=0),
-                                       limit=1, only_key=args.outbox_key)
+                    reconciliation = {"failed": True, "reason": "coding-metadata-unavailable"}
+            result = note_outbox.drain(
+                lambda record: deliver_queued_note(record, lock_timeout_s=0),
+                limit=1,
+                only_key=args.outbox_key,
+            )
             if reconciliation is not None:
-                result['coding_metadata'] = reconciliation
+                result["coding_metadata"] = reconciliation
             print(json.dumps(result, sort_keys=True))
             return 0
         except Exception:
-            print(json.dumps({'failed': True, 'reason': 'outbox-unavailable'}))
+            print(json.dumps({"failed": True, "reason": "outbox-unavailable"}))
             return 1
     if args.outbox_key:
-        ap.error('--outbox-key requires --drain-outbox')
+        ap.error("--outbox-key requires --drain-outbox")
     if args.reconcile_coding:
-        ap.error('--reconcile-coding requires --drain-outbox')
+        ap.error("--reconcile-coding requires --drain-outbox")
     try:
         payload = _read_stdin()
     except (FleetRagError, ValueError, UnicodeDecodeError) as exc:

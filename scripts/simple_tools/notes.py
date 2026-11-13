@@ -1263,10 +1263,11 @@ def _fleet_rag_delete(note_id: str, env: Mapping[str, str]) -> dict[str, Any]:
     """Best-effort Fleet RAG delete after the Apple Note is gone (AFC-728).  Returns the child result dict."""
     try:
         from fleet_rag import note_outbox, note_upsert
-        root = Path(str(env.get('HOME') or Path.home())) / '.local/state/fleet-rag-note-outbox'
+
+        root = Path(str(env.get("HOME") or Path.home())) / ".local/state/fleet-rag-note-outbox"
         note_outbox.cancel(note_upsert.note_doc_id(note_id), root=root)
     except Exception:
-        return {'ok': False, 'error': 'rag-outbox-cancellation-unavailable'}
+        return {"ok": False, "error": "rag-outbox-cancellation-unavailable"}
     payload = json.dumps({"note_id": note_id}, ensure_ascii=False).encode("utf-8")
     try:
         proc = subprocess.run(
@@ -1295,19 +1296,22 @@ def _fleet_rag_delete(note_id: str, env: Mapping[str, str]) -> dict[str, Any]:
 def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str, str]) -> dict:
     """Commit delivery intent before attempting RAG; Notes and RAG outcomes stay separate."""
     if request.get("action") not in BODY_ACTIONS or not note_id:
-        return {'state': 'excluded', 'reason': 'not-a-body-write'}
+        return {"state": "excluded", "reason": "not-a-body-write"}
     try:
         from fleet_rag import note_outbox, note_upsert
+
         queued = note_outbox.enqueue_id(note_upsert.note_doc_id(note_id))
     except Exception:
-        return {'state': 'failed', 'reason': 'durable-rag-queue-unavailable'}
+        return {"state": "failed", "reason": "durable-rag-queue-unavailable"}
     try:
         outcome = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "fleet_rag.note_upsert",
-                '--drain-outbox', '--outbox-key', queued['key'],
+                "--drain-outbox",
+                "--outbox-key",
+                queued["key"],
             ],
             capture_output=True,
             timeout=RAG_UPSERT_TIMEOUT_S,
@@ -1317,33 +1321,45 @@ def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str
         )
         if outcome.returncode == 0:
             receipt = json.loads(outcome.stdout)
-            if receipt.get('verified') == 1:
-                return {'state': 'receiver-verified'}
-            if receipt.get('quarantined'):
-                return {'state': 'failed', 'reason': 'rag-delivery-record-quarantined'}
+            if receipt.get("verified") == 1:
+                return {"state": "receiver-verified"}
+            if receipt.get("quarantined"):
+                return {"state": "failed", "reason": "rag-delivery-record-quarantined"}
     except (OSError, subprocess.SubprocessError):
         pass
     except (ValueError, TypeError):
         pass
-    return {'state': 'queued', 'reason': 'receiver-verification-pending'}
+    return {"state": "queued", "reason": "receiver-verification-pending"}
 
 
 def retry_rag_outbox(env: Mapping[str, Any]) -> dict:
     """One bounded retry in the existing Notes runner, with its existing credential route."""
     try:
-        process = subprocess.run([sys.executable, '-m', 'fleet_rag.note_upsert', '--drain-outbox', '--reconcile-coding'],
-                                 cwd=str(_SCRIPTS_ROOT), env=rag_subprocess_env(env),
-                                 capture_output=True, timeout=30, check=False)
+        process = subprocess.run(
+            [sys.executable, "-m", "fleet_rag.note_upsert", "--drain-outbox", "--reconcile-coding"],
+            cwd=str(_SCRIPTS_ROOT),
+            env=rag_subprocess_env(env),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
         if process.returncode == 0:
             record = json.loads(process.stdout)
-            summary = {name: int(record.get(name, 0)) for name in ('verified', 'pending', 'superseded', 'quarantined')}
-            metadata = record.get('coding_metadata')
+            summary = {
+                name: int(record.get(name, 0))
+                for name in ("verified", "pending", "superseded", "quarantined")
+            }
+            metadata = record.get("coding_metadata")
             if isinstance(metadata, dict):
-                summary['coding_metadata'] = {name: metadata[name] for name in ('baseline_only', 'observed', 'changed', 'queued', 'failed') if name in metadata and type(metadata[name]) in (bool, int)}
+                summary["coding_metadata"] = {
+                    name: metadata[name]
+                    for name in ("baseline_only", "observed", "changed", "queued", "failed")
+                    if name in metadata and type(metadata[name]) in (bool, int)
+                }
             return summary
     except Exception:
         pass
-    return {'failed': 1}
+    return {"failed": 1}
 
 
 def run_direct(
@@ -1475,7 +1491,7 @@ def run_direct(
             if action in BODY_ACTIONS:
                 delivery = _fleet_rag_upsert(request, note_id, env)
                 if isinstance(delivery, dict):
-                    result['rag_delivery'] = delivery
+                    result["rag_delivery"] = delivery
         skipped = _pin_skipped(proc.stderr)
         if skipped:
             result["pin_skipped"] = skipped
