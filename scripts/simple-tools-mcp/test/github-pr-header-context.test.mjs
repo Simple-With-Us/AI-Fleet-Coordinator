@@ -83,10 +83,46 @@ test("actual hosted description edits preserve quoted, fenced and arbitrary late
     `- Pass Required CI\n\n  ${full}`,
     `- Pass Required CI\n${full}`,
     `- \`\`\`text\n\n${full}\n  \`\`\``,
+    `@kody start-review\n1. Pass Required CI\n\n> ${full}`,
+    `@kody start-review\n1. Pass Required CI\n\n  ${full}`,
+    `1000000000) Example\n\n${full}`,
+    `\t${full}`,
+    `    ${full}`,
   ]) {
     const result = await tools.call("gr_edit_pr", { repo: "example/header-fixture", number: 1, body });
     assert.ok(!result.isError, result.content?.[0]?.text);
     assert.equal(sent.at(-1).args.body, body);
+  }
+});
+
+test("actual hosted descriptions compose command, finite ordered criteria and header-first indentation", async () => {
+  const { tools, sent } = harness();
+  for (const [prefix, leading] of [
+    ["@kody start-review\r\n- Pass Required CI\r\n\r\n", ""],
+    ["1. Pass Required CI\n999999999) Keep The Hold\n\n", ""],
+    ["@kody start-review\n1. Pass Required CI\n\n", ""],
+    ["", "   "],
+  ]) {
+    const body = `${prefix}${leading}${full}\nSummary\n${full} later sample`;
+    const expected = `${prefix}${leading}${compact}\nSummary\n${full} later sample`;
+    for (const [action, extra] of [
+      ["gr_open_pr", { base: "main", head: "feature", title: `${full} Title` }],
+      ["gr_edit_pr", { number: 1, title: `${full} Title` }],
+    ]) {
+      const result = await tools.call(action, { repo: "example/header-fixture", body, ...extra });
+      assert.ok(!result.isError, result.content?.[0]?.text);
+      assert.equal(sent.at(-1).args.body, expected);
+      assert.equal(sent.at(-1).args.title, `${compact} Title`);
+    }
+  }
+  const sample = `@kody start-review\n1. Example\n\n${full}`;
+  for (const [action, extra] of [
+    ["gr_comment_pr", { number: 1 }],
+    ["gr_wf_review_submit", { number: 1, commit_id: sha, event: "COMMENT" }],
+  ]) {
+    const result = await tools.call(action, { repo: "example/header-fixture", body: sample, ...extra });
+    assert.ok(!result.isError, result.content?.[0]?.text);
+    assert.equal(sent.at(-1).args.body, sample);
   }
 });
 

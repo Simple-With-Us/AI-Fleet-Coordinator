@@ -514,7 +514,7 @@ function prBodyPrefix(text) {
     const chunk = text.slice(cursor, cursor + 8193);
     const newline = chunk.indexOf("\n");
     const line = (newline < 0 ? chunk : chunk.slice(0, newline)).replace(/\r$/u, "");
-    const bullet = /^[-*+] ([^\r\n]+)$/u.exec(line);
+    const bullet = /^(?:[-*+]|[0-9]{1,9}[.)]) ([^\r\n]+)$/u.exec(line);
     if (bullet) {
       const payload = bullet[1].replace(/^[ \t]*/u, "").replace(/^\[[ xX]\][ \t]+/u, "");
       if (newline < 0 || !payload || /^(?:>|<|`{3}|~{3})/u.test(payload)) return null;
@@ -540,15 +540,21 @@ export function normalizeHeader(text, { seat = null, context = "message" } = {})
   if (!["message", "github-pr", "github-pr-body"].includes(context)) throw new TypeError("unknown header context");
   const isPr = context !== "message";
   let prefix = isPr ? /^@kody start-review\r?\n/u.exec(text)?.[0] ?? "" : "";
-  if (context === "github-pr-body" && !prefix) {
-    const end = prBodyPrefix(text);
+  let criteria = "";
+  if (context === "github-pr-body") {
+    const description = text.slice(prefix.length);
+    const end = prBodyPrefix(description);
     if (end === null) return text;
-    prefix = text.slice(0, end);
+    criteria = description.slice(0, end);
+    prefix += criteria;
   }
   const content = text.slice(prefix.length);
-  const pattern = context === "github-pr-body"
-    ? /^(?<lead>(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u
-    : /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;
+  let pattern = /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;
+  if (context === "github-pr-body") {
+    pattern = criteria.replace(/[ \t\r\n]/gu, "")
+      ? /^(?<lead>(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u
+      : /^(?<lead> {0,3}(?:(?:👀|:eyes:)[ \t]*)?)\[(?<inner>[^\r\n\[\]]+)\]/u;
+  }
   const match = pattern.exec(content);
   if (!match) return text;
   const parts = match.groups.inner.split(/\s*(?:→|->)\s*/u);

@@ -23,6 +23,9 @@ _SENDER = re.compile(
 )
 _OPERATOR_THREAD = re.compile(r"[A-Z]{1,2}[.-]\d+[.-][MSC]")
 _BODY_HEADER = re.compile(r"^(?P<lead>(?:(?:👀|:eyes:)[ \t]*)?)\[(?P<inner>[^\r\n\[\]]+)\]")
+_BODY_FIRST_HEADER = re.compile(
+    r"^(?P<lead> {0,3}(?:(?:👀|:eyes:)[ \t]*)?)\[(?P<inner>[^\r\n\[\]]+)\]"
+)
 
 
 def _pr_body_prefix(text: str) -> int | None:
@@ -33,7 +36,7 @@ def _pr_body_prefix(text: str) -> int | None:
         chunk = text[cursor : cursor + 8193]
         newline = chunk.find("\n")
         line = (chunk if newline < 0 else chunk[:newline]).removesuffix("\r")
-        bullet = re.fullmatch(r"[-*+] ([^\r\n]+)", line)
+        bullet = re.fullmatch(r"(?:[-*+]|[0-9]{1,9}[.)]) ([^\r\n]+)", line)
         if bullet:
             payload = re.sub(r"^\[[ xX]\][ \t]+", "", bullet.group(1).lstrip(" \t"))
             if newline < 0 or not payload or re.match(r"(?:>|<|`{3}|~{3})", payload):
@@ -63,19 +66,25 @@ def normalize_header(text: str, *, seat: str | None = None, context: str = "mess
     letter identifies the thread, so its sender never carries a runtime session suffix.
     Legacy transport-only tags remain readable; message context keeps their correlation fragment.  PR
     contexts omit repositories and private transport, preserving the literal Kody command line.  Only PR
-    body context permits a bounded initial readiness-bullet block before the envelope."""
+    body context permits a bounded initial list of readiness criteria before the envelope."""
     if context not in ("message", "github-pr", "github-pr-body"):
         raise ValueError("unknown header context")
     is_pr = context != "message"
     command = re.match(r"^@kody start-review\r?\n", text) if is_pr else None
     prefix = command.group(0) if command else ""
-    if context == "github-pr-body" and not command:
-        end = _pr_body_prefix(text)
+    criteria = ""
+    if context == "github-pr-body":
+        description = text[len(prefix) :]
+        end = _pr_body_prefix(description)
         if end is None:
             return text
-        prefix = text[:end]
+        criteria = description[:end]
+        prefix += criteria
     content = text[len(prefix) :]
-    match = (_BODY_HEADER if context == "github-pr-body" else _HEADER).match(content)
+    pattern = _HEADER
+    if context == "github-pr-body":
+        pattern = _BODY_HEADER if criteria.strip(" \t\r\n") else _BODY_FIRST_HEADER
+    match = pattern.match(content)
     if not match:
         return text
     parts = re.split(r"\s*(?:→|->)\s*", match.group("inner"), maxsplit=1)

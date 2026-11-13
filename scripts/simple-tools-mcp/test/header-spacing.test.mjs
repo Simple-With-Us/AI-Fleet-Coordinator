@@ -30,11 +30,15 @@ test("PR body readiness prefix has the same exact line and UTF-8 byte bounds as 
   for (const [prefix, accepted] of [
     ["- Wait\n".repeat(31) + "\n", true],
     ["- Wait\n".repeat(32) + "\n", false],
+    ["1. Wait\n".repeat(31) + "\n", true],
+    ["1. Wait\n".repeat(32) + "\n", false],
     ["- " + "é".repeat(4094) + "\n\n", true],
     ["- " + "é".repeat(4094) + "x\n\n", false],
   ]) {
-    assert.equal(normalizeHeader(prefix + full, { context: "github-pr-body" }),
-      prefix + (accepted ? compact : full), `prefix bytes=${Buffer.byteLength(prefix)}`);
+    for (const command of ["", "@kody start-review\r\n"]) {
+      assert.equal(normalizeHeader(command + prefix + full, { context: "github-pr-body" }),
+        command + prefix + (accepted ? compact : full), `prefix bytes=${Buffer.byteLength(prefix)}`);
+    }
   }
 });
 

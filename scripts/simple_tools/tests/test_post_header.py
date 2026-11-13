@@ -29,14 +29,19 @@ class HeaderSpacingTests(unittest.TestCase):
         for prefix, accepted in (
             ("- Wait\n" * 31 + "\n", True),
             ("- Wait\n" * 32 + "\n", False),
+            ("1. Wait\n" * 31 + "\n", True),
+            ("1. Wait\n" * 32 + "\n", False),
             ("- " + "é" * 4094 + "\n\n", True),
             ("- " + "é" * 4094 + "x\n\n", False),
         ):
-            with self.subTest(lines=prefix.count("\n"), bytes=len(prefix.encode("utf-8"))):
-                self.assertEqual(
-                    post_header.normalize_header(prefix + full, context="github-pr-body"),
-                    prefix + (compact if accepted else full),
-                )
+            for command in ("", "@kody start-review\r\n"):
+                with self.subTest(
+                    lines=prefix.count("\n"), bytes=len(prefix.encode("utf-8")), command=command
+                ):
+                    self.assertEqual(
+                        post_header.normalize_header(command + prefix + full, context="github-pr-body"),
+                        command + prefix + (compact if accepted else full),
+                    )
 
     def test_shared_golden_headers_survive_json_utf8_and_legacy_parsing(self):
         for case in FIXTURES:
