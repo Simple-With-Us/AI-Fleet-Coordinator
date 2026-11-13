@@ -611,9 +611,7 @@ class DoctorTests(Base):
         self.use(world)
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
         self.env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        code, out, err = self.call(
-            "doctor", "--json", "--project", "fleet-ops", "--path", "/"
-        )
+        code, out, err = self.call("doctor", "--json", "--project", "fleet-ops", "--path", "/")
         rep = json.loads(out)
         self.assertEqual(code, 0)
         self.assertTrue(rep["ok"])
@@ -634,9 +632,7 @@ class DoctorTests(Base):
         self.assertTrue(rep["reader_configured"])
         self.assertFalse(rep["writer_configured"])
         self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
-        self.assertEqual(
-            [(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")]
-        )
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")])
         self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
         self.assertNoSentinel(out, err)
 
