@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { composeBody, MAX_CONTENT_LENGTH, normalizeHeader, tagPrefix, UsageError } from "../src/contract.js";
+import { gapGitHubArgs } from "../src/outbound-gap.js";
 
 const fixtures = JSON.parse(readFileSync(new URL("../../simple_tools/tests/header-spacing.json", import.meta.url), "utf8"));
 
@@ -36,4 +37,12 @@ test("the hosted content cap applies after header serialization", () => {
   const prefix = "[CODEX: EE.1.S 📁AFC] ";
   const input = prefix + "x".repeat(MAX_CONTENT_LENGTH - Array.from(prefix).length);
   assert.throws(() => composeBody(tagPrefix("CODEX", null), input), UsageError);
+});
+
+test("GitHub prose verbs preserve all exact header spaces through gap handling and JSON", () => {
+  const body = fixtures[0].expected;
+  for (const verb of ["open_pr", "edit_pr", "comment_pr", "reply_thread", "wf_pr_edit", "wf_issue_comment"]) {
+    const wire = JSON.parse(JSON.stringify(gapGitHubArgs(verb, { body })));
+    assert.equal(wire.body, body, verb);
+  }
 });
