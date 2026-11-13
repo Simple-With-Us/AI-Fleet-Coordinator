@@ -257,6 +257,7 @@ REDUCED_STATUS_MAX_BYTES = 256 * 1024
 # container the module is at its image path.  Every word of the docker argv is a constant here.
 EAVESDROPPER_SETTINGS_VERB = "eavesdropper-settings"
 EAVESDROPPER_SETTINGS_TARGET = "server"
+# The server-route action set; direct CLI choices remain get/plan/apply.
 EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply", "save", "initialize", "reconcile")
 EAVESDROPPER_SETTINGS_ALLOWLIST_NAME = "fleet-ops-eavesdropper-settings.json"
 EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES = 64 * 1024
@@ -1815,7 +1816,7 @@ def eavesdropper_settings(
     server's container.  The fields are the usual `ok`, `result`, `detail` (and `errorCode`), the
     editor's whole answer as `eavesdropperSettings`, and a plain-text `output` for a terminal."""
     if action not in EAVESDROPPER_SETTINGS_ACTIONS:
-        raise Refused("the eavesdropper settings action is get, plan or apply")
+        raise Refused("unsupported eavesdropper settings action")
     request = {"action": action, "allowlist": load_eavesdropper_settings_allowlist(ctx)}
     if action in ("save", "initialize", "reconcile"):
         request.update(requestID=request_id, requestCreatedAt=created_at)
