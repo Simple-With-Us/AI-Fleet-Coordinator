@@ -52,16 +52,22 @@ struct ResourceLimitsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                receiptStatus
-                serverGateNote
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    VStack(alignment: .leading, spacing: 18) {
+                        receiptStatusLine(now: context.date)
+                        serverGateNote
+                        if let snapshot = reading.snapshot {
+                            summaryBody(snapshot, state: reading.state(at: context.date))
+                        } else {
+                            unknownCard
+                        }
+                    }
+                }
                 if let snapshot = reading.snapshot {
-                    summaryCard(snapshot)
                     cpuCard(snapshot)
                     memoryCard(snapshot)
                     borrowingCard(snapshot)
                     receiptCard(snapshot)
-                } else {
-                    unknownCard
                 }
             }
             .frame(maxWidth: 920, alignment: .leading)
@@ -110,12 +116,7 @@ struct ResourceLimitsView: View {
 
     // MARK: - Where the values came from and how old they are
 
-    /// Ticks every second,  so the age it shows is never frozen (RESOURCES-8).
-    private var receiptStatus: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            receiptStatusLine(now: context.date)
-        }
-    }
+    /// Status line rendered from the parent `TimelineView` clock (RESOURCES-8).
 
     private func receiptStatusLine(now: Date) -> some View {
         let state = reading.state(at: now)
@@ -213,14 +214,7 @@ struct ResourceLimitsView: View {
         }
     }
 
-    /// One sentence on whether the limits are in effect,  then every named cause or reason.
-    /// A reading that is not current never gets the green check:  it says what the last
-    /// report said,  in a neutral tint (RESOURCES-22).
-    private func summaryCard(_ snapshot: ResourcePolicySnapshot) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            summaryBody(snapshot, state: reading.state(at: context.date))
-        }
-    }
+    // Summary body is driven directly by the consolidated TimelineView above (RESOURCES-22).
 
     private func summaryBody(_ snapshot: ResourcePolicySnapshot, state: ResourcePolicyReadState) -> some View {
         let applied = snapshot.status == "applied"

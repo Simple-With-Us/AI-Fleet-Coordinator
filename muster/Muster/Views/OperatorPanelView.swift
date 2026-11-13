@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Operator panel:  the one service on the server that reads Zulip, wakes the right chat and
@@ -18,6 +19,16 @@ struct OperatorPanelView: View {
     var openControls: () -> Void = {}
 
     @ObservedObject private var store = OperatorPanelStore.shared
+    @State private var seatGrouping: OperatorSeatGrouping = .byPlatform
+    @State private var seatFilter: OperatorSeatFilter = .all
+    @State private var seatSearch: String = ""
+    @State private var showAllSeats: Bool = false
+    @State private var collapsedSeatGroups: Set<String> = []
+    @State private var wakeGrouping: OperatorWakeGrouping = .newestFirst
+    @State private var wakeFilter: OperatorWakeFilter = .all
+    @State private var wakeSearch: String = ""
+    @State private var showAllWakes: Bool = false
+    @State private var collapsedWakeSeats: Set<String> = []
 
     /// How often the panel reads again while it is open.
     static let rereadSeconds: TimeInterval = 60
@@ -30,9 +41,11 @@ struct OperatorPanelView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    header
                     TimelineView(.periodic(from: .now, by: 10)) { context in
-                        readings(now: context.date)
+                        VStack(alignment: .leading, spacing: 14) {
+                            header(now: context.date)
+                            readings(now: context.date)
+                        }
                     }
                     SectionPanel(title: "Settings") {
                         ServerListenerSettingsSection()
@@ -58,16 +71,14 @@ struct OperatorPanelView: View {
 
     // MARK: The header
 
-    private var header: some View {
+    private func header(now: Date) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(OperatorPanelCopy.heading)
                 .font(.title2.weight(.semibold))
             Spacer()
-            TimelineView(.periodic(from: .now, by: 5)) { context in
-                Text(headerAge(now: context.date))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(headerAge(now: now))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if store.loading { ProgressView().controlSize(.small) }
             Button {
                 Task { await Self.readEverything(store) }
@@ -126,29 +137,154 @@ struct OperatorPanelView: View {
             case .unreachable(let why)?, .unavailable(let why)?:
                 EmptyNote(text: why)
             case .read(let document)?:
-                let table = OperatorPanelPresentation.seatsTable(document, status: store.status, now: now)
-                if table.rows.isEmpty {
-                    EmptyNote(text: "The registry holds no chats.")
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        OperatorSeatHeader()
-                        Divider()
-                        ForEach(table.rows) { OperatorSeatRowView(row: $0) }
+                let table = OperatorPanelPresentation.seatsTable(
+                    document,
+                    status: store.status,
+                    now: now,
+                    limit: showAllSeats ? Int.max : OperatorPanelPresentation.seatRowLimit,
+                    filter: seatFilter,
+                    search: seatSearch,
+                    grouping: seatGrouping
+                )
+                VStack(alignment: .leading, spacing: 8) {
+                    seatsToolbar(table: table)
+                    if table.rows.isEmpty {
+                        if document.sessions.isEmpty {
+                            EmptyNote(text: "The registry holds no chats.")
+                        } else {
+                            HStack(spacing: 8) {
+                                Text("No chats match the current filter.")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                Button("Reset Filters") {
+                                    seatFilter = .all
+                                    seatSearch = ""
+                                }
+                                .buttonStyle(.link)
+                            }
+                        }
+                    } else if seatGrouping == .flat {
+                        VStack(alignment: .leading, spacing: 4) {
+                            OperatorSeatHeader(showPlatform: true)
+                            Divider()
+                            ForEach(table.rows) { OperatorSeatRowView(row: $0, showPlatform: true) }
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(table.groups) { group in
+                                seatGroupView(group)
+                            }
+                        }
                     }
-                }
-                if table.moreCount > 0 {
-                    Text("and \(table.moreCount) more")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let note = table.note {
-                    Text(note)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !showAllSeats && table.moreCount > 0 {
+                        Button("Show All \(table.totalMatchingCount) Chats (\(table.moreCount) More)") {
+                            showAllSeats = true
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.link)
+                    } else if showAllSeats && table.totalMatchingCount > OperatorPanelPresentation.seatRowLimit {
+                        Button("Show First \(OperatorPanelPresentation.seatRowLimit)") {
+                            showAllSeats = false
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.link)
+                    }
+                    if let note = table.note {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
+    }
+
+    private func seatsToolbar(table: OperatorSeatsTable) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                MusterSearchField(prompt: "Filter seat, platform, letter, or issue\u{2026}", text: $seatSearch)
+                Picker("Filter", selection: $seatFilter) {
+                    ForEach(OperatorSeatFilter.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+            HStack(spacing: 8) {
+                Picker("Group", selection: $seatGrouping) {
+                    ForEach(OperatorSeatGrouping.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                if table.totalMatchingCount > 0 {
+                    Text(seatGrouping == .flat
+                         ? "Showing \(table.rows.count) of \(table.totalMatchingCount)"
+                         : "Showing \(table.rows.count) of \(table.totalMatchingCount) across \(table.groups.count) groups")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if seatGrouping != .flat && !table.groups.isEmpty {
+                    let allCollapsed = table.groups.allSatisfy { collapsedSeatGroups.contains($0.id) }
+                    Button(allCollapsed ? "Expand All" : "Collapse All") {
+                        if allCollapsed {
+                            collapsedSeatGroups.removeAll()
+                        } else {
+                            collapsedSeatGroups = Set(table.groups.map(\.id))
+                        }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                }
+            }
+        }
+    }
+
+    private func seatGroupView(_ group: OperatorSeatGroup) -> some View {
+        let isCollapsed = collapsedSeatGroups.contains(group.id)
+        let showPlatform = (seatGrouping != .byPlatform)
+        return VStack(alignment: .leading, spacing: 6) {
+            MusterGroupHeaderButton(
+                title: group.title,
+                isExpanded: !isCollapsed,
+                summary: group.seatsSummary,
+                badges: seatGroupBadges(group)
+            ) {
+                if isCollapsed {
+                    collapsedSeatGroups.remove(group.id)
+                } else {
+                    collapsedSeatGroups.insert(group.id)
+                }
+            }
+            if !isCollapsed {
+                VStack(alignment: .leading, spacing: 4) {
+                    OperatorSeatHeader(showPlatform: showPlatform)
+                    Divider()
+                    ForEach(group.rows) { OperatorSeatRowView(row: $0, showPlatform: showPlatform) }
+                }
+                .padding(.leading, 14)
+            }
+        }
+    }
+
+    private func seatGroupBadges(_ group: OperatorSeatGroup) -> [MusterBadgeSpec] {
+        var badges: [MusterBadgeSpec] = []
+        if group.liveCount > 0 {
+            badges.append(MusterBadgeSpec(text: "\(group.liveCount) live", color: .green))
+        }
+        if group.goneCount > 0 {
+            badges.append(MusterBadgeSpec(text: "\(group.goneCount) gone", color: .secondary))
+        }
+        if group.problemCount > 0 {
+            badges.append(MusterBadgeSpec(text: "\(group.problemCount) attention", color: .orange))
+        }
+        return badges
     }
 
     @ViewBuilder
@@ -160,31 +296,148 @@ struct OperatorPanelView: View {
             case .unreachable(let why)?, .unavailable(let why)?:
                 EmptyNote(text: why)
             case .read(let document)?:
-                let table = OperatorPanelPresentation.wakesTable(document, now: now)
-                if table.rows.isEmpty {
-                    EmptyNote(text: "No wakes in the last 24 hours.")
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        OperatorWakeHeader()
-                        Divider()
-                        ForEach(table.rows) { OperatorWakeRowView(row: $0) }
+                let table = OperatorPanelPresentation.wakesTable(
+                    document,
+                    now: now,
+                    limit: showAllWakes ? Int.max : OperatorPanelPresentation.wakeRowLimit,
+                    filter: wakeFilter,
+                    search: wakeSearch
+                )
+                VStack(alignment: .leading, spacing: 8) {
+                    wakesToolbar(table: table)
+                    if table.rows.isEmpty {
+                        let anyLoaded = document.seats.contains { !$0.recent.isEmpty }
+                        if !anyLoaded {
+                            EmptyNote(text: "No wakes in the last 24 hours.")
+                        } else {
+                            HStack(spacing: 8) {
+                                Text("No wakes match the current filter.")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                Button("Reset Filters") {
+                                    wakeFilter = .all
+                                    wakeSearch = ""
+                                }
+                                .buttonStyle(.link)
+                            }
+                        }
+                    } else if wakeGrouping == .newestFirst {
+                        VStack(alignment: .leading, spacing: 4) {
+                            OperatorWakeHeader()
+                            Divider()
+                            ForEach(table.rows) { OperatorWakeRowView(row: $0) }
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(table.seatGroups) { group in
+                                wakeGroupView(group)
+                            }
+                        }
+                    }
+                    if !showAllWakes && table.loadedMoreCount > 0 {
+                        Button("Show All \(table.totalLoadedCount) Loaded Wakes (\(table.loadedMoreCount) More)") {
+                            showAllWakes = true
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.link)
+                    } else if showAllWakes && table.totalLoadedCount > OperatorPanelPresentation.wakeRowLimit {
+                        Button("Show First \(OperatorPanelPresentation.wakeRowLimit)") {
+                            showAllWakes = false
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.link)
+                    }
+                    if table.unloadedServerCount > 0 {
+                        Text("\(table.unloadedServerCount) older wakes on the server are counted in the total and not included in this list.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let summary = table.summary {
+                        Text(summary)
+                            .font(.callout)
+                    }
+                    ForEach(table.notes, id: \.self) { note in
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                if table.moreCount > 0 {
-                    Text("and \(table.moreCount) more")
+            }
+        }
+    }
+
+    private func wakesToolbar(table: OperatorWakesTable) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                MusterSearchField(prompt: "Filter seat, state, or reason\u{2026}", text: $wakeSearch)
+                Picker("Filter", selection: $wakeFilter) {
+                    ForEach(OperatorWakeFilter.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+            HStack(spacing: 8) {
+                Picker("Group", selection: $wakeGrouping) {
+                    ForEach(OperatorWakeGrouping.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                if table.totalLoadedCount > 0 {
+                    Text("Showing \(table.rows.count) of \(table.totalLoadedCount) loaded")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let summary = table.summary {
-                    Text(summary)
-                        .font(.callout)
+                if wakeGrouping == .bySeat && !table.seatGroups.isEmpty {
+                    let allCollapsed = table.seatGroups.allSatisfy { collapsedWakeSeats.contains($0.id) }
+                    Button(allCollapsed ? "Expand All" : "Collapse All") {
+                        if allCollapsed {
+                            collapsedWakeSeats.removeAll()
+                        } else {
+                            collapsedWakeSeats = Set(table.seatGroups.map(\.id))
+                        }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
                 }
-                ForEach(table.notes, id: \.self) { note in
-                    Text(note)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func wakeGroupView(_ group: OperatorWakeSeatGroup) -> some View {
+        let isCollapsed = collapsedWakeSeats.contains(group.id)
+        var badges = [MusterBadgeSpec(text: "\(group.rows.count)", color: .secondary)]
+        if group.problemCount > 0 {
+            badges.append(MusterBadgeSpec(text: "\(group.problemCount) stopped", color: .orange))
+        }
+        return VStack(alignment: .leading, spacing: 6) {
+            MusterGroupHeaderButton(
+                title: group.seat,
+                isExpanded: !isCollapsed,
+                summary: nil,
+                badges: badges
+            ) {
+                if isCollapsed {
+                    collapsedWakeSeats.remove(group.id)
+                } else {
+                    collapsedWakeSeats.insert(group.id)
                 }
+            }
+            if !isCollapsed {
+                VStack(alignment: .leading, spacing: 4) {
+                    OperatorWakeHeader()
+                    Divider()
+                    ForEach(group.rows) { OperatorWakeRowView(row: $0) }
+                }
+                .padding(.leading, 14)
             }
         }
     }
@@ -275,20 +528,26 @@ private struct OperatorCellView: View {
 }
 
 private enum OperatorColumns {
-    static let seat: CGFloat = 120
-    static let letter: CGFloat = 56
-    static let host: CGFloat = 60
-    static let state: CGFloat = 70
-    static let wake: CGFloat = 110
-    static let router: CGFloat = 120
-    static let time: CGFloat = 150
+    static let seat: CGFloat = 105
+    static let letter: CGFloat = 52
+    static let platform: CGFloat = 76
+    static let host: CGFloat = 50
+    static let state: CGFloat = 66
+    static let wake: CGFloat = 98
+    static let router: CGFloat = 108
+    static let time: CGFloat = 140
 }
 
 private struct OperatorSeatHeader: View {
+    let showPlatform: Bool
+
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             header("Seat", OperatorColumns.seat)
             header("Letter", OperatorColumns.letter)
+            if showPlatform {
+                header("Platform", OperatorColumns.platform)
+            }
             header("Host", OperatorColumns.host)
             header("State", OperatorColumns.state)
             header("Wake", OperatorColumns.wake)
@@ -308,40 +567,65 @@ private struct OperatorSeatHeader: View {
 
 private struct OperatorSeatRowView: View {
     let row: OperatorSeatRow
+    let showPlatform: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(row.seat)
-                .font(.system(size: 11, design: .monospaced).weight(.semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(width: OperatorColumns.seat, alignment: .leading)
-            Text(row.letter)
-                .font(.system(size: 11, design: .monospaced))
-                .frame(width: OperatorColumns.letter, alignment: .leading)
-            Text(row.host)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: OperatorColumns.host, alignment: .leading)
-            OperatorCellView(cell: row.state)
-                .frame(width: OperatorColumns.state, alignment: .leading)
-            OperatorCellView(cell: row.wake)
-                .frame(width: OperatorColumns.wake, alignment: .leading)
-            OperatorCellView(cell: row.router)
-                .frame(width: OperatorColumns.router, alignment: .leading)
-            Text(row.lastSeen)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text(row.seat)
+                    .font(.system(size: 11, design: .monospaced).weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: OperatorColumns.seat, alignment: .leading)
+                Text(row.letter)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(width: OperatorColumns.letter, alignment: .leading)
+                if showPlatform {
+                    Text(row.platform)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(width: OperatorColumns.platform, alignment: .leading)
+                }
+                Text(row.host)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(width: OperatorColumns.host, alignment: .leading)
+                OperatorCellView(cell: row.state)
+                    .frame(width: OperatorColumns.state, alignment: .leading)
+                OperatorCellView(cell: row.wake)
+                    .frame(width: OperatorColumns.wake, alignment: .leading)
+                OperatorCellView(cell: row.router)
+                    .frame(width: OperatorColumns.router, alignment: .leading)
+                Text(row.lastSeen)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !row.issues.isEmpty {
+                Text("Issues: " + row.issues.joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.leading, 8)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.vertical, 2)
         .textSelection(.enabled)
+        .contextMenu {
+            Button("Copy Seat & Letter") {
+                MusterClipboard.copy("\(row.seat) \(row.letter) (\(row.platform), \(row.host))")
+            }
+            Button("Copy Seat Name") {
+                MusterClipboard.copy(row.seat)
+            }
+        }
     }
 }
 
 private struct OperatorWakeHeader: View {
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             header("Time", OperatorColumns.time)
             header("Seat", OperatorColumns.seat)
             header("State", OperatorColumns.wake)
@@ -362,7 +646,7 @@ private struct OperatorWakeRowView: View {
     let row: OperatorWakeLine
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text(row.time)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -382,5 +666,106 @@ private struct OperatorWakeRowView: View {
         }
         .padding(.vertical, 2)
         .textSelection(.enabled)
+        .contextMenu {
+            Button("Copy Wake Summary") {
+                MusterClipboard.copy("\(row.time) \(row.seat) — \(row.state.text): \(row.reason)")
+            }
+            Button("Copy Seat Name") {
+                MusterClipboard.copy(row.seat)
+            }
+        }
+    }
+}
+
+// MARK: - Shared UI controls
+
+enum MusterClipboard {
+    static func copy(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
+struct MusterSearchField: View {
+    let prompt: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.roundedBorder)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear filter text")
+            }
+        }
+    }
+}
+
+struct MusterBadgeSpec: Hashable {
+    let text: String
+    let color: Color
+}
+
+struct MusterCountBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(color == .secondary ? Color.primary.opacity(0.75) : color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+struct MusterGroupHeaderButton: View {
+    let title: String
+    let isExpanded: Bool
+    let summary: String?
+    let badges: [MusterBadgeSpec]
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 8) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 10)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                ForEach(badges, id: \.self) { badge in
+                    MusterCountBadge(text: badge.text, color: badge.color)
+                }
+                if let summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

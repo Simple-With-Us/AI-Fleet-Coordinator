@@ -18,6 +18,7 @@ struct AppProcessesView: View {
     @State private var reading: AppProcessesReading?
     @State private var loading = false
     @State private var showAppsWithoutProcesses = true
+    @State private var searchText = ""
 
     var body: some View {
         ScrollView {
@@ -92,6 +93,7 @@ struct AppProcessesView: View {
             if !reading.isCurrent {
                 problemBox("Not Known.\u{00A0} The report is older than 45 minutes, so nothing in it is current.\u{00A0} Every app reads Not Known until the doctor writes a fresh one.")
             }
+            MusterSearchField(prompt: "Filter app, process, executable, or state\u{2026}", text: $searchText)
             ForEach(reading.hosts) { host in
                 hostCard(host)
             }
@@ -115,12 +117,20 @@ struct AppProcessesView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(visibleApps(host)) { app in
-                    appRow(app)
+            let toggled = appsRespectingToggle(host)
+            let visible = visibleApps(from: toggled)
+            if visible.isEmpty && !toggled.isEmpty {
+                Text("No apps or processes match the current search.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(visible) { app in
+                        appRow(app)
+                    }
                 }
             }
-            let hidden = host.apps.count - visibleApps(host).count
+            let hidden = host.apps.count - toggled.count
             if hidden > 0 {
                 Text(hidden == 1 ? "1 app with no process seen is hidden." : "\(hidden) apps with no process seen are hidden.")
                     .font(.system(size: 11))
@@ -154,8 +164,23 @@ struct AppProcessesView: View {
     }
 
     /// Only an app the full read found nothing for may be hidden:  a Not Known row stays.
-    private func visibleApps(_ host: AppProcessesHostReading) -> [AppProcessesAppReading] {
+    private func appsRespectingToggle(_ host: AppProcessesHostReading) -> [AppProcessesAppReading] {
         showAppsWithoutProcesses ? host.apps : host.apps.filter { $0.state != .noProcessSeen }
+    }
+
+    private func visibleApps(from apps: [AppProcessesAppReading]) -> [AppProcessesAppReading] {
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return apps }
+        return apps.filter { app in
+            var fields = [app.title, app.state.words]
+            for process in app.processes {
+                fields.append(process.name)
+                if let executable = process.executable { fields.append(executable) }
+                fields.append(process.stateWords)
+                if let pid = process.pid { fields.append("\(pid)") }
+            }
+            return fields.contains { $0.localizedCaseInsensitiveContains(needle) }
+        }
     }
 
     // MARK: One app

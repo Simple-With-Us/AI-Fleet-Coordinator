@@ -39,6 +39,10 @@ struct OperationsView: View {
     @State private var allowlist: OpsAllowlist?
     @State private var allowlistPath = ""
     @State private var audit: OpsAuditReading?
+    @State private var auditSearch = ""
+    @State private var auditHostFilter: OpsAuditHostFilter = .all
+    @State private var auditResultFilter: OpsAuditResultFilter = .all
+    @State private var auditExpanded = false
     @State private var loading = false
     @State private var collectingAgents = false
     @State private var refreshRequests = OperationsRefreshRequests()
@@ -409,7 +413,7 @@ struct OperationsView: View {
             sectionHeader(
                 "Actions",
                 state: nil,
-                detail: "last \(OpsAuditLog.defaultLimit) rows, newest first"
+                detail: auditExpanded ? "all loaded rows, newest first" : "last \(OpsAuditLog.defaultLimit) rows, newest first"
             )
             if let audit {
                 if let problem = audit.problem {
@@ -419,9 +423,44 @@ struct OperationsView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    GridRowHeader(labels: ["Time", "Machine", "Verb", "Target", "Result"])
-                    ForEach(audit.entries) { entry in
-                        auditRow(entry)
+                    auditToolbar(audit: audit)
+                    let visible = audit.filteredEntries(
+                        host: auditHostFilter,
+                        result: auditResultFilter,
+                        search: auditSearch
+                    )
+                    if visible.isEmpty {
+                        HStack(spacing: 8) {
+                            Text("No actions match the current filter.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Button("Reset Filters") {
+                                auditSearch = ""
+                                auditHostFilter = .all
+                                auditResultFilter = .all
+                            }
+                            .buttonStyle(.link)
+                        }
+                    } else {
+                        GridRowHeader(labels: ["Time", "Machine", "Verb", "Target", "Result"])
+                        ForEach(visible) { entry in
+                            auditRow(entry)
+                        }
+                    }
+                    if !auditExpanded && audit.moreCount > 0 {
+                        Button("Show All \(audit.totalParsed) Rows (\(audit.moreCount) More)") {
+                            auditExpanded = true
+                            Task { await load(collectAgents: false) }
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.link)
+                    } else if auditExpanded && audit.totalParsed > OpsAuditLog.defaultLimit {
+                        Button("Show First \(OpsAuditLog.defaultLimit)") {
+                            auditExpanded = false
+                            Task { await load(collectAgents: false) }
+                        }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.link)
                     }
                 }
                 if audit.unreadable > 0 {
@@ -436,6 +475,33 @@ struct OperationsView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+        }
+    }
+
+    private func auditToolbar(audit: OpsAuditReading) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                MusterSearchField(prompt: "Filter verb, target, machine, or result\u{2026}", text: $auditSearch)
+                Picker("Machine", selection: $auditHostFilter) {
+                    ForEach(OpsAuditHostFilter.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Picker("Result", selection: $auditResultFilter) {
+                    ForEach(OpsAuditResultFilter.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+            Text("Loaded \(audit.entries.count) of \(audit.totalParsed) rows")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -464,6 +530,18 @@ struct OperationsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 1)
+        .contextMenu {
+            Button("Copy Row Summary") {
+                MusterClipboard.copy(
+                    "\(entry.clockText) [\(entry.host ?? "-")] \(entry.verb ?? "-") \(entry.target ?? "-") -> \(entry.result ?? "unknown")"
+                )
+            }
+            if let target = entry.target, !target.isEmpty {
+                Button("Copy Target") {
+                    MusterClipboard.copy(target)
+                }
+            }
+        }
     }
 
     // MARK: The read
@@ -490,11 +568,12 @@ struct OperationsView: View {
                 // stamped after the wake.  A wake mid-read queues its own pass through
                 // refreshRequests,  so the loop reads again.
                 let started = Date()
+                let auditLimit = auditExpanded ? OpsAuditLog.expandedLimit : OpsAuditLog.defaultLimit
                 let (readServices, readAllowlist, readAudit) = await Task.detached(priority: .userInitiated) {
                     (
                         MacServicesReportReader.read(at: servicesURL),
                         OpsAllowlist.read(at: allowlistURL),
-                        OpsAuditLog.read(at: auditURL)
+                        OpsAuditLog.read(at: auditURL, limit: auditLimit)
                     )
                 }.value
                 // A newer saved file replaces older rows,  and a file that could not be read
