@@ -33,7 +33,7 @@ HAS_PARENT = PL._accepts(OR.register_session, "parent_session_id")
 THREADS_DDL = (
     "CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT NOT NULL DEFAULT 'vscode', title TEXT NOT NULL DEFAULT '',"
     " first_user_message TEXT NOT NULL DEFAULT '', agent_nickname TEXT, agent_path TEXT, thread_source TEXT,"
-    " name TEXT, originator TEXT, archived INTEGER NOT NULL DEFAULT 0)"
+    " name TEXT, originator TEXT, archived INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL DEFAULT 0)"
 )
 EDGES_DDL = (
     "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY,"
@@ -1786,3 +1786,41 @@ class SpecTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["letter"]), (1, None))
 
 
+
+
+class UnletteredSessionsTests(Base):
+    """`codex_unlettered_sessions`:  the repair pass's candidates are this host's threads still showing "??: ",
+    old enough that their own start has finished and young enough to be a live loss, newest first."""
+
+    def insert(self, n: int, name: str, age: float) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO threads (id, name, created_at) VALUES (?, ?, ?)",
+                (tid(n), name, time.time() - age),
+            )
+        conn.close()
+
+    def test_names_only_unlettered_chats_in_the_window(self) -> None:
+        self.insert(1, "??: Resolve CodeCaps PR 520 And 521", 3600)
+        self.insert(2, "DD: Done", 3600)
+        self.insert(3, "??: Brand New", 60)
+        self.insert(4, "??: Ancient", 30 * 86400)
+        self.insert(5, "??: Also Due", 7200)
+        self.assertEqual(
+            C.codex_unlettered_sessions(self.env()),
+            [tid(1), tid(5)],  # newest first
+        )
+
+    def test_no_store_is_doubt_and_doubt_answers_none(self) -> None:
+        os.unlink(self.store)
+        self.assertIsNone(C.codex_unlettered_sessions(self.env()))
+
+    def test_a_store_too_old_to_say_ages_answers_none(self) -> None:
+        os.unlink(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT)")
+            conn.execute("INSERT INTO threads (id, name) VALUES (?, ?)", (tid(1), "??: Untimed"))
+        conn.close()
+        self.assertIsNone(C.codex_unlettered_sessions(self.env()))
