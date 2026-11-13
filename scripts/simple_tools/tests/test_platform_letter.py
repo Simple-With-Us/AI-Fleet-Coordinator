@@ -152,7 +152,7 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(PL.title_from_prompt("/review fix the login page"), "Fix the Login Page")
 
     def test_secret_shaped_words_never_name_a_chat(self) -> None:
-        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped: 32 mixed-case letters and digits
+        key = "A1b2C3d4" * 4  # Synthetic, Zulip-shaped: 32 mixed-case letters and digits
         self.assertEqual(PL.title_from_prompt("rotate %s today" % key), "Rotate Today")
         self.assertEqual(PL.clean_title("Rotate %s Today" % key), "Rotate Today")
         token = secret_word()
@@ -4327,9 +4327,18 @@ class HostWrapperTests(Base):
                 os.chmod(mine, 0o755)
                 os.makedirs(os.path.join(home, ".config", "opencode"))  # OpenCode installs into its own folder
                 os.makedirs(os.path.join(home, ".grok"))  # and Grok into its own
+                env = {"HOME": home}
+                if platform == "opencode":
+                    from simple_tools import platform_letter_opencode as OC
+
+                    plug = os.path.join(home, "plugin")
+                    os.makedirs(plug, exist_ok=True)
+                    with open(os.path.join(plug, "index.js"), "w", encoding="utf-8") as pf:
+                        pf.write("//\n")
+                    env[OC.ENV_PLUGIN_DIR] = plug
                 for where in ("server", "mac"):
                     out = io.StringIO()
-                    code = PL.install_main(["--platform", platform, "--location", where], {"HOME": home}, out)
+                    code = PL.install_main(["--platform", platform, "--location", where], env, out)
                     if code == 0:
                         break
                 if platform == "fx":  # fx has no hook file at all:  it registers from its session store
