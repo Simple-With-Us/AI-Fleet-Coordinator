@@ -893,6 +893,17 @@ struct OpsCommandBuilder {
         return invocation
     }
 
+    /// The same guarded route reconciles an existing attempt; it carries no setting mutation.
+    func listenerSettingsReconcileInvocation(_ attempt: ServerSettingsAttempt) throws -> OpsInvocation {
+        guard let input = attempt.reconcileInput else { throw OpsControlError.invalidArgument("settings attempt") }
+        var invocation = serverInvocation(
+            tail: ["server", "eavesdropper-settings", "server", "--yes", "--json"],
+            timeout: OpsControlRoute.serverListenerSettingsRunTimeout
+        )
+        invocation.standardInput = input
+        return invocation
+    }
+
     /// The typed, read-only route that asks the server what one platform has installed:
     /// `server seat-inventory PLATFORM --plan --json`.  It changes nothing, so it needs no
     /// confirmation sheet and no Touch ID, and the helper accepts only `--plan` for it.  The
