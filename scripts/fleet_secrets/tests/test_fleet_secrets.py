@@ -327,8 +327,8 @@ class RunTests(Base):
                 self.assertEqual(world.fetches, [])
                 self.assertEqual(self.exec_calls, [])
 
-    def test_interactive_get_keeps_the_manual_cli_session_route(self):
-        self.use(World())
+    def test_interactive_get_requires_its_own_scoped_token_before_any_read(self):
+        world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
         env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
@@ -342,7 +342,10 @@ class RunTests(Base):
             mock.patch.object(cli.sys, "stderr", TTY()),
         ):
             code, out, err = self.call("get", "ALPHA", env=env)
-        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn(core.ENV_TOKEN, err)
+        self.assertEqual(world.fetches, [])
+        self.assertEqual(world.calls, [])
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
