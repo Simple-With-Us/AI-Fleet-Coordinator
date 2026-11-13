@@ -147,7 +147,7 @@ def start():
         )
 
     try:
-        from simple_tools.platform_letter_bootstrap import bind
+        from simple_tools.platform_letter_bootstrap import bind, report
         from simple_tools.platform_letter import main  # noqa: E402
     except Exception:  # noqa: BLE001 - a hook never blocks a chat, even from a checkout that cannot be imported
         if sys.argv[1:2] == ["hook"]:
@@ -155,7 +155,7 @@ def start():
             sys.exit(0)
         raise
 
-    bind()
+    report(bind())
     sys.exit(main(sys.argv[1:]))
 
 
