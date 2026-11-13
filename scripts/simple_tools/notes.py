@@ -61,7 +61,7 @@ WRITE_ACTIONS = ("create", "update", "pin", "unpin", "delete")
 BODY_ACTIONS = ("create", "update")
 FORMATS = ("html", "text", "raw")
 TITLE_MAX = 200
-SUMMARY_MAX = 280
+SUMMARY_MAX = 1000  # sanity cap on the optional "Summary:" block; the helper owns the real rules
 PR_MAX = 40
 QUERY_MAX = 100
 LIST_DEFAULT, LIST_MAX = 100, 500
@@ -742,7 +742,14 @@ _SESSION_ROW_RE = re.compile(r"^Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\
 _SESSION_FRAGMENT_RE = re.compile(
     r"Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\s+-\s+.{0,40})?"
 )
-_BANNER_PREFIXES = ("⚠️ NEEDS OWNER REVIEW", "📌 Mobile Quick View:")
+_BANNER_PREFIXES = ("⚠️ NEEDS OWNER REVIEW", "📌 Mobile Quick View:", "Summary:")
+#  An HTML banner is only stripped with its generated background beside the label:  a body block
+#  can open with the same words ("Summary: the plan is ...") and must survive a read-back.
+_BANNER_SIGNATURES = (
+    ("#FFF3CD", "⚠️ NEEDS OWNER REVIEW"),
+    ("#F8F9FA", "📌 Mobile Quick View:"),
+    ("#F8F9FA", "Summary:"),
+)
 _LEAD_BLOCK_RE = re.compile(
     r"\s*(<(div|p|h[1-6])\b[^>]*>(?:(?!<(?:div|p|h[1-6])\b).)*?</\2>)", re.DOTALL | re.IGNORECASE
 )
@@ -842,6 +849,11 @@ def _block_text(block: str) -> str:
     return " ".join(html.unescape(_TAG_RE.sub("", block)).split())
 
 
+def _is_banner_block(block: str, text: str) -> bool:
+    """True for a banner the flags write:  the label and its generated background together."""
+    return any(marker in block and text.startswith(label) for marker, label in _BANNER_SIGNATURES)
+
+
 def content_html(body: str, title: str) -> str:
     """A stored note's HTML without what the script writes on every save:  the title row, the date row, the Session
     row, the needs-owner and quick-view banners, one spacer, and the provenance line at the end.  What is left is the
@@ -861,8 +873,8 @@ def content_html(body: str, title: str) -> str:
             seen_stamp = True
         elif header and seen_stamp and not seen_session and _SESSION_ROW_RE.match(text):
             seen_session = True
-        elif text.startswith(_BANNER_PREFIXES):
-            pass  # the needs-owner and quick-view banners follow the spacer;  the flags write them again
+        elif _is_banner_block(block, text):
+            pass  # the needs-owner and summary banners follow the spacer;  the flags write them again
         elif (
             header
             and (seen_title or seen_stamp)
@@ -889,7 +901,9 @@ def content_text(plaintext: str, title: str) -> str:
             index += 1
     if index < len(lines) and not lines[index].strip() and index > 0:
         index += 1
-    while index < len(lines) and lines[index].strip().startswith(_BANNER_PREFIXES):
+    #  Banner lines strip only after the writer's header rows matched:  a note without them is
+    #  not tool-shaped, so a first line that opens with the same words stays.
+    while index > 0 and index < len(lines) and lines[index].strip().startswith(_BANNER_PREFIXES):
         index += 1
     text = _on_tail("\n".join(lines[index:]), _TEXT_FOOTER_RE)
     return text.rstrip()
