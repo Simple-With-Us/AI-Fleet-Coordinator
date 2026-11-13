@@ -15,9 +15,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -1528,10 +1528,10 @@ class InstallerRepoOnlyTests(unittest.TestCase):
 
     def test_selected_home_refresh_preserves_unrelated_and_retired_files(self) -> None:
         protected = [
-            self.home / '.fx/skills/board-ops/SKILL.md',
-            self.home / '.fx/skills/ios-ship/SKILL.md',
-            self.home / '.fx/skills/ios-ship.zip',
-            self.home / '.cursor/rules/fleet-recall.mdc',
+            self.home / ".fx/skills/board-ops/SKILL.md",
+            self.home / ".fx/skills/ios-ship/SKILL.md",
+            self.home / ".fx/skills/ios-ship.zip",
+            self.home / ".cursor/rules/fleet-recall.mdc",
         ]
         for path in protected:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1539,40 +1539,49 @@ class InstallerRepoOnlyTests(unittest.TestCase):
             path.chmod(0o600)
             os.utime(path, (1, 1))
         before = {p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in protected}
-        with mock.patch.object(self.installer, '_install_always_on_rules') as rules, \
-                mock.patch.object(self.installer, 'rewrite_skill_tree') as rewrite:
-            self._run(['--home-only', '--skill', 'session-start', '--skill', 'session-start'])
+        with (
+            mock.patch.object(self.installer, "_install_always_on_rules") as rules,
+            mock.patch.object(self.installer, "rewrite_skill_tree") as rewrite,
+        ):
+            self._run(["--home-only", "--skill", "session-start", "--skill", "session-start"])
         rules.assert_not_called()
         rewrite.assert_not_called()
         for path, snapshot in before.items():
-            self.assertEqual((path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns), snapshot)
-        selected = self.home / '.fx/skills/session-start/SKILL.md'
-        self.assertEqual(selected.read_text(), specialize_from_monet(_load_skill('session-start'), SEATS['fx'], skill_name='session-start'))
-        self.assertFalse((self.repo / 'skills').exists())
+            self.assertEqual(
+                (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns), snapshot
+            )
+        selected = self.home / ".fx/skills/session-start/SKILL.md"
+        self.assertEqual(
+            selected.read_text(),
+            specialize_from_monet(
+                _load_skill("session-start"), SEATS["fx"], skill_name="session-start"
+            ),
+        )
+        self.assertFalse((self.repo / "skills").exists())
 
     def test_selected_repo_refresh_never_purges_retired_skills(self) -> None:
         protected = [
-            self.repo / 'docs/fleet-skills/ios-ship/SKILL.md',
-            self.repo / 'skills/ios-ship/SKILL.md',
-            self.repo / '.fx/skills/ios-ship/SKILL.md',
-            self.repo / 'skills/board-ops/SKILL.md',
+            self.repo / "docs/fleet-skills/ios-ship/SKILL.md",
+            self.repo / "skills/ios-ship/SKILL.md",
+            self.repo / ".fx/skills/ios-ship/SKILL.md",
+            self.repo / "skills/board-ops/SKILL.md",
         ]
         for path in protected:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('preserve existing task-independent content\n')
+            path.write_text("preserve existing task-independent content\n")
         before = {p: p.read_bytes() for p in protected}
-        self._run(['--repo-only', '--skill', 'session-start'])
+        self._run(["--repo-only", "--skill", "session-start"])
         self.assertEqual({p: p.read_bytes() for p in protected}, before)
         self.assertFalse(self._home_files())
 
     def test_unknown_or_retired_selectors_refuse_before_any_write(self) -> None:
-        for name in ('not-a-skill', 'ios-ship', '../session-start'):
+        for name in ("not-a-skill", "ios-ship", "../session-start"):
             with self.subTest(name=name), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
-                    self._run(['--home-only', '--skill', name])
+                    self._run(["--home-only", "--skill", name])
                 self.assertEqual(error.exception.code, 2)
                 self.assertFalse(self._home_files())
-                self.assertFalse((self.repo / 'skills').exists())
+                self.assertFalse((self.repo / "skills").exists())
 
     def test_repo_only_copies_equal_a_fresh_render(self) -> None:
         self._run(["--repo-only"])

@@ -204,7 +204,10 @@ def main(argv: list[str] | None = None) -> None:
         help="write tool homes that already exist; do not re-render this checkout",
     )
     parser.add_argument(
-        "--skill", action="append", default=[], metavar="NAME",
+        "--skill",
+        action="append",
+        default=[],
+        metavar="NAME",
         help="refresh only this skill (repeatable); skip all unrelated cleanup and rule writes",
     )
     args = parser.parse_args(argv)
@@ -261,7 +264,9 @@ def main(argv: list[str] | None = None) -> None:
             #  comes from the renderer (it reads the seat's own retired block), not from a hand edit.
             key = seat.seat_key or seat.tag.lower()
             seat_root = os.path.join(BY_SEAT, key)
-            written = _install_skill_set(seat_root, sources, seat, zip_each=True, cleanup=not selected)
+            written = _install_skill_set(
+                seat_root, sources, seat, zip_each=True, cleanup=not selected
+            )
             note = "  (retired)" if seat.retired else ""
             print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills){note}")
 
