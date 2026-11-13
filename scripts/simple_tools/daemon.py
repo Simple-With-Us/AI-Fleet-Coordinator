@@ -974,13 +974,16 @@ class Daemon:
     # ---- config ------------------------------------------------------------------------------
     def _remember_operator_settings(self) -> None:
         if (
-            self._operator_settings_lock_fd is None or getattr(self, "deferred", False)
-            or self.refusal or self.config.errors
+            self._operator_settings_lock_fd is None
+            or getattr(self, "deferred", False)
+            or self.refusal
+            or self.config.errors
             or self.config.operator_settings_source != "infisical"
             or self.config.operator_settings_document is None
         ):
             return
         from .server import operator_settings
+
         try:
             operator_settings.remember_verified(
                 Path(self.config_path), self.config.operator_settings_document, self.env
@@ -8273,13 +8276,18 @@ class Daemon:
             # SIGHUP can tell a refused reload from an accepted one with soft config errors.
             "reload_refused": [self.scrub(e) for e in self.reload_refused],
             "reload_at": self.reload_at,
-            "channel_names": sorted({
-                name for runner in self.seats.values()
-                for name in getattr(runner, "streams", {}).values()
-                if isinstance(name, str) and 0 < len(name) <= 60
-            })[:500],
+            "channel_names": sorted(
+                {
+                    name
+                    for runner in self.seats.values()
+                    for name in getattr(runner, "streams", {}).values()
+                    if isinstance(name, str) and 0 < len(name) <= 60
+                }
+            )[:500],
             "operator_settings_revision": (
-                self.config.operator_settings_revision if not self.refusal and not self.config.errors else None
+                self.config.operator_settings_revision
+                if not self.refusal and not self.config.errors
+                else None
             ),
             "operator_settings_snapshot_revision": self.config.operator_settings_snapshot_revision,
             # Which partition this listener goes by, so a tool that decides who holds a seat reads
