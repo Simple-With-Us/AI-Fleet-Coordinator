@@ -58,6 +58,13 @@ main() {
   fi
   trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
+  # Unlettered-repair tick:  replay the start of this Mac's chats still showing "??: " - an app-driven
+  # chat's hook never runs, so only a scheduled tick reaches it.  platform-letter's own stamp throttles the
+  # pass to hourly;  a failure here never blocks the sync.
+  if [ -x "$HOME/.local/bin/platform-letter" ]; then
+    perl -e 'alarm 90; exec @ARGV' "$HOME/.local/bin/platform-letter" repair --location mac >/dev/null 2>&1 || true
+  fi
+
   # Mac GitOps G7 (AFC-375): optional check-only drift report against deploy/mac/manifest.toml.
   # Never loads or unloads LaunchAgents; apply is only via mac_gitops reconcile --apply by hand.
   if [ -e "$STATE_DIR/mac-gitops-check.enabled" ]; then
