@@ -39,6 +39,7 @@ class ProtocolIntegrationTests(unittest.TestCase):
         }
         self.calls, self.mutations = [], []
         self.status, self.read_status = 200, 200
+        self.folder_status = 200
         patch = mock.patch.object(core, "_api_json", self.api)
         patch.start()
         self.addCleanup(patch.stop)
@@ -69,7 +70,7 @@ class ProtocolIntegrationTests(unittest.TestCase):
             return self.status, {}
         if urlsplit(endpoint).path == "/v3/secrets/raw":
             self.assertIn("viewSecretValue=false", endpoint)
-            return 200, {"secrets": []}
+            return self.folder_status, {"secrets": []}
         return self.read_status, {"secret": self.stored}
 
     def identity(self, intent):
@@ -150,6 +151,50 @@ class ProtocolIntegrationTests(unittest.TestCase):
         self.assertEqual((code, error.getvalue()), (0, ""))
         self.assertEqual(json.loads(output.getvalue())["outcome"], "ok")
         self.assertEqual(self.mutations, ["PATCH"])
+
+    def test_preflight_500_is_retryable_but_original_identity_stays_terminal(self):
+        self.folder_status = 500
+        code, out, err = self.call_cli()
+        first = json.loads(out)
+        self.assertEqual((code, first["outcome"]), (4, "refused"))
+        self.assertIn("write-refused", err)
+        self.assertEqual(
+            (first["provider_status"], first["retryable"], first["request_may_have_been_sent"]),
+            (500, True, False),
+        )
+        self.assertEqual([method for method, _ in self.calls], ["GET", "GET"])
+        self.assertEqual(self.calls[0][1], "/v2/service-token")
+        self.assertEqual(urlsplit(self.calls[1][1]).path, "/v3/secrets/raw")
+        self.assertFalse(self.mutations)
+        intent = cli.write_intent_for_cli(
+            self.env, first["purpose"], first["request_id"], first["created_at_ms"]
+        )
+        before = list(self.calls)
+        self.folder_status = 200
+        for suffix in (self.identity(intent), [*self.identity(intent), "--reconcile"]):
+            code, out, _ = self.call_cli(suffix)
+            repeated = json.loads(out)
+            self.assertEqual((code, repeated["outcome"]), (4, "refused"))
+            self.assertEqual(
+                (
+                    repeated["request_id"],
+                    repeated["provider_status"],
+                    repeated["retryable"],
+                    repeated["request_may_have_been_sent"],
+                ),
+                (intent.request_id, 500, True, False),
+            )
+            self.assertEqual(self.calls, before)
+        # A deliberate fresh intent can verify the provider again; the refused row is retained.
+        code, out, err = self.call_cli()
+        fresh = json.loads(out)
+        self.assertEqual((code, err, fresh["outcome"]), (0, "", "ok"))
+        self.assertNotEqual(fresh["request_id"], intent.request_id)
+        self.assertEqual(self.mutations, ["PATCH"])
+        held = core._write_ledger(intent.state_dir).lookup(
+            core._write_namespace(core.API_BASE, self.project, self.path), intent.request_id
+        )
+        self.assertEqual(held[0], "refused")
 
     def test_actual_sync_reconcile_skips_source_and_set_and_settles_only_acknowledged_attempt(self):
         self.read_status = 503
