@@ -270,6 +270,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 
 | Key | Owner | Kind | Default | Secret | Local files may | What it does |
 |---|---|---|---|---|---|---|
+| `CODE_MIRROR_INTERVAL_SECONDS` | OPS-1088 | int 30 to 86400 | `300` | no | nothing | in folder `/code-mirrors`;  time between updates by the existing Mac and server Code mirror jobs |
 | `FLEET_AUTOPUSH_MODE` | C1 | enum: off < report < snapshot < full | `off` | no | only move toward `off` | what the autopush hooks may do;  full also needs FLEET_AUTOPUSH_IDLE_COMMIT |
 | `FLEET_AUTOPUSH_REPOS` | C1 | list | empty | no | only remove entries | allowlist of owner/repo names the hooks may touch |
 | `FLEET_AUTOPUSH_IDLE_COMMIT` | C1 | bool | `false` | no | only set it to `false` | true lets the idle backstop commit on its own (mode full only) |

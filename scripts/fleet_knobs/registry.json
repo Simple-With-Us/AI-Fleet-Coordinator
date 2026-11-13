@@ -3,6 +3,43 @@
  "generated_by": "python3 -m fleet_knobs inventory --write-json fleet_knobs/registry.json",
  "knobs": [
   {
+   "name": "CODE_MIRROR_INTERVAL_SECONDS",
+   "label": "Mirror Update Interval",
+   "group": "Code Mirrors",
+   "owner": "OPS-1088",
+   "kind": "int",
+   "kind_text": "int 30 to 86400",
+   "choices": [],
+   "minimum": 30,
+   "maximum": 86400,
+   "unit": "seconds",
+   "step": 30,
+   "secret": false,
+   "default": "300",
+   "default_text": "300",
+   "cap_names": [],
+   "safe": null,
+   "narrower": "max",
+   "local": "deny",
+   "local_rule": "A local file cannot change this.",
+   "hosts": "both",
+   "consumers": [
+    {
+     "name": "the shared Code mirror jobs",
+     "path": "scripts/fleet_lanes/code_main_sync.py"
+    }
+   ],
+   "requires": [],
+   "consequences": [],
+   "pattern": "",
+   "format": "",
+   "example": "",
+   "once": false,
+   "requires_explicit": false,
+   "note": "time between updates by the existing Mac and server Code mirror jobs",
+   "folder": "/code-mirrors"
+  },
+  {
    "name": "FLEET_AUTOPUSH_MODE",
    "label": "Autopush Mode",
    "group": "Autopush",
