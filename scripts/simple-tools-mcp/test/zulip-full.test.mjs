@@ -201,11 +201,11 @@ test("AFC-689: body @-mentions are not silenced or doubled after an own intro", 
   const several = ok(
     await tools.call("zulip_post", {
       topic: "t",
-      text: "[GROK-WEB 📁AFC] @**Codex** and @**Jay Wedgeworth|1211974**",
+      text: "[GROK-WEB 📁AFC] @**Codex** and @**Fixture User|12345**",
     }),
     "zulip_post",
   ).id;
-  assert.equal(content(several), "[GROK-WEB\u200a\u200a📁\u200aAFC] @**Codex** and @**Jay Wedgeworth|1211974**");
+  assert.equal(content(several), "[GROK-WEB\u200a\u200a📁\u200aAFC] @**Codex** and @**Fixture User|12345**");
   const arrow = ok(
     await tools.call("zulip_post", {
       topic: "t",
