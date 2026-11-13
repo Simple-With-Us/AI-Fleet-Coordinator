@@ -145,6 +145,7 @@ SHIPPED = (
     "fleet-apps.json",
     "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
+    "scripts/fleet_infisical_bootstrap.py",
     "scripts/recall",
     "scripts/fleet_rag/",
     "scripts/fleet_lanes/",
