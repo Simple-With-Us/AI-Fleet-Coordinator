@@ -420,7 +420,7 @@ class SendPathTests(Harness):
         self.run_cli("post", "--topic", "t", "--to", "codex", "Please look.  Soon.")
         self.assertEqual(
             self.last_form()["content"],
-            "[CLAUDE·%s→CODEX] @**Codex** Please look.%sSoon." % (TAG, G),
+            "[CLAUDE·%s → CODEX] @**Codex** Please look.%sSoon." % (TAG, G),
         )
 
     def test_post_leaves_code_and_trailing_spaces_alone(self) -> None:
@@ -448,7 +448,7 @@ class SendPathTests(Harness):
         result = self.run_cli("dm", "--owner", "--", "Done.  Please review.")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
-            self.last_form()["content"], "[CLAUDE·%s→OWNER] Done.%sPlease review." % (TAG, G)
+            self.last_form()["content"], "[CLAUDE·%s → OWNER] Done.%sPlease review." % (TAG, G)
         )
 
     def test_read_shows_other_peoples_messages_exactly_as_stored(self) -> None:

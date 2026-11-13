@@ -371,7 +371,7 @@ Source: Jay, Zulip #Policy, topic "Peer Requests (notify, act, log)", November 1
 
 ### Fleet post headers (owner ruling)
 
-Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  Kody trigger comments may put the control command first and the fleet header on the next line.
+Header spacing (owner, November 12, 2026): use real U+200A HAIR SPACE characters, exactly three after the seat colon, two immediately before 📁, one immediately after 📁, one after repository commas and two after recipient/platform commas.  Keep ordinary spaces around `→` and inside recipient names.  An unlettered header omits the colon/session segment and keeps the folder/list spacing.  Sentence gaps and supported mentions retain their existing rules.  Every request keeps the required header first; a different placement requires an explicit owner exception for its stated scope.
 
 Every post on every platform, including Linear, Zulip and GitHub, begins with the required header.  The form turns on the session, not the seat (owner directive, November 10, 2026).  A session with no Operator session letter uses `[<seat-tag>  📁 <repo, repo…>]`, for example `[JET  📁 ST, CTS, CT]`;  Jet, Rob, Grok Bots (`GB-*`) and BotFleet bots (`BF-*`) normally hold no letters.
 
