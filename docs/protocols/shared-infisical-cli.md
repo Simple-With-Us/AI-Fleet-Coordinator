@@ -6,7 +6,7 @@ Use an isolated interpreter and the absolute script path in the reviewed checkou
 
 `names` uses the metadata-only API and prints names only.  Bound `get` uses the shared named-read API, so asking for one key does not decrypt every value in the folder.  Existing output and exit contracts, write allowlists and stdin value handling remain compatible.  Consumer reads require their own scoped service-token binding in both interactive and noninteractive processes; a TTY never authorizes an administrative CLI-session fallback.
 
-The legacy `doctor` contract intentionally still reads values to count unresolved references, and probes Fleet-OPS `/` plus AI Fleet Coordinator `/fleetlink`.  It is not a metadata-only listing.  A narrower doctor contract needs its own reviewed migration; no new grant or broad fallback is introduced here.
+The unqualified legacy `doctor` contract still probes Fleet-OPS `/` plus AI Fleet Coordinator `/fleetlink`.  An explicit `doctor --project fleet-ops --path /` selects only that project/folder and never probes the other project; an explicit path alone selects the default Fleet-OPS project.  Both forms intentionally read values to count unresolved references and return only masked status/counts, so neither is a metadata-only listing.  Selection uses the same caller's own scoped read binding; it adds no grant or credential fallback.
 
 The shared command is added to new release payload requirements and the doctor inventory; retained older releases remain valid rollback targets.  The existing compatibility installer also copies it beside the shared library, so the legacy module alias never imports a missing file after a fresh install.
 

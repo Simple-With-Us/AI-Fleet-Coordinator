@@ -588,18 +588,87 @@ class ConfigTests(Base):
 
 class DoctorTests(Base):
     def test_doctor_checks_the_second_project_with_its_scoped_token(self):
-        self.use(World())
+        world = World()
+        self.use(world)
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 0)
         self.assertTrue(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertTrue(rep["ai_fleet_coordinator_fetch_ok"])
+        self.assertEqual(
+            [(row[0], row[1]) for row in world.fetches],
+            [(PROJECT, "/"), (OTHER_PROJECT, "/fleetlink")],
+        )
         self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
         code, out, _ = self.call("doctor", "--json")
         rep = json.loads(out)
         self.assertEqual(code, 1)
         self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
         self.assertFalse(rep["ok"])
+
+    def test_selected_doctor_reads_only_the_default_project_root(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
+        self.env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        code, out, err = self.call(
+            "doctor", "--json", "--project", "fleet-ops", "--path", "/"
+        )
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
+        self.assertNoSentinel(out, err)
+
+    def test_selected_doctor_uses_only_the_selected_project_and_path(self):
+        world = World()
+        self.use(world)
+        self.env.pop(core.ENV_TOKEN)
+        code, out, err = self.call(
+            "doctor", "--json", "--project=ai-fleet-coordinator", "--path=/catalog"
+        )
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(rep["auth_mode"], "token")
+        self.assertTrue(rep["reader_configured"])
+        self.assertFalse(rep["writer_configured"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual(
+            [(row[0], row[1]) for row in world.fetches], [(OTHER_PROJECT, "/catalog")]
+        )
+        self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
+        self.assertNoSentinel(out, err)
+
+    def test_direct_doctor_path_selection_does_not_probe_the_other_project(self):
+        world = World()
+        self.use(world)
+        rep = cli.doctor_report(self.env, path="/catalog")
+        self.assertTrue(rep["ok"])
+        self.assertNotIn("ai_fleet_coordinator_fetch_ok", rep)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/catalog")])
+
+    def test_selected_doctor_validates_the_route_before_fetching(self):
+        world = World()
+        self.use(world)
+        for args in (("--project=unknown",), ("--project=fleet-ops", "--path=/../private")):
+            with self.subTest(args=args):
+                code, out, _ = self.call("doctor", "--json", *args)
+                self.assertEqual(code, 2)
+                self.assertEqual(out, "")
+                self.assertEqual(world.fetches, [])
+
+    def test_selected_doctor_preserves_value_validation_without_returning_values(self):
+        world = World(secrets={"ALPHA": "${UNRESOLVED_EXAMPLE}"})
+        self.use(world)
+        code, out, err = self.call("doctor", "--json", "--path", "/")
+        rep = json.loads(out)
+        self.assertEqual(code, 1)
+        self.assertEqual(rep["names_count"], 1)
+        self.assertEqual(rep["unresolved_reference_count"], 1)
+        self.assertFalse(rep["ok"])
+        self.assertNotIn("UNRESOLVED_EXAMPLE", out + err)
+        self.assertEqual([(row[0], row[1]) for row in world.fetches], [(PROJECT, "/")])
 
     def test_doctor_reports_booleans_and_counts_only(self):
         self.use(World(keychain=KEYCHAIN_FULL))

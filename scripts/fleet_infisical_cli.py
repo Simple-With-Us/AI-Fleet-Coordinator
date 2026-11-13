@@ -14,8 +14,8 @@
         trailing newline removed), never from an argument.  Needs a separately bound scoped writer token.  Only names on the
         built-in allowlist in core.WRITE_ALLOWLIST (now CACHE_* under /linear) are accepted;  everything
         else exits 2.
-  doctor [--json]
-        booleans and counts only, never a value.
+  doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]
+        booleans and counts only, never a value.  An explicit project or path checks only that route.
 
 Exit codes:  0 ok, 2 usage or refused configuration, 3 key absent, 4 fetch or auth failure,
 5 a value came back as an unresolved Infisical reference, 126/127 the command in `run` could
@@ -43,7 +43,7 @@ USAGE = (
     "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
-    "       fleet-secrets doctor [--json]\n"
+    "       fleet-secrets doctor [--json] [--project fleet-ops|ai-fleet-coordinator] [--path /]\n"
 )
 
 
@@ -224,47 +224,58 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     return 0  # unreachable after a real exec
 
 
-def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
-    """Booleans, a version and counts.  Never a value, a client id or a token."""
+def doctor_report(
+    env: Mapping[str, str], *, project: str | None = None, path: str | None = None
+) -> dict[str, object]:
+    """Masked diagnostics for the legacy set or one explicitly selected project/folder."""
+    selected = project is not None or path is not None
+    primary_project = core.DEFAULT_PROJECT if project is None else project
+    if primary_project not in core.PROJECT_SOURCES:
+        raise UsageError("unknown Infisical project")
+    path = core.check_path("/" if path is None else path)
     rep: dict[str, object] = {}
     rep["environment_ok"] = core.environment_refusal(env) is None
     cli = core.find_cli(env)
     rep["cli_present"] = cli is not None
     rep["cli_version"] = core.cli_version(cli, env) if cli else None
     try:
-        core.infisical_project_id(env, core.home_dir(env))
+        core.infisical_project_id(env, core.home_dir(env), primary_project)
         rep["project_id_resolvable"] = True
     except SecretsError:
         rep["project_id_resolvable"] = False
-    rep["auth_mode"] = core.auth_mode(env)
-    rep["reader_configured"] = bool((env.get(core.ENV_TOKEN) or "").strip())
-    rep["writer_configured"] = bool((env.get(core.ENV_WRITE_TOKEN) or "").strip())
+    rep["reader_configured"] = bool(
+        (env.get(core.project_token_name(primary_project)) or "").strip()
+    )
+    rep["auth_mode"] = "token" if rep["reader_configured"] else "missing"
+    rep["writer_configured"] = primary_project == core.DEFAULT_PROJECT and bool(
+        (env.get(core.ENV_WRITE_TOKEN) or "").strip()
+    )
     rep["fetch_names_ok"] = False
     rep["names_count"] = 0
     rep["unresolved_reference_count"] = 0
     rep["failure_reason"] = None
     try:
-        secrets = core.fetch_all("/", env)
+        secrets = core.fetch_all(path, env, primary_project)
         rep["fetch_names_ok"] = True
         rep["names_count"] = len(secrets)
         rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.match(v))
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
-    # The read-only second project (the FleetLink seat tokens, `get --project`):  its id and a read of /fleetlink.
+    # The unqualified legacy doctor also probes the read-only FleetLink folder.
     other_ok = True
-    for project in core.PROJECT_SOURCES:
-        if project == core.DEFAULT_PROJECT:
+    for other_project in core.PROJECT_SOURCES if not selected else ():
+        if other_project == core.DEFAULT_PROJECT:
             continue
-        slug = project.replace("-", "_")
+        slug = other_project.replace("-", "_")
         try:
-            core.infisical_project_id(env, core.home_dir(env), project)
+            core.infisical_project_id(env, core.home_dir(env), other_project)
             rep[f"{slug}_project_id_resolvable"] = True
         except SecretsError:
             rep[f"{slug}_project_id_resolvable"] = False
         rep[f"{slug}_fetch_ok"] = False
         if rep[f"{slug}_project_id_resolvable"]:
             try:
-                core.fetch_all("/fleetlink", env, project)
+                core.fetch_all("/fleetlink", env, other_project)
                 rep[f"{slug}_fetch_ok"] = True
             except SecretsError:
                 pass
@@ -288,8 +299,13 @@ def cmd_doctor(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     if "--json" in rest:
         as_json = True
         rest.remove("--json")
-    _parse(rest, False, 0)
-    rep = doctor_report(env)
+    selected = any(
+        a in ("--project", "--path") or a.startswith(("--project=", "--path=")) for a in rest
+    )
+    project, rest = _take_project(rest)
+    opts = _parse(rest, False, 0)
+    path = core.check_path(str(opts["path"]))
+    rep = doctor_report(env, project=project, path=path) if selected else doctor_report(env)
     if as_json:
         out.write(json.dumps(rep, sort_keys=True) + "\n")
     else:
