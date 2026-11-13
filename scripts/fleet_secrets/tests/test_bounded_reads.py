@@ -1,4 +1,5 @@
 """Actual isolated reader, provider trickle and bounded private IPC regressions."""
+
 import io
 import json
 import os
@@ -39,9 +40,12 @@ class BoundedReadTests(unittest.TestCase):
                     time.sleep(1.2)
                 metadata = self.path.endswith("/service-token")
                 if metadata:
-                    payload = {"workspace": case.project, "permissions": ["read"],
+                    payload = {
+                        "workspace": case.project,
+                        "permissions": ["read"],
                         "scopes": [{"environment": "prod", "secretPath": "/operator-registry"}],
-                        "expiresAt": "2099-01-01T00:00:00Z"}
+                        "expiresAt": "2099-01-01T00:00:00Z",
+                    }
                     if case.mode == "wrong-scope":
                         payload["scopes"] = [{"environment": "prod", "secretPath": "/"}]
                 else:
@@ -50,12 +54,21 @@ class BoundedReadTests(unittest.TestCase):
                         case.mixed.wait(timeout=1)
                         if name == "B_KEY":
                             time.sleep(1.2)
-                    payload = {"secret": {"secretKey": name, "secretValue": "value-" + name,
-                        "type": "shared", "workspace": case.project, "environment": "prod",
-                        "secretPath": "/operator-registry"}}
+                    payload = {
+                        "secret": {
+                            "secretKey": name,
+                            "secretValue": "value-" + name,
+                            "type": "shared",
+                            "workspace": case.project,
+                            "environment": "prod",
+                            "secretPath": "/operator-registry",
+                        }
+                    }
                 raw = json.dumps(payload).encode()
                 try:
-                    failed = case.mode == "slow-error" or (case.mode == "mixed" and not metadata and name == "A_KEY")
+                    failed = case.mode == "slow-error" or (
+                        case.mode == "mixed" and not metadata and name == "A_KEY"
+                    )
                     self.send_response(503 if failed else 200)
                     if case.mode == "slow-chunk":
                         self.send_header("Transfer-Encoding", "chunked")
@@ -64,10 +77,14 @@ class BoundedReadTests(unittest.TestCase):
                     self.end_headers()
                     if case.mode == "slow-chunk":
                         for value in b"0000000000000000000001\r\n":
-                            self.wfile.write(bytes([value])); self.wfile.flush(); time.sleep(0.04)
+                            self.wfile.write(bytes([value]))
+                            self.wfile.flush()
+                            time.sleep(0.04)
                     elif case.mode in {"slow-body", "slow-error"}:
                         for value in raw[:24]:
-                            self.wfile.write(bytes([value])); self.wfile.flush(); time.sleep(0.05)
+                            self.wfile.write(bytes([value]))
+                            self.wfile.flush()
+                            time.sleep(0.05)
                         self.wfile.write(raw[24:])
                     else:
                         self.wfile.write(raw)
@@ -76,12 +93,18 @@ class BoundedReadTests(unittest.TestCase):
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
-        self.thread = threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True)
+        self.thread = threading.Thread(
+            target=lambda: self.server.serve_forever(poll_interval=0.01), daemon=True
+        )
         self.thread.start()
         self.addCleanup(self.stop)
-        self.env = {core.ENV_API: "http://127.0.0.1:%d/api" % self.server.server_address[1],
-                    core.ENV_READ_PATHS: "/operator-registry", "INFISICAL_ENVIRONMENT": "prod",
-                    "INFISICAL_TOKEN": "another-consumer", "PYTHONPATH": "/untrusted"}
+        self.env = {
+            core.ENV_API: "http://127.0.0.1:%d/api" % self.server.server_address[1],
+            core.ENV_READ_PATHS: "/operator-registry",
+            "INFISICAL_ENVIRONMENT": "prod",
+            "INFISICAL_TOKEN": "another-consumer",
+            "PYTHONPATH": "/untrusted",
+        }
         real = core.subprocess.Popen
 
         def tracked(*args, **kwargs):
@@ -93,16 +116,26 @@ class BoundedReadTests(unittest.TestCase):
             return child
 
         patch = mock.patch.object(core.subprocess, "Popen", side_effect=tracked)
-        patch.start(); self.addCleanup(patch.stop)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def stop(self):
-        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=1)
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=1)
         for child in self.children:
             self.assertIsNotNone(child.poll(), "the owned read child survived cleanup")
 
     def fetch(self, timeout=1.0, **kwargs):
-        return core.bounded_fetch_project(self.project, "/operator-registry", self.env,
-            token=self.sample, names=("A_KEY", "B_KEY"), timeout=timeout, **kwargs)
+        return core.bounded_fetch_project(
+            self.project,
+            "/operator-registry",
+            self.env,
+            token=self.sample,
+            names=("A_KEY", "B_KEY"),
+            timeout=timeout,
+            **kwargs,
+        )
 
     def test_real_worker_verifies_grant_and_exact_named_values(self):
         self.assertEqual(self.fetch(), {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"})
@@ -127,8 +160,9 @@ class BoundedReadTests(unittest.TestCase):
                 self.assertIsNotNone(self.children[-1].poll())
 
     def scripted(self, program):
-        return mock.patch.object(core, "_bounded_read_command",
-            return_value=[sys.executable, "-I", "-B", "-c", program])
+        return mock.patch.object(
+            core, "_bounded_read_command", return_value=[sys.executable, "-I", "-B", "-c", program]
+        )
 
     def test_blocked_resolver_or_executor_worker_is_killed_and_reaped(self):
         programs = [
@@ -171,9 +205,13 @@ class BoundedReadTests(unittest.TestCase):
         child = mock.Mock(stdin=io.BytesIO(), stdout=io.BytesIO())
         child.poll.return_value = None
         child.wait.side_effect = subprocess.TimeoutExpired("owned child", 0)
-        with mock.patch.object(core.subprocess, "Popen", return_value=child), mock.patch.object(
-            core, "_read_worker_pipes", side_effect=subprocess.TimeoutExpired("owned child", 0)
-        ), self.assertRaisesRegex(core.SecretsError, "bounded-read-cleanup-failed"):
+        with (
+            mock.patch.object(core.subprocess, "Popen", return_value=child),
+            mock.patch.object(
+                core, "_read_worker_pipes", side_effect=subprocess.TimeoutExpired("owned child", 0)
+            ),
+            self.assertRaisesRegex(core.SecretsError, "bounded-read-cleanup-failed"),
+        ):
             self.fetch(timeout=0.2)
         child.kill.assert_called()
 
@@ -185,9 +223,18 @@ class BoundedReadTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_private_worker_has_no_selectable_write_operation(self):
-        request = dict(schema=1, operation="write", project=self.project,
-            path="/operator-registry", env={core.ENV_API: self.env[core.ENV_API]},
-            token=self.sample, names=["A_KEY"], writer=False, timeout=1.0, max_output_bytes=4096)
+        request = dict(
+            schema=1,
+            operation="write",
+            project=self.project,
+            path="/operator-registry",
+            env={core.ENV_API: self.env[core.ENV_API]},
+            token=self.sample,
+            names=["A_KEY"],
+            writer=False,
+            timeout=1.0,
+            max_output_bytes=4096,
+        )
         with self.assertRaises(core.SecretsError):
             core._bounded_read_request(request, time.monotonic() + 1)
         self.assertEqual(self.calls, [])
