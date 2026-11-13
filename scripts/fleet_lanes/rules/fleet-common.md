@@ -31,3 +31,5 @@ Infisical is the sole source for secrets, environment values and settings; prod 
 Use real U+00A0 plus a normal space between sentences everywhere, including Apple Notes; Notes may display the imported pair as two ordinary spaces.  Only replies in the Claude Code Code tab, MiniMax Code pane and Z Code pane use `&nbsp;` plus a normal space.  Never use it elsewhere; code, identifiers and machine config get no prose gap.
 
 Write owner-facing times in America/Chicago 12-hour form with AM or PM, no zone label or adjacent UTC time.  See canonical sentence-gap and owner-copy rules.
+
+Headings, buttons and titles are Title Case; light theme is default.  Release copy never names agents.

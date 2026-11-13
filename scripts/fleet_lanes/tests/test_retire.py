@@ -377,6 +377,90 @@ class WorldCase(unittest.TestCase):
         self.w = World(self)
 
 
+class LegacySuffixTests(WorldCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.registry = json.loads(json.dumps(REGISTRY_DATA))
+        self.registry["seats"].append({
+            "tag": "ZC", "worktreeSuffix": "zcode", "branchPrefixes": ["zcode/", "zc/"],
+        })
+        self.write_registry()
+        self.legacy = self.w.new_lane("legacy", seat="ZC")
+        self.assertEqual(self.legacy.name, "zcode-legacy")
+        self.w.merged_pr(self.legacy, "zcode/legacy")
+        self.registry["seats"][-1].update(worktreeSuffix="zc", branchPrefixes=["zc/", "zcode/"])
+        self.write_registry()
+
+    def write_registry(self) -> None:
+        Path(self.w.env["FLEET_APPS_JSON"]).write_text(json.dumps(self.registry), encoding="utf-8")
+
+    def test_new_lanes_use_registered_suffix_and_legacy_path_retires(self) -> None:
+        modern = self.w.new_lane("modern", seat="ZC")
+        self.assertEqual(modern.name, "zc-modern")
+        self.assertEqual(self.w.git(["branch", "--show-current"], modern), "zc/modern")
+        result = self.w.run("retire", str(self.legacy), "--json", env={"AGENT_SEAT": "ZC"})
+        self.assertEqual(result.rc, 0, result.err)
+        self.assertTrue(result.row("zcode-legacy")["removed"])
+        self.assertFalse(self.legacy.exists())
+        self.assertTrue(modern.exists())
+
+    def test_legacy_slug_retires_but_two_equivalent_spellings_are_ambiguous(self) -> None:
+        modern = self.w.new_lane("legacy", seat="ZC")
+        result = self.w.run("retire", "legacy", env={"AGENT_SEAT": "ZC"})
+        self.assertEqual(result.rc, 64, result.err)
+        self.assertIn("more than one lane", result.err)
+        self.assertTrue(self.legacy.exists())
+        self.assertTrue(modern.exists())
+        self.w.git(["worktree", "remove", str(modern)], self.w.trees["DealDex"])
+        result = self.w.run("retire", "legacy", env={"AGENT_SEAT": "ZC"})
+        self.assertEqual(result.rc, 0, result.err)
+        self.assertFalse(self.legacy.exists())
+
+    def test_prune_includes_both_spellings_and_excludes_other_seats(self) -> None:
+        modern = self.w.new_lane("modern", seat="ZC")
+        peer = self.w.new_lane("peer", seat="CODEX")
+        result = self.w.run("prune", "--apply", "--json", env={"AGENT_SEAT": "ZC"}, clock=MUCH_LATER)
+        self.assertEqual(result.rc, 0, result.err)
+        for path in (self.legacy, modern):
+            self.assertTrue(result.row(path.name)["removed"])
+            self.assertEqual(result.row(path.name)["seat"], "zc")
+            self.assertFalse(path.exists())
+        self.assertTrue(peer.exists())
+        self.assertNotIn(peer.name, result.out)
+
+    def test_another_seat_cannot_retire_or_prune_legacy_lanes(self) -> None:
+        result = self.w.run("retire", str(self.legacy), env={"AGENT_SEAT": "CODEX"})
+        self.assertEqual(result.rc, 64, result.err)
+        self.assertIn("not CODEX", result.err)
+        result = self.w.run("prune", "--apply", "--json", env={"AGENT_SEAT": "CODEX"}, clock=MUCH_LATER)
+        self.assertEqual(result.rc, 0, result.err)
+        self.assertEqual(result.json()["lanes"], [])
+        self.assertTrue(self.legacy.exists())
+
+    def test_prune_cleans_a_stale_legacy_entry_only_for_its_owner(self) -> None:
+        shutil.rmtree(self.legacy)
+        result = self.w.run("prune", "--apply", "--json", env={"AGENT_SEAT": "CODEX"}, clock=MUCH_LATER)
+        self.assertEqual(result.rc, 0, result.err)
+        self.assertFalse(result.has("worktree", "prune"))
+        self.assertIn(str(self.legacy), self.w.worktree_paths())
+        result = self.w.run("prune", "--apply", "--json", env={"AGENT_SEAT": "ZC"}, clock=MUCH_LATER)
+        self.assertEqual(result.rc, 0, result.err)
+        self.assertTrue(result.has("worktree", "prune"))
+        self.assertEqual(result.row("zcode-legacy")["seat"], "zc")
+        self.assertNotIn(str(self.legacy), self.w.worktree_paths())
+
+    def test_a_conflicting_manifest_still_blocks_retirement(self) -> None:
+        gitdir = self.w.git(["rev-parse", "--absolute-git-dir"], self.legacy)
+        manifest_path = Path(gitdir, K.MANIFEST_NAME)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(seat="codex", tag="CODEX")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        result = self.w.run("retire", str(self.legacy), env={"AGENT_SEAT": "ZC"})
+        self.assertEqual(result.rc, 64, result.err)
+        self.assertIn("codex", result.err)
+        self.assertTrue(self.legacy.exists())
+
+
 # --------------------------------------------------------------------------- the allowlist
 
 
