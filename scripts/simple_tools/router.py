@@ -156,6 +156,7 @@ _SESSION_TAG_ENDS = ("]", "\u2192", "->", " ", ":", "\t", "\u200a")
 _LOUD_MENTION_RE = re.compile(r"(?<![\\\w*])@(?:\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*)")
 _MENTION_NAME_RE = re.compile(r"(?<![\\\w*])@\*\*([^*|\n]+?)(?:\|\d+)?\*\*")
 
+
 #: A plain @SEAT tag (`@MC`, `@CODEX`):  the tag in any ASCII case, not the tail of a word, an
 #: address, a path or an escape (`jay@MC`, `/x/@MC`, `\@MC`), and not the start of a longer
 #: token (`@MCX`, `@MC-BUILD`, `@MC|123`), and not the start of a domain-like continuation
@@ -172,6 +173,8 @@ def plain_at_seat(visible: str, seat: str) -> bool:
     return bool(
         re.search(r"(?<![\w@*/.\\])@(?ai:%s)(?![\w|-])(?!\.[\w|-])" % re.escape(tag), visible)
     )
+
+
 _THREAD_LETTER_RE = re.compile(r"\s*:\s*([A-Za-z0-9]+)")
 MAX_LETTER_LENGTH = 8
 _LEGACY_ARROW_RE = re.compile(r"(?:\u2192|->)([^\]]*)\]")
