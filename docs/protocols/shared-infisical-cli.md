@@ -4,7 +4,7 @@
 
 Use an isolated interpreter and the absolute script path in the reviewed checkout or release, for example `python3 -I ~/.local/share/fleet-cli/current/scripts/fleet_infisical_cli.py names --path /folder`.  The entry inserts only its own real directory before importing the shared reader, so an unrelated current directory or PYTHONPATH cannot substitute a reader that receives the caller's bindings.  Shell, Swift and MJS callers use that same argv surface, with their own explicit scoped process bindings; this command never discovers another consumer's store.
 
-`names` uses the metadata-only API and prints names only.  Bound `get` uses the shared named-read API, so asking for one key does not decrypt every value in the folder.  Existing output and exit contracts, write allowlists, stdin value handling and the explicit tokenless interactive CLI-session route remain compatible.  That interactive route requires a TTY and is unavailable to a noninteractive app subprocess.
+`names` uses the metadata-only API and prints names only.  Bound `get` uses the shared named-read API, so asking for one key does not decrypt every value in the folder.  Existing output and exit contracts, write allowlists and stdin value handling remain compatible.  Consumer reads require their own scoped service-token binding in both interactive and noninteractive processes; a TTY never authorizes an administrative CLI-session fallback.
 
 The legacy `doctor` contract intentionally still reads values to count unresolved references, and probes Fleet-OPS `/` plus AI Fleet Coordinator `/fleetlink`.  It is not a metadata-only listing.  A narrower doctor contract needs its own reviewed migration; no new grant or broad fallback is introduced here.
 

@@ -126,11 +126,7 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
     path = core.check_path(str(opts["path"]))
     project_id = core.infisical_project_id(env, core.home_dir(env), project)
-    if sys.stdin.isatty() and not (env.get(core.project_token_name(project)) or "").strip():
-        # Preserve the existing explicit interactive CLI-session route only.
-        secrets = core.fetch_all(path, env, project, allow_session=True)
-    else:
-        secrets = core.fetch_project(project_id, path, env, names=tuple(names))
+    secrets = core.fetch_project(project_id, path, env, names=tuple(names))
     # Bound token reads request only the named keys, never the rest of the folder.
     # Nothing is printed unless every requested name resolves.
     missing = [n for n in names if n not in secrets]
