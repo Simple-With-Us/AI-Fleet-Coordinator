@@ -15,6 +15,32 @@ from fleet_knobs.tests._fake import ScopedReadAPI
 
 
 class SharedClientTests(unittest.TestCase):
+    def test_missing_shared_client_keeps_import_safe_and_returns_process_local_reason(self):
+        scripts = str(Path(__file__).resolve().parents[2])
+        boot = """
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.modules['fleet_infisical'] = None
+from fleet_knobs import source
+try:
+    source.fetch({'OPERATOR_API_URL'})
+except source.FetchFailed as exc:
+    print(exc.reason)
+else:
+    raise AssertionError('missing client allowed a read')
+"""
+        with tempfile.TemporaryDirectory() as home:
+            proc = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", boot, scripts],
+                env={"HOME": home, "PATH": "/unavailable"},
+                cwd=home,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "scoped-reader-unavailable")
+
     def test_listener_image_includes_shared_client_in_payload_and_build_context(self):
         server = Path(__file__).resolve().parents[2] / "simple_tools" / "server"
         self.assertIn(
@@ -42,7 +68,9 @@ sys.modules['fleet_secrets.core'] = None
 from fleet_knobs import source
 import fleet_infisical
 assert source._load_helper() is fleet_infisical
-print(json.dumps(source.fetch({'OPERATOR_API_URL'})))
+result = source.fetch({'OPERATOR_API_URL'})
+assert result == {'OPERATOR_API_URL': 'https://operator.invalid'}
+print(json.dumps(sorted(result)))
 """
         with (
             tempfile.TemporaryDirectory() as home,
@@ -69,7 +97,7 @@ print(json.dumps(source.fetch({'OPERATOR_API_URL'})))
                         self.assertEqual(proc.returncode, 0, proc.stderr)
                         self.assertEqual(
                             json.loads(proc.stdout),
-                            {"OPERATOR_API_URL": "https://operator.invalid"},
+                            ["OPERATOR_API_URL"],
                         )
                         self.assertEqual(len(api.requests), 2)
                     self.assertNotIn(api.token, proc.stdout + proc.stderr)
