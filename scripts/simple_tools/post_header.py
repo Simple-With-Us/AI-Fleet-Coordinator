@@ -16,7 +16,7 @@ REPO_SEPARATOR = "," + HAIR
 RECIPIENT_SEPARATOR = "," + HAIR * 2
 ARROW = " → "
 
-_HEADER = re.compile(r"^(?P<lead>(?:(?:👀|:eyes:)\s*)?\s*)\[(?P<inner>[^\r\n\[\]]+)\]")
+_HEADER = re.compile(r"^(?P<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?P<inner>[^\r\n\[\]]+)\]")
 _SENDER = re.compile(
     r"(?P<seat>[A-Z0-9][A-Z0-9_-]*)(?P<transport>·[^\s:→\]]+)?"
     r"(?:\s*:\s*(?P<thread>[A-Za-z0-9][A-Za-z0-9.-]*))?"

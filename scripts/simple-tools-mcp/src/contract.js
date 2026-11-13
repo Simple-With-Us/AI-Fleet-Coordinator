@@ -508,7 +508,7 @@ export const HEADER_RECIPIENT_SEPARATOR = `,${HEADER_HAIR.repeat(2)}`;
 
 /** The Python post_header.normalize_header contract: only the first complete header changes. */
 export function normalizeHeader(text, { seat = null } = {}) {
-  const match = /^(?<lead>(?:(?:👀|:eyes:)\s*)?\s*)\[(?<inner>[^\r\n\[\]]+)\]/u.exec(text);
+  const match = /^(?<lead>\s*(?:(?:👀|:eyes:)\s*)?)\[(?<inner>[^\r\n\[\]]+)\]/u.exec(text);
   if (!match) return text;
   const parts = match.groups.inner.split(/\s*(?:→|->)\s*/u);
   if (parts.length > 2) return text;
@@ -533,7 +533,7 @@ export function normalizeHeader(text, { seat = null } = {}) {
 /** Locate a complete, single-line own-seat intro. Foreign-seat and malformed markers are content. */
 export function ownIntro(prefix, text) {
   const seat = prefix.slice(1).split("·", 1)[0];
-  const leading = text.match(/^(?:(?:👀|:eyes:)\s*)?\s*/u)[0];
+  const leading = text.match(/^\s*(?:(?:👀|:eyes:)\s*)?/u)[0];
   const start = leading.length;
   if (!text.startsWith(`[${seat}`, start)) return null;
   const after = start + seat.length + 1;
@@ -597,7 +597,7 @@ export function composeBody(prefix, text, { labels = [], mentions = [] } = {}) {
   if (own) {
     let intro = own.intro;
     const seatEnd = intro.indexOf("[") + 1 + prefix.slice(1).split("·", 1)[0].length;
-    const suffix = intro.slice(seatEnd).replace(/^·[^\s:→\]]*/u, "");
+    const suffix = intro.slice(seatEnd).replace(/^·(?:(?!->)[^\s:→\]])*/u, "");
     const session = prefix.includes("·") ? prefix.slice(prefix.indexOf("·")) : "";
     // Supplied session is operational attribution and overrides a stale text session.
     if (session) intro = intro.slice(0, seatEnd) + session + suffix;

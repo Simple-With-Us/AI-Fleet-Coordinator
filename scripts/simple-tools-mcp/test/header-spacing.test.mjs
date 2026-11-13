@@ -6,11 +6,11 @@ import { gapGitHubArgs } from "../src/outbound-gap.js";
 
 const fixtures = JSON.parse(readFileSync(new URL("../../simple_tools/tests/header-spacing.json", import.meta.url), "utf8"));
 if (!Array.isArray(fixtures) || fixtures.length === 0 || !fixtures.every((entry) =>
-  entry !== null && typeof entry === "object" && typeof entry.name === "string" &&
-  typeof entry.input === "string" && typeof entry.expected === "string" &&
-  (entry.seat === undefined || entry.seat === null || typeof entry.seat === "string"))) {
-  throw new Error("Invalid header-spacing.json fixture shape");
-}
+  entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+  ["name", "input", "expected"].every((key) => typeof entry[key] === "string") &&
+  (entry.seat === undefined || entry.seat === null || typeof entry.seat === "string") &&
+  ["repos", "peers"].every((key) => entry[key] === undefined || (Array.isArray(entry[key]) && entry[key].every((v) => typeof v === "string")))
+)) throw new Error("Invalid header-spacing.json fixture shape");
 
 test("OPS-1086 golden headers survive JSON and UTF-8 without changing body gaps", () => {
   for (const entry of fixtures) {
@@ -43,6 +43,15 @@ test("the hosted content cap applies after header serialization", () => {
   const prefix = "[CODEX: EE.1.S 📁AFC] ";
   const input = prefix + "x".repeat(MAX_CONTENT_LENGTH - Array.from(prefix).length);
   assert.throws(() => composeBody(tagPrefix("CODEX", null), input), UsageError);
+});
+
+test("quiet own headers retain one no-wake marker and all addressed peers", () => {
+  const body = "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] Body.\u00a0 Next.";
+  for (const marker of [":eyes: ", "👀 "]) {
+    assert.equal(composeBody(tagPrefix("CODEX", "deadbeef"), marker + body, { labels: ["AG"] }), marker + fixtures[0].expected);
+  }
+  assert.equal(composeBody(tagPrefix("CODEX", "deadbeef"), "[CODEX·oldtag->AG] hi", { labels: ["CURSOR"] }),
+    "[CODEX·deadbeef → AG,\u200a\u200aCURSOR] hi");
 });
 
 test("quiet marker survives hosted composition with the same header bytes", () => {
