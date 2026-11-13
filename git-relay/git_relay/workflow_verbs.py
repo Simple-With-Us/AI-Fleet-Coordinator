@@ -1267,7 +1267,7 @@ class WorkflowVerbs:
             tip_obj = tip.get("object") if isinstance(tip, dict) else None
             tip_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
             if not isinstance(tip_sha, str) or not _SHA.fullmatch(tip_sha):
-                raise Refused("PR base not matched")
+                raise Refused("PR base tip unverifiable")
             base_sha = tip_sha
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
