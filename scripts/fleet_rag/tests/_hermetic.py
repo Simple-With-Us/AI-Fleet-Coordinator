@@ -1,9 +1,8 @@
 """Shared hermeticity helper: isolate a test from this machine's real credentials and Infisical.
 
-An owner's Mac has `fleet-secrets` installed (OPS-818), which
-fleet_rag.core falls back to for missing credentials.  A test that reaches any of these unpatched
-seams will read real credentials and, if fleet_rag.core.infisical_login() then succeeds, make a
-real network call to Infisical -- slow, and a genuine credential leak into the test process.
+fleet_rag.core reads missing credentials directly through the shared Infisical client.  Tests
+must disable both optional Fleet-OPS reads and the separate recall-project login seam so a real
+binding can never reach a provider or load credentials into the test process.
 
 Use HermeticTestCase as a drop-in base (it cooperates with your own setUp via super()), or mix
 HermeticCredentialsMixin into an existing base class and call self.make_hermetic() yourself:
@@ -54,9 +53,8 @@ class HermeticCredentialsMixin:
         env_patch.start()
         self.addCleanup(env_patch.stop)
 
-        # FLEET_RAG_HANDOFF_FILE covers core.handoff_file() callers (core._identity, via
-        # infisical_login);  the `fleet-secrets` fallback is switched off so no test shells out.
-        for patcher in (mock.patch.object(core, "_fleet_secrets_bin", lambda: None),):
+        # Disable optional direct reads independently of the dedicated recall reader below.
+        for patcher in (mock.patch.object(core, "fleet_secrets_many", lambda names: {}),):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -83,7 +81,6 @@ class _SelfTest(HermeticTestCase):
 
     def test_handoff_paths_are_redirected_and_absent(self) -> None:
         self.assertFalse(core.handoff_file().exists())
-        self.assertIsNone(core._fleet_secrets_bin())
         self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
 
     def test_infisical_login_is_stubbed_out(self) -> None:
