@@ -11,7 +11,7 @@
 // `singleGaps` widens a ONE space after a sentence (agents type one, and some
 // tools collapse two into one before the text reaches the client) and
 // `fleetDates` rewrites an ISO date in prose (`2026-10-19`, `2026-10-20T02:03:00Z`)
-// into the fleet form (`Mon, Oct 19`, `Mon, Oct 19, 9:03pm`), in Central, with the
+// into the fleet form (`Mon, Oct 19`, `Mon, Oct 19, 9:03 PM`), in Central, with the
 // year only when it is not this year.  A date inside a name or a path
 // (`backup-2026-10-19.tar`, `/2026-10-19/`) is left alone.  Both skip code, math and
 // mentions, and both report what they changed so the caller can tell the author.
@@ -133,7 +133,7 @@ export function sentenceGap(text) {
 // words.
 //
 // fleetDates rewrites an ISO date in prose (`2026-10-19`, `2026-10-20T02:03:00Z`) into the fleet form
-// (`Mon, Oct 19`, `Mon, Oct 19, 9:03pm`), in Central, with the year only when it is not this year.  A date inside a
+// (`Mon, Oct 19`, `Mon, Oct 19, 9:03 PM`), in Central, with the year only when it is not this year.  A date inside a
 // name or a path (`backup-2026-10-19.tar`, `/2026-10-19/`) is left alone.
 //
 // Both skip code, math and mentions (the same protected ranges as sentenceGap), and both report what they changed,
@@ -250,9 +250,9 @@ function fleetDay(when, thisYear) {
   );
 }
 
-/** `9:03am`. */
+/** `9:03 AM`. */
 function clock(hour, minute) {
-  return `${hour % 12 || 12}:${String(minute).padStart(2, "0")}${hour < 12 ? "am" : "pm"}`;
+  return `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}`;
 }
 
 /** Minutes east of UTC for `Z`, `+HH:MM`, `+HHMM` or `-HH:MM`. */

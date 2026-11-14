@@ -21,7 +21,7 @@ class Render(Sandbox):
         text = render_markdown(self.facts())
         for number, title in enumerate(SECTION_TITLES, 1):
             self.assertRegex(text, r"(?m)^## %d\. %s" % (number, re.escape(title)))
-        self.assertTrue(text.startswith("# Open Loops as of Sun, Oct 11, 7:00am"))
+        self.assertTrue(text.startswith("# Open Loops as of Sun, Oct 11, 7:00 AM"))
         self.assertNotIn("CDT", text)
         self.assertIn("Full list:  ", text)
         self.assertTrue(text.endswith("\n"))
