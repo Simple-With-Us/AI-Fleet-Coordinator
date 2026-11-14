@@ -6,12 +6,12 @@ description: >-
 
 # Session start (ZC)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
-This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).  Session tag `[ZC·session8]`.  Notes name `ZCode`.  Branches `zcode/<slug>` only.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  `ZC` is the default seat of an ordinary session; a launcher's seat wins (Identity).
+This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).  Session tag `[ZC·session8]`.  Notes name `ZCode`.  New branches `zc/<slug>`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`; existing `zcode/` branches are legacy.  `ZC` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
 Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
@@ -29,9 +29,9 @@ simple-chat whoami --as "$SEAT"
 
 Your seat is the first of these that applies (FLEET-PROTOCOL.md § Identity Rules): a seat Jay names to you in this conversation; a seat your launcher assigned (`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`, matching your launch prompt), which beats this file whatever model you are; otherwise this is an ordinary ZCode session, and your seat is **ZC** (bot `zc-bot@`).  If `AGENT_LAUNCHER` is set with no `AGENT_LAUNCH_SEAT`, or they disagree with your launch prompt, you have no seat: do no fleet action, and say so.
 
-Stop if `whoami` shows another seat's bot or the credential is missing (the CLI also refuses on its own).  Never use another seat's credential or Jay's account.  Your shell may not keep exports between commands, so pass `--as <SEAT>` on every simple-chat call.  `simple-board` does not read these variables: the fleet verifier names your seat from your own bearer (`simple-board whoami` prints it as `bearer-verified`), no variable can pick it, and `--by <YOUR_TAG>` in the commands below is only a check that must equal that seat.  `<branch-prefix>` below is your seat's branch prefix: `zcode` for ZC, or the one your launcher names.  Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`, and never overwrite an `AGENT_SEAT` you found already set.
+Stop if `whoami` shows another seat's bot or the credential is missing (the CLI also refuses on its own).  Never use another seat's credential or Jay's account.  Your shell may not keep exports between commands, so pass `--as <SEAT>` on every simple-chat call.  `simple-board` does not read these variables: the fleet verifier names your seat from your own bearer (`simple-board whoami` prints it as `bearer-verified`), no variable can pick it, and `--by <YOUR_TAG>` in the commands below is only a check that must equal that seat.  `<branch-prefix>` below is your seat's branch prefix: `zc` for ZC, or the one your launcher names.  Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`, and never overwrite an `AGENT_SEAT` you found already set.
 
-Never open or push another seat's prefix from a ZCode session.  Only `zcode/`.
+Never open or push another seat's prefix from a ZCode session.  Only `zc/`.
 
 ## 2. Read live coordination
 
@@ -92,7 +92,7 @@ cd "$(~/apps/lane path <app> <slug>)"
 | Personal-Site | `Personal-Site` | PS | `~/apps/lanes/Personal-Site/<seat>-<slug>` |
 | AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/AI-Fleet-Coordinator/<seat>-<slug>` |
 
-Machine-infra issues file to the `OPS` team (`linear_file` with `app` = `fleet-infra` routes there).  `<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag, and the folder above it is the repo's folder name under the owner's integration tree (`codeDir`), exactly as spelled there.  Lanes in the old places under `~/apps/lanes` (`<prefix>/` such as `lanes/trading`, `_managed`, `_review`) stay until the layout migration moves them, and flat ones such as `~/apps/trading-zcode` are not moved at all and retire normally; do not create new ones in any old place.  The inventory is the `fleet-apps.json` file in the fleet coordinator repo.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
+Machine-infra issues file to the `OPS` team (`linear_file` with `app` = `fleet-infra` routes there).  `<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag, and the folder above it is the repo's folder name under the owner's integration tree (`codeDir`), exactly as spelled there.  Lanes in the old places under `~/apps/lanes` (`<prefix>/` such as `lanes/trading`, `_managed`, `_review`) stay until the layout migration moves them, and flat ones such as `~/apps/trading-zc` are not moved at all and retire normally; do not create new ones in any old place.  The inventory is the `fleet-apps.json` file in the fleet coordinator repo.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
 
 Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its open Linear issues (`linear_list --team <app>`).  `docs/EFFORT-LOG.md` is archived history now; read it only for background.  Personal-Site `AGENTS.md` can lag `README.md` (the live source is `site/`); believe README + current tree over a stale "static snapshot" paragraph.
 
@@ -100,7 +100,7 @@ Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its 
 
 1. **Linear** — the MCP tool `linear_list` (`team` = `<app>`) finds the issue, then the MCP tool `linear_claim` with `id` = the issue and `comment` = "<lane path> @ <branch>".  If nothing exists:  `linear_file` with `title`, `app` = `<app>`, `severity` = `P1` and `description`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; the hosted server refuses an issue another seat holds.  The CLI fallback is `simple-board list --app <app>`, then `simple-board claim <id> --by <YOUR_TAG> --env Mac --where "~/apps/lanes/<Repo>/<seat>-<slug> @ <branch>"`.
 2. **Zulip** — open the work topic and post the claim (below).  There is no effort log and no separate GitHub issue to mark; a GitHub issue filed after the cutover is already a Linear issue.
-3. **Branch and PR** — branch `<seat>/<id>-<slug>` (`zcode/afc-123-zulip-cutover`), and the PR body says `Fixes <ID>` when it finishes the issue or `Refs <ID>` for partial work.
+3. **Branch and PR** — branch `<seat>/<id>-<slug>` (`zc/afc-123-zulip-cutover`), and the PR body says `Fixes <ID>` when it finishes the issue or `Refs <ID>` for partial work.
 
 Post in the work topic (`<ID> <subject>`, for example `AFC-123 claim title`, at most 58 characters):
 
