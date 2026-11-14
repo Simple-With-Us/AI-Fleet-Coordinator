@@ -37,6 +37,8 @@ def _pin_image_generation(old, new, code):
         data, _meta = read_regular(code / "provenance_patch.py")
     except FileNotFoundError:
         return
+    except OSError as exc:
+        raise TransactionError("unreadable image generation sentinel") from exc
     digest = hashlib.sha256(data).hexdigest()
     old["code/provenance_patch.py"] = digest
     new["code/provenance_patch.py"] = digest

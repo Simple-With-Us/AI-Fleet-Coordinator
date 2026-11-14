@@ -201,6 +201,22 @@ class ImageGenerationSentinelTests(unittest.TestCase):
             self.assertNotIn("code/provenance_patch.py", old)
             self.assertNotIn("code/provenance_patch.py", new)
 
+    def test_unreadable_or_symlinked_sentinel_refuses_typed(self):
+        # O_NOFOLLOW rejects a symlink with OSError(ELOOP); the pin must not
+        # leak an untyped traceback - it fails as a diagnosable TransactionError.
+        import os
+
+        with tempfile.TemporaryDirectory() as d:
+            code = Path(d)
+            (code / "real_target.py").write_bytes(b"x")
+            os.symlink("real_target.py", code / "provenance_patch.py")
+            old = {"code/patch_secretscan.py": "before"}
+            new = {"code/patch_secretscan.py": "after"}
+            with self.assertRaises(TransactionError):
+                _pin_image_generation(old, new, code)
+            self.assertNotIn("code/provenance_patch.py", old)
+            self.assertNotIn("code/provenance_patch.py", new)
+
     def test_manifest_row_naming_the_sentinel_wins(self):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "provenance_patch.py").write_bytes(b"on-disk")

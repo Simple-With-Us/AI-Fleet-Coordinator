@@ -26,7 +26,7 @@ MODULES = {
     "deploy_host.py": "bbb1d3906e89f9f83f10c0a0f6976aa1e72244bbc9d112a0f841b49bbb89fce5",
     "deploy_journal.py": "bb39bbe7ced794771aa419c357509cf2a30bc719d68cdb5c29557f7cec74a2a0",
     "deploy_recovery.py": "e362ba890b0e19fa8fbd07a23096358bfbc8b29b5a9524da09546b4f4c5619d1",
-    "deploy_runner.py": "f932c45c5d6595737ea7d3d8a4686ec506c4ba20970b76e548841a3c08106d6e",
+    "deploy_runner.py": "2d9eb6b2743a6bc1af85ba51a28724112cabc619c513ab197dbb503d49e6c06a",
     "deploy_supervisor.py": "cab9dd1336c7f9eafd81fa9327bf4eb613363bd9486cb17ae3b491cc3f82c115",
     "deploy_transaction.py": "a6bf527f0cf9946ea352c84372fb49df3682cd163f2c91d46ddf301521d50852",
 }
