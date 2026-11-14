@@ -164,8 +164,8 @@ import os
 import re
 import secrets
 import selectors
-import signal
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -1786,8 +1786,11 @@ def _settings_directory(ctx, create=False):
             fd = os.open(name, flags, dir_fd=fd)
             opened.append(fd)
             info = os.fstat(fd)
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, ctx.uid)
-                    or info.st_mode & 0o022):
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in (0, ctx.uid)
+                or info.st_mode & 0o022
+            ):
                 raise _settings_refusal()
         info = os.fstat(fd)
         if info.st_uid != ctx.uid or stat.S_IMODE(info.st_mode) != 0o700:
@@ -1804,8 +1807,13 @@ def _settings_read(parent, name, uid):
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     try:
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != uid
-                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > SETTINGS_BOOTSTRAP_MAX):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > SETTINGS_BOOTSTRAP_MAX
+        ):
             raise _settings_refusal()
         raw = bytearray()
         while chunk := os.read(fd, 4096):
@@ -1825,8 +1833,9 @@ def _settings_read(parent, name, uid):
 
 def _settings_publish(parent, name, raw):
     temporary = ".operator-settings-" + secrets.token_hex(16)
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                 0o600, dir_fd=parent)
+    fd = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+    )
     try:
         os.fchmod(fd, 0o600)
         remaining = memoryview(raw)
@@ -1849,15 +1858,23 @@ def _settings_values(raw):
         values = {}
         for line in raw.decode("ascii").splitlines():
             key, separator, value = line.partition("=")
-            if (not separator or key not in (SETTINGS_PROJECT, SETTINGS_WRITER) or key in values
-                    or not value or any(c.isspace() or c in "\"'" for c in value)):
+            if (
+                not separator
+                or key not in (SETTINGS_PROJECT, SETTINGS_WRITER)
+                or key in values
+                or not value
+                or any(c.isspace() or c in "\"'" for c in value)
+            ):
                 raise _settings_refusal()
             values[key] = value
-        if (set(values) != {SETTINGS_PROJECT, SETTINGS_WRITER}
-                or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
-                                    values[SETTINGS_PROJECT])
-                or not values[SETTINGS_WRITER].startswith("st.")
-                or not 20 <= len(values[SETTINGS_WRITER]) <= 8192):
+        if (
+            set(values) != {SETTINGS_PROJECT, SETTINGS_WRITER}
+            or not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", values[SETTINGS_PROJECT]
+            )
+            or not values[SETTINGS_WRITER].startswith("st.")
+            or not 20 <= len(values[SETTINGS_WRITER]) <= 8192
+        ):
             raise _settings_refusal()
         return values
     except (UnicodeError, KeyError, TypeError):
@@ -1868,14 +1885,21 @@ def _settings_container(ctx, target=EAVESDROPPER_CONTAINER):
     with tempfile.TemporaryDirectory(prefix="fleet-ops-docker-") as scratch:
         status, out, _, over = ctx.reader(
             [_docker(), "inspect", "--format", "{{.Id}} {{.Image}} {{.State.Running}}", target],
-            timeout=5, env=_docker_env(scratch), max_bytes=256,
+            timeout=5,
+            env=_docker_env(scratch),
+            max_bytes=256,
         )
     try:
         cid, image, running = out.decode("ascii").strip().split(" ")
     except (ValueError, UnicodeError):
         raise _settings_refusal() from None
-    if (status or over or not SETTINGS_CID_RE.fullmatch(cid)
-            or not SETTINGS_IMAGE_RE.fullmatch(image) or running != "true"):
+    if (
+        status
+        or over
+        or not SETTINGS_CID_RE.fullmatch(cid)
+        or not SETTINGS_IMAGE_RE.fullmatch(image)
+        or running != "true"
+    ):
         raise _settings_refusal()
     return cid, image
 
@@ -1887,11 +1911,15 @@ def _settings_writer_request(ctx, request):
         with _settings_directory(ctx) as parent:
             raw, _ = _settings_read(parent, SETTINGS_IMAGE, ctx.uid)
             image = _settings_json(raw)
-            if (not isinstance(image, dict) or set(image) != {"protocol", "imageID", "storeInode"}
-                    or image["protocol"] != "operator-settings-image/1"
-                    or not isinstance(image["imageID"], str)
-                    or not SETTINGS_IMAGE_RE.fullmatch(image["imageID"])
-                    or type(image["storeInode"]) is not int or image["storeInode"] <= 0):
+            if (
+                not isinstance(image, dict)
+                or set(image) != {"protocol", "imageID", "storeInode"}
+                or image["protocol"] != "operator-settings-image/1"
+                or not isinstance(image["imageID"], str)
+                or not SETTINGS_IMAGE_RE.fullmatch(image["imageID"])
+                or type(image["storeInode"]) is not int
+                or image["storeInode"] <= 0
+            ):
                 raise _settings_refusal()
             cid, actual_image = _settings_container(ctx)
             if actual_image != image["imageID"]:
@@ -1902,8 +1930,10 @@ def _settings_writer_request(ctx, request):
             values = _settings_values(raw)
             if _settings_container(ctx, cid) != (cid, actual_image):
                 raise _settings_refusal()
-            envelope = json.dumps(dict(protocol="operator-settings-bootstrap/1", request=request,
-                                       bootstrap=values), separators=(",", ":")).encode()
+            envelope = json.dumps(
+                dict(protocol="operator-settings-bootstrap/1", request=request, bootstrap=values),
+                separators=(",", ":"),
+            ).encode()
             if len(envelope) > SETTINGS_BOOTSTRAP_MAX:
                 raise _settings_refusal()
             return cid, envelope
@@ -1925,16 +1955,21 @@ def receive_settings_bootstrap(ctx):
         if raw is None or len(raw) > SETTINGS_BOOTSTRAP_MAX:
             raise _settings_refusal()
         envelope = _settings_json(raw)
-        if (not isinstance(envelope, dict) or set(envelope) != {"protocol", "imageID", "bootstrap"}
-                or envelope["protocol"] != "operator-settings-install/1"
-                or not isinstance(envelope["imageID"], str)
-                or not SETTINGS_IMAGE_RE.fullmatch(envelope["imageID"])
-                or not isinstance(envelope["bootstrap"], dict)
-                or set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}
-                or any(not isinstance(value, str) for value in envelope["bootstrap"].values())):
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != {"protocol", "imageID", "bootstrap"}
+            or envelope["protocol"] != "operator-settings-install/1"
+            or not isinstance(envelope["imageID"], str)
+            or not SETTINGS_IMAGE_RE.fullmatch(envelope["imageID"])
+            or not isinstance(envelope["bootstrap"], dict)
+            or set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}
+            or any(not isinstance(value, str) for value in envelope["bootstrap"].values())
+        ):
             raise _settings_refusal()
-        payload = "".join(key + "=" + envelope["bootstrap"][key] + "\n"
-                          for key in (SETTINGS_PROJECT, SETTINGS_WRITER)).encode("ascii")
+        payload = "".join(
+            key + "=" + envelope["bootstrap"][key] + "\n"
+            for key in (SETTINGS_PROJECT, SETTINGS_WRITER)
+        ).encode("ascii")
         values = _settings_values(payload)
         cid, image = _settings_container(ctx)
         if image != envelope["imageID"]:
@@ -1956,14 +1991,24 @@ def receive_settings_bootstrap(ctx):
 
             def finite_grant(metadata, project, paths, permissions):
                 original(metadata, project, paths, permissions)
-                expiry = datetime.datetime.fromisoformat(metadata["expiresAt"].replace("Z", "+00:00"))
-                if expiry > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=90):
+                expiry = datetime.datetime.fromisoformat(
+                    metadata["expiresAt"].replace("Z", "+00:00")
+                )
+                if expiry > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                    days=90
+                ):
                     raise _settings_refusal()
 
             reader.validate_service_metadata = finite_grant
             try:
-                reader.verify_service_token(values[SETTINGS_WRITER], values[SETTINGS_PROJECT],
-                    "/operator-settings", {}, writer=True, deadline=time.monotonic() + 20)
+                reader.verify_service_token(
+                    values[SETTINGS_WRITER],
+                    values[SETTINGS_PROJECT],
+                    "/operator-settings",
+                    {},
+                    writer=True,
+                    deadline=time.monotonic() + 20,
+                )
             finally:
                 reader.validate_service_metadata = original
             if _settings_container(ctx, cid) != (cid, image):
@@ -4683,14 +4728,19 @@ def main(argv=None, ctx=None, out=None, muster=None):
             import pwd
 
             ctx = Context(home=Path(pwd.getpwuid(os.getuid()).pw_dir), environ={})
+
         def expired(signum, frame):
             raise TimeoutError()
+
         prior = signal.signal(signal.SIGALRM, expired)
         signal.setitimer(signal.ITIMER_REAL, 30)
         try:
             answer, code = receive_settings_bootstrap(ctx)
         except Exception:  # noqa: BLE001 - the local receiver never emits input or provider text
-            answer, code = {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+            answer, code = (
+                {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                2,
+            )
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, prior)
