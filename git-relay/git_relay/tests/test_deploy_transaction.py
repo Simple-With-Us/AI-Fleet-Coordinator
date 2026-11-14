@@ -137,7 +137,33 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(self.t.recover(rows), "aborted-no-write")
         self.assert_original()
 
-    def test_recover_without_journal_refuses_drift_partial_and_remnants(self):
+    def test_recover_without_journal_aborts_on_exact_staged_remnants(self):
+        # prepare() mkdirs the backup and stages the before/after images
+        # before writing the journal; a crash in that window leaves remnants
+        # whose content is verifiable against the pinned manifest rows.
+        rows = [
+            {k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes
+        ]
+        # Crash right after mkdir: an empty backup is a clean no-write abort.
+        self.t.backup.mkdir()
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        # Crash mid-staging: the images written so far all match the manifest.
+        (self.t.backup / "0.before").write_bytes(b"old code")
+        (self.t.backup / "0.after").write_bytes(b"new code")
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        # Crash after full staging, before the journal: still nothing applied.
+        (self.t.backup / "1.after").write_bytes(b"new module")
+        (self.t.backup / "2.before").write_bytes(b"old policy")
+        (self.t.backup / "2.after").write_bytes(b"new policy")
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        # Recovery created no journal and left the verified remnants in place.
+        self.assertFalse((self.t.backup / "journal.json").exists())
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+
+    def test_recover_without_journal_refuses_drift_tamper_and_remnants(self):
         rows = [
             {k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes
         ]
@@ -155,8 +181,29 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(TransactionError):
             self.t.recover(rows)
         os.chmod(self.code / "old.py", 0o644)
-        # A staged remnant without its journal is a partial prepare.
+        # A manifest-created file appearing early is drift for a before=None row.
+        (self.code / "new.py").write_bytes(b"new module")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.code / "new.py").unlink()
+        # A staged file whose content differs from the manifest is tamper.
         self.t.backup.mkdir()
+        (self.t.backup / "0.before").write_bytes(b"corrupt")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.t.backup / "0.before").unlink()
+        # An unexpected staged name is tamper.
+        (self.t.backup / "unexpected").write_bytes(b"old code")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.t.backup / "unexpected").unlink()
+        # A before-image for a manifest-created row is tamper.
+        (self.t.backup / "1.before").write_bytes(b"old code")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.t.backup / "1.before").unlink()
+        # A symlinked staged file is tamper.
+        (self.t.backup / "0.before").symlink_to(self.code / "old.py")
         with self.assertRaises(TransactionError):
             self.t.recover(rows)
         import shutil
@@ -167,10 +214,10 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(TransactionError):
             self.t.recover(rows)
         self.t.backup.unlink()
-        # A manifest-created file appearing early is drift for a before=None row.
-        (self.code / "new.py").write_bytes(b"new module")
+        # A regular file at the backup path is tamper, not absence.
+        self.t.backup.write_bytes(b"x")
         with self.assertRaises(TransactionError):
             self.t.recover(rows)
-        (self.code / "new.py").unlink()
+        self.t.backup.unlink()
         self.assertEqual(self.t.recover(rows), "aborted-no-write")
         self.assert_original()
