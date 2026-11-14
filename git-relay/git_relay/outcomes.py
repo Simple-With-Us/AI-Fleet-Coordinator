@@ -440,11 +440,6 @@ class OutcomeStore:
         a duplicate write.
         """
         with self._lock:
-            if corr is not None and (not isinstance(corr, str) or not corr):
-                # A non-string corr would persist verbatim, get archived, and
-                # then fail the archive's own type check on every later load:
-                # reject it before it can poison the store.
-                raise OutcomeStoreError("corr must be a non-empty string when supplied")
             existing = self._rows.get(key)
             if existing and (
                 existing["state"] in ("unknown", "pending")
@@ -452,6 +447,14 @@ class OutcomeStore:
                 and not reapply_ok
             ):
                 return existing
+            if corr is not None and (not isinstance(corr, str) or not corr):
+                # Caller-input validation, not store state:  callers map this
+                # to 400 bad_request, and a replay of a held key above keeps
+                # its outcome instead of being refused.  A non-string corr
+                # would persist verbatim, get archived, and then fail the
+                # archive's own type check on every later load:  reject it
+                # before it can poison the store.
+                raise ValueError("corr must be a non-empty string when supplied")
             if existing is None and key in self._archived:
                 # An archived held row still refuses:  archival is storage,
                 # never a release.  Only unknown rows are ever archived.

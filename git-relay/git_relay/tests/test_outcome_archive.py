@@ -430,12 +430,27 @@ class ArchiveHardeningTests(ArchiveTestCase):
         self.assertEqual(len(self.read_archive()), 2)
 
     def test_begin_rejects_a_non_string_corr_before_it_can_persist(self):
+        # Caller-input errors raise ValueError (mapped to 400 by callers),
+        # not the store-fatal OutcomeStoreError that callers map to a
+        # misleading capacity 503.
         store = OutcomeStore(self.path, clock=self.clock)
         for bad in (123, "", {"corr": 1}):
-            with self.assertRaises(OutcomeStoreError, msg=f"corr={bad!r}"):
+            with self.assertRaises(ValueError, msg=f"corr={bad!r}"):
                 store.begin("a" * 64, corr=bad)
         self.assertEqual(store._rows, {}, "a refused corr must not persist")
         self.assertIsNone(store.begin("a" * 64, corr="good-corr"))
+
+    def test_held_key_replay_wins_over_corr_validation(self):
+        # A replay of an in-flight key returns the held row even when the
+        # replay carries a malformed corr:  the replay stores nothing, so
+        # there is nothing to poison, and refusing it would misreport an
+        # in-flight attempt as unavailable.
+        store = OutcomeStore(self.path, clock=self.clock)
+        key = "b" * 64
+        self.assertIsNone(store.begin(key, corr="c" * 32))
+        held = store.begin(key, corr=123)
+        self.assertIsNotNone(held, "an in-flight replay must return the held row")
+        self.assertEqual(store.corr_of(key), "c" * 32, "the held row keeps its corr")
 
     def test_torn_tail_quarantine_preserves_the_whole_fragment(self):
         # Fragment longer than the intact prefix:  every discarded byte must
