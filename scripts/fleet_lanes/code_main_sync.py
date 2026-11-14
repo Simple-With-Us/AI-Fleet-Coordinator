@@ -36,7 +36,10 @@ import fcntl
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
+import threading
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -574,32 +577,79 @@ def run_loop(run, read=read_interval, sleep=time.sleep) -> int:
         return 0
 
 
+SCHEDULER_LOCK_STALE_S = 3600
+_CHILD_LOCK = threading.Lock()
+_ACTIVE_CHILDREN: set[subprocess.Popen] = set()
+_SHUTTING_DOWN = False
+
+
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Terminate a child and its entire process group, escalating to SIGKILL if needed."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (OSError, TypeError):
+        try:
+            proc.terminate()
+        except OSError:
+            return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (OSError, TypeError):
+            try:
+                proc.kill()
+            except OSError:
+                return
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def shutdown_children() -> None:
+    """Terminate all active sweep child process groups during scheduler shutdown."""
+    with _CHILD_LOCK:
+        global _SHUTTING_DOWN
+        _SHUTTING_DOWN = True
+        children = list(_ACTIVE_CHILDREN)
+    for proc in children:
+        _terminate_process_group(proc)
+
+
 def run_sweep_command(command: list[str]) -> int:
     """Keep the host's existing authorization bootstrap inside every sweep."""
     try:
-        proc = subprocess.Popen(command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(
+            command,
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
     except OSError:
         print("Code mirror sweep command exit=127", file=sys.stderr)
         return 127
+    with _CHILD_LOCK:
+        if _SHUTTING_DOWN:
+            _terminate_process_group(proc)
+            return 130
+        _ACTIVE_CHILDREN.add(proc)
     try:
         stdout, _stderr = proc.communicate(timeout=120)
     except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        _terminate_process_group(proc)
         print("Code mirror sweep command exit=124", file=sys.stderr)
         return 124
     except BaseException:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        _terminate_process_group(proc)
         raise
+    finally:
+        with _CHILD_LOCK:
+            _ACTIVE_CHILDREN.discard(proc)
     # Only the fixed counter receipt crosses the bootstrap boundary; never relay child diagnostics.
     summary_pattern = re.compile(
         r"(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2}) )?"
@@ -641,19 +691,54 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         state = Path(env.get("FLEET_LANE_GUARD_STATE_DIR") or home / ".local" / "state")
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         lock_dir = state / "code-main-sync-scheduler.lock"
-        try:
-            os.mkdir(lock_dir, 0o700)
-        except FileExistsError:
+        owner_file = lock_dir / "owner.json"
+        acquired = False
+        for _ in range(2):
+            try:
+                os.mkdir(lock_dir, 0o700)
+                acquired = True
+                break
+            except FileExistsError:
+                stale = False
+                try:
+                    owner = json.loads(owner_file.read_text(encoding="utf-8"))
+                    pid = owner.get("pid")
+                    if isinstance(pid, int) and pid > 0:
+                        try:
+                            os.kill(pid, 0)
+                        except ProcessLookupError:
+                            stale = True
+                        except PermissionError:
+                            stale = False
+                    else:
+                        stale = True
+                except (OSError, ValueError, TypeError):
+                    try:
+                        stale = (time.time() - lock_dir.stat().st_mtime) >= SCHEDULER_LOCK_STALE_S
+                    except OSError:
+                        stale = False
+                if stale:
+                    shutil.rmtree(lock_dir, ignore_errors=True)
+                    continue
+                print("Code mirror scheduler is already running", file=sys.stderr)
+                return 0
+        if not acquired:
             print("Code mirror scheduler is already running", file=sys.stderr)
             return 0
         try:
+            with _CHILD_LOCK:
+                global _SHUTTING_DOWN
+                _SHUTTING_DOWN = False
+            fd = os.open(owner_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid(), "started_at": time.time()}, handle)
             sweep = (lambda: run_sweep_command(args.sweep_command)) if args.sweep_command is not None else (lambda: main(["--dry-run"] if args.dry_run else [], env=env))
             return run_loop(sweep)
         finally:
-            try:
-                os.rmdir(lock_dir)
-            except OSError:
-                pass
+            shutdown_children()
+            with _CHILD_LOCK:
+                _SHUTTING_DOWN = False
+            shutil.rmtree(lock_dir, ignore_errors=True)
     home = Path(env.get("HOME") or os.path.expanduser("~"))
     root = Path(env.get("FLEET_CODE_ROOT") or home / "Code")
     if not root.is_dir():

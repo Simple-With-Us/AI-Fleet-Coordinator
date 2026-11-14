@@ -107,9 +107,13 @@ def install(source, destination, source_commit):
             if backup is not None:
                 os.rename(backup, destination)
             raise
-        for old_backup in destination.parent.glob(destination.name + ".backup-*"):
-            if old_backup != backup:
-                shutil.rmtree(old_backup)
+        backup_prefix = destination.name + ".backup-"
+        for old_backup in destination.parent.iterdir():
+            if old_backup.name.startswith(backup_prefix) and old_backup != backup and old_backup.is_dir():
+                try:
+                    shutil.rmtree(old_backup)
+                except OSError as error:
+                    print(f"Warning: failed to remove old backup {old_backup}: {error}", file=sys.stderr)
         return {
             "destination": str(destination),
             "backup": str(backup) if backup else None,
