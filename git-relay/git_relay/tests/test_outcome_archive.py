@@ -466,5 +466,53 @@ class ArchiveHardeningTests(ArchiveTestCase):
         self.assertGreaterEqual(len(fsyncs), 3)
 
 
+class ReconciliationHardeningTests(ArchiveTestCase):
+    """A non-definitive reconciliation must never release an archived denial."""
+
+    def test_unknown_finish_keeps_archived_key_denied(self):
+        store = OutcomeStore(self.path, clock=self.clock)
+        self.fill_unknowns(store, MAX_ENTRIES)
+        self.assertIsNone(store.begin("f" * 64))  # archives the oldest unknowns
+        archived_key = hexkey(0)
+        store.finish(archived_key, "unknown")
+        held = store.begin(archived_key)
+        self.assertIsNotNone(held, "unknown reconciliation must not re-arm the key")
+        self.assertTrue(held.get("archived"))
+        # No release marker was appended for the non-definitive outcome.
+        entries = self.read_archive()
+        self.assertFalse(
+            any("released_at" in e and e["key"] == archived_key for e in entries)
+        )
+        # The denial survives a restart (crash-window proof: index intact).
+        reloaded = OutcomeStore(self.path, clock=self.clock)
+        self.assertIsNotNone(reloaded.begin(archived_key))
+
+    def test_definitive_finish_releases_archived_key(self):
+        store = OutcomeStore(self.path, clock=self.clock)
+        self.fill_unknowns(store, MAX_ENTRIES)
+        self.assertIsNone(store.begin("f" * 64))
+        archived_key = hexkey(0)
+        store.finish(archived_key, "refused")
+        self.assertIsNone(store.begin(archived_key), "definitive refusal releases")
+        entries = self.read_archive()
+        self.assertTrue(
+            any(
+                e.get("released_at") and e["key"] == archived_key and e["state"] == "refused"
+                for e in entries
+            )
+        )
+
+    def test_archival_persists_live_registry_removal(self):
+        store = OutcomeStore(self.path, clock=self.clock)
+        self.fill_unknowns(store, MAX_ENTRIES)
+        self.assertIsNone(store.begin("f" * 64))
+        # Without reloading in memory:  the on-disk registry already excludes
+        # the archived keys, so a crash now cannot re-archive them.
+        with open(self.path, encoding="utf-8") as fh:
+            on_disk = json.load(fh)
+        for i in range(ARCHIVE_BATCH):
+            self.assertNotIn(hexkey(i), on_disk)
+
+
 if __name__ == "__main__":
     unittest.main()

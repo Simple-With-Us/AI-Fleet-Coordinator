@@ -395,8 +395,13 @@ unknown and never as ok, so no later call replays its number.  A replay of a
 successful call returns the stored result without touching GitHub twice.  A crash mid-write loads
 as unknown - the store fails closed, never replays.  The registry is bounded:  ok rows are
 evicted after a 24 h replay window, refused rows are evicted oldest-first under capacity, and
-a store full of held pending/unknown rows refuses new writes with 503 until an operator
-reconciles them (fail closed - never evict a held side effect).  Writes go through a
+a store full of held unknown rows archives the oldest unknowns to an append-only
+`<outcomes file>.archive.jsonl` sidecar (with a `<outcomes file>.archive-index.json` duplicate-denial
+index) to make room - an archived unknown still refuses a replay exactly as a live one, and an
+operator releases it by reconciling the key to a definitive `ok` or `refused` (a non-definitive
+reconciliation keeps the denial).  Only a store full of held pending rows with nothing left to
+archive refuses new writes with 503 until an operator reconciles them (fail closed - never
+evict a held side effect).  Writes go through a
 full-write loop, so a short write fails loudly instead of renaming a truncated registry.  `mint_token` is exempt:  it returns a raw
 credential (never cached in the store) and a re-mint is safe under the minter's own lock.
 

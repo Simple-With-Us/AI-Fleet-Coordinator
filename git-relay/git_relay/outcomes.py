@@ -426,6 +426,10 @@ class OutcomeStore:
         self._save_index()
         for _, key in candidates:
             del self._rows[key]
+        # Persist the removal:  a crash before this save would reload the
+        # archived rows as live on restart and re-archive the same keys,
+        # duplicating evidence lines.
+        self._save()
 
     def begin(self, key: str, *, reapply_ok: bool = False, corr: str | None = None) -> dict | None:
         """Mark a key in flight;  return the existing row when the key is already taken.
@@ -487,6 +491,11 @@ class OutcomeStore:
                 row["corr"] = corr
             if result is not None:
                 row["result"] = result
+            if key in self._archived and state not in ("ok", "refused"):
+                # A non-definitive reconciliation never releases an archived
+                # denial:  no release marker, no index drop, no live row, so a
+                # crash at any point leaves the key denied (fail closed).
+                return
             if key in self._archived:
                 # A reconciliation outcome for an archived write.  Order:  the
                 # release marker is appended to the archive log and fsynced
