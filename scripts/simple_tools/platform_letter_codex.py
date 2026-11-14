@@ -635,8 +635,8 @@ def codex_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
     try:
         try:
             rows = conn.execute(
-                "SELECT id FROM threads WHERE name LIKE '??: %' AND archived = 0 AND created_at >= ? AND created_at <= ?"
-                " ORDER BY created_at DESC LIMIT ?",
+                "SELECT id FROM threads WHERE name LIKE '??: %' AND archived = 0"
+                " AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
                 (
                     now - UNLETTERED_MAX_AGE_SECONDS,
                     now - UNLETTERED_MIN_AGE_SECONDS,
@@ -644,9 +644,25 @@ def codex_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
                 ),
             ).fetchall()
         except sqlite3.OperationalError as exc:
-            if "no such column" in str(exc):
+            if "no such column" not in str(exc):
+                raise
+            if "archived" not in str(exc):
                 return None  # a store version this old cannot say how old a chat is:  no pass
-            raise
+            # A store from before `archived`:  no chat in it can be archived (the column did not exist to
+            # set), so the unfiltered scan loses nothing;  the age window, the cap and the pass's own scope
+            # gate still bind.
+            try:
+                rows = conn.execute(
+                    "SELECT id FROM threads WHERE name LIKE '??: %'"
+                    " AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+                    (
+                        now - UNLETTERED_MAX_AGE_SECONDS,
+                        now - UNLETTERED_MIN_AGE_SECONDS,
+                        UNLETTERED_SCAN,
+                    ),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
     except sqlite3.Error:
         return None
     finally:
