@@ -91,7 +91,9 @@ class StopHookTests(HookBase):
         self.assertEqual(out["decision"], "block")
         self.assertTrue(out["reason"].startswith(REASON_START))
         self.assertIn("recall_contribute", out["reason"])
-        self.assertIn("'no lesson'", out["reason"])
+        self.assertIn("search for duplicates", out["reason"])
+        self.assertIn("finish without filler or a public declaration", out["reason"])
+        self.assertNotIn("reply with", out["reason"])
         marker = self.state / "hook-nudged" / "sess-1"
         self.assertTrue(marker.is_file())
         self.assertEqual(json.loads(marker.read_text())["tool_uses"], 30)
@@ -159,6 +161,14 @@ class StopHookTests(HookBase):
         tr = make_transcript(self.home / "t3.jsonl", 30, [line])
         out, _ = self.stop(tr, session_id="s3")
         self.assertIsNone(out)
+
+    def test_echoing_current_shared_policy_does_not_satisfy_legacy_acknowledgment(self):
+        policy = (HOOKS.parent / "fleet_lanes" / "rules" / "fleet-recall.md").read_text(encoding="utf-8")
+        self.assertNotIn("no lesson", policy.lower())
+        transcript = make_transcript(self.home / "policy.jsonl", 30, [assistant_line([text(policy)])])
+        out, _ = self.stop(transcript)
+        self.assertEqual(out["decision"], "block")
+        self.assertIsNone(self.stop(transcript)[0])
 
     def test_missing_transcript_bad_json_and_garbage_lines_never_fail(self):
         out, _ = self.stop(self.home / "does-not-exist.jsonl")
