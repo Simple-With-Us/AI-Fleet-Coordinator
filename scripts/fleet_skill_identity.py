@@ -407,7 +407,8 @@ KIMI_EXTRA = (
 ZCODE_IDENTITY = (
     "This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).\u00a0 "
     "Session tag `[ZC·session8]`.\u00a0 Notes name `ZCode`.\u00a0 New branches `zc/<slug>`.\u00a0 "
-    "Lanes `~/apps/lanes/<Repo>/zc-<slug>`; existing `zcode/` branches are legacy.\u00a0 "
+    "New lanes `~/apps/lanes/<Repo>/zc-<slug>`; legacy lanes `~/apps/lanes/<Repo>/zcode-<slug>` "
+    "and existing `zcode/` branches remain accepted for existing work.\u00a0 "
     "Pin `AGENT_SEAT=ZC`."
 )
 

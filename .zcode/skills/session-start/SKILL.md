@@ -11,7 +11,7 @@ description: >-
 > **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
-This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).  Session tag `[ZC·session8]`.  Notes name `ZCode`.  New branches `zc/<slug>`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`; existing `zcode/` branches are legacy.  `ZC` is the default seat of an ordinary session; a launcher's seat wins (Identity).
+This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).  Session tag `[ZC·session8]`.  Notes name `ZCode`.  New branches `zc/<slug>`.  New lanes `~/apps/lanes/<Repo>/zc-<slug>`; legacy lanes `~/apps/lanes/<Repo>/zcode-<slug>` and existing `zcode/` branches remain accepted for existing work.  `ZC` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
 Any legacy session or chat tag is a transport identifier, never a compliant post header.  Supply the applicable complete header in its required position, including the documented command-first exception for Kody requests.
 
