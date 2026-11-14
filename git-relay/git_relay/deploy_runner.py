@@ -267,8 +267,7 @@ class Runner:
             self.host.start()
             if not self.host.prove_old_runtime(self.rows):
                 raise TransactionError(
-                    "old runtime proof failed: "
-                    + getattr(self.host, "last_phase", "unknown")
+                    "old runtime proof failed: " + getattr(self.host, "last_phase", "unknown")
                 )
             self.recovery.finish()
             return "restored"
