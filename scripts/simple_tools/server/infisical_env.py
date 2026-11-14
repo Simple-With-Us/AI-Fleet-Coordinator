@@ -90,6 +90,9 @@ AUTH_ENV_VARS = frozenset(
         WAKE_ROUTER_TOKEN,
         "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
         "INFISICAL_WRITE_TOKEN",
+        # The settings writer belongs only to a fresh docker-exec editor, never
+        # to the long-running listener or its wake/checker children.
+        "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN",
         "INFISICAL_CLIENT_ID",
         "INFISICAL_CLIENT_SECRET",
         "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
