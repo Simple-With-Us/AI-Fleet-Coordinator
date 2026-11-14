@@ -1810,19 +1810,34 @@ class TestReview1199(unittest.TestCase):
             )
 
     def test_exceptional_parent_exit_kills_and_reaps_its_own_child(self):
+        # Fail only the parent's polling call. The cleanup wait must use the
+        # real syscall, otherwise the test itself prevents the promised reap.
+        real_waitpid, real_kill = os.waitpid, os.kill
+        child = []
+
+        def fail_poll_then_reap(pid, options):
+            if not child:
+                self.assertEqual(options, os.WNOHANG)
+                child.append(pid)
+                raise RuntimeError("boom")
+            self.assertEqual((pid, options), (child[0], 0))
+            return real_waitpid(pid, options)
+
         with with_known(r"^a*a*a*a*a*a*b$"):
-            with mock.patch.object(git.os, "waitpid", side_effect=RuntimeError("boom")):
-                with self.assertRaises(RuntimeError):
-                    git._patterns_match(
-                        [(r"^a*a*a*a*a*a*b$", "a" * 200 + "!")], time.monotonic() + 60
-                    )
-        # the child was killed, not left burning CPU:  reap it here, then nothing remains
-        for _ in range(100):
-            done, _ = os.waitpid(-1, os.WNOHANG)
-            if done == 0:
-                break
-            time.sleep(0.01)
-        self.assertEqual(os.waitpid(-1, os.WNOHANG)[0], 0)
+            with mock.patch.object(git.os, "waitpid", side_effect=fail_poll_then_reap) as wait:
+                with mock.patch.object(git.os, "kill", wraps=real_kill) as kill:
+                    with self.assertRaisesRegex(RuntimeError, "boom"):
+                        git._patterns_match(
+                            [(r"^a*a*a*a*a*a*b$", "a" * 200 + "!")], time.monotonic() + 60
+                        )
+        self.assertEqual(len(child), 1)
+        kill.assert_called_once_with(child[0], git.signal.SIGKILL)
+        self.assertEqual(
+            wait.call_args_list, [mock.call(child[0], os.WNOHANG), mock.call(child[0], 0)]
+        )
+        # This exact child is gone. Never reap or assume other test children.
+        with self.assertRaises(ChildProcessError):
+            real_waitpid(child[0], os.WNOHANG)
 
     def test_validation_never_starts_when_the_budget_is_gone(self):
         entry = {"name": "gr_x", "read": False, "schema": {"type": "object"}}
