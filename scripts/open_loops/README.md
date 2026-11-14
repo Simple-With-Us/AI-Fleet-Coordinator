@@ -28,7 +28,7 @@ The facts document (schema 1):
 | Key | What |
 | --- | --- |
 | `facts_id` | `ol-YYYYMMDD-HHMM-<host>`, in Central time |
-| `built_at`, `built_at_local` | UTC for machines;  Central, 12-hour, no zone name (`Sun, Oct 11, 7:00am`) |
+| `built_at`, `built_at_local` | UTC for machines; Central, 12-hour, spaced uppercase AM/PM and no zone name (`Sun, Oct 11, 7:00 AM`) |
 | `sources` | `{name: {status: ok / absent / failed, reason}}` for github, linear, lanes, autopush, needs_owner, asks, report, zulip, and mac_facts when one was asked for |
 | `missing` | what the digest must show as `Missing:  <source> (<reason>)` (see below) |
 | `decisions` | Linear `needs-owner` items, oldest first, each with its link, `low_stakes` options, `tap_to_answer` and OWNER topic link;  `low_stakes` (a count) and `over_five` (seats with more than 5 open) come from C6 and are `null` without it;  C6 is asked for every row (`needs-owner list --all`, because its default lists only the open ones), and its `state` decides:  `replied` (the owner answered, the filer has not closed it) is counted in `answered_awaiting_close` and not listed, `closed` is neither, and a Linear item C6 does not know (labelled by hand) is listed, because being absent from a list never proves an answer |
