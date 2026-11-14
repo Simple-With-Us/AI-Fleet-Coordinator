@@ -193,7 +193,27 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
         }
         with mock.patch.dict(os.environ, self.env, clear=True):
             self.assertEqual(public_fallback.public_credentials(), expected)
-        self.assertEqual(len(self.api.requests), 6)
+        self.assertEqual(len(self.api.requests), 4)
+
+    def test_public_fallback_missing_subset_uses_one_worker_and_no_second_diagnostic_read(self):
+        from fleet_rag import public_fallback
+        import fleet_infisical as shared
+
+        self.api.values = {
+            "RECALL_API_TOKEN": "fixture-api-value",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "fixture-access-id",
+        }
+        real_popen = subprocess.Popen
+        with (
+            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.object(shared.subprocess, "Popen", wraps=real_popen) as worker,
+            mock.patch.object(core, "http_json", side_effect=AssertionError("public request without credentials")),
+        ):
+            with self.assertRaisesRegex(core.FleetRagError, "needs CF_ACCESS_CLIENT_SECRET --"):
+                public_fallback.call_public("recall_stats", {})
+        self.assertEqual(worker.call_count, 1)
+        self.assertEqual(self.api.requests.count("/api/v2/service-token"), 1)
+        self.assertEqual(len(self.api.requests), 4)
 
     def test_ingest_heartbeat_uses_the_real_reader_and_remains_optional(self):
         from fleet_rag import ingest
@@ -210,6 +230,44 @@ class NamedOptionalFleetOpsTests(unittest.TestCase):
             del self.api.values[ingest.HEARTBEAT_KEY]
             ingest._heartbeat()
             heartbeat.assert_not_called()
+
+
+class OptionalReaderCompatibilityTests(unittest.TestCase):
+    def test_actual_import_of_partial_helpers_is_unavailable_before_any_reader_call(self):
+        scripts = pathlib.Path(__file__).resolve().parents[2]
+        helper = (
+            "from pathlib import Path\n"
+            "DEFAULT_PROJECT = 'fleet-ops'\n"
+            "class SecretsError(Exception): pass\n"
+            "def unavailable(*args, **kwargs):\n"
+            "    Path(__file__).with_name('called').touch()\n"
+            "    raise AssertionError('incompatible helper called')\n"
+            "home_dir = infisical_project_id = bounded_fetch_project = unavailable\n"
+        )
+        variants = ["del " + name for name in (
+            "DEFAULT_PROJECT", "SecretsError", "home_dir", "infisical_project_id", "bounded_fetch_project"
+        )] + [
+            "home_dir = None", "infisical_project_id = None", "bounded_fetch_project = None",
+            "SecretsError = 3", "SecretsError = BaseException", "DEFAULT_PROJECT = None",
+            "DEFAULT_PROJECT = ''",
+            "DEFAULT_PROJECT = 'wrong-project'", "DEFAULT_PROJECT = 'ai-fleet-coordinator'",
+        ]
+        program = (
+            "import json,sys;sys.path[:0]=sys.argv[1:];"
+            "from fleet_rag import core;"
+            "print(json.dumps(core.fleet_secrets_many(['TEI_URL'])))"
+        )
+        for variant in variants:
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as tmp:
+                pathlib.Path(tmp, "fleet_infisical.py").write_text(helper + variant + "\n")
+                result = subprocess.run(
+                    [sys.executable, "-I", "-B", "-c", program, tmp, str(scripts)],
+                    env={"PATH": os.defpath, "HOME": tmp, "INFISICAL_TOKEN": SERVICE_TOKEN},
+                    cwd=tmp, capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {})
+                self.assertFalse(pathlib.Path(tmp, "called").exists())
 
 
 class CleanEnvironmentTests(unittest.TestCase):
