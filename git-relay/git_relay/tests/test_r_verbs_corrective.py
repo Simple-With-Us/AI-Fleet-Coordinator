@@ -118,7 +118,10 @@ class PrCreateTests(unittest.TestCase):
             with self.assertRaisesRegex(Refused, "owner-only open_pr"):
                 # Exercise even a stale already-bound handle directly.
                 from git_relay.workflow_verbs import WorkflowVerbs
-                handle = WorkflowVerbs(c, Policy(), "swu-wise", "opaque", "swu-wise", "wf_pr_create", REPO)
+
+                handle = WorkflowVerbs(
+                    c, Policy(), "swu-wise", "opaque", "swu-wise", "wf_pr_create", REPO
+                )
                 handle.wf_pr_create(REPO, args)
             self.assertEqual(c.calls, [])
 
@@ -130,8 +133,16 @@ class PrCreateTests(unittest.TestCase):
         for preauthorized in (False, True):
             client, minter = Client(), Minter()
             with self.assertRaisesRegex(Refused, "owner-only open_pr"):
-                WorkflowVerbs.for_action(client, Policy(), minter, "swu-wise", "wf_pr_create", REPO,
-                                         preauthorized=preauthorized, args=self.ARGS)
+                WorkflowVerbs.for_action(
+                    client,
+                    Policy(),
+                    minter,
+                    "swu-wise",
+                    "wf_pr_create",
+                    REPO,
+                    preauthorized=preauthorized,
+                    args=self.ARGS,
+                )
             self.assertEqual(minter.calls, [])
             self.assertEqual(client.calls, [])
 
