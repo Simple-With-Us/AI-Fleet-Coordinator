@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-13 14:32 CST · timezone America/Chicago_
+_Generated 2026-11-14 01:40 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -9,41 +9,74 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **ICS (daily outline):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
 - **ICS (per-commit activity):** https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
 
-## 2026-11-13
+## 2026-11-14
 
-*29 PRs merged · 0 issues opened · 0 issues closed*
+*1 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
+- **AFC** [#2218](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2218): test(simple-tools): deterministic PEM fixture for compact-key refusal test _(by jaywedgeworth22)_
+
+## 2026-11-13
+
+*54 PRs merged · 0 issues opened · 0 issues closed*
+
+### Merged PRs
+
+- **AFC** `Codex` [#1813](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1813): [ : EE.1.S] Align Peer-Request Guidance With Current Owner Policy (AFC-716) _(by jaywedgeworth22)_
 - **AFC** [#1825](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1825): 727: Accept gr_workflow_dispatch intent_id without paired expected_head_sha _(by jaywedgeworth22)_
 - **AFC** [#2159](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2159): chore(deps): bump hono from 4.13.14 to 4.13.18 in /scripts/simple-tools-mcp _(by dependabot[bot])_
+- **AFC** [#2161](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2161): Wakes: optional bracket-recipient wakes + plain @SEAT tags, with Muster settings UI _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2171](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2171): [ : EE.1.S] Keep Operator Credentials Out Of Title Subprocesses _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2173](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2173): [ : GG.1.S] Synchronize Fleet Headers And Review Triggers _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2174](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2174): [ : EE.1.S] Preserve Exact Fleet Header Spacing (OPS-1086) _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2175](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2175): [ : EE.1.S] Scan Peer Registry Fields Before Print Or Append (AFC-788) _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2178](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2178): [ : FF.1.S 📁AFC, OPS] Share Mirror Sync And Preserve Hooks _(by jaywedgeworth22)_
 - **AFC** [#2181](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2181): chore: com.simplewithus.codecaps.ios 0.1.0 _(by jaywedgeworth22)_
+- **AFC** [#2182](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2182): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2185](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2185): [ : GG.1.S 📁 AFC] Admit two reviewed CT integrity files _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2200](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2200): [ : EE.1.S] Omit Repositories From GitHub PR Headers _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2203](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2203): [ : EE.1.S] Read Selected Run Keys And Complete Writer Payloads _(by jaywedgeworth22)_
+- **AFC** `Antigravity` [#2204](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2204): [ : FF.1.S] Muster: Interactive grouping, expandable lists, and performance (AFC-790) _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2205](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2205): [ : EE.1.S] Pin Shared Imports And Preserve Masked Doctor Counts _(by jaywedgeworth22)_
+- **AFC** [#2206](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2206): feat: use hosted Peer-Actions logging from a local bot _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2208](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2208): [ : EE.1.S] Use The Current Base Ref For Guarded Branch Updates _(by jaywedgeworth22)_
+- **AFC** [#2212](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2212): letters: a chat's start replays this host's "??: " chats to recover lost letters _(by jaywedgeworth22)_
+- **AFC** `Codex` [#2215](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2215): [ : EE.1.S] Configure Relay Outcome Capacity Through Its Existing Source _(by jaywedgeworth22)_
 - **BF** [#2070](https://github.com/Simple-With-Us/BotFleet/pull/2070): Peer wrapper: act/notify/log posture, standing holds kept _(by jaywedgeworth22)_
 - **BF** [#2071](https://github.com/Simple-With-Us/BotFleet/pull/2071): Update non-major dependencies _(by renovate[bot])_
 - **BF** `Codex` [#2072](https://github.com/Simple-With-Us/BotFleet/pull/2072): [ : GG.1.S 📁 BF] Synchronize Fleet Instruction Policy (AFC-786) _(by jaywedgeworth22)_
 - **BF** [#2073](https://github.com/Simple-With-Us/BotFleet/pull/2073): Update dependency typebox to v1.4.6 _(by renovate[bot])_
+- **BF** `Codex` [#2074](https://github.com/Simple-With-Us/BotFleet/pull/2074): [ : GG.1.S] Align Peer Guidance And Owner-Facing Times _(by jaywedgeworth22)_
 - **BF** [#2075](https://github.com/Simple-With-Us/BotFleet/pull/2075): Update non-major dependencies _(by renovate[bot])_
 - **C** `Muse Assist` [#264](https://github.com/Simple-With-Us/Clutch/pull/264): Declare — Spark multimodal: sanitizer + meta route image support _(by jaywedgeworth22)_
 - **C** `Codex` [#276](https://github.com/Simple-With-Us/Clutch/pull/276): [ : GG.1.S 📁 C] docs: sync fleet coordination rules _(by jaywedgeworth22)_
+- **C** `Codex` [#277](https://github.com/Simple-With-Us/Clutch/pull/277): [ : GG.1.S 📁 AFC, C] Align Fleet Posting Rules And Release Clock _(by jaywedgeworth22)_
+- **CT** `Codex` [#3173](https://github.com/Simple-With-Us/Congress.Trade/pull/3173): [ : GG.1.S] Synchronize Fleet Rules And Isolate Secret Caches _(by jaywedgeworth22)_
 - **CT** [#3175](https://github.com/Simple-With-Us/Congress.Trade/pull/3175): Update dependency hono to v4.13.16 [SECURITY] _(by renovate[bot])_
 - **CT** [#3176](https://github.com/Simple-With-Us/Congress.Trade/pull/3176): Add Senate eFD fetcher to the repo (tools/senate-fetcher) _(by jaywedgeworth22)_
 - **CL** `Codex` [#341](https://github.com/Simple-With-Us/ContactLogo/pull/341): [ : GG.1.S 📁 CL] docs: sync fleet coordination rules _(by jaywedgeworth22)_
+- **CL** `Codex` [#342](https://github.com/Simple-With-Us/ContactLogo/pull/342): [ : GG.1.S 📁 AFC, CL] Docs: Clarify External Post And Kody Headers _(by jaywedgeworth22)_
 - **DD** `Codex` [#595](https://github.com/Simple-With-Us/DealDex/pull/595): [ : GG.1.S 📁 DD] docs: sync fleet coordination rules _(by jaywedgeworth22)_
 - **DD** [#596](https://github.com/Simple-With-Us/DealDex/pull/596): 413: clear stale archive.lockdir from the ship-state cache _(by jaywedgeworth22)_
+- **DD** `Codex` [#597](https://github.com/Simple-With-Us/DealDex/pull/597): [ : GG.1.S 📁 AFC, DD] Clarify Fleet Header Exceptions _(by jaywedgeworth22)_
+- **HH** [#357](https://github.com/Simple-With-Us/HogHunter/pull/357): WIP: preserve uncommitted work from Mac /Users/jay/apps/lanes/HogHunter/claude-hh224-server-tab (fleet commit-push-delete pass 2026-11-12) _(by jaywedgeworth22)_
 - **HH** `Codex` [#362](https://github.com/Simple-With-Us/HogHunter/pull/362): [ : GG.1.S 📁 HH] docs: sync fleet coordination rules _(by jaywedgeworth22)_
+- **HH** `Codex` [#363](https://github.com/Simple-With-Us/HogHunter/pull/363): [ : GG.1.S 📁 AFC, HH] Clarify Fleet Header Exceptions _(by jaywedgeworth22)_
 - **PS** `Codex` [#289](https://github.com/Simple-With-Us/Personal-Site/pull/289): [ : GG.1.S 📁 PS] docs: sync fleet coordination rules _(by jaywedgeworth22)_
+- **PS** `Codex` [#290](https://github.com/Simple-With-Us/Personal-Site/pull/290): [ : GG.1.S 📁 AFC, PS] Docs: Clarify External Post And Kody Headers _(by jaywedgeworth22)_
 - **ST** [#5125](https://github.com/Simple-With-Us/Socratic-Trade/pull/5125): fix(scan): ST-3999 screener priority, and show a saved snapshot before live quotes _(by jaywedgeworth22)_
 - **ST** [#5131](https://github.com/Simple-With-Us/Socratic-Trade/pull/5131): 4596 iOS Keychain session cookie persistence (app lock → ST-4605) _(by jaywedgeworth22)_
 - **ST** [#5141](https://github.com/Simple-With-Us/Socratic-Trade/pull/5141): 4605: iOS app lock _(by jaywedgeworth22)_
 - **ST** `Codex` [#5394](https://github.com/Simple-With-Us/Socratic-Trade/pull/5394): [ : GG.1.S 📁 ST] Sync fleet rules and retire legacy automated posting _(by jaywedgeworth22)_
+- **ST** `Codex` [#5396](https://github.com/Simple-With-Us/Socratic-Trade/pull/5396): [ : GG.1.S] Docs: Clarify External Post And Kody Headers _(by jaywedgeworth22)_
 - **UM** `Codex` [#2068](https://github.com/Simple-With-Us/Usage-Monitor/pull/2068): [ : GG.1.S 📁 UM] docs: sync fleet coordination rules _(by jaywedgeworth22)_
+- **UM** `Codex` [#2069](https://github.com/Simple-With-Us/Usage-Monitor/pull/2069): [ : GG.1.S 📁 AFC, UM] Clarify Fleet Header Exceptions _(by jaywedgeworth22)_
 - **CC** [#470](https://github.com/Simple-With-Us/codecaps/pull/470): 219: Verify the iOS home-screen WidgetKit render _(by jaywedgeworth22)_
+- **CC** [#519](https://github.com/Simple-With-Us/codecaps/pull/519): Share the quota client test stub with the retry tests _(by jaywedgeworth22)_
 - **CC** `Codex` [#522](https://github.com/Simple-With-Us/codecaps/pull/522): [ : GG.1.S 📁 CC] docs: sync fleet coordination rules _(by jaywedgeworth22)_
 - **CTS** `Codex` [#422](https://github.com/Simple-With-Us/congress-trading-shared/pull/422): [ : GG.1.S 📁 CTS] docs: sync fleet coordination rules _(by jaywedgeworth22)_
+- **CTS** `Codex` [#423](https://github.com/Simple-With-Us/congress-trading-shared/pull/423): [ : GG.1.S 📁 AFC, CTS] Clarify Fleet Header Exceptions _(by jaywedgeworth22)_
 
 ## 2026-11-12
 
@@ -1651,24 +1684,10 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-29
 
-*117 PRs merged · 0 issues opened · 0 issues closed*
+*103 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** [#1068](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1068): feat(mcp): add bounded issue event and timeline metadata reads _(by jaywedgeworth22)_
-- **AFC** `Claude` [#1127](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1127): feat: — chats take pair letters, renames reach the Operator, platforms that run — take none (AFC-564) _(by jaywedgeworth22)_
-- **AFC** `Codex` [#1129](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1129): fix(mcp): allow seat-bound — manual client on ChatGPT callback _(by jaywedgeworth22)_
-- **AFC** [#1132](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1132): fix(mcp): load admin grant inventories only on request _(by jaywedgeworth22)_
-- **AFC** [#1139](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1139): feat(git-relay): commit-comment lifecycle and PR release detail reads _(by jaywedgeworth22)_
-- **AFC** [#1140](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1140): feat(git-relay): strict dedicated systemd seat-policy credential input _(by jaywedgeworth22)_
-- **AFC** `Muse Assist` [#1141](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1141): Wire all 20 Linear own apps with per-app bootstrap scopes and — pre-mint guard _(by jaywedgeworth22)_
-- **AFC** [#1142](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1142): Use each bot fleet bearer for simple-notes and fleet-share identity _(by jaywedgeworth22)_
-- **AFC** [#1143](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1143): test(registry): synchronize contenders before write lock, not inside it _(by jaywedgeworth22)_
-- **AFC** [#1147](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1147): alert-ingress: resource alerts tag both Housekeepers and Jay _(by jaywedgeworth22)_
-- **AFC** [#1152](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1152): chore: com.simplewithus.codecaps.ios 0.1.0 _(by jaywedgeworth22)_
-- **AFC** [#1155](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1155): fix(auth): restrict original Jet to wake events across MCP and Git _(by jaywedgeworth22)_
-- **AFC** [#1156](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1156): Notify Owner Promptly On Sustained Severe Host CPU _(by jaywedgeworth22)_
-- **AFC** [#1157](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1157): fix(cli): preserve own-seat defaults in managed wrappers _(by jaywedgeworth22)_
 - **AFC** [#1158](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1158): fix(cli): load own-seat defaults through installed entry points _(by jaywedgeworth22)_
 - **AFC** [#1159](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1159): fix(letters): run the letter hook in remote mode so the server hook is not refused (AFC-564) _(by jaywedgeworth22)_
 - **BF** [#761](https://github.com/Simple-With-Us/BotFleet/pull/761): DEFERRED UNTIL FUTURE AVATAR WORK: TV-Face sheet expressions first-class (all colors + iOS) _(by jaywedgeworth22)_
@@ -1775,12 +1794,11 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-28
 
-*38 PRs merged · 0 issues opened · 0 issues closed*
+*37 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** [#973](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/973): 545: the outbound WhatsApp reply leg _(by jaywedgeworth22)_
-- **AFC** [#1021](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1021): pr-conflict-watch: alert Zulip #Alerts with the author seat instead of retired Slack #agent-sync _(by jaywedgeworth22)_
 - **BF** [#1380](https://github.com/Simple-With-Us/BotFleet/pull/1380): Seat prompts: Deployer unblocks and may merge clean PRs (never do-not-merge/do-not-auto-merge), @all mostly Jay's, 👀 wake rule, auto-label ui PRs _(by jaywedgeworth22)_
 - **BF** [#1381](https://github.com/Simple-With-Us/BotFleet/pull/1381): Zulip router: eyes no-wake marker and @all wakes (Jay, Oct 27) _(by jaywedgeworth22)_
 - **BF** `Sentry` [#1382](https://github.com/Simple-With-Us/BotFleet/pull/1382): Webhooks: per-trigger action, label, conclusion, branch, — and PagerDuty filters; no run for Off bots _(by jaywedgeworth22)_
@@ -2083,64 +2101,3 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **UM** [#1789](https://github.com/Simple-With-Us/Usage-Monitor/pull/1789): fix(UM-1631): add python3, make and g++ to the Docker builder stage _(by jaywedgeworth22)_
 - **CC** `Grok` [#306](https://github.com/Simple-With-Us/codecaps/pull/306): gRPC fallback, xAI dedupe, iOS canonical cards, dedupe _(by jaywedgeworth22)_
 - **CC** [#320](https://github.com/Simple-With-Us/codecaps/pull/320): fix(mac): stop the main thread from blocking on smd and ICU date parsing _(by jaywedgeworth22)_
-
-## 2026-10-23
-
-*54 PRs merged · 0 issues opened · 0 issues closed*
-
-### Merged PRs
-
-- **BF** [#1310](https://github.com/Simple-With-Us/BotFleet/pull/1310): Docs: one sentence-gap rule on every surface (U+00A0 plus a space) _(by jaywedgeworth22)_
-- **BF** [#1311](https://github.com/Simple-With-Us/BotFleet/pull/1311): docs: point AGENTS.md at the current fleet coordination tools _(by jaywedgeworth22)_
-- **BF** [#1312](https://github.com/Simple-With-Us/BotFleet/pull/1312): Update dependency postcss to v8.5.31 _(by renovate[bot])_
-- **BF** [#1313](https://github.com/Simple-With-Us/BotFleet/pull/1313): 1222: Labeled Steer / Edit / Cancel on queued messages _(by jaywedgeworth22)_
-- **BF** [#1314](https://github.com/Simple-With-Us/BotFleet/pull/1314): Update dependency electron-updater to v6.8.10 _(by renovate[bot])_
-- **BF** [#1315](https://github.com/Simple-With-Us/BotFleet/pull/1315): fix(release): the publish guard compares the stamped version _(by jaywedgeworth22)_
-- **BF** [#1316](https://github.com/Simple-With-Us/BotFleet/pull/1316): Docs: the release version is the stamped commit count, not a package.json bump _(by jaywedgeworth22)_
-- **C** [#189](https://github.com/Simple-With-Us/Clutch/pull/189): docs: point AGENTS.md at the current fleet coordination tools _(by jaywedgeworth22)_
-- **C** [#190](https://github.com/Simple-With-Us/Clutch/pull/190): Docs: one sentence-gap rule in AGENTS.md (U+00A0 plus a space) _(by jaywedgeworth22)_
-- **C** `MiniMax` [#191](https://github.com/Simple-With-Us/Clutch/pull/191): Code server hosts, iPhone Code surface, and Mac chat polish _(by jaywedgeworth22)_
-- **CT** [#2837](https://github.com/Simple-With-Us/Congress.Trade/pull/2837): fix(health): honest iOS admin pipeline status and ST peer price check _(by jaywedgeworth22)_
-- **CT** [#2838](https://github.com/Simple-With-Us/Congress.Trade/pull/2838): Docs: one sentence-gap rule on every surface (U+00A0 plus a space) _(by jaywedgeworth22)_
-- **CT** [#2839](https://github.com/Simple-With-Us/Congress.Trade/pull/2839): docs: point AGENTS.md at the current fleet coordination tools _(by jaywedgeworth22)_
-- **CT** [#2840](https://github.com/Simple-With-Us/Congress.Trade/pull/2840): feat(share): re-vendor shared v2.9.0 and resolve inbound schemaVersion (ST-3853) _(by jaywedgeworth22)_
-- **CT** `Claude` [#2841](https://github.com/Simple-With-Us/Congress.Trade/pull/2841): docs: point .md at the current fleet coordination tools _(by jaywedgeworth22)_
-- **CT** [#2842](https://github.com/Simple-With-Us/Congress.Trade/pull/2842): chore(vendor): refresh vendored congress-trading-shared AGENTS.md from main (#402) _(by jaywedgeworth22)_
-- **CT** [#2843](https://github.com/Simple-With-Us/Congress.Trade/pull/2843): 2441: Harden 278-T ingest against OCR-garbled names/dates + Sep 17 cleanup _(by jaywedgeworth22)_
-- **CT** [#2844](https://github.com/Simple-With-Us/Congress.Trade/pull/2844): fix(deploy): hold skips boot migrate; guarded 0091 rebuild (CT-2442) _(by jaywedgeworth22)_
-- **CT** [#2845](https://github.com/Simple-With-Us/Congress.Trade/pull/2845): fix(delivery): unwedge parked webhooks and stop dropping fresh trades (CT-2442) _(by jaywedgeworth22)_
-- **CT** `Sentry` [#2847](https://github.com/Simple-With-Us/Congress.Trade/pull/2847): ci : skip the browser source map upload until a map is built (CT-2442) _(by jaywedgeworth22)_
-- **CT** [#2848](https://github.com/Simple-With-Us/Congress.Trade/pull/2848): fix(deps): raise the undici override floor to 8.12.3 (npm audit, CT-2442) _(by jaywedgeworth22)_
-- **CT** [#2849](https://github.com/Simple-With-Us/Congress.Trade/pull/2849): feat(prices): mark ST-unpriceable tickers not_covered and show the count (CT-2443) _(by jaywedgeworth22)_
-- **CT** [#2850](https://github.com/Simple-With-Us/Congress.Trade/pull/2850): fix(ingestion): proxied eFD probe + distinct Akamai block for Senate (CT-2416) _(by jaywedgeworth22)_
-- **CT** [#2852](https://github.com/Simple-With-Us/Congress.Trade/pull/2852): chore(deps): update non-major dependencies _(by renovate[bot])_
-- **CL** [#254](https://github.com/Simple-With-Us/ContactLogo/pull/254): docs: point AGENTS.md at the current fleet coordination tools _(by jaywedgeworth22)_
-- **CL** [#255](https://github.com/Simple-With-Us/ContactLogo/pull/255): chore(deps): update dependency react-resizable-panels to v4.14.6 _(by renovate[bot])_
-- **CL** [#256](https://github.com/Simple-With-Us/ContactLogo/pull/256): chore(deps): update dependency better-auth to v1.7.11 _(by renovate[bot])_
-- **DD** [#530](https://github.com/Simple-With-Us/DealDex/pull/530): Docs: one sentence-gap rule on every surface (U+00A0 plus a space) _(by jaywedgeworth22)_
-- **DD** [#531](https://github.com/Simple-With-Us/DealDex/pull/531): docs: point AGENTS.md at the current fleet coordination tools _(by jaywedgeworth22)_
-- **DD** [#532](https://github.com/Simple-With-Us/DealDex/pull/532): Docs: per-language NBSP spelling in the sentence-gap rule _(by jaywedgeworth22)_
-- **HH** [#221](https://github.com/Simple-With-Us/HogHunter/pull/221): docs: point AGENTS.md at the current fleet coordination tools _(by jaywedgeworth22)_
-- **HH** [#222](https://github.com/Simple-With-Us/HogHunter/pull/222): Docs: one sentence-gap rule (U+00A0 plus a space) in AGENTS, README and DESIGN _(by jaywedgeworth22)_
-- **PS** [#237](https://github.com/Simple-With-Us/Personal-Site/pull/237): chore: update static mirror of live site 2026-10-23 _(by github-actions[bot])_
-- **PS** [#238](https://github.com/Simple-With-Us/Personal-Site/pull/238): Docs: one sentence-gap rule on every surface (U+00A0 plus a space) _(by jaywedgeworth22)_
-- **ST** [#4920](https://github.com/Simple-With-Us/Socratic-Trade/pull/4920): Docs: one sentence-gap rule on every surface (U+00A0 plus a space) _(by jaywedgeworth22)_
-- **ST** [#4921](https://github.com/Simple-With-Us/Socratic-Trade/pull/4921): feat(congress-share): pin shared v2.9.0 and stamp shared schemaVersion (ST-3853) _(by jaywedgeworth22)_
-- **ST** [#4922](https://github.com/Simple-With-Us/Socratic-Trade/pull/4922): chore(deps): update dependency postcss to v8.5.31 _(by renovate[bot])_
-- **ST** [#4923](https://github.com/Simple-With-Us/Socratic-Trade/pull/4923): chore(deps): update dependency react-resizable-panels to v4.14.6 _(by renovate[bot])_
-- **UM** `Sentry` [#1766](https://github.com/Simple-With-Us/Usage-Monitor/pull/1766): fix: improve coding telemetry completeness and — parity _(by jaywedgeworth22)_
-- **UM** [#1767](https://github.com/Simple-With-Us/Usage-Monitor/pull/1767): fix: preserve telemetry identity and OpenCode PAYG costs _(by jaywedgeworth22)_
-- **UM** [#1768](https://github.com/Simple-With-Us/Usage-Monitor/pull/1768): Docs: one sentence-gap rule on every surface (U+00A0 plus a space) _(by jaywedgeworth22)_
-- **UM** [#1769](https://github.com/Simple-With-Us/Usage-Monitor/pull/1769): chore(deps): align shared contract pin with v2.9.0 _(by jaywedgeworth22)_
-- **UM** [#1771](https://github.com/Simple-With-Us/Usage-Monitor/pull/1771): build(deps): bump zod from 4.6.5 to 4.6.6 _(by dependabot[bot])_
-- **UM** [#1773](https://github.com/Simple-With-Us/Usage-Monitor/pull/1773): 1246: Stacked daily Backblaze B2 usage by app (web + iOS) _(by jaywedgeworth22)_
-- **UM** [#1774](https://github.com/Simple-With-Us/Usage-Monitor/pull/1774): fix(deps): clear high npm audit findings blocking verify (UM-1626) _(by jaywedgeworth22)_
-- **UM** [#1775](https://github.com/Simple-With-Us/Usage-Monitor/pull/1775): chore(renovate): group prisma majors, hold vitest 5 until pool-workers supports it _(by jaywedgeworth22)_
-- **UM** [#1777](https://github.com/Simple-With-Us/Usage-Monitor/pull/1777): CI: run UsageMonitorKitTests on the iOS Simulator (UM-1627) _(by jaywedgeworth22)_
-- **CC** [#308](https://github.com/Simple-With-Us/codecaps/pull/308): fix(fleet): dedup quota windows in linear time and write snapshots off-main _(by sentry[bot])_
-- **CC** [#311](https://github.com/Simple-With-Us/codecaps/pull/311): Fix iOS Startup Crash In Alert History Persistence _(by jaywedgeworth22)_
-- **CC** [#312](https://github.com/Simple-With-Us/codecaps/pull/312): Bound The iOS Crash Regression Test And Clarify Its Coverage _(by jaywedgeworth22)_
-- **CC** [#313](https://github.com/Simple-With-Us/codecaps/pull/313): Keep PiP Provider Names Visible While They Fit _(by jaywedgeworth22)_
-- **CC** [#314](https://github.com/Simple-With-Us/codecaps/pull/314): fix(quota): drop expired fleet copies from a provider row _(by jaywedgeworth22)_
-- **CTS** [#401](https://github.com/Simple-With-Us/congress-trading-shared/pull/401): feat(schemas): add optional schemaVersion to SharePayloadSchema (ST-3853) _(by jaywedgeworth22)_
-- **CTS** [#402](https://github.com/Simple-With-Us/congress-trading-shared/pull/402): Docs: one sentence-gap rule on every surface (U+00A0 plus a space) _(by jaywedgeworth22)_
