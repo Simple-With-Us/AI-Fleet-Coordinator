@@ -583,7 +583,7 @@ class RemoteGitSourceTests(unittest.TestCase):
                 )
         self.assertFalse(any(tool == "gr_wf_file_get" for tool, _ in self.provider.calls))
 
-    def test_wrong_provider_identity_and_branch_or_commit_fails_before_content_reads(self):
+    def test_wrong_provider_identity_branch_or_commit_fails_before_content_reads(self):
         for field in ("identity", "visibility", "branch", "commit"):
 
             def call(tool, args, field=field):
@@ -626,7 +626,7 @@ class RemoteGitSourceTests(unittest.TestCase):
             self.base / "local", "fixture-owner", "ExampleRepo", "origin/main", self.provider.commit
         )
         with (
-            patch.object(collector, "_repo_info", return=local),
+            patch.object(collector, "_repo_info", return_value=local),
             self.assertRaisesRegex(collector.CollectionError, "duplicates"),
         ):
             collector.collect(
@@ -684,33 +684,32 @@ class RemoteGitSourceTests(unittest.TestCase):
                     self.assertEqual(calls.count(count), 1)
                     self.assertEqual(sum(calls), 2 * count)
                 else:
-                    with self.assertRaises(remote.SourceError, "metadata exceeds"):
+                    with self.assertRaisesRegex(remote.SourceError, "metadata exceeds"):
                         self.provider.snapshot()
                     self.assertEqual(calls.count(count), 0)
                     self.assertEqual(sum(calls), count)
 
     def fake_cli(self, source):
         directory = self.base / "fixture-bin"
-        directory.mkdin()
+        directory.mkdir()
         executable = directory / "simple-git"
-        executable.write_text(f"!#{sys.executable}\n" + source)
+        executable.write_text(f"#!{sys.executable}\n" + source)
         executable.chmod(0o755)
-        return str(directory) + os.pathsep + os.environ.get("PATH", "/usr/bin
-/bin")
+        return str(directory) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")
 
     def test_real_relay_child_cannot_spool_unbounded_output_even_if_it_ignores_sigxfsz(self):
         parent_limits = exporter.resource.getrlimit(exporter.resource.RLIMIT_FSIZE)
         marker = self.base / "child-observation.json"
         path = self.fake_cli(
             "import json, os, resource, signal\n"
-            "signal.signal(signal.SIGXGSZ, signal.SIG_IGN)\n"
+            "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
             "for _ in range(64):\n"
             "    try:\n"
             "        os.write(1, b'x' * 1_000_000)\n"
             "    except OSError:\n"
             "        pass\n"
             "with open(os.environ['FIXTURE_MARKER'], 'w') as marker:\n"
-            "    json.dump({sbytes': os.fstat(1).st_size, 'limit': resource.getrlimit(resource.RLIMIT_FSIZE)[1]}, marker)\n"
+            "    json.dump({'bytes': os.fstat(1).st_size, 'limit': resource.getrlimit(resource.RLIMIT_FSIZE)[1]}, marker)\n"
         )
         temporary_file = tempfile.TemporaryFile
         spools = []
@@ -730,7 +729,7 @@ class RemoteGitSourceTests(unittest.TestCase):
                 },
             ),
             patch.object(exporter.tempfile, "TemporaryFile", side_effect=tracked_spool),
-            self.assertRaises(remote.SourceError, "byte bound"),
+            self.assertRaisesRegex(remote.SourceError, "byte bound"),
         ):
             exporter.relay_read("gr_wf_repo_get", {"repo": "fixture-owner/ExampleRepo"})
         observation = json.loads(marker.read_text())
