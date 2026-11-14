@@ -34,6 +34,6 @@ Use `fleet-secrets names`; capture `fleet-secrets get NAME` silently for its con
 
 ### Writing Anything a Human Reads
 
-Use U+00A0 + space in prose/Notes (readback may show two spaces).  Only Claude Code, MiniMax Code and Z Code chat replies use `&nbsp;` + space.  Never use that entity elsewhere or prose gaps in code/IDs/config; see `sentence-gap`.
+Use U+00A0 + space in prose/Notes (readback may show 2 spaces).  One exception: Claude Code, MiniMax Code and Z Code chat replies use `&nbsp;` + space.  Never use that entity elsewhere or prose gaps in code/IDs/config; see `sentence-gap`.
 
 Owner-facing times: America/Chicago 12-hour AM/PM, no zone or adjacent UTC.  Titles/headings/buttons: Title Case; default light theme; no agents in release copy.
