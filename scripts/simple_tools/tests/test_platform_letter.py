@@ -2461,7 +2461,7 @@ class UnletteredRepairTests(Base):
 
     def test_a_chat_the_assigner_still_knows_resumes_its_own_letter(self) -> None:
         # The register landed but the hook died before saving:  the assigner holds the letter, the host does not.
-        held = self.register("s-0100", title="Resolve CodeCaps PR 520 And 521", platform="faux", seat="CODEX")
+        held = self.register("s-0100", title="Fixture-Repo PR 1", platform="faux", seat="CODEX")
         self.unlettered.append("s-0100")
         self.start("s-0001")
         self.assertEqual(self.label("s-0100"), held["label"])
@@ -2593,7 +2593,9 @@ class UnletteredRepairTests(Base):
         self.assertFalse(os.path.exists(self.note_path("s-0114")))
 
     def test_a_closed_chat_is_not_replayed(self) -> None:
-        os.makedirs(os.path.dirname(self.note_path("s-0115")), exist_ok=True)
+        note_dir = os.path.dirname(self.note_path("s-0115"))
+        self.assertFalse(os.path.islink(note_dir))
+        os.makedirs(note_dir, mode=0o700, exist_ok=True)
         with open(self.note_path("s-0115"), "w", encoding="utf-8") as fh:
             json.dump({"state": "closed"}, fh)
         self.unlettered.append("s-0115")
@@ -2619,6 +2621,24 @@ class UnletteredRepairTests(Base):
                 self.spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
             )
         self.assertEqual(done["asked"], ["s-0116"])
+
+    def test_an_unsaved_outcome_leaves_a_distinguishable_marker(self) -> None:
+        self.unlettered.append("s-0118")
+        real_save = PL._save_json
+        failed = [False]
+
+        def flaky_save(path, data):
+            outcome = data.get("outcome") if isinstance(data, dict) else None
+            if isinstance(outcome, dict) and "found" in outcome and not failed[0]:
+                failed[0] = True
+                return False
+            return real_save(path, data)
+
+        with mock.patch.object(PL, "_save_json", flaky_save):
+            PL.repair_unlettered(
+                self.spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+            )
+        self.assertEqual(self.stamp()["outcome"], {"error": "the outcome could not be saved"})
 
 
 class RepairCliTests(Base):
@@ -2686,6 +2706,23 @@ class RepairCliTests(Base):
             )
         self.assertEqual(code, 0)
         self.assertIn("s-0203 failed (RuntimeError)", out.getvalue())
+
+    def test_the_verb_reports_an_unrecordable_outcome_on_stderr(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(PL, "_save_json", lambda path, data: False):
+            with mock.patch("sys.stderr", err):
+                with mock.patch.dict(PL.SPECS, {"faux": self.spec}):
+                    code = PL.repair_main(
+                        ["--platform", "faux", "--location", "server"],
+                        self.server_env(),
+                        out,
+                        platform="linux",
+                        transport=Calls(self),
+                        now=1000.0,
+                    )
+        self.assertEqual(code, 0)
+        self.assertIn("skipped (the stamp could not be saved)", out.getvalue())
+        self.assertIn("the pass's outcome could not be recorded", err.getvalue())
 
     def test_the_stamp_throttles_without_force(self) -> None:
         self.unlettered.append("s-0201")
