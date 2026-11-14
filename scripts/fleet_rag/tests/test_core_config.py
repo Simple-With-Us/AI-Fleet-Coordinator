@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest import mock
 
 from fleet_knobs.tests._fake import ScopedReadAPI
@@ -44,6 +45,172 @@ class ExplodingHttp:
         raise AssertionError(f"unexpected network call to {url}")
 
 
+class NamedOptionalFleetOpsTests(unittest.TestCase):
+    """Optional root reads use the real scoped client without a secrets executable."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = pathlib.Path(temporary.name).resolve()
+        self.project = str(uuid.uuid4())
+        self.api = ScopedReadAPI({"TEI_URL": "https://tei.example.invalid"}, project=self.project)
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.env = {
+            "HOME": str(self.home),
+            "PATH": str(self.home),
+            "INFISICAL_TOKEN": self.api.token,
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
+            "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+            "INFISICAL_ENVIRONMENT": "prod",
+        }
+
+    def test_many_preserves_present_subset_through_real_named_reader_without_a_binary(self):
+        import fleet_infisical as shared
+
+        real_popen = subprocess.Popen
+        with (
+            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.object(shutil, "which", side_effect=AssertionError("no executable discovery")),
+            mock.patch.object(subprocess, "run", side_effect=AssertionError("no CLI subprocess")),
+            mock.patch.object(shared.subprocess, "Popen", wraps=real_popen) as worker,
+        ):
+            got = core.fleet_secrets_many(["TEI_URL", "NOT_THERE"])
+        self.assertEqual(got, {"TEI_URL": "https://tei.example.invalid"})
+        self.assertEqual(worker.call_count, 1)
+        self.assertEqual(worker.call_args.kwargs["env"], {"PATH": os.defpath})
+        self.assertTrue(self.api.token not in repr(worker.call_args.args))
+        self.assertEqual(len(self.api.requests), 3)
+        self.assertTrue(any("/raw/TEI_URL?" in path for path in self.api.requests))
+        self.assertTrue(any("/raw/NOT_THERE?" in path for path in self.api.requests))
+
+    def test_single_get_strips_while_many_preserves_raw_values_and_reserved_names(self):
+        self.api.values["INFISICAL_EXAMPLE"] = "  fixture-value\n"
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(
+                core.fleet_secrets_many(["INFISICAL_EXAMPLE"]),
+                {"INFISICAL_EXAMPLE": "  fixture-value\n"},
+            )
+            self.assertEqual(core.fleet_secret_get("INFISICAL_EXAMPLE"), "fixture-value")
+            self.assertIsNone(core.fleet_secret_get("NOT_THERE"))
+
+    def test_empty_or_invalid_selection_does_no_provider_work(self):
+        for names in ([], [""], ["bad-name"], ["TEI_URL\n"], [object()]):
+            with self.subTest(names=names), mock.patch.dict(os.environ, self.env, clear=True):
+                self.assertEqual(core.fleet_secrets_many(names), {})
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertIsNone(core.fleet_secret_get(""))
+            self.assertIsNone(core.fleet_secret_get("bad-name"))
+        self.assertEqual(self.api.requests, [])
+
+    def test_no_default_binding_never_substitutes_another_purpose(self):
+        env = {key: value for key, value in self.env.items() if key != "INFISICAL_TOKEN"}
+        for binding in (
+            "FLEET_RECALL_INFISICAL_TOKEN",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+            "INFISICAL_WRITE_TOKEN",
+        ):
+            with self.subTest(binding=binding), mock.patch.dict(
+                os.environ, {**env, binding: self.api.token}, clear=True
+            ):
+                self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+                self.assertIsNone(core.fleet_secret_get("TEI_URL"))
+        with (
+            mock.patch.dict(
+                os.environ,
+                {**env, "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(self.home / "not-this-reader.env")},
+                clear=True,
+            ),
+            mock.patch.object(core, "_read_token_file", side_effect=AssertionError("foreign file")),
+        ):
+            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+        self.assertEqual(self.api.requests, [])
+
+    def test_recall_project_provider_and_broad_path_declarations_do_not_change_this_route(self):
+        env = {
+            **self.env,
+            "FLEET_RAG_INFISICAL_PROJECT": str(uuid.uuid4()),
+            "FLEET_RAG_INFISICAL_API": "http://127.0.0.1:1/api",
+            "INFISICAL_READ_PATHS": "/,/another-purpose",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                core.fleet_secrets_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+            )
+
+    def test_existing_default_project_id_file_is_metadata_not_another_token_source(self):
+        metadata = self.home / ".simple-tools" / "fleet-ops-project-id"
+        metadata.parent.mkdir()
+        metadata.write_text(self.project + "\n")
+        env = {
+            key: value for key, value in self.env.items() if key != "INFISICAL_FLEET_OPS_PROJECT_ID"
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                core.fleet_secrets_many(["TEI_URL"]), {"TEI_URL": "https://tei.example.invalid"}
+            )
+
+    def test_missing_or_malformed_default_project_does_no_provider_work(self):
+        env = {
+            key: value for key, value in self.env.items() if key != "INFISICAL_FLEET_OPS_PROJECT_ID"
+        }
+        for extra in ({}, {"INFISICAL_FLEET_OPS_PROJECT_ID": "not-a-project-id"}):
+            with self.subTest(extra=extra), mock.patch.dict(os.environ, {**env, **extra}, clear=True):
+                self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+        self.assertEqual(self.api.requests, [])
+
+    def test_real_verifier_refuses_other_scopes_write_permissions_and_indefinite_expiry(self):
+        for metadata in (
+            {"workspace": str(uuid.uuid4())},
+            {"scopes": [{"environment": "prod", "secretPath": "/another-purpose"}]},
+            {"scopes": [{"environment": "staging", "secretPath": "/"}]},
+            {"permissions": ["read", "write"]},
+            {"expiresAt": None},
+        ):
+            self.api.metadata_override = metadata
+            self.api.requests.clear()
+            with self.subTest(metadata=metadata), mock.patch.dict(os.environ, self.env, clear=True):
+                self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+            self.assertEqual(self.api.requests, ["/api/v2/service-token"])
+
+    def test_provider_failure_returns_empty_without_a_cli_fallback(self):
+        self.api.status = 503
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+        self.assertEqual(self.api.requests, ["/api/v2/service-token"])
+
+    def test_public_fallback_resolves_its_missing_environment_values_through_the_real_reader(self):
+        from fleet_rag import public_fallback
+
+        expected = {
+            "RECALL_API_TOKEN": "fixture-api-value",
+            "CF_ACCESS_CLIENT_ID": "fixture-access-id",
+            "CF_ACCESS_CLIENT_SECRET": "fixture-access-value",
+        }
+        self.api.values = {
+            public_fallback.PUBLIC_INFISICAL_NAMES[key]: value for key, value in expected.items()
+        }
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(public_fallback.public_credentials(), expected)
+        self.assertEqual(len(self.api.requests), 6)
+
+    def test_ingest_heartbeat_uses_the_real_reader_and_remains_optional(self):
+        from fleet_rag import ingest
+
+        url = "https://heartbeat.example.invalid/ping"
+        self.api.values[ingest.HEARTBEAT_KEY] = url
+        with (
+            mock.patch.dict(os.environ, self.env, clear=True),
+            mock.patch.object(ingest.urllib.request, "urlopen") as heartbeat,
+        ):
+            ingest._heartbeat()
+            heartbeat.assert_called_once_with(url, timeout=10)
+            heartbeat.reset_mock()
+            del self.api.values[ingest.HEARTBEAT_KEY]
+            ingest._heartbeat()
+            heartbeat.assert_not_called()
+
+
 class CleanEnvironmentTests(unittest.TestCase):
     """A machine with only the five variables set: no Infisical, no handoff file."""
 
@@ -56,9 +223,9 @@ class CleanEnvironmentTests(unittest.TestCase):
         patcher = mock.patch.object(core, "http_json", self.http)
         patcher.start()
         self.addCleanup(patcher.stop)
-        no_bin = mock.patch.object(core, "_fleet_secrets_bin", lambda: None)
-        no_bin.start()
-        self.addCleanup(no_bin.stop)
+        optional_reader = mock.patch.object(core, "fleet_secrets_many", return_value={})
+        optional_reader.start()
+        self.addCleanup(optional_reader.stop)
 
     def env(self, **extra: str) -> dict[str, str]:
         return {**BYO, "FLEET_RAG_HANDOFF_FILE": str(self.absent), **extra}
@@ -115,74 +282,20 @@ class CleanEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.http.calls, [])
 
 
-FAKE_FLEET_SECRETS = """#!/bin/sh
-# Stands in for `fleet-secrets run -- python -c PICK names...`: runs the child with a fake env.
-[ "$1" = run ] || exit 2
-shift; [ "$1" = -- ] && shift
-TEI_URL=https://tei.example.invalid TEI_API_KEY=fake-tei QDRANT_URL=https://q.example.invalid \\
-QDRANT_FLEET_COLLECTION=fake-coll exec "$@"
-"""
+class RetiredIdentityTests(unittest.TestCase):
+    """Legacy identity fields never become an optional reader credential route."""
 
-
-class FleetSecretsFallbackTests(unittest.TestCase):
-    """The Mac path:  env first, then the `fleet-secrets` command, never the flat file."""
-
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.bin = pathlib.Path(self.tmp.name) / "fleet-secrets"
-        self.bin.write_text(FAKE_FLEET_SECRETS)
-        self.bin.chmod(0o755)
-
-    def test_many_returns_only_present_names(self) -> None:
-        with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
-            got = core.fleet_secrets_many(["TEI_URL", "NOT_THERE"])
-        self.assertEqual(got, {"TEI_URL": "https://tei.example.invalid"})
-
-    def test_identity_falls_back_to_fleet_secrets_get(self) -> None:
-        self.bin.write_text(
-            "#!/bin/sh\n"
-            '[ "$1" = get ] || exit 2\n'
-            'case "$2" in\n'
-            "  INFISICAL_SHARED_CLIENT_ID) printf cid-fs ;;\n"
-            "  INFISICAL_SHARED_CLIENT_SECRET) printf placeholder-fs ;;\n"
-            "  *) exit 3 ;;\n"
-            "esac\n"
-        )
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
-                self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
-                self.assertEqual(core._identity("INFISICAL_OTHER"), (None, None))
-
-    def test_identity_environment_beats_fleet_secrets(self) -> None:
+    def test_identity_environment_is_ignored(self) -> None:
         env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            mock.patch.object(core, "_fleet_secrets_bin", lambda: "/nonexistent/fleet-secrets"),
-        ):
+        with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
-
-    def test_missing_binary_is_just_absent(self) -> None:
-        with mock.patch.object(core, "_fleet_secrets_bin", lambda: None):
-            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
-            self.assertIsNone(core.fleet_secret("TEI_URL"))
-
-    def test_failing_binary_is_just_absent(self) -> None:
-        self.bin.write_text("#!/bin/sh\nexit 4\n")
-        with mock.patch.object(core, "_fleet_secrets_bin", lambda: str(self.bin)):
-            self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
+            self.assertEqual(core._identity("INFISICAL_OTHER"), (None, None))
 
     def test_missing_config_does_not_borrow_a_foreign_project_loader(self) -> None:
         with (mock.patch.dict(os.environ, {"QDRANT_API_KEY": "k"}, clear=True),
               mock.patch.object(core, "fleet_secrets_many", side_effect=AssertionError("foreign fallback"))):
             with self.assertRaises(core.FleetRagError):
                 core.load_config()
-
-
-    def test_identity_comes_from_the_environment(self) -> None:
-        env = {"INFISICAL_SHARED_CLIENT_ID": "cid-env", "INFISICAL_SHARED_CLIENT_SECRET": "sec-env"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            self.assertEqual(core._identity("INFISICAL_SHARED"), (None, None))
 
 
 class OverrideTests(unittest.TestCase):
@@ -248,7 +361,7 @@ class OverrideTests(unittest.TestCase):
             seen.append(path)
             if path == "/v2/service-token":
                 return 200, {"workspace": "proj-1234", "permissions": ["read"],
-                             "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}
+                             "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}
             name = path.split("?", 1)[0].rsplit("/", 1)[-1]
             if name != "TEI_RERANK_URL":
                 return 404, {}
@@ -348,7 +461,7 @@ class ReadTokenFileTests(unittest.TestCase):
 
     def test_environment_variable_wins_and_no_file_is_none(self) -> None:
         self.assertIsNone(self.binding())
-        self.write(self.default, "FLEET_RECALL_INFISICAL_TOKEN=st.fromfile0000000000000\n")
+        self.write(self.default, f"FLEET_RECALL_INFISICAL_TOKEN={SERVICE_TOKEN}\n")
         self.assertEqual(self.binding(FLEET_RECALL_INFISICAL_TOKEN=self.TOKEN), self.TOKEN)
 
     def test_no_home_means_no_default_file(self) -> None:

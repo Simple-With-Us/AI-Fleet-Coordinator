@@ -12,6 +12,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Standalone discovery also needs the resolved repo-only fixture package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
+
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 SETTINGS = json.dumps({"applyEnabled": False})
@@ -62,11 +67,15 @@ class InstallerTests(unittest.TestCase):
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
             "muster_approval.py",
+            "fleet_infisical.py",
+            "fleet_infisical_cli.py",
             "muster_trust_files.py",
             "reduced_status.py",
             "hetzner/__init__.py",
             "hetzner/fleet_coding_memory.py",
             "hetzner/coding_resources.py",
+            "simple_tools/__init__.py",
+            "simple_tools/operator_github_state.py",
         }
         expected.update(
             "fleet_secrets/" + path.name for path in (SCRIPTS / "fleet_secrets").glob("*.py")
@@ -81,6 +90,7 @@ class InstallerTests(unittest.TestCase):
             self.destination,
             self.destination / "fleet_secrets",
             self.destination / "hetzner",
+            self.destination / "simple_tools",
         ):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
         for relative in expected:
@@ -109,9 +119,10 @@ class InstallerTests(unittest.TestCase):
         muster_imports = ",muster_approval,muster_trust_files" if has_cryptography else ""
         code = (
             "import sys,runpy;sys.path.insert(0,sys.argv[1]);"
-            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,hetzner.fleet_coding_memory"
+            "import fleet_resource_control,fleet_seat_inventory,reduced_status,fleet_secrets.core,fleet_secrets.cli,fleet_infisical_cli,hetzner.fleet_coding_memory"
             + muster_imports
-            + ";runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
+            + ";assert fleet_secrets.cli is fleet_infisical_cli;"
+            "runpy.run_path(sys.argv[1]+'/fleet-ops-control.py');print('imports-ok')"
         )
         result = subprocess.run(
             [sys.executable, "-I", "-c", code, str(self.destination)],
@@ -123,6 +134,12 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "imports-ok")
+        for name in ("__init__.py", "operator_github_state.py"):
+            self.assertEqual(
+                (self.destination / "simple_tools" / name).read_bytes(),
+                (SCRIPTS / "simple_tools" / name).read_bytes(),
+            )
+        assert_installed_writer(self, self.destination, self.home)
         self.install()  # Existing protected installation can be refreshed without state changes.
         self.assertEqual(credential.read_text(), "untouched-test-credential")
         if not has_cryptography:
@@ -206,6 +223,8 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
             "reduced_status.py",
             "muster_approval.py",
+            "fleet_infisical.py",
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -225,6 +244,8 @@ class InstallerTests(unittest.TestCase):
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
             "muster_approval.py",
+            "fleet_infisical.py",
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "muster_agent").mkdir()
@@ -234,6 +255,7 @@ class InstallerTests(unittest.TestCase):
         for package, names in (
             ("fleet_secrets", ("__init__.py", "core.py")),
             ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
+            ("simple_tools", ("__init__.py", "operator_github_state.py")),
         ):
             (source / package).mkdir()
             for name in names:
@@ -255,6 +277,22 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((SCRIPTS / "fleet-ops-control.py").is_file())
         self.assertFalse((SCRIPTS / "simple_tools" / "reduced_status.py").exists())
 
+    def test_missing_writer_ledger_is_refused_before_destination_created(self):
+        source = self.minimal_source()
+        (source / "simple_tools/operator_github_state.py").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
+
+    def test_symlinked_writer_ledger_is_refused_before_destination_created(self):
+        source = self.minimal_source()
+        ledger = source / "simple_tools/operator_github_state.py"
+        ledger.unlink()
+        ledger.symlink_to(SCRIPTS / "simple_tools/operator_github_state.py")
+        with self.assertRaises(OSError):
+            self.install(source)
+        self.assertFalse(self.destination.exists())
+
     def minimal_source(self, trust_text="pass\n"):
         """A small valid source tree.  `trust_text` None leaves out the `muster_agent` folder."""
         source = self.root / "source"
@@ -265,6 +303,8 @@ class InstallerTests(unittest.TestCase):
             "fleet_seat_inventory.py",
             "reduced_status.py",
             "muster_approval.py",
+            "fleet_infisical.py",
+            "fleet_infisical_cli.py",
         ):
             (source / name).write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
@@ -275,6 +315,7 @@ class InstallerTests(unittest.TestCase):
         for package, names in (
             ("fleet_secrets", ("__init__.py", "core.py")),
             ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
+            ("simple_tools", ("__init__.py", "operator_github_state.py")),
         ):
             (source / package).mkdir()
             for name in names:
