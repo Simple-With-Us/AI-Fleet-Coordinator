@@ -140,6 +140,7 @@ def _direct_values(env: Mapping[str, str]) -> dict[str, str]:
                 names=(URL_ENV, KEY_VAR),
                 timeout=REGISTRY_FETCH_TIMEOUT,
                 max_output_bytes=8192,
+                strict_records=True,
             )
             url, key = values.get(URL_ENV, ""), values.get(KEY_VAR, "")
             missing = [name for name in (URL_ENV, KEY_VAR) if not values.get(name)]

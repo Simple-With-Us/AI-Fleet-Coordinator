@@ -58,6 +58,7 @@ class DirectRegistryTests(unittest.TestCase):
         self.assertEqual(set(kwargs["names"]), {API.URL_ENV, API.KEY_VAR})
         self.assertEqual(kwargs["timeout"], 3.0)
         self.assertEqual(kwargs["max_output_bytes"], 8192)
+        self.assertIs(kwargs["strict_records"], True)
 
     def test_foreign_preloaded_reader_receives_neither_binding_nor_values(self):
         foreign = types.SimpleNamespace(__file__="/foreign/fleet_infisical.py",
@@ -104,6 +105,77 @@ print('listener-reader-ok')
                 self.assertEqual(len(api.requests), 3, result.stderr)
                 self.assertNotIn(api.token, result.stdout + result.stderr)
         self.assertEqual((result.returncode, result.stdout.strip()), (0, "listener-reader-ok"), result.stderr)
+
+    def test_real_bounded_reader_rejects_unproven_registry_rows(self):
+        source = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "simple_tools"
+            package.mkdir()
+            (package / "__init__.py").write_text("")
+            shutil.copyfile(source / "simple_tools/registry_api.py", package / "registry_api.py")
+            shutil.copyfile(source / "fleet_infisical.py", root / "fleet_infisical.py")
+            program = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+sys.modules['fleet_knobs'] = None
+sys.modules['fleet_knobs.source'] = None
+from simple_tools import registry_api as API
+config = json.load(sys.stdin)
+env = {API.TOKEN_ENV: config['token'], 'FLEET_SECRETS_API': config['api']}
+answer = API._direct_values(env)
+assert answer == {}, 'invalid row values entered the direct cache'
+assert API.base_url() == ''
+assert API.signing_key() == ''
+API.reset_knob_cache()
+valid_env = {API.TOKEN_ENV: config['valid_token'],
+             'FLEET_SECRETS_API': config['valid_api']}
+valid = API._direct_values(valid_env)
+assert set(valid) == {API.URL_ENV, API.KEY_VAR}
+assert valid[API.URL_ENV] == 'https://registry.example.test'
+assert valid[API.KEY_VAR] == 'synthetic-key-' * 4
+print('invalid-row-refused')
+'''
+            cases = (
+                ("missing workspace", {}, ("workspace",), {}),
+                ("wrong workspace", {"workspace": "other-project"}, (), {}),
+                ("wrong environment", {"environment": "dev"}, (), {}),
+                ("wrong folder", {"secretPath": "/other"}, (), {}),
+                ("wrong type", {"type": "personal"}, (), {}),
+                ("wrong name", {"secretKey": "OTHER_NAME"}, (), {}),
+                ("missing visibility proof", {}, ("secretValueHidden",), {}),
+                ("hidden value", {"secretValueHidden": True}, (), {}),
+                ("empty value", {}, (), {API.KEY_VAR: ""}),
+            )
+            for label, overrides, omissions, changed_values in cases:
+                with self.subTest(record=label):
+                    values = {API.URL_ENV: "https://registry.example.test",
+                              API.KEY_VAR: "synthetic-key-" * 4}
+                    values.update(changed_values)
+                    with ScopedReadAPI(values, project=API.REGISTRY_PROJECT_ID,
+                                       path=API.REGISTRY_PATH) as api:
+                        api.record_override = overrides
+                        api.record_omissions = omissions
+                        with ScopedReadAPI(
+                            {API.URL_ENV: "https://registry.example.test",
+                             API.KEY_VAR: "synthetic-key-" * 4},
+                            project=API.REGISTRY_PROJECT_ID, path=API.REGISTRY_PATH,
+                        ) as valid_api:
+                            result = subprocess.run(
+                                [sys.executable, "-I", "-B", "-c", program, str(root)],
+                                input=json.dumps({"token": api.token,
+                                                  "api": api.env["FLEET_SECRETS_API"],
+                                                  "valid_token": valid_api.token,
+                                                  "valid_api": valid_api.env["FLEET_SECRETS_API"]}),
+                                capture_output=True, text=True, timeout=10,
+                                env={"PATH": os.defpath},
+                            )
+                            self.assertEqual(len(valid_api.requests), 3, result.stderr)
+                            self.assertNotIn(valid_api.token, result.stdout + result.stderr)
+                        self.assertEqual(len(api.requests), 3, result.stderr)
+                        self.assertNotIn(api.token, result.stdout + result.stderr)
+                    self.assertEqual((result.returncode, result.stdout.strip()),
+                                     (0, "invalid-row-refused"), result.stderr)
 
     def test_provider_failure_is_cached_and_payload_is_not_reported(self):
         self.fetch.side_effect = RuntimeError("provider-secret-must-not-appear")
