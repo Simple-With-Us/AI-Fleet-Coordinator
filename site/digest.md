@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-14 01:40 CST · timezone America/Chicago_
+_Generated 2026-11-14 12:46 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,11 +11,22 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-14
 
-*1 PRs merged · 0 issues opened · 0 issues closed*
+*12 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
+- **AFC** [#2193](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2193): test(gr-workflow-v1): cover wf_issue_milestone_set nullable scalar and exact receipt _(by jaywedgeworth22)_
 - **AFC** [#2218](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2218): test(simple-tools): deterministic PEM fixture for compact-key refusal test _(by jaywedgeworth22)_
+- **AFC** [#2219](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2219): git-relay: admit exact reviewed server.py digest to generic-fixture registry _(by jaywedgeworth22)_
+- **AFC** [#2220](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2220): git-relay: admit corrected final server.py bytes (D2) in reviewed-fixture registries _(by jaywedgeworth22)_
+- **AFC** [#2221](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2221): ci: pin test job to ubuntu-24.04 (ubuntu-latest 26.04 dropped Python 3.9) _(by jaywedgeworth22)_
+- **AFC** [#2223](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2223): deploy_transaction: clean no-write abort when recovery finds no journal _(by jaywedgeworth22)_
+- **AFC** [#2224](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2224): deploy_host: bound loopback readiness at 45s for cold-start services _(by jaywedgeworth22)_
+- **AFC** [#2225](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2225): deploy proof: pin image-generation sentinel from verified image evidence _(by jaywedgeworth22)_
+- **BF** [#2078](https://github.com/Simple-With-Us/BotFleet/pull/2078): Update non-major dependencies _(by renovate[bot])_
+- **BF** [#2079](https://github.com/Simple-With-Us/BotFleet/pull/2079): Update non-major dependencies _(by renovate[bot])_
+- **BF** [#2080](https://github.com/Simple-With-Us/BotFleet/pull/2080): Update non-major dependencies _(by renovate[bot])_
+- **CT** [#3177](https://github.com/Simple-With-Us/Congress.Trade/pull/3177): Fix Senate fetcher proxy gate health parse _(by jaywedgeworth22)_
 
 ## 2026-11-13
 
@@ -1574,20 +1585,16 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-30
 
-*103 PRs merged · 0 issues opened · 0 issues closed*
+*99 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** [#1069](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1069): feat(mcp): add bounded verified binary Git blob reads _(by jaywedgeworth22)_
-- **AFC** [#1130](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1130): feat: add opt-in destination storage admission guard _(by jaywedgeworth22)_
 - **AFC** [#1136](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1136): fix(notes): read the scoped service token without env credentials _(by jaywedgeworth22)_
 - **AFC** `Muse Assist` [#1146](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1146): fix(linear-board): preserve — app scope on native token renewal _(by jaywedgeworth22)_
 - **AFC** [#1148](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1148): Delete any message, wake seats tagged by an edit, tier resource alerts (AFC-577) _(by jaywedgeworth22)_
 - **AFC** `Claude` [#1160](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1160): feat(platform-letter): the shared session-letter library for the non — platforms (AFC-564) _(by jaywedgeworth22)_
 - **AFC** [#1161](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1161): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
 - **AFC** [#1162](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1162): Document Operator handbook notice transport _(by jaywedgeworth22)_
-- **AFC** [#1163](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1163): fix(fleet-cli): make the board smoke case the same on every host _(by jaywedgeworth22)_
-- **AFC** [#1165](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1165): fix(relay): refuse non-UTF8 variable values safely _(by jaywedgeworth22)_
 - **AFC** `Muse Assist` [#1167](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1167): fix(wake): send the — runtime a strict schema, every property required _(by jaywedgeworth22)_
 - **AFC** [#1168](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1168): fix(status): show no RED quota line for a provider the wake gate never caps _(by jaywedgeworth22)_
 - **AFC** [#1169](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1169): fix(mcp): prepare separate Jet Chat standard OAuth callback _(by jaywedgeworth22)_
@@ -1684,12 +1691,10 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-29
 
-*103 PRs merged · 0 issues opened · 0 issues closed*
+*101 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
-- **AFC** [#1158](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1158): fix(cli): load own-seat defaults through installed entry points _(by jaywedgeworth22)_
-- **AFC** [#1159](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1159): fix(letters): run the letter hook in remote mode so the server hook is not refused (AFC-564) _(by jaywedgeworth22)_
 - **BF** [#761](https://github.com/Simple-With-Us/BotFleet/pull/761): DEFERRED UNTIL FUTURE AVATAR WORK: TV-Face sheet expressions first-class (all colors + iOS) _(by jaywedgeworth22)_
 - **BF** [#1377](https://github.com/Simple-With-Us/BotFleet/pull/1377): chore(deps): update dependency node to v26 _(by renovate[bot])_
 - **BF** [#1390](https://github.com/Simple-With-Us/BotFleet/pull/1390): Seats: rename BF-Builder to BF-Engineer, add BF-Trader _(by jaywedgeworth22)_
