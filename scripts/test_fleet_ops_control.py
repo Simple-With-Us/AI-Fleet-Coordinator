@@ -6091,5 +6091,194 @@ class SourceTests(unittest.TestCase):
                 self.assertNotIn("datetime.UTC", path.read_text())
 
 
+class SettingsBootstrapTests(unittest.TestCase):
+    """Real fd stores and canonical grant validation; Docker alone is simulated."""
+
+    def setUp(self):
+        import pwd
+        import types
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home/control"
+        self.home.mkdir(parents=True, mode=0o700)
+        self.root.chmod(0o700)
+        self.uid = os.getuid()
+        self.enterContext(mock.patch.object(pwd, "getpwuid", return_value=types.SimpleNamespace(pw_dir="/home/control")))
+        original_open = os.open
+
+        def virtual_root(path, *args, **kwargs):
+            return original_open(self.root if path == "/" else path, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(foc.os, "open", side_effect=virtual_root))
+        self.project = str(uuid.uuid4())
+        self.api = ScopedReadAPI({}, project=self.project, path="/operator-settings")
+        self.api.metadata_override = {"permissions": ["read", "write"], "expiresAt":
+            (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)).isoformat()}
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.source = self.root / "reader"
+        self.source.mkdir(mode=0o700)
+        (self.source / "fleet_infisical.py").write_bytes(Path(HERE, "fleet_infisical.py").read_bytes())
+        (self.source / "fleet_infisical.py").chmod(0o600)
+        self.enterContext(mock.patch.object(foc, "HELPER_DIR", self.source))
+        original_loader = foc._load_infisical_reader
+
+        def local_verifier(ctx):
+            reader = original_loader(ctx)
+            reader.API_BASE = self.api.env["FLEET_SECRETS_API"]
+            return reader
+
+        self.enterContext(mock.patch.object(foc, "_load_infisical_reader", side_effect=local_verifier))
+        self.cid, self.image = "a" * 64, "sha256:" + "b" * 64
+        self.calls = []
+        self.gone = False
+        self.envelope = dict(protocol="operator-settings-install/1", imageID=self.image,
+            bootstrap={foc.SETTINGS_PROJECT: self.project, foc.SETTINGS_WRITER: self.api.token})
+        self.ctx = foc.Context(home=self.root / "untrusted-HOME", uid=self.uid, platform="linux",
+            environ={}, stdin=lambda: json.dumps(self.envelope).encode(), reader=self.docker)
+        self.store = self.home / ".config/fleet-tools" / foc.SETTINGS_STORE
+        self.image_file = self.store.with_name(foc.SETTINGS_IMAGE)
+
+    def docker(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if argv[1] == "inspect":
+            if self.gone and argv[-1] == self.cid:
+                return 1, b"", b"not running", False
+            return 0, (self.cid + " " + self.image + " true\n").encode(), b"", False
+        return 0, b'{"tool":"eavesdropper-settings","ok":false,"result":"failed"}', b"", False
+
+    def install(self):
+        answer, code = foc.receive_settings_bootstrap(self.ctx)
+        self.assertNotIn(self.api.token, json.dumps(answer))
+        return answer, code
+
+    def test_real_grant_store_then_captured_container_pipe_and_no_foreign_module(self):
+        foreign = mock.Mock()
+        with mock.patch.dict(sys.modules, {"fleet_infisical": foreign}):
+            self.assertEqual(self.install()[1], 0)
+        self.assertEqual(foreign.mock_calls, [])
+        self.assertEqual(self.api.requests, ["/api/v2/service-token"])
+        self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.store.parent.stat().st_mode), 0o700)
+        self.assertEqual(self.store.stat().st_nlink, 1)
+        metadata = json.loads(self.image_file.read_bytes())
+        self.assertEqual(metadata["storeInode"], self.store.stat().st_ino)
+        request = {"action": "save", "requestID": str(uuid.uuid4()), "set": {"daemon.coalesce_seconds": 3}}
+        foc.run_eavesdropper_settings_editor_in_container(self.ctx, request)
+        argv, kwargs = self.calls[-1]
+        self.assertIn(self.cid, argv)
+        self.assertNotIn("eavesdropper", argv)
+        self.assertEqual(argv[-1], "--bootstrap-request-stdin")
+        self.assertNotIn(self.api.token, repr(argv) + repr(kwargs["env"]))
+        wire = json.loads(kwargs["data"])
+        self.assertEqual(wire["request"], request)
+        self.assertEqual(wire["bootstrap"][foc.SETTINGS_WRITER], self.api.token)
+        self.assertNotIn("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN", wire["bootstrap"])
+
+    def test_old_image_refuses_before_writer_store_is_opened(self):
+        self.assertEqual(self.install()[1], 0)
+        self.image = "sha256:" + "c" * 64
+        actual = foc._settings_read
+        names = []
+        def observed(parent, name, uid):
+            names.append(name)
+            return actual(parent, name, uid)
+        with mock.patch.object(foc, "_settings_read", side_effect=observed):
+            with self.assertRaises(foc.Refused):
+                foc._settings_writer_request(self.ctx, {"action": "save"})
+        self.assertEqual(names, [foc.SETTINGS_IMAGE])
+
+    def test_exited_captured_container_never_switches_to_replacement_name(self):
+        self.assertEqual(self.install()[1], 0)
+        self.gone = True
+        self.calls.clear()
+        with self.assertRaises(foc.Refused):
+            foc.run_eavesdropper_settings_editor_in_container(self.ctx, {"action": "save"})
+        self.assertFalse(any(argv[1] == "exec" for argv, _ in self.calls))
+        self.assertEqual([argv[-1] for argv, _ in self.calls], ["eavesdropper", self.cid])
+
+    def test_invalid_grant_or_overlong_expiry_never_publishes_ready_image(self):
+        for override in ({"permissions": ["read"]}, {"expiresAt": "2099-01-01T00:00:00Z"},
+                         {"scopes": [{"environment": "prod", "secretPath": "/other"}]},
+                         {"expiresAt": None}):
+            with self.subTest(override=override):
+                self.api.metadata_override = {"permissions": ["read", "write"], "expiresAt":
+                    (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)).isoformat()}
+                self.api.metadata_override.update(override)
+                self.assertEqual(self.install()[1], 2)
+                self.assertFalse(self.image_file.exists())
+                self.assertTrue(self.store.exists())
+                self.store.unlink()
+
+    def test_atomic_publish_race_preserves_existing_store_without_a_provider_call(self):
+        actual = os.link
+
+        def collision(source, target, **kwargs):
+            if target == foc.SETTINGS_STORE:
+                fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600,
+                             dir_fd=kwargs["dst_dir_fd"])
+                os.write(fd, b"pre-existing")
+                os.close(fd)
+            return actual(source, target, **kwargs)
+
+        with mock.patch.object(foc.os, "link", side_effect=collision):
+            self.assertEqual(self.install()[1], 2)
+        self.assertEqual(self.store.read_bytes(), b"pre-existing")
+        self.assertFalse(self.image_file.exists())
+        self.assertEqual(self.api.requests, [])
+
+    def test_existing_store_and_inode_custody_fail_closed(self):
+        self.assertEqual(self.install()[1], 0)
+        before = self.store.read_bytes()
+        count = len(self.api.requests)
+        self.assertEqual(self.install()[1], 2)
+        self.assertEqual(self.store.read_bytes(), before)
+        self.assertEqual(len(self.api.requests), count)
+        for mode in (0o644, 0o400):
+            self.store.chmod(mode)
+            with self.assertRaises(foc.Refused):
+                foc._settings_writer_request(self.ctx, {"action": "save"})
+        self.store.chmod(0o600)
+        with foc._settings_directory(self.ctx) as fd:
+            with self.assertRaises(foc.Refused):
+                foc._settings_read(fd, foc.SETTINGS_STORE, self.uid + 1)
+        os.link(self.store, self.store.with_name("linked"))
+        with self.assertRaises(foc.Refused):
+            foc._settings_writer_request(self.ctx, {"action": "save"})
+
+    def test_symlinked_store_and_parent_are_refused(self):
+        self.assertEqual(self.install()[1], 0)
+        self.store.unlink()
+        self.store.symlink_to(self.image_file)
+        with self.assertRaises(foc.Refused):
+            foc._settings_writer_request(self.ctx, {"action": "save"})
+        folder = self.store.parent
+        folder.rename(folder.with_name("actual"))
+        folder.symlink_to(folder.with_name("actual"), target_is_directory=True)
+        self.assertEqual(self.install()[1], 2)
+
+    def test_remote_flags_and_json_cannot_select_local_receiver(self):
+        with mock.patch.object(foc, "receive_settings_bootstrap") as receive:
+            for argv in ([foc.SETTINGS_RECEIVE, "--from-muster"],
+                         ["--from-ssh", foc.SETTINGS_RECEIVE]):
+                self.assertEqual(foc.main(argv, ctx=self.ctx, out=io.StringIO()), 2)
+            self.ctx.environ["SSH_ORIGINAL_COMMAND"] = foc.SETTINGS_RECEIVE
+            self.assertEqual(foc.main([foc.SETTINGS_RECEIVE], ctx=self.ctx, out=io.StringIO()), 2)
+            receive.assert_not_called()
+        self.ctx.stdin = lambda: json.dumps({"action": "save", "bootstrap": self.envelope}).encode()
+        with self.assertRaises(foc.Refused):
+            foc.eavesdropper_settings_request_from_stdin(self.ctx, "yes")
+
+    def test_malformed_receive_and_unready_store_output_never_reflect_input(self):
+        for raw in (b"not-json", json.dumps({"bootstrap": self.api.token}).encode(),
+                    b'{"protocol":"x","protocol":"y"}'):
+            self.ctx.stdin = lambda: raw
+            answer, code = self.install()
+            self.assertEqual(code, 2)
+            self.assertEqual(set(answer), {"ok", "result", "errorCode"})
+
+
 if __name__ == "__main__":
     unittest.main()
