@@ -80,3 +80,16 @@ the number the create named as unconfirmed_number - a lead to check in the
 repository, not a confirmed pull request - followed by duplicate_refused for
 each held retry. The caller checks the repository for the pull request before
 changing or repeating the request. No live PR was opened to test this source.
+
+## PR creation identity is not a caller choice
+
+All new PRs use `open_pr` / `gr_open_pr`, with the relay-held scoped owner credential.
+The former `wf_pr_create` / `gr_wf_pr_create` App-author path is retired. Its wire schema
+is retained only to give stale callers a definite refusal, before App minting or any
+provider request. It is absent from hosted tool discovery and new CLI catalogs; the
+CLI also rejects a stale direct invocation before reading a bearer.
+
+There is no automatic remap: the legacy expected-head contract differs from `open_pr`.
+A caller must inspect the supported contract and submit a new, authorized request.
+Owner credential absence or provider refusal cannot fall back to a seat App. Edits,
+comments, reviews and other existing operations keep their own-App identity.

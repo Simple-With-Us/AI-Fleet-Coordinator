@@ -3540,6 +3540,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
+    if getattr(a, "tool", None) == "gr_wf_pr_create":
+        die("PR creation requires gr_open_pr; bot-author creation is retired")
     if a.cmd == "push":
         _push_refuse_early(a)  # force and a bad refspec are refused before any credential is read
     # One overall budget for the verb:  the identities probe, every discovery page and the target call

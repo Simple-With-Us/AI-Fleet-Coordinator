@@ -203,6 +203,7 @@ export class GrRelayClient {
   // Workflow verbs get a bounded stream, longer deadline and conservative write
   // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
+    if (action === "wf_pr_create") return {status:403,body:{error:"owner_only_pr_creation"},localFailure:true};
     // Bound depth/nodes/cycles before serialization, then cap raw JSON bytes
     // before recursive Zod parsing. Keep the normalized payload check below.
     const limit = workflowInputLimit(action);
