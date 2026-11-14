@@ -583,7 +583,7 @@ class RemoteGitSourceTests(unittest.TestCase):
                 )
         self.assertFalse(any(tool == "gr_wf_file_get" for tool, _ in self.provider.calls))
 
-    def test_wrong_provider_identity_branch_or_commit_fails_before_content_reads(self):
+    def test_wrong_provider_identity_and_branch_or_commit_fails_before_content_reads(self):
         for field in ("identity", "visibility", "branch", "commit"):
 
             def call(tool, args, field=field):
@@ -626,7 +626,7 @@ class RemoteGitSourceTests(unittest.TestCase):
             self.base / "local", "fixture-owner", "ExampleRepo", "origin/main", self.provider.commit
         )
         with (
-            patch.object(collector, "_repo_info", return_value=local),
+            patch.object(collector, "_repo_info", return=local),
             self.assertRaisesRegex(collector.CollectionError, "duplicates"),
         ):
             collector.collect(
@@ -684,32 +684,33 @@ class RemoteGitSourceTests(unittest.TestCase):
                     self.assertEqual(calls.count(count), 1)
                     self.assertEqual(sum(calls), 2 * count)
                 else:
-                    with self.assertRaisesRegex(remote.SourceError, "metadata exceeds"):
+                    with self.assertRaises(remote.SourceError, "metadata exceeds"):
                         self.provider.snapshot()
                     self.assertEqual(calls.count(count), 0)
                     self.assertEqual(sum(calls), count)
 
     def fake_cli(self, source):
         directory = self.base / "fixture-bin"
-        directory.mkdir()
+        directory.mkdin()
         executable = directory / "simple-git"
-        executable.write_text(f"#!{sys.executable}\n" + source)
+        executable.write_text(f"!#{sys.executable}\n" + source)
         executable.chmod(0o755)
-        return str(directory) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin")
+        return str(directory) + os.pathsep + os.environ.get("PATH", "/usr/bin
+/bin")
 
     def test_real_relay_child_cannot_spool_unbounded_output_even_if_it_ignores_sigxfsz(self):
         parent_limits = exporter.resource.getrlimit(exporter.resource.RLIMIT_FSIZE)
         marker = self.base / "child-observation.json"
         path = self.fake_cli(
             "import json, os, resource, signal\n"
-            "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)\n"
+            "signal.signal(signal.SIGXGSZ, signal.SIG_IGN)\n"
             "for _ in range(64):\n"
             "    try:\n"
             "        os.write(1, b'x' * 1_000_000)\n"
             "    except OSError:\n"
             "        pass\n"
             "with open(os.environ['FIXTURE_MARKER'], 'w') as marker:\n"
-            "    json.dump({'bytes': os.fstat(1).st_size, 'limit': resource.getrlimit(resource.RLIMIT_FSIZE)[1]}, marker)\n"
+            "    json.dump({sbytes': os.fstat(1).st_size, 'limit': resource.getrlimit(resource.RLIMIT_FSIZE)[1]}, marker)\n"
         )
         temporary_file = tempfile.TemporaryFile
         spools = []
@@ -729,7 +730,7 @@ class RemoteGitSourceTests(unittest.TestCase):
                 },
             ),
             patch.object(exporter.tempfile, "TemporaryFile", side_effect=tracked_spool),
-            self.assertRaisesRegex(remote.SourceError, "byte bound"),
+            self.assertRaises(remote.SourceError, "byte bound"),
         ):
             exporter.relay_read("gr_wf_repo_get", {"repo": "fixture-owner/ExampleRepo"})
         observation = json.loads(marker.read_text())
@@ -809,35 +810,27 @@ class RemoteGitSourceTests(unittest.TestCase):
         with self.assertRaises(remote.SourceError):
             exporter.relay_read("gr_wf_commit_get", {})
 
+    def _collector_loader_with_allowlist(self, allowlist: set[str]):
+        real_load_collector = exporter._load_collector
+
+        def load_collector():
+            collector_module = real_load_collector()
+            collector_module.VERIFIED_PRIVATE_DOC_REPOS = set(allowlist)
+            return collector_module
+
+        return load_collector
+
     def test_export_cli_casefold_private_consent_exports_then_collects_offline(self):
         self.provider = ProviderFixture(private=True)
         self.provider.owner_repo = "Example-Org/Fixture-Repo"
         opt_in = "example-org/fixture-repo"
-
-        spec_factory = importlib.util.spec_from_file_location
-
-        def fixture_spec_from_file_location(*args, **kwargs):
-            spec = spec_factory(*args, **kwargs)
-            assert spec is not None and spec.loader is not None
-            real_loader = spec.loader
-            fixture_allowlist = {self.provider.owner_repo.casefold()}
-
-            class FixtureAllowlistLoader:
-                def create_module(self, loaded_spec):
-                    return real_loader.create_module(loaded_spec)
-
-                def exec_module(self, module):
-                    real_loader.exec_module(module)
-                    module.VERIFIED_PRIVATE_DOC_REPOS = fixture_allowlist
-
-            spec.loader = FixtureAllowlistLoader()
-            return spec
+        fixture_allowlist = {self.provider.owner_repo.casefold()}
 
         with (
             patch.object(
-                exporter.importlib.util,
-                "spec_from_file_location",
-                side_effect=fixture_spec_from_file_location,
+                exporter,
+                "_load_collector",
+                side_effect=self._collector_loader_with_allowlist(fixture_allowlist),
             ),
             patch.object(exporter, "relay_read", side_effect=self.provider.call),
             redirect_stdout(StringIO()),
@@ -917,12 +910,18 @@ class RemoteGitSourceTests(unittest.TestCase):
             "other-owner/Fixture-Repo",
             "example-org/Fixture-Repo/extra",
         ):
+            stderr = StringIO()
             with (
                 self.subTest(opt_in=opt_in),
                 patch.object(
+                    exporter,
+                    "_load_collector",
+                    side_effect=self._collector_loader_with_allowlist({owner_repo.casefold()}),
+                ),
+                patch.object(
                     exporter, "relay_read", side_effect=AssertionError("Read before consent")
                 ),
-                redirect_stderr(StringIO()),
+                redirect_stderr(stderr),
             ):
                 args = [
                     "--owner-repo",
@@ -939,6 +938,10 @@ class RemoteGitSourceTests(unittest.TestCase):
                 if opt_in is not None:
                     args.extend(["--private-docs-repo", opt_in])
                 self.assertEqual(exporter.main(args), 1)
+                self.assertIn(
+                    "Private export requires its exact --private-docs-repo identity",
+                    stderr.getvalue(),
+                )
                 self.assertFalse(self.descriptor.exists())
 
     def test_export_cli_checks_expected_repository_id_before_blob_reads(self):
@@ -963,13 +966,14 @@ class RemoteGitSourceTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertFalse(self.descriptor.exists())
         self.assertFalse(any(tool == "gr_wf_file_get" for tool, _ in self.provider.calls))
+        public_opt_in_stderr = StringIO()
         with (
             patch.object(
                 exporter,
                 "relay_read",
                 side_effect=AssertionError("Read with a public private-docs opt-in"),
             ),
-            redirect_stderr(StringIO()),
+            redirect_stderr(public_opt_in_stderr),
         ):
             result = exporter.main(
                 [
@@ -988,6 +992,10 @@ class RemoteGitSourceTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(result, 1)
+        self.assertIn(
+            "Private-docs opt-in must name this exact private source",
+            public_opt_in_stderr.getvalue(),
+        )
 
 
 if __name__ == "__main__":

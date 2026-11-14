@@ -66,6 +66,17 @@ def relay_read(tool: str, arguments: dict) -> dict:
         raise remote.SourceError("Assigned Git relay read could not complete: " + tool) from exc
 
 
+def _load_collector():
+    collector_path = Path(__file__).with_name("collect-repo-documents.py")
+    spec = importlib.util.spec_from_file_location("collect_repo_documents", collector_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load collector module from {collector_path}")
+    collector = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = collector
+    spec.loader.exec_module(collector)
+    return collector
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--owner-repo", required=True)
@@ -80,13 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         "--output", type=Path, required=True, help="new descriptor path in an owner-only directory"
     )
     args = parser.parse_args(argv)
-    spec = importlib.util.spec_from_file_location(
-        "collect_repo_documents", Path(__file__).with_name("collect-repo-documents.py")
-    )
-    assert spec is not None and spec.loader is not None
-    collector = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = collector
-    spec.loader.exec_module(collector)
+    collector = _load_collector()
     try:
         if (
             remote.REPOSITORY.fullmatch(args.owner_repo) is None
