@@ -87,7 +87,7 @@ import {
   GR_UNAVAILABLE_REASON,
   grNotConfiguredMessage,
 } from "./gr-tools.js";
-import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
+import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, isScanCategory, movedRepository, refusalReasonText, repositoryMovedText, scanCategoryFromError } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
@@ -1652,6 +1652,9 @@ export class HostedTools {
         // A reason is trusted only from the closed vocabulary (gr-refusal.js);
         // callWorkflow is the only producer on the workflow path.
         reason: z.enum(REFUSAL_REASONS).optional(),
+        // Same rule for the scan category:  read as a bounded string here,
+        // trusted only when isScanCategory accepts it below.
+        scan_category: z.string().max(60).optional(),
         github_status: z.unknown().optional(),
       }).safeParse(body);
       if (!refusalShape.success) throw new ToolError("relay_refused", "refused");
@@ -1672,7 +1675,21 @@ export class HostedTools {
         || (typeof refusalError === "string"
           && /^[^\n]{1,200} looks like it contains a credential \([A-Za-z0-9_]{1,60}\); refusing to relay it$/.test(refusalError));
       if (credentialRefusal) {
-        throw new ToolError("refused_secret", "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.");
+        // The matched scan category rides along when the relay named one:
+        // callWorkflow already validated it into the body on the workflow
+        // path, and the seven-action path carries it in the vouched anchored
+        // shape.  A closed-vocabulary member only, never relay prose - and
+        // no category at all when the relay named none, exactly as before.
+        const scanCategory = isScanCategory(refusalShape.data.scan_category)
+          ? refusalShape.data.scan_category
+          : scanCategoryFromError(refusalError);
+        throw new ToolError(
+          "refused_secret",
+          scanCategory
+            ? `git-relay refused the write:  the content looks like it contains a credential (${scanCategory}).  Remove or reword the credential-shaped content and send it again.  Nothing was written.`
+            : "git-relay refused the write:  the content looks like it contains a credential.  Remove or reword the credential-shaped content and send it again.  Nothing was written.",
+          scanCategory ? { extra: { scan_category: scanCategory } } : {},
+        );
       }
       // Every other refusal keeps relay_refused but names its cause class when
       // the relay's exact fixed string (or its numeric github_status) maps to

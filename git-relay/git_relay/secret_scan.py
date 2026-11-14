@@ -69,6 +69,60 @@ def find_secret(text: object) -> str | None:
     return None
 
 
+_PATTERN_NAMES = frozenset(name for name, _ in _PATTERNS)
+
+# The patch scanner (patch_secretscan) names its categories in prose, and the
+# file-content gate (reviewed_fixtures.unreviewed_file_secret) returns those
+# labels alongside this module's pattern names.  A refusal names ONE stable
+# identifier from this closed vocabulary, so the labels map onto identifiers
+# here;  a category nobody mapped collapses to "credential".  A refusal never
+# carries scanner prose beyond this vocabulary, matched content or a snippet.
+_LABEL_CATEGORY_IDS = {
+    "private key block": "private_key_block",
+    "AWS access key": "aws_access_key_id",
+    "GitHub token": "github_token",
+    "Anthropic or OpenAI key": "anthropic_or_openai_key",
+    "Slack token": "slack_token",
+    "GitLab token": "gitlab_token",
+    "Google API key": "google_api_key",
+    "Stripe key": "stripe_key",
+    "Linear API key": "linear_api_key",
+    "Linear client secret": "linear_client_secret",
+    "Sentry token": "sentry_token",
+    "xAI key": "xai_key",
+    "Infisical service token": "infisical_service_token",
+    "Infisical credential": "infisical_credential",
+    "access token (JWT)": "jwt",
+    "Cloudflare token": "cloudflare_token",
+    "Coolify token": "coolify_token",
+    "assigned credential": "assigned_credential",
+    "assigned secret": "assigned_secret",
+    "bearer token": "bearer_credential",
+    "a Zulip-shaped API key": "zulip_api_key",
+    "a loaded credential": "loaded_credential",
+}
+
+
+def category_id(category: object) -> str:
+    """The stable identifier for a scanner category from either scanner."""
+    if category in _PATTERN_NAMES:
+        return category
+    return _LABEL_CATEGORY_IDS.get(category, "credential")
+
+
+def scan_refusal(field: str, category: object) -> str:
+    """The refusal text for a scanner hit in a verb-scanned field.
+
+    The same shape SecretInputError uses pre-dispatch, so the audit row and
+    every front read both scan paths identically:  the field and the category
+    identifier, never the matched content.
+    """
+    return (
+        f"{field} looks like it contains a credential ({category_id(category)}); "
+        "refusing to relay it"
+    )
+
+
 def first_secret_start(text: object) -> int | None:
     """Index where the earliest credential shape in text begins, or None.
 

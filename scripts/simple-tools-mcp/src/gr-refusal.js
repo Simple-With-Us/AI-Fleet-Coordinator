@@ -154,6 +154,56 @@ export function githubRefusalStatus(value) {
   return Number.isInteger(value) && value >= 400 && value <= 499 && value !== 429 ? value : undefined;
 }
 
+/** The relay scanner's stable category identifiers (git-relay's
+ * secret_scan.category_id):  the only scan detail a refusal may carry.  A
+ * category is trusted only as a member of this closed set, extracted from
+ * the relay's anchored scanner-refusal shape - never reflected prose, and
+ * never the matched content, which no refusal carries in the first place. */
+export const SCAN_CATEGORIES = Object.freeze([
+  "credential",
+  "github_fine_grained_pat",
+  "github_token",
+  "private_key_block",
+  "infisical_service_token",
+  "aws_access_key_id",
+  "slack_token",
+  "jwt",
+  "bearer_credential",
+  "anthropic_or_openai_key",
+  "gitlab_token",
+  "google_api_key",
+  "stripe_key",
+  "linear_api_key",
+  "linear_client_secret",
+  "sentry_token",
+  "xai_key",
+  "infisical_credential",
+  "cloudflare_token",
+  "coolify_token",
+  "assigned_credential",
+  "assigned_secret",
+  "zulip_api_key",
+  "loaded_credential",
+]);
+
+const SCAN_CATEGORY_SET = new Set(SCAN_CATEGORIES);
+
+/** Is `value` one of the closed scan category ids? */
+export function isScanCategory(value) {
+  return typeof value === "string" && SCAN_CATEGORY_SET.has(value);
+}
+
+const SCAN_REFUSAL_SHAPE = /^[^\n]{1,200} looks like it contains a credential \(([A-Za-z0-9_]{1,60})\); refusing to relay it$/;
+
+/** The vouched scan category in a relay scanner refusal, or null:  the
+ * anchored shape must match exactly and the captured id must be a member
+ * of the closed set, so a category the relay invented stays hidden. */
+export function scanCategoryFromError(error) {
+  if (typeof error !== "string") return null;
+  const match = SCAN_REFUSAL_SHAPE.exec(error);
+  return match && isScanCategory(match[1]) ? match[1] : null;
+}
+
 /**
  * Classify one relay refusal.  `error` is the relay's own string (already
  * length-checked by the caller's schema) and `githubStatus` its numeric
