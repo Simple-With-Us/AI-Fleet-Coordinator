@@ -28,7 +28,9 @@ class OperatorSettingsFixtureTests(unittest.TestCase):
                 relative,
             )
         self.assertEqual(artifact["schema_path"], SCHEMA)
-        self.assertEqual(artifact["schema_sha256"], hashlib.sha256((ROOT / SCHEMA).read_bytes()).hexdigest())
+        self.assertEqual(
+            artifact["schema_sha256"], hashlib.sha256((ROOT / SCHEMA).read_bytes()).hexdigest()
+        )
 
 
 if __name__ == "__main__":
