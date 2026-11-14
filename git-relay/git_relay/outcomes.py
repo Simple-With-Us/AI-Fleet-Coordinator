@@ -302,9 +302,7 @@ class OutcomeStore:
         ever overwriting earlier evidence:  a unique name (clock + uuid, exclusive
         create), fsynced before the caller mutates the log it came from."""
         while True:
-            quarantined = (
-                f"{self._archive_path}.corrupt-{int(self._clock())}-{uuid.uuid4().hex}"
-            )
+            quarantined = f"{self._archive_path}.corrupt-{int(self._clock())}-{uuid.uuid4().hex}"
             try:
                 fd = os.open(quarantined, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 break

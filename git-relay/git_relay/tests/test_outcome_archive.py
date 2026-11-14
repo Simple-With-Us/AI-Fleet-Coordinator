@@ -406,9 +406,7 @@ class ArchiveHardeningTests(ArchiveTestCase):
         return json.dumps({"key": key, "archived_at": 2.0, "row": row}).encode()
 
     def marker_line(self, key, released_at=3.0, state="refused"):
-        return json.dumps(
-            {"key": key, "released_at": released_at, "state": state}
-        ).encode()
+        return json.dumps({"key": key, "released_at": released_at, "state": state}).encode()
 
     def test_valid_marker_releases_and_bad_released_at_fails_closed(self):
         key = hexkey(0)
@@ -416,17 +414,13 @@ class ArchiveHardeningTests(ArchiveTestCase):
         store = OutcomeStore(self.path, clock=self.clock)
         self.assertIsNone(store.begin(key), "valid release marker releases the key")
         # A non-numeric released_at must not release:  the load fails closed.
-        self.write_raw_archive(
-            [self.row_line(key), self.marker_line(key, released_at="junk")]
-        )
+        self.write_raw_archive([self.row_line(key), self.marker_line(key, released_at="junk")])
         with self.assertRaises(OutcomeStoreError):
             OutcomeStore(self.path, clock=self.clock)
 
     def test_marker_with_bad_state_fails_closed(self):
         key = hexkey(0)
-        self.write_raw_archive(
-            [self.row_line(key), self.marker_line(key, state="junk")]
-        )
+        self.write_raw_archive([self.row_line(key), self.marker_line(key, state="junk")])
         with self.assertRaises(OutcomeStoreError):
             OutcomeStore(self.path, clock=self.clock)
         # Evidence file untouched by the refused fold.
@@ -453,9 +447,7 @@ class ArchiveHardeningTests(ArchiveTestCase):
         with open(self.archive, "ab") as fh:
             fh.write(b"{torn-two")
         OutcomeStore(self.path, clock=FixedClock())
-        quarantined = sorted(
-            p for p in self.dir.iterdir() if ".corrupt-" in p.name
-        )
+        quarantined = sorted(p for p in self.dir.iterdir() if ".corrupt-" in p.name)
         self.assertEqual(len(quarantined), 2)
         bodies = {p.read_bytes() for p in quarantined}
         self.assertEqual(bodies, {b"{torn-one", b"{torn-two"})
