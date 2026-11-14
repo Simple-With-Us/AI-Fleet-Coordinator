@@ -35,6 +35,11 @@ class ReviewedGenericTests(unittest.TestCase):
                 "scripts/linear-board/test_board.py",
                 "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3",
             ),
+            (
+                "Simple-With-Us/AI-Fleet-Coordinator",
+                "git-relay/git_relay/server.py",
+                "873109fe354a21ea6907722ebb14d35907f2c06fbbedd6dc49b1d48e99c0e4d1",
+            ),
         }))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))
 
