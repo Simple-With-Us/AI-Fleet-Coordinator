@@ -1,4 +1,4 @@
-"""Offline routing tests; all network, subprocesses and credential stores are faked."""
+"""Offline routing tests with fake providers and one real bounded-reader worker."""
 
 import contextlib
 import io
@@ -10,6 +10,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 from fleet_knobs import source as knobs
+from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core as rag
 from fleet_rag import infisical_settings as settings
 
@@ -281,19 +282,6 @@ class ScopedTokens(unittest.TestCase):
             knobs.fetch_named(["ALPHA"], project_id=PROJECT, path="/")
         self.assertEqual(self.calls, [])
 
-    def test_rag_load_rejects_foreign_binding_instead_of_fleet_secrets_fallback(self):
-        env = dict(self.env, FLEET_RAG_INFISICAL_PROJECT=OTHER, FLEET_RECALL_INFISICAL_TOKEN=READ)
-        env.pop(core.ENV_TOKEN)
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            mock.patch.object(
-                rag, "fleet_secrets_many", side_effect=AssertionError("foreign fallback")
-            ),
-            self.assertRaises(rag.FleetRagError),
-        ):
-            rag.load_config()
-        self.assertEqual(len(self.calls), 1)
-
     def test_settings_default_never_reads_shared_identity_file(self):
         env = {
             "INFISICAL_AUTOMATION_CLIENT_ID": VALUE,
@@ -316,6 +304,40 @@ class ScopedTokens(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             service = settings.InfisicalSettings(project_id=PROJECT, identity_prefixes=("OWN_APP",))
             self.assertEqual(service._credential(writer=True), (None, ""))
+
+
+class RagWorkerScopedTokens(unittest.TestCase):
+    def test_rag_load_rejects_foreign_binding_instead_of_fleet_secrets_fallback(self):
+        with ScopedReadAPI({}, project=PROJECT) as api:
+            env = {
+                "FLEET_RAG_INFISICAL_PROJECT": OTHER,
+                "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"],
+                "FLEET_RECALL_INFISICAL_TOKEN": api.token,
+                core.ENV_AI_FLEET_COORDINATOR_TOKEN: COORDINATOR_READ,
+                core.ENV_WRITE_TOKEN: WRITE,
+            }
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(
+                    rag, "fleet_secrets_many", side_effect=AssertionError("foreign fallback")
+                ) as fallback,
+                mock.patch.object(
+                    rag, "_read_token_file", side_effect=AssertionError("file token fallback")
+                ) as token_file,
+                mock.patch("subprocess.run", side_effect=AssertionError("credential login")),
+                mock.patch.object(
+                    core, "bounded_fetch_project", wraps=core.bounded_fetch_project
+                ) as bounded,
+                self.assertRaises(rag.FleetRagError),
+            ):
+                rag.load_config()
+            bounded.assert_called_once()
+            self.assertEqual(bounded.call_args.args[:2], (OTHER, "/"))
+            self.assertEqual(bounded.call_args.kwargs["token"], api.token)
+            self.assertEqual(bounded.call_args.kwargs["timeout"], 30.0)
+            fallback.assert_not_called()
+            token_file.assert_not_called()
+            self.assertEqual(api.requests, ["/api/v2/service-token"])
 
 
 if __name__ == "__main__":
