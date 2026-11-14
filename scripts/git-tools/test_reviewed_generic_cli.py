@@ -37,7 +37,7 @@ class CliFixtureTests(unittest.TestCase):
             self.assertIsNotNone(git._scan_arguments(args, ""))
             args["message"] = body
             self.assertEqual(
-                git._scan_arguments(args, "", "gr_wf_files_put"), "secret_scan:message"
+                git._scan_arguments(args, "", "gr_wf_files_put"), "secret_scan:message [category=assigned secret]"
             )
             args["message"] = "fix"
             args["repo"] = repo + "2"
@@ -65,7 +65,7 @@ class CliPublicIntegrityTests(unittest.TestCase):
                     self.assertIsNotNone(git._scan_arguments(args, "Ab1", tool))
                     self.assertEqual(
                         git._scan_arguments(dict(args, message=body), "", tool),
-                        "secret_scan:message",
+                        "secret_scan:message [category=a Zulip-shaped API key]",
                     )
                     self.assertIsNotNone(git._scan_arguments(dict(args, repo=repo + "2"), "", tool))
                     self.assertIsNotNone(git._scan_arguments(args, "", "gr_wf_issue_create"))
