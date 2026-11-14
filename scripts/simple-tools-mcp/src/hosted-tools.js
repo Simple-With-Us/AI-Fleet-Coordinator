@@ -43,6 +43,7 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
+  normalizeHeader,
   stripOwnIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
@@ -154,7 +155,7 @@ import {
   STATUS_WORDS,
 } from "./linear.js";
 import { GAP, fixOutbound } from "./textfmt.js";
-import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
+import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, compactGitHubArgs, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
@@ -383,6 +384,19 @@ const LINEAR_WORKSPACE_CACHE = new Map();
  * flat inputs, <=32 keys, scalar values only, <=1024 chars per string, no
  * unknown fields.  The relay re-checks the same caps;  an over-limit call
  * refuses here instead of spending a parse, a stringify and an upstream call. */
+// Keep in step with git_relay.github_client.intent_branch_ref.  A tag whose
+// name passes the shape is not distinguishable without the contents read
+// that an intent-only call skips.
+const INTENT_BRANCH_REF = /^[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}$/;
+const COMMIT_SHA_REF = /^[0-9a-f]{40}$/;
+
+function intentBranchRef(ref) {
+  return typeof ref === "string"
+    && INTENT_BRANCH_REF.test(ref)
+    && !ref.includes("..")
+    && !COMMIT_SHA_REF.test(ref);
+}
+
 const GR_DISPATCH_ARGS = z
   .object({
     repo: z.string().min(3).max(200),
@@ -1701,14 +1715,19 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
-    if ((parsed.intent_id === undefined) !== (parsed.expected_head_sha === undefined)) throw new ToolError("invalid_argument", "intent_id and expected_head_sha must be supplied together");
+    if (parsed.expected_head_sha !== undefined && parsed.intent_id === undefined) {
+      throw new ToolError("invalid_argument", "expected_head_sha requires intent_id");
+    }
+    if (parsed.intent_id !== undefined && !intentBranchRef(parsed.ref)) {
+      throw new ToolError("invalid_argument", "intent dispatch requires a canonical branch name");
+    }
     return this.grCall("workflow_dispatch", parsed);
   }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
@@ -2040,6 +2059,7 @@ export class HostedTools {
   linearBody(text, session) {
     void session;
     if (isSingleThread(this.seat)) text = stripOwnIntro(seatTagForSeat(this.seat), text);
+    text = normalizeHeader(text, { seat: seatTagForSeat(this.seat) });
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
     // AFC-722:  the full house gap (one or more spaces), unless the call passed sentence_gap: false.
@@ -2515,13 +2535,14 @@ for (const action of WF_V1_ACTIONS) {
     // AFC-722:  the gap is written before the relay's own checks, so they see the bytes that will land.  A
     // gapped body that no longer fits a byte cap (U+00A0 is two UTF-8 bytes) is sent as written instead, and the
     // result says so.
-    const gapped = gapGitHubArgs(action, args);
+    const compacted = compactGitHubArgs(action, args, { seat: seatTagForSeat(this.seat) });
+    const gapped = gapGitHubArgs(action, compacted, { seat: seatTagForSeat(this.seat) });
     let parsedArgs = parseWfV1Args(action, gapped);
-    if (parsedArgs === null && gapped !== args) {
-      parsedArgs = parseWfV1Args(action, args);
+    if (parsedArgs === null && gapped !== compacted) {
+      parsedArgs = parseWfV1Args(action, compacted);
       if (parsedArgs !== null) {
         for (const field of GITHUB_GAP_FIELDS[action] ?? []) {
-          if (gapped[field] !== args[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
+          if (gapped[field] !== compacted[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
         }
       }
     }

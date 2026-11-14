@@ -310,6 +310,10 @@ class LetterParse(unittest.TestCase):
             self.assertEqual(self.letter(text), want, text)
 
     def test_the_first_of_a_headers_recipients_for_the_seat_wins(self) -> None:
+        header = ("[GROK:\u200a\u200a\u200aBB.2.M\u200a\u200a📁\u200aAFC,\u200aOPS"
+                  " → CODEX EE,\u200a\u200aCLAUDE AA] text")
+        self.assertEqual(self.letter(header, "CODEX", "Codex"), "EE")
+        self.assertEqual(self.letter(header), "AA")
         five = "CLAUDE EE, CLAUDE AA, CLAUDE BB, CLAUDE CC, CLAUDE DD"
         self.assertEqual(self.letter(self.HEADER % five), "EE")
         self.assertEqual(self.letter(self.HEADER % ("CODEX ZZ, " + five)), "EE")
@@ -1191,8 +1195,9 @@ class SessionFragments(Base):
         self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), "aaaaaaaa"))
 
     def test_the_header_is_found_after_the_no_wake_mark(self) -> None:
-        wake = self.from_excerpt("\U0001F440" + self.HEADER + "hello")
-        self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), "aaaaaaaa"))
+        for marker in ("\U0001F440", ":eyes: "):
+            wake = self.from_excerpt(marker + self.HEADER + "hello")
+            self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), "aaaaaaaa"))
 
     def test_text_after_the_headers_arrow_is_an_addressee(self) -> None:
         wake = self.from_excerpt("[CLAUDE·aaaaaaaa: AA.4.S → bbbbbbbb] hello")

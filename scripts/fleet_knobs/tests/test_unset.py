@@ -8,7 +8,7 @@ import os
 from unittest import mock
 
 from fleet_knobs import __main__ as cli
-from fleet_knobs import setter
+from fleet_knobs import setter, source
 
 from ._fake import KnobTestCase, fixture_service_token
 
@@ -21,7 +21,8 @@ class UnsetTests(KnobTestCase):
         super().setUp()
         self.fake.set(secrets=LIVE)
         self.audit_file = str(self.home / ".simple-tools" / "listener" / "knobs.jsonl")
-        from fleet_secrets import core
+        core = source._load_helper()
+        self.assertIsNotNone(core)
 
         verifier = mock.patch.object(core, "verify_service_token", return_value=("/",))
         verifier.start()

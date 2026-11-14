@@ -1854,6 +1854,9 @@ class FromRealDaemonStatusTests(DaemonHarness):
         }  # fmt: skip
         self.assertEqual(set(document), read | not_read)
         seat_keys = {
+            # The bracket-recipient wake switch is read through the settings allowlist
+            # route; the reducer deliberately does not read it.
+            "bracket_recipient_wakes",
             "bot", "creds", "connected", "cursor", "webhook_high_water", "last_event", "wake",
             "routine",
             "pinned", "pin", "claude", "muse", "model", "fallback", "provider", "quota",

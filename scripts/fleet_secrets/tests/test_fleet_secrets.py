@@ -268,7 +268,7 @@ class GetTests(Base):
 class UnresolvedReferenceTests(Base):
     def test_unresolved_reference_fails_closed_naming_the_key(self):
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${folder.OTHER}"}))
-        code, _out, err = self.call("run", "--", "true")
+        code, _out, err = self.call("run", "--only", "ALPHA,BROKEN", "--", "true")
         self.assertEqual(code, 5)
         self.assertIn("BROKEN", err)
         self.assertNotIn("folder.OTHER", err)
@@ -304,7 +304,7 @@ class RunTests(Base):
     def test_run_injects_env_and_execs(self):
         self.use(World())
         self.env["KEEP"] = "kept"
-        _code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
+        _code, _, err = self.call("run", "--only", "ALPHA,BETA", "--", "mycmd", "--flag", "x")
         self.assertEqual(err, "")
         ((prog, argv, env),) = self.exec_calls
         self.assertEqual((prog, argv), ("mycmd", ["mycmd", "--flag", "x"]))
@@ -313,11 +313,11 @@ class RunTests(Base):
     def test_run_replaces_an_existing_variable(self):
         self.use(World())
         self.env["ALPHA"] = "old"
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         self.assertEqual(self.exec_calls[0][2]["ALPHA"], VAL_A)
 
     def test_noninteractive_get_names_and_run_require_a_scoped_token(self):
-        for args in (("get", "ALPHA"), ("names",), ("run", "--", "mycmd")):
+        for args in (("get", "ALPHA"), ("names",), ("run", "--only", "ALPHA", "--", "mycmd")):
             with self.subTest(args=args):
                 world = self.use(World())
                 env = dict(self.env)
@@ -381,7 +381,7 @@ class RunTests(Base):
                 }
             )
         )
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["PATH"], self.env["PATH"])
         self.assertEqual(env["HOME"], self.env["HOME"])
@@ -417,7 +417,7 @@ class RunTests(Base):
             core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
         }
         self.use(World(secrets=secrets))
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["ALPHA"], VAL_A)
         self.assertEqual(
@@ -442,7 +442,7 @@ class RunTests(Base):
         self.env[core.ENV_TOKEN] = "st.parent-token-fixture"
         self.env[core.ENV_CLIENT_ID] = "PARENT_ID_SENTINEL"
         self.env[core.ENV_CLIENT_SECRET] = "PARENT_SECRET_SENTINEL"
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA,BETA", "--", "mycmd")
         self.call("run", "--only", "ALPHA", "--", "mycmd")
         self.assertEqual(len(self.exec_calls), 2)
         for _, _, env in self.exec_calls:
@@ -452,7 +452,7 @@ class RunTests(Base):
 
     def test_names_that_are_not_env_names_are_dropped(self):
         self.use(World(secrets={"ALPHA": VAL_A, "bad-name": "x", "9LIVES": "y"}))
-        self.call("run", "--", "mycmd")
+        self.call("run", "--only", "ALPHA", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertNotIn("bad-name", env)
         self.assertNotIn("9LIVES", env)
@@ -466,7 +466,7 @@ class RunTests(Base):
     def test_command_not_found_is_127(self):
         self.use(World())
         with mock.patch.object(cli.os, "execvpe", side_effect=FileNotFoundError):
-            code, _, err = self.call("run", "--", "nosuchcmd")
+            code, _, err = self.call("run", "--only", "ALPHA", "--", "nosuchcmd")
         self.assertEqual(code, 127)
         self.assertIn("nosuchcmd", err)
         self.assertNoSentinel(err)

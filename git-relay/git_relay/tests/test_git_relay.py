@@ -2755,7 +2755,9 @@ class LegacyStateAdoption(unittest.TestCase):
 
         def fake_source(**kwargs):
             captured.update(kwargs)
-            return real_source(runner=lambda *a, **k: None, **kwargs)
+            source = real_source(runner=lambda *a, **k: None, **kwargs)
+            source.verified_secret = unittest.mock.Mock(return_value="20000")
+            return source
 
         origin = pathlib.Path.cwd()
         with (
@@ -3068,7 +3070,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
             class _Source:
                 def verified_secret(self, name):
-                    return "v"
+                    return "20000" if name == server.OUTCOMES_CAPACITY_KEY else "v"
 
                 def secret(self, name):
                     return "k" * 32

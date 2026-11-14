@@ -1558,9 +1558,72 @@ def run_request(request, path=None, checker=None, reloader=None, reload="auto"):
         )
 
 
+BOOTSTRAP_MAX_BYTES = 64 * 1024
+BOOTSTRAP_PROJECT = "INFISICAL_OPERATOR_SETTINGS_PROJECT_ID"
+BOOTSTRAP_WRITER = "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
+BOOTSTRAP_READER = "OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"
+
+
+def bootstrap_request(raw):
+    """Private host-to-editor envelope only; the original request owns the transaction."""
+    envelope, bootstrap = None, None
+    refused = {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+
+    os.environ.pop(BOOTSTRAP_WRITER, None)
+    os.environ.pop(BOOTSTRAP_READER, None)
+    try:
+        if len(raw) > BOOTSTRAP_MAX_BYTES:
+            return refused, 2
+        envelope = json.loads(raw, object_pairs_hook=pairs)
+        if (not isinstance(envelope, dict) or set(envelope) != {"protocol", "request", "bootstrap"}
+                or envelope["protocol"] != "operator-settings-bootstrap/1"
+                or not isinstance(envelope["request"], dict)
+                or envelope["request"].get("action") not in ("save", "initialize", "reconcile")):
+            return refused, 2
+        bootstrap = envelope["bootstrap"]
+        if (not isinstance(bootstrap, dict) or set(bootstrap) != {BOOTSTRAP_PROJECT, BOOTSTRAP_WRITER}
+                or any(not isinstance(value, str) for value in bootstrap.values())
+                or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                                    bootstrap[BOOTSTRAP_PROJECT])
+                or not bootstrap[BOOTSTRAP_WRITER].startswith("st.")
+                or not 20 <= len(bootstrap[BOOTSTRAP_WRITER]) <= 8192
+                or any(c.isspace() for c in bootstrap[BOOTSTRAP_WRITER])):
+            return refused, 2
+        os.environ.update(bootstrap)
+        return run_request(envelope["request"])
+    except Exception:  # noqa: BLE001 - bootstrap data never becomes an error detail
+        return refused, 2
+    finally:
+        for name in (BOOTSTRAP_WRITER, BOOTSTRAP_READER, BOOTSTRAP_PROJECT):
+            os.environ.pop(name, None)
+        if isinstance(bootstrap, dict):
+            bootstrap.clear()
+        if isinstance(envelope, dict):
+            envelope.clear()
+        raw = b""
+
+
 def main(argv=None, stdin=None, out=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     out = out or sys.stdout
+    if argv == ["--bootstrap-request-stdin"]:
+        try:
+            answer, code = bootstrap_request((stdin or sys.stdin.buffer).read(BOOTSTRAP_MAX_BYTES + 1))
+        except Exception:  # noqa: BLE001 - private input failures have one closed response
+            answer, code = {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+        finally:
+            for name in (BOOTSTRAP_WRITER, BOOTSTRAP_READER, BOOTSTRAP_PROJECT):
+                os.environ.pop(name, None)
+        out.write(json.dumps(answer, sort_keys=True, ensure_ascii=True) + "\n")
+        return code
     if argv != ["--request-stdin"]:
         out.write(
             json.dumps(

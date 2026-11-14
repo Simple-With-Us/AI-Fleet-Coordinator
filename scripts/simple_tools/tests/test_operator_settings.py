@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import io
 import json
 import os
@@ -89,15 +90,43 @@ class AutosaveTests(unittest.TestCase):
         control = load_control()
         home = self.path.parent / "helper-home"
         home.mkdir(mode=0o700, exist_ok=True)
+        cid, image = "a" * 64, "sha256:" + "b" * 64
 
-        def reader(_argv, *, data, **_kwargs):
+        @contextlib.contextmanager
+        def directory(_ctx, create=False):
+            # Model the external control-account directory using this test's protected home.
+            fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                yield fd
+            finally:
+                os.close(fd)
+
+        with directory(None) as fd:
+            if not (home / control.SETTINGS_STORE).exists():
+                values = {control.SETTINGS_PROJECT: str(uuid.uuid4()),
+                          control.SETTINGS_WRITER: "st." + secrets.token_urlsafe(32)}
+                control._settings_publish(fd, control.SETTINGS_STORE,
+                    "".join(key + "=" + value + "\n" for key, value in values.items()).encode())
+                control._settings_publish(fd, control.SETTINGS_IMAGE, json.dumps(dict(
+                    protocol="operator-settings-image/1", imageID=image,
+                    storeInode=(home / control.SETTINGS_STORE).stat().st_ino)).encode())
+
+        def reader(_argv, *, data=None, **_kwargs):
+            if _argv[1] == "inspect":
+                return 0, (cid + " " + image + " true\n").encode(), b"", False
             proposed = json.loads(data)
-            answer, code = editor.run_request(
-                proposed, path=self.path, checker=lambda *_: {"ok": True},
-                reloader=reloader or (lambda _: {
-                    "ok": True, "confirmed": True, "code": "reloaded", "revision": settings.revision(self.store.document),
-                }),
-            )
+            actual_run = editor.run_request
+
+            def run(request):
+                return actual_run(request, path=self.path, checker=lambda *_: {"ok": True},
+                    reloader=reloader or (lambda _: {"ok": True, "confirmed": True,
+                        "code": "reloaded", "revision": settings.revision(self.store.document)}))
+
+            if _argv[-1] == "--bootstrap-request-stdin":
+                with mock.patch.object(editor, "run_request", side_effect=run):
+                    answer, code = editor.bootstrap_request(data)
+            else:
+                answer, code = run(proposed)
             return code, json.dumps(answer).encode(), b"", False
 
         if request is not None and request.get("action") in ("save", "initialize", "reconcile"):
@@ -109,7 +138,7 @@ class AutosaveTests(unittest.TestCase):
         )
         out = io.StringIO()
         env = {settings.READ_BINDING: "st." + secrets.token_urlsafe(32)} if reader_enabled else {}
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store, side_effect=store_error):
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(settings, "InfisicalStore", return_value=self.store, side_effect=store_error), mock.patch.object(control, "_settings_directory", side_effect=directory):
             code = control.main(
                 ["server", "eavesdropper-settings", "server", "--plan" if request is None else "--yes", "--json"],
                 ctx=ctx, out=out,
@@ -145,6 +174,49 @@ class AutosaveTests(unittest.TestCase):
         self.assertTrue(answer["persisted"] and answer["readback"])
         self.assertFalse(answer["ok"] or answer["runtimeApplied"])
         self.assertEqual(answer["errorCode"], "runtime_pending")
+
+    def test_actual_wire_bracket_switch_round_trips_through_canonical_readback(self):
+        from simple_tools import config
+
+        envelope, code = self.canonical_wire()
+        self.assertEqual(code, 0)
+        previous = envelope["eavesdropperSettings"]
+        key = "seat.GROK.bracket_recipient_wakes"
+        self.assertNotIn(key, previous["settings"])
+        for value in (True, False):
+            identity = self.identity()
+            request = dict(identity, action="save", set={key: value},
+                           expectBaseSHA256=previous["revision"])
+            envelope, code = self.canonical_wire(request)
+            answer = envelope["eavesdropperSettings"]
+            self.assertEqual((code, answer["result"], answer["outcome"]), (0, "saved", "ok"))
+            self.assertEqual(answer["requestID"], identity["requestID"])
+            self.assertTrue(all(answer[flag] is True for flag in
+                                ("persisted", "readback", "runtimeApplied", "autosaveEnabled")))
+            self.assertIs(answer["settings"][key], value)
+            self.assertIs(self.store.document["settings"][key], value)
+            self.assertEqual(answer["revision"], settings.revision(self.store.document))
+            self.assertEqual(answer["reload"]["revision"], answer["revision"])
+            self.assertEqual({name: setting for name, setting in answer["settings"].items() if name != key},
+                             self.document["settings"])
+            parsed = editor._parse(self.path.read_text(), "fixture")
+            self.assertIs(config.from_dict(parsed).seats["GROK"].bracket_recipient_wakes, value)
+            self.assertIn("# unrelated comment survives", self.path.read_text())
+            previous = answer
+        self.assertEqual(len(self.store.writes), 2)
+
+    def test_actual_wire_bracket_switch_wrong_types_do_not_write(self):
+        for value in ("true", 1, None, []):
+            with self.subTest(value=value):
+                envelope, code = self.canonical_wire({
+                    "action": "save", "set": {"seat.GROK.bracket_recipient_wakes": value},
+                    "expectBaseSHA256": settings.revision(self.document),
+                })
+                self.assertEqual((code, envelope["errorCode"]), (2, "value_not_allowed"))
+                self.assertFalse(envelope["ok"])
+                self.assertEqual(self.store.writes, [])
+                self.assertEqual(self.store.document, self.document)
+                self.assertEqual(self.path.read_text(), self.original)
 
     def test_actual_early_refusal_keeps_unknown_metadata_absent_and_recovers_after_fresh_get(self):
         baseline, _ = self.canonical_wire()

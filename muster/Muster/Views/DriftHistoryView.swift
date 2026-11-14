@@ -7,6 +7,10 @@ import SwiftUI
 struct DriftHistoryView: View {
     @EnvironmentObject private var monitor: DriftMonitor
     @State private var confirmingClear = false
+    @State private var searchText = ""
+    @State private var stateFilter: DriftHistoryStateFilter = .all
+    @State private var grouping: DriftHistoryGrouping = .newestFirst
+    @State private var collapsedSeats: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -157,10 +161,130 @@ struct DriftHistoryView: View {
 
     /// The list of turns.
     private var table: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            GridRowHeader(labels: ["Time", "Seat", "Kind", "Check", "From", "To"])
-            ForEach(monitor.transitions) { transition in
-                DriftTransitionRow(transition: transition)
+        let filtered = filteredTransitions
+        let groups = groupedBySeat(filtered)
+        return VStack(alignment: .leading, spacing: 8) {
+            filterToolbar(filteredCount: filtered.count, groupSeats: groups.map(\.seat))
+            if filtered.isEmpty {
+                HStack(spacing: 8) {
+                    Text("No drift transitions match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("Reset Filters") {
+                        searchText = ""
+                        stateFilter = .all
+                    }
+                    .buttonStyle(.link)
+                }
+                .padding(.vertical, 6)
+            } else if grouping == .newestFirst {
+                VStack(alignment: .leading, spacing: 0) {
+                    GridRowHeader(labels: ["Time", "Seat", "Kind", "Check", "From", "To"])
+                    ForEach(filtered) { transition in
+                        DriftTransitionRow(transition: transition)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(groups) { group in
+                        let isCollapsed = collapsedSeats.contains(group.seat)
+                        VStack(alignment: .leading, spacing: 6) {
+                            MusterGroupHeaderButton(
+                                title: group.seat,
+                                isExpanded: !isCollapsed,
+                                summary: group.summary,
+                                badges: [MusterBadgeSpec(text: "\(group.rows.count)", color: .orange)]
+                            ) {
+                                if isCollapsed {
+                                    collapsedSeats.remove(group.seat)
+                                } else {
+                                    collapsedSeats.insert(group.seat)
+                                }
+                            }
+                            if !isCollapsed {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    GridRowHeader(labels: ["Time", "Seat", "Kind", "Check", "From", "To"])
+                                    ForEach(group.rows) { transition in
+                                        DriftTransitionRow(transition: transition)
+                                    }
+                                }
+                                .padding(.leading, 14)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var filteredTransitions: [DriftTransition] {
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return monitor.transitions.filter { transition in
+            guard stateFilter.matches(transition) else { return false }
+            guard !needle.isEmpty else { return true }
+            return [transition.seat, transition.kindTitle, transition.checkText, transition.fromText, transition.toState, transition.timeText]
+                .contains { $0.localizedCaseInsensitiveContains(needle) }
+        }
+    }
+
+    private func groupedBySeat(_ transitions: [DriftTransition]) -> [DriftSeatGroup] {
+        var order: [String] = []
+        var buckets: [String: [DriftTransition]] = [:]
+        for transition in transitions {
+            if buckets[transition.seat] == nil { order.append(transition.seat) }
+            buckets[transition.seat, default: []].append(transition)
+        }
+        return order.compactMap { seat in
+            guard let rows = buckets[seat] else { return nil }
+            let kinds = rows.reduce(into: [String]()) { acc, row in
+                if !acc.contains(row.kindTitle) { acc.append(row.kindTitle) }
+            }
+            return DriftSeatGroup(
+                seat: seat,
+                summary: kinds.prefix(4).joined(separator: ", ") + (kinds.count > 4 ? " +\(kinds.count - 4)" : ""),
+                rows: rows
+            )
+        }
+    }
+
+    private func filterToolbar(filteredCount: Int, groupSeats: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                MusterSearchField(prompt: "Filter seat, kind, rule, or state\u{2026}", text: $searchText)
+                Picker("State", selection: $stateFilter) {
+                    ForEach(DriftHistoryStateFilter.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+            HStack(spacing: 8) {
+                Picker("Group", selection: $grouping) {
+                    ForEach(DriftHistoryGrouping.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                Text("Showing \(filteredCount) of \(monitor.transitions.count) transitions")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if grouping == .bySeat && !groupSeats.isEmpty {
+                    let allCollapsed = groupSeats.allSatisfy { collapsedSeats.contains($0) }
+                    Button(allCollapsed ? "Expand All" : "Collapse All") {
+                        if allCollapsed {
+                            collapsedSeats.removeAll()
+                        } else {
+                            collapsedSeats = Set(groupSeats)
+                        }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                }
             }
         }
     }
@@ -235,7 +359,75 @@ private struct DriftTransitionRow: View {
             .frame(width: 92, alignment: .leading)
         }
         .padding(.vertical, 3)
+        .contextMenu {
+            Button("Copy Transition Summary") {
+                MusterClipboard.copy(
+                    "\(transition.timeText) \(transition.seat) \(transition.kindTitle) (\(transition.checkText)): \(transition.fromText) -> \(transition.toState)"
+                )
+            }
+            Button("Copy Seat Name") {
+                MusterClipboard.copy(transition.seat)
+            }
+            if let rule = transition.ruleID {
+                Button("Copy Rule ID") {
+                    MusterClipboard.copy(rule)
+                }
+            }
+        }
     }
+}
+
+private enum DriftHistoryGrouping: String, CaseIterable, Identifiable {
+    case newestFirst
+    case bySeat
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .newestFirst: return "Newest first"
+        case .bySeat: return "By seat"
+        }
+    }
+}
+
+private enum DriftHistoryStateFilter: String, CaseIterable, Identifiable {
+    case all
+    case missing
+    case drift
+    case unknown
+    case unproven
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .missing: return "Missing"
+        case .drift: return "Drifted"
+        case .unknown: return "Unknown"
+        case .unproven: return "Unproven"
+        }
+    }
+
+    func matches(_ transition: DriftTransition) -> Bool {
+        if self == .all { return true }
+        let state = CellState(checkState: CheckState(envelopeValue: transition.toState))
+        switch self {
+        case .all: return true
+        case .missing: return state == .missing
+        case .drift: return state == .drift
+        case .unknown: return state == .unknown
+        case .unproven: return state == .unproven
+        }
+    }
+}
+
+private struct DriftSeatGroup: Identifiable {
+    let seat: String
+    let summary: String
+    let rows: [DriftTransition]
+    var id: String { seat }
 }
 
 #Preview {

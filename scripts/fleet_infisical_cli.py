@@ -1,6 +1,6 @@
 """The shared direct Infisical command, invoked by its isolated absolute script path.
 
-  run [--path /] [--only NAME,NAME] -- CMD [ARG...]
+  run [--path /] --only NAME,NAME -- CMD [ARG...]
         exec CMD with the secrets as environment variables.  Existing variables of the same
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
   get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]
@@ -42,8 +42,11 @@ if __name__ == "__main__":
 import fleet_infisical as core
 from fleet_infisical import SecretsError, UsageError
 
+# The total named-response budget must not exceed the existing folder-response budget.
+MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
+
 USAGE = (
-    "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
+    "usage: fleet-secrets run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
@@ -101,9 +104,13 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
 def _only_names(raw: object | None) -> list[str] | None:
     if raw is None:
         return None
-    names = [core.check_name(n.strip()) for n in str(raw).split(",") if n.strip()]
+    names = list(
+        dict.fromkeys(core.check_name(n.strip()) for n in str(raw).split(",") if n.strip())
+    )
     if not names:
         raise UsageError("--only needs at least one key name")
+    if len(names) > MAX_RUN_NAMES:
+        raise UsageError(f"--only accepts at most {MAX_RUN_NAMES} distinct key names")
     return names
 
 
@@ -316,28 +323,30 @@ def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
 
 def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     if "--" not in args:
-        raise UsageError("run needs `--` before the command:  fleet-secrets run -- CMD [ARG...]")
+        raise UsageError(
+            "run needs `--` before the command:  fleet-secrets run --only NAME -- CMD [ARG...]"
+        )
     split = list(args).index("--")
     opts = _parse(args[:split], True, 0)
     command = list(args[split + 1 :])
     if not command or not command[0]:
         raise UsageError("run needs a command after `--`")
     only = _only_names(opts["only"])
-    if only is not None:
-        reserved = [n for n in only if not core.injectable(n)]
-        if reserved:
-            raise UsageError(
-                f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
-                "variables are never injected);  read it with `get` if you really need the value"
-            )
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
-    if only is not None:
-        for name in only:
-            if name not in secrets:
-                raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
-        chosen = {n: secrets[n] for n in only}
-    else:
-        chosen = {n: v for n, v in secrets.items() if core.injectable(n)}
+    if only is None:
+        raise UsageError("run requires --only with one or more explicit key names")
+    reserved = [n for n in only if not core.injectable(n)]
+    if reserved:
+        raise UsageError(
+            f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
+            "variables are never injected);  read it with `get` if you really need the value"
+        )
+    path = core.check_path(str(opts["path"]))
+    project = core.infisical_project_id(env, core.home_dir(env), core.DEFAULT_PROJECT)
+    secrets = core.fetch_project(project, path, env, names=tuple(only))
+    for name in only:
+        if name not in secrets:
+            raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
+    chosen = {n: secrets[n] for n in only}
     core.reject_unresolved(chosen)
     child_env = {k: v for k, v in env.items() if k not in core.AUTH_ENV_VARS}
     child_env.update(chosen)
@@ -387,7 +396,15 @@ def doctor_report(
         secrets = core.fetch_all(path, env, primary_project)
         rep["fetch_names_ok"] = True
         rep["names_count"] = len(secrets)
-        rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.match(v))
+        rep["unresolved_reference_count"] = sum(
+            1 for v in secrets.values() if core.REF_RE.search(v)
+        )
+    except core.UnresolvedReferenceError as exc:
+        # The shared strict reader validated every row before refusing unresolved values.
+        rep["fetch_names_ok"] = True
+        rep["names_count"] = exc.names_count
+        rep["unresolved_reference_count"] = exc.unresolved_reference_count
+        rep["failure_reason"] = "unresolved-reference"
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
     # The unqualified legacy doctor also probes the read-only FleetLink folder.
