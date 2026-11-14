@@ -434,8 +434,9 @@ def main(argv: list[str] | None = None) -> int:
         # chat's hook never runs, so only the scheduled update reaches it.  platform-letter's own stamp
         # throttles the pass;  a failure here never fails the update, but names itself on stderr for the
         # unit's journal (the command's own exit code stays the update's).
+        proc = None
         try:
-            ticked = subprocess.run(
+            proc = subprocess.Popen(
                 [
                     str(args.home / ".local" / "bin" / "platform-letter"),
                     "repair",
@@ -443,20 +444,34 @@ def main(argv: list[str] | None = None) -> int:
                     "server",
                 ],
                 stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=90,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
+            _, ticked_err = proc.communicate(timeout=90)
             if (
-                ticked.stderr
+                ticked_err
             ):  # the verb's own failures reach the unit's journal, stdout stays the command's
-                sys.stderr.write(ticked.stderr.decode(errors="replace")[:2000])
+                sys.stderr.write(ticked_err.decode(errors="replace")[:2000])
         except subprocess.TimeoutExpired:
+            if proc is not None:
+                proc.kill()
+                proc.wait()
             print(json.dumps({"repair_tick": "timeout"}), file=sys.stderr)
         except FileNotFoundError:
             print(json.dumps({"repair_tick": "platform-letter missing"}), file=sys.stderr)
         except Exception:  # noqa: BLE001 - the tick is best-effort
             pass
+        except BaseException:
+            # An interrupted updater must not leave the repair child running (concurrent
+            # repairs, stale state): terminate and reap it before re-raising.
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            raise
     try:
         result = {"setup": setup, "update": update, "rollback": rollback, "status": status}[
             args.command
