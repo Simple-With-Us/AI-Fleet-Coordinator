@@ -127,7 +127,7 @@ done
 for name in "$SERVICE" "$TIMER"; do
   [[ -f "$HERE/$name" ]] || die "missing source $HERE/$name"
 done
-[[ -f "$SCRIPTS/fleet_secrets/core.py" ]] || die "missing source $SCRIPTS/fleet_secrets/core.py"
+[[ -f "$SCRIPTS/fleet_infisical.py" ]] || die "missing source $SCRIPTS/fleet_infisical.py"
 
 [[ "$DRY" -eq 1 ]] && say "dry run: nothing will be changed"
 
@@ -511,7 +511,7 @@ def main(argv):
     (scripts, etc_dir, token_file, workbook_id, sessions_id, events_id, container, registry_db,
      page_limit, lock_path) = argv
     sys.path.insert(0, scripts)
-    from fleet_secrets import core  # noqa: E402 - the checkout's own reviewed helper
+    import fleet_infisical as core  # noqa: E402 - the checkout's own reviewed client
 
     env = {key: os.environ[key] for key in ("HOME", core.ENV_PROJECT) if os.environ.get(key)}
     token = read_token(token_file)

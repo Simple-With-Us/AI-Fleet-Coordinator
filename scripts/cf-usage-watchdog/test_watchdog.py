@@ -11,12 +11,16 @@ import io
 import json
 import os
 import re
+import runpy
+import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 import urllib.error
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -982,8 +986,35 @@ class RearmTests(Base):
         self.assertIn(WORKER, self.state["trips"])
 
 
+def fake_named_reader(test, values, codes=None):
+    test.secret_reads = []
+
+    def fetch(project, path, env, *, token, names, timeout, max_output_bytes):
+        test.secret_reads.append(
+            (project, path, dict(env), token, names, timeout, max_output_bytes)
+        )
+        (name,) = names
+        code = (codes or {}).get(name, 0 if name in values else 3)
+        if code == 3:
+            return {}
+        if code:
+            raise RuntimeError("synthetic provider refusal")
+        return {name: values[name]}
+
+    patch = mock.patch.dict(
+        sys.modules,
+        {
+            "fleet_infisical": SimpleNamespace(
+                __file__=str(HERE.parent / "fleet_infisical.py"), bounded_fetch_project=fetch
+            )
+        },
+    )
+    patch.start()
+    test.addCleanup(patch.stop)
+
+
 class ConnectionTests(Base):
-    TOKEN = "credential-value-never-logged"
+    SAMPLE_VALUE = secrets.token_urlsafe(32)
 
     def runner(self, values: dict, codes: dict | None = None):
         self.commands = []
@@ -991,9 +1022,7 @@ class ConnectionTests(Base):
         def run(command, **kwargs):
             self.commands.append((command, kwargs))
             if command[0] == "fleet-secrets":
-                name = command[2]
-                code = (codes or {}).get(name, 0 if name in values else 3)
-                return SimpleNamespace(returncode=code, stdout=values.get(name, ""))
+                raise AssertionError("credential reads must not start an application")
             return SimpleNamespace(returncode=0, stdout="")
 
         return run
@@ -1024,42 +1053,49 @@ class ConnectionTests(Base):
         return open_
 
     def conn(self, values, responses=(), codes=None, env=None):
+        fake_named_reader(self, values, codes)
+        environment = dict(env or {})
+        environment.setdefault("INFISICAL_TOKEN", "st." + secrets.token_urlsafe(32))
         return wd.Connections(
             self.cfg,
             runner=self.runner(values, codes),
             opener=self.opener(list(responses)),
-            env=env or {},
+            env=environment,
         )
 
-    def test_secrets_come_from_fleet_secrets_by_the_named_key_and_folder(self):
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN})
-        self.assertEqual(conn.token(), self.TOKEN)
-        command = self.commands[0][0]
+    def test_secrets_use_one_named_read_and_the_units_own_binding(self):
+        from fleet_knobs.source import PROJECT_ID
+
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE})
+        self.assertEqual(conn.token(), self.SAMPLE_VALUE)
         self.assertEqual(
-            command,
+            self.secret_reads,
             [
-                "fleet-secrets",
-                "get",
-                "CF_USAGE_WATCHDOG_API_TOKEN",
-                "--path",
-                "/cf-usage-watchdog",
-                "--project",
-                "ai-fleet-coordinator",
+                (
+                    PROJECT_ID,
+                    "/cf-usage-watchdog",
+                    {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/cf-usage-watchdog"},
+                    conn.env["INFISICAL_TOKEN"],
+                    ("CF_USAGE_WATCHDOG_API_TOKEN",),
+                    30,
+                    8192,
+                )
             ],
         )
+        self.assertEqual(self.commands, [])
 
     def test_absent_or_failed_credential_is_a_poll_failure(self):
         with self.assertRaises(wd.PollError):
             self.conn({}).graphql("q", {})
         with self.assertRaises(wd.PollError) as caught:
             self.conn({}, codes={"CF_USAGE_WATCHDOG_API_TOKEN": 4}).graphql("q", {})
-        self.assertIn("exit-4", str(caught.exception))
+        self.assertEqual(str(caught.exception), "credential-fetch-failed")
 
     def test_graphql_errors_are_a_poll_failure_even_with_data(self):
         answer = json.dumps(
             {"data": {"viewer": {"accounts": [{}]}}, "errors": [{"message": "rate limited"}]}
         ).encode()
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [answer])
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE}, [answer])
         with self.assertRaises(wd.PollError):
             conn.graphql("q", {})
 
@@ -1067,20 +1103,20 @@ class ConnectionTests(Base):
         answer = json.dumps(
             {"data": None, "errors": [{"message": "x", "extensions": {"code": "budget"}}]}
         ).encode()
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [answer])
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE}, [answer])
         with self.assertRaises(wd.PollError) as caught:
             conn.graphql("q", {})
         self.assertEqual(str(caught.exception), "graphql-errors-1-budget")
 
     def test_a_broken_http_answer_is_a_poll_failure_not_a_crash(self):
         conn = self.conn(
-            {"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [http.client.IncompleteRead(b"")]
+            {"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE}, [http.client.IncompleteRead(b"")]
         )
         with self.assertRaises(wd.PollError):
             conn.graphql("q", {})
 
     def test_a_json_answer_that_is_not_an_object_is_a_poll_failure(self):
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [b"[1]"])
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE}, [b"[1]"])
         with self.assertRaises(wd.PollError):
             conn.graphql("q", {})
 
@@ -1088,25 +1124,27 @@ class ConnectionTests(Base):
         answer = json.dumps(
             {"data": {"viewer": {"accounts": [{"wd": []}]}}, "errors": None}
         ).encode()
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [answer])
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE}, [answer])
         self.assertEqual(conn.graphql("q", {}), {"wd": []})
-        self.assertEqual(self.requests[0].get_header("Authorization"), f"Bearer {self.TOKEN}")
+        self.assertEqual(
+            self.requests[0].get_header("Authorization"), f"Bearer {self.SAMPLE_VALUE}"
+        )
         self.assertEqual(self.requests[0].full_url, "https://api.cloudflare.com/client/v4/graphql")
 
     def test_empty_success_body_is_not_a_failure(self):
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [b""])
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE}, [b""])
         self.assertIsNone(conn.api("DELETE", "/x"))
 
     def test_api_error_carries_no_credential(self):
         error = urllib.error.HTTPError(
             "https://x", 403, "no", {}, io.BytesIO(b'{"errors":[{"code":10000}]}')
         )
-        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN}, [error])
+        conn = self.conn({"CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE}, [error])
         with self.assertRaises(wd.ApiError) as caught:
             conn.api("PUT", "/x", {})
         self.assertEqual(caught.exception.status, 403)
         self.assertEqual(caught.exception.codes, [10000])
-        self.assertNotIn(self.TOKEN, str(caught.exception))
+        self.assertNotIn(self.SAMPLE_VALUE, str(caught.exception))
 
     def test_zulip_uses_simple_chat_as_the_seat_without_infisical_in_its_environment(self):
         conn = self.conn({}, env={"INFISICAL_TOKEN": "t", "HOME": "/h"})
@@ -1154,7 +1192,7 @@ class ConnectionTests(Base):
         conn = self.conn({"CF_USAGE_WATCHDOG_HEARTBEAT_URL": url}, [b"", b""])
         self.assertTrue(conn.heartbeat())
         self.assertTrue(conn.heartbeat())
-        self.assertEqual(len([c for c in self.commands if c[0][0] == "fleet-secrets"]), 1)
+        self.assertEqual(len(self.secret_reads), 1)
         self.assertEqual(self.requests[0].full_url, url)
 
     def test_heartbeat_absent_is_none(self):
@@ -1164,7 +1202,7 @@ class ConnectionTests(Base):
         answer = json.dumps({"errors": [{"message": "nope"}]}).encode()
         conn = self.conn(
             {
-                "CF_USAGE_WATCHDOG_API_TOKEN": self.TOKEN,
+                "CF_USAGE_WATCHDOG_API_TOKEN": self.SAMPLE_VALUE,
                 "PUSHOVER_APP_TOKEN": "pushover-credential",
                 "PUSHOVER_USER_KEY": "pushover-user",
             },
@@ -1177,7 +1215,7 @@ class ConnectionTests(Base):
         logged = (
             out.getvalue() + self.store.events_path.read_text() + self.store.state_path.read_text()
         )
-        for secret in (self.TOKEN, "pushover-credential", "pushover-user"):
+        for secret in (self.SAMPLE_VALUE, "pushover-credential", "pushover-user"):
             self.assertNotIn(secret, logged)
 
 
@@ -1222,15 +1260,289 @@ class StoreTests(Base):
         self.assertEqual(len(self.store.events_path.read_text().splitlines()), 1)
 
 
+class DirectCredentialTests(unittest.TestCase):
+    def setUp(self):
+        import fleet_infisical
+        from fleet_knobs.source import PROJECT_ID
+        from fleet_knobs.tests._fake import ScopedReadAPI
+
+        self.core, self.project = fleet_infisical, PROJECT_ID
+        self.cfg = json.loads(wd.CONFIG_PATH.read_text())
+        self.value = secrets.token_urlsafe(32)
+        self.api = ScopedReadAPI(
+            {"CF_USAGE_WATCHDOG_API_TOKEN": self.value, "EXAMPLE": self.value},
+            project=self.project,
+            path="/cf-usage-watchdog",
+        )
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.binding = self.api.token
+        self.calls = self.api.requests
+        self.reads = []
+        self.actual_bounded = self.core.bounded_fetch_project
+        wrapper = mock.patch.object(self.core, "bounded_fetch_project", self.loopback_fetch)
+        wrapper.start()
+        self.addCleanup(wrapper.stop)
+        direct = mock.patch.object(
+            self.core, "fetch_project", side_effect=AssertionError("unbounded parent read")
+        )
+        direct.start()
+        self.addCleanup(direct.stop)
+        self.metadata = {
+            "workspace": self.project,
+            "permissions": ["read"],
+            "scopes": [{"environment": "prod", "secretPath": "/cf-usage-watchdog"}],
+            "expiresAt": "2099-01-01T00:00:00Z",
+        }
+        self.runner = mock.Mock(side_effect=AssertionError("no credential application"))
+        self.conn = wd.Connections(
+            self.cfg,
+            runner=self.runner,
+            env={
+                "INFISICAL_TOKEN": self.binding,
+                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "other-consumer",
+                "FLEET_KNOBS_INFISICAL_TOKEN": "independent-knob-reader",
+                "INFISICAL_READ_PATHS": "/,/another-folder",
+                "FLEET_SECRETS_API": "https://unused.example.invalid",
+            },
+        )
+
+    def loopback_fetch(self, project, path, env, *, token, names, timeout, max_output_bytes):
+        self.assertEqual(project, self.project)
+        self.assertEqual(path, "/cf-usage-watchdog")
+        self.assertEqual(token, self.conn.env.get("INFISICAL_TOKEN", ""))
+        self.assertEqual(
+            env, {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/cf-usage-watchdog"}
+        )
+        self.assertEqual(timeout, 30)
+        self.assertEqual(max_output_bytes, 8192)
+        self.reads.append((token, names, timeout, max_output_bytes))
+        self.api.metadata_override = self.metadata
+        # The adapter receives no API override; this test adds loopback only after that assertion.
+        return self.actual_bounded(
+            project,
+            path,
+            {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]},
+            token=token,
+            names=names,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
+        )
+
+    def test_real_exact_scope_named_read_uses_only_own_token_and_preserves_cache(self):
+        self.assertEqual(self.conn.token(), self.value)
+        self.assertEqual(self.conn.token(), self.value)
+        self.assertEqual(len(self.calls), 2)
+        self.assertIn("/raw/CF_USAGE_WATCHDOG_API_TOKEN?", self.calls[1])
+        self.assertEqual(len(self.reads), 1)
+        self.assertIn("recursive=false", self.calls[1])
+        self.assertIn("include_imports=false", self.calls[1])
+        self.assertIn("expandSecretReferences=false", self.calls[1])
+        self.runner.assert_not_called()
+
+    def test_absence_and_empty_values_remain_none_without_an_application(self):
+        del self.api.values["EXAMPLE"]
+        self.assertIsNone(self.conn._secret("EXAMPLE"))
+        self.api.values["EXAMPLE"] = "  "
+        self.assertIsNone(self.conn._secret("EXAMPLE"))
+        self.runner.assert_not_called()
+
+    def test_real_worker_rejects_an_oversized_single_value(self):
+        self.api.values["EXAMPLE"] = secrets.token_urlsafe(7000)
+        with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
+            self.conn._secret("EXAMPLE")
+        self.assertEqual(len(self.calls), 2)
+        self.runner.assert_not_called()
+
+    def test_wrong_scope_project_permissions_and_expiry_stop_before_values(self):
+        original = dict(self.metadata)
+        for field, value in (
+            ("workspace", str(uuid.uuid4())),
+            ("permissions", ["read", "write"]),
+            ("scopes", [{"environment": "prod", "secretPath": "/"}]),
+            ("scopes", [{"environment": "dev", "secretPath": "/cf-usage-watchdog"}]),
+            (
+                "scopes",
+                [
+                    {"environment": "prod", "secretPath": "/cf-usage-watchdog"},
+                    {"environment": "prod", "secretPath": "/"},
+                ],
+            ),
+            ("expiresAt", None),
+            ("expiresAt", "2000-01-01T00:00:00Z"),
+        ):
+            with self.subTest(field=field):
+                self.metadata = dict(original, **{field: value})
+                self.calls.clear()
+                with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
+                    self.conn._secret("EXAMPLE")
+                self.assertEqual(self.calls, ["/api/v2/service-token"])
+        self.runner.assert_not_called()
+
+    def test_missing_own_binding_never_uses_another_token_or_raw_secret_environment(self):
+        self.conn.env.pop("INFISICAL_TOKEN")
+        self.conn.env["CF_USAGE_WATCHDOG_API_TOKEN"] = self.value
+        with self.assertRaisesRegex(wd.PollError, "^credential-fetch-failed$"):
+            self.conn._secret("CF_USAGE_WATCHDOG_API_TOKEN")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.reads[0][0], "")
+        self.runner.assert_not_called()
+
+    def test_provider_failures_are_fixed_and_never_reflect_diagnostics(self):
+        marker = secrets.token_urlsafe(32)
+        for failure, expected in (
+            (RuntimeError(marker), "credential-fetch-failed"),
+            (TimeoutError(marker), "credential-fetch-timeout"),
+        ):
+            with self.subTest(expected=expected):
+                with mock.patch.object(self.core, "bounded_fetch_project", side_effect=failure):
+                    with self.assertRaises(wd.PollError) as caught:
+                        self.conn._secret("EXAMPLE")
+                self.assertEqual(str(caught.exception), expected)
+                self.assertNotIn(marker, str(caught.exception))
+        self.runner.assert_not_called()
+
+    def test_another_configured_project_never_reaches_the_reader(self):
+        self.cfg["infisical"]["project"] = "fleet-ops"
+        with mock.patch.object(self.core, "bounded_fetch_project") as reader:
+            with self.assertRaisesRegex(wd.PollError, "^credential-fetch-project-refused$"):
+                self.conn._secret("EXAMPLE")
+        reader.assert_not_called()
+        self.runner.assert_not_called()
+
+    def test_missing_shared_module_never_starts_the_retired_application(self):
+        with mock.patch.dict(sys.modules, {"fleet_infisical": None}):
+            with self.assertRaisesRegex(wd.PollError, "^credential-fetch-reader-unavailable$"):
+                self.conn._secret("EXAMPLE")
+        self.runner.assert_not_called()
+
+    def test_preloaded_foreign_or_missing_origin_never_receives_own_binding(self):
+        fetch = mock.Mock(side_effect=AssertionError("foreign reader received binding"))
+        for origin in ("/untrusted/fleet_infisical.py", "", None):
+            with self.subTest(origin=origin):
+                foreign = SimpleNamespace(__file__=origin, bounded_fetch_project=fetch)
+                with mock.patch.dict(sys.modules, {"fleet_infisical": foreign}):
+                    with self.assertRaisesRegex(
+                        wd.PollError, "^credential-fetch-reader-unavailable$"
+                    ):
+                        self.conn._secret("EXAMPLE")
+        fetch.assert_not_called()
+        self.runner.assert_not_called()
+
+    def test_isolated_entry_refuses_preloaded_foreign_module_before_credentials(self):
+        program = r"""
+import runpy, secrets, sys, types
+called = []
+foreign = types.ModuleType('fleet_infisical')
+foreign.__file__ = '/untrusted/fleet_infisical.py'
+foreign.bounded_fetch_project = lambda *args, **kwargs: called.append((args, kwargs))
+sys.modules['fleet_infisical'] = foreign
+loaded = runpy.run_path(sys.argv[1])
+cfg = dict(infisical=dict(project='ai-fleet-coordinator', path='/cf-usage-watchdog'), limits=dict(http_timeout_seconds=20))
+conn = loaded['Connections'](cfg, env={'INFISICAL_TOKEN': 'st.' + secrets.token_urlsafe(32)})
+try:
+    conn._secret('EXAMPLE')
+except loaded['PollError'] as exc:
+    assert str(exc) == 'credential-fetch-reader-unavailable'
+else:
+    raise AssertionError('foreign module accepted')
+assert called == []
+print('preloaded-reader-refused')
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", program, str(Path(wd.__file__).resolve())],
+                cwd=directory,
+                env={"HOME": directory, "PATH": os.defpath},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()),
+            (0, "preloaded-reader-refused"),
+            result.stderr,
+        )
+
+    def test_isolated_managed_payload_ignores_hostile_import_paths(self):
+        policy = runpy.run_path(str(HERE.parent / "fleet-cli-release.py"))
+        self.assertTrue(policy["shipped_path"]("scripts/fleet_infisical.py"))
+        self.assertIn("scripts/fleet_infisical.py", policy["REQUIRED"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "managed/scripts"
+            entry = scripts / "cf-usage-watchdog/watchdog.py"
+            entry.parent.mkdir(parents=True)
+            shutil.copyfile(wd.__file__, entry)
+            shutil.copyfile(HERE.parent / "fleet_infisical.py", scripts / "fleet_infisical.py")
+            (scripts / "fleet_knobs").mkdir()
+            for module in policy["KNOB_MODULES"]:
+                shutil.copyfile(
+                    HERE.parent / "fleet_knobs" / (module + ".py"),
+                    scripts / "fleet_knobs" / (module + ".py"),
+                )
+            hostile = root / "hostile"
+            hostile.mkdir()
+            (hostile / "fleet_infisical.py").write_text("raise AssertionError('foreign reader')\n")
+            (hostile / "fleet_knobs").mkdir()
+            (hostile / "fleet_knobs/__init__.py").write_text(
+                "raise AssertionError('foreign knobs')\n"
+            )
+            program = r"""
+import builtins, os, runpy, sys
+from pathlib import Path
+original = builtins.__import__
+def imported(name, *args, **kwargs):
+    module = original(name, *args, **kwargs)
+    if name == 'fleet_infisical':
+        assert Path(module.__file__).parent == Path(sys.argv[1]).parents[1]
+        actual = module.bounded_fetch_project
+        def no_direct(*args, **kwargs):
+            raise AssertionError('unbounded parent read')
+        module.fetch_project = no_direct
+        def fixture(project, path, env, *, token, names, timeout, max_output_bytes):
+            assert env == dict(INFISICAL_ENVIRONMENT='prod', INFISICAL_READ_PATHS='/cf-usage-watchdog')
+            assert token == os.environ['TEST_READER_TOKEN']
+            assert names == ('EXAMPLE',) and timeout == 30 and max_output_bytes == 8192
+            return actual(project, path, {**env, 'FLEET_SECRETS_API': os.environ['TEST_READER_API']},
+                          token=token, names=names, timeout=timeout, max_output_bytes=max_output_bytes)
+        module.bounded_fetch_project = fixture
+    return module
+builtins.__import__ = imported
+loaded = runpy.run_path(sys.argv[1])
+cfg = dict(infisical=dict(project='ai-fleet-coordinator', path='/cf-usage-watchdog'), limits=dict(http_timeout_seconds=20))
+def no_app(*args, **kwargs):
+    raise AssertionError('application fallback')
+conn = loaded['Connections'](cfg, runner=no_app, env={'INFISICAL_TOKEN':os.environ['TEST_READER_TOKEN']})
+assert conn._secret('EXAMPLE') == os.environ['TEST_READER_VALUE']
+print('isolated-reader-ok')
+"""
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", program, str(entry)],
+                cwd=hostile,
+                env={
+                    "HOME": directory,
+                    "PATH": os.defpath,
+                    "PYTHONPATH": str(hostile),
+                    "TEST_READER_API": self.api.env["FLEET_SECRETS_API"],
+                    "TEST_READER_TOKEN": self.binding,
+                    "TEST_READER_VALUE": self.value,
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(
+            (result.returncode, result.stdout.strip()), (0, "isolated-reader-ok"), result.stderr
+        )
+
+
 class AccountIdTests(Base):
     def conn(self, values, env=None):
-        def run(command, **kwargs):
-            name = command[2]
-            return SimpleNamespace(
-                returncode=0 if name in values else 3, stdout=values.get(name, "")
-            )
-
-        return wd.Connections(self.cfg, runner=run, env=env or {})
+        fake_named_reader(self, values)
+        environment = dict(env or {})
+        environment.setdefault("INFISICAL_TOKEN", "st." + secrets.token_urlsafe(32))
+        return wd.Connections(self.cfg, env=environment)
 
     def test_no_account_id_is_committed(self):
         raw = wd.CONFIG_PATH.read_text(encoding="utf-8")
@@ -1345,7 +1657,7 @@ class HttpSafetyTests(Base):
         conn = wd.Connections(self.cfg, runner=run, env={})
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertFalse(conn.page("title", "text"))
-        self.assertIn("credential-fetch-exit-4", out.getvalue())
+        self.assertIn("credential-fetch-failed", out.getvalue())
 
     def test_only_machine_codes_survive_from_an_error_body(self):
         errors = [

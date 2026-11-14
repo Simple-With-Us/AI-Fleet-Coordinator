@@ -7,7 +7,7 @@ day-to-date over a threshold, and a 5-minute rate over a threshold.  Two named p
 and enforce.  See README.md for the design, the stop action and the operating steps.
 
 Standard library only, plus this repo's stdlib-only fleet_knobs for the mode and the profile.
-Credentials come from fleet-secrets, live in memory only and never reach a log or a message.
+Credentials use the shared scoped Infisical reader, stay in memory and never reach a log or a message.
 """
 
 from __future__ import annotations
@@ -53,6 +53,7 @@ ACCOUNT_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
 MINUTE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z")
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_ERROR_BYTES = 64 * 1024
+MAX_CREDENTIAL_BYTES = 8192
 ROW_LIMIT = 2000
 STORAGE_ROW_LIMIT = 500
 
@@ -619,28 +620,41 @@ class Connections:
         return value
 
     def _secret(self, name: str) -> str | None:
-        """One value from fleet-secrets, or None when it is absent.  Raises PollError on any other failure."""
+        """One named value through this unit's own reader, or None when absent."""
         conf = self.cfg["infisical"]
-        command = [
-            "fleet-secrets",
-            "get",
-            name,
-            "--path",
-            conf["path"],
-            "--project",
-            conf["project"],
-        ]
+        if conf["project"] != "ai-fleet-coordinator":
+            raise PollError("credential-fetch-project-refused")
         try:
-            done = self.runner(
-                command, capture_output=True, text=True, timeout=30, check=False, env=self.env
+            # The isolated unit and manual re-arm both load only the managed sibling code.
+            sys.path.insert(0, str(HERE.parent))
+            import fleet_infisical
+
+            expected_reader = (HERE.parent / "fleet_infisical.py").resolve()
+            if Path(getattr(fleet_infisical, "__file__", "")).resolve() != expected_reader:
+                raise ImportError("foreign shared reader")
+            from fleet_knobs.source import PROJECT_ID
+        except (ImportError, TypeError, ValueError, OSError):
+            raise PollError("credential-fetch-reader-unavailable") from None
+        try:
+            # This is the unit's documented own bootstrap, never the independent knob reader.
+            token = (self.env.get("INFISICAL_TOKEN") or "").strip()
+            values = fleet_infisical.bounded_fetch_project(
+                PROJECT_ID,
+                conf["path"],
+                {"INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": conf["path"]},
+                token=token,
+                names=(name,),
+                timeout=30,
+                max_output_bytes=MAX_CREDENTIAL_BYTES,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise PollError(f"credential-fetch-{type(exc).__name__}") from None
-        if done.returncode == 3:
-            return None
-        if done.returncode != 0:
-            raise PollError(f"credential-fetch-exit-{done.returncode}")
-        return done.stdout.strip() or None
+            value = values.get(name)
+            if value is None:
+                return None
+            return value.strip() or None
+        except TimeoutError:
+            raise PollError("credential-fetch-timeout") from None
+        except Exception:  # noqa: BLE001 - provider text and credentials never reach an error.
+            raise PollError("credential-fetch-failed") from None
 
     def token(self) -> str:
         if self._token is None:

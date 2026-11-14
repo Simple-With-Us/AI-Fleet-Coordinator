@@ -62,7 +62,7 @@ Once a UTC day it reads the account again and compares the live Worker list, `li
 
 ## Credentials
 
-Everything is in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`, read through `fleet-secrets` and held in memory only.
+Credentials are in Infisical, project AI Fleet Coordinator, folder `/cf-usage-watchdog`, read by the canonical `fleet_infisical` named reader and held in memory only.  The managed payload already carries that shared module; no installed `fleet-secrets` application is needed for these credential reads.
 
 | Key | Holds | Needed |
 | --- | --- | --- |
@@ -75,7 +75,11 @@ The Cloudflare token needs **Account Analytics Read** and **Workers Scripts Writ
 
 The secrets deliberately have no environment path.  The unit's environment file holds only the Infisical token, and Infisical is the sole source of truth for this app, so a secret in the environment would be a second copy to leak and to go stale.
 
-The unit logs in with a read-only Infisical service token in `/etc/cf-usage-watchdog/infisical.env`, owned by root with mode 0600, holding the line `INFISICAL_TOKEN=...`.  It needs to read `/` (for the two knobs) and `/cf-usage-watchdog` in the prod environment of AI Fleet Coordinator.  Record it in the Infisical Service Tokens tab of the registry sheet.
+The unit's existing documented own credential reader is `INFISICAL_TOKEN`, injected from its protected root-owned environment file.  The direct reader passes it explicitly for the expected AI Fleet Coordinator project, prod and the configured credential folder, requests only the named key through the shared bounded reader with a 30-second operation budget and an 8 KiB whole-answer cap, and requires exact read-only scope and finite expiry.  The imported shared module must resolve to the managed sibling before it receives the token.  Missing or refused bindings fail closed without another consumer's token, login session, file or application fallback.
+
+Mode and profile remain on the independent shared `fleet_knobs` route: the root-folder specifications use its existing `FLEET_KNOBS_INFISICAL_TOKEN` contract, last-known-good behavior and STOP handling.  The credential binding does not alias that reader or prove that one token covers both homes.  No knob value, profile, enforcement rule, grant or token purpose changes here.
+
+Source migration does not establish installed acceptance.  Before rollout, verify the own credential reader's registry identity, exact AFC prod `/cf-usage-watchdog` read-only grant, finite expiry and consumer binding, then safely verify the named read and negative scope behavior through the managed payload.  Independently verify the existing root-knob binding and its stale/STOP behavior.  The former two-folder token claim is withdrawn; this source does not widen or split a grant, provision a token, read its store or activate the unit.  Preserve the working installed path until those actual metadata and runtime gates pass.
 
 ## Install
 

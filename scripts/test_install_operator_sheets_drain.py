@@ -5,7 +5,7 @@ ways:  in --dry-run or up to a refusal against this checkout;  in its test mode
 (OPERATOR_SHEETS_INSTALL_TEST_ROOT) against a throwaway git checkout, with every destination
 under a temporary root and docker and systemctl as recording stubs, which drives steps 1, 4 and
 5 for real;  and its Python block (steps 2 and 3) in-process, with root ownership and the
-fleet_secrets helper faked.  Fixture tokens and keys are built in parts at run time, so no
+shared scoped client faked.  Fixture tokens and keys are built in parts at run time, so no
 credential-shaped literal sits in this file.
 
 Run:  python3 scripts/test_install_operator_sheets_drain.py
@@ -257,8 +257,7 @@ class StubbedInstallTests(unittest.TestCase):
         repo = self.tmp / "repo"
         agent = repo / "scripts" / "simple_tools"
         (agent / "server").mkdir(parents=True)
-        (repo / "scripts" / "fleet_secrets").mkdir()
-        (repo / "scripts" / "fleet_secrets" / "core.py").write_text("")
+        (repo / "scripts" / "fleet_infisical.py").write_text("")
         shutil.copy(SCRIPT, agent / "server" / SCRIPT.name)
         for name in MODULES:
             (agent / name).write_text(drain if name.endswith("drain.mjs") else f"// {name}\n")
@@ -559,15 +558,11 @@ class PythonBlockTests(unittest.TestCase):
 
     def run_main(self, etc, page_limit="", lock_path=""):
         core, calls = fake_core()
-        package = types.ModuleType("fleet_secrets")
-        package.core = core
         out = io.StringIO()
         path_before = list(sys.path)
         try:
             with (
-                mock.patch.dict(
-                    sys.modules, {"fleet_secrets": package, "fleet_secrets.core": core}
-                ),
+                mock.patch.dict(sys.modules, {"fleet_infisical": core}),
                 redirect_stdout(out),
             ):
                 self.block.main(
