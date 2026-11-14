@@ -1832,7 +1832,9 @@ class TestReview1199(unittest.TestCase):
                         )
         self.assertEqual(len(child), 1)
         kill.assert_called_once_with(child[0], git.signal.SIGKILL)
-        self.assertEqual(wait.call_args_list, [mock.call(child[0], os.WNOHANG), mock.call(child[0], 0)])
+        self.assertEqual(
+            wait.call_args_list, [mock.call(child[0], os.WNOHANG), mock.call(child[0], 0)]
+        )
         # This exact child is gone. Never reap or assume other test children.
         with self.assertRaises(ChildProcessError):
             real_waitpid(child[0], os.WNOHANG)
