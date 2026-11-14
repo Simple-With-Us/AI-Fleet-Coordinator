@@ -710,10 +710,28 @@ def _scanner():
     return module
 
 
+# Categories are fixed public labels, never scanner-controlled text or matched bytes.
+_SCAN_CATEGORIES = frozenset({
+    "private key block", "AWS access key", "GitHub token", "Anthropic or OpenAI key",
+    "Slack token", "GitLab token", "Google API key", "Stripe key", "Linear API key",
+    "Linear client secret", "Sentry token", "xAI key", "Infisical service token",
+    "Infisical credential", "access token (JWT)", "Cloudflare token", "Coolify token",
+    "assigned credential", "bearer token", "assigned secret", "a Zulip-shaped API key",
+    "a loaded credential",
+})
+
+
+def _scan_category(hit) -> str:
+    # Unknown/non-string results remain refusals without leaking their contents.
+    return hit if isinstance(hit, str) and hit in _SCAN_CATEGORIES else "unclassified"
+
+
 def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | None:
-    """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
-    never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
-    always matches."""
+    """The first flagged argument field and a fixed category label, never matched text.
+
+    Every string at any depth is checked and the bearer itself always matches.
+    None means no match; every other scanner result remains a refusal.
+    """
     scanner = _scanner()
     files = {}
     if isinstance(arguments, dict) and tool in {"gr_wf_file_put", "gr_wf_files_put"}:
@@ -741,7 +759,11 @@ def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | No
             else:
                 hit = scanner.scan(value, known=known)
             if hit is not None:
-                return "secret_scan:" + (path or "arguments")
+                # Path keys are untrusted. Escape delimiters, backslashes and
+                # controls so only our final marker can be read as a category.
+                safe_path = json.dumps(path or "arguments", ensure_ascii=True)[1:-1]
+                safe_path = safe_path.replace("[", "\\u005b").replace("]", "\\u005d")
+                return "secret_scan:" + safe_path + " [category=" + _scan_category(hit) + "]"
         elif isinstance(value, dict):
             stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
         elif isinstance(value, (list, tuple)):
