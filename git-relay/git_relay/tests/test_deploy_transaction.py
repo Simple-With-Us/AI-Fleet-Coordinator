@@ -122,11 +122,14 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(TransactionError):
             self.t.recover(rows)
         self.assertEqual((self.code / "old.py").read_bytes(), b"new code")
+
     def test_recover_without_journal_verifies_intact_old_image(self):
         # Failure before prepare() wrote the journal: nothing staged, nothing
         # applied; recovery is a pure source-bound verification of the old
         # image's bytes and metadata, and creates no state.
-        rows = [{k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes]
+        rows = [
+            {k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes
+        ]
         self.assertFalse(self.t.backup.exists())
         self.assertEqual(self.t.recover(rows), "aborted-no-write")
         self.assert_original()
@@ -135,7 +138,9 @@ class TransactionTests(unittest.TestCase):
         self.assert_original()
 
     def test_recover_without_journal_refuses_drift_partial_and_remnants(self):
-        rows = [{k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes]
+        rows = [
+            {k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes
+        ]
         # A target carrying the after bytes is a partial write; never blessed.
         (self.code / "old.py").write_bytes(b"new code")
         with self.assertRaises(TransactionError):
