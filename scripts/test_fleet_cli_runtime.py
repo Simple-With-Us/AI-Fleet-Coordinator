@@ -321,6 +321,8 @@ class ActualRuntime(unittest.TestCase):
         # not pinned to a number, so adding a module under the cap breaks nothing here.
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
         self.assertIn("scripts/simple_tools/wake_settings.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/codex_wake.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/wake_acceptance.py", self.bundle["files"])
         self.assertIn("scripts/simple_tools/wake_service.py", self.bundle["files"])
         self.assertIn("scripts/simple_tools/thread_registry.py", self.bundle["files"])
         self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
