@@ -315,5 +315,84 @@ class ArchiveTestCase(unittest.TestCase):
         self.assertEqual(store.corr_of(key), "d" * 32, "each attempt binds its own corr")
 
 
+    def test_valid_index_missing_archive_fails_closed(self):
+        store = OutcomeStore(self.path, clock=self.clock)
+        self.fill_unknowns(store, MAX_ENTRIES)
+        self.assertIsNone(store.begin("f" * 64))
+        self.assertTrue(os.path.exists(self.archive))
+        self.assertTrue(os.path.exists(self.index))
+        os.unlink(self.archive)
+        with self.assertRaises(OutcomeStoreError):
+            OutcomeStore(self.path, clock=self.clock)
+
+    def test_append_repairs_torn_tail_before_writing(self):
+        store = OutcomeStore(self.path, clock=self.clock)
+        self.fill_unknowns(store, MAX_ENTRIES)
+        self.assertIsNone(store.begin("f" * 64))
+        archived_key = hexkey(0)
+        before = open(self.archive, "rb").read()
+        # Simulate an interrupted earlier write: a fragment with no newline.
+        with open(self.archive, "ab") as fh:
+            fh.write(b'{"key": "deadbeef')
+        # finish() on the archived key appends a release marker:  it must
+        # quarantine the fragment and truncate back to the intact prefix
+        # first, never glue its row onto the fragment.
+        store.finish(archived_key, "ok")
+        data = open(self.archive, "rb").read()
+        self.assertTrue(data.endswith(b"\n"))
+        self.assertTrue(data.startswith(before))
+        lines = [ln for ln in data.split(b"\n") if ln]
+        # No glued line survives.
+        entries = [json.loads(ln) for ln in lines]
+        self.assertEqual(entries[-1]["key"], archived_key)
+        self.assertIn("released_at", entries[-1])
+        quarantines = list(self.dir.glob("outcomes.json.archive.jsonl.corrupt-*"))
+        self.assertEqual(len(quarantines), 1)
+        self.assertEqual(quarantines[0].read_bytes(), b'{"key": "deadbeef')
+        # The fold still works after the repair:  key released, others held.
+        reloaded = OutcomeStore(self.path, clock=self.clock)
+        self.assertIsNone(reloaded.begin(archived_key, reapply_ok=True))
+        self.assertIsNotNone(reloaded.begin(hexkey(1)))
+
+    def test_failed_append_rolls_back(self):
+        store = OutcomeStore(self.path, clock=self.clock)
+        self.fill_unknowns(store, MAX_ENTRIES)
+        self.assertIsNone(store.begin("f" * 64))
+        # Refill to the wall so the next begin() archives again.
+        for i in range(ARCHIVE_BATCH - 1):
+            key = f"{1000 + i:064x}"
+            self.assertIsNone(store.begin(key))
+            store.finish(key, "unknown")
+        before_archive = open(self.archive, "rb").read()
+        before_index = open(self.index, "rb").read()
+        before_rows = {k: dict(r) for k, r in store._rows.items()}
+        real_write = os.write
+        calls = {"n": 0}
+
+        def flaky(fd, data):
+            # Fail only the second write carrying archive-row payloads, so
+            # unrelated writes (registry saves) pass through.
+            if b'"archived_at"' in bytes(data):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise OSError("ENOSPC")
+            return real_write(fd, data)
+
+        # The next begin() hits the wall and archives;  die mid-batch.
+        with mock.patch.object(outcomes.os, "write", flaky):
+            with self.assertRaises(OSError):
+                store.begin("e" * 64)
+        self.assertEqual(
+            open(self.archive, "rb").read(),
+            before_archive,
+            "interrupted batch must roll back to the pre-append offset",
+        )
+        self.assertEqual(open(self.index, "rb").read(), before_index)
+        self.assertEqual(store._rows, before_rows, "live registry untouched")
+        # Recovery:  with the fault gone the same begin archives cleanly.
+        self.assertIsNone(store.begin("e" * 64))
+        self.assertEqual(len(self.read_archive()), 2 * ARCHIVE_BATCH)
+
+
 if __name__ == "__main__":
     unittest.main()

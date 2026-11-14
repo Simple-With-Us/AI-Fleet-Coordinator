@@ -218,6 +218,12 @@ class OutcomeStore:
                     f"archive index {self._index_path!r} is unreadable and no archive "
                     "exists to rebuild it from; refusing to continue"
                 ) from index_exc
+        if not os.path.exists(self._archive_path):
+            raise OutcomeStoreError(
+                f"archive index {self._index_path!r} exists but archive "
+                f"{self._archive_path!r} is missing; archived evidence cannot be "
+                "verified, refusing to continue"
+            )
         held: dict[str, dict] = {}
         released: set[str] = set()
         with open(self._archive_path, "rb") as fh:
@@ -296,6 +302,50 @@ class OutcomeStore:
         finally:
             os.close(dirfd)
 
+    def _append_archive(self, payloads: list[bytes]) -> None:
+        """Append complete lines to the archive log, fsynced, all-or-nothing.
+
+        Two interruption guards.  A prior interrupted write can leave a torn
+        tail (no trailing newline):  appending now would glue valid rows onto
+        the fragment and strand the log mid-file-corrupt, so the fragment is
+        quarantined and the log truncated back to its last intact line first.
+        And if this append itself is interrupted, the log is truncated back to
+        the offset recorded before its first write, so a batch lands whole or
+        not at all and no later append can glue onto its fragment.  Callers
+        hold the store lock.
+        """
+        fd = os.open(self._archive_path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            offset = os.lseek(fd, 0, os.SEEK_END)
+            if offset:
+                tail = os.pread(fd, min(offset, 1 << 20), max(0, offset - (1 << 20)))
+                if not tail.endswith(b"\n"):
+                    cut = tail.rfind(b"\n")
+                    good_end = (offset - len(tail)) + cut + 1 if cut >= 0 else 0
+                    quarantined = f"{self._archive_path}.corrupt-{int(self._clock())}"
+                    with open(quarantined, "ab") as fh:
+                        fh.write(os.pread(fd, offset - good_end, good_end))
+                    os.ftruncate(fd, good_end)
+                    os.fsync(fd)
+                    offset = good_end
+            try:
+                for payload in payloads:
+                    view = memoryview(payload)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OutcomeStoreError(
+                                f"short write to archive {self._archive_path!r}"
+                            )
+                        view = view[written:]
+                os.fsync(fd)
+            except BaseException:
+                os.ftruncate(fd, offset)
+                os.fsync(fd)
+                raise
+        finally:
+            os.close(fd)
+
     def corr_of(self, key: str) -> str | None:
         """The correlation id of the key's current row, live or archived, when it has one."""
         row = self._rows.get(key)
@@ -321,27 +371,15 @@ class OutcomeStore:
         )[:ARCHIVE_BATCH]
         if not candidates:
             return
-        fd = os.open(self._archive_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            for _, key in candidates:
-                line = (
-                    json.dumps(
-                        {"key": key, "archived_at": self._clock(), "row": self._rows[key]},
-                        sort_keys=True,
-                    ).encode()
-                    + b"\n"
-                )
-                view = memoryview(line)
-                while view:
-                    written = os.write(fd, view)
-                    if written <= 0:
-                        raise OutcomeStoreError(
-                            f"short write to archive {self._archive_path!r}; live registry untouched"
-                        )
-                    view = view[written:]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        payloads = [
+            json.dumps(
+                {"key": key, "archived_at": self._clock(), "row": self._rows[key]},
+                sort_keys=True,
+            ).encode()
+            + b"\n"
+            for _, key in candidates
+        ]
+        self._append_archive(payloads)
         for _, key in candidates:
             self._archived[key] = self._archive_meta(key, self._rows[key])
         self._save_index()
@@ -415,27 +453,22 @@ class OutcomeStore:
                 # key denied (fail closed), never silently released;  an index
                 # rebuilt from the archive folds the marker and stays released.
                 if self._archive_path:
-                    line = (
-                        json.dumps(
-                            {"key": key, "released_at": self._clock(), "state": state},
-                            sort_keys=True,
-                        ).encode()
-                        + b"\n"
+                    # On any failure the marker append rolls back and this
+                    # method raises before the index drop:  the key stays
+                    # denied (fail closed).
+                    self._append_archive(
+                        [
+                            json.dumps(
+                                {
+                                    "key": key,
+                                    "released_at": self._clock(),
+                                    "state": state,
+                                },
+                                sort_keys=True,
+                            ).encode()
+                            + b"\n"
+                        ]
                     )
-                    fd = os.open(self._archive_path, os.O_WRONLY | os.O_APPEND, 0o600)
-                    try:
-                        view = memoryview(line)
-                        while view:
-                            written = os.write(fd, view)
-                            if written <= 0:
-                                raise OutcomeStoreError(
-                                    f"short write to archive {self._archive_path!r}; "
-                                    "key still denied"
-                                )
-                            view = view[written:]
-                        os.fsync(fd)
-                    finally:
-                        os.close(fd)
                 del self._archived[key]
                 if self._index_path:
                     self._save_index()
