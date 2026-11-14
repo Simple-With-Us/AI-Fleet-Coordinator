@@ -46,9 +46,9 @@ What it promises:
     is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
-    `fleet-secrets` into memory, sent in one request header and never printed, logged or
-    passed in an argv.  A forced command has only the environment sshd gives it, so
-    `fleet-secrets` receives the scoped Fleet Ops Control token from `ops-control.env` (0600).
+    the adjacent shared Infisical reader into memory, sent in one request header and never
+    printed, logged or passed in an argv.  The reader accepts only the control consumer's
+    scoped token from `ops-control.env` (0600) or its existing explicit process binding.
     `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
@@ -638,17 +638,18 @@ PM2_CANDIDATES = (
     "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
     "/usr/local/lib/node_modules/pm2/bin/pm2",
 )
-FLEET_SECRETS_CANDIDATES = ("~/.local/bin/fleet-secrets", "/usr/local/bin/fleet-secrets")
 COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
 COOLIFY_TOKEN_PATH = "/coolify"
+COOLIFY_READER_MAX_OUTPUT_BYTES = 8192
+INFISICAL_READER_NAME = "fleet_infisical.py"
+INFISICAL_READER_MAX_BYTES = 512 * 1024
 # Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
-# The Infisical identity fleet-secrets may be handed from the credential file, and nothing
-# else from it.
+# The control consumer's Infisical binding, and nothing else from its credential file.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
-# Keep this boundary independent of optional fleet-secrets imports.
+# Keep this custody boundary independent of the optional shared reader.
 SHARED_AUTH_ENV_NAMES = frozenset(
     {
         "INFISICAL_TOKEN",
@@ -1299,7 +1300,6 @@ class Context:
         config_path=CONFIG_PATH,
         status_path=None,
         audit_path=None,
-        fleet_secrets=None,
         credentials_path=None,
         pm2_node=None,
         pm2_script=None,
@@ -1320,7 +1320,6 @@ class Context:
         self.status_path = status_path or (
             self.home / ".local" / "state" / "fleet-tools" / "server-status.json"
         )
-        self.fleet_secrets = fleet_secrets
         self.credentials_path = credentials_path or (
             self.home / ".config" / "fleet-tools" / "ops-control.env"
         )
@@ -3044,35 +3043,65 @@ def coolify_base(ctx):
     return base
 
 
+def _load_infisical_reader(ctx):
+    """Load only the checked adjacent canonical source, never an import-cache substitute."""
+    source = _read_module_source(ctx, (INFISICAL_READER_NAME,), INFISICAL_READER_MAX_BYTES)
+    module = None
+    if source is not None:
+        try:
+            path = str(HELPER_DIR / INFISICAL_READER_NAME)
+            code = compile(source, path, "exec", dont_inherit=True)
+            module = types.ModuleType("_fleet_ops_control_infisical")
+            # The canonical bounded reader launches this exact sibling in Python's isolated mode.
+            module.__file__ = path
+            exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+        except (Exception, SystemExit):  # noqa: BLE001 - unusable code has one fixed answer
+            module = None
+    if module is None or not all(
+        callable(getattr(module, name, None))
+        for name in ("bounded_fetch_project", "infisical_project_id")
+    ):
+        raise Failed("the shared Infisical reader is not available")
+    return module
+
+
 def read_coolify_token(ctx):
-    """The Coolify API token, from fleet-secrets, into memory only.  Raises Failed."""
-    binary = ctx.fleet_secrets
-    for candidate in () if binary else FLEET_SECRETS_CANDIDATES:
-        path = os.path.expanduser(candidate)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            binary = path
-            break
-    if binary is None:
-        raise Failed("fleet-secrets is not installed")
-    status, out = ctx.runner(
-        [binary, "get", COOLIFY_TOKEN_NAME, "--path", COOLIFY_TOKEN_PATH],
-        timeout=SECRET_TIMEOUT,
-        env=secrets_env(ctx),
-        want_stdout=True,
-    )
-    token = out.decode("utf-8", "replace").strip() if status == 0 else ""
-    out = b""
+    """One strict named read through this control consumer's own binding.  Raises Failed."""
+    reader = _load_infisical_reader(ctx)
+    env = secrets_env(ctx)
+    binding = env.pop("INFISICAL_TOKEN", "")
+    if not binding:
+        raise Failed("the Coolify token is not available")
+    try:
+        project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
+        scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
+        scoped[reader.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
+        values = reader.bounded_fetch_project(
+            project,
+            COOLIFY_TOKEN_PATH,
+            scoped,
+            token=binding,
+            names=(COOLIFY_TOKEN_NAME,),
+            timeout=SECRET_TIMEOUT,
+            writer=False,
+            max_output_bytes=COOLIFY_READER_MAX_OUTPUT_BYTES,
+            strict_records=True,
+        )
+        token = values.get(COOLIFY_TOKEN_NAME, "").strip()
+    except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
+        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
+        raise Failed("the Coolify token is not available") from None
     if not token or any(c.isspace() or ord(c) < 33 for c in token):
         raise Failed("the Coolify token is not available")
     return token
 
 
 def secrets_env(ctx):
-    """The environment the fleet-secrets child runs with.  Raises Failed.
+    """Resolve this control consumer's private reader binding.  Raises Failed.
 
     The private file supplies only this caller's scoped read-only service token.  It is mapped
-    to INFISICAL_TOKEN for the one fleet-secrets child, never to an argv or a service-control
-    child.  Inherited shared token and machine-identity bindings are discarded."""
+    to INFISICAL_TOKEN for this reader only, never to an argv or a service-control child.
+    Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
     process_token = env.pop(SCOPED_TOKEN_NAME, "")
     for name in SHARED_AUTH_ENV_NAMES:

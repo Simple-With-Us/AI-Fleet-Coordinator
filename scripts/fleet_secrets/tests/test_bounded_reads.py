@@ -428,6 +428,42 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
             core._bounded_read_request(request, time.monotonic() + 1)
         self.assertEqual(self.calls, [])
 
+    def test_private_worker_rejects_malformed_project_before_provider(self):
+        for project in (None, 7, [self.project], "", "x" * 257):
+            request = dict(
+                schema=1,
+                operation="named-fetch",
+                project=project,
+                path="/operator-registry",
+                env={core.ENV_API: self.env[core.ENV_API]},
+                token=self.sample,
+                names=["A_KEY"],
+                writer=False,
+                strict_records=False,
+                timeout=1.0,
+                max_output_bytes=4096,
+            )
+            with self.subTest(project_type=type(project).__name__):
+                result = subprocess.run(
+                    core._bounded_read_command(),
+                    input=json.dumps(request).encode(),
+                    capture_output=True,
+                    env={"PATH": os.defpath},
+                    timeout=3,
+                )
+                self.assertEqual(result.returncode, 4)
+                self.assertEqual(result.stderr, b"")
+                self.assertEqual(
+                    json.loads(result.stdout),
+                    {
+                        "schema": 1,
+                        "ok": False,
+                        "reason": "bounded-read-invalid",
+                        "failure_kind": "refused",
+                    },
+                )
+                self.assertEqual(self.calls, [])
+
     def test_request_cap_is_checked_before_launch(self):
         self.env[core.ENV_API] += "x" * (128 * 1024)
         with self.assertRaises(core.UsageError):

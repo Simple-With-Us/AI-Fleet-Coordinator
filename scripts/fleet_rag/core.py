@@ -281,7 +281,9 @@ def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
     except ImportError:
         return {}
     try:
-        project = secrets.infisical_project_id(source, secrets.home_dir(source), secrets.DEFAULT_PROJECT)
+        project = secrets.infisical_project_id(
+            source, secrets.home_dir(source), secrets.DEFAULT_PROJECT
+        )
         # The shared API validates and bounds the iterator before starting its read-only worker.
         # No ambient read-path declaration can widen this exact default-root consumer route.
         got = secrets.bounded_fetch_project(
@@ -408,9 +410,7 @@ def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     try:
         project = infisical_project()
         read_token = read_token_binding()
-        return secrets.fetch_project(
-            project, "/", env, token=read_token, names=wanted
-        )
+        return secrets.fetch_project(project, "/", env, token=read_token, names=wanted)
     except secrets.SecretsError as exc:
         raise FleetRagError("Infisical scoped read failed: " + exc.message) from None
 
