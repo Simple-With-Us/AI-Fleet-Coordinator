@@ -15,10 +15,19 @@ from fleet_docs import snapshot
 
 class SnapshotTests(unittest.TestCase):
     def test_unflushed_transaction_is_never_published_at_the_authoritative_path(self):
-        with patch.object(snapshot.os, "fsync", side_effect=OSError("fixture interrupted metadata flush")):
-            with self.assertRaises(snapshot.Refused):
-                snapshot.save_transaction(self.destination, self.parent / ".generated-docs-stage-fixture",
-                                          self.parent / ".generated-docs-backup-fixture", None, "0" * 64)
+        with (
+            patch.object(
+                snapshot.os, "fsync", side_effect=OSError("fixture interrupted metadata flush")
+            ),
+            self.assertRaises(snapshot.Refused),
+        ):
+            snapshot.save_transaction(
+                self.destination,
+                self.parent / ".generated-docs-stage-fixture",
+                self.parent / ".generated-docs-backup-fixture",
+                None,
+                "0" * 64,
+            )
         self.assertFalse(snapshot.transaction_path(self.destination).exists())
         self.assertFalse(list(self.parent.glob(".generated-docs-stage-write-*")))
 
@@ -29,9 +38,13 @@ class SnapshotTests(unittest.TestCase):
         target = parent / "receipt.json"
         target.write_bytes(b'{"old":true}\n')
         target.chmod(0o600)
-        with patch.object(snapshot.os, "replace", side_effect=OSError("fixture interrupted publish")):
-            with self.assertRaises((OSError, snapshot.Refused)):
-                snapshot.atomic_write(parent, "receipt.json", b'{"new":true}\n')
+        with (
+            patch.object(
+                snapshot.os, "replace", side_effect=OSError("fixture interrupted publish")
+            ),
+            self.assertRaises((OSError, snapshot.Refused)),
+        ):
+            snapshot.atomic_write(parent, "receipt.json", b'{"new":true}\n')
         self.assertEqual(target.read_bytes(), b'{"old":true}\n')
         self.assertEqual([path.name for path in parent.iterdir()], ["receipt.json"])
 

@@ -210,7 +210,8 @@ def validate_generated(root):
                 "unrecognized-document-record",
             )
             require(
-                current["files"].get(repo_root.name + "/" + key, {}).get("sha256") == record["sha256"],
+                current["files"].get(repo_root.name + "/" + key, {}).get("sha256")
+                == record["sha256"],
                 "generated-document-edited",
             )
             expected.add(repo_root.name + "/" + key)
@@ -344,10 +345,13 @@ def atomic_write(parent, name, data, *, directory_fd=None):
     """Publish complete private metadata only after its file and parent are durable."""
     require(relative(name).name == name, "unsafe-metadata-name")
     temporary = ".generated-docs-stage-write-" + uuid.uuid4().hex
+
     def write(fd):
         created = False
         try:
-            output_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+            output_fd = os.open(
+                temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd
+            )
             created = True
             with os.fdopen(output_fd, "wb") as output:
                 output.write(data)
@@ -361,6 +365,7 @@ def atomic_write(parent, name, data, *, directory_fd=None):
                     os.unlink(temporary, dir_fd=fd)
                 except FileNotFoundError:
                     pass
+
     if directory_fd is not None:
         write(directory_fd)
     else:
@@ -376,7 +381,10 @@ def save_transaction(root, stage, backup, before, after):
         "before": before,
         "after": after,
     }
-    require(not transaction_path(root).exists() and not transaction_path(root).is_symlink(), "transaction-already-exists")
+    require(
+        not transaction_path(root).exists() and not transaction_path(root).is_symlink(),
+        "transaction-already-exists",
+    )
     atomic_write(root.parent, transaction_path(root).name, canonical(document))
 
 

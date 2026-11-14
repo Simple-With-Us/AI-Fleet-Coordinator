@@ -78,7 +78,13 @@ def _matches_payload(root, expected):
             with os.fdopen(fd, "rb") as stream:
                 info = os.fstat(stream.fileno())
                 mode = 0o700 if relative == "scripts/code-main-keeper.sh" else 0o600
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_size != len(expected[relative]) or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode:
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_size != len(expected[relative])
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != mode
+                ):
                     return False
                 if stream.read(len(expected[relative]) + 1) != expected[relative]:
                     return False

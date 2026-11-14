@@ -37,7 +37,9 @@ class ManagedExportTests(unittest.TestCase):
                     "identities": [{"identity": actor}],
                 }
             )
-            kwargs["stdout"].write((raw_json if raw_json is not None else json.dumps({"structured": value})).encode())
+            kwargs["stdout"].write(
+                (raw_json if raw_json is not None else json.dumps({"structured": value})).encode()
+            )
             return SimpleNamespace(returncode=0)
 
         # The fixture's system temp ancestor is world-writable; production still checks every parent.

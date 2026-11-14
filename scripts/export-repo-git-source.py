@@ -100,7 +100,9 @@ def verify_managed_route(environ: dict[str, str] | None = None) -> str:
             output.seek(0)
             response = json.loads(output.read(65537))
             if not isinstance(response, dict) or not isinstance(response.get("structured"), dict):
-                raise remote.SourceError("Managed Git identity response requires structured objects")
+                raise remote.SourceError(
+                    "Managed Git identity response requires structured objects"
+                )
             identity = response["structured"]
         fields = [identity.get(key) for key in ("authenticated_seat", "default_identity")]
         advertised = identity.get("identities")
