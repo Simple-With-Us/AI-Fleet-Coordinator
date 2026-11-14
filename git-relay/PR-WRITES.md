@@ -1,15 +1,15 @@
 # Pull request writes
 
-Three default-off own-App pull_requests:write commands: wf_pr_create, wf_pr_edit and
+Two own-App pull_requests:write commands: wf_pr_edit and
 wf_pr_close (close only; branch deletion is a separately authorized follow-up, never
-implicit). Each pins expected_head_sha - edit and close also expected_base_ref - as
+implicit). Each pins expected_head_sha and expected_base_ref as
 a documented non-atomic pre-read: a foreign move between the pre-read and the write
 is caught by the receipt comparison, which fails 502 and leaves the outcome UNKNOWN
 and held. A held retry returns 409 with zero upstream calls; pending/UNKNOWN rows
 never re-arm.
 
-wf_pr_create is append-only: an identical resubmission returns the cached created
-object and never mints a second PR. wf_pr_edit and wf_pr_close are desired-state
+wf_pr_create is retired: every call is refused, including an identical resubmission;
+it cannot return a cached created object. wf_pr_edit and wf_pr_close are desired-state
 setters (server.py _REAPPLY_STATE_ACTIONS): an identical resubmission of a
 known-success edit or close RE-DISPATCHES against the current upstream state. An
 external rename is overwritten by the re-asserted title/body, and an external
@@ -93,3 +93,19 @@ There is no automatic remap: the legacy expected-head contract differs from `ope
 A caller must inspect the supported contract and submit a new, authorized request.
 Owner credential absence or provider refusal cannot fall back to a seat App. Edits,
 comments, reviews and other existing operations keep their own-App identity.
+
+### Verified canonical replacement
+
+The canonical owner route is already deployed independently of this retirement patch.
+On 2026-11-14 the installed simple-git `gr_open_pr` returned `verified: true` for
+https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2227 . An independent
+`gr_wf_pr_get` read confirmed provider author `jaywedgeworth22`, initial head
+`e5c1ea49f54c766d1df5117353161da6ddf4e1b8`, and the intended repository/base.
+The same supported route subsequently created owner-authored PR2228 at the exact
+unchanged source commit used in PR2226. This is evidence for the existing route,
+not a claim that either new patch is merged or deployed.
+
+Source regression coverage for the existing route is in `test_open_pr_readback.py`
+and `test_git_relay.py`; this patch adds an explicit owner-route rejection test
+that proves a provider401 never mints an App token. The owner implementation and
+its credential-loading path are unchanged by the retirement patch.

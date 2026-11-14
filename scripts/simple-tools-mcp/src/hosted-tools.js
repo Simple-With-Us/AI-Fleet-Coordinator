@@ -2529,7 +2529,7 @@ for (const action of TYPED_V1_ACTIONS) {
 // (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
 for (const action of WF_V1_ACTIONS) {
   HostedTools.prototype[`tool_gr_${action}`] = async function (args) {
-    if (action === "wf_pr_create") throw new ToolError("owner_only_pr_creation", "PR creation requires gr_open_pr. No request was sent.");
+    if (action === "wf_pr_create") throw new ToolError("forbidden", "PR creation requires gr_open_pr. No request was sent.");
     if (this.config?.grWorkflowEnabled !== true) {
       throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
     }

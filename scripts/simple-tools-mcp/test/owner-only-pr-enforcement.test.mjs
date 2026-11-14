@@ -14,6 +14,6 @@ test('legacy transport refuses before credential fetch or relay network',async()
  const client=new GrRelayClient({baseUrl:'https://broker.invalid',bearer:'opaque',fetch:async()=>{sent++;throw Error('unexpected');}});
  const result=await client.callWorkflow('wf_pr_create',{});
  assert.equal(result.status,403);
- assert.equal(result.body.error,'owner_only_pr_creation');
+ assert.equal(result.body.error,'forbidden');
  assert.equal(sent,0);
 });

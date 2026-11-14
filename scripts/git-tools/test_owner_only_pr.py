@@ -30,11 +30,37 @@ class Tests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
             json.dump({"tools": tools}, f)
             f.flush()
-            run = subprocess.run(
-                [sys.executable, str(ROOT / "export_catalog.py"), f.name],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
+            try:
+                run = subprocess.run(
+                    [sys.executable, str(ROOT / "export_catalog.py"), f.name],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                self.fail("export_catalog.py exceeded its 30-second test budget")
+
         names = [t["name"] for t in json.loads(run.stdout)["tools"]]
         self.assertEqual(names, ["gr_open_pr", "gr_wf_pr_edit"])
+
+    def test_committed_catalog_does_not_advertise_retired_creation(self):
+        catalog = json.loads((ROOT / "catalog.json").read_text())
+        self.assertNotIn("gr_wf_pr_create", [tool["name"] for tool in catalog["tools"]])
+
+    def test_committed_catalog_tools_match_export_and_ignore_stale_create(self):
+        catalog = json.loads((ROOT / "catalog.json").read_text())
+        capture = {"tools": [{"name": tool["name"], "description": tool["description"],
+            "title": tool.get("title", ""), "inputSchema": tool["schema"]}
+            for tool in catalog["tools"]]}
+        capture["tools"].append({"name": "gr_wf_pr_create", "inputSchema": {}})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
+            json.dump(capture, f)
+            f.flush()
+            try:
+                run = subprocess.run([sys.executable, str(ROOT / "export_catalog.py"), f.name],
+                    capture_output=True, text=True, check=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                self.fail("catalog parity export exceeded its 30-second test budget")
+        # Provenance is historical capture metadata, not derived from tool contracts.
+        self.assertEqual(json.loads(run.stdout)["tools"], catalog["tools"])
