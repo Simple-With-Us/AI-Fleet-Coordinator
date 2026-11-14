@@ -220,10 +220,6 @@ def enqueue_id(doc_id, root=None, now=None):
         "queued_at": stamp,
     }
     with _locked(root) as directory:
-        try:
-            os.unlink("cancelled-" + key, dir_fd=directory)
-        except FileNotFoundError:
-            pass
         entries = os.listdir(directory)
         cancelled_keys = {entry[10:] for entry in entries if entry.startswith("cancelled-")}
         names = []
@@ -237,6 +233,10 @@ def enqueue_id(doc_id, root=None, now=None):
         if len(names) >= MAX_PENDING or size + len(json.dumps(record).encode()) > MAX_SPOOL:
             raise OutboxError("note-outbox-full")
         _atomic(directory, key + ".json", record)
+        try:
+            os.unlink("cancelled-" + key, dir_fd=directory)
+        except FileNotFoundError:
+            pass
     return {"state": "queued", "key": key, "version": version}
 
 
@@ -375,10 +375,7 @@ def cancel(doc_id, root=None):
                 "state": "source-deleted",
             },
         )
-        fd = os.open(
-            "cancelled-" + key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600, dir_fd=directory
-        )
-        os.close(fd)
+        _atomic(directory, "cancelled-" + key, {"cancelled": True})
 
 
 def reconcile_coding(root=None, metadata_reader=None, limit=100):
