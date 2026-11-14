@@ -154,13 +154,11 @@ def infisical_credentials(realm: str) -> list[Z.Credentials]:
     # only scripts/simple_tools and scripts/simple-chat.  This optional CLI helper is installed on
     # the host, not in the listener image; load it only when this explicit command is invoked.
     try:
-        from fleet_secrets import core as scoped_secrets
+        import fleet_infisical as scoped_secrets
     except ModuleNotFoundError as exc:
-        if exc.name not in {"fleet_secrets", "fleet_secrets.core"}:
+        if exc.name != "fleet_infisical":
             raise
-        raise Failure(
-            "Infisical source unavailable (fleet-secrets helper is not installed)"
-        ) from None
+        raise Failure("Infisical source unavailable (shared client is not installed)") from None
 
     token = _service_token()
     env = {

@@ -154,7 +154,7 @@ class ServiceTokenWrites(ServiceTokenTestCase):
             "projectId": provision.AFC,
             "permissions": ["read", "write"],
             "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
-            "expiresAt": None,
+            "expiresAt": "2099-01-01T00:00:00Z",
         }
         with (
             mock.patch.object(
@@ -179,7 +179,7 @@ class ServiceTokenWrites(ServiceTokenTestCase):
             "projectId": provision.AFC,
             "permissions": ["read", "write"],
             "scopes": [{"environment": "prod", "secretPath": "/wrong"}],
-            "expiresAt": None,
+            "expiresAt": "2099-01-01T00:00:00Z",
         }
         with mock.patch.object(provision.scoped_secrets, "_api_json", return_value=(200, metadata)):
             with mock.patch.object(provision, "api") as write:

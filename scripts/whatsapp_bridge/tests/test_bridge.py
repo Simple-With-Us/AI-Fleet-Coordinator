@@ -481,7 +481,7 @@ class LaunchTests(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "scopes": [{"environment": "prod", "secretPath": granted_folder}],
                     "permissions": ["read"],
-                    "expiresAt": "2000-01-01T00:00:00Z" if denied else None,
+                    "expiresAt": "2000-01-01T00:00:00Z" if denied else "2099-01-01T00:00:00Z",
                 }
             self.assertTrue(path.startswith("/v3/secrets/raw?"))
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
