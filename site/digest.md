@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-14 16:41 CST · timezone America/Chicago_
+_Generated 2026-11-14 17:08 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,10 +11,11 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-14
 
-*18 PRs merged · 0 issues opened · 0 issues closed*
+*22 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
+- **AFC** `Codex` [#2177](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2177): Synchronize Fleet Rules And Complete Z Code Instructions _(by jaywedgeworth22)_
 - **AFC** [#2193](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2193): test(gr-workflow-v1): cover wf_issue_milestone_set nullable scalar and exact receipt _(by jaywedgeworth22)_
 - **AFC** `Codex` [#2210](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2210): Refresh Public Info, Activity Platforms And Muster Branding _(by jaywedgeworth22)_
 - **AFC** [#2218](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2218): test(simple-tools): deterministic PEM fixture for compact-key refusal test _(by jaywedgeworth22)_
@@ -26,13 +27,16 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** [#2225](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2225): deploy proof: pin image-generation sentinel from verified image evidence _(by jaywedgeworth22)_
 - **AFC** [#2227](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2227): fix(git-relay): retire bot-author PR creation and enforce owner-only route _(by jaywedgeworth22)_
 - **AFC** [#2228](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2228): fix(simple-git): report fixed scanner categories without changing refusal decisions _(by jaywedgeworth22)_
+- **AFC** [#2232](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2232): Record gate-2 alert credential qualification receipt (run 43647609600) _(by jaywedgeworth22)_
 - **BF** [#1970](https://github.com/Simple-With-Us/BotFleet/pull/1970): chore: also swap uppercase GPT-3.5-turbo fixture in BotExecutionPolicyTests _(by jaywedgeworth22)_
 - **BF** [#2069](https://github.com/Simple-With-Us/BotFleet/pull/2069): Remove past model numbers from static catalogs (BF-2681) _(by jaywedgeworth22)_
 - **BF** `Codex` [#2077](https://github.com/Simple-With-Us/BotFleet/pull/2077): Clarify PR Header Scope _(by jaywedgeworth22)_
 - **BF** [#2078](https://github.com/Simple-With-Us/BotFleet/pull/2078): Update non-major dependencies _(by renovate[bot])_
 - **BF** [#2079](https://github.com/Simple-With-Us/BotFleet/pull/2079): Update non-major dependencies _(by renovate[bot])_
 - **BF** [#2080](https://github.com/Simple-With-Us/BotFleet/pull/2080): Update non-major dependencies _(by renovate[bot])_
+- **BF** [#2081](https://github.com/Simple-With-Us/BotFleet/pull/2081): Update dependency next to v16.4.6 _(by renovate[bot])_
 - **CT** [#3177](https://github.com/Simple-With-Us/Congress.Trade/pull/3177): Fix Senate fetcher proxy gate health parse _(by jaywedgeworth22)_
+- **ST** [#5399](https://github.com/Simple-With-Us/Socratic-Trade/pull/5399): fix(console): keep tooltips visible outside clipped containers _(by jaywedgeworth22)_
 
 ## 2026-11-13
 
@@ -1625,7 +1629,7 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-30
 
-*100 PRs merged · 0 issues opened · 0 issues closed*
+*98 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
@@ -1634,8 +1638,6 @@ Agent names are stripped from titles; HTML site shows logos instead.
 - **AFC** [#1148](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1148): Delete any message, wake seats tagged by an edit, tier resource alerts (AFC-577) _(by jaywedgeworth22)_
 - **AFC** [#1161](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1161): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
 - **AFC** [#1162](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1162): Document Operator handbook notice transport _(by jaywedgeworth22)_
-- **AFC** `Muse Assist` [#1167](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1167): fix(wake): send the — runtime a strict schema, every property required _(by jaywedgeworth22)_
-- **AFC** [#1168](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1168): fix(status): show no RED quota line for a provider the wake gate never caps _(by jaywedgeworth22)_
 - **AFC** [#1170](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1170): fix(fleet): raise all-seat routine tool budgets with bounded history _(by jaywedgeworth22)_
 - **AFC** `Codex` [#1171](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1171): feat(platform-letter): the — adapter, session letters for — chats (AFC-564) _(by jaywedgeworth22)_
 - **AFC** [#1172](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1172): fix(git): route full Jet login to its own App and keep wake login out _(by jaywedgeworth22)_
