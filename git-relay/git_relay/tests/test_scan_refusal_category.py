@@ -74,8 +74,7 @@ class RefusalFieldGuard(unittest.TestCase):
     def test_short_plain_path_is_echoed(self):
         self.assertEqual(
             scan_refusal("docs/a.md", "jwt"),
-            "docs/a.md looks like it contains a credential (jwt); "
-            "refusing to relay it",
+            "docs/a.md looks like it contains a credential (jwt); refusing to relay it",
         )
 
     def test_long_path_collapses_to_the_fixed_label(self):
@@ -249,12 +248,9 @@ class FilePatchCategory(unittest.TestCase):
         self.assertNotIn(GITHUB_FIXTURE, message)
         self.assertTrue(all(m == "GET" for m, *_ in c.calls))
 
-
     def test_long_path_finding_keeps_the_category_under_a_fixed_label(self):
         raw = ("key = '" + GITHUB_FIXTURE + "'\n").encode()
-        blob_sha = hashlib.sha1(
-            b"blob " + str(len(raw)).encode() + b"\0" + raw
-        ).hexdigest()
+        blob_sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
         args = {
             "repo": REPO,
             "branch": "feature/x",
@@ -282,8 +278,7 @@ class FilePatchCategory(unittest.TestCase):
         message = str(caught.exception)
         self.assertEqual(
             message,
-            "args.path looks like it contains a credential "
-            "(github_token); refusing to relay it",
+            "args.path looks like it contains a credential (github_token); refusing to relay it",
         )
         self.assertNotIn(args["path"], message)
 

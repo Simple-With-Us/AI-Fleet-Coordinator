@@ -129,11 +129,7 @@ def _refusal_field(field: str) -> str:
     category still names what matched, and no credential-shaped value is
     written down.
     """
-    if (
-        len(field) <= _FIELD_PREFIX_MAX
-        and find_secret(field) is None
-        and patch_scan(field) is None
-    ):
+    if len(field) <= _FIELD_PREFIX_MAX and find_secret(field) is None and patch_scan(field) is None:
         return field
     return "args.path"
 
