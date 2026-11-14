@@ -66,7 +66,9 @@ class OutcomeCapacityTests(unittest.TestCase):
                 self.assertIsNotNone(held)
                 self.assertTrue(held.get("archived"), key[:4])
             self.assertIn("c" * 64, store._rows)
-            archive_lines = (Path(str(path) + ".archive.jsonl")).read_text(encoding="utf-8").splitlines()
+            archive_lines = (
+                (Path(str(path) + ".archive.jsonl")).read_text(encoding="utf-8").splitlines()
+            )
             archived_keys = {json.loads(line)["key"] for line in archive_lines}
             self.assertEqual(archived_keys, {"a" * 64, "b" * 64})
 
