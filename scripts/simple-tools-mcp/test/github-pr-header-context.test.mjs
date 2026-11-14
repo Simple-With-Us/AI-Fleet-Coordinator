@@ -30,10 +30,11 @@ function harness() {
   return { tools, sent };
 }
 
-test("actual hosted PR title/body/comment/reply writes use compact context without changing identity", async () => {
+test("actual hosted PR titles and comments compact while PR descriptions keep full context", async () => {
   const { tools, sent } = harness();
   const body = `${full}\nOne. Two.\n[AG: AA.1.M 📁OPS] quoted`;
-  const expected = `${compact}\nOne.\u00a0 Two.\n[AG: AA.1.M 📁OPS] quoted`;
+  const compactComment = `${compact}\nOne.\u00a0 Two.\n[AG: AA.1.M 📁OPS] quoted`;
+  const fullDescription = `${full}\nOne.\u00a0 Two.\n[AG: AA.1.M 📁OPS] quoted`;
   for (const [action, extra] of [
     ["gr_open_pr", { base: "main", head: "feature", title: `${full} A. B` }],
     ["gr_edit_pr", { number: 1, title: `${full} A. B` }],
@@ -42,20 +43,21 @@ test("actual hosted PR title/body/comment/reply writes use compact context witho
   ]) {
     const result = await tools.call(action, { repo: "example/header-fixture", body, ...extra });
     assert.ok(!result.isError, result.content?.[0]?.text);
-    assert.equal(sent.at(-1).args.body, expected, action);
+    assert.equal(sent.at(-1).args.body,
+      ["gr_open_pr", "gr_edit_pr"].includes(action) ? fullDescription : compactComment, action);
     if (extra.title) assert.equal(sent.at(-1).args.title, `${compact} A. B`, "title prose remains literal");
   }
   const gg = await tools.call("gr_edit_pr", { repo: "example/header-fixture", number: 1,
     body: "[CODEX: GG.1.S 📁AFC] supplied attribution" });
   assert.ok(!gg.isError, gg.content?.[0]?.text);
-  assert.equal(sent.at(-1).args.body, "[CODEX:\u200a\u200a\u200aGG.1.S] supplied attribution");
+  assert.equal(sent.at(-1).args.body, "[CODEX: GG.1.S 📁AFC] supplied attribution");
 });
 
-test("actual hosted PR descriptions compact only the envelope after initial readiness bullets", async () => {
+test("actual hosted PR descriptions keep full headers after initial readiness bullets", async () => {
   const { tools, sent } = harness();
   const prefix = "- Pass Required CI\n- Keep The Draft Hold\n\n";
   const body = `${prefix}${full}\nSummary\n${full} quoted later`;
-  const expected = `${prefix}${compact}\nSummary\n${full} quoted later`;
+  const expected = `${prefix}${full}\nSummary\n${full} quoted later`;
   for (const [action, extra] of [
     ["gr_open_pr", { base: "main", head: "feature", title: `${full} Title`, draft: true }],
     ["gr_edit_pr", { number: 1, title: `${full} Title` }],
@@ -95,7 +97,7 @@ test("actual hosted description edits preserve quoted, fenced and arbitrary late
   }
 });
 
-test("actual hosted descriptions compose command, finite ordered criteria and header-first indentation", async () => {
+test("actual hosted descriptions preserve full headers with command, criteria and indentation", async () => {
   const { tools, sent } = harness();
   for (const [prefix, leading] of [
     ["@kody start-review\r\n- Pass Required CI\r\n\r\n", ""],
@@ -104,7 +106,7 @@ test("actual hosted descriptions compose command, finite ordered criteria and he
     ["", "   "],
   ]) {
     const body = `${prefix}${leading}${full}\nSummary\n${full} later sample`;
-    const expected = `${prefix}${leading}${compact}\nSummary\n${full} later sample`;
+    const expected = `${prefix}${leading}${full}\nSummary\n${full} later sample`;
     for (const [action, extra] of [
       ["gr_open_pr", { base: "main", head: "feature", title: `${full} Title` }],
       ["gr_edit_pr", { number: 1, title: `${full} Title` }],
@@ -160,7 +162,7 @@ test("actual hosted PR prose keeps indented samples literal while titles keep th
   }
 });
 
-test("actual hosted PR writes discard unused repo defects and transport while preserving recipient refusal", async () => {
+test("PR titles compact supplied headers while descriptions preserve the original text", async () => {
   const { tools, sent } = harness();
   const prefix = "- Pass Required CI\n\n";
   for (const [header, expectedHeader] of [
@@ -177,12 +179,12 @@ test("actual hosted PR writes discard unused repo defects and transport while pr
         title: `${header} Title`, body: `${prefix}${header}\nSummary` });
       assert.ok(!result.isError, result.content?.[0]?.text);
       assert.equal(sent.at(-1).args.title, `${expectedHeader} Title`);
-      assert.equal(sent.at(-1).args.body, `${prefix}${expectedHeader}\nSummary`);
+      assert.equal(sent.at(-1).args.body, `${prefix}${header}\nSummary`);
     }
   }
 });
 
-test("workflow PR writes compact while ordinary issue and Linear contexts retain repository names", async () => {
+test("workflow PR titles and review comments compact while descriptions and issues keep their context", async () => {
   const { tools, sent } = harness();
   const args = { repo: "example/header-fixture", number: 1, body: `${full} body` };
   for (const [action, extra] of [
@@ -192,7 +194,8 @@ test("workflow PR writes compact while ordinary issue and Linear contexts retain
   ]) {
     const result = await tools.call(action, { ...args, ...extra });
     assert.ok(!result.isError, `${action}: ${result.content?.[0]?.text}`);
-    assert.equal(sent.at(-1).args.body, `${compact} body`, action);
+    assert.equal(sent.at(-1).args.body,
+      action === "gr_wf_pr_edit" ? `${full} body` : `${compact} body`, action);
     if (extra.title) assert.equal(sent.at(-1).args.title, `${compact} Title`);
   }
   const issue = await tools.call("gr_wf_issue_comment", { ...args });
@@ -211,13 +214,13 @@ test("Kody command remains literal line one and only its own following header is
   assert.equal(gapGitHubArgs("comment_pr", { body: foreign }, { seat: "CODEX" }).body, foreign);
 });
 
-test("byte-cap fallback keeps the compact header and explicit byte-for-byte opt-out remains literal", async () => {
+test("description byte-cap fallback preserves its full header and comment opt-out remains literal", async () => {
   const { tools, sent } = harness();
   const body = `${full}\n${"Word. Next ".repeat(5940)}`;
   const result = await tools.call("gr_wf_pr_edit", { repo: "example/header-fixture", number: 1,
     expected_head_sha: sha, expected_base_ref: "main", body });
   assert.ok(!result.isError, result.content?.[0]?.text);
-  assert.equal(sent.at(-1).args.body, `${compact}\n${"Word. Next ".repeat(5940)}`);
+  assert.equal(sent.at(-1).args.body, `${full}\n${"Word. Next ".repeat(5940)}`);
   assert.ok(result.content.some((part) => part.text?.includes("sent as typed")));
   await runWithGap(false, () => assert.equal(gapGitHubArgs("comment_pr", { body }).body, body));
 });

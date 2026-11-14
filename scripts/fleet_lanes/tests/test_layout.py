@@ -606,6 +606,27 @@ class SeatTests(unittest.TestCase):
         self.assertEqual(derived["mm"], "minimax")
         self.assertEqual(L.normalize_seat("dsh", reg), "deepseek")
 
+    def test_registry_suffix_promotes_an_existing_alias_without_using_branch_prefixes(self) -> None:
+        reg = L.parse_registry({"seats": [
+            {"tag": "ZC", "worktreeSuffix": "zc", "branchPrefixes": ["zc/", "zcode/", "codex/"]},
+            {"tag": "CODEX", "worktreeSuffix": "codex", "branchPrefixes": ["codex/"]},
+        ]})
+        self.assertEqual(L.normalize_seat("zc", reg), "zc")
+        self.assertEqual(L.normalize_seat("zcode", reg), "zc")
+        self.assertEqual(L.normalize_seat("codex", reg), "codex")
+        self.assertEqual(L.seat_alias_map(reg)["zcode"], "zc")
+        self.assertNotIn("zcode", L.canonical_seat_set(reg))
+        self.assertIn("zc", L.canonical_seat_set(reg))
+        self.assertEqual(L.normalize_seat("zc"), "zcode")  # Older registries keep their meaning.
+
+    def test_an_alias_promotion_never_takes_a_registered_peers_suffix(self) -> None:
+        reg = L.parse_registry({"seats": [
+            {"tag": "ZC", "worktreeSuffix": "zc", "branchPrefixes": ["zc/", "zcode/"]},
+            {"tag": "PEER", "worktreeSuffix": "zcode", "branchPrefixes": ["peer/"]},
+        ]})
+        self.assertEqual(L.normalize_seat("zc", reg), "zc")
+        self.assertEqual(L.normalize_seat("zcode", reg), "zcode")
+
 
 # --------------------------------------------------------------------------- roots
 

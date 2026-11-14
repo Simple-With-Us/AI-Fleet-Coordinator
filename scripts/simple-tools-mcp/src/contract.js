@@ -704,7 +704,7 @@ function nthSundayUtc(year, month, n) {
   return 1 + offset + 7 * (n - 1);
 }
 
-/** 'Wed, Oct 7, 6:41pm':  America/Chicago, 12-hour, lowercase am/pm, no zone abbreviation. */
+/** 'Wed, Oct 7, 6:41 PM':  America/Chicago, 12-hour, spaced AM/PM, no zone abbreviation. */
 export function formatTime(timestampS) {
   const utc = new Date(timestampS * 1000);
   const year = utc.getUTCFullYear();
@@ -713,7 +713,7 @@ export function formatTime(timestampS) {
   const offsetH = utc.getTime() >= start && utc.getTime() < end ? -5 : -6;
   const local = new Date(utc.getTime() + offsetH * 3600 * 1000);
   const hour = local.getUTCHours() % 12 || 12;
-  const suffix = local.getUTCHours() >= 12 ? "pm" : "am";
+  const suffix = local.getUTCHours() >= 12 ? " PM" : " AM";
   return `${WEEKDAYS[local.getUTCDay()]}, ${MONTHS[local.getUTCMonth()]} ${local.getUTCDate()}, ${hour}:${String(local.getUTCMinutes()).padStart(2, "0")}${suffix}`;
 }
 

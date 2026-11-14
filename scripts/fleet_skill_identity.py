@@ -406,15 +406,16 @@ KIMI_EXTRA = (
 
 ZCODE_IDENTITY = (
     "This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).\u00a0 "
-    "Session tag `[ZC·session8]`.\u00a0 Notes name `ZCode`.\u00a0 Branches `zcode/<slug>` only.\u00a0 "
-    "Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.\u00a0 "
+    "Session tag `[ZC·session8]`.\u00a0 Notes name `ZCode`.\u00a0 New branches `zc/<slug>`.\u00a0 "
+    "Lanes `~/apps/lanes/<Repo>/zc-<slug>`; existing `zcode/` branches are legacy.\u00a0 "
     "Pin `AGENT_SEAT=ZC`."
 )
 
 ZCODE_EXTRA = (
     "> **Runtime (Z Code).**\u00a0 Z Code desktop IDE (`/Applications/ZCode.app`) with config in "
     "`~/.zcode`.\u00a0 Skills installed here (`~/.zcode/skills`) are loaded by Z Code.\u00a0 "
-    "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).\u00a0 A seat a launcher assigned "
+    "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or "
+    "`~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).\u00a0 A seat a launcher assigned "
     "beats the ZC default.\n\n"
 )
 
@@ -693,8 +694,8 @@ SEATS: dict[str, Seat] = {
     "zcode": Seat(
         "ZC",
         "ZCode",
-        "zcode",
-        "zcode",
+        "zc",
+        "zc",
         "~/.zcode/skills",
         "exclusive",
         ZCODE_IDENTITY,
