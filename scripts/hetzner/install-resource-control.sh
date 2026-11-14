@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Install reviewed broker code only; credentials, keys and runtime state stay untouched.
+# Normal install copies reviewed code only; the explicit local receive mode delegates to its
+# already installed fixed consumer for a separately reviewed private stdin handoff.
 # Run it as the account that runs the helper (jay on the server), never as root:  the code goes to
 # that account's ~/.local/lib/fleet-resource-control, owned by it and writable by no one else.
 set -euo pipefail
+if [[ $# == 1 && $1 == --receive-operator-settings-bootstrap ]]; then
+  # Explicit local handoff only, to the already installed helper; stdin stays private.
+  exec /usr/bin/python3 -I -c 'import os,pwd; p=pwd.getpwuid(os.getuid()).pw_dir+"/.local/lib/fleet-resource-control/fleet-ops-control.py"; os.execv("/usr/bin/python3",["/usr/bin/python3","-I",p,"--receive-operator-settings-bootstrap"])'
+fi
 [[ $# == 0 ]] || { echo 'This installer accepts no arguments.' >&2; exit 2; }
 here=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 scripts=$(cd -P -- "$here/.." && pwd)

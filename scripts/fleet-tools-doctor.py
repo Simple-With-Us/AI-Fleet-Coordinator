@@ -145,6 +145,7 @@ SHIPPED = (
     "fleet-apps.json",
     "docs/protocols/simple-tools-partition.toml",
     "scripts/fleet-cli-release.py",
+    "scripts/fleet-ops-eavesdropper-settings.json",
     "scripts/fleet_infisical_cli.py",
     "scripts/recall",
     "scripts/fleet_rag/",
@@ -164,6 +165,10 @@ SHIPPED = (
 # copies cannot drift;  a test pins this copy to the release's EXACT minus REPO_ONLY.
 SHIPPED_EXACT = frozenset(
     {
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         "scripts/simple-chat",
         "scripts/simple-notes",
         "scripts/simple-board",

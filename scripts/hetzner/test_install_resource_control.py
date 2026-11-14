@@ -58,10 +58,18 @@ class InstallerTests(unittest.TestCase):
         credential.parent.mkdir(parents=True)
         credential.write_text("untouched-test-credential")
         credential.chmod(0o600)
+        settings_bootstrap = credential.with_name("operator-settings.env")
+        settings_bootstrap.write_bytes(b"untouched-private-settings-bootstrap")
+        settings_bootstrap.chmod(0o600)
+        settings_image = credential.with_name("operator-settings-image.json")
+        settings_image.write_text('{"untouched":true}')
+        settings_image.chmod(0o600)
         state = self.root / "run/fleet-coding-resources/status.json"
         state.parent.mkdir(parents=True)
         state.write_text('{"untouched":true}')
         self.install()
+        self.assertEqual(settings_bootstrap.read_bytes(), b"untouched-private-settings-bootstrap")
+        self.assertEqual(settings_image.read_text(), '{"untouched":true}')
         expected = {
             "fleet-ops-control.py",
             "fleet-ops-control.json",

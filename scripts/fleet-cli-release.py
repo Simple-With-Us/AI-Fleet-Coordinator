@@ -129,6 +129,10 @@ EXACT = frozenset(
         "fleet-apps.json",
         "docs/protocols/simple-tools-partition.toml",
         "scripts/fleet-cli-release.py",
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
         "scripts/simple_tools/mcp/tools.json",
@@ -218,6 +222,12 @@ BASE_REQUIRED = frozenset(
 # The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
 TOOL_REQUIRED = frozenset(
     {
+        # New canonical settings consumers need the shared editor and its schema.
+        # Retained older code remains a valid rollback target.
+        "scripts/fleet-ops-eavesdropper-settings.json",
+        "scripts/simple_tools/server/eavesdropper_settings_edit.py",
+        "scripts/simple_tools/server/operator_settings.py",
+        "scripts/simple_tools/operator_github_state.py",
         # The CLI entry points:  a new bundle must carry them, but a retained older release may not and
         # stays a valid rollback target.
         "scripts/simple-chat",
@@ -243,7 +253,6 @@ TOOL_REQUIRED = frozenset(
         "scripts/fleet_infisical.py",
         "scripts/fleet_infisical_cli.py",
         # The direct command's writer requires the same retained intent ledger.
-        "scripts/simple_tools/operator_github_state.py",
         *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
