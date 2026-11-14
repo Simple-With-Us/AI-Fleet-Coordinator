@@ -143,8 +143,7 @@ class FilePutCategory(unittest.TestCase):
         message = self.run_put(b"clean", message="auth " + JWT_FIXTURE)
         self.assertEqual(
             message,
-            "args.message looks like it contains a credential (jwt); "
-            "refusing to relay it",
+            "args.message looks like it contains a credential (jwt); refusing to relay it",
         )
         self.assertNotIn(JWT_FIXTURE, message)
 
@@ -176,9 +175,7 @@ class TreeCreateCategory(unittest.TestCase):
 class FilePatchCategory(unittest.TestCase):
     def test_base_finding_names_path_and_category(self):
         raw = ("key = '" + GITHUB_FIXTURE + "'\n").encode()
-        blob_sha = hashlib.sha1(
-            b"blob " + str(len(raw)).encode() + b"\0" + raw
-        ).hexdigest()
+        blob_sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
         args = {
             "repo": REPO,
             "branch": "feature/x",

@@ -7334,9 +7334,7 @@ class WorkflowVerbs:
                     validated_blobs[sha] = decoded_raw
                 decoded_raw = validated_blobs[sha]
                 # Cache verified bytes only, not path-dependent scan approvals.
-                category = unreviewed_file_secret(
-                    repo, path, decoded_raw, known=self.loaded_known
-                )
+                category = unreviewed_file_secret(repo, path, decoded_raw, known=self.loaded_known)
                 if category:
                     raise Refused(scan_refusal(path, category))
                 try:
@@ -8171,9 +8169,7 @@ class WorkflowVerbs:
             if base_finding and not preserve:
                 finding = base_finding
                 raise ValueError()
-            if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode(
-                "utf-8"
-            ):
+            if self._provider_token_text(raw.decode("utf-8")) or self.bearer in raw.decode("utf-8"):
                 raise ValueError()
             result = apply_reviewed_patch(repo, path, raw, args.get("edits"), known=[self.bearer])
             result_finding = find_secret(result.decode("utf-8"))
