@@ -55,10 +55,22 @@ class OutcomeCapacityTests(unittest.TestCase):
             }
             path.write_text(json.dumps(rows), encoding="utf-8")
             store = OutcomeStore(str(path), clock=lambda: now, max_entries=2)
-            with self.assertRaises(OutcomeStoreError):
-                store.begin("d" * 64)
-            self.assertEqual(set(store._rows), set(rows))
-            self.assertEqual(path.read_text(encoding="utf-8"), json.dumps(rows))
+            # With durable archiving (outcome-corr-archive), a downgrade is no
+            # longer a hard wall while held unknown rows can move to the
+            # archive:  the write is admitted and the archived keys keep
+            # refusing exactly as live held rows do.  Refusal still applies
+            # once nothing unknown remains to archive.
+            self.assertIsNone(store.begin("d" * 64))
+            for key in ("a" * 64, "b" * 64):
+                held = store.begin(key)
+                self.assertIsNotNone(held)
+                self.assertTrue(held.get("archived"), key[:4])
+            self.assertIn("c" * 64, store._rows)
+            archive_lines = (
+                (Path(str(path) + ".archive.jsonl")).read_text(encoding="utf-8").splitlines()
+            )
+            archived_keys = {json.loads(line)["key"] for line in archive_lines}
+            self.assertEqual(archived_keys, {"a" * 64, "b" * 64})
 
     def test_full_recent_ok_rows_remain_replayable_and_refuse_a_fresh_write(self):
         now = 1_700_000_000.0
