@@ -51,3 +51,21 @@ review.  This source review must pass the normal review/check/merge gates
 before its scanner is installed.  Do not patch a live registry to unblock
 publication.  This record is an independent source review;  it is not an
 owner approval.
+
+## v3 correction (2026-11-14): digest re-admitted over current main bytes
+
+The v2 admission above recorded sha256 873109fe... over the reviewed 1,728-line
+bytes, which included a +15/-1 attempt-corr patch that never landed on main.
+Main's actual server.py drifted, so the admitted digest matched nothing live
+(found by Kody/Sentry on #2219): the waiver was inert and the scanner still
+refused the file.
+
+Current main bytes (origin/main at ad56cff9): 78,304 UTF-8 bytes, 1,714 lines,
+sha256 2c06fe036dac53cf0be463e3e6c4c4912524edf75b4a8190316fd180f27e853d.
+The reviewed-to-current delta is 15 removed / 1 changed lines, all correlation
+plumbing (uuid import, attempt_corr capture, outcome_corr audit detail); the
+flagged generic-assignment construct (token_for_namespace) is verbatim-identical
+at line 1037 of the current numbering. Full delta review and byte copies:
+evidence repo afc-serverpy-corr-evidence-20261114-v2 commit 1c29f67 (v3/).
+The admitted digest is updated to the current-bytes value above; any future
+server.py change requires re-admission by design.
