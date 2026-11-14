@@ -37,7 +37,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fleet_secrets.core import (
+from fleet_infisical import (
     ENV_API,
     SecretsError,
     check_service_token,

@@ -34,7 +34,7 @@ from fleet_rag.core import (
     infisical_env,
     infisical_project,
 )
-from fleet_secrets.core import SecretsError, check_service_token
+from fleet_infisical import SecretsError, check_service_token
 
 TOKEN_ENV = "FLEET_RECALL_INFISICAL_TOKEN"
 
@@ -47,7 +47,7 @@ def env_identity() -> tuple[str | None, None, None]:
 
 
 def fetch(token: str, wanted: list[str]) -> dict[str, str]:
-    from fleet_secrets import core as secrets
+    import fleet_infisical as secrets
 
     env = dict(os.environ)
     env[secrets.ENV_API] = infisical_api()

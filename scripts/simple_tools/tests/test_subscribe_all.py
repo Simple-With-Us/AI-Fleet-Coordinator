@@ -150,6 +150,7 @@ class SubscribeAllTests(unittest.TestCase):
                 ignore=shutil.ignore_patterns("tests", "__pycache__"),
             )
             shutil.copy2(repo / "scripts" / "simple-chat", scripts / "simple-chat")
+            shutil.copy2(repo / "scripts" / "fleet_infisical.py", scripts / "fleet_infisical.py")
             env = {
                 "PATH": os.environ.get("PATH", ""),
                 "PYTHONPATH": str(scripts),

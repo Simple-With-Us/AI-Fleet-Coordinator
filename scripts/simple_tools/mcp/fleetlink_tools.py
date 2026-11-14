@@ -14,7 +14,7 @@ in order:
      names this same seat, so one connection acting as several bots never lends one bot's token to another;  the
      server sets AGENT_SEAT to the seat it resolved from --as or --default-seat when the environment named none, so
      a seat that came from a flag is as binding as one from the environment;
-  3. FLEETLINK_TOKEN_<SEAT> in Infisical AI Fleet Coordinator /fleetlink, read through `fleet-secrets get` (AFC-359:  the old
+  3. FLEETLINK_TOKEN_<SEAT> in Infisical AI Fleet Coordinator /fleetlink, read directly through the shared library (the old
      per-seat FleetLink env file is retired and never read), held in memory and handed to the child as
      FLEETLINK_TOKEN.
 
@@ -34,6 +34,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -45,6 +46,8 @@ import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+import fleet_infisical as FI
 
 from .. import identity as IDENT
 from ..textfold import fold
@@ -59,12 +62,8 @@ INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> n
 INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
-FETCH_TIMEOUT_S = (
-    60.0  # one scoped `fleet-secrets get`:  metadata verification and export, under load
-)
-KEY_ABSENT_EXIT = (
-    3  # fleet-secrets: the key is not there (a failure of any other kind says nothing about it)
-)
+FETCH_TIMEOUT_S = 60.0  # one scoped direct read: token metadata and the named secret
+KEY_ABSENT_EXIT = 3  # the shared reader's definite missing-key outcome
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
     8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
@@ -174,51 +173,52 @@ def generic_token_allowed(seat: str, env: Mapping[str, str]) -> bool:
     return not named or named == _canonical(seat)
 
 
-_token_cache: dict[str, tuple[float, str | None]] = {}
+_token_cache: dict[tuple[str, str, str], tuple[float, str | None]] = {}
 
 
 def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str | None:
-    """`fleet-secrets get NAME --path /fleetlink`, or None when absent or unreadable.  Cached in memory per
-    process (a clean miss too, exit 3, so a seat with no token does not pay the Infisical round trip on every
-    call;  a timeout or any other failure is not cached, so a passing fault cannot hide a good token for ten
-    minutes).  Its output is never logged and its stderr never read."""
+    """Read the seat's named token directly from its exact Infisical folder.
+
+    A clean miss is cached; a timeout or any other failure is not.  Caches are partitioned by project and
+    bootstrap binding, so neither a credential rotation nor another consumer can reuse the held value."""
     import time
 
     from .. import zulip as Z
 
+    if not Z.infisical_enabled(env):
+        return None
+    scoped = dict(env, HOME=str(home))
+    scoped[FI.ENV_READ_PATHS] = INFISICAL_PATH
+    try:
+        project = FI.infisical_project_id(scoped, home, INFISICAL_PROJECT)
+        binding = FI.resolve_token(scoped, project_name=INFISICAL_PROJECT)
+    except FI.SecretsError:
+        return None
+    route = hashlib.sha256(
+        (scoped.get(FI.ENV_API, FI.API_BASE) + "\0" + binding).encode()
+    ).hexdigest()
+    cache_key = (project, route, name)
     now = time.monotonic()
-    held = _token_cache.get(name)
+    held = _token_cache.get(cache_key)
     if held is not None and now - held[0] < TOKEN_CACHE_TTL:
         return held[1]
     value: str | None = None
-    definitive = True  # a token, or a clean "no such key" (exit 3);  anything else may pass, so it is not cached
-    binary = Z.fleet_secrets_bin(env, home) if Z.infisical_enabled(env) else None
-    if binary:
-        child = dict(env)
-        child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
-        try:
-            proc = subprocess.run(
-                [binary, "get", name, "--path", INFISICAL_PATH, "--project", INFISICAL_PROJECT],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=FETCH_TIMEOUT_S,
-                cwd="/",
-                env=child,
-                check=False,
-            )
-            if proc.returncode == 0:
-                value = proc.stdout.decode("utf-8").strip() or None
-            else:
-                definitive = proc.returncode == KEY_ABSENT_EXIT
-        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-            value = None
-            definitive = False
+    definitive = True
+    try:
+        values = FI.fetch_project(
+            project, INFISICAL_PATH, scoped, token=binding, names=(name,), timeout=FETCH_TIMEOUT_S
+        )
+        value = values.get(name, "").strip() or None
+    except FI.SecretsError as exc:
+        definitive = exc.code == KEY_ABSENT_EXIT
+    except (OSError, TimeoutError, ValueError, TypeError):
+        definitive = False
     if definitive:
-        _token_cache[name] = (now, value)
+        _token_cache[cache_key] = (now, value)
     return value
 
 
-# The name tests replace (simple_tools/tests/__init__.py), so none can reach the real fleet-secrets.
+# Compatibility function name; tests replace this seam so no live Infisical request can escape.
 _default_token_fetch = _fleet_secrets_token
 
 
@@ -233,9 +233,9 @@ def resolve_credential(seat: str, env: Mapping[str, str], home: Path) -> tuple[s
     token = _clean_env(env, ENV_TOKEN)
     if token and generic_token_allowed(seat, env):
         return "env", ENV_TOKEN, token
-    token = _default_token_fetch(own, env, home)
-    if token and not any(ch in token for ch in "\r\n\x00"):
-        return "infisical", "%s %s %s" % (INFISICAL_LABEL, INFISICAL_PATH, own), token
+    credential = _default_token_fetch(own, env, home)
+    if credential and not any(ch in credential for ch in "\r\n\x00"):
+        return "infisical", "%s %s %s" % (INFISICAL_LABEL, INFISICAL_PATH, own), credential
     raise FleetLinkFailure(
         "not_configured",
         "FleetLink has no credential for %s here:  set %s, or store %s in %s %s.  "
