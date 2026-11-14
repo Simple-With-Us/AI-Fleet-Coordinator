@@ -447,8 +447,9 @@
     {
       "tag": "ZC",
       "notesName": "ZCode",
-      "worktreeSuffix": "zcode",
+      "worktreeSuffix": "zc",
       "branchPrefixes": [
+        "zc/",
         "zcode/"
       ],
       "zulipBotEmail": "zc-bot@simplewithus.zulipchat.com",

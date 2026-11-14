@@ -1,4 +1,4 @@
-"""Time formatting: America/Chicago, 12-hour, lowercase am/pm, never a zone abbreviation."""
+"""Time formatting: America/Chicago, 12-hour, spaced uppercase AM/PM, never a zone abbreviation."""
 from __future__ import annotations
 
 import datetime as dt
@@ -14,16 +14,16 @@ def utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> floa
 
 CASES = (
     # (utc timestamp, expected)
-    (utc(2026, 10, 7, 23, 41), "Wed, Oct 7, 6:41pm"),      # daylight time, UTC-5
-    (utc(2026, 10, 7, 17, 0), "Wed, Oct 7, 12:00pm"),      # noon
-    (utc(2026, 10, 7, 5, 0), "Wed, Oct 7, 12:00am"),       # midnight
-    (utc(2026, 10, 7, 5, 9), "Wed, Oct 7, 12:09am"),
-    (utc(2026, 1, 15, 3, 5), "Wed, Jan 14, 9:05pm"),       # winter, UTC-6, previous local day
-    (utc(2026, 3, 8, 7, 59), "Sun, Mar 8, 1:59am"),        # just before the spring change (2am local)
-    (utc(2026, 3, 8, 8, 0), "Sun, Mar 8, 3:00am"),         # just after
-    (utc(2026, 11, 1, 6, 59), "Sun, Nov 1, 1:59am"),       # daylight, before the fall change
-    (utc(2026, 11, 1, 7, 0), "Sun, Nov 1, 1:00am"),        # the repeated hour, now standard time
-    (utc(2026, 12, 31, 23, 59), "Thu, Dec 31, 5:59pm"),
+    (utc(2026, 10, 7, 23, 41), "Wed, Oct 7, 6:41 PM"),     # daylight time, UTC-5
+    (utc(2026, 10, 7, 17, 0), "Wed, Oct 7, 12:00 PM"),     # noon
+    (utc(2026, 10, 7, 5, 0), "Wed, Oct 7, 12:00 AM"),      # midnight
+    (utc(2026, 10, 7, 5, 9), "Wed, Oct 7, 12:09 AM"),
+    (utc(2026, 1, 15, 3, 5), "Wed, Jan 14, 9:05 PM"),      # winter, UTC-6, previous local day
+    (utc(2026, 3, 8, 7, 59), "Sun, Mar 8, 1:59 AM"),       # just before the spring change (2am local)
+    (utc(2026, 3, 8, 8, 0), "Sun, Mar 8, 3:00 AM"),        # just after
+    (utc(2026, 11, 1, 6, 59), "Sun, Nov 1, 1:59 AM"),      # daylight, before the fall change
+    (utc(2026, 11, 1, 7, 0), "Sun, Nov 1, 1:00 AM"),       # the repeated hour, now standard time
+    (utc(2026, 12, 31, 23, 59), "Thu, Dec 31, 5:59 PM"),
 )
 
 
@@ -33,11 +33,11 @@ class TimeFormatTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(cli.format_time(stamp), expected)
 
-    def test_no_zone_abbreviation_and_lowercase_suffix(self) -> None:
+    def test_no_zone_abbreviation_and_spaced_uppercase_suffix(self) -> None:
         for stamp, _ in CASES:
             text = cli.format_time(stamp)
-            self.assertRegex(text, r"^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}(am|pm)$")
-            for banned in ("CDT", "CST", "CT", "UTC", "AM", "PM"):
+            self.assertRegex(text, r"^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} (AM|PM)$")
+            for banned in ("CDT", "CST", "CT", "UTC"):
                 self.assertNotIn(banned, text)
 
     def test_fallback_rule_matches_zoneinfo_when_the_tz_database_is_missing(self) -> None:

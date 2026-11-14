@@ -775,9 +775,26 @@ ROLE_TOKENS = frozenset(
 )
 
 
+def _fallback_seat_aliases(registry: Registry | None = None) -> dict[str, str]:
+    """Keep established aliases equivalent when the registry promotes one to its suffix.
+
+    Only an explicit alias pair can reverse; a branch prefix alone never transfers ownership.
+    If both spellings have registered owners, both keep their own suffix.
+    """
+    out = dict(SEAT_ALIASES)
+    if registry is not None:
+        suffixes = {s.suffix.lower() for s in registry.seats}
+        for alias, target in SEAT_ALIASES.items():
+            if alias in suffixes and target not in suffixes:
+                del out[alias]
+                out[target] = alias
+    return out
+
+
 def canonical_seat_set(registry: Registry | None = None) -> frozenset[str]:
     out = set(CANONICAL_SEATS)
     if registry is not None:
+        out.difference_update(_fallback_seat_aliases(registry))
         out.update(s.suffix.lower() for s in registry.seats)
     return frozenset(out)
 
@@ -785,7 +802,7 @@ def canonical_seat_set(registry: Registry | None = None) -> frozenset[str]:
 def seat_alias_map(registry: Registry | None = None) -> dict[str, str]:
     """Alias token -> canonical token: the hand table plus, from the registry, each tag whose
     lowercase differs from its suffix (ag, mm, dsh, ...) and each single-segment branch prefix."""
-    out = dict(SEAT_ALIASES)
+    out = _fallback_seat_aliases(registry)
     if registry is None:
         return out
     canon = canonical_seat_set(registry)

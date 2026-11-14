@@ -78,11 +78,14 @@ test("quiet marker survives hosted composition with the same header bytes", () =
   assert.equal(composeBody(tagPrefix("CODEX", "deadbeef"), input), ":eyes: " + fixtures[0].expected);
 });
 
-test("GitHub PR prose omits repository context while ordinary issues retain it", () => {
+test("PR comments omit repository context while descriptions and issues retain it", () => {
   const body = fixtures[0].expected;
-  for (const verb of ["open_pr", "edit_pr", "comment_pr", "reply_thread", "wf_pr_edit"]) {
+  for (const verb of ["comment_pr", "reply_thread"]) {
     const wire = JSON.parse(JSON.stringify(gapGitHubArgs(verb, { body })));
     assert.equal(wire.body, normalizeHeader(body, { context: "github-pr" }), verb);
+  }
+  for (const verb of ["open_pr", "edit_pr", "wf_pr_create", "wf_pr_edit"]) {
+    assert.equal(gapGitHubArgs(verb, { body }).body, body, verb);
   }
   assert.equal(gapGitHubArgs("wf_issue_comment", { body }).body, body);
 });

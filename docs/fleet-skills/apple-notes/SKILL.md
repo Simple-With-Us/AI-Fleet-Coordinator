@@ -82,10 +82,10 @@ There is no GUI fallback.  When the Shortcut does not pin, the helper prints `p
 The helper injects/refreshes:
 
 ```
-Sun, Aug 9, 3:52pm · PR #18
+Sun, Aug 9, 3:52 PM · PR #18
 ```
 
-Local Mac time, no leading zeros, lowercase am/pm.  Refresh on every `--update`.
+America/Chicago time, no leading zeros, with a space before uppercase AM/PM.  Refresh on every `--update`.
 
 Then: type line (`Completion` / `Plan` / `Review` / `Design` / `Handoff` / `Rollout` / `Incident` / `Fleet change` / `Work log`), then content.
 

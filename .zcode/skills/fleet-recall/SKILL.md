@@ -6,7 +6,7 @@ description: >-
 
 # Fleet recall
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 The fleet has one shared memory: the collection named by `QDRANT_FLEET_COLLECTION` in the self-hosted Qdrant on the
