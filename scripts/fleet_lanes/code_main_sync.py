@@ -32,11 +32,15 @@ import sys
 sys.dont_write_bytecode = True
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 import json
 import os
 import re
+import signal
+import stat
 import subprocess
+import threading
 import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -574,10 +578,87 @@ def run_loop(run, read=read_interval, sleep=time.sleep) -> int:
         return 0
 
 
+@contextmanager
+def state_directory(path, *, private=False):
+    """Create missing directories and pin every component without following symlinks."""
+    path = Path(os.path.abspath(path))
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            created = False
+            try:
+                os.mkdir(component, 0o700, dir_fd=fd)
+                created = True
+            except FileExistsError:
+                pass
+            following = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            if created:
+                os.fchmod(following, 0o700)
+            os.close(fd)
+            fd = following
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022 or (private and stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError("state-directory-not-private")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def run_child(command, *, timeout, capture_output=False, input=None, **options):
+    """Bound a child session and reap it and its process group on interruption."""
+    process = None
+    previous = None
+    def interrupted(signum, frame):
+        raise SystemExit(128 + signum)
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        if capture_output:
+            options.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if input is not None:
+            options["stdin"] = subprocess.PIPE
+        options.pop("check", None)
+        options["start_new_session"] = True
+        process = subprocess.Popen(command, **options)
+        output, error = process.communicate(input=input, timeout=timeout)
+        return subprocess.CompletedProcess(command, process.returncode, output, error)
+    except BaseException:
+        if process is not None:
+            saved_handlers = {}
+            if threading.current_thread() is threading.main_thread():
+                saved_handlers = {value: signal.signal(value, signal.SIG_IGN) for value in (signal.SIGINT, signal.SIGTERM)}
+            try:
+                for signum in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, signum)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                for value, handler in saved_handlers.items():
+                    signal.signal(value, handler)
+        raise
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+
+
+SWEEP_TIMEOUT_SECONDS = 1800
+
+
 def run_sweep_command(command: list[str]) -> int:
     """Keep the host's existing authorization bootstrap inside every sweep."""
     try:
-        result = subprocess.run(command, shell=False, capture_output=True)
+        result = run_child(command, shell=False, capture_output=True, timeout=SWEEP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        print("Code mirror sweep command exit=124", file=sys.stderr)
+        return 124
+    except FileNotFoundError:
+        print("Code mirror sweep command exit=127", file=sys.stderr)
+        return 127
     except OSError:
         print("Code mirror sweep command exit=unavailable", file=sys.stderr)
         return 1
@@ -629,8 +710,8 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     if args.loop:
         home = Path(env.get("HOME") or os.path.expanduser("~"))
         state = Path(env.get("FLEET_LANE_GUARD_STATE_DIR") or home / ".local" / "state")
-        state.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(state / "code-main-sync-scheduler.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with state_directory(state) as state_fd:
+            fd = os.open("code-main-sync-scheduler.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=state_fd)
         try:
             info = os.fstat(fd)
             import stat
@@ -652,8 +733,8 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         log(f"fail: code root {root.name} does not exist")
         return 1
     state = Path(env.get("FLEET_LANE_GUARD_STATE_DIR") or home / ".local" / "state")
-    state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock_fd = os.open(state / "code-main-sync.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    with state_directory(state) as state_fd:
+        lock_fd = os.open("code-main-sync.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=state_fd)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
