@@ -2754,12 +2754,20 @@ class CredentialTests(Base):
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
-            "INFISICAL_TOKEN", "INFISICAL_AI_FLEET_COORDINATOR_TOKEN", "INFISICAL_WRITE_TOKEN",
-            "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_AUTOMATION_CLIENT_ID",
-            "INFISICAL_AUTOMATION_CLIENT_SECRET", "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET", "INFISICAL_SHARED_CLIENT_ID",
-            "INFISICAL_SHARED_CLIENT_SECRET", "WISE_RELAY_INFISICAL_TOKEN",
-            "FLEET_KNOBS_INFISICAL_TOKEN", "FLEET_RECALL_INFISICAL_TOKEN",
+            "INFISICAL_TOKEN",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
+            "INFISICAL_WRITE_TOKEN",
+            "INFISICAL_CLIENT_ID",
+            "INFISICAL_CLIENT_SECRET",
+            "INFISICAL_AUTOMATION_CLIENT_ID",
+            "INFISICAL_AUTOMATION_CLIENT_SECRET",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+            "INFISICAL_SHARED_CLIENT_ID",
+            "INFISICAL_SHARED_CLIENT_SECRET",
+            "WISE_RELAY_INFISICAL_TOKEN",
+            "FLEET_KNOBS_INFISICAL_TOKEN",
+            "FLEET_RECALL_INFISICAL_TOKEN",
         )
     }
 
@@ -2774,7 +2782,9 @@ class CredentialTests(Base):
         reader_file.chmod(0o600)
         self.enterContext(mock.patch.object(foc, "HELPER_DIR", reader_dir))
         self.project = str(uuid.uuid4())
-        self.api = ScopedReadAPI({foc.COOLIFY_TOKEN_NAME: TOKEN}, project=self.project, path="/coolify")
+        self.api = ScopedReadAPI(
+            {foc.COOLIFY_TOKEN_NAME: TOKEN}, project=self.project, path="/coolify"
+        )
         self.api.record_override = {"secretValueHidden": False}
         self.api.__enter__()
         self.addCleanup(self.api.__exit__, None, None, None)
@@ -2799,10 +2809,13 @@ class CredentialTests(Base):
 
     def env(self, **extra):
         return {
-            "HOME": str(self.home), "PATH": "/no-secret-application",
+            "HOME": str(self.home),
+            "PATH": "/no-secret-application",
             "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
             "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
-            "INFISICAL_ENVIRONMENT": "prod", self.TOKEN: self.VALUE, **extra,
+            "INFISICAL_ENVIRONMENT": "prod",
+            self.TOKEN: self.VALUE,
+            **extra,
         }
 
     def credentials(self, text, mode=0o600):
@@ -2832,11 +2845,25 @@ class CredentialTests(Base):
         self.assertEqual((code, ans["result"], ans["verified"]), (0, "submitted", False), ans)
         ((project, folder, env, kwargs),) = self.read_calls
         self.assertEqual((project, folder), (self.project, "/coolify"))
-        self.assertEqual(env, {"FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
-                               "INFISICAL_ENVIRONMENT": "prod", "INFISICAL_READ_PATHS": "/coolify"})
-        self.assertEqual(kwargs, {"token": self.VALUE, "names": ("COOLIFY_API_TOKEN",),
-                                 "timeout": 30, "writer": False, "max_output_bytes": 8192,
-                                 "strict_records": True})
+        self.assertEqual(
+            env,
+            {
+                "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+                "INFISICAL_ENVIRONMENT": "prod",
+                "INFISICAL_READ_PATHS": "/coolify",
+            },
+        )
+        self.assertEqual(
+            kwargs,
+            {
+                "token": self.VALUE,
+                "names": ("COOLIFY_API_TOKEN",),
+                "timeout": 30,
+                "writer": False,
+                "max_output_bytes": 8192,
+                "strict_records": True,
+            },
+        )
         self.assertEqual(len(self.api.requests), 2)
         self.assertEqual(self.api.requests[0], "/api/v2/service-token")
         self.assertTrue(self.api.requests[1].startswith("/api/v3/secrets/raw/COOLIFY_API_TOKEN?"))
@@ -2845,8 +2872,10 @@ class CredentialTests(Base):
         self.assertNotIn(TOKEN, text)
         self.assertEqual(self.runner.calls, [])
         self.runner.calls.clear()
-        self.run_main(["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
-                      self.ctx(environ=inherited))
+        self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
+            self.ctx(environ=inherited),
+        )
         ((argv, child_env),) = self.runner.calls
         self.assertNotIn(self.VALUE, " ".join(argv))
         self.assertNotIn(self.TOKEN, child_env)
@@ -2866,8 +2895,10 @@ class CredentialTests(Base):
         env = self.env(**self.SHARED_AUTH)
         env.pop(self.TOKEN)
         code, ans = self.redeploy(env)
-        self.assertEqual((code, ans["result"], ans["detail"]),
-                         (1, "failed", "the Coolify token is not available"))
+        self.assertEqual(
+            (code, ans["result"], ans["detail"]),
+            (1, "failed", "the Coolify token is not available"),
+        )
         self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
     def test_missing_or_malformed_project_refuses_before_the_provider(self):
@@ -2879,17 +2910,25 @@ class CredentialTests(Base):
                     env["INFISICAL_FLEET_OPS_PROJECT_ID"] = value
                 code, ans = self.redeploy(env)
                 self.assertEqual((code, ans["result"]), (1, "failed"))
-                self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
+                self.assertEqual(
+                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
+                )
 
     def test_wrong_scope_permission_project_and_expiry_stop_before_named_values(self):
         cases = (
             {"workspace": str(uuid.uuid4())},
             {"scopes": [{"environment": "prod", "secretPath": "/"}]},
             {"scopes": [{"environment": "dev", "secretPath": "/coolify"}]},
-            {"scopes": [{"environment": "prod", "secretPath": "/coolify"},
-                        {"environment": "prod", "secretPath": "/other"}]},
-            {"permissions": ["read", "write"]}, {"expiresAt": None},
-            {"expiresAt": "2000-01-01T00:00:00Z"}, {"expiresAt": "2099-01-01T00:00:00"},
+            {
+                "scopes": [
+                    {"environment": "prod", "secretPath": "/coolify"},
+                    {"environment": "prod", "secretPath": "/other"},
+                ]
+            },
+            {"permissions": ["read", "write"]},
+            {"expiresAt": None},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
         )
         for metadata in cases:
             with self.subTest(fields=tuple(metadata)):
@@ -2901,13 +2940,22 @@ class CredentialTests(Base):
                 self.assertEqual(self.http_calls, [])
 
     def test_strict_named_record_failures_never_reach_coolify(self):
-        cases = ({}, {"secretValueHidden": True}, {"secretValueHidden": "false"},
-                 {"secretKey": "OTHER_NAME"}, {"workspace": str(uuid.uuid4())},
-                 {"environment": "dev"}, {"secretPath": "/other"}, {"type": "personal"},
-                 {"secretValue": ""}, {"secretValue": None}, {"secretValue": "${UNRESOLVED}"})
+        cases = (
+            {},
+            {"secretValueHidden": True},
+            {"secretValueHidden": "false"},
+            {"secretKey": "OTHER_NAME"},
+            {"workspace": str(uuid.uuid4())},
+            {"environment": "dev"},
+            {"secretPath": "/other"},
+            {"type": "personal"},
+            {"secretValue": ""},
+            {"secretValue": None},
+            {"secretValue": "${UNRESOLVED}"},
+        )
         for record in cases:
             with self.subTest(fields=tuple(record)):
-                self.api.record_override = ({"secretValueHidden": False, **record} if record else {})
+                self.api.record_override = {"secretValueHidden": False, **record} if record else {}
                 self.api.record_omissions = () if record else ("secretValueHidden",)
                 self.api.requests.clear()
                 self.http_calls.clear()
@@ -2929,8 +2977,11 @@ class CredentialTests(Base):
                 self.assertNotIn(self.VALUE, json.dumps(ans))
 
     def test_non_prod_and_invalid_own_binding_never_contact_the_provider(self):
-        for change in ({"INFISICAL_ENVIRONMENT": "dev"}, {"INFISICAL_ENV": "staging"},
-                       {self.TOKEN: "malformed"}):
+        for change in (
+            {"INFISICAL_ENVIRONMENT": "dev"},
+            {"INFISICAL_ENV": "staging"},
+            {self.TOKEN: "malformed"},
+        ):
             with self.subTest(fields=tuple(change)):
                 self.api.requests.clear()
                 code, ans = self.redeploy(self.env(**change))
@@ -2938,22 +2989,32 @@ class CredentialTests(Base):
                 self.assertEqual((self.api.requests, self.http_calls), ([], []))
 
     def test_private_file_custody_failures_stop_before_any_reader_or_coolify_call(self):
-        cases = [(self.pair_text(), 0o640), (self.pair_text(), 0o604),
-                 ("INFISICAL_AUTOMATION_CLIENT_ID=only-half\n", 0o600),
-                 ('FLEET_OPS_CONTROL_INFISICAL_TOKEN="quoted"\n', 0o600),
-                 ("PATH=/tmp/evil\n", 0o600),
-                 ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=a b\n", 0o600),
-                 (self.pair_text() + self.pair_text(), 0o600),
-                 ("export " + self.pair_text().splitlines()[1] + "\n", 0o600),
-                 ("# nothing\n", 0o600)]
+        cases = [
+            (self.pair_text(), 0o640),
+            (self.pair_text(), 0o604),
+            ("INFISICAL_AUTOMATION_CLIENT_ID=only-half\n", 0o600),
+            ('FLEET_OPS_CONTROL_INFISICAL_TOKEN="quoted"\n', 0o600),
+            ("PATH=/tmp/evil\n", 0o600),
+            ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=a b\n", 0o600),
+            (self.pair_text() + self.pair_text(), 0o600),
+            ("export " + self.pair_text().splitlines()[1] + "\n", 0o600),
+            ("# nothing\n", 0o600),
+        ]
         for text, mode in cases:
             with self.subTest(mode=mode):
                 self.credentials(text, mode)
                 code, ans = self.redeploy()
                 self.assertEqual((code, ans["result"]), (1, "failed"))
-                self.assertIn(ans["detail"], ("the Infisical credential file is not private",
-                                             "the Infisical credential file is malformed"))
-                self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
+                self.assertIn(
+                    ans["detail"],
+                    (
+                        "the Infisical credential file is not private",
+                        "the Infisical credential file is malformed",
+                    ),
+                )
+                self.assertEqual(
+                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
+                )
 
     def test_symlinked_credential_file_is_refused(self):
         real = self.home / "elsewhere.env"
