@@ -189,12 +189,26 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn("Muster / AI Fleet Coordinator", rendered)
         self.assertIn("FleetLink", rendered)
         self.assertIn("Simple With Us", rendered)
+        self.assertIn("--swu: #4b5563;", rendered)
+        self.assertIn(".repo-swu { background: var(--swu); }", rendered)
+        self.assertIn('<span class="repo repo-swu">SWU</span>', rendered)
         self.assertIn('href="agent-logos/app-afc.png"', rendered)
         self.assertIn(
             'href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)"', rendered
         )
+        self.assertNotIn("app-fleet.", rendered)
+        self.assertNotIn("app-swu.", rendered)
         for filename in re.findall(r'(?:src|href)="agent-logos/([^"<>]+)"', rendered):
             self.assertTrue((digest.LOGO_DIR / filename).is_file(), filename)
+
+        fixture_path = Path(__file__).resolve().parent.parent / "visual-tests" / "tests" / "fixtures" / "digest-2day.html"
+        fixture_html = fixture_path.read_text(encoding="utf-8")
+        self.assertIn("--swu: #4b5563;", fixture_html)
+        self.assertIn(".repo-swu { background: var(--swu); }", fixture_html)
+        self.assertIn('<span class="repo repo-swu">SWU</span><span class="legend-label">Simple With Us</span>', fixture_html)
+        self.assertIn('href="agent-logos/app-afc.png"', fixture_html)
+        self.assertNotIn("app-fleet.", fixture_html)
+        self.assertNotIn("app-swu.", fixture_html)
 
     def test_built_public_artifacts_contain_only_allowlisted_links(self) -> None:
         """Published snapshots live on published/fleet-activity, not stale main copies."""
