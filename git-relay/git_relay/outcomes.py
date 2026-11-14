@@ -45,6 +45,7 @@ import time
 import uuid
 
 MAX_ENTRIES = 5000
+MAX_CAPACITY = 50_000
 OK_TTL_SECONDS = 24 * 3600
 # Rows archived in one capacity event:  enough headroom that a host at the
 # wall does not pay archive I/O on every write, small enough that the live
@@ -117,9 +118,14 @@ def _load_rows(path: str) -> dict:
 class OutcomeStore:
     """Small durable map:  key -> {state, result, ts}.  A None path keeps it in memory."""
 
-    def __init__(self, path: str | None = None, clock=time.time):
+    def __init__(self, path: str | None = None, clock=time.time, *, max_entries=None):
+        if max_entries is None:
+            max_entries = MAX_ENTRIES
+        if type(max_entries) is not int or not 0 < max_entries <= MAX_CAPACITY:
+            raise ValueError("max_entries must be a positive integer within the supported limit")
         self._path = path
         self._clock = clock
+        self._max_entries = max_entries
         self._lock = threading.Lock()
         self._rows: dict[str, dict] = {}
         self._archive_path = f"{path}.archive.jsonl" if path else None
@@ -420,12 +426,12 @@ class OutcomeStore:
                 }
                 self._save()
                 return None
-            self._trim(MAX_ENTRIES - 1)
-            if len(self._rows) >= MAX_ENTRIES and self._path:
+            self._trim(self._max_entries - 1)
+            if len(self._rows) >= self._max_entries and self._path:
                 self._archive_for_room()
-            if len(self._rows) >= MAX_ENTRIES:
+            if len(self._rows) >= self._max_entries:
                 raise OutcomeStoreError(
-                    f"outcome store holds {MAX_ENTRIES} rows with none evictable; "
+                    f"outcome store holds {self._max_entries} rows with none evictable; "
                     "reconcile the held unknown outcomes before new writes"
                 )
             self._rows[key] = {
@@ -488,7 +494,7 @@ class OutcomeStore:
         ]
         for key in stale:
             del self._rows[key]
-        excess = len(self._rows) - (MAX_ENTRIES if limit is None else limit)
+        excess = len(self._rows) - (self._max_entries if limit is None else limit)
         if excess <= 0:
             return
         removable = sorted(
