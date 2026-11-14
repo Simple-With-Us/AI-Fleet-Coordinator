@@ -192,11 +192,11 @@ instance = "server"
 creds = "env"                     # ZULIP_CURSOR_EMAIL, ZULIP_CURSOR_API_KEY
 wake = "inbox"
 
-# GROK is off:  its Infisical pair is stored under the stem ZULIP_GROK_BUILD_* (the seat's older code), which the
-# GROK section's default names (ZULIP_GROK_EMAIL, ZULIP_GROK_API_KEY) do not load.
+# GROK expects canonical names; verify them before enabling the deployed seat.
+# The retired GROK-BUILD credential stem is never loaded.
 [seat.GROK]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_GROK_EMAIL, ZULIP_GROK_API_KEY
 wake = "inbox"
 
