@@ -201,11 +201,20 @@ class PublicActivityTests(unittest.TestCase):
         for filename in re.findall(r'(?:src|href)="agent-logos/([^"<>]+)"', rendered):
             self.assertTrue((digest.LOGO_DIR / filename).is_file(), filename)
 
-        fixture_path = Path(__file__).resolve().parent.parent / "visual-tests" / "tests" / "fixtures" / "digest-2day.html"
+        fixture_path = (
+            Path(__file__).resolve().parent.parent
+            / "visual-tests"
+            / "tests"
+            / "fixtures"
+            / "digest-2day.html"
+        )
         fixture_html = fixture_path.read_text(encoding="utf-8")
         self.assertIn("--swu: #4b5563;", fixture_html)
         self.assertIn(".repo-swu { background: var(--swu); }", fixture_html)
-        self.assertIn('<span class="repo repo-swu">SWU</span><span class="legend-label">Simple With Us</span>', fixture_html)
+        self.assertIn(
+            '<span class="repo repo-swu">SWU</span><span class="legend-label">Simple With Us</span>',
+            fixture_html,
+        )
         self.assertIn('href="agent-logos/app-afc.png"', fixture_html)
         self.assertNotIn("app-fleet.", fixture_html)
         self.assertNotIn("app-swu.", fixture_html)
