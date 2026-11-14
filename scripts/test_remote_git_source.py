@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -808,6 +808,91 @@ class RemoteGitSourceTests(unittest.TestCase):
             exporter.relay_read("gr_wf_repo_get", {})
         with self.assertRaises(remote.SourceError):
             exporter.relay_read("gr_wf_commit_get", {})
+
+    def test_export_cli_casefold_private_consent_exports_then_collects_offline(self):
+        self.provider = ProviderFixture(private=True)
+        self.provider.owner_repo = "Simple-With-Us/Fleet-OPS"
+        opt_in = "simple-with-us/fleet-ops"
+        with (
+            patch.object(exporter, "relay_read", side_effect=self.provider.call),
+            redirect_stdout(StringIO()),
+        ):
+            result = exporter.main(
+                [
+                    "--owner-repo", self.provider.owner_repo,
+                    "--visibility", "private",
+                    "--private-docs-repo", opt_in,
+                    "--expected-repository-id", "123",
+                    "--commit", self.provider.commit,
+                    "--output", str(self.descriptor),
+                ]
+            )
+        self.assertEqual(result, 0)
+        snapshot = remote.load_descriptor(self.descriptor)
+        private_path = "docs/private-audits/evidence.md"
+        private_bytes = self.provider.files[private_path][1]
+        self.assertEqual(snapshot.identity["owner_repo"], self.provider.owner_repo)
+        self.assertEqual(snapshot.identity["source_commit"], self.provider.commit)
+        self.assertEqual(snapshot.contents[private_path], private_bytes)
+        with (
+            patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", {opt_in}),
+            patch.object(collector, "_run_git", side_effect=AssertionError("Used local Git")),
+        ):
+            collector.collect(
+                None, self.output, git_source_descriptors=[self.descriptor],
+                private_docs_repo=opt_in,
+            )
+            mirror = self.output / "Fleet-OPS"
+            copied = "documents/" + private_path
+            self.assertEqual((mirror / copied).read_bytes(), private_bytes)
+            manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(manifest["owner_repo"], self.provider.owner_repo)
+            self.assertEqual(manifest["private_docs_opt_in"], self.provider.owner_repo)
+            self.assertEqual(
+                manifest["files"][copied]["object_id"],
+                remote.object_id("blob", private_bytes),
+            )
+            before = {
+                p.relative_to(mirror): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode))
+                for p in mirror.rglob("*") if p.is_file()
+            }
+            self.assertEqual(
+                collector.collect(
+                    None, self.output, git_source_descriptors=[self.descriptor],
+                    private_docs_repo=opt_in,
+                ),
+                [],
+            )
+            self.assertEqual(
+                {
+                    p.relative_to(mirror): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode))
+                    for p in mirror.rglob("*") if p.is_file()
+                },
+                before,
+            )
+
+    def test_export_cli_rejects_invalid_private_consent_before_provider_reads(self):
+        owner_repo = "Simple-With-Us/Fleet-OPS"
+        for opt_in in (
+            None, "", " simple-with-us/fleet-ops", "other-owner/Fleet-OPS",
+            "simple-with-us/Fleet-OPS/extra",
+        ):
+            with (
+                self.subTest(opt_in=opt_in),
+                patch.object(
+                    exporter, "relay_read", side_effect=AssertionError("Read before consent")
+                ),
+                redirect_stderr(StringIO()),
+            ):
+                args = [
+                    "--owner-repo", owner_repo, "--visibility", "private",
+                    "--expected-repository-id", "123", "--commit", self.provider.commit,
+                    "--output", str(self.descriptor),
+                ]
+                if opt_in is not None:
+                    args.extend(["--private-docs-repo", opt_in])
+                self.assertEqual(exporter.main(args), 1)
+                self.assertFalse(self.descriptor.exists())
 
     def test_export_cli_checks_expected_repository_id_before_blob_reads(self):
         with (
