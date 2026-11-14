@@ -50,16 +50,29 @@ class Tests(unittest.TestCase):
 
     def test_committed_catalog_tools_match_export_and_ignore_stale_create(self):
         catalog = json.loads((ROOT / "catalog.json").read_text())
-        capture = {"tools": [{"name": tool["name"], "description": tool["description"],
-            "title": tool.get("title", ""), "inputSchema": tool["schema"]}
-            for tool in catalog["tools"]]}
+        capture = {
+            "tools": [
+                {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "title": tool.get("title", ""),
+                    "inputSchema": tool["schema"],
+                }
+                for tool in catalog["tools"]
+            ]
+        }
         capture["tools"].append({"name": "gr_wf_pr_create", "inputSchema": {}})
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
             json.dump(capture, f)
             f.flush()
             try:
-                run = subprocess.run([sys.executable, str(ROOT / "export_catalog.py"), f.name],
-                    capture_output=True, text=True, check=True, timeout=30)
+                run = subprocess.run(
+                    [sys.executable, str(ROOT / "export_catalog.py"), f.name],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=30,
+                )
             except subprocess.TimeoutExpired:
                 self.fail("catalog parity export exceeded its 30-second test budget")
         # Provenance is historical capture metadata, not derived from tool contracts.
