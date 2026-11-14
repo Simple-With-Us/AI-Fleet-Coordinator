@@ -8,6 +8,11 @@ git = fixture.git
 
 
 class CategoryTests(unittest.TestCase):
+    def test_fixed_public_vocabulary_matches_loaded_scanner(self):
+        scanner = git._scanner()
+        labels = {label for label, pattern in scanner._PATTERNS}
+        self.assertEqual(git._SCAN_CATEGORIES, labels | {"a Zulip-shaped API key", "a loaded credential"})
+
     def test_public_labels_only(self):
         for label in git._SCAN_CATEGORIES:
             self.assertEqual(git._scan_category(label), label)
@@ -54,21 +59,36 @@ class CategoryTests(unittest.TestCase):
 
     def test_decisions_match_pristine_for_synthetic_cases(self):
         # Same scanner and traversal, no network and no refused production inputs.
-        def pristine(arguments, scanner):
-            # Pinned baseline behavior for these synthetic cases: decode file bytes,
-            # select file-aware scan, then return field only on every non-None hit.
+        def pristine(arguments, bearer, tool, scanner) -> str | None:
+            """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
+            never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
+            always matches."""
+            files = {}
+            if isinstance(arguments, dict) and tool in {"gr_wf_file_put", "gr_wf_files_put"}:
+                repo = arguments.get("repo")
+                rows = [arguments] if tool == "gr_wf_file_put" else arguments.get("files", [])
+                if isinstance(repo, str) and isinstance(rows, list):
+                    for i, row in enumerate(rows):
+                        if isinstance(row, dict) and isinstance(row.get("path"), str):
+                            field = "content_b64" if tool == "gr_wf_file_put" else f"files[{i}].content_b64"
+                            files[field] = (repo, row["path"])
             stack = [("", arguments)]
             while stack:
                 path, value = stack.pop()
                 if isinstance(value, str):
                     if path.endswith("content_b64"):
+                        # Base64 of ordinary bytes looks like a token, and it hides a real one, so the decoded text is what is
+                        # scanned.  Anything that does not decode is scanned as it came.
                         try:
-                            value = base64.b64decode(value, validate=True).decode(
-                                "utf-8", "replace"
-                            )
-                        except (ValueError, git.binascii.Error):
+                            value = base64.b64decode(value, validate=True).decode("utf-8", "replace")
+                        except (git.binascii.Error, ValueError):
                             pass
-                    if scanner.scan(value) is not None:
+                    known = [bearer] if bearer else []
+                    if path in files and callable(getattr(scanner, "scan_file", None)):
+                        hit = scanner.scan_file(*files[path], value, known)
+                    else:
+                        hit = scanner.scan(value, known=known)
+                    if hit is not None:
                         return "secret_scan:" + (path or "arguments")
                 elif isinstance(value, dict):
                     stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
@@ -78,6 +98,8 @@ class CategoryTests(unittest.TestCase):
 
         cases = [
             {"text": "ordinary"},
+            {"text": "synthetic-bearer"},
+            {"repo": "o/r", "files": [{"path": "file-aware.py", "content_b64": base64.b64encode(b"ordinary").decode()}]},
             {"text": "synthetic-token"},
             {"nested": [{"value": "synthetic-token"}]},
             {
@@ -91,15 +113,19 @@ class CategoryTests(unittest.TestCase):
 
         class Scanner:
             def scan(self, value, known=()):
+                if any(token in value for token in known):
+                    return "a loaded credential"
                 return "assigned secret" if "synthetic-token" in value else None
 
             def scan_file(self, repo, path, value, known=()):
+                if repo == "o/r" and path == "file-aware.py":
+                    return "assigned secret"
                 return self.scan(value, known)
 
         for case in cases:
             with mock.patch.object(git, "_scanner", return_value=Scanner()):
-                before = pristine(case, Scanner())
-                after = git._scan_arguments(case, "", "gr_wf_files_put")
+                before = pristine(case, "synthetic-bearer", "gr_wf_files_put", Scanner())
+                after = git._scan_arguments(case, "synthetic-bearer", "gr_wf_files_put")
             self.assertEqual(before is None, after is None)
             if before is not None:
                 expected_path = fixture.json.dumps(

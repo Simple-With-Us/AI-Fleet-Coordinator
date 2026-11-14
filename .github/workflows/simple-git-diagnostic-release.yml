@@ -1,0 +1,20 @@
+name: Narrow simple-git release
+on:
+  pull_request:
+    branches: [release/simple-git-3d97-diagnostics-20261114]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Exact-source complete client suite including category and file guards
+        run: python3 -m unittest discover -s scripts/git-tools -p 'test*.py' -v
