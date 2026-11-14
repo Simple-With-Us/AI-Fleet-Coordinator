@@ -231,10 +231,7 @@ def enqueue_id(doc_id, root=None, now=None):
                     continue
                 names.append(name)
             size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
-        if (
-            len(names) >= MAX_PENDING
-            or size + len(json.dumps(record).encode()) > MAX_SPOOL
-        ):
+        if len(names) >= MAX_PENDING or size + len(json.dumps(record).encode()) > MAX_SPOOL:
             raise OutboxError("note-outbox-full")
         _atomic(directory, key + ".json", record)
     return {"state": "queued", "key": key, "version": version}
