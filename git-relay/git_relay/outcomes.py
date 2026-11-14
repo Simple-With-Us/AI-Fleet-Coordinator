@@ -23,8 +23,16 @@ Durability rules:
 - Capacity trimming deletes only releasable rows:  "ok" rows past the 24 h
   replay window and explicitly releasable "refused" rows, oldest first.
   pending/unknown rows are never evicted:  losing one would re-arm a side
-  effect.  A store full of held rows refuses new writes (fail closed) until
-  an operator reconciles the unknowns.
+  effect.  When the store is full of held rows, the oldest unknown rows move
+  to an append-only archive (evidence preserved verbatim) and their keys to
+  a durable index that begin() still refuses on, so capacity no longer
+  strangles new writes and no side effect is ever re-armed.  Only an
+  explicit reconciliation finish() releases an archived key;  nothing is
+  dropped because time passed or state merely looks settled.
+- Every accepted write attempt carries a random correlation id ("corr"),
+  recorded in its row and available for the audit log:  an exact,
+  non-disclosing join between an audit entry and its outcome row that no
+  argument content can be brute-forced from.
 """
 
 from __future__ import annotations
@@ -34,9 +42,14 @@ import json
 import os
 import threading
 import time
+import uuid
 
 MAX_ENTRIES = 5000
 OK_TTL_SECONDS = 24 * 3600
+# Rows archived in one capacity event:  enough headroom that a host at the
+# wall does not pay archive I/O on every write, small enough that the live
+# map stays the working set.
+ARCHIVE_BATCH = 250
 STATES = ("pending", "ok", "refused", "unknown")
 
 _KEY_HEX = set("0123456789abcdef")
@@ -109,11 +122,20 @@ class OutcomeStore:
         self._clock = clock
         self._lock = threading.Lock()
         self._rows: dict[str, dict] = {}
+        self._archive_path = f"{path}.archive.jsonl" if path else None
+        self._index_path = f"{path}.archive-index.json" if path else None
+        # key -> {"state", "ts", "corr"?} for every archived row:  the durable
+        # duplicate-denial set.  Rebuilt from the archive itself when the index
+        # is missing or unreadable;  a key here refuses exactly as a live held
+        # row does.
+        self._archived: dict[str, dict] = {}
         if path and os.path.exists(path):
             self._rows = self._load_with_recovery(path)
             for row in self._rows.values():
                 if row["state"] == "pending":
                     row["state"] = "unknown"  # crashed mid-write: the outcome is unknown
+        if path and (os.path.exists(self._index_path) or os.path.exists(self._archive_path)):
+            self._archived = self._load_archive()
 
     def _load_with_recovery(self, path: str) -> dict:
         try:
@@ -141,12 +163,195 @@ class OutcomeStore:
         self._save()
         return rows
 
-    def begin(self, key: str, *, reapply_ok: bool = False) -> dict | None:
+    def _archive_meta(self, key: str, row: dict) -> dict:
+        meta = {"state": row.get("state"), "ts": row.get("ts", 0)}
+        if row.get("corr"):
+            meta["corr"] = row["corr"]
+        return meta
+
+    def _load_archive(self) -> dict:
+        """The archived-keys denial set, folded from the archive log and the index.
+
+        The archive is the evidence of record, a log folded in order:  an
+        entry's row holds the key, a release marker (appended by a
+        reconciliation finish, fsynced before the index dropped the key)
+        releases it again.  The archive is validated on every load:  a torn
+        final line (an interrupted append) is quarantined beside the archive
+        and truncated away in place, so a later append never glues onto it;
+        corruption anywhere else fails closed naming the path.  Rows in a torn
+        tail were never index-confirmed, so their live rows survived the crash
+        and still refuse through the live map loaded above - never re-armed.
+
+        The effective denial set is (index union archive-held) minus
+        archive-released:  an index that lost keys never admits their
+        duplicates, a stale index entry left by a crash before the index write
+        never denies a reconciled key forever, and a key with no archive trace
+        at all stays denied (its evidence may sit in a quarantined tail).  No
+        archived row is ever silently dropped, and no archived key is ever
+        silently released.
+        """
+        indexed: dict[str, dict] | None = None
+        try:
+            with open(self._index_path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            if not isinstance(raw, dict):
+                raise ValueError("index is not a JSON object")
+            out = {}
+            for key, meta in raw.items():
+                if (
+                    not isinstance(key, str)
+                    or len(key) != 64
+                    or any(ch not in _KEY_HEX for ch in key)
+                    or not isinstance(meta, dict)
+                    or meta.get("state") not in STATES
+                    or isinstance(meta.get("ts"), bool)
+                    or not isinstance(meta.get("ts"), (int, float))
+                ):
+                    raise ValueError(f"bad index entry for {key!r}")
+                out[key] = meta
+            indexed = out
+        except (OSError, ValueError) as index_exc:
+            if not os.path.exists(self._archive_path):
+                if isinstance(index_exc, OSError) and not os.path.exists(self._index_path):
+                    return {}
+                raise OutcomeStoreError(
+                    f"archive index {self._index_path!r} is unreadable and no archive "
+                    "exists to rebuild it from; refusing to continue"
+                ) from index_exc
+        held: dict[str, dict] = {}
+        released: set[str] = set()
+        with open(self._archive_path, "rb") as fh:
+            data = fh.read()
+        lines = data.split(b"\n")
+        # The split always leaves a final fragment:  empty when the file ends
+        # clean, the torn line when an append was interrupted.  Neither is a row.
+        tail_ok = not lines or lines[-1] == b""
+        body = lines[:-1]
+        for i, raw_line in enumerate(body):
+            if not raw_line:
+                continue
+            try:
+                entry = json.loads(raw_line.decode("utf-8"))
+                key = entry["key"]
+                if not isinstance(key, str) or len(key) != 64 or any(
+                    ch not in _KEY_HEX for ch in key
+                ):
+                    raise OutcomeStoreError(f"invalid key {key!r}")
+                if "released_at" in entry:
+                    held.pop(key, None)
+                    released.add(key)
+                else:
+                    row = _validate_row(self._archive_path, key, entry["row"])
+                    held[key] = self._archive_meta(key, row)
+                    released.discard(key)
+            except (ValueError, KeyError, TypeError, OutcomeStoreError) as exc:
+                raise OutcomeStoreError(
+                    f"archive {self._archive_path!r} is corrupt at line {i + 1}: {exc}; "
+                    "refusing to continue (evidence file untouched)"
+                ) from exc
+        if not tail_ok:
+            quarantined = f"{self._archive_path}.corrupt-{int(self._clock())}"
+            with open(quarantined, "wb") as fh:
+                fh.write(lines[-1])
+            keep = sum(len(line) + 1 for line in body)
+            fd = os.open(self._archive_path, os.O_WRONLY)
+            try:
+                os.ftruncate(fd, keep)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        if indexed is None:
+            self._archived = held
+            self._save_index()
+            return held
+        folded = dict(indexed)
+        for key, meta in held.items():
+            folded.setdefault(key, meta)
+        for key in released:
+            folded.pop(key, None)
+        if folded != indexed:
+            self._archived = folded
+            self._save_index()
+        return folded
+
+    def _save_index(self) -> None:
+        tmp = self._index_path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            view = memoryview(json.dumps(self._archived, sort_keys=True).encode())
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OutcomeStoreError(
+                        f"short write to archive index {self._index_path!r}"
+                    )
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, self._index_path)
+        dirfd = os.open(os.path.dirname(os.path.abspath(self._index_path)) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+
+    def corr_of(self, key: str) -> str | None:
+        """The correlation id of the key's current row, live or archived, when it has one."""
+        row = self._rows.get(key)
+        if row is not None:
+            return row.get("corr")
+        meta = self._archived.get(key)
+        return meta.get("corr") if meta else None
+
+    def _archive_for_room(self) -> None:
+        """Move the oldest unknown rows to the archive so begin() can admit one more write.
+
+        Order is the safety contract:  archive evidence is appended and fsynced,
+        the duplicate-denial index is written and fsynced, and only then are the
+        rows removed from the live map.  A crash before the live save leaves the
+        rows live (begin still refuses on them);  a crash after it leaves the
+        keys in the index (begin still refuses).  Nothing is re-armed at any
+        interruption point.
+        """
+        candidates = sorted(
+            (row.get("ts", 0), key)
+            for key, row in self._rows.items()
+            if row.get("state") == "unknown"
+        )[:ARCHIVE_BATCH]
+        if not candidates:
+            return
+        fd = os.open(self._archive_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            for _, key in candidates:
+                line = json.dumps(
+                    {"key": key, "archived_at": self._clock(), "row": self._rows[key]},
+                    sort_keys=True,
+                ).encode() + b"\n"
+                view = memoryview(line)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OutcomeStoreError(
+                            f"short write to archive {self._archive_path!r}; live registry untouched"
+                        )
+                    view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        for _, key in candidates:
+            self._archived[key] = self._archive_meta(key, self._rows[key])
+        self._save_index()
+        for _, key in candidates:
+            del self._rows[key]
+
+    def begin(self, key: str, *, reapply_ok: bool = False, corr: str | None = None) -> dict | None:
         """Mark a key in flight;  return the existing row when the key is already taken.
 
         Refuses (OutcomeStoreError) when the registry is at capacity with no
-        evictable row:  every remaining row is a held pending/unknown side
-        effect, and silently dropping one could re-arm a duplicate write.
+        evictable row and no unknown row left to archive:  every remaining row
+        is a held pending side effect, and silently dropping one could re-arm
+        a duplicate write.
         """
         with self._lock:
             existing = self._rows.get(key)
@@ -156,26 +361,78 @@ class OutcomeStore:
                 and not reapply_ok
             ):
                 return existing
+            if existing is None and key in self._archived:
+                # An archived held row still refuses:  archival is storage,
+                # never a release.  Only unknown rows are ever archived.
+                meta = self._archived[key]
+                held = {"state": meta["state"], "ts": meta["ts"], "archived": True}
+                if meta.get("corr"):
+                    held["corr"] = meta["corr"]
+                if held["state"] in ("unknown", "pending"):
+                    return held
             if existing and existing["state"] == "ok" and reapply_ok:
                 # Only a verified success is replaceable.  Pending/unknown never re-arm.
-                self._rows[key] = {"state": "pending", "ts": self._clock()}
+                self._rows[key] = {
+                    "state": "pending",
+                    "ts": self._clock(),
+                    "corr": corr or uuid.uuid4().hex,
+                }
                 self._save()
                 return None
             self._trim(MAX_ENTRIES - 1)
+            if len(self._rows) >= MAX_ENTRIES and self._path:
+                self._archive_for_room()
             if len(self._rows) >= MAX_ENTRIES:
                 raise OutcomeStoreError(
                     f"outcome store holds {MAX_ENTRIES} rows with none evictable; "
                     "reconcile the held unknown outcomes before new writes"
                 )
-            self._rows[key] = {"state": "pending", "ts": self._clock()}
+            self._rows[key] = {
+                "state": "pending",
+                "ts": self._clock(),
+                "corr": corr or uuid.uuid4().hex,
+            }
             self._save()
             return None
 
     def finish(self, key: str, state: str, result: dict | None = None) -> None:
         with self._lock:
             row: dict = {"state": state, "ts": self._clock()}
+            corr = (self._rows.get(key) or {}).get("corr") or (
+                self._archived.get(key) or {}
+            ).get("corr")
+            if corr:
+                row["corr"] = corr
             if result is not None:
                 row["result"] = result
+            if key in self._archived:
+                # A reconciliation outcome for an archived write.  Order:  the
+                # release marker is appended to the archive log and fsynced
+                # BEFORE the index drops the key, so a crash can only leave the
+                # key denied (fail closed), never silently released;  an index
+                # rebuilt from the archive folds the marker and stays released.
+                if self._archive_path:
+                    line = json.dumps(
+                        {"key": key, "released_at": self._clock(), "state": state},
+                        sort_keys=True,
+                    ).encode() + b"\n"
+                    fd = os.open(self._archive_path, os.O_WRONLY | os.O_APPEND, 0o600)
+                    try:
+                        view = memoryview(line)
+                        while view:
+                            written = os.write(fd, view)
+                            if written <= 0:
+                                raise OutcomeStoreError(
+                                    f"short write to archive {self._archive_path!r}; "
+                                    "key still denied"
+                                )
+                            view = view[written:]
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                del self._archived[key]
+                if self._index_path:
+                    self._save_index()
             self._rows[key] = row
             self._trim()
             self._save()
