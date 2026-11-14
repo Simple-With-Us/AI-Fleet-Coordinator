@@ -200,6 +200,26 @@ private actor SettingsDebounceClock {
 }
 
 final class ServerSettingsAutosaveReceiptTests: XCTestCase {
+    func test_bracket_wake_uses_the_generic_boolean_control_and_false_default() throws {
+        let rows = ServerSettingsBuilder.groups(settings: settingsBaseline, allowlist: try settingsSchema(),
+                                                 editable: true).flatMap(\.rows)
+        let key = "seat.CODEX.bracket_recipient_wakes"
+        let row = try XCTUnwrap(rows.first { $0.id == key })
+        XCTAssertEqual(row.control, .toggle)
+        XCTAssertTrue(row.isEditable)
+        XCTAssertNil(row.current)
+        XCTAssertEqual(row.effective, .bool(false))
+        XCTAssertTrue(row.showsDefault)
+        for (text, value) in [("true", true), ("false", false)] {
+            XCTAssertEqual(try ServerSettingsBuilder.value(text, for: row).get(), .bool(value))
+        }
+        let typed = try ServerSettingsBuilder.request(edits: [key: "true"], rows: rows, forAutosave: true).get()
+        XCTAssertEqual(typed.set, [key: .bool(true)])
+        XCTAssertTrue(typed.remove.isEmpty)
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: [key: "false"], rows: rows, forAutosave: true),
+                       .failure(.nothingChanged))
+    }
+
     func test_save_uses_existing_forced_command_and_revision_fenced_stdin() throws {
         let request = settingsRequest(set: ["linear_projects.enabled": .bool(true)], expectBaseSHA256: settingsRevisionA)
         let invocation = try settingsBuilder().listenerSettingsSaveInvocation(request)
@@ -779,6 +799,48 @@ final class ServerSettingsAutosaveStoreTests: XCTestCase {
         await store.savePending()
         let writes = await runner.writes
         XCTAssertEqual(writes.count, 3)
+        store.revert(); await clock.advance()
+    }
+
+    func test_actual_backend_bracket_wire_saves_both_boolean_values_without_optimistic_saved() async throws {
+        let runner = SettingsSaveRunner(), clock = SettingsDebounceClock()
+        await runner.setRead(generatedSettingsCase("bracket_get").stdout)
+        let attempts = try ["bracket_true", "bracket_false"].map { name -> ServerSettingsAttempt in
+            let request = try XCTUnwrap(generatedSettingsCase(name).request)
+            guard case .text(let requestID)? = request["requestID"], case .int(let created)? = request["requestCreatedAt"] else {
+                throw SettingsTestWait.timedOut
+            }
+            return ServerSettingsAttempt(requestID: requestID, requestCreatedAt: created)
+        }
+        let store = try makeStore(runner, clock, attempts: attempts)
+        await store.refresh()
+        let key = "seat.GROK.bracket_recipient_wakes"
+        let initial = try XCTUnwrap(store.groups.flatMap(\.rows).first { $0.id == key })
+        XCTAssertEqual(initial.control, .toggle)
+        XCTAssertEqual(initial.effective, .bool(false))
+        XCTAssertTrue(initial.showsDefault)
+        for (index, name) in ["bracket_true", "bracket_false"].enumerated() {
+            let actual = generatedSettingsCase(name)
+            let request = try XCTUnwrap(actual.request)
+            let value = try XCTUnwrap(request["set"]?.tableEntries?[key])
+            store.edit(key, text: value.fieldText)
+            let save = Task { await store.savePending() }
+            try await runner.untilWrites(index + 1)
+            XCTAssertEqual(store.saveStates[key], .saving)
+            XCTAssertNotNil(store.drafts[key])
+            let writes = await runner.writes
+            let sent = try XCTUnwrap(writes.last?.standardInput)
+            XCTAssertEqual(ServerSettingJSON.parse(String(decoding: sent, as: UTF8.self)), .table(request))
+            await runner.finish(actual.stdout, exit: actual.exitCode)
+            await save.value
+            XCTAssertEqual(store.saveStates[key], .saved)
+            XCTAssertNil(store.drafts[key])
+            XCTAssertEqual(store.groups.flatMap(\.rows).first { $0.id == key }?.current, value)
+        }
+        await clock.advance()
+        await store.savePending()
+        let writes = await runner.writes
+        XCTAssertEqual(writes.count, 2)
         store.revert(); await clock.advance()
     }
 

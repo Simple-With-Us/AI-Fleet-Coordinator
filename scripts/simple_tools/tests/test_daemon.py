@@ -2355,7 +2355,17 @@ class ThreadedRunTests(DaemonHarness):
 
         process_env = self.env()
         process_env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
-        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parents[2] / "simple-chat"), "daemon", "run"],
+        scripts = Path(__file__).resolve().parents[2]
+        source = (scripts / "simple-chat").read_text()
+        binding = '_SEAT_HELPER_ANCHOR = "/"'
+        isolated_binding = "_SEAT_HELPER_ANCHOR = " + repr(str(self.tmp.resolve()))
+        self.assertEqual(source.count(binding), 1)
+        entry = self.tmp / "simple-chat"
+        entry.write_text(source.replace(binding, isolated_binding, 1))
+        self.assertEqual(entry.read_text().replace(isolated_binding, binding, 1), source)
+        # Import the actual package while the existing anchor seam excludes the host's helper.
+        process_env["PYTHONPATH"] = str(scripts)
+        process = subprocess.Popen([sys.executable, str(entry), "daemon", "run"],
                                    env=process_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         out = err = ""
         try:

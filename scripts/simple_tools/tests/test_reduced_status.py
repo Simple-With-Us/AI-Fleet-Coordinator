@@ -1848,9 +1848,15 @@ class FromRealDaemonStatusTests(DaemonHarness):
             # and effect reasons in its terminal rows, so the reducer deliberately never
             # reads it (see reduced_status.py, "Deliberately never read").
             "drain",
+            # Canonical settings revisions and channel spelling belong to the separately
+            # authenticated settings editor, not this names/counts/status document.
+            "operator_settings_revision", "operator_settings_snapshot_revision", "channel_names",
         }  # fmt: skip
         self.assertEqual(set(document), read | not_read)
         seat_keys = {
+            # The bracket-recipient wake switch is read through the settings allowlist
+            # route; the reducer deliberately does not read it.
+            "bracket_recipient_wakes",
             "bot", "creds", "connected", "cursor", "webhook_high_water", "last_event", "wake",
             "routine",
             "pinned", "pin", "claude", "muse", "model", "fallback", "provider", "quota",

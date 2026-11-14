@@ -599,6 +599,30 @@ struct SeatSession: Identifiable, Equatable, Sendable {
     /// message.  Nil when the eavesdropper did not say.
     var watcher: Bool?
 
+    init(
+        id: String,
+        letter: String? = nil,
+        title: String? = nil,
+        platform: String? = nil,
+        verifiedHost: FleetHost? = nil,
+        alive: Bool? = nil,
+        why: String? = nil,
+        topics: Int? = nil,
+        pending: Int? = nil,
+        watcher: Bool? = nil
+    ) {
+        self.id = id
+        self.letter = letter
+        self.title = title
+        self.platform = platform
+        self.verifiedHost = verifiedHost
+        self.alive = alive
+        self.why = why
+        self.topics = topics
+        self.pending = pending
+        self.watcher = watcher
+    }
+
     init(lease: ListenerStateDocument.Lease, index: Int) {
         id = lease.leaseID ?? "lease-\(index)"
         letter = lease.letter.map(SeatActivityText.label).flatMap { $0.isEmpty ? nil : $0 }
@@ -778,6 +802,149 @@ struct SeatActivityRow: Identifiable, Equatable, Sendable {
     var hasUnknown: Bool {
         !unknowns.isEmpty
     }
+
+    /// Sessions ordered with live leases first while preserving source order within each state.
+    var sortedSessions: [SeatSession] {
+        sessions.enumerated().sorted { lhs, rhs in
+            let la = lhs.element.alive == true
+            let ra = rhs.element.alive == true
+            if la != ra { return la }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
+    /// Sessions grouped by normalized platform name (live platforms first).
+    var sessionsByPlatform: [SeatSessionPlatformGroup] {
+        let ordered = sortedSessions
+        guard !ordered.isEmpty else { return [] }
+        var order: [String] = []
+        var buckets: [String: [SeatSession]] = [:]
+        for session in ordered {
+            let key = OperatorPanelPresentation.platformLabel(session.platform)
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(session)
+        }
+        return order.compactMap { key in
+            guard let items = buckets[key] else { return nil }
+            return SeatSessionPlatformGroup(platform: key, sessions: items)
+        }
+    }
+
+    /// Whether this row satisfies the Seats panel filter and search text.
+    func matches(filter: SeatActivityFilter, search: String) -> Bool {
+        switch filter {
+        case .all:
+            break
+        case .working:
+            guard isWorking else { return false }
+        case .attention:
+            guard needsAttention else { return false }
+        case .withSessions:
+            let hasCount = (openSessions.value ?? 0) > 0
+            guard !sessions.isEmpty || hasCount else { return false }
+        }
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return true }
+        var fields: [String] = [seat, place.group.title]
+        if let botName, !botName.isEmpty { fields.append(botName) }
+        if let post = lastPost.value {
+            if !post.channel.isEmpty { fields.append(post.channel) }
+            if !post.label.isEmpty { fields.append(post.label) }
+        }
+        for session in sessions {
+            if let letter = session.letter { fields.append(letter) }
+            if let title = session.title { fields.append(title) }
+            if let platform = session.platform { fields.append(platform) }
+            fields.append(OperatorPanelPresentation.platformLabel(session.platform))
+        }
+        fields.append(contentsOf: notes.map(\.text))
+        return fields.contains { $0.localizedCaseInsensitiveContains(needle) }
+    }
+}
+
+/// Which seats the Seats panel displays.
+enum SeatActivityFilter: String, CaseIterable, Identifiable, Sendable {
+    case all
+    case working
+    case attention
+    case withSessions
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .working: return "Working"
+        case .attention: return "Attention"
+        case .withSessions: return "With Sessions"
+        }
+    }
+}
+
+/// How the Seats panel groups seats.
+enum SeatActivityGrouping: String, CaseIterable, Identifiable, Sendable {
+    case byHolder
+    case byFamily
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .byHolder: return "By Holder"
+        case .byFamily: return "By Family"
+        }
+    }
+}
+
+/// Collapsible family classification for the Seats panel.
+enum SeatFamilyGroup: String, CaseIterable, Identifiable, Sendable {
+    case core
+    case grokBots
+    case botFleet
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .core: return "Core Seats"
+        case .grokBots: return "Grok Bots"
+        case .botFleet: return "BotFleet"
+        }
+    }
+
+    static func of(seat: String) -> SeatFamilyGroup {
+        let upper = seat.uppercased()
+        if upper.hasPrefix("GB-") || upper.hasPrefix("GB_") { return .grokBots }
+        if upper.hasPrefix("BF-") || upper.hasPrefix("BF_") { return .botFleet }
+        return .core
+    }
+}
+
+/// One seat's sessions bucketed under one platform label.
+struct SeatSessionPlatformGroup: Identifiable, Equatable, Sendable {
+    let platform: String
+    let sessions: [SeatSession]
+
+    var id: String { platform }
+    var liveCount: Int { sessions.filter { $0.alive == true }.count }
+}
+
+/// One collapsible family section in the Seats panel.
+struct SeatActivitySection: Identifiable, Equatable, Sendable {
+    let kind: SeatFamilyGroup
+    let rows: [SeatActivityRow]
+
+    var id: String { kind.id }
+
+    /// Preserves holder classification within a family section so server-held seats never
+    /// render under Mac-specific table column headings.
+    var groups: [SeatActivityGroup] {
+        SeatPlaceGroup.allCases.compactMap { place in
+            let match = rows.filter { $0.place.group == place }
+            guard !match.isEmpty else { return nil }
+            return SeatActivityGroup(kind: place, rows: match)
+        }
+    }
 }
 
 /// One group of rows,  under one heading.
@@ -839,6 +1006,28 @@ struct SeatActivityModel: Equatable, Sendable {
             let first = members.filter { $0.needsAttention }
             let rest = members.filter { !$0.needsAttention }
             return SeatActivityGroup(kind: kind, rows: first + rest)
+        }
+    }
+
+    /// Holder-grouped rows after applying UI search and filter.
+    func filteredGroups(filter: SeatActivityFilter, search: String) -> [SeatActivityGroup] {
+        groups.compactMap { group in
+            let kept = group.rows.filter { $0.matches(filter: filter, search: search) }
+            guard !kept.isEmpty else { return nil }
+            return SeatActivityGroup(kind: group.kind, rows: kept)
+        }
+    }
+
+    /// Family-grouped rows (Core / Grok Bots / BotFleet) with attention rows first, after filtering.
+    func familySections(filter: SeatActivityFilter, search: String) -> [SeatActivitySection] {
+        SeatFamilyGroup.allCases.compactMap { kind in
+            let members = rows.filter {
+                SeatFamilyGroup.of(seat: $0.seat) == kind && $0.matches(filter: filter, search: search)
+            }
+            guard !members.isEmpty else { return nil }
+            let first = members.filter { $0.needsAttention }
+            let rest = members.filter { !$0.needsAttention }
+            return SeatActivitySection(kind: kind, rows: first + rest)
         }
     }
 

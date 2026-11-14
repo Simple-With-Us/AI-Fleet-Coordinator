@@ -22,6 +22,7 @@ import unittest
 import unittest.mock
 import urllib.error
 import urllib.request
+import uuid
 from http.server import ThreadingHTTPServer
 
 from git_relay.audit import AuditLog
@@ -1493,18 +1494,36 @@ class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
         finally:
             sys.path.remove(scripts)
 
-        def fake_export(path, env, project_name=None, token=None, *, allow_session=False):
-            self.assertIs(allow_session, False)
-            return dict(self.FOLDER)
+        project = str(uuid.uuid4())
+        binding = "st.synthetic-" + uuid.uuid4().hex
+
+        def fake_fetch(project_id, path, env, *, names):
+            self.assertEqual(project_id, project)
+            self.assertEqual(path, "/github-apps")
+            self.assertEqual(env[core.ENV_TOKEN], binding)
+            self.assertIn(
+                names,
+                (
+                    ("GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"),
+                    ("GH_APP_X_ID", "GH_APP_X_ID_OLD"),
+                    ("GH_APP_X_ID",),
+                ),
+            )
+            return {name: self.FOLDER[name] for name in names if name in self.FOLDER}
 
         def runner(argv, capture_output, timeout):
             calls.append(argv)
             out, err = io.StringIO(), io.StringIO()
             with (
-                unittest.mock.patch.object(core, "fetch_all", fake_export),
+                unittest.mock.patch.object(core, "fetch_project", fake_fetch),
                 unittest.mock.patch.object(cli.sys, "stdin", io.StringIO()),
             ):
-                code = cli.main(argv[1:], env={}, out=out, err=err)
+                code = cli.main(
+                    argv[1:],
+                    env={core.ENV_PROJECT: project, core.ENV_TOKEN: binding},
+                    out=out,
+                    err=err,
+                )
             return subprocess.CompletedProcess(
                 argv, code, stdout=out.getvalue().encode(), stderr=err.getvalue().encode()
             )
@@ -2736,7 +2755,9 @@ class LegacyStateAdoption(unittest.TestCase):
 
         def fake_source(**kwargs):
             captured.update(kwargs)
-            return real_source(runner=lambda *a, **k: None, **kwargs)
+            source = real_source(runner=lambda *a, **k: None, **kwargs)
+            source.verified_secret = unittest.mock.Mock(return_value="20000")
+            return source
 
         origin = pathlib.Path.cwd()
         with (
@@ -3049,7 +3070,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
             class _Source:
                 def verified_secret(self, name):
-                    return "v"
+                    return "20000" if name == server.OUTCOMES_CAPACITY_KEY else "v"
 
                 def secret(self, name):
                     return "k" * 32

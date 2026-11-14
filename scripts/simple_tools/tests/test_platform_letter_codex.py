@@ -33,7 +33,7 @@ HAS_PARENT = PL._accepts(OR.register_session, "parent_session_id")
 THREADS_DDL = (
     "CREATE TABLE threads (id TEXT PRIMARY KEY, source TEXT NOT NULL DEFAULT 'vscode', title TEXT NOT NULL DEFAULT '',"
     " first_user_message TEXT NOT NULL DEFAULT '', agent_nickname TEXT, agent_path TEXT, thread_source TEXT,"
-    " name TEXT, originator TEXT, archived INTEGER NOT NULL DEFAULT 0)"
+    " name TEXT, originator TEXT, archived INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL DEFAULT 0)"
 )
 EDGES_DDL = (
     "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY,"
@@ -716,14 +716,25 @@ class BinaryTests(Base):
         seen = []
 
         def popen(argv, **kw):
-            seen.append(argv)
+            seen.append((argv, kw["env"]))
             return FakeServer("ws" if argv[-1] == "proxy" else "lines", standard)
 
-        env = self.env(CODEX_LETTER_BIN=binary)
+        env = self.env(CODEX_LETTER_BIN=binary, AGENT_LAUNCHER="platform-launcher", OPENAI_API_KEY="fake.app-auth",
+                       SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN="fake.bootstrap",
+                       FLEET_KNOBS_INFISICAL_TOKEN="fake.old", FLEET_KNOBS_WRITE_TOKEN="fake.writer")
+        original = dict(env)
         for daemon, framing, argv in ((True, "ws", [binary, "app-server", "proxy"]), (False, "lines", [binary, "app-server"])):
             with C.open_rpc(env, deadline(), daemon=daemon, popen=popen) as rpc:
                 self.assertEqual(rpc.framing, framing)
-            self.assertEqual(seen[-1], argv)
+            self.assertEqual(seen[-1][0], argv)
+            child = seen[-1][1]
+            self.assertEqual(child["CODEX_HOME"], self.codex)
+            self.assertEqual(child["AGENT_LAUNCHER"], "platform-launcher")
+            self.assertEqual(child["OPENAI_API_KEY"], "fake.app-auth")
+            for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN", "FLEET_KNOBS_INFISICAL_TOKEN",
+                         "FLEET_KNOBS_WRITE_TOKEN", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+                self.assertNotIn(name, child)
+        self.assertEqual(env, original)
         with self.assertRaises(C.RpcError):
             C.open_rpc(self.env(CODEX_LETTER_BIN="/nonexistent/codex"), deadline(), daemon=False, popen=popen)
 
@@ -822,6 +833,40 @@ class RenameTests(Base):
         with mock.patch.object(C, "open_rpc", side_effect=lambda env, dl, *, daemon, popen=None: FakeApp(self, [])):
             self.assertTrue(C.codex_rename(request))
         self.assertEqual((self.stored_name(child), self.stored_name(chat)), ("AB: Pong", None))
+
+    def test_shared_parent_registry_capability_never_enters_child_env_or_rpc_payload(self) -> None:
+        sid = self.add(3)
+        env = self.env(CODEX_LETTER_BIN=self.binary, AGENT_LAUNCHER="platform-launcher", OPENAI_API_KEY="fake.app-auth")
+        for name in PL._OPERATOR_CHILD_SECRETS:
+            env[name] = "fake.private." + name.lower()
+        original = dict(env)
+        child_envs, messages = [], []
+
+        def handler(server, message):
+            messages.append(message)
+            self.writes_the_name(server, message)
+
+        def capture_popen(argv, **options):
+            child_envs.append(dict(options["env"]))
+            return FakeServer("lines", handler)
+
+        open_rpc = C.open_rpc
+        with mock.patch.object(C, "open_rpc", side_effect=lambda child, budget, *, daemon, popen=None:
+                               open_rpc(child, budget, daemon=daemon, popen=capture_popen)):
+            chat = PL.Chat(C.SPEC, env, "server", sid, now=1.0)
+            self.assertTrue(PL._write_title(chat, {"label": "AA"}, "AA: Words", "", {}, "start"))
+        self.assertTrue(child_envs)
+        for child in child_envs:
+            self.assertEqual(child["AGENT_LAUNCHER"], "platform-launcher")
+            self.assertEqual(child["OPENAI_API_KEY"], "fake.app-auth")
+            for name in PL._OPERATOR_CHILD_SECRETS:
+                self.assertNotIn(name, child)
+        wire = json.dumps(messages)
+        for name in PL._OPERATOR_CHILD_SECRETS:
+            self.assertNotIn(env[name], wire)
+        self.assertNotIn("record_thread_link", wire)
+        self.assertEqual(env, original)
+        self.assertEqual(self.stored_name(sid), "AA: Words")
 
 
 # --------------------------------------------------------------------------------------------
@@ -1741,3 +1786,65 @@ class SpecTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["letter"]), (1, None))
 
 
+
+
+class UnletteredSessionsTests(Base):
+    """`codex_unlettered_sessions`:  the repair pass's candidates are this host's threads still showing "??: ",
+    old enough that their own start has finished and young enough to be a live loss, newest first."""
+
+    def insert(self, n: int, name: str, age: float) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO threads (id, name, created_at) VALUES (?, ?, ?)",
+                (tid(n), name, time.time() - age),
+            )
+        conn.close()
+
+    def test_names_only_unlettered_chats_in_the_window(self) -> None:
+        self.insert(1, "??: Fixture-Repo PR 1", 3600)
+        self.insert(2, "DD: Done", 3600)
+        self.insert(3, "??: Brand New", 60)
+        self.insert(4, "??: Ancient", 30 * 86400)
+        self.insert(5, "??: Also Due", 7200)
+        self.assertEqual(
+            C.codex_unlettered_sessions(self.env()),
+            [tid(1), tid(5)],  # newest first
+        )
+
+    def test_an_archived_chat_is_not_a_candidate(self) -> None:
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "INSERT INTO threads (id, name, created_at, archived) VALUES (?, ?, ?, 1)",
+                (tid(6), "??: Put Away", time.time() - 3600),
+            )
+        conn.close()
+        self.assertEqual(C.codex_unlettered_sessions(self.env()), [])
+
+    def test_a_store_from_before_archived_still_scans(self) -> None:
+        os.unlink(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT, created_at REAL NOT NULL DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO threads (id, name, created_at) VALUES (?, ?, ?)",
+                (tid(7), "??: Old Store", time.time() - 3600),
+            )
+        conn.close()
+        self.assertEqual(C.codex_unlettered_sessions(self.env()), [tid(7)])
+
+    def test_no_store_is_doubt_and_doubt_answers_none(self) -> None:
+        os.unlink(self.store)
+        self.assertIsNone(C.codex_unlettered_sessions(self.env()))
+
+    def test_a_store_too_old_to_say_ages_answers_none(self) -> None:
+        os.unlink(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT)")
+            conn.execute("INSERT INTO threads (id, name) VALUES (?, ?)", (tid(1), "??: Untimed"))
+        conn.close()
+        self.assertIsNone(C.codex_unlettered_sessions(self.env()))

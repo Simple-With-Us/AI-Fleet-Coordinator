@@ -27,7 +27,7 @@ Three tools stand alone and need no identity:
 | `guide` | This guide, or one `##` section by name (case and punctuation ignored).  Needs no credential.  A wrong name lists the section names. |
 | `catalog` | This connection's own tool catalog in bounded pages:  names and one-line descriptions only (full schemas come from `tools/list`, which accepts the same cursor).  Call with no arguments for the first page;  pass the returned `nextCursor` as `cursor` for the next page.  Hosted only. |
 
-Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #sandbox.
+Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #Sandbox.
 
 ## Which Connection a Client Gets
 
@@ -210,6 +210,8 @@ Hosted only, JET-CHAT (the full Jet login) only, and only while the WhatsApp bri
 | `whatsapp_read` | R | The owner's WhatsApp messages after the acknowledged mark.  `limit` (1-50, default 20); `ack_through` (the `seq` string of a returned message, moves the acknowledged mark up to and including it; must be one an earlier read returned); `include_surfaced` (default false, also list messages already surfaced to the owner) |
 
 ## GitHub Tools: git-relay and GR-MCP
+
+PR titles, descriptions and comments use the actual writing session in a compact header, for example `[CODEX:   EE.1.S]`, without the folder symbol or repository names.  Kody requests retain the literal command on line 1, that header on line 2 and the full reviewed head SHA and context afterward.  Hosted explicit PR text routes normalize supplied headers; direct GR-MCP/HTTP callers and byte-for-byte opt-outs supply the compact form themselves.  Generic workflow issue-comment verbs preserve ordinary issue context; use the explicit PR comment verb for PR context.  Ordinary GitHub issue, Zulip and Linear headers retain repository names, and no formatter assigns or infers a session letter.
 
 GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 

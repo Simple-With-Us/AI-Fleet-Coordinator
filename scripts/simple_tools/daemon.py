@@ -703,6 +703,7 @@ class Daemon:
         operator_client_factory: OPV.Factory | None = None,
     ) -> None:
         self.env = dict(os.environ if env is None else env)
+        self.env.pop("OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN", None)
         self.home = home or self.env.get("HOME") or os.path.expanduser("~")
         self.root = root or L.state_root(self.env)
         self.clock = clock or Clock()
@@ -757,6 +758,7 @@ class Daemon:
             sleep=self.clock.sleep, clock=self.clock.monotonic, should_stop=self.stop.is_set
         )
         self.config_path = L.config_path(self.root, self.env)
+        self._operator_settings_lock_fd: int | None = None
         self.partition_file = partition_file or C.partition_path(self.env)
         # Eligible senders' tags (owner 2026-10-09):  every partition seat plus FLEET_SEATS, refreshed
         # with the partition on every check, so a seat added to the partition is eligible without a re-init.
@@ -764,7 +766,7 @@ class Daemon:
         self.partition: dict[
             str, str
         ] = {}  # seat -> instance, from the last partition check (route checks)
-        self.config = C.load(self.root, self.config_path)
+        self.config = C.load(self.root, self.config_path, environ=self.env)
         # The Operator's identity pins are the host's own settings:  the environment wins, and a
         # host whose LaunchAgent carries no OPERATOR_ZULIP_* names (the Mac's) falls back to the
         # `[daemon] operator_user_id` and `operator_email` it pinned in listener.toml.  Without
@@ -970,8 +972,29 @@ class Daemon:
         )
 
     # ---- config ------------------------------------------------------------------------------
+    def _remember_operator_settings(self) -> None:
+        if (
+            self._operator_settings_lock_fd is None
+            or getattr(self, "deferred", False)
+            or self.refusal
+            or self.config.errors
+            or self.config.operator_settings_source != "infisical"
+            or self.config.operator_settings_document is None
+        ):
+            return
+        from .server import operator_settings
+
+        try:
+            operator_settings.remember_verified(
+                Path(self.config_path), self.config.operator_settings_document, self.env
+            )
+        except (OSError, operator_settings.SettingsError) as exc:
+            self.log.write("operator-settings-copy-failed", reason=type(exc).__name__)
+
     def partition_check(self, cfg: C.Config) -> list[str]:
         """Why this config must not run here (the seat partition), or []."""
+        if cfg.operator_settings_error:
+            return ["canonical Operator settings unavailable; retain the accepted configuration"]
         partition, error = C.load_partition(self.partition_file)
         if error:
             return [error + "; cannot check the seat partition, so no seat is held"]
@@ -1748,7 +1771,7 @@ class Daemon:
 
     def reload(self) -> None:
         self.reload_at = self.clock.time()
-        new = C.load(self.root, self.config_path)
+        new = C.load(self.root, self.config_path, environ=self.env)
         refused = self.partition_check(new)
         if refused:
             # Never a runner for a seat this instance may not hold:  the running config stays.
@@ -1770,6 +1793,7 @@ class Daemon:
         self._configure_outgoing_webhook()
         self._configure_listener_api()
         self._configure_linear_comments()
+        self._remember_operator_settings()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
 
     def _recover_ledgers(self) -> None:
@@ -1831,13 +1855,14 @@ class Daemon:
             runner.stop.set()
         self.seats = {}
         self.coalescer.pending.clear()
-        self.config = C.load(self.root, self.config_path)
+        self.config = C.load(self.root, self.config_path, environ=self.env)
         self.refusal = self.partition_check(self.config)
         if self.refusal:
             self.config.seats = {}
         self.reload_refused = []
         self.config_notified = False
         self._apply_config()
+        self._remember_operator_settings()
         self._recover_ledgers()
         self.deferred = False
         self.log.write("rebuilt-after-wait", seats=sorted(self.seats))
@@ -2032,6 +2057,7 @@ class Daemon:
             operator_user_id=OPV.pinned_user_id(self.env),
             seat_has_routine=runner.cfg.routine is not None,
             topic_ledger=self.topic_ledger,
+            bracket_recipient_wakes=runner.cfg.bracket_recipient_wakes,
         )
 
     def fleet_bot_names(self, runner: SeatRunner) -> dict[str, str]:
@@ -2314,9 +2340,10 @@ class Daemon:
             or message_id in runner.edit_ring
         ):
             return
-        if not R.tags_seat(str(event.get("content") or ""), runner.me) or R.tags_seat(
-            str(event.get("orig_content") or ""), runner.me
-        ):
+        bracket_ok = runner.cfg.bracket_recipient_wakes
+        if not R.tags_seat(
+            str(event.get("content") or ""), runner.me, bracket_ok=bracket_ok
+        ) or R.tags_seat(str(event.get("orig_content") or ""), runner.me, bracket_ok=bracket_ok):
             return
         try:
             fetched = runner.client.get("messages/%d" % message_id, {"apply_markdown": "false"})
@@ -2330,7 +2357,7 @@ class Daemon:
             return
         message = dict(fetched.get("message") or {})
         if message.get("type") == "private" or not R.tags_seat(
-            str(message.get("content") or ""), runner.me
+            str(message.get("content") or ""), runner.me, bracket_ok=bracket_ok
         ):
             return  # a DM, or edited again since:  the newer edit's own event decides
         message["id"] = message_id
@@ -8218,6 +8245,8 @@ class Daemon:
                 "wakes_24h": len(day),
                 "routes_24h": W.routes_in(views.values(), now),
                 "route_enabled": bool(self.config.route_enabled and runner.cfg.route_enabled),
+                # Additive:  a reader that predates the switch ignores it (AFC-643-style decode).
+                "bracket_recipient_wakes": bool(runner.cfg.bracket_recipient_wakes),
                 # No dollar figures in the status at all (owner 2026-10-13):  the per-run cost of a wake was
                 # never a real signal, while the COUNT caps are what actually bound a seat.
                 "budget": runner.cfg.budget,
@@ -8251,6 +8280,20 @@ class Daemon:
             # SIGHUP can tell a refused reload from an accepted one with soft config errors.
             "reload_refused": [self.scrub(e) for e in self.reload_refused],
             "reload_at": self.reload_at,
+            "channel_names": sorted(
+                {
+                    name
+                    for runner in self.seats.values()
+                    for name in getattr(runner, "streams", {}).values()
+                    if isinstance(name, str) and 0 < len(name) <= 60
+                }
+            )[:500],
+            "operator_settings_revision": (
+                self.config.operator_settings_revision
+                if not self.refusal and not self.config.errors
+                else None
+            ),
+            "operator_settings_snapshot_revision": self.config.operator_settings_snapshot_revision,
             # Which partition this listener goes by, so a tool that decides who holds a seat reads
             # this copy and not whichever one its own checkout has.
             "partition_file": self.partition_file,
@@ -8787,6 +8830,7 @@ class Daemon:
         while True:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._operator_settings_lock_fd = lock_fd
                 break
             except OSError:
                 if waiting and self.stop.is_set():
@@ -8809,8 +8853,10 @@ class Daemon:
         if waiting or self.deferred:
             self.rebuild_from_disk()
             if self.refusal:  # the config changed while this listener waited
+                self._operator_settings_lock_fd = None
                 os.close(lock_fd)
                 return self.refuse_start()
+        self._remember_operator_settings()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
         self._configure_linear_comments()
@@ -8897,6 +8943,7 @@ class Daemon:
                 self.tick()
         finally:
             self.shutdown()
+            self._operator_settings_lock_fd = None
             os.close(lock_fd)
         return 0
 

@@ -192,7 +192,7 @@ class CliAliasTests(Harness):
             with self.subTest(raw=raw):
                 result = self.run_cli("post", "--topic", "alias test", "--to", raw, "hi")
                 self.assertEqual(result.code, 0, result.err)
-                self.assertEqual(self.fake.messages[-1]["content"], "[CLAUDE·%s→GROK] @**Grok** hi" % TAG)
+                self.assertEqual(self.fake.messages[-1]["content"], '[CLAUDE·%s → GROK] @**Grok** hi' % TAG)
 
     def test_to_still_refuses_a_name_that_is_nobody(self) -> None:
         for raw in ("GROKBUILDER", "grok2build", "grok-build-bot", "NOSUCHSEAT", "GROK-WEB"):

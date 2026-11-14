@@ -10,6 +10,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from unittest import mock
 
 from fleet_rag import collection_health
 from fleet_rag.core import FleetRagError
@@ -294,6 +295,27 @@ class CollectionHealthTests(HermeticTestCase):
                 fetch,
             )
         self.assertEqual(caught.exception.reason, "machine-identity:INFISICAL_CLIENT_ID")
+
+    def test_direct_primary_api_does_not_borrow_an_ambient_project_binding(self) -> None:
+        import fleet_infisical as shared
+        from fleet_knobs.tests._fake import fixture_service_token
+
+        env = {
+            "HOME": str(self.home),
+            "INFISICAL_TOKEN": fixture_service_token(),
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": fixture_service_token(),
+            "INFISICAL_WRITE_TOKEN": fixture_service_token(),
+        }
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(
+                shared, "bounded_fetch_project", side_effect=AssertionError("ambient reader used")
+            ) as fetch,
+        ):
+            with self.assertRaises(collection_health.CollectionHealthError) as caught:
+                collection_health.read_config(env)
+            fetch.assert_not_called()
+        self.assertIn("FLEET_RECALL_INFISICAL_TOKEN", caught.exception.reason)
 
     def test_main_disabled_exits_zero(self) -> None:
         env = self.env()

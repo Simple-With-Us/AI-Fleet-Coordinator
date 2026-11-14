@@ -24,7 +24,7 @@ class ScopedSeatKeyTests(unittest.TestCase):
                     "projectId": seat_key.INFISICAL_PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
-                    "expiresAt": None,
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             name = path.split("/v3/secrets/raw/", 1)[1].split("?", 1)[0]
             value = {"EMAIL": "seat@example.test", "KEY": "synthetic-zulip-key"}[name]
@@ -63,7 +63,7 @@ class ScopedSeatKeyTests(unittest.TestCase):
                 "projectId": "00000000-0000-4000-8000-000000000001",
                 "permissions": ["read"],
                 "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
-                "expiresAt": None,
+                "expiresAt": "2099-01-01T00:00:00Z",
             }
 
         token_name = seat_key.AFC_TOKEN_ENV

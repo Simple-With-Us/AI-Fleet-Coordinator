@@ -37,8 +37,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from . import git_read
 from .app_tokens import AppTokenError, missing_app_credential
 from .audit import AuditLog, BootstrapDenialAuditor, UnauthorizedAuditor
-from .github_client import DispatchPreReadUnavailable, GitHubClient, RelayGitHubError
-from .outcomes import OutcomeStore, OutcomeStoreError, key_for
+from .github_client import (
+    DispatchPreReadUnavailable,
+    GitHubClient,
+    RelayGitHubError,
+    intent_branch_ref,
+)
+from .outcomes import MAX_CAPACITY, OutcomeStore, OutcomeStoreError, key_for
 from .policy import (
     DEFAULT_RATE_PER_HOUR,
     DEFAULT_WRITE_RATE_PER_HOUR,
@@ -241,13 +246,14 @@ def _validate_args(action: str, args: dict) -> dict:
     if action == "workflow_dispatch":
         intent = canonical.get("intent_id")
         expected = canonical.get("expected_head_sha")
-        if (intent is None) != (expected is None):
-            raise ValueError("intent_id and expected_head_sha must be supplied together")
-        if intent is not None and (
-            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent)
-            or not re.fullmatch(r"[0-9a-f]{40}", expected)
-        ):
+        if expected is not None and intent is None:
+            raise ValueError("expected_head_sha requires intent_id")
+        if intent is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}", intent):
             raise ValueError("invalid dispatch intent or expected source")
+        if expected is not None and not re.fullmatch(r"[0-9a-f]{40}", expected):
+            raise ValueError("invalid dispatch intent or expected source")
+        if intent is not None and not intent_branch_ref(canonical.get("ref")):
+            raise ValueError("intent dispatch requires a canonical branch name")
     GitHubClient._check_repo(canonical["repo"])
     return canonical
 
@@ -1046,7 +1052,7 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
             if token is not None:
                 self.app_minter.revoke_installation_token(token)
     required = dict(ACTION_REQUIRED_PERMISSIONS[action])
-    if action == "workflow_dispatch" and args.get("intent_id"):
+    if action == "workflow_dispatch" and args.get("expected_head_sha"):
         required["contents"] = "read"
     missing = _perm_within_ceiling(required, ceiling)
     if missing:
@@ -1505,6 +1511,27 @@ def _build_assertion_verifier():
         raise SystemExit(f"git-relay config: {exc}") from exc
 
 
+OUTCOMES_CAPACITY_KEY = "GIT_RELAY_OUTCOMES_MAX_ENTRIES"
+MIN_PRODUCTION_OUTCOMES = 5_000
+
+
+def _outcome_capacity_from_source(source) -> int:
+    """One folder-proven startup setting; no environment override or fallback."""
+    value = source.verified_secret(OUTCOMES_CAPACITY_KEY)
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{3,4}", value):
+        raise ValueError(
+            f"{OUTCOMES_CAPACITY_KEY} must be an integer from "
+            f"{MIN_PRODUCTION_OUTCOMES} to {MAX_CAPACITY}"
+        )
+    capacity = int(value)
+    if not MIN_PRODUCTION_OUTCOMES <= capacity <= MAX_CAPACITY:
+        raise ValueError(
+            f"{OUTCOMES_CAPACITY_KEY} must be an integer from "
+            f"{MIN_PRODUCTION_OUTCOMES} to {MAX_CAPACITY}"
+        )
+    return capacity
+
+
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
@@ -1524,22 +1551,8 @@ def from_env() -> Relay:
         ):
             raise SystemExit("git-relay config: file seat policy invalid or unreadable") from None
         raise SystemExit(f"git-relay config: {exc}") from exc
-    client = GitHubClient(_owner_token_from_cli())
-    # An explicitly configured path is the operator's business:  adoption only
-    # covers the built-in defaults.
-    audit_path = (
-        os.environ["GIT_RELAY_AUDIT_PATH"]
-        if "GIT_RELAY_AUDIT_PATH" in os.environ
-        else adopt_legacy_state(DEFAULT_AUDIT_PATH)
-    )
-    outcomes_path = (
-        os.environ["GIT_RELAY_OUTCOMES_PATH"]
-        if "GIT_RELAY_OUTCOMES_PATH" in os.environ
-        else adopt_legacy_state(DEFAULT_OUTCOMES_PATH)
-    )
-    audit = AuditLog(audit_path)
-    outcomes = OutcomeStore(outcomes_path)
-    app_minter = None
+    app_source = None
+    outcome_capacity = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
         # App-credential reads go through the fleet-secrets CLI only (owner
         # decision 2026-10-21:  no env secrets, no direct Infisical).  The CLI
@@ -1560,21 +1573,43 @@ def from_env() -> Relay:
                 "unset it to use /github-apps"
             )
         try:
-            app_minter = AppTokenMinter(
-                FleetSecretsSource(
-                    path=(raw_secrets_path or "/github-apps").strip(),
-                    credential_file=_credential_file_for(
-                        "the App-credentials source",
-                        "GIT_RELAY_APPS_CREDENTIAL_FILE",
-                        "git-relay-apps-token",
-                    ),
-                ),
-                lambda method, path, bearer, payload=None: client._call(
-                    method, path, payload, bearer=bearer
+            app_source = FleetSecretsSource(
+                path=(raw_secrets_path or "/github-apps").strip(),
+                credential_file=_credential_file_for(
+                    "the App-credentials source",
+                    "GIT_RELAY_APPS_CREDENTIAL_FILE",
+                    "git-relay-apps-token",
                 ),
             )
-        except AppTokenError as exc:
+            # Read before any state adoption/load.  A missing or invalid policy
+            # never activates a guessed capacity or alters the existing ledger.
+            outcome_capacity = _outcome_capacity_from_source(app_source)
+        except (AppTokenError, ValueError) as exc:
             raise SystemExit(f"git-relay config: {exc}") from exc
+    client = GitHubClient(_owner_token_from_cli())
+    app_minter = None
+    if app_source is not None:
+        app_minter = AppTokenMinter(
+            app_source,
+            lambda method, path, bearer, payload=None: client._call(
+                method, path, payload, bearer=bearer
+            ),
+        )
+    # An explicitly configured path is the operator's business:  adoption only
+    # covers the built-in defaults.
+    audit_path = (
+        os.environ["GIT_RELAY_AUDIT_PATH"]
+        if "GIT_RELAY_AUDIT_PATH" in os.environ
+        else adopt_legacy_state(DEFAULT_AUDIT_PATH)
+    )
+    outcomes_path = (
+        os.environ["GIT_RELAY_OUTCOMES_PATH"]
+        if "GIT_RELAY_OUTCOMES_PATH" in os.environ
+        else adopt_legacy_state(DEFAULT_OUTCOMES_PATH)
+    )
+    audit = AuditLog(audit_path)
+    # App-disabled legacy startup keeps the auth-free library default.
+    outcomes = OutcomeStore(outcomes_path, max_entries=outcome_capacity)
     return Relay(
         policy,
         client,

@@ -134,6 +134,7 @@ SEAT_KEYS: frozenset[str] = frozenset(
         "held_back",
         "live",
         "routine",
+        "bracket_recipient_wakes",
         "email_env",
         "key_env",
         "site_env",
@@ -507,6 +508,7 @@ class SeatConfig:
         fallback_uncontained_ok: bool = False,
         fallback_model: str = OPENROUTER_FALLBACK_MODEL,
         typing_indicator: bool = False,
+        bracket_recipient_wakes: bool = False,
         bearer_file: str | None = None,
         config_problems: list[str] | None = None,
     ) -> None:
@@ -557,6 +559,12 @@ class SeatConfig:
         # the conversation, so each seat turns it on for itself.  The indicator is cosmetic and
         # never changes whether the seat answers.
         self.typing_indicator = typing_indicator
+        # The per-seat switch for bracket-recipient wakes.  Off by default:  a post whose leading
+        # header names the seat in its recipient list (after the arrow) then counts as addressing
+        # the seat the way its own mention does, so the seat wakes without an @.  Only the
+        # recipient list counts - never the header's sender tag, and never code or quotes - and
+        # every wake guard (loop guard, budgets, coalescing) applies unchanged.
+        self.bracket_recipient_wakes = bracket_recipient_wakes
         self.held_back: dict[str, Any] = (
             held_back if held_back is not None else held_back_defaults(wake)
         )
@@ -623,6 +631,11 @@ class SeatConfig:
 class Config:
     def __init__(self) -> None:
         self.raw: dict[str, Any] = {}
+        self.operator_settings_revision: str | None = None
+        self.operator_settings_document: dict | None = None
+        self.operator_settings_source: str | None = None
+        self.operator_settings_error = False
+        self.operator_settings_snapshot_revision: str | None = None
         # `[decider.consult_backup]`:  the decider's OpenRouter declaration as written (None when the
         # file has none), its parsed form (None when absent or malformed), and the table it was read
         # from ("decider", or "muse_bridge" for a config that still holds the old location).
@@ -1426,6 +1439,12 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(typing_indicator, bool):
             wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
             typing_indicator = False
+        bracket_recipient_wakes = section.get("bracket_recipient_wakes", False)
+        if not isinstance(bracket_recipient_wakes, bool):
+            wake_problems.append(
+                "seat.%s.bracket_recipient_wakes must be true or false" % seat_name
+            )
+            bracket_recipient_wakes = False
         if "bearer_locator" in section:
             wake_problems.append(
                 "seat.%s.bearer_locator is retired:  name bearer_file instead, an absolute path to the "
@@ -1716,6 +1735,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback_uncontained_ok=uncontained,
             fallback_model=fallback_model,
             typing_indicator=typing_indicator,
+            bracket_recipient_wakes=bracket_recipient_wakes,
             bearer_file=bearer_file,
             config_problems=wake_problems,
         )
@@ -1811,10 +1831,30 @@ def _refuse_shared_env(cfg: Config) -> None:
             cfg.skipped_seats.setdefault(seat, []).append(reason)
 
 
-def load(root: str, path: str | None = None) -> Config:
+def load(root: str, path: str | None = None, *, environ=None) -> Config:
     path = path or os.path.join(root, L.CONFIG_NAME)
     raw, error = L.load_config(root, path)
+    settings_metadata = None
+    settings_error = False
+    env = os.environ if environ is None else environ
+    if not error and env.get("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"):
+        from .server import operator_settings
+
+        try:
+            raw, settings_metadata = operator_settings.load_runtime(raw, path, environ=env)
+        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
+            error = "canonical Operator settings unavailable; no verified configuration was loaded"
+            settings_error = True
     cfg = from_dict(raw)
+    cfg.operator_settings_error = settings_error
+    if settings_metadata:
+        cfg.operator_settings_revision = settings_metadata["revision"]
+        cfg.operator_settings_document = settings_metadata["document"]
+        cfg.operator_settings_source = settings_metadata["source"]
+    if cfg.operator_settings_source == "verified-copy":
+        cfg.warnings.append(
+            "Operator settings refresh failed; using the verified last-known-good copy"
+        )
     if error:
         cfg.errors.insert(0, error)
     elif not raw:
@@ -1824,6 +1864,16 @@ def load(root: str, path: str | None = None) -> Config:
             "daemon.owner_user_id is 0 (not pinned): nothing is treated as the owner and nothing wakes; "
             "run simple-chat daemon init"
         )
+    if cfg.instance == "server" and not cfg.errors:
+        from .server import operator_settings
+
+        try:
+            snapshot = operator_settings.accepted_snapshot(raw, operator_settings._manifest())
+            cfg.operator_settings_snapshot_revision = operator_settings.revision(snapshot)
+        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
+            # Existing listeners remain usable before migration; initialization
+            # refuses when no complete schema-valid accepted snapshot exists.
+            pass
     return cfg
 
 

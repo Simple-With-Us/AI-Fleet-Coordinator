@@ -44,6 +44,7 @@ private let allowlistJSON = """
   "seat": {
     "enabled": {"type": "bool"},
     "wake": {"type": "enum", "values": ["inbox", "http"]},
+    "bracket_recipient_wakes": {"type": "bool"},
     "creds": {"type": "string", "pattern": "[a-z]+", "maxLength": 8},
     "routine": {"type": "table", "keys": {
       "url_env": {"type": "seat-env"},
@@ -262,9 +263,9 @@ final class ServerListenerSettingsTests: XCTestCase {
     }
 
     /// Pinned from the checkout's real allowlist copy, with every key it lists given a value:  only
-    /// each seat's `enabled` and `wake` are editable, so a key added to the allowlist later never
-    /// becomes editable by accident.
-    func test_the_real_allowlist_makes_only_enabled_and_wake_editable() throws {
+    /// each seat's sendable keys (`enabled`, `wake` and the optional wake switches) are
+    /// editable, so a key added to the allowlist later never becomes editable by accident.
+    func test_the_real_allowlist_makes_only_the_sendable_seat_keys_editable() throws {
         let list = try realAllowlist()
         var settings: [String: ServerSettingValue] = [:]
         for seat in ["CLAUDE", "JET"] {
@@ -276,7 +277,8 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertNotNil(settings["seat.CLAUDE.routine"]?.tableEntries, "the seats have a routine table")
         let rows = ServerSettingsBuilder.groups(settings: settings, allowlist: list).flatMap(\.rows)
         let editable = Set(rows.filter(\.isEditable).map(\.id))
-        XCTAssertEqual(editable, ["seat.CLAUDE.enabled", "seat.CLAUDE.wake", "seat.JET.enabled", "seat.JET.wake"])
+        XCTAssertEqual(editable, ["seat.CLAUDE.bracket_recipient_wakes", "seat.CLAUDE.enabled", "seat.CLAUDE.wake",
+                                  "seat.JET.bracket_recipient_wakes", "seat.JET.enabled", "seat.JET.wake"])
         // A routine's timing and cost are knobs, even on a seat that has a routine.
         for id in ["seat.CLAUDE.routine.timeout_seconds", "seat.CLAUDE.routine.cost_usd"] {
             let knob = try XCTUnwrap(rows.first { $0.id == id }, id)
@@ -333,7 +335,8 @@ final class ServerListenerSettingsTests: XCTestCase {
     }
 
     /// Owner's rule (Nov 11, 2026):  a knob's home is Infisical, so Muster never writes one into the
-    /// server's listener file.  Only a seat's `enabled` and `wake` are editable here.
+    /// server's listener file.  Only a seat's sendable keys are editable here:  its `enabled`
+    /// and `wake` routing and its optional wake switches (`bracket_recipient_wakes`).
     func test_a_knob_is_shown_and_never_written_through_the_settings_editor() throws {
         for id in ["daemon.coalesce_seconds", "daemon.held_back_catch_up", "linear_comments.enabled",
                    "seat.CLAUDE.budget.wakes_per_day", "seat.CLAUDE.budget.wakes_per_hour",
@@ -350,6 +353,9 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertEqual(try row("seat.CLAUDE.enabled").control, .toggle)
         XCTAssertTrue(try row("seat.CLAUDE.wake").isEditable)
         XCTAssertEqual(try row("seat.CLAUDE.wake").control, .choice(["inbox", "http"]))
+        // The optional wake switch is listener-file config, not a knob:  editable, a toggle.
+        XCTAssertTrue(try row("seat.CLAUDE.bracket_recipient_wakes").isEditable)
+        XCTAssertEqual(try row("seat.CLAUDE.bracket_recipient_wakes").control, .toggle)
         for edits in [["daemon.held_back_catch_up": "On"], ["seat.CLAUDE.budget.wakes_per_day": "50"],
                       ["seat.CLAUDE.routine.timeout_seconds": "20"]] {
             guard case .failure(.readOnly) = ServerSettingsBuilder.request(edits: edits, rows: try rows()) else {
@@ -357,11 +363,13 @@ final class ServerListenerSettingsTests: XCTestCase {
             }
         }
         XCTAssertEqual(ServerSettingsBuilder.seatStructureKeys, ["enabled", "wake"])
+        XCTAssertEqual(ServerSettingsBuilder.seatOptionalWakeKeys, ["bracket_recipient_wakes"])
+        XCTAssertEqual(ServerSettingsBuilder.seatSendableKeys, ["bracket_recipient_wakes", "enabled", "wake"])
     }
 
-    /// The request gate refuses every key but a seat's `enabled` and `wake`, whatever built the
+    /// The request gate refuses every key but a seat's sendable keys, whatever built the
     /// request, so no knob reaches the server even past the rows.
-    func test_only_a_seats_enabled_and_wake_are_sendable_and_every_knob_key_is_refused() throws {
+    func test_only_a_seats_sendable_keys_are_sendable_and_every_knob_key_is_refused() throws {
         let refused: [String: ServerSettingValue] = [
             "daemon.coalesce_seconds": .number(30),
             "daemon.held_back_catch_up": .bool(true),
@@ -389,6 +397,7 @@ final class ServerListenerSettingsTests: XCTestCase {
             "seat.CLAUDE.enabled": .bool(false),
             "seat.CLAUDE.wake": .text("http"),
             "seat.BF-HOUSEKEEPER.wake": .text("inbox"),
+            "seat.CLAUDE.bracket_recipient_wakes": .bool(true),
         ]
         for (key, value) in accepted {
             XCTAssertTrue(ServerListenerSettingsRequest.isOfferableKey(key), key)
@@ -451,6 +460,74 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertNil(budget.defaultNote)
         let unread = try XCTUnwrap(rows.first { $0.id == "seat.AMP.budget.wakes_per_hour" })
         XCTAssertEqual(unread.currentText, "Not read")
+    }
+
+    /// The bracket-recipient wake switch:  a seat whose file sets nothing is Off by default
+    /// (`scripts/simple_tools/config.py`), drawn Off with the default note, editable as a toggle,
+    /// and only turning it On plans anything.
+    func test_the_bracket_wake_switch_is_off_by_default_and_only_turning_it_on_plans() throws {
+        let settings: [String: ServerSettingValue] = ["seat.AMP.budget": .table(["wakes_per_day": .int(5)])]
+        let rows = ServerSettingsBuilder.groups(settings: settings, allowlist: try allowlist()).flatMap(\.rows)
+        let row = try XCTUnwrap(rows.first { $0.id == "seat.AMP.bracket_recipient_wakes" })
+        XCTAssertEqual(row.title, "Bracket Recipient Wakes")
+        XCTAssertEqual(row.control, .toggle)
+        XCTAssertTrue(row.isEditable)
+        XCTAssertNil(row.current, "the file sets no value, so a plan's old value reads as not set")
+        XCTAssertEqual(row.defaultValue, .bool(false))
+        XCTAssertEqual(row.effective, .bool(false))
+        XCTAssertEqual(row.currentText, "Off")
+        XCTAssertTrue(row.showsDefault)
+        XCTAssertEqual(row.defaultNote, ServerSettingsCopy.daemonDefault)
+
+        // Off when the file holds nothing is already the daemon's state:  nothing to plan.
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.AMP.bracket_recipient_wakes": "Off"], rows: rows),
+                       .failure(.nothingChanged))
+        // On plans a true, in the editor's own shape.
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.AMP.bracket_recipient_wakes": "On"], rows: rows),
+                       .success(ServerListenerSettingsRequest(set: ["seat.AMP.bracket_recipient_wakes": .bool(true)])))
+        // Anything but On or Off is refused, and one bad value sinks the whole request.
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.AMP.bracket_recipient_wakes": "maybe"], rows: rows),
+                       .failure(.notAValue("Bracket Recipient Wakes must be on or off.")))
+        let mixed = ServerSettingsBuilder.request(
+            edits: ["seat.AMP.bracket_recipient_wakes": "On", "seat.AMP.enabled": "maybe"], rows: rows)
+        guard case .failure(.notAValue) = mixed else { return XCTFail("\(mixed)") }
+
+        // A value the file sets is shown as it is, with no default note, and turning it back off
+        // plans a false.
+        let on = ServerSettingsBuilder.groups(
+            settings: ["seat.AMP.bracket_recipient_wakes": .bool(true)], allowlist: try allowlist()
+        ).flatMap(\.rows)
+        let onRow = try XCTUnwrap(on.first { $0.id == "seat.AMP.bracket_recipient_wakes" })
+        XCTAssertEqual(onRow.current, .bool(true))
+        XCTAssertEqual(onRow.currentText, "On")
+        XCTAssertFalse(onRow.showsDefault)
+        XCTAssertNil(onRow.defaultNote)
+        XCTAssertEqual(ServerSettingsBuilder.request(edits: ["seat.AMP.bracket_recipient_wakes": "Off"], rows: on),
+                       .success(ServerListenerSettingsRequest(set: ["seat.AMP.bracket_recipient_wakes": .bool(false)])))
+    }
+
+    /// A stale checkout copy (one from before the switch) shows the server's value read only with
+    /// the not-on-this-copy reason:  it is never offered for edit from a copy that predates it.
+    func test_the_bracket_wake_switch_on_a_stale_allowlist_copy_is_read_only() throws {
+        let staleJSON = """
+        {
+          "schemaVersion": 1,
+          "applyEnabled": false,
+          "seat": {
+            "enabled": {"type": "bool"},
+            "wake": {"type": "enum", "values": ["inbox", "http"]}
+          },
+          "tables": {}
+        }
+        """
+        let stale = try XCTUnwrap(ServerSettingsAllowlist.parse(Data(staleJSON.utf8)))
+        let rows = ServerSettingsBuilder.groups(
+            settings: ["seat.CLAUDE.bracket_recipient_wakes": .bool(true)], allowlist: stale
+        ).flatMap(\.rows)
+        let row = try XCTUnwrap(rows.first { $0.id == "seat.CLAUDE.bracket_recipient_wakes" })
+        XCTAssertFalse(row.isEditable)
+        XCTAssertEqual(row.readOnlyReason, ServerSettingsCopy.notOnThisCopy)
+        XCTAssertEqual(row.current, .bool(true), "the server's value is still shown")
     }
 
     // MARK: What one Show Plan sends
@@ -579,7 +656,8 @@ final class ServerListenerSettingsTests: XCTestCase {
         XCTAssertEqual(try shown("seat.JET.wake").current, .text("inbox"))
         XCTAssertEqual(try shown("seat.CLAUDE.wake").current, .text("http"))
         XCTAssertEqual(Set(rows.filter(\.isEditable).map(\.id)),
-                       ["seat.CLAUDE.enabled", "seat.CLAUDE.wake", "seat.JET.enabled", "seat.JET.wake"])
+                       ["seat.CLAUDE.bracket_recipient_wakes", "seat.CLAUDE.enabled", "seat.CLAUDE.wake",
+                        "seat.JET.bracket_recipient_wakes", "seat.JET.enabled", "seat.JET.wake"])
     }
 
     func test_a_failed_read_is_unavailable_and_says_why() {
