@@ -252,10 +252,21 @@ class OutcomeStore:
                 ):
                     raise OutcomeStoreError(f"invalid key {key!r}")
                 if "released_at" in entry:
+                    released_at = entry.get("released_at")
+                    marker_state = entry.get("state")
+                    if (
+                        isinstance(released_at, bool)
+                        or not isinstance(released_at, (int, float))
+                        or marker_state not in STATES
+                    ):
+                        raise OutcomeStoreError(f"invalid release marker for {key!r}")
                     held.pop(key, None)
                     released.add(key)
                 else:
                     row = _validate_row(self._archive_path, key, entry["row"])
+                    corr = row.get("corr")
+                    if corr is not None and (not isinstance(corr, str) or not corr):
+                        raise OutcomeStoreError(f"invalid archived corr for {key!r}")
                     held[key] = self._archive_meta(key, row)
                     released.discard(key)
             except (ValueError, KeyError, TypeError, OutcomeStoreError) as exc:
@@ -264,9 +275,7 @@ class OutcomeStore:
                     "refusing to continue (evidence file untouched)"
                 ) from exc
         if not tail_ok:
-            quarantined = f"{self._archive_path}.corrupt-{int(self._clock())}"
-            with open(quarantined, "wb") as fh:
-                fh.write(lines[-1])
+            self._quarantine(lines[-1])
             keep = sum(len(line) + 1 for line in body)
             fd = os.open(self._archive_path, os.O_WRONLY)
             try:
@@ -287,6 +296,36 @@ class OutcomeStore:
             self._archived = folded
             self._save_index()
         return folded
+
+    def _quarantine(self, fragment: bytes) -> str:
+        """Preserve an unreadable fragment beside the archive, durably and without
+        ever overwriting earlier evidence:  a unique name (clock + uuid, exclusive
+        create), fsynced before the caller mutates the log it came from."""
+        while True:
+            quarantined = (
+                f"{self._archive_path}.corrupt-{int(self._clock())}-{uuid.uuid4().hex}"
+            )
+            try:
+                fd = os.open(quarantined, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                break
+            except FileExistsError:
+                continue
+        try:
+            view = memoryview(fragment)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OutcomeStoreError(f"short write to quarantine {quarantined!r}")
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        dirfd = os.open(os.path.dirname(os.path.abspath(quarantined)) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+        return quarantined
 
     def _save_index(self) -> None:
         tmp = self._index_path + ".tmp"
@@ -328,9 +367,7 @@ class OutcomeStore:
                 if not tail.endswith(b"\n"):
                     cut = tail.rfind(b"\n")
                     good_end = (offset - len(tail)) + cut + 1 if cut >= 0 else 0
-                    quarantined = f"{self._archive_path}.corrupt-{int(self._clock())}"
-                    with open(quarantined, "ab") as fh:
-                        fh.write(os.pread(fd, offset - good_end, good_end))
+                    self._quarantine(os.pread(fd, offset - good_end, good_end))
                     os.ftruncate(fd, good_end)
                     os.fsync(fd)
                     offset = good_end

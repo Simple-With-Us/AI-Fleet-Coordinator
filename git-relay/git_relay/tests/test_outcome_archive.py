@@ -392,5 +392,87 @@ class ArchiveTestCase(unittest.TestCase):
         self.assertEqual(len(self.read_archive()), 2 * ARCHIVE_BATCH)
 
 
+class ArchiveHardeningTests(ArchiveTestCase):
+    """Failure-path pins for the archive consumption and quarantine fixes."""
+
+    def write_raw_archive(self, lines):
+        with open(self.archive, "wb") as fh:
+            fh.write(b"".join(line + b"\n" for line in lines))
+
+    def row_line(self, key, state="unknown", corr=None):
+        row = {"state": state, "ts": 1.0}
+        if corr is not None:
+            row["corr"] = corr
+        return json.dumps({"key": key, "archived_at": 2.0, "row": row}).encode()
+
+    def marker_line(self, key, released_at=3.0, state="refused"):
+        return json.dumps(
+            {"key": key, "released_at": released_at, "state": state}
+        ).encode()
+
+    def test_valid_marker_releases_and_bad_released_at_fails_closed(self):
+        key = hexkey(0)
+        self.write_raw_archive([self.row_line(key), self.marker_line(key)])
+        store = OutcomeStore(self.path, clock=self.clock)
+        self.assertIsNone(store.begin(key), "valid release marker releases the key")
+        # A non-numeric released_at must not release:  the load fails closed.
+        self.write_raw_archive(
+            [self.row_line(key), self.marker_line(key, released_at="junk")]
+        )
+        with self.assertRaises(OutcomeStoreError):
+            OutcomeStore(self.path, clock=self.clock)
+
+    def test_marker_with_bad_state_fails_closed(self):
+        key = hexkey(0)
+        self.write_raw_archive(
+            [self.row_line(key), self.marker_line(key, state="junk")]
+        )
+        with self.assertRaises(OutcomeStoreError):
+            OutcomeStore(self.path, clock=self.clock)
+        # Evidence file untouched by the refused fold.
+        self.assertEqual(len(self.read_archive()), 2)
+
+    def test_archived_row_with_bad_corr_fails_closed(self):
+        for bad in (123, ""):
+            self.write_raw_archive([self.row_line(hexkey(0), corr=bad)])
+            with self.assertRaises(OutcomeStoreError, msg=f"corr={bad!r}"):
+                OutcomeStore(self.path, clock=self.clock)
+
+    def test_same_second_quarantines_never_overwrite(self):
+        class FixedClock:
+            def __call__(self):
+                return 1_700_000_000.0
+
+        self.write_raw_archive([self.row_line(hexkey(0))])
+        # Tear the tail:  first load quarantines fragment one.
+        with open(self.archive, "ab") as fh:
+            fh.write(b"{torn-one")
+        OutcomeStore(self.path, clock=FixedClock())
+        # Tear it again in the same second:  the second quarantine must not
+        # truncate the first.
+        with open(self.archive, "ab") as fh:
+            fh.write(b"{torn-two")
+        OutcomeStore(self.path, clock=FixedClock())
+        quarantined = sorted(
+            p for p in self.dir.iterdir() if ".corrupt-" in p.name
+        )
+        self.assertEqual(len(quarantined), 2)
+        bodies = {p.read_bytes() for p in quarantined}
+        self.assertEqual(bodies, {b"{torn-one", b"{torn-two"})
+
+    def test_quarantine_is_fsynced_before_the_log_is_truncated(self):
+        self.write_raw_archive([self.row_line(hexkey(0))])
+        with open(self.archive, "ab") as fh:
+            fh.write(b"{torn")
+        fsyncs = []
+        real_fsync = os.fsync
+        with mock.patch.object(
+            outcomes.os, "fsync", lambda fd: (fsyncs.append(fd), real_fsync(fd))[1]
+        ):
+            OutcomeStore(self.path, clock=self.clock)
+        # quarantine fd + archive fd + quarantine dir fd, at minimum.
+        self.assertGreaterEqual(len(fsyncs), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
