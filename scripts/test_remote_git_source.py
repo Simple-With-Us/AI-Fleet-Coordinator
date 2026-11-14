@@ -697,7 +697,7 @@ class RemoteGitSourceTests(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {"SIMPLE_TOOLS_BEARER": "fixture-process-only"}),
-            patch.object(exporter.subprocess, "run", side_effect=run),
+            patch.object(exporter, "run_child", side_effect=run),
             patch.object(Path, "read_text", side_effect=AssertionError("Read a credential path")),
         ):
             self.assertEqual(
@@ -707,7 +707,7 @@ class RemoteGitSourceTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {}, clear=True),
             patch.object(
-                exporter.subprocess, "run", side_effect=AssertionError("Started without a bearer")
+                exporter, "run_child", side_effect=AssertionError("Started without a bearer")
             ),
             self.assertRaises(remote.SourceError),
         ):

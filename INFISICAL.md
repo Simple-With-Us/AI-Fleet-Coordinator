@@ -287,6 +287,9 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `FLEET_AUTOPUSH_IDLE_COMMIT` | C1 | bool | `false` | no | only set it to `false` | true lets the idle backstop commit on its own (mode full only) |
 | `FLEET_AUTOPUSH_IDLE_HOURS` | C1 | int 1 to 168 | `2` | no | only raise it | hours a lane sits unchanged before the backstop sweep acts |
 | `FLEET_AUTOPUSH_PUBLIC_DRAFTS` | C1 | list | empty | no | only remove entries | public repos where a draft PR may open;  empty means none |
+| `CODE_MIRROR_INTERVAL_SECONDS` | OPS-1088 | int 30 to 86400 | `300` | no | nothing | in folder `/code-mirrors`;  time between updates by the existing Mac and server Code mirror jobs |
+| `DOCS_SYNC_ENABLED` | AFC-793 | bool | `false` | no | nothing | in folder `/code-mirrors`;  refresh generated Docs and replicate the validated snapshot after the existing Git sweep |
+| `DOCS_SYNC_CONFIGURATION` | AFC-793 | str | unset | no | nothing | in folder `/code-mirrors`;  JSON profile with the existing SSH peer, exact private opt-ins and verified remote repository identities |
 | `FLEET_FACTS_SIGNING_KEY` | F7 | str | none, fails closed | secret | nothing | HMAC key for the signed facts files;  never cached, a job without it publishes nothing |
 | `FLEET_FACTS_PUBLISH_FULL_COPY` | F7 | bool | `false` | no | only set it to `false` | true also publishes the full mac-facts.json, which keeps lane paths and is readable by everything that can read fleet-loops-data;  false (the default) publishes only the path-free gb/ copy and the full list |
 | `FLEET_FACTS_PUBLISH_CAP_MINUTES` | F7 | int 10 to 60 | `20` | no | only lower it | minutes a publish run may take before it ends itself and its child processes;  10 is the least that leaves room for the gatherers (5 minutes are reserved) and the writes |

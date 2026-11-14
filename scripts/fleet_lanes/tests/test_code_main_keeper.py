@@ -25,7 +25,7 @@ class KeeperEntrypoint(unittest.TestCase):
         self.log = self.home / "apps/logs/code-main-keeper.log"
 
     def shared(self, installed: bool = False, label: str = "sibling") -> Path:
-        base = self.home / ".local/share/fleet-cli/repo/scripts" if installed else self.entry.parent
+        base = self.home / ".local/share/code-mirrors/scripts" if installed else self.entry.parent
         path = base / "fleet_lanes/code_main_sync.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
