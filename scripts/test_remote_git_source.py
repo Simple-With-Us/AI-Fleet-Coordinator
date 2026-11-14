@@ -811,9 +811,34 @@ class RemoteGitSourceTests(unittest.TestCase):
 
     def test_export_cli_casefold_private_consent_exports_then_collects_offline(self):
         self.provider = ProviderFixture(private=True)
-        self.provider.owner_repo = "Simple-With-Us/Fleet-OPS"
-        opt_in = "simple-with-us/fleet-ops"
+        self.provider.owner_repo = "Example-Org/Fixture-Repo"
+        opt_in = "example-org/fixture-repo"
+
+        spec_factory = importlib.util.spec_from_file_location
+
+        def fixture_spec_from_file_location(*args, **kwargs):
+            spec = spec_factory(*args, **kwargs)
+            assert spec is not None and spec.loader is not None
+            real_loader = spec.loader
+            fixture_allowlist = {self.provider.owner_repo.casefold()}
+
+            class FixtureAllowlistLoader:
+                def create_module(self, loaded_spec):
+                    return real_loader.create_module(loaded_spec)
+
+                def exec_module(self, module):
+                    real_loader.exec_module(module)
+                    module.VERIFIED_PRIVATE_DOC_REPOS = fixture_allowlist
+
+            spec.loader = FixtureAllowlistLoader()
+            return spec
+
         with (
+            patch.object(
+                exporter.importlib.util,
+                "spec_from_file_location",
+                side_effect=fixture_spec_from_file_location,
+            ),
             patch.object(exporter, "relay_read", side_effect=self.provider.call),
             redirect_stdout(StringIO()),
         ):
@@ -850,7 +875,7 @@ class RemoteGitSourceTests(unittest.TestCase):
                 git_source_descriptors=[self.descriptor],
                 private_docs_repo=opt_in,
             )
-            mirror = self.output / "Fleet-OPS"
+            mirror = self.output / self.provider.owner_repo.split("/")[1]
             copied = "documents/" + private_path
             self.assertEqual((mirror / copied).read_bytes(), private_bytes)
             manifest = json.loads((mirror / "manifest.json").read_text())
@@ -884,13 +909,13 @@ class RemoteGitSourceTests(unittest.TestCase):
             )
 
     def test_export_cli_rejects_invalid_private_consent_before_provider_reads(self):
-        owner_repo = "Simple-With-Us/Fleet-OPS"
+        owner_repo = "Example-Org/Fixture-Repo"
         for opt_in in (
             None,
             "",
-            " simple-with-us/fleet-ops",
-            "other-owner/Fleet-OPS",
-            "simple-with-us/Fleet-OPS/extra",
+            " example-org/fixture-repo",
+            "other-owner/Fixture-Repo",
+            "example-org/Fixture-Repo/extra",
         ):
             with (
                 self.subTest(opt_in=opt_in),
