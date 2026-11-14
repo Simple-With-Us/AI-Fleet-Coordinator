@@ -433,12 +433,26 @@ class InfisicalFallbackTests(Harness):
             ("MM", "MM"),
             ("AG", "AG"),
             ("OPENCODE", "OPENCODE"),
+            # ZC keeps the acronym seat tag;  its created /zulip records use the ZCODE stem.
+            ("ZC", "ZCODE"),
+            ("Zcode", "ZCODE"),
         ):
             with self.subTest(seat=seat):
                 self.assertEqual(
                     Z.infisical_key_names(Z.normalise_seat(seat)),
                     tuple("%s_ZULIP_%s" % (prefix, part) for part in ("EMAIL", "KEY", "SITE")),
                 )
+
+    def test_zc_override_maps_the_seat_to_its_zcode_records_and_back(self) -> None:
+        # Seat ZC's created Fleet-OPS /zulip records are ZCODE_ZULIP_* (2026-11-03):  the backend
+        # resolves them from the seat alone, never from a caller-chosen prefix.
+        self.assertEqual(Z.credential_file_name("ZC"), "Zcode-zuliprc")
+        self.assertEqual(Z.seat_from_rc_path("/x/Zcode-zuliprc"), "ZC")
+        self.assertEqual(
+            Z.infisical_key_names("ZC"),
+            ("ZCODE_ZULIP_EMAIL", "ZCODE_ZULIP_KEY", "ZCODE_ZULIP_SITE"),
+        )
+        self.assertEqual(Z.seat_from_infisical_prefix("ZCODE"), "ZC")
 
     def test_infisical_credentials_hold_no_value_in_repr_or_source(self) -> None:
         self.seed()
@@ -508,6 +522,8 @@ class SeatTests(Harness):
             ("CODEX-2", "Codex-2-zuliprc"),
             ("OPENCODE", "OpenCode-zuliprc"),
             ("opencode", "OpenCode-zuliprc"),
+            ("ZC", "Zcode-zuliprc"),
+            ("zc", "Zcode-zuliprc"),
         ):
             with self.subTest(seat=seat):
                 self.assertEqual(Z.credential_file_name(seat), expected)
