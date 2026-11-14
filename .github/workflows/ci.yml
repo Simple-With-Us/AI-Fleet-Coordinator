@@ -26,7 +26,7 @@ jobs:
     # Pinned: ubuntu-latest rolled to 26.04 (2026-11-14), whose setup-python manifest has
     # no 3.9 build, and the AFC-616 fleet_view leg below needs a real 3.9.  24.04 still
     # carries it (3.9.25 verified in actions/python-versions).
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # A stalled step once held this job open for over 15 minutes, and a rerun passed.  Each test
     # step has its own limit, about twice its normal run (a stall now fails in minutes and names
     # the step), and the whole job stops at 60 minutes;  a normal run takes 21 to 32 minutes.
