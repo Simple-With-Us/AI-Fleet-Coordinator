@@ -1,7 +1,7 @@
 ---
 name: service-tokens
 description: >-
-  Scoped Infisical service tokens for fleet consumers: mint one narrow grant, store it in the consumer host's own secret store, verify its exact scope in both directions, register the row in the fleet references registry, and retire it on time.  Load BEFORE issuing, rotating, widening or revoking any Infisical service token, before a consumer asks for a key no approved token covers, and before writing anything into a token registry.
+  Create and manage narrowly scoped Infisical service tokens for fleet consumers, store each value in its consumer's host secret store, verify the grant, register nonsecret metadata in the Fleet Reference sheet, and retire tokens safely.  Load before issuing, rotating, widening or revoking a service token, or editing its registry record.
 ---
 
 # Service Tokens
@@ -9,98 +9,296 @@ description: >-
 > **Runtime (Muse Code).**  Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
-## Why this exists
+Give each consumer its own token scoped to exactly the project, environment and folder it needs, read-only unless write access is proven necessary, with an expiry.  Never create or use retired machine identities, borrow another consumer's token, or fall back to `fleet-secrets`.  If the issuer session, consumer, scope or approved registry access is uncertain, stop before issuance or write.
 
-A shared credential that many consumers read is a credential none of them owns.  It cannot be revoked without breaking someone else, its scope drifts until it covers the whole estate, and nobody can say who reads it.  One consumer gets one token, scoped to exactly what it reads.
+## Inventory Before Issuance
 
-Two failures make this a written rule rather than a habit.  A token was minted and printed into a transcript, so it had to be revoked by hand and the leak was in the transcript forever.  Another consumer asked for a key no approved token covered, and the tempting answer was to reuse the shared Automation identity, which would have granted far more than the consumer needed.
+Establish the exact consumer and runtime location, Infisical project and project ID, one exact folder in `prod`, read/write need, expiry, purpose, owner and secure-storage destination.  Check the Fleet Reference registry for an exact existing entry before minting.  Folder scope is exact: do not assume a parent grants descendants or `/` means every folder.  Never widen a token shared by another consumer.  Review the names already in the proposed folder: an exact folder grant may still expose credentials this consumer does not need.  Use named reads in the consumer, rather than exporting the folder.  If unrelated credentials share that folder, obtain the required authority for a coordinated narrower folder migration; preserve existing consumers and values until replacement acceptance.
 
-## The rule
+## Issue With The Authorized Infisical User Session
 
-Every consumer gets its own scoped service token: one project, one environment, one folder, the narrowest access level that works, and an expiry.  The shared Automation identity is never a consumer's credential, and it is never a fallback.  A consumer that cannot resolve its own token stops and says so.
+Use the existing authorized Infisical user CLI issuer session.  The Mac GUI login/keychain may provide the user's encryption credentials; a server session may lack them.  Missing user credentials are a stop condition, never a reason to try machine auth or another person's session.
 
-## Before you mint one
-
-1. Inventory first.  Read the registry: the Fleet Reference sheet is the source of truth and `Fleet-OPS/docs/infisical-service-tokens.json` is its mirror.  Check whether a token already covers this consumer and this folder.
-2. Reuse beats minting.  A token whose scope already matches the consumer exactly is the right answer, and the registry row already names its consumer.
-3. Never widen.  If the consumer needs more than an existing token grants, mint a new token for the consumer.  Editing an existing grant changes what every other holder of it can read.
-4. One consumer, one row.  Two consumers sharing a token means neither can be rotated alone.
-
-## Minting it
-
-The Infisical CLI reads the login keychain, so a plain shell over SSH cannot authenticate as the owner.  Run the CLI in the owner's GUI session, and treat the output as a secret.
+Check `infisical service-token create --help` in that session.  Pass explicit profile and project selections, exact environment/folder scope, access level, expiry, and a consumer-specific name.  Use only flags confirmed by the installed CLI.  This example captures both streams privately before invocation; it never displays a value:
 
 ```sh
-infisical service-token create \
-  --projectId <project-id> \
-  --scope <environment>:<folder> \
+set +x
+umask 077
+stdout_file="$(mktemp "${TMPDIR:-/tmp}/infisical-token.stdout.XXXXXX")"
+stderr_file="$(mktemp "${TMPDIR:-/tmp}/infisical-token.stderr.XXXXXX")"
+chmod 600 "$stdout_file" "$stderr_file"
+if infisical service-token create \
+  --profile "<authorized-user-profile>" \
+  --projectId "<approved-project-id>" \
+  --scope "prod:<exact-folder>" \
   --access-level read \
-  --expiry-seconds 7776000 \
-  --name <consumer>-ro
+  --expiry-seconds "<approved-seconds>" \
+  --name "<consumer>-ro" \
+  --token-only >"$stdout_file" 2>"$stderr_file"; then
+  issue_status=0
+else
+  issue_status=$?
+  printf '%s\n' 'Issuance outcome unknown; preserve private captures and reconcile before retrying.' >&2
+  exit "$issue_status"
+fi
 ```
 
-The CLI prints the token on stderr.  Capture it straight into a 0600 file and never echo it, never let it reach a log, and never let it reach a transcript.  That file is staging, not a home: install the value into the consumer host's secret store, verify it there, and delete the file.  A token that was printed is a token that must be revoked and re-minted, not a token that may be reused.
+Keep shell tracing off.  Never print either capture, copy its value to a command argument, broad shell export or diagnostic dump, or let it reach an error, transcript, metadata file, source or registry.  Process-local variables and a narrowly scoped child-process environment binding are allowed when the consumer requires them; do not persist or log them.  After confirmed installation and verification, delete both captures.  If issuance is ambiguous, preserve them and reconcile with the authorized issuer before any retry.  If the value reaches a transcript or log, stop, report it and arrange authorized revocation before issuing a replacement.
 
-## Where the token lives
+## Verify The Issued Grant
 
-The value lives in the consumer host's own secret store, and nowhere else.
+Use the newly issued token as a Bearer credential to call `GET /api/v2/service-token` (no token ID in the path).  Parse the response in memory and retain only these nonsecret fields: `id`, `name`, `projectId` or `workspace`, `permissions`, `scopes`, `createdAt` and `expiresAt`.  Confirm returned project, environment, exact folder scopes, permissions and expiry match the inventory.  Record verification time and evidence summary; do not infer actual scope from requested CLI options.
 
-- On the Mac: the owner's login keychain, one generic-password item per token.  The service is `infisical-service-token` and the account is the token's registry name, so a reader holding the registry row can find the item by that name: `security find-generic-password -s infisical-service-token -a <name> -w`.
-- On a server or a container: that host's own store, which for a fleet consumer is Infisical itself or the environment the host injects the value into.  A server-side consumer never reaches for the Mac keychain, and a Mac consumer never reaches for a server-side file.
-- The metadata sidecar `~/.config/infisical/<consumer>.json` carries the token id, the project, the environment, the folder, the access level and the expiry.  It never carries the value.
-- The token is never passed as a command line argument, because a command line is visible in `ps` and in the process log.  It is read from the store inside the process that uses it, and the Mac's keychain write takes the value on stdin rather than in the argument list.
-- A 0600 file under `~/.config/infisical/` is a staging step on the way in, never the resting place: the CLI prints the value on stderr, so it has to be captured somewhere before it can be installed.  Once the value is in the keychain, the staging file is deleted.  A file in a repo is a published secret the moment the repo is pushed.
-- The Mac login keychain is reachable only from the owner's GUI session.  A plain shell over SSH cannot read or write it, so the install and the consumer both run in that session, and a consumer outside it fails closed with the reason.
+The complete CLI value may have the legacy four-part form `st.<id>.<secret>.<encryption-key>`.  For the metadata request's Bearer header, remove only the final encryption-key segment to form `st.<id>.<secret>`.  Preserve the complete CLI value when installing it for the consumer.  Never print the response or retain unallowlisted fields.
 
-## Verifying the scope
+A successful in-scope read is positive evidence that access works.  A zero-item result or HTTP 200 outside the requested path does not prove permission denial; the raw endpoint may project the allowed scope regardless of the requested path.  Use a known outside-key control only if the authorized issuer confirms it is available independently and its use is approved.  Otherwise record that the boundary is unverified.  Claim a 403 only when one was actually observed.  Do not probe arbitrary keys or issue a write probe for a read-only grant.
 
-A scope that was never checked is a scope that was never bound.
+## Store The Value On The Consumer Host
 
-1. Read one secret from the folder with the token, and confirm the value is the one the consumer expects.  A token that returns nothing is a token with no access, not a consumer with no secrets.
-2. Read a secret outside the folder, and expect a refusal.  If that read succeeds, the token is wider than its grant: revoke it and mint a narrower one.
-3. Check the access level.  A consumer that only reads is issued a read-only token, even when the same folder also holds a write path.
+The value lives only in the consumer host's approved secret store.
 
-## Registering the row
+- On the Mac, use the owner's login keychain, one generic-password item per token.  Set service to `infisical-service-token` and account to the registry token name.  A reader can retrieve it with `security find-generic-password -s infisical-service-token -a <name> -w`.
+- A specifically owner-approved Mac file store is an exception for the named consumer, path and grant only: consumer-owned 0600 file, parent 0700.  Preserve an approved working wrapper until reviewed source and actual consumer acceptance justify replacing it; do not extend the exception to other consumers.
+- On a server or container, use that consumer host's approved store.  A file owned by the consumer account with mode 0600 inside a parent directory mode 0700 is an allowed explicit choice when that host's policy permits it; Infisical or another approved host store may also be used.  A server consumer never reaches for the Mac keychain; a Mac consumer never reaches for a server-side file.
+- The metadata sidecar `~/.config/infisical/<consumer>.json` preserves token ID, project, environment, folder, access level, `createdAt` and expiry, never the value.  Keep the original creation timestamp through status updates and mirror synchronization.
+- Never pass the token as a command-line argument.  Read it from the store inside the process that uses it; pass a Mac keychain write over stdin.
+- Without that explicit store exception, a 0600 token file under `~/.config/infisical/` is staging only and must be deleted after installation.  A file in a repository is a published secret when pushed.
+- The Mac login keychain is reachable only from the owner's GUI session.  If a consumer cannot access its approved store, fail closed and identify the missing item or scope.
 
-A token that is not registered cannot be rotated by anybody but the seat that minted it, and it cannot be revoked in an emergency by a human who does not know it exists.  Every token gets a row in both places:
+## Register Metadata In The Fleet Reference Sheet
 
-- The Fleet Reference sheet, which is the source of truth.  The sheet has a seat that owns it, so the row goes to that seat to write; ask for it with the fields below, and do not treat the token as registered until the sheet row exists.
-- The mirror `Fleet-OPS/docs/infisical-service-tokens.json`, one object per token.
+The source is <https://fleetlink.online/references>, tab `Infisical Service Tokens`.  Use only the shared Fleet-OPS module `scripts/fleet-sheet/sa.mjs` and its exported `api(path, init)`.  The module pins the private workbook configuration, reads `GOOGLE_SHEETS_SA` in memory from Infisical Fleet-OPS prod `/google-sheets-sa`, and handles Google Sheets authentication.  Normal use relies on the approved prebound `INFISICAL_TOKEN` and explicit Fleet-OPS project selection.  If either is missing, stop; do not mint or borrow another consumer's token for the sheet client.  An authorized GUI issuer operation may bootstrap the approved binding, never machine auth or another identity.  Do not print or write `GOOGLE_SHEETS_SA` JSON to disk or create a competing client.
 
-The row carries: `id` (the token id), `name`, `project`, `projectId`, `scopes`, `purpose`, `owner`, `consumer`, `status`, `createdAt`, `expiresAt`, `verifiedAt` and `evidence`.
+Save only the nonsecret token metadata below as JSON.  Designate one registrar for this token across all hosts in its existing work topic before running the recipe, and preserve that ownership through reconciliation.  From an authorized Fleet-OPS checkout, that registrar runs the following with the metadata file as its sole argument.  It reads the live header, maps exact column names, checks ID and stable content, appends once, and fully reads back `updatedRange` before claiming success.  It prints only fixed outcomes and allowlisted variable, source or column names, never metadata values or provider errors.
 
-- `consumer` is the program or host that reads the token, named exactly as it appears in its configuration, so a reader can find the item.
-- `evidence` is what proved the scope: the verification that was run and when.
-- `status` is `active`, `revoked` or `expired`.  A revoked token keeps its row, because the history of a grant is part of the registry.
+Required metadata JSON fields: `id`, `name`, `project`, `projectId`, `scopes` (exactly one `{environment, folder, permissions}` for one folder in `prod`, with unique `read` and/or `write` permissions), `purpose`, `owner`, `consumer`, `status`, `createdAt`, `expiresAt`, `verifiedAt`, `evidence` and `secureStorageReference`.  Optional fields are `auditCoverage`, `screenshotComparison`, `discrepancyEvidenceLimits` and `createdBy`; omitted values become empty cells.  The current 19-column sheet has no creation-timestamp column: retain `createdAt` in the nonsecret sidecar.  The private mirror schema accepts an optional `createdAt` from verified Infisical metadata, but a new row derived only from the sheet does not supply it.  Do not claim that sheet synchronization captured the creation time.  Do not add a remote column as part of registration, include secret response fields, or flatten several grants into one row.
 
-## Rotating and revoking
+Keep the sidecar private.  The registrar's existing `~/.config/infisical` directory must be owned by its account with mode 0700; the recipe refuses a missing, symlinked or less private directory.  Its `registry-attempts` subdirectory contains only local attempt outcomes keyed by a token-ID digest, never token values or token-value hashes.
 
-Rotation is never a metadata edit.
+```sh
+export FLEET_OPS_ROOT="$(pwd -P)"  # Run from the owned Fleet-OPS checkout root.
+metadata_file="$HOME/.config/infisical/service-token-metadata.json"
+node --input-type=module - "$metadata_file" <<'JS'
+import { open, mkdir, lstat, rename, unlink, rmdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-1. Mint the replacement with the same scope and a fresh expiry, and install it on the consumer.
-2. Verify the replacement in both directions.
-3. Update the registry row: the new id, the new expiry, the old row's status `revoked`.
-4. Revoke the old token through the API with an owner session: `DELETE https://app.infisical.com/api/v2/service-token/<token-id>`.
+const MAX_BYTES = 64 * 1024;
+const safeErrors = new WeakMap();
+const refuse = (code, source) => {
+  const error = new Error();
+  safeErrors.set(error, { code, source });
+  throw error;
+};
+const boundedJSON = async (path, source) => {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!(await file.stat()).isFile()) refuse('invalid_metadata', source);
+    const raw = Buffer.alloc(MAX_BYTES + 1);
+    let used = 0;
+    while (used < raw.length) {
+      const { bytesRead } = await file.read(raw, used, raw.length - used, null);
+      if (!bytesRead) break;
+      used += bytesRead;
+    }
+    if (used > MAX_BYTES) refuse('metadata_too_large', source);
+    const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw.subarray(0, used)));
+    const stack = [[value, 0]];
+    let nodes = 0;
+    while (stack.length) {
+      const [item, depth] = stack.pop();
+      if (++nodes > 1000 || depth > 16) refuse('metadata_complexity', source);
+      if (item && typeof item === 'object') {
+        for (const child of Object.values(item)) stack.push([child, depth + 1]);
+      }
+    }
+    return value;
+  } finally { await file.close(); }
+};
+let phase = 'pre-append';
+let source = 'configuration';
+let lock;
+let lockOwned = false;
+let stateDir;
+let marker;
+let attempt;
+const saveAttempt = async outcome => {
+  const temp = marker + '.' + randomUUID();
+  const file = await open(temp, 'wx', 0o600);
+  try {
+    await file.writeFile(JSON.stringify({ version: 1, outcome }));
+    await file.sync();
+  } finally { await file.close(); }
+  try {
+    await rename(temp, marker);
+    const directory = await open(stateDir, 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
+  } finally { await unlink(temp).catch(() => {}); }
+};
+try {
+  const root = process.env.FLEET_OPS_ROOT;
+  if (!root) refuse('missing_configuration', 'FLEET_OPS_ROOT');
+  if (process.argv.length !== 3) refuse('invalid_arguments', 'metadata-file');
+  for (const name of ['INFISICAL_TOKEN', 'INFISICAL_FLEET_OPS_PROJECT_ID']) {
+    if (!process.env[name]?.trim()) refuse('missing_configuration', name);
+  }
 
-Revoke a token when it is expired, when its consumer is retired, when it was printed or logged, or when its scope turns out to be wider than its grant.  Never revoke or broaden a token from a metadata row alone: a row is a claim about a token, and the API is the fact about it.
+  source = 'metadata-file';
+  const input = await boundedJSON(process.argv[2], source);
+  const required = ['id', 'name', 'project', 'projectId', 'scopes', 'purpose', 'owner', 'consumer', 'status', 'createdAt', 'expiresAt', 'verifiedAt', 'evidence', 'secureStorageReference'];
+  const optional = ['auditCoverage', 'screenshotComparison', 'discrepancyEvidenceLimits', 'createdBy'];
+  if (!input || typeof input !== 'object' || Array.isArray(input)) refuse('invalid_metadata', source);
+  if (Object.keys(input).some(key => !required.includes(key) && !optional.includes(key))) refuse('invalid_metadata', source);
+  for (const key of optional) input[key] ??= '';
+  if (required.filter(key => key !== 'scopes').some(key => typeof input[key] !== 'string' || !input[key].trim())) refuse('invalid_metadata', source);
+  if (optional.some(key => typeof input[key] !== 'string')) refuse('invalid_metadata', source);
+  if (!Array.isArray(input.scopes) || input.scopes.length !== 1) refuse('one_scope_required', source);
+  const scope = input.scopes[0];
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope) || Object.keys(scope).some(key => !['environment', 'folder', 'permissions'].includes(key))) refuse('invalid_scope', source);
+  if (scope.environment !== 'prod' || typeof scope.folder !== 'string' || !scope.folder.startsWith('/') || /[\s,]/.test(scope.folder)) refuse('invalid_scope', source);
+  if (!Array.isArray(scope.permissions) || !scope.permissions.length || scope.permissions.some(value => !['read', 'write'].includes(value)) || new Set(scope.permissions).size !== scope.permissions.length) refuse('invalid_permission', source);
+  for (const key of ['createdAt', 'expiresAt', 'verifiedAt']) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(input[key]) || !Number.isFinite(Date.parse(input[key]))) refuse('invalid_timestamp', source);
+  }
+  delete process.env.GOOGLE_SHEETS_SA; // Require the shared client's Infisical read.
+  source = 'Fleet-OPS/scripts/fleet-sheet/sa.mjs';
+  const { api } = await import(pathToFileURL(join(root, 'scripts/fleet-sheet/sa.mjs')).href);
+  const sheet = 'Infisical Service Tokens';
+  const readPath = range => '/values/' + encodeURIComponent(range) + '?majorDimension=ROWS';
+  const read = range => api(readPath(range));
+  source = 'attempt-state';
+  const stateParent = join(homedir(), '.config/infisical');
+  const parentInfo = await lstat(stateParent);
+  if (!parentInfo.isDirectory() || parentInfo.uid !== process.getuid() || (parentInfo.mode & 0o777) !== 0o700) refuse('unsafe_state_directory', source);
+  stateDir = join(stateParent, 'registry-attempts');
+  try { await mkdir(stateDir, { mode: 0o700 }); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const stateInfo = await lstat(stateDir);
+  if (!stateInfo.isDirectory() || stateInfo.uid !== process.getuid() || (stateInfo.mode & 0o777) !== 0o700) refuse('unsafe_state_directory', source);
+  const parentDirectory = await open(stateParent, 'r');
+  try { await parentDirectory.sync(); } finally { await parentDirectory.close(); }
+  const key = createHash('sha256').update(input.id).digest('hex'); // Token ID, never token value.
+  marker = join(stateDir, key + '.json');
+  lock = join(stateDir, key + '.lock');
+  try { await mkdir(lock, { mode: 0o700 }); lockOwned = true; }
+  catch { refuse('local_lock_unavailable', source); }
+  try {
+    const info = await lstat(marker);
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o600) refuse('unsafe_attempt_state', source);
+    attempt = await boundedJSON(marker, source);
+    if (attempt?.version !== 1 || !['ok', 'unknown'].includes(attempt.outcome)) refuse('invalid_attempt_state', source);
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  source = 'Infisical Service Tokens/read';
+  const current = await read(sheet);
+  const [headers, ...rows] = current.values ??  [];
+  const needed = ['Token', 'Token ID', 'Project', 'Project ID', 'Environment', 'Folders', 'Permission', 'Purpose', 'Owner', 'Runtime consumer', 'Status', 'Expires (UTC)', 'Metadata verified (UTC)', 'Evidence', 'Audit coverage', 'Secure storage reference', 'Screenshot comparison 2026-11-03', 'Discrepancy / evidence limits', 'Created By'];
+  if (!headers || headers.length !== needed.length || needed.some(name => headers.filter(value => value === name).length !== 1)) throw new Error();
+  const values = {
+    'Token': input.name, 'Token ID': input.id, 'Project': input.project, 'Project ID': input.projectId,
+    'Environment': scope.environment,
+    'Folders': input.scopes.map(value => value.folder).join('\n'),
+    'Permission': scope.permissions.length === 2 ? 'read/write' : scope.permissions[0],
+    'Purpose': input.purpose, 'Owner': input.owner, 'Runtime consumer': input.consumer,
+    'Status': input.status, 'Expires (UTC)': input.expiresAt, 'Metadata verified (UTC)': input.verifiedAt,
+    'Evidence': input.evidence, 'Audit coverage': input.auditCoverage,
+    'Secure storage reference': input.secureStorageReference,
+    'Screenshot comparison 2026-11-03': input.screenshotComparison,
+    'Discrepancy / evidence limits': input.discrepancyEvidenceLimits, 'Created By': input.createdBy,
+  };
+  const row = headers.map(header => values[header] ??  '');
+  const secretPattern = /(?:\bst\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|\bgh[pousr]_[A-Za-z0-9_]+|\bgithub_pat_[A-Za-z0-9_]+|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]+|\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]+|\bxox[baprs]-[A-Za-z0-9-]+|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[A-Za-z0-9_-]{30,}|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|-----BEGIN [A-Z ]*PRIVATE KEY-----|"(?:private_key|encryptedKey|secret|token|iv|tag)"\s*:)/i;
+  for (let index = 0; index < row.length; index++) {
+    if (typeof row[index] !== 'string' || secretPattern.test(row[index])) refuse('secret_like_metadata', headers[index]);
+  }
+  const idColumn = headers.indexOf('Token ID');
+  const matches = rows.filter(existingRow => existingRow[idColumn] === input.id);
+  if (matches.length > 1) throw new Error();
+  const existing = matches[0];
+  if (!existing) {
+    const stable = ['Token', 'Project ID', 'Environment', 'Folders', 'Runtime consumer'];
+    if (rows.some(candidate => stable.every(header => String(candidate[headers.indexOf(header)] ?? '') === values[header]))) refuse('content_match_requires_reconciliation', 'Infisical Service Tokens');
+  }
+  if (existing) {
+    if (needed.some(header => String(existing[headers.indexOf(header)] ?? '') !== String(row[headers.indexOf(header)] ?? ''))) {
+      process.stdout.write('Token ID exists with different metadata; stop and reconcile.\n');
+      process.exitCode = 2;
+    } else {
+      if (attempt) await saveAttempt('ok'); // Exact-row reconciliation sends no mutation.
+      process.stdout.write('Token ID already registered; no row added.\n');
+    }
+  } else {
+    if (attempt) {
+      process.stdout.write('outcome_unknown phase=pre-append source=attempt-state; reconcile without appending.\n');
+      process.exitCode = 3;
+      // The persistent marker blocks replay even when no row is visible yet.
+    } else {
+      source = 'attempt-state';
+      await saveAttempt('unknown'); // Durable before the first possibly sent mutation.
+      phase = 'mutation-started';
+      source = 'Infisical Service Tokens/append';
+      const appended = await api('/values/' + encodeURIComponent(sheet + '!A:S') + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', {
+        method: 'POST', body: JSON.stringify({ majorDimension: 'ROWS', values: [row] }),
+      });
+      const range = appended.updates?.updatedRange;
+      const matchedRange = typeof range === 'string' && /^'?Infisical Service Tokens'?!A([1-9]\d*):S\1$/.exec(range);
+      if (appended.updates?.updatedRows !== 1 || !matchedRange || Number(matchedRange[1]) < 2) throw new Error();
+      phase = 'post-append';
+      source = 'Infisical Service Tokens/readback';
+      const readback = await read(range);
+      const actual = readback.values ?? [];
+      if (actual.length !== 1 || !Array.isArray(actual[0]) || actual[0].length > row.length) throw new Error();
+      const normalized = Array.from({ length: row.length }, (_, index) => actual[0][index] ?? '');
+      if (JSON.stringify([normalized]) !== JSON.stringify([row])) throw new Error();
+      source = 'Infisical Service Tokens/final-readback';
+      const finalTab = await read(sheet);
+      const finalValues = finalTab.values;
+      if (!Array.isArray(finalValues) || !Array.isArray(finalValues[0]) || JSON.stringify(finalValues[0]) !== JSON.stringify(headers)) throw new Error();
+      const finalRows = finalValues.slice(1);
+      if (finalRows.some(entry => !Array.isArray(entry) || entry.length > row.length)) throw new Error();
+      const finalMatches = finalRows.filter(entry => entry[idColumn] === input.id);
+      if (finalMatches.length !== 1) throw new Error();
+      const confirmed = Array.from({ length: row.length }, (_, index) => finalMatches[0][index] ?? '');
+      if (JSON.stringify(confirmed) !== JSON.stringify(row)) throw new Error();
+      await saveAttempt('ok'); // Exact range and unique full-tab readback commit success.
+      process.stdout.write('Registry row appended and read back exactly.\n');
+    }
+  }
+} catch (error) {
+  // The shared api throws provider text, not trusted status/send metadata. Never echo it.
+  const safe = safeErrors.get(error) ?? { code: 'source_unavailable', source };
+  const unknown = phase !== 'pre-append' || attempt?.outcome === 'unknown';
+  process.stderr.write(`${unknown ? 'outcome_unknown' : safe.code} phase=${phase} source=${safe.source}; stop and reconcile before retrying.\n`);
+  process.exitCode = unknown ? 3 : 1;
+} finally {
+  if (lockOwned) {
+    try { await rmdir(lock); }
+    catch { process.stderr.write('local_lock_cleanup_failed source=attempt-state\n'); process.exitCode ||= 1; }
+  }
+}
+JS
+```
 
-## Failing closed
+The local lock and fsynced attempt marker serialize this host and prevent its crash/retry from blindly appending.  They do not coordinate other hosts or replace the designated registrar.  Google Sheets has no token-ID uniqueness constraint; this recipe is not a shared transactional idempotency service.  The final full-tab read checks unchanged headers, one exact ID match and all 19 cells before recording success; it detects observed duplicates without making the read atomic with another host’s writes.  Do not run another host's registrar or delete its markers to retry.  An existing `unknown` or `ok` marker with no exact matching row blocks mutation; a full exact row match can reconcile it to `ok` using reads only.  After a crash, retain the lock and marker until the designated registrar establishes that the original invocation has ended and reconciles the live rows; no age-based unlocking or automatic unknown replay.
 
-- A missing item, a locked keychain or an unreadable secret store means the consumer stops with a clear error naming the item and the missing scope.
-- A refused API call means the consumer stops.  It does not fall back to another token, does not read a flat key file, does not reuse the Automation identity, and does not cache a value it managed to read once.
-- A grant that no approved token covers is an owner request, not a technical obstacle.  Ask for the narrow grant, and say which folder and which access level it needs.
+Every exception after mutation starts, including authentication, timeout, response parsing, readback or local completion-record failure, is conservatively `outcome_unknown` with exit 3.  The shared client supplies no trustworthy structured status or sent flag, so do not infer a definite refusal from its error text or release the attempt for a blind retry.  Pre-append failures exit 1; an existing ID with different metadata exits 2.  No provider body is printed.  The exact headers are checked on every run; metadata only is allowed, never token value, value hash, `encryptedKey`, `iv`, `tag` or service-account JSON.  Pattern scanning supplements allowlisted metadata and private review; it cannot prove arbitrary text secret-free.
 
-## Before you call it done
+A validation refusal before mutation creates no new attempt marker and leaves any existing marker intact.  Local outcomes do not prove a provider refusal and are not a cross-host idempotency ledger.
 
-- One project, one environment, one folder, read-only unless write is genuinely required.
-- An expiry is set, and it is short enough to be meaningful.
-- The value is in the consumer host's secret store, the Mac login keychain for a Mac consumer, and appears in no log, no transcript, no command line and no pull request.
-- The scope was verified in both directions: it reads inside the folder and it is refused outside it.
-- The registry row exists in the sheet and in the mirror, with the verification recorded.
-- Every temporary issuance artifact is gone: the issue script, the launchd job that ran it, the log that held the value, and the staging file the value was captured in.
+The same designated registrar owns approved same-ID status changes.  This append recipe deliberately refuses different metadata on an existing ID.  For a sanctioned update, read the entire live tab, require exactly one Token ID match, capture its exact 19-cell before-image privately, and establish the approved field changes from observed revocation evidence.  Re-read that row immediately before updating and stop if any cell changed.  Through the same shared `api`, update only its exact row range with `PUT` and `valueInputOption=RAW`; preserve ID, creation sidecar and unaffected cells.  Apply the same column mapping, secret scan and persistent unknown-before-mutation guard, fully read back all 19 cells, and mark `ok` only on exact equality.  Preserve registrar ownership and an `unknown` operation record on any ambiguous result; reconcile by ID and full row without replay.  This is a supervised writer procedure, not an additional runnable updater or a compare-and-swap guarantee; use an existing reviewed updater if available, otherwise prepare and review the specific update before execution.
+
+After verifying the sheet row, the Fleet-OPS metadata mirror may be synchronized from an owned Fleet-OPS lane with `node scripts/infisical-service-tokens/sync-from-sheet.mjs --write`.  Inspect the diff and confirm only the matching metadata changed.  The sheet remains the source of truth; never hand-edit the mirror as a substitute.
+
+## Rotate, Revoke And Close Out
+
+Rotation is not a metadata edit.  Issue the replacement with the intended scope and fresh expiry, install it, verify its grant and store, and register the new metadata row.  Keep the old grant live until the actual consumer successfully reads through the replacement; source edits or a stored file alone are insufficient.  After the required owner authorization and consumer acceptance, revoke the old grant through the authorized user session, verify the result, then mark its registry row revoked.  An uncertain revoke result must be reconciled before any retry or revoked-status claim.  Never revoke or broaden a token based on a metadata row alone.
+
+A missing item, locked keychain, unreadable store, refused API call or uncertain write means stop and report the observed boundary.  Do not retry as another identity or silently change stores.  A token is complete when the consumer can read its own store entry without printing it, its exact metadata is verified, the sheet row is confirmed by readback, and any mirror sync is verified.  Record outside-scope uncertainty accurately rather than describing it as a denial.
 
 ## Related
 
-- `secret-handoff` for how a credential reaches a consumer in the first place.
-- `secret-safety` for the handling rules that apply to every secret, token included.
+- `secret-handoff` for moving a credential to its consumer.
+- `secret-safety` for handling any secret value.
 - `housekeeper` for a consumer that posts to a webhook from the Mac.
