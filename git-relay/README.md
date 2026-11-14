@@ -49,6 +49,12 @@ the owner's cutover decision.
 
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
 
+### PR Headers
+
+PR titles, descriptions and comments use compact fleet headers, for example `[CODEX:   EE.1.S]`, without `📁` or repository names.  Keep the actual writing session and any recipients; do not derive a session letter from the GitHub author or repository.  Kody trigger comments start with the literal `@kody start-review`, put the compact header on line 2 and include the full reviewed head SHA and context afterward.
+
+The hosted Fleet Tools front normalizes supplied headers on explicit PR title/body/comment/review routes.  Direct HTTP and GR-MCP callers supply the compact form themselves; the independently packaged relay preserves it without importing another formatter.  Generic workflow issue-comment verbs retain ordinary issue context because their target may be an issue rather than a PR; use the explicit PR comment verb for PR context.  The existing `sentence_gap: false` option preserves supplied bytes, so those callers also supply the compact form.  Ordinary GitHub issue, Zulip and Linear headers retain repository names.  Source publication does not establish a deployed formatter or delivered-message receipt.
+
 `open_pr` never reports a number for a pull request it has not seen.  After the create answers,
 the relay reads the pull request back by number with the same owner token and checks the number,
 the repository, the base branch and the head branch (and the owner, for an `owner:branch` or
@@ -393,6 +399,14 @@ a store full of held pending/unknown rows refuses new writes with 503 until an o
 reconciles them (fail closed - never evict a held side effect).  Writes go through a
 full-write loop, so a short write fails loudly instead of renaming a truncated registry.  `mint_token` is exempt:  it returns a raw
 credential (never cached in the store) and a re-mint is safe under the minter's own lock.
+
+## Outcome Capacity Policy
+
+With App minting enabled, the relay requires the nonsecret Infisical key `GIT_RELAY_OUTCOMES_MAX_ENTRIES` from Fleet-OPS `prod` in its existing App-source folder, normally `/github-apps` or the already configured `GIT_RELAY_SECRETS_PATH`.  It reads the value once through that Source's folder-proven `verified_secret` method and reuses the exact Source object for App-token minting.  Only a canonical decimal integer from 5,000 through 50,000 is accepted; the intended production value is `20000`.  This key is not an environment override and has no fallback value or source.
+
+Provision it in the service's actual configured folder and verify a cold read through its own existing binding before activating this source.  Missing, unreadable or invalid policy fails startup before any legacy-state adoption or outcome-store loading.  Keep the existing outcome file; never clear it or trim recent successful, pending or unknown rows to make room.  A capacity increase retains the complete 24-hour successful replay window and permanent pending/unknown holds.  A lower capacity never removes those protected rows; fresh writes remain refused until permitted expiry or reconciliation makes room.
+
+Explicit `GIT_RELAY_APP_MINT=0` preserves the existing legacy startup behavior: no App Source or new authentication is required, and the outcome store keeps its 5,000-row library default.  Direct `OutcomeStore` callers also remain auth-free with that default.  The new production policy applies at qualified startup, and source tests do not establish provisioning, deployment or runtime acceptance.
 
 ## Configuration and running
 

@@ -114,7 +114,7 @@ sys.modules[source._HELPER_NAME] = foreign
 try:
     setter.verify_writer(os.environ[setter.ENV_WRITE_TOKEN], dict(os.environ))
 except setter.Refused as exc:
-    assert str(exc) == 'write token verifier unavailable'
+    assert str(exc) == 'fleet_infisical write token verifier unavailable'
     assert not foreign.calls
     print(str(exc))
 else:
@@ -144,7 +144,9 @@ else:
                     )
                     self.assertNotIn(own, proc.stdout + proc.stderr)
                     self.assertEqual(proc.returncode, 0, proc.stderr)
-                    self.assertEqual(proc.stdout.strip(), "write token verifier unavailable")
+                    self.assertEqual(
+                        proc.stdout.strip(), "fleet_infisical write token verifier unavailable"
+                    )
 
     def test_missing_shared_client_keeps_import_safe_and_returns_process_local_reason(self):
         scripts = str(Path(__file__).resolve().parents[2])

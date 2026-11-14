@@ -1,5 +1,6 @@
 """Actual isolated reader, provider trickle and bounded private IPC regressions."""
 
+import errno
 import io
 import json
 import os
@@ -147,6 +148,119 @@ class BoundedReadTests(unittest.TestCase):
         self.assertEqual(self.fetch(), {"A_KEY": "value-A_KEY", "B_KEY": "value-B_KEY"})
         self.assertEqual(len(self.calls), 3)
         self.assertEqual(len(self.children), 1)
+
+    def test_large_legal_request_survives_eagain_after_a_real_partial_pipe_write(self):
+        program = """
+import json,sys,time
+raw = bytearray()
+while True:
+    chunk = sys.stdin.buffer.read(1024)
+    if not chunk:
+        break
+    raw.extend(chunk)
+    time.sleep(0.0001)
+request = json.loads(raw)
+assert 65536 < len(raw) <= 128 * 1024
+assert request['operation'] == 'named-fetch'
+assert len(request['names']) == 1024 and request['strict_records'] is True
+print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
+"""
+        names = ["A_KEY"] + ["N_%04d_" % n + "x" * 64 for n in range(1023)]
+        real_write = os.write
+        attempted, accepted = [], []
+
+        def partial_then_blocked(fd, data):
+            attempted.append(len(data))
+            if len(attempted) == 2:
+                raise BlockingIOError(errno.EAGAIN, "synthetic transient pipe pressure")
+            count = real_write(fd, data[:3072])
+            accepted.append(count)
+            return count
+
+        with (
+            self.scripted(program),
+            mock.patch.object(core.os, "write", side_effect=partial_then_blocked),
+        ):
+            result = core.bounded_fetch_project(
+                self.project,
+                "/operator-registry",
+                self.env,
+                token=self.sample,
+                names=names,
+                timeout=2.0,
+                strict_records=True,
+            )
+        self.assertEqual(result, {"A_KEY": "fixture"})
+        self.assertGreater(sum(accepted), 65536)
+        self.assertGreater(len(accepted), 2)
+        self.assertGreater(attempted[0], accepted[0])
+        self.assertEqual(self.calls, [])
+
+    def test_repeated_eagain_keeps_original_deadline_and_reaps_the_real_child(self):
+        with (
+            self.scripted("import sys;sys.stdin.buffer.read()"),
+            mock.patch.object(
+                core.os, "write", side_effect=BlockingIOError(errno.EAGAIN, "fixture")
+            ),
+            self.assertRaisesRegex(core.SecretsError, "bounded-read-timeout"),
+        ):
+            started = time.monotonic()
+            self.fetch(timeout=0.15)
+        self.assertLess(time.monotonic() - started, 0.65)
+        self.assertIsNotNone(self.children[-1].poll())
+
+    def test_real_worker_preserves_only_closed_unresolved_reason_and_code_five(self):
+        self.record_changes = {"secretValue": "${PUBLIC_FIXTURE_REFERENCE}"}
+        observed = {}
+        real_read = core._read_worker_pipes
+
+        def capture_reply(child, request, limit, deadline):
+            raw = real_read(child, request, limit, deadline)
+            observed.update(reply=json.loads(raw), returncode=child.returncode)
+            return raw
+
+        with (
+            mock.patch.object(core, "_read_worker_pipes", side_effect=capture_reply),
+            self.assertRaises(core.SecretsError) as caught,
+        ):
+            self.fetch(strict_records=True)
+        self.assertEqual(caught.exception.code, 5)
+        self.assertEqual(str(caught.exception), "unresolved-reference")
+        self.assertEqual(observed["returncode"], 5)
+        self.assertEqual(
+            observed["reply"],
+            {
+                "schema": 1,
+                "ok": False,
+                "reason": "unresolved-reference",
+                "code": 5,
+                "failure_kind": None,
+            },
+        )
+        self.assertEqual(len(self.calls), 3)
+
+    def test_unresolved_wire_reason_requires_exact_typed_code_and_child_exit(self):
+        for reason, code, status, extra in (
+            ("unresolved-reference", True, 5, {}),
+            ("unresolved-reference", "5", 5, {}),
+            ("unresolved-reference", 5.0, 5, {}),
+            ("unresolved-reference", 4, 5, {}),
+            ("unresolved-reference", 5, 4, {}),
+            ("private-provider-text", 5, 5, {}),
+            ("unresolved-reference", 5, 5, {"ok": True}),
+            ("unresolved-reference", 5, 5, {"provider": "private-provider-text"}),
+        ):
+            reply = dict(schema=1, ok=False, reason=reason, code=code, failure_kind=None)
+            reply.update(extra)
+            program = "import json,sys;sys.stdin.buffer.read();print(%r);sys.exit(%d)" % (
+                json.dumps(reply),
+                status,
+            )
+            with self.subTest(code=code, status=status), self.scripted(program):
+                with self.assertRaises(core.SecretsError) as caught:
+                    self.fetch()
+                self.assertEqual(caught.exception.code, 4)
+                self.assertEqual(str(caught.exception), "bounded-read-failed")
 
     def test_wrong_grant_stops_inside_worker_before_any_value_read(self):
         self.mode = "wrong-scope"
@@ -313,6 +427,42 @@ class BoundedReadTests(unittest.TestCase):
         with self.assertRaises(core.SecretsError):
             core._bounded_read_request(request, time.monotonic() + 1)
         self.assertEqual(self.calls, [])
+
+    def test_private_worker_rejects_malformed_project_before_provider(self):
+        for project in (None, 7, [self.project], "", "x" * 257):
+            request = dict(
+                schema=1,
+                operation="named-fetch",
+                project=project,
+                path="/operator-registry",
+                env={core.ENV_API: self.env[core.ENV_API]},
+                token=self.sample,
+                names=["A_KEY"],
+                writer=False,
+                strict_records=False,
+                timeout=1.0,
+                max_output_bytes=4096,
+            )
+            with self.subTest(project_type=type(project).__name__):
+                result = subprocess.run(
+                    core._bounded_read_command(),
+                    input=json.dumps(request).encode(),
+                    capture_output=True,
+                    env={"PATH": os.defpath},
+                    timeout=3,
+                )
+                self.assertEqual(result.returncode, 4)
+                self.assertEqual(result.stderr, b"")
+                self.assertEqual(
+                    json.loads(result.stdout),
+                    {
+                        "schema": 1,
+                        "ok": False,
+                        "reason": "bounded-read-invalid",
+                        "failure_kind": "refused",
+                    },
+                )
+                self.assertEqual(self.calls, [])
 
     def test_request_cap_is_checked_before_launch(self):
         self.env[core.ENV_API] += "x" * (128 * 1024)

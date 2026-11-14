@@ -2,6 +2,11 @@
 
 New consumers import fleet_infisical directly.  This alias retains the existing
 CLI and import contract without another reader implementation.
+
+This compatibility path trusts its Python process.  The preload check compares
+declared routing origin; it does not authenticate executed provenance against
+arbitrary runtime code.  Warmed module and exception identity, including
+intentional in-process patches, remain shared.
 """
 
 import importlib.util
@@ -20,7 +25,7 @@ def _load_client():
             try:
                 if not isinstance(client, ModuleType):
                     raise ValueError()
-                # Inspect metadata without invoking a foreign module's __getattr__ hook.
+                # Compare declared origin without invoking the module's __getattr__ hook.
                 metadata = vars(client)
                 origin = vars(metadata.get("__spec__")).get("origin")
                 if (

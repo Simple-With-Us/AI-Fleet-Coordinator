@@ -23,9 +23,7 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import stat
-import subprocess
 import sys
 import time
 import urllib.error
@@ -47,7 +45,7 @@ SHARED_ENV = "prod"
 NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
-INFISICAL_READ_TOKEN = "FLEET_RECALL_INFISICAL_TOKEN"
+INFISICAL_READ_TOKEN: str = "FLEET_RECALL_INFISICAL_TOKEN"
 # The same binding kept in a file of the caller's own, so every caller of recall (the CLI, the MCP servers, the
 # nightly) gets it without the value sitting in a config file or a shell profile.  FLEET_RECALL_INFISICAL_TOKEN_FILE
 # names it;  otherwise ~/.secrets/fleet-recall-infisical.env is used when it exists.  The variable always wins.
@@ -255,65 +253,60 @@ def _identity(prefix: str) -> tuple[None, None]:
 
 
 FLEET_SECRETS_TIMEOUT = 60
-_FLEET_SECRETS_PICK = (
-    "import json,os,sys;"
-    "print(json.dumps({n:os.environ[n] for n in sys.argv[1:] if os.environ.get(n)}))"
-)
-
-
-def _fleet_secrets_bin() -> str | None:
-    """The `fleet-secrets` command (OPS-818) on PATH or in ~/.local/bin, or None."""
-    found = shutil.which("fleet-secrets")
-    if found:
-        return found
-    local = pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    return str(local) if local.is_file() and os.access(local, os.X_OK) else None
 
 
 def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
-    """Values of `names` that `fleet-secrets` can supply, from one fetch.  Missing command,
-    a failure or an absent name just leaves that name out;  values are never logged.
+    """Present named values from the consumer's explicit default Fleet-OPS root reader.
 
-    One `fleet-secrets run` fetches Fleet-OPS once and starts a tiny child that prints only the
-    wanted names as JSON on a pipe, so N names cost one fetch rather than N `get` calls.
+    Missing binding, invalid input or a failed read returns an empty map; a named 404 omits
+    only that name.  The separate recall-project token is never a fallback for this route.
     """
-    wanted = [n for n in names if n]
-    binary = _fleet_secrets_bin()
-    if not wanted or not binary:
+    source = {
+        key: value
+        for key in (
+            "INFISICAL_TOKEN",
+            "INFISICAL_FLEET_OPS_PROJECT_ID",
+            "FLEET_SECRETS_API",
+            "INFISICAL_ENVIRONMENT",
+            "INFISICAL_ENV",
+            "HOME",
+        )
+        if (value := os.environ.get(key)) is not None
+    }
+    token = (source.get("INFISICAL_TOKEN") or "").strip()
+    if not token:
         return {}
     try:
-        proc = subprocess.run(
-            [binary, "run", "--", sys.executable, "-c", _FLEET_SECRETS_PICK, *wanted],
-            capture_output=True,
-            text=True,
+        import fleet_infisical as secrets
+    except ImportError:
+        return {}
+    try:
+        project = secrets.infisical_project_id(
+            source, secrets.home_dir(source), secrets.DEFAULT_PROJECT
+        )
+        # The shared API validates and bounds the iterator before starting its read-only worker.
+        # No ambient read-path declaration can widen this exact default-root consumer route.
+        got = secrets.bounded_fetch_project(
+            project,
+            "/",
+            source,
+            token=token,
+            names=(name for name in names if name),
             timeout=FLEET_SECRETS_TIMEOUT,
         )
-        if proc.returncode != 0:
-            return {}
-        got = json.loads(proc.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (secrets.SecretsError, OSError, TypeError, ValueError):
         return {}
-    return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
+    return {key: value for key, value in got.items() if isinstance(value, str) and value}
 
 
 def fleet_secret(name: str) -> str | None:
-    """One value via `fleet-secrets`, or None."""
+    """One optional value through the shared default Fleet-OPS reader."""
     return fleet_secrets_many([name]).get(name)
 
 
 def fleet_secret_get(name: str) -> str | None:
-    """One value via `fleet-secrets get NAME` (works for INFISICAL_* names that `run` refuses),
-    or None for a missing command, a failure or an absent name.  The value is never logged."""
-    binary = _fleet_secrets_bin()
-    if not name or not binary:
-        return None
-    try:
-        proc = subprocess.run(
-            [binary, "get", name], capture_output=True, text=True, timeout=FLEET_SECRETS_TIMEOUT
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    value = proc.stdout.strip() if proc.returncode == 0 else ""
+    """One optional named value, including INFISICAL_* names; strip surrounding whitespace."""
+    value = (fleet_secrets_many([name]).get(name) or "").strip()
     return value or None
 
 
@@ -415,9 +408,9 @@ def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     env = dict(os.environ)
     env[secrets.ENV_API] = infisical_api()
     try:
-        return secrets.fetch_project(
-            infisical_project(), "/", env, token=read_token_binding(), names=wanted
-        )
+        project = infisical_project()
+        read_token = read_token_binding()
+        return secrets.fetch_project(project, "/", env, token=read_token, names=wanted)
     except secrets.SecretsError as exc:
         raise FleetRagError("Infisical scoped read failed: " + exc.message) from None
 
