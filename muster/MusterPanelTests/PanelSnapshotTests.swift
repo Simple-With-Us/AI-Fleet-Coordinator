@@ -20,7 +20,7 @@ import XCTest
 /// `FleetViewStore.shared`, `SeatActivityStore.shared`, `WakeSettingsStore.shared`,
 /// `ServerEavesdropperStatusStore.shared`) or build their own reader (`FleetSecrets()` in
 /// Secrets and Recall Settings) from a `.task` when they appear.  None of them can reach
-/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so `fleet-secrets`, the
+/// anything:  `InertProcess.swift` shadows `Process` in this bundle, so shared Infisical reads, the
 /// recall token read, `ssh` for `eavesdropper-status --plan`, the Seats panel's sources and
 /// every other launch fail at once without starting, and `InertURLProtocol` fails every
 /// request through `URLSession.shared`.  Those panels show their own could-not-read state,
@@ -105,16 +105,20 @@ final class PanelSnapshotTests: XCTestCase {
     /// The readers the Secrets and Recall panels build for themselves, and `ssh` through the
     /// Ops runner, fail without starting anything, and `URLSession.shared` never leaves the Mac.
     func testPanelReadersCannotStartAProcessOrReachTheNetwork() async throws {
-        XCTAssertThrowsError(try FleetSecrets().secretNamesGrouped(paths: ["/"]))
-        XCTAssertThrowsError(try FleetSecrets().doctorReport())
+        // Explicit synthetic locations reach the process trap without discovering an installed engine.
+        let interpreter = scratch.appendingPathComponent("fixture-python3")
+        let reader = FleetSecrets(engineRoot: scratch.appendingPathComponent("fixture-engine"),
+                                  interpreter: interpreter)
+        XCTAssertThrowsError(try reader.secretNamesGrouped(paths: ["/"]))
+        XCTAssertThrowsError(try reader.doctorReport())
         let ssh = OpsInvocation(executable: "/usr/bin/ssh", arguments: ["example.invalid", "true"],
                                 workingDirectory: "/", environment: [:], timeout: 5)
         do {
             _ = try await OpsProcessRunner().run(ssh)
             XCTFail("the Ops runner started ssh")
         } catch {}
-        let tried = Process.takeAttempts().map { URL(fileURLWithPath: $0).lastPathComponent }
-        XCTAssertEqual(tried, ["fleet-secrets", "fleet-secrets", "ssh"])
+        let tried = Process.takeAttempts()
+        XCTAssertEqual(tried, [interpreter.path, interpreter.path, "/usr/bin/ssh"])
 
         do {
             _ = try await URLSession.shared.data(from: URL(string: "https://example.invalid/")!)

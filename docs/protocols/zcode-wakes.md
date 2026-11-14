@@ -35,8 +35,9 @@ marked seen only after the POST is answered.
   `delivery.jsonl`.  `zc-wake-bridge deliver --wake-id ... --topic ...` runs one delivery by
   hand, the same code the POST path runs.
 - `scripts/simple_tools/server/zc-wake-bridge.service`  the unit template.  It sources the shared
-  registry env file (`~/.local/bin/operator-registry-env`) itself (the letter hooks no longer read it:  they get the same
-  settings from the host's `~/.local/bin/platform-letter` wrapper, which sources an env script in shell), binds the
+  registry env file (`~/.local/bin/operator-registry-env`) itself.  This unit is a separate consumer from the
+  letter client, whose [dedicated registry-only bootstrap](../rollouts/afc-785-letter-bootstrap.md) replaces
+  env-helper sourcing; verify each consumer's own approved binding before activation.  The unit binds the
   address `/etc/zc-wake-bridge.env` names (the tailnet IP;  loopback without one), and runs the
   checkout out of fleet-cli `current`, so a release move never leaves a dead path.
 - Target rules:  a subagent session never wins (the store's `task_type` says so), a session on
