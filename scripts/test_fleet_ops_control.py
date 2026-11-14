@@ -6166,7 +6166,11 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.home.mkdir(parents=True, mode=0o700)
         self.root.chmod(0o700)
         self.uid = os.getuid()
-        self.enterContext(mock.patch.object(pwd, "getpwuid", return_value=types.SimpleNamespace(pw_dir="/home/control")))
+        self.enterContext(
+            mock.patch.object(
+                pwd, "getpwuid", return_value=types.SimpleNamespace(pw_dir="/home/control")
+            )
+        )
         original_open = os.open
 
         def virtual_root(path, *args, **kwargs):
@@ -6175,13 +6179,19 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.enterContext(mock.patch.object(foc.os, "open", side_effect=virtual_root))
         self.project = str(uuid.uuid4())
         self.api = ScopedReadAPI({}, project=self.project, path="/operator-settings")
-        self.api.metadata_override = {"permissions": ["read", "write"], "expiresAt":
-            (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)).isoformat()}
+        self.api.metadata_override = {
+            "permissions": ["read", "write"],
+            "expiresAt": (
+                datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+            ).isoformat(),
+        }
         self.api.__enter__()
         self.addCleanup(self.api.__exit__, None, None, None)
         self.source = self.root / "reader"
         self.source.mkdir(mode=0o700)
-        (self.source / "fleet_infisical.py").write_bytes(Path(HERE, "fleet_infisical.py").read_bytes())
+        (self.source / "fleet_infisical.py").write_bytes(
+            Path(HERE, "fleet_infisical.py").read_bytes()
+        )
         (self.source / "fleet_infisical.py").chmod(0o600)
         self.enterContext(mock.patch.object(foc, "HELPER_DIR", self.source))
         original_loader = foc._load_infisical_reader
@@ -6191,14 +6201,25 @@ class SettingsBootstrapTests(unittest.TestCase):
             reader.API_BASE = self.api.env["FLEET_SECRETS_API"]
             return reader
 
-        self.enterContext(mock.patch.object(foc, "_load_infisical_reader", side_effect=local_verifier))
+        self.enterContext(
+            mock.patch.object(foc, "_load_infisical_reader", side_effect=local_verifier)
+        )
         self.cid, self.image = "a" * 64, "sha256:" + "b" * 64
         self.calls = []
         self.gone = False
-        self.envelope = dict(protocol="operator-settings-install/1", imageID=self.image,
-            bootstrap={foc.SETTINGS_PROJECT: self.project, foc.SETTINGS_WRITER: self.api.token})
-        self.ctx = foc.Context(home=self.root / "untrusted-HOME", uid=self.uid, platform="linux",
-            environ={}, stdin=lambda: json.dumps(self.envelope).encode(), reader=self.docker)
+        self.envelope = dict(
+            protocol="operator-settings-install/1",
+            imageID=self.image,
+            bootstrap={foc.SETTINGS_PROJECT: self.project, foc.SETTINGS_WRITER: self.api.token},
+        )
+        self.ctx = foc.Context(
+            home=self.root / "untrusted-HOME",
+            uid=self.uid,
+            platform="linux",
+            environ={},
+            stdin=lambda: json.dumps(self.envelope).encode(),
+            reader=self.docker,
+        )
         self.store = self.home / ".config/fleet-tools" / foc.SETTINGS_STORE
         self.image_file = self.store.with_name(foc.SETTINGS_IMAGE)
 
@@ -6226,7 +6247,11 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.assertEqual(self.store.stat().st_nlink, 1)
         metadata = json.loads(self.image_file.read_bytes())
         self.assertEqual(metadata["storeInode"], self.store.stat().st_ino)
-        request = {"action": "save", "requestID": str(uuid.uuid4()), "set": {"daemon.coalesce_seconds": 3}}
+        request = {
+            "action": "save",
+            "requestID": str(uuid.uuid4()),
+            "set": {"daemon.coalesce_seconds": 3},
+        }
         foc.run_eavesdropper_settings_editor_in_container(self.ctx, request)
         argv, kwargs = self.calls[-1]
         self.assertIn(self.cid, argv)
@@ -6243,9 +6268,11 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.image = "sha256:" + "c" * 64
         actual = foc._settings_read
         names = []
+
         def observed(parent, name, uid):
             names.append(name)
             return actual(parent, name, uid)
+
         with mock.patch.object(foc, "_settings_read", side_effect=observed):
             with self.assertRaises(foc.Refused):
                 foc._settings_writer_request(self.ctx, {"action": "save"})
@@ -6261,12 +6288,19 @@ class SettingsBootstrapTests(unittest.TestCase):
         self.assertEqual([argv[-1] for argv, _ in self.calls], ["eavesdropper", self.cid])
 
     def test_invalid_grant_or_overlong_expiry_never_publishes_ready_image(self):
-        for override in ({"permissions": ["read"]}, {"expiresAt": "2099-01-01T00:00:00Z"},
-                         {"scopes": [{"environment": "prod", "secretPath": "/other"}]},
-                         {"expiresAt": None}):
+        for override in (
+            {"permissions": ["read"]},
+            {"expiresAt": "2099-01-01T00:00:00Z"},
+            {"scopes": [{"environment": "prod", "secretPath": "/other"}]},
+            {"expiresAt": None},
+        ):
             with self.subTest(override=override):
-                self.api.metadata_override = {"permissions": ["read", "write"], "expiresAt":
-                    (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)).isoformat()}
+                self.api.metadata_override = {
+                    "permissions": ["read", "write"],
+                    "expiresAt": (
+                        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+                    ).isoformat(),
+                }
                 self.api.metadata_override.update(override)
                 self.assertEqual(self.install()[1], 2)
                 self.assertFalse(self.image_file.exists())
@@ -6278,8 +6312,9 @@ class SettingsBootstrapTests(unittest.TestCase):
 
         def collision(source, target, **kwargs):
             if target == foc.SETTINGS_STORE:
-                fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600,
-                             dir_fd=kwargs["dst_dir_fd"])
+                fd = os.open(
+                    target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=kwargs["dst_dir_fd"]
+                )
                 os.write(fd, b"pre-existing")
                 os.close(fd)
             return actual(source, target, **kwargs)
@@ -6302,9 +6337,8 @@ class SettingsBootstrapTests(unittest.TestCase):
             with self.assertRaises(foc.Refused):
                 foc._settings_writer_request(self.ctx, {"action": "save"})
         self.store.chmod(0o600)
-        with foc._settings_directory(self.ctx) as fd:
-            with self.assertRaises(foc.Refused):
-                foc._settings_read(fd, foc.SETTINGS_STORE, self.uid + 1)
+        with foc._settings_directory(self.ctx) as fd, self.assertRaises(foc.Refused):
+            foc._settings_read(fd, foc.SETTINGS_STORE, self.uid + 1)
         os.link(self.store, self.store.with_name("linked"))
         with self.assertRaises(foc.Refused):
             foc._settings_writer_request(self.ctx, {"action": "save"})
@@ -6322,8 +6356,10 @@ class SettingsBootstrapTests(unittest.TestCase):
 
     def test_remote_flags_and_json_cannot_select_local_receiver(self):
         with mock.patch.object(foc, "receive_settings_bootstrap") as receive:
-            for argv in ([foc.SETTINGS_RECEIVE, "--from-muster"],
-                         ["--from-ssh", foc.SETTINGS_RECEIVE]):
+            for argv in (
+                [foc.SETTINGS_RECEIVE, "--from-muster"],
+                ["--from-ssh", foc.SETTINGS_RECEIVE],
+            ):
                 self.assertEqual(foc.main(argv, ctx=self.ctx, out=io.StringIO()), 2)
             self.ctx.environ["SSH_ORIGINAL_COMMAND"] = foc.SETTINGS_RECEIVE
             self.assertEqual(foc.main([foc.SETTINGS_RECEIVE], ctx=self.ctx, out=io.StringIO()), 2)
@@ -6333,8 +6369,11 @@ class SettingsBootstrapTests(unittest.TestCase):
             foc.eavesdropper_settings_request_from_stdin(self.ctx, "yes")
 
     def test_malformed_receive_and_unready_store_output_never_reflect_input(self):
-        for raw in (b"not-json", json.dumps({"bootstrap": self.api.token}).encode(),
-                    b'{"protocol":"x","protocol":"y"}'):
+        for raw in (
+            b"not-json",
+            json.dumps({"bootstrap": self.api.token}).encode(),
+            b'{"protocol":"x","protocol":"y"}',
+        ):
             self.ctx.stdin = lambda: raw
             answer, code = self.install()
             self.assertEqual(code, 2)
