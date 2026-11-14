@@ -867,6 +867,12 @@ def _bounded_read_worker() -> int:
         if request["operation"] != "named-fetch":
             raise UsageError("bounded-read-invalid")
         if (
+            not isinstance(request["project"], str)
+            or not request["project"]
+            or len(request["project"]) > 256
+        ):
+            raise UsageError("bounded-read-invalid")
+        if (
             not isinstance(request["names"], list)
             or not 1 <= len(request["names"]) <= 1024
             or type(request["writer"]) is not bool
@@ -902,6 +908,8 @@ def _bounded_read_worker() -> int:
         reply = {"schema": 1, "ok": True, "values": values}
     except UnresolvedReferenceError as exc:
         reply.update(reason="unresolved-reference", code=5, failure_kind=exc.failure_kind)
+    except UsageError:
+        reply.update(reason="bounded-read-invalid", failure_kind="refused")
     except SecretsError as exc:
         reply["reason"] = (
             "token-expired-or-invalid"
