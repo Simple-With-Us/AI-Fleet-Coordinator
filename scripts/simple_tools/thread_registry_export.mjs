@@ -42,6 +42,25 @@ const COL_PURPOSE = 13;
 const COL_UPDATED = 14;
 const PAGE_SIZE = 500;
 
+// Error diagnostics carry the Google error body, never its secrets:  credential-shaped
+// content (bearer/access tokens, JWTs, API keys, private-key blocks, JSON credential
+// fields) is redacted before the text is bound to the thrown error, and the whole detail
+// is capped so a pathological body cannot flood logs.
+const ERROR_DETAIL_CAP = 500;
+const REDACT_PATTERNS = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[redacted]"],
+  [/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "[redacted]"],
+  [/ya29\.[A-Za-z0-9._-]+/g, "[redacted]"],
+  [/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]"],
+  [/AIza[0-9A-Za-z_-]{20,}/g, "[redacted]"],
+  [/("(?:[A-Za-z_]*(?:key|token|secret|assertion|password))[A-Za-z_]*"\s*:\s*")[^"]*(")/gi, "$1[redacted]$2"],
+];
+export function redactForError(text) {
+  let out = String(text ?? "");
+  for (const [re, replacement] of REDACT_PATTERNS) out = out.replace(re, replacement);
+  return out.length > ERROR_DETAIL_CAP ? `${out.slice(0, ERROR_DETAIL_CAP)}...` : out;
+}
+
 function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
@@ -89,7 +108,7 @@ async function getGoogleAccessToken() {
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(`Google OAuth error: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Google OAuth error: HTTP ${res.status}: ${redactForError(JSON.stringify(data))}`);
   // Shape-check before use, the way operator_sheets_google.mjs validates its
   // token response:  an unexpected body must fail here, not downstream as an
   // auth header.  (This drain runs under bare node with no zod available.)
@@ -110,7 +129,10 @@ export function makeSheetsAdapter(token, spreadsheetId = SPREADSHEET_ID, tab = S
   const base = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`;
   async function call(path, init = {}) {
     const res = await fetch(`${base}${path}`, { ...init, headers: { ...auth, ...(init.headers || {}) } });
-    if (!res.ok) throw new Error(`Sheets API ${init.method || "GET"} ${path} -> ${res.status}`);
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`Sheets API ${init.method || "GET"} ${path} -> ${res.status}${detail ? `: ${redactForError(detail)}` : ""}`);
+    }
     return res.json();
   }
   return {
