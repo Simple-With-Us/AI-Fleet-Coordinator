@@ -1802,7 +1802,7 @@ class UnletteredSessionsTests(Base):
         conn.close()
 
     def test_names_only_unlettered_chats_in_the_window(self) -> None:
-        self.insert(1, "??: Resolve CodeCaps PR 520 And 521", 3600)
+        self.insert(1, "??: Fixture-Repo PR 1", 3600)
         self.insert(2, "DD: Done", 3600)
         self.insert(3, "??: Brand New", 60)
         self.insert(4, "??: Ancient", 30 * 86400)
@@ -1821,6 +1821,20 @@ class UnletteredSessionsTests(Base):
             )
         conn.close()
         self.assertEqual(C.codex_unlettered_sessions(self.env()), [])
+
+    def test_a_store_from_before_archived_still_scans(self) -> None:
+        os.unlink(self.store)
+        conn = sqlite3.connect(self.store)
+        with conn:
+            conn.execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT, created_at REAL NOT NULL DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO threads (id, name, created_at) VALUES (?, ?, ?)",
+                (tid(7), "??: Old Store", time.time() - 3600),
+            )
+        conn.close()
+        self.assertEqual(C.codex_unlettered_sessions(self.env()), [tid(7)])
 
     def test_no_store_is_doubt_and_doubt_answers_none(self) -> None:
         os.unlink(self.store)
