@@ -32,7 +32,6 @@ import sys
 sys.dont_write_bytecode = True
 
 import argparse
-from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -43,6 +42,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
