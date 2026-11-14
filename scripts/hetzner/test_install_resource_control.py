@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -16,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -147,6 +149,144 @@ class InstallerTests(unittest.TestCase):
                 "cryptography is not installed: muster_approval and muster_trust_files were not "
                 "imported (everything else in this test ran)"
             )
+
+    def test_installed_reader_uses_checked_sibling_and_real_bounded_worker(self):
+        project = str(uuid.uuid4())
+        coolify_token = "synthetic-coolify-token-value"
+        trap = self.root / "reader-untrusted-cwd"
+        trap.mkdir()
+        home = self.root / "reader-home"
+        home.mkdir()
+
+        def invoke(api, payload=None):
+            code = r"""
+import importlib.util, json, os, pathlib, sys, types
+installed = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(installed))
+foreign = types.ModuleType("fleet_infisical")
+foreign.bounded_fetch_project = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("foreign reader used"))
+sys.modules["fleet_infisical"] = foreign
+spec = importlib.util.spec_from_file_location("installed_control", installed / "fleet-ops-control.py")
+control = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(control)
+calls = []
+ctx = control.Context(
+    platform="linux", uid=os.getuid(), home=pathlib.Path(os.environ["TEST_HOME"]),
+    environ={key: value for key, value in os.environ.items() if key in {
+        "FLEET_OPS_CONTROL_INFISICAL_TOKEN", "INFISICAL_FLEET_OPS_PROJECT_ID",
+        "FLEET_SECRETS_API", "INFISICAL_ENVIRONMENT", "INFISICAL_ENV",
+    }},
+    http=lambda url, headers: calls.append(url) or 200,
+)
+answer, status = control.check_token(ctx)
+print(json.dumps({
+    "answer": answer, "status": status, "httpCalls": calls,
+    "foreignStillLoaded": sys.modules.get("fleet_infisical") is foreign,
+    "ledgerImported": "simple_tools.operator_github_state" in sys.modules,
+}))
+"""
+            env = {
+                "PATH": str(trap),
+                "TEST_HOME": str(home),
+                "FLEET_OPS_CONTROL_INFISICAL_TOKEN": api.token,
+                "INFISICAL_FLEET_OPS_PROJECT_ID": project,
+                "FLEET_SECRETS_API": "http://127.0.0.1:%d/api"
+                % api.server.server_address[1],
+                "INFISICAL_ENVIRONMENT": "prod",
+            }
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", code, str(payload or self.destination)],
+                cwd=trap,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(api.token, result.stdout)
+            self.assertNotIn(api.token, " ".join(result.args))
+            return json.loads(result.stdout)
+
+        # The consumer receives only a synthetic protected process binding.  This route uses
+        # the copied sibling source and the real disposable worker against the loopback fixture.
+        self.install()
+        with ScopedReadAPI(
+            {"COOLIFY_API_TOKEN": coolify_token},
+            project=project,
+            path="/coolify",
+        ) as api:
+            api.record_override = {"secretValueHidden": False}
+            success = invoke(api)
+            self.assertEqual(success["status"], 0, success)
+            self.assertEqual(len(success["httpCalls"]), 1)
+            self.assertTrue(success["foreignStillLoaded"])
+            self.assertFalse(success["ledgerImported"])
+            self.assertEqual(
+                api.requests,
+                [
+                    "/api/v2/service-token",
+                    "/api/v3/secrets/raw/COOLIFY_API_TOKEN?workspaceId="
+                    + project
+                    + "&environment=prod&secretPath=%2Fcoolify&viewSecretValue=true"
+                    "&expandSecretReferences=false&recursive=false&include_imports=false",
+                ],
+            )
+
+        # A real read-only payload needs no compatibility package or writer ledger in either
+        # interpreter.  The bounded worker executes only this copied canonical source.
+        reader_only = self.root / "read-only-payload"
+        reader_only.mkdir(mode=0o700)
+        for name in ("fleet-ops-control.py", "fleet_infisical.py"):
+            target = reader_only / name
+            target.write_bytes((self.destination / name).read_bytes())
+            target.chmod(0o600)
+        with ScopedReadAPI({"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify") as api:
+            api.record_override = {"secretValueHidden": False}
+            isolated = invoke(api, reader_only)
+            self.assertEqual(isolated["status"], 0, isolated)
+            self.assertFalse(isolated["ledgerImported"])
+            self.assertEqual(len(api.requests), 2)
+        self.assertEqual(list(reader_only.rglob("*.sqlite*")), [])
+
+        # Bad scope is refused by the canonical grant verifier before the injected Coolify
+        # request can observe any token.
+        with ScopedReadAPI(
+            {"COOLIFY_API_TOKEN": coolify_token},
+            project=project,
+            path="/wrong-folder",
+        ) as api:
+            api.record_override = {"secretValueHidden": False}
+            refused = invoke(api)
+            self.assertEqual(refused["status"], 1, refused)
+            self.assertEqual(refused["httpCalls"], [])
+            self.assertEqual(api.requests, ["/api/v2/service-token"])
+
+        # A broken installed canonical sibling fails closed before either provider request.
+        reader = self.destination / "fleet_infisical.py"
+        original = reader.read_bytes()
+        try:
+            reader.unlink()
+            with ScopedReadAPI({"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify") as api:
+                missing = invoke(api)
+                self.assertEqual(missing["status"], 1, missing)
+                self.assertEqual(missing["httpCalls"], [])
+                self.assertEqual(api.requests, [])
+            reader.write_text("raise RuntimeError('broken copied reader')\n")
+            reader.chmod(0o644)
+            with ScopedReadAPI(
+                {"COOLIFY_API_TOKEN": coolify_token},
+                project=project,
+                path="/coolify",
+            ) as api:
+                api.record_override = {"secretValueHidden": False}
+                broken = invoke(api)
+                self.assertEqual(broken["status"], 1, broken)
+                self.assertEqual(broken["httpCalls"], [])
+                self.assertEqual(api.requests, [])
+        finally:
+            reader.write_bytes(original)
+
+        self.assertEqual(list(home.rglob("*")), [])
 
     def test_symlink_destination_directory_refused(self):
         lib = self.home / ".local/lib"

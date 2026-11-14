@@ -223,12 +223,10 @@ class ValidateTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    """The responder's contract is code:  it must carry the same screen the fleet documents.
+    """Keep the operative legacy contract aligned with its implementation documentation.
 
-    The screen the fleet documents lives in the Zulip fleet guide, which this repository owns
-    and which is canonical for chat conduct.  The protocol document is a generated mirror of
-    the Fleet-OPS handbook, and the trim of 2026-10-28 turned it into a tools manual that does
-    not restate the chat rules, so the screen is read from the guide and not from the mirror.
+    Current acting-session policy lives in AGENTS.md and the Zulip guide.  The listener
+    documentation describes the older runtime gates until their separate implementation rollout.
     """
 
     def contract(self) -> str:
@@ -247,7 +245,7 @@ class ContractTests(unittest.TestCase):
         self.assertLess(text.index("## Untrusted Content"), text.index("## Peer Requests"))
         self.assertLess(text.index("## Peer Requests"), text.index("## Choosing an Action"))
 
-    def test_the_high_risk_list_matches_the_documented_peer_screen(self) -> None:
+    def test_the_high_risk_list_matches_the_legacy_implementation_notes(self) -> None:
         text = self.contract()
         for phrase in (
             "secret, key, token or credential",
@@ -265,18 +263,25 @@ class ContractTests(unittest.TestCase):
                 self.assertIn(phrase, text)
                 self.assertIn(
                     phrase,
-                    self.zulip_guide(),
-                    "the contract and the fleet's peer screen name the same risk",
+                    self.listener_protocol(),
+                    "the legacy contract and its implementation notes name the same risk",
                 )
 
-    def zulip_guide(self) -> str:
-        """The Zulip fleet guide, which is canonical for chat conduct.
+    def listener_protocol(self) -> str:
+        path = os.path.join(
+            os.path.dirname(W.CONTRACT_PATH),
+            "..",
+            "..",
+            "..",
+            "docs",
+            "protocols",
+            "simple-tools-listener.md",
+        )
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
 
-        The trim of 2026-10-28 moved the working rules out of the protocol document and into
-        each repository's AGENTS.md, so the protocol document is now a tools manual that does
-        not restate them.  The peer screen itself is documented in this guide, which this
-        repository owns, so the guide and the contract are the two halves that have to agree.
-        """
+    def zulip_guide(self) -> str:
+        """The current fleet guide, used for CLI command documentation checks."""
         path = os.path.join(
             os.path.dirname(W.CONTRACT_PATH),
             "..",
