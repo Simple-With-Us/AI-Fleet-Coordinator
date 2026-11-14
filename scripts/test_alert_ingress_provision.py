@@ -1,5 +1,4 @@
 import importlib.util
-import json
 import os
 import pathlib
 import shutil
@@ -10,8 +9,8 @@ import unittest
 import uuid
 from unittest import mock
 
-from fleet_knobs.tests._fake import ScopedReadAPI, fixture_service_token
 from fleet_infisical import SecretsError
+from fleet_knobs.tests._fake import ScopedReadAPI, fixture_service_token
 
 SPEC = importlib.util.spec_from_file_location(
     "alert_ingress_provision",
@@ -80,7 +79,9 @@ class BoundedReader(ReaderTestCase):
 
     def test_one_and_multiple_names_use_the_real_bounded_reader(self):
         project = str(uuid.uuid4())
-        with ScopedReadAPI({"ONLY_ONE": "one-value", "A": "alpha", "B": "beta"}, project=project) as api:
+        with ScopedReadAPI(
+            {"ONLY_ONE": "one-value", "A": "alpha", "B": "beta"}, project=project
+        ) as api:
             self.use_api(
                 api,
                 own_binding=provision.READ_TOKEN_FLEETOPS,
@@ -134,12 +135,17 @@ class BoundedReader(ReaderTestCase):
         with ScopedReadAPI({"A": "from-provider"}, project=project) as api:
             self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
             os.environ["A"] = "from-environment"
-            self.assertEqual(provision.batch_values(["A"], provision.FLEETOPS_SLUG, "/"), {"A": "from-environment"})
+            self.assertEqual(
+                provision.batch_values(["A"], provision.FLEETOPS_SLUG, "/"),
+                {"A": "from-environment"},
+            )
             self.assertEqual(api.requests, [])
 
     def test_afc_and_fleetops_use_only_their_own_project_and_folder(self):
         afc_values = {"AFC_VALUE": "from-afc"}
-        with ScopedReadAPI(afc_values, project=provision.AFC, path=provision.SECRET_PATH) as afc_api:
+        with ScopedReadAPI(
+            afc_values, project=provision.AFC, path=provision.SECRET_PATH
+        ) as afc_api:
             self.use_api(afc_api, own_binding=provision.READ_TOKEN_AFC)
             self.assertEqual(
                 provision.fleet_secrets_get("AFC_VALUE", provision.AFC_SLUG, provision.SECRET_PATH),
@@ -148,7 +154,9 @@ class BoundedReader(ReaderTestCase):
             self.assertEqual(afc_api.requests.count("/api/v2/service-token"), 1)
 
         fleetops_project = str(uuid.uuid4())
-        with ScopedReadAPI({"FLEETOPS_VALUE": "from-fleetops"}, project=fleetops_project) as fleetops_api:
+        with ScopedReadAPI(
+            {"FLEETOPS_VALUE": "from-fleetops"}, project=fleetops_project
+        ) as fleetops_api:
             self.use_api(
                 fleetops_api,
                 own_binding=provision.READ_TOKEN_FLEETOPS,
@@ -167,7 +175,10 @@ class BoundedReader(ReaderTestCase):
         project = str(uuid.uuid4())
         with ScopedReadAPI({"A": "value"}, project=project) as api:
             self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            for invalid_project, invalid_path in (("unknown", "/"), (provision.FLEETOPS_SLUG, "/other")):
+            for invalid_project, invalid_path in (
+                ("unknown", "/"),
+                (provision.FLEETOPS_SLUG, "/other"),
+            ):
                 with self.assertRaises(provision.ReadError):
                     provision.fleet_secrets_get("A", invalid_project, invalid_path)
             self.assertEqual(api.requests, [])
@@ -188,7 +199,9 @@ class BoundedReader(ReaderTestCase):
             )
             with self.assertRaises(provision.ReadError) as caught:
                 provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
-            self.assertEqual(caught.exception.reason, f"{provision.READ_TOKEN_FLEETOPS} is missing or invalid")
+            self.assertEqual(
+                caught.exception.reason, f"{provision.READ_TOKEN_FLEETOPS} is missing or invalid"
+            )
             os.environ[provision.READ_TOKEN_FLEETOPS] = ""
             with self.assertRaises(provision.ReadError):
                 provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
@@ -228,13 +241,15 @@ class BoundedReader(ReaderTestCase):
         project = str(uuid.uuid4())
         with ScopedReadAPI({"A": "sentinel-value"}, project=project) as api:
             self.use_api(api, own_binding=provision.READ_TOKEN_FLEETOPS, project_id=project)
-            with mock.patch.object(
-                provision.scoped_secrets,
-                "bounded_fetch_project",
-                side_effect=SecretsError("bounded-read-timeout", failure_kind="unavailable"),
+            with (
+                mock.patch.object(
+                    provision.scoped_secrets,
+                    "bounded_fetch_project",
+                    side_effect=SecretsError("bounded-read-timeout", failure_kind="unavailable"),
+                ),
+                self.assertRaises(provision.ReadError) as caught,
             ):
-                with self.assertRaises(provision.ReadError) as caught:
-                    provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
+                provision.fleet_secrets_get("A", provision.FLEETOPS_SLUG, "/")
             self.assertEqual(caught.exception.code, provision.EXIT_TIMEOUT)
             self.assertNotIn("sentinel-value", caught.exception.reason)
 
@@ -249,6 +264,7 @@ class BoundedReader(ReaderTestCase):
 
 class IsolatedPayload(unittest.TestCase):
     """The public payload imports and reads without an installed app package."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -266,7 +282,9 @@ class IsolatedPayload(unittest.TestCase):
         )
         app.chmod(0o700)
         (self.payload / "scripts" / "alert-ingress").mkdir(parents=True)
-        shutil.copy2(self.source_root / "fleet_infisical.py", self.payload / "scripts" / "fleet_infisical.py")
+        shutil.copy2(
+            self.source_root / "fleet_infisical.py", self.payload / "scripts" / "fleet_infisical.py"
+        )
         shutil.copy2(
             self.source_root / "alert-ingress" / "provision-secrets.py",
             self.payload / "scripts" / "alert-ingress" / "provision-secrets.py",
@@ -317,7 +335,11 @@ class IsolatedPayload(unittest.TestCase):
             self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"ok\n", b""))
             self.assertFalse(self.app_sentinel.exists())
             self.assertEqual(
-                {p.relative_to(self.payload).as_posix() for p in self.payload.rglob("*") if p.is_file()},
+                {
+                    p.relative_to(self.payload).as_posix()
+                    for p in self.payload.rglob("*")
+                    if p.is_file()
+                },
                 {"scripts/fleet_infisical.py", "scripts/alert-ingress/provision-secrets.py"},
             )
 

@@ -1583,19 +1583,27 @@ def bootstrap_request(raw):
         if len(raw) > BOOTSTRAP_MAX_BYTES:
             return refused, 2
         envelope = json.loads(raw, object_pairs_hook=pairs)
-        if (not isinstance(envelope, dict) or set(envelope) != {"protocol", "request", "bootstrap"}
-                or envelope["protocol"] != "operator-settings-bootstrap/1"
-                or not isinstance(envelope["request"], dict)
-                or envelope["request"].get("action") not in ("save", "initialize", "reconcile")):
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != {"protocol", "request", "bootstrap"}
+            or envelope["protocol"] != "operator-settings-bootstrap/1"
+            or not isinstance(envelope["request"], dict)
+            or envelope["request"].get("action") not in ("save", "initialize", "reconcile")
+        ):
             return refused, 2
         bootstrap = envelope["bootstrap"]
-        if (not isinstance(bootstrap, dict) or set(bootstrap) != {BOOTSTRAP_PROJECT, BOOTSTRAP_WRITER}
-                or any(not isinstance(value, str) for value in bootstrap.values())
-                or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
-                                    bootstrap[BOOTSTRAP_PROJECT])
-                or not bootstrap[BOOTSTRAP_WRITER].startswith("st.")
-                or not 20 <= len(bootstrap[BOOTSTRAP_WRITER]) <= 8192
-                or any(c.isspace() for c in bootstrap[BOOTSTRAP_WRITER])):
+        if (
+            not isinstance(bootstrap, dict)
+            or set(bootstrap) != {BOOTSTRAP_PROJECT, BOOTSTRAP_WRITER}
+            or any(not isinstance(value, str) for value in bootstrap.values())
+            or not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                bootstrap[BOOTSTRAP_PROJECT],
+            )
+            or not bootstrap[BOOTSTRAP_WRITER].startswith("st.")
+            or not 20 <= len(bootstrap[BOOTSTRAP_WRITER]) <= 8192
+            or any(c.isspace() for c in bootstrap[BOOTSTRAP_WRITER])
+        ):
             return refused, 2
         os.environ.update(bootstrap)
         return run_request(envelope["request"])
@@ -1616,9 +1624,14 @@ def main(argv=None, stdin=None, out=None):
     out = out or sys.stdout
     if argv == ["--bootstrap-request-stdin"]:
         try:
-            answer, code = bootstrap_request((stdin or sys.stdin.buffer).read(BOOTSTRAP_MAX_BYTES + 1))
+            answer, code = bootstrap_request(
+                (stdin or sys.stdin.buffer).read(BOOTSTRAP_MAX_BYTES + 1)
+            )
         except Exception:  # noqa: BLE001 - private input failures have one closed response
-            answer, code = {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+            answer, code = (
+                {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                2,
+            )
         finally:
             for name in (BOOTSTRAP_WRITER, BOOTSTRAP_READER, BOOTSTRAP_PROJECT):
                 os.environ.pop(name, None)
