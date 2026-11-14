@@ -1396,7 +1396,7 @@ def iter_docs(
                 try:
                     text = docs_library.text_from_bytes(raw, p.suffix)
                 except (ValueError, UnicodeError):
-                    warn(f"doc: skipped unreadable tracked file {relative}")
+                    warn(f"doc: unreadable-or-excluded tracked file {relative}")
                     continue
                 document = Doc(
                     doc_id="doc/" + repository.name + "/" + relative,
