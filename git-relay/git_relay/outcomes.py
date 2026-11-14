@@ -36,6 +36,7 @@ import threading
 import time
 
 MAX_ENTRIES = 5000
+MAX_CAPACITY = 50_000
 OK_TTL_SECONDS = 24 * 3600
 STATES = ("pending", "ok", "refused", "unknown")
 
@@ -104,9 +105,14 @@ def _load_rows(path: str) -> dict:
 class OutcomeStore:
     """Small durable map:  key -> {state, result, ts}.  A None path keeps it in memory."""
 
-    def __init__(self, path: str | None = None, clock=time.time):
+    def __init__(self, path: str | None = None, clock=time.time, *, max_entries=None):
+        if max_entries is None:
+            max_entries = MAX_ENTRIES
+        if type(max_entries) is not int or not 0 < max_entries <= MAX_CAPACITY:
+            raise ValueError("max_entries must be a positive integer within the supported limit")
         self._path = path
         self._clock = clock
+        self._max_entries = max_entries
         self._lock = threading.Lock()
         self._rows: dict[str, dict] = {}
         if path and os.path.exists(path):
@@ -161,10 +167,10 @@ class OutcomeStore:
                 self._rows[key] = {"state": "pending", "ts": self._clock()}
                 self._save()
                 return None
-            self._trim(MAX_ENTRIES - 1)
-            if len(self._rows) >= MAX_ENTRIES:
+            self._trim(self._max_entries - 1)
+            if len(self._rows) >= self._max_entries:
                 raise OutcomeStoreError(
-                    f"outcome store holds {MAX_ENTRIES} rows with none evictable; "
+                    f"outcome store holds {self._max_entries} rows with none evictable; "
                     "reconcile the held unknown outcomes before new writes"
                 )
             self._rows[key] = {"state": "pending", "ts": self._clock()}
@@ -192,7 +198,7 @@ class OutcomeStore:
         ]
         for key in stale:
             del self._rows[key]
-        excess = len(self._rows) - (MAX_ENTRIES if limit is None else limit)
+        excess = len(self._rows) - (self._max_entries if limit is None else limit)
         if excess <= 0:
             return
         removable = sorted(
