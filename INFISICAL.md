@@ -35,6 +35,18 @@ Owner rule, Nov 11, 2026.  Infisical is the sole source of truth for every secre
 
 Secret values are NEVER invented, guessed, or copied from anywhere: the six secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
 
+## Git Relay Outcome Capacity
+
+This nonsecret startup policy belongs to **Fleet-OPS**, `prod`, in the relay's existing App-source folder, normally `/github-apps`.  The relay reads it through the same configured Source and protected credential binding as its App keys, using the folder-proven `verified_secret` method.  It does not read an environment override, use another source or acquire a new grant.
+
+| Key | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `GIT_RELAY_OUTCOMES_MAX_ENTRIES` | Existing App-source folder, normally `/github-apps` | Nonsecret relay outcome capacity; canonical decimal integer from 5,000 through 50,000; intended production value `20000` |
+
+Provision the setting in the service's actual configured folder and verify an own-source cold read before starting App-enabled source that requires it.  A missing, unreadable or invalid setting stops startup before legacy-state adoption or outcome-store loading.  Source and test changes alone do not prove that the setting exists or that a runtime was activated.
+
+The capacity is loaded once per process.  Raising it preserves the same outcome path, successful replay records for their complete 24-hour window, and every pending or unknown outcome.  Lowering it does not evict protected records; a full store still refuses fresh writes.  The auth-free `OutcomeStore` library default remains 5,000, and explicit `GIT_RELAY_APP_MINT=0` retains that default without constructing an App Source or adding authentication.
+
 ## Muster Server Resource Policy
 
 This control plane uses the **Fleet-OPS** project, separate from the recall service settings above.  The existing `CODING_RAM_POLICY` remains authoritative for the complete resource policy; the controller loads and refreshes it, and the broker saves only one allowlisted field against a reviewed full-policy revision.

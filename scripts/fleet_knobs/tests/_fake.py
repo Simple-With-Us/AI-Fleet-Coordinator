@@ -115,6 +115,7 @@ class ScopedReadAPI:
                             "secret": {
                                 "secretKey": name,
                                 "secretValue": fake.values[name],
+                                "secretValueHidden": False,
                                 "workspace": fake.project,
                                 "environment": "prod",
                                 "secretPath": fake.path,
@@ -141,6 +142,7 @@ class ScopedReadAPI:
                             {
                                 "secretKey": name,
                                 "secretValue": value,
+                                "secretValueHidden": False,
                                 "workspace": fake.project,
                                 "environment": "prod",
                                 "secretPath": fake.path,
