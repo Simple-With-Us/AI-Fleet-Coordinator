@@ -188,9 +188,7 @@ class Transaction:
             # pinned before-image; an after-image or any other content is a
             # partial or foreign write that must be reconciled by hand, never
             # blessed here.
-            if self.backup.is_symlink() or (
-                self.backup.exists() and not self.backup.is_dir()
-            ):
+            if self.backup.is_symlink() or (self.backup.exists() and not self.backup.is_dir()):
                 raise TransactionError("invalid backup remnants without journal")
             if self.backup.exists():
                 expected = {}
