@@ -375,7 +375,9 @@ def cancel(doc_id, root=None):
                 "state": "source-deleted",
             },
         )
-        fd = os.open("cancelled-" + key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600, dir_fd=directory)
+        fd = os.open(
+            "cancelled-" + key, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600, dir_fd=directory
+        )
         os.close(fd)
 
 
