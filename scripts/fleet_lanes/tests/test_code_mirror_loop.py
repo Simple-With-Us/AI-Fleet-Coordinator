@@ -18,11 +18,15 @@ from fleet_lanes import code_mirror_credentials as credentials
 class LoopTests(unittest.TestCase):
     def test_sweep_command_forwards_remainder_without_parsing_or_logging(self):
         command = [sys.executable, "private-sentinel", "--dry-run", "--loop"]
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sync, "run_loop", side_effect=lambda run: run()) as loop, mock.patch.object(sync.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=b"")) as run:
+        proc = mock.Mock(returncode=0)
+        proc.communicate.return_value = (b"", b"")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sync, "run_loop", side_effect=lambda run: run()), mock.patch.object(sync.subprocess, "Popen", return_value=proc) as popen:
             self.assertEqual(sync.main(["--loop", "--sweep-command", *command], env={"FLEET_LANE_GUARD_STATE_DIR":tmp}), 0)
-        self.assertEqual(run.call_args.args[0], command)
-        self.assertIs(run.call_args.kwargs["shell"], False)
-        self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertEqual(popen.call_args.args[0], command)
+        self.assertIs(popen.call_args.kwargs["shell"], False)
+        self.assertEqual(popen.call_args.kwargs["stdout"], sync.subprocess.PIPE)
+        self.assertEqual(popen.call_args.kwargs["stderr"], sync.subprocess.PIPE)
+        proc.communicate.assert_called_once_with(timeout=120)
 
     def test_only_strict_counter_summary_survives_malicious_adjacent_output(self):
         summary = "summary: updated=0 current=17 would_update=0 skipped=0 failed=0"
@@ -30,8 +34,9 @@ class LoopTests(unittest.TestCase):
                           summary+" private-sentinel", "private-sentinel "+summary,
                           summary.replace("current=17", "current=1000000"),
                           summary.replace("failed=0", "failed=-1")]).encode()
-        result = mock.Mock(returncode=0, stdout=raw, stderr=summary.encode()+b" private-sentinel")
-        with mock.patch.object(sync.subprocess, "run", return_value=result), mock.patch.object(sync, "log") as log:
+        proc = mock.Mock(returncode=0)
+        proc.communicate.return_value = (raw, summary.encode()+b" private-sentinel")
+        with mock.patch.object(sync.subprocess, "Popen", return_value=proc), mock.patch.object(sync, "log") as log:
             self.assertEqual(sync.run_sweep_command([sys.executable]),0)
         log.assert_called_once_with(summary)
 
@@ -50,25 +55,32 @@ class LoopTests(unittest.TestCase):
             sleeps.append(seconds)
             if len(sleeps) == 2:
                 raise KeyboardInterrupt
-        with mock.patch.object(sync.subprocess, "run", side_effect=[mock.Mock(returncode=-15, stdout=b"private-sentinel", stderr=b"private-sentinel"), OSError("private-sentinel")]) as run, contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
-            self.assertEqual(sync.run_loop(lambda: sync.run_sweep_command([sys.executable, "private-sentinel"]), read=lambda: 300, sleep=sleep), 0)
-        self.assertEqual(sleeps, [300, 300])
-        self.assertEqual(run.call_count, 2)
+        proc_fail = mock.Mock(returncode=-15)
+        proc_fail.communicate.return_value = (b"private-sentinel", b"private-sentinel")
+        proc_timeout = mock.Mock()
+        proc_timeout.communicate.side_effect = sync.subprocess.TimeoutExpired(["x"], 120)
+        with mock.patch.object(sync.subprocess, "Popen", side_effect=[proc_fail, OSError("private-sentinel"), proc_timeout]) as popen, contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            self.assertEqual(sync.run_sweep_command([sys.executable, "private-sentinel"]), -15)
+            self.assertEqual(sync.run_sweep_command([sys.executable, "private-sentinel"]), 127)
+            self.assertEqual(sync.run_sweep_command([sys.executable, "private-sentinel"]), 124)
+        self.assertEqual(popen.call_count, 3)
+        proc_timeout.terminate.assert_called_once()
         self.assertIn("exit=-15", error.getvalue())
-        self.assertIn("exit=unavailable", error.getvalue())
+        self.assertIn("exit=127", error.getvalue())
+        self.assertIn("exit=124", error.getvalue())
         self.assertNotIn("private-sentinel", output.getvalue()+error.getvalue())
 
     def test_duplicate_loop_never_reads_or_runs_a_sweep(self):
         with tempfile.TemporaryDirectory() as tmp:
-            fd = os.open(Path(tmp)/"code-main-sync-scheduler.lock", os.O_CREAT | os.O_RDWR, 0o600)
+            lock_dir = Path(tmp)/"code-main-sync-scheduler.lock"
+            os.mkdir(lock_dir, 0o700)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 with mock.patch.object(sync, "run_loop") as loop, mock.patch.object(sync, "process_repo") as sweep:
                     self.assertEqual(sync.main(["--loop"], env={"FLEET_LANE_GUARD_STATE_DIR":tmp}), 0)
                 loop.assert_not_called()
                 sweep.assert_not_called()
             finally:
-                os.close(fd)
+                os.rmdir(lock_dir)
 
     def test_print_failure_has_no_stdout(self):
         output, error = io.StringIO(), io.StringIO()
@@ -174,11 +186,13 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["/usr/bin/security", "find-generic-password", "-s", "infisical-service-token", "-a", credentials.NAME, "-w"])
         self.assertTrue(run.call_args.kwargs["capture_output"])
 
-    def test_existing_binding_is_preserved_without_store_access(self):
-        with mock.patch.dict(os.environ, {credentials.ENV: "existing"}), mock.patch.object(credentials, "_load_token") as load:
+    def test_authoritative_binding_replaces_existing_env_value(self):
+        material = "st."+"fixture-sensitive-material"
+        with mock.patch.dict(os.environ, {credentials.ENV: "existing"}), mock.patch.object(credentials, "_load_token", return_value=credentials._Credential(material)) as load:
             with credentials.settings_read_binding():
-                self.assertEqual(os.environ[credentials.ENV], "existing")
-            load.assert_not_called()
+                self.assertEqual(os.environ[credentials.ENV], material)
+            load.assert_called_once()
+            self.assertEqual(os.environ[credentials.ENV], "existing")
 
     def test_binding_restored_even_after_fetch_exception(self):
         material = "st."+"fixture-sensitive-material"

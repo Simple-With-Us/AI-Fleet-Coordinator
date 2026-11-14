@@ -577,22 +577,41 @@ def run_loop(run, read=read_interval, sleep=time.sleep) -> int:
 def run_sweep_command(command: list[str]) -> int:
     """Keep the host's existing authorization bootstrap inside every sweep."""
     try:
-        result = subprocess.run(command, shell=False, capture_output=True)
+        proc = subprocess.Popen(command, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError:
-        print("Code mirror sweep command exit=unavailable", file=sys.stderr)
-        return 1
+        print("Code mirror sweep command exit=127", file=sys.stderr)
+        return 127
+    try:
+        stdout, _stderr = proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        print("Code mirror sweep command exit=124", file=sys.stderr)
+        return 124
+    except BaseException:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        raise
     # Only the fixed counter receipt crosses the bootstrap boundary; never relay child diagnostics.
     summary_pattern = re.compile(
         r"(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2}) )?"
         r"(summary: updated=[0-9]{1,6} current=[0-9]{1,6} would_update=[0-9]{1,6} skipped=[0-9]{1,6} failed=[0-9]{1,6})"
     )
-    for line in (result.stdout or b"").decode("utf-8", errors="replace").splitlines():
+    for line in (stdout or b"").decode("utf-8", errors="replace").splitlines():
         match = summary_pattern.fullmatch(line)
         if match:
             log(match.group(1))
-    if result.returncode:
-        print(f"Code mirror sweep command exit={int(result.returncode)}", file=sys.stderr)
-    return result.returncode
+    if proc.returncode:
+        print(f"Code mirror sweep command exit={int(proc.returncode)}", file=sys.stderr)
+    return proc.returncode
 
 
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
@@ -621,22 +640,20 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         home = Path(env.get("HOME") or os.path.expanduser("~"))
         state = Path(env.get("FLEET_LANE_GUARD_STATE_DIR") or home / ".local" / "state")
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(state / "code-main-sync-scheduler.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        lock_dir = state / "code-main-sync-scheduler.lock"
         try:
-            info = os.fstat(fd)
-            import stat
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-                print("Code mirror scheduler lock is not private", file=sys.stderr)
-                return 1
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                print("Code mirror scheduler is already running", file=sys.stderr)
-                return 0
+            os.mkdir(lock_dir, 0o700)
+        except FileExistsError:
+            print("Code mirror scheduler is already running", file=sys.stderr)
+            return 0
+        try:
             sweep = (lambda: run_sweep_command(args.sweep_command)) if args.sweep_command is not None else (lambda: main(["--dry-run"] if args.dry_run else [], env=env))
             return run_loop(sweep)
         finally:
-            os.close(fd)
+            try:
+                os.rmdir(lock_dir)
+            except OSError:
+                pass
     home = Path(env.get("HOME") or os.path.expanduser("~"))
     root = Path(env.get("FLEET_CODE_ROOT") or home / "Code")
     if not root.is_dir():

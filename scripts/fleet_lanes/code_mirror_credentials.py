@@ -77,9 +77,6 @@ def _load_token():
 @contextmanager
 def settings_read_binding():
     previous = os.environ.get(ENV)
-    if previous:
-        yield
-        return
     try:
         credential = _load_token()
     except Exception:

@@ -77,7 +77,7 @@ def install(source, destination, source_commit):
             target = destination / "scripts" / name
             if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != digest:
                 raise ValueError("Existing bundle differs from its source manifest")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".code-mirrors-stage-", dir=destination.parent))
     backup = None
     try:
@@ -107,6 +107,9 @@ def install(source, destination, source_commit):
             if backup is not None:
                 os.rename(backup, destination)
             raise
+        for old_backup in destination.parent.glob(destination.name + ".backup-*"):
+            if old_backup != backup:
+                shutil.rmtree(old_backup)
         return {
             "destination": str(destination),
             "backup": str(backup) if backup else None,
