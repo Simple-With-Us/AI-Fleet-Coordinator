@@ -7,7 +7,7 @@ description: Land a ZCode feature branch to main across the fleet — seat workt
 
 > **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
