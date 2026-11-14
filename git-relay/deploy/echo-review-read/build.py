@@ -29,7 +29,7 @@ MODULES = {
     "deploy_recovery.py": "e362ba890b0e19fa8fbd07a23096358bfbc8b29b5a9524da09546b4f4c5619d1",
     "deploy_runner.py": "bb11dcc965a7aa49a29d7b0ab8583e3486c9a7af9f0d932a6a89bbac115b5267",
     "deploy_supervisor.py": "1a1b9f45adb6498d78811d1c7742257440043c19e3fbaf9f174e66ca88081040",
-    "deploy_transaction.py": "58cbd2aa2ce842e51d8b9c265adfe08b88634d87a6409a1b96da88bfb82321f9",
+    "deploy_transaction.py": "a6bf527f0cf9946ea352c84372fb49df3682cd163f2c91d46ddf301521d50852",
 }
 
 
