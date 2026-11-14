@@ -1260,16 +1260,21 @@ class WorkflowVerbs:
             ):
                 raise Refused("PR head not matched")
             base_ref = quote(pr["base"]["ref"], safe="/")
-            try:
-                tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
-            except RelayGitHubError as exc:
-                if exc.status == 404:
-                    raise Refused("PR base not matched") from None
-                raise
-            tip_obj = tip.get("object") if isinstance(tip, dict) else None
-            base_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
-            if not isinstance(base_sha, str) or not _SHA.fullmatch(base_sha):
-                raise Refused("PR base not matched")
+
+            def _read_base_tip_sha():
+                try:
+                    tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+                except RelayGitHubError as exc:
+                    if exc.status == 404:
+                        raise Refused("PR base not matched") from None
+                    raise
+                tip_obj = tip.get("object") if isinstance(tip, dict) else None
+                sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
+                if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+                    raise Refused("PR base not matched")
+                return sha
+
+            base_sha = _read_base_tip_sha()
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
             # Freeze the actual named ref tip, since the PR's base snapshot may lag it.
@@ -1299,10 +1304,7 @@ class WorkflowVerbs:
             # recheck stays possible - the endpoint gives no stronger fence - which
             # is exactly why the write below always runs under the workflow ceiling
             # instead of relying on the provider to refuse unaudited changes.
-            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
-            tip_obj = tip.get("object") if isinstance(tip, dict) else None
-            tip_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
-            if tip_sha != base_sha:
+            if _read_base_tip_sha() != base_sha:
                 raise Refused("PR base not matched")
         else:
             for page in range(1, 31):
