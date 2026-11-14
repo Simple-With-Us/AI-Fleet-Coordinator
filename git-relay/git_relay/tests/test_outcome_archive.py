@@ -314,7 +314,6 @@ class ArchiveTestCase(unittest.TestCase):
         self.assertIsNone(store.begin(key, reapply_ok=True, corr="d" * 32))
         self.assertEqual(store.corr_of(key), "d" * 32, "each attempt binds its own corr")
 
-
     def test_valid_index_missing_archive_fails_closed(self):
         store = OutcomeStore(self.path, clock=self.clock)
         self.fill_unknowns(store, MAX_ENTRIES)
@@ -379,9 +378,8 @@ class ArchiveTestCase(unittest.TestCase):
             return real_write(fd, data)
 
         # The next begin() hits the wall and archives;  die mid-batch.
-        with mock.patch.object(outcomes.os, "write", flaky):
-            with self.assertRaises(OSError):
-                store.begin("e" * 64)
+        with mock.patch.object(outcomes.os, "write", flaky), self.assertRaises(OSError):
+            store.begin("e" * 64)
         self.assertEqual(
             open(self.archive, "rb").read(),
             before_archive,
