@@ -73,7 +73,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--visibility", choices=("public", "private"), required=True)
     parser.add_argument("--commit", required=True, help="expected immutable default-branch commit")
     parser.add_argument(
-        "--private-docs-repo", help="private repository opt-in (case-insensitive), also required on import"
+        "--private-docs-repo",
+        help="private repository opt-in (case-insensitive), also required on import",
     )
     parser.add_argument(
         "--output", type=Path, required=True, help="new descriptor path in an owner-only directory"

@@ -819,12 +819,18 @@ class RemoteGitSourceTests(unittest.TestCase):
         ):
             result = exporter.main(
                 [
-                    "--owner-repo", self.provider.owner_repo,
-                    "--visibility", "private",
-                    "--private-docs-repo", opt_in,
-                    "--expected-repository-id", "123",
-                    "--commit", self.provider.commit,
-                    "--output", str(self.descriptor),
+                    "--owner-repo",
+                    self.provider.owner_repo,
+                    "--visibility",
+                    "private",
+                    "--private-docs-repo",
+                    opt_in,
+                    "--expected-repository-id",
+                    "123",
+                    "--commit",
+                    self.provider.commit,
+                    "--output",
+                    str(self.descriptor),
                 ]
             )
         self.assertEqual(result, 0)
@@ -839,7 +845,9 @@ class RemoteGitSourceTests(unittest.TestCase):
             patch.object(collector, "_run_git", side_effect=AssertionError("Used local Git")),
         ):
             collector.collect(
-                None, self.output, git_source_descriptors=[self.descriptor],
+                None,
+                self.output,
+                git_source_descriptors=[self.descriptor],
                 private_docs_repo=opt_in,
             )
             mirror = self.output / "Fleet-OPS"
@@ -854,11 +862,14 @@ class RemoteGitSourceTests(unittest.TestCase):
             )
             before = {
                 p.relative_to(mirror): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode))
-                for p in mirror.rglob("*") if p.is_file()
+                for p in mirror.rglob("*")
+                if p.is_file()
             }
             self.assertEqual(
                 collector.collect(
-                    None, self.output, git_source_descriptors=[self.descriptor],
+                    None,
+                    self.output,
+                    git_source_descriptors=[self.descriptor],
                     private_docs_repo=opt_in,
                 ),
                 [],
@@ -866,7 +877,8 @@ class RemoteGitSourceTests(unittest.TestCase):
             self.assertEqual(
                 {
                     p.relative_to(mirror): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode))
-                    for p in mirror.rglob("*") if p.is_file()
+                    for p in mirror.rglob("*")
+                    if p.is_file()
                 },
                 before,
             )
@@ -874,7 +886,10 @@ class RemoteGitSourceTests(unittest.TestCase):
     def test_export_cli_rejects_invalid_private_consent_before_provider_reads(self):
         owner_repo = "Simple-With-Us/Fleet-OPS"
         for opt_in in (
-            None, "", " simple-with-us/fleet-ops", "other-owner/Fleet-OPS",
+            None,
+            "",
+            " simple-with-us/fleet-ops",
+            "other-owner/Fleet-OPS",
             "simple-with-us/Fleet-OPS/extra",
         ):
             with (
@@ -885,9 +900,16 @@ class RemoteGitSourceTests(unittest.TestCase):
                 redirect_stderr(StringIO()),
             ):
                 args = [
-                    "--owner-repo", owner_repo, "--visibility", "private",
-                    "--expected-repository-id", "123", "--commit", self.provider.commit,
-                    "--output", str(self.descriptor),
+                    "--owner-repo",
+                    owner_repo,
+                    "--visibility",
+                    "private",
+                    "--expected-repository-id",
+                    "123",
+                    "--commit",
+                    self.provider.commit,
+                    "--output",
+                    str(self.descriptor),
                 ]
                 if opt_in is not None:
                     args.extend(["--private-docs-repo", opt_in])
