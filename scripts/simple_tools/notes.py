@@ -1325,6 +1325,10 @@ def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str
                 return {"state": "receiver-verified"}
             if receipt.get("quarantined"):
                 return {"state": "failed", "reason": "rag-delivery-record-quarantined"}
+    except subprocess.TimeoutExpired:
+        return {"state": "queued", "reason": "rag-delivery-timeout", "exit_code": 124}
+    except FileNotFoundError:
+        return {"state": "queued", "reason": "rag-delivery-executable-missing", "exit_code": 127}
     except (OSError, subprocess.SubprocessError):
         pass
     except (ValueError, TypeError):
@@ -1357,6 +1361,10 @@ def retry_rag_outbox(env: Mapping[str, Any]) -> dict:
                     if name in metadata and type(metadata[name]) in (bool, int)
                 }
             return summary
+    except subprocess.TimeoutExpired:
+        return {"failed": 1, "exit_code": 124, "reason": "timeout"}
+    except FileNotFoundError:
+        return {"failed": 1, "exit_code": 127, "reason": "executable-missing"}
     except Exception:
         pass
     return {"failed": 1}

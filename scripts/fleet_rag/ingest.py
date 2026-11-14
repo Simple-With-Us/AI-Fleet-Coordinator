@@ -1563,6 +1563,7 @@ def _prune_candidates(name: str, yielded: set[str], state: dict) -> list[str]:
         for did, rec in state.items()
         if isinstance(rec, dict)
         and rec.get("source") == name
+        and rec.get("source_reconciliation_marker") != "preserved"
         and did not in yielded
         # Coverage work supplies no authority to delete preserved library history.
         and not (name == "doc" and did.startswith("doc/library/"))

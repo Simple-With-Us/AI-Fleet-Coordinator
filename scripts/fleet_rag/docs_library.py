@@ -167,6 +167,56 @@ def _tracked_tree(root, commit):
     return result
 
 
+@functools.lru_cache(maxsize=16)
+def _tracked_blobs(root, commit):
+    tree = _tracked_tree(root, commit)
+    if not tree:
+        return {}
+    oids = list(dict.fromkeys(tree.values()))
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_NAMESPACE",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        }
+        and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
+    result = subprocess.run(
+        ["git", "--no-replace-objects", "-C", str(root), "cat-file", "--batch"],
+        input=("\n".join(oids) + "\n").encode("utf-8"),
+        capture_output=True,
+        timeout=60,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise GitInventoryError("tracked-git-blob-unavailable")
+    stdout = result.stdout
+    pos = 0
+    blobs = {}
+    for oid in oids:
+        nl = stdout.find(b"\n", pos)
+        if nl == -1:
+            raise GitInventoryError("tracked-git-blob-unavailable")
+        header = stdout[pos:nl].decode("utf-8", errors="replace").split()
+        pos = nl + 1
+        if len(header) != 3 or header[1] != "blob" or not header[2].isdigit():
+            raise GitInventoryError("tracked-git-blob-unavailable")
+        size = int(header[2])
+        blobs[oid] = stdout[pos : pos + size]
+        pos += size + 1
+    return blobs
+
+
 @dataclass(frozen=True)
 class Repository:
     root: Path
@@ -179,7 +229,7 @@ class Repository:
         oid = _tracked_tree(self.root, self.commit).get(path)
         if oid is None:
             return None
-        data = git(self.root, "cat-file", "-p", oid)
+        data = _tracked_blobs(self.root, self.commit).get(oid)
         if data is None:
             raise GitInventoryError("tracked-git-blob-unavailable")
         return data

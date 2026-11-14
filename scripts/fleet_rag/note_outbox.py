@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -179,6 +180,9 @@ def prepare_document(document):
 
     data = asdict(document)
     data.pop("extra", None)
+    raw_serialized = json.dumps(data, sort_keys=True, ensure_ascii=False)
+    if scan(raw_serialized) or shutil.which("gitleaks") is None:
+        raise OutboxError("note-secret-gate-unavailable-or-refused")
     for name, value in data.items():
         if isinstance(value, str):
             data[name] = scrub(value)[0]
@@ -186,7 +190,7 @@ def prepare_document(document):
         raise OutboxError("invalid-note-document")
     _key(data["doc_id"])
     serialized = json.dumps(data, sort_keys=True, ensure_ascii=False)
-    if scan(serialized) or shutil.which("gitleaks") is None:
+    if scan(serialized):
         raise OutboxError("note-secret-gate-unavailable-or-refused")
     # The existing gitleaks interface needs a private staged file; only scrubbed text reaches it.
     with tempfile.TemporaryDirectory(prefix="fleet-note-scan-") as temporary:
@@ -216,15 +220,19 @@ def enqueue_id(doc_id, root=None, now=None):
         "queued_at": stamp,
     }
     with _locked(root) as directory:
-        names = [name for name in os.listdir(directory) if PENDING.fullmatch(name)]
-        size = sum(
-            os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
-            for name in os.listdir(directory)
-            if name != key + ".json"
-        )
+        names = []
+        size = 0
+        for name in os.listdir(directory):
+            if name == key + ".json":
+                continue
+            if PENDING.fullmatch(name):
+                existing = _read(directory, name)
+                if isinstance(existing, dict) and existing.get("cancelled"):
+                    continue
+                names.append(name)
+            size += os.stat(name, dir_fd=directory, follow_symlinks=False).st_size
         if (
             len(names) >= MAX_PENDING
-            and key + ".json" not in names
             or size + len(json.dumps(record).encode()) > MAX_SPOOL
         ):
             raise OutboxError("note-outbox-full")
@@ -283,6 +291,8 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
                 pending.append((name, record))
             if len(pending) >= limit:
                 break
+    from .scrub import scrub
+
     result = {"verified": 0, "pending": 0, "superseded": 0, "quarantined": quarantined}
     for name, record in pending:
         key = name[:-5]
@@ -291,10 +301,20 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
                 if not current(root, key, record["version"]):
                     result["superseded"] += 1
                     continue
+                permanent_failure = False
                 try:
                     verified = deliver(record) is True
-                except Exception:
+                except Exception as exc:
                     verified = False
+                    status = getattr(exc, "status", None)
+                    if status is None:
+                        status = getattr(exc, "code", None)
+                    if isinstance(status, int) and 400 <= status < 500 and status not in (408, 429):
+                        permanent_failure = True
+                    print(
+                        f"note_outbox: delivery error for {key}: {scrub(str(exc))[0]}",
+                        file=sys.stderr,
+                    )
                 with _locked(root) as directory:
                     latest = _read(directory, name)
                     if not latest or latest.get("version") != record.get("version"):
@@ -316,6 +336,9 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
                         os.unlink(name, dir_fd=directory)
                         os.fsync(directory)
                         result["verified"] += 1
+                    elif permanent_failure:
+                        _quarantine(directory, name)
+                        result["quarantined"] += 1
                     else:
                         record["attempts"] = min(int(record.get("attempts", 0)) + 1, 1000)
                         record["next_attempt"] = stamp + min(
@@ -324,6 +347,14 @@ def drain(deliver, root=None, now=None, limit=2, only_key=None):
                         _atomic(directory, name, record)
                         result["pending"] += 1
         except BlockingIOError:
+            result["pending"] += 1
+        except OSError:
+            raise
+        except Exception as exc:
+            print(
+                f"note_outbox: drain item error for {key}: {scrub(str(exc))[0]}",
+                file=sys.stderr,
+            )
             result["pending"] += 1
     return result
 

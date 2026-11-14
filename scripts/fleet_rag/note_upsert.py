@@ -185,6 +185,12 @@ def deliver_queued_note(record, root=None, lock_timeout_s=0, read_current=None):
         if record.get("schema") != 2 or record.get("cancelled"):
             return False
         snapshot = reader(record["doc_id"])
+        if not isinstance(snapshot, dict) or not all(
+            isinstance(snapshot.get(k), str) for k in ("id", "name", "text", "revision")
+        ):
+            return False
+        if not snapshot["id"].strip() or not snapshot["revision"].strip():
+            return False
         text = snapshot["text"].strip()
         text_kind = "body" if text else "title-only"
         text = text or snapshot["name"].strip()

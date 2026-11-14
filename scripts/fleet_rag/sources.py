@@ -1393,7 +1393,11 @@ def iter_docs(
             except (OSError, ValueError):
                 raw = None
             if raw is not None:
-                text = docs_library.text_from_bytes(raw, p.suffix)
+                try:
+                    text = docs_library.text_from_bytes(raw, p.suffix)
+                except (ValueError, UnicodeError):
+                    warn(f"doc: skipped unreadable tracked file {relative}")
+                    continue
                 document = Doc(
                     doc_id="doc/" + repository.name + "/" + relative,
                     title=first_heading(text, p.name),
