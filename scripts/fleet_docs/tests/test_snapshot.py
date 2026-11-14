@@ -14,6 +14,27 @@ from fleet_docs import snapshot
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_unflushed_transaction_is_never_published_at_the_authoritative_path(self):
+        with patch.object(snapshot.os, "fsync", side_effect=OSError("fixture interrupted metadata flush")):
+            with self.assertRaises(snapshot.Refused):
+                snapshot.save_transaction(self.destination, self.parent / ".generated-docs-stage-fixture",
+                                          self.parent / ".generated-docs-backup-fixture", None, "0" * 64)
+        self.assertFalse(snapshot.transaction_path(self.destination).exists())
+        self.assertFalse(list(self.parent.glob(".generated-docs-stage-write-*")))
+
+    def test_failed_metadata_publish_leaves_previous_complete_receipt_and_no_temporary(self):
+        parent = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, parent)
+        parent.chmod(0o700)
+        target = parent / "receipt.json"
+        target.write_bytes(b'{"old":true}\n')
+        target.chmod(0o600)
+        with patch.object(snapshot.os, "replace", side_effect=OSError("fixture interrupted publish")):
+            with self.assertRaises((OSError, snapshot.Refused)):
+                snapshot.atomic_write(parent, "receipt.json", b'{"new":true}\n')
+        self.assertEqual(target.read_bytes(), b'{"old":true}\n')
+        self.assertEqual([path.name for path in parent.iterdir()], ["receipt.json"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -44,7 +65,7 @@ class SnapshotTests(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.check_output(
-            ["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL, text=True
+            ["git", "-C", str(self.repo), *args], stderr=subprocess.DEVNULL, text=True, timeout=15
         ).strip()
 
     def payload(self, before=None):

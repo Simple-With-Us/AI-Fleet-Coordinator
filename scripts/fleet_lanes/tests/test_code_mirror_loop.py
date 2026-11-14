@@ -7,6 +7,9 @@ from pathlib import Path
 import tempfile
 import sys
 import stat
+import signal
+import subprocess
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -16,18 +19,73 @@ from fleet_lanes import code_mirror_credentials as credentials
 
 
 class LoopTests(unittest.TestCase):
+    def test_missing_bootstrap_returns127_and_timeout_reaps_the_child_group(self):
+        self.assertEqual(sync.run_sweep_command(["/nonexistent-fixture-bootstrap"]), 127)
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "child.lock"
+            ready = Path(tmp) / "ready"
+            child = ("import fcntl,os,signal,time;from pathlib import Path;"
+                     "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                     "f=open(" + repr(str(lock)) + ",'w');fcntl.flock(f,fcntl.LOCK_EX);"
+                     "Path(" + repr(str(ready)) + ").write_text(str(os.getpid()));time.sleep(60)")
+            parent = "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c'," + repr(child) + "]);time.sleep(60)"
+            with mock.patch.object(sync, "SWEEP_TIMEOUT_SECONDS", 1):
+                self.assertEqual(sync.run_sweep_command([sys.executable, "-c", parent]), 124)
+            self.assertTrue(ready.exists(), "fixture child must have held the resource before timeout")
+            with lock.open("r+") as stream:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_sigterm_of_runner_terminates_and_reaps_identity_child(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock, ready = Path(tmp) / "identity.lock", Path(tmp) / "ready"
+            child = ("import fcntl,os,time;from pathlib import Path;f=open(" + repr(str(lock)) + ",'w');"
+                     "fcntl.flock(f,fcntl.LOCK_EX);Path(" + repr(str(ready)) + ").write_text(str(os.getpid()));time.sleep(60)")
+            source = Path(sync.__file__).resolve().parents[1]
+            runner_code = ("import sys;sys.path.insert(0," + repr(str(source)) + ");"
+                           "from fleet_lanes.code_main_sync import run_child;"
+                           "run_child([sys.executable,'-c'," + repr(child) + "],timeout=60,capture_output=True)")
+            runner = subprocess.Popen([sys.executable, "-I", "-B", "-c", runner_code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists())
+                runner.send_signal(signal.SIGTERM)
+                self.assertEqual(runner.wait(timeout=8), 128 + signal.SIGTERM)
+                with lock.open("r+") as stream:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                if runner.poll() is None:
+                    runner.kill()
+                    runner.wait(timeout=5)
+                if ready.exists():
+                    try:
+                        os.kill(int(ready.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_scheduler_refuses_symlinked_state_before_creating_a_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            target.mkdir()
+            (root / "link").symlink_to(target, target_is_directory=True)
+            with self.assertRaises(OSError):
+                sync.main(["--loop"], env={"FLEET_LANE_GUARD_STATE_DIR": str(root / "link/nested")})
+            self.assertEqual(list(target.iterdir()), [])
+
     def test_only_fixed_docs_status_survives_the_sweep_bootstrap_boundary(self):
         valid = "docs: state=unavailable reason=peer changed=1"
         output = (valid + "\n" + valid + " private-sentinel\n" +
                   "docs: state=unavailable reason=private-sentinel changed=1\n").encode()
-        with mock.patch.object(sync.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=output)), \
+        with mock.patch.object(sync, "run_child", return_value=mock.Mock(returncode=0, stdout=output)), \
              mock.patch.object(sync, "log") as log:
             self.assertEqual(sync.run_sweep_command([sys.executable]), 0)
         log.assert_called_once_with(valid)
 
     def test_sweep_command_forwards_remainder_without_parsing_or_logging(self):
         command = [sys.executable, "private-sentinel", "--dry-run", "--loop"]
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sync, "run_loop", side_effect=lambda run: run()) as loop, mock.patch.object(sync.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=b"")) as run:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sync, "run_loop", side_effect=lambda run: run()) as loop, mock.patch.object(sync, "run_child", return_value=mock.Mock(returncode=0, stdout=b"")) as run:
             self.assertEqual(sync.main(["--loop", "--sweep-command", *command], env={"FLEET_LANE_GUARD_STATE_DIR":tmp}), 0)
         self.assertEqual(run.call_args.args[0], command)
         self.assertIs(run.call_args.kwargs["shell"], False)
@@ -40,7 +98,7 @@ class LoopTests(unittest.TestCase):
                           summary.replace("current=17", "current=1000000"),
                           summary.replace("failed=0", "failed=-1")]).encode()
         result = mock.Mock(returncode=0, stdout=raw, stderr=summary.encode()+b" private-sentinel")
-        with mock.patch.object(sync.subprocess, "run", return_value=result), mock.patch.object(sync, "log") as log:
+        with mock.patch.object(sync, "run_child", return_value=result), mock.patch.object(sync, "log") as log:
             self.assertEqual(sync.run_sweep_command([sys.executable]),0)
         log.assert_called_once_with(summary)
 
@@ -59,7 +117,7 @@ class LoopTests(unittest.TestCase):
             sleeps.append(seconds)
             if len(sleeps) == 2:
                 raise KeyboardInterrupt
-        with mock.patch.object(sync.subprocess, "run", side_effect=[mock.Mock(returncode=-15, stdout=b"private-sentinel", stderr=b"private-sentinel"), OSError("private-sentinel")]) as run, contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+        with mock.patch.object(sync, "run_child", side_effect=[mock.Mock(returncode=-15, stdout=b"private-sentinel", stderr=b"private-sentinel"), OSError("private-sentinel")]) as run, contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
             self.assertEqual(sync.run_loop(lambda: sync.run_sweep_command([sys.executable, "private-sentinel"]), read=lambda: 300, sleep=sleep), 0)
         self.assertEqual(sleeps, [300, 300])
         self.assertEqual(run.call_count, 2)

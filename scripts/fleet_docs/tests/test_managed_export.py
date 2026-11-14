@@ -26,7 +26,7 @@ class ManagedExportTests(unittest.TestCase):
         self.wrapper.chmod(0o700)
         exporter._MANAGED_ROUTE_VERIFIED = False
 
-    def invoke(self, actor="CODEX", seat="CODEX", identity=None):
+    def invoke(self, actor="CODEX", seat="CODEX", identity=None, raw_json=None):
         def run(argv, **kwargs):
             value = (
                 identity
@@ -37,7 +37,7 @@ class ManagedExportTests(unittest.TestCase):
                     "identities": [{"identity": actor}],
                 }
             )
-            kwargs["stdout"].write(json.dumps({"structured": value}).encode())
+            kwargs["stdout"].write((raw_json if raw_json is not None else json.dumps({"structured": value})).encode())
             return SimpleNamespace(returncode=0)
 
         # The fixture's system temp ancestor is world-writable; production still checks every parent.
@@ -54,7 +54,7 @@ class ManagedExportTests(unittest.TestCase):
             patch.object(Path, "home", return_value=self.home),
             patch.object(exporter.shutil, "which", return_value=str(self.wrapper)),
             patch.object(Path, "lstat", autospec=True, side_effect=metadata),
-            patch.object(exporter.subprocess, "run", side_effect=run) as process,
+            patch.object(exporter, "run_child", side_effect=run) as process,
         ):
             exporter.verify_managed_route()
             self.assertTrue(process.call_args.kwargs["start_new_session"])
@@ -63,6 +63,11 @@ class ManagedExportTests(unittest.TestCase):
     def test_matching_assigned_actor_uses_no_credential_file_or_environment_copy(self):
         self.invoke()
         self.assertTrue(exporter._MANAGED_ROUTE_VERIFIED)
+
+    def test_malformed_external_json_layers_are_refused_as_source_errors(self):
+        for value in (None, [], "text", {"structured": None}, {"structured": []}, {}):
+            with self.subTest(value=value), self.assertRaises(exporter.remote.SourceError):
+                self.invoke(raw_json=json.dumps(value))
 
     def test_missing_or_mismatched_actor_is_refused(self):
         for actor, seat in (("CODEX", ""), ("OTHER", "CODEX")):
@@ -107,7 +112,7 @@ class ManagedExportTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {"SIMPLE_TOOLS_BEARER": "synthetic-fixture"}, clear=True),
             patch.object(exporter, "verify_managed_route") as fallback,
-            patch.object(exporter.subprocess, "run", side_effect=run),
+            patch.object(exporter, "run_child", side_effect=run),
         ):
             self.assertEqual(
                 exporter.relay_read("gr_wf_repo_get", {"repo": "fixture/repo"}),

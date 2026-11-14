@@ -16,7 +16,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+script_directory = str(Path(__file__).resolve().parent)
+if script_directory not in sys.path:
+    sys.path.insert(0, script_directory)
+
 import remote_git_source as remote
+from fleet_lanes.code_main_sync import run_child
 
 MAX_RELAY_RESPONSE_BYTES = 4_000_000
 RELAY_READ_TIMEOUT_SECONDS = 310
@@ -78,7 +84,7 @@ def verify_managed_route(environ: dict[str, str] | None = None) -> str:
         return _MANAGED_ROUTE_ACTOR
     try:
         with tempfile.TemporaryFile() as output:
-            result = subprocess.run(
+            result = run_child(
                 [command, "whoami", "--json"],
                 stdin=subprocess.DEVNULL,
                 stdout=output,
@@ -92,7 +98,10 @@ def verify_managed_route(environ: dict[str, str] | None = None) -> str:
             if result.returncode != 0 or os.fstat(output.fileno()).st_size > 65536:
                 raise remote.SourceError("Assigned managed Git identity verification failed")
             output.seek(0)
-            identity = json.loads(output.read(65537))["structured"]
+            response = json.loads(output.read(65537))
+            if not isinstance(response, dict) or not isinstance(response.get("structured"), dict):
+                raise remote.SourceError("Managed Git identity response requires structured objects")
+            identity = response["structured"]
         fields = [identity.get(key) for key in ("authenticated_seat", "default_identity")]
         advertised = identity.get("identities")
         if (
@@ -129,7 +138,7 @@ def relay_read(tool: str, arguments: dict, *, environ: dict[str, str] | None = N
     # The installed CLI verifies the authenticated seat; no credential locator is read here.
     try:
         with tempfile.TemporaryFile() as output:
-            result = subprocess.run(
+            result = run_child(
                 ["simple-git", "call", tool, "--args-json", "-", "--json"],
                 input=remote.canonical(arguments),
                 stdout=output,

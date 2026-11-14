@@ -16,10 +16,19 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import snapshot
+from fleet_lanes.code_main_sync import state_directory, run_child
 
 REMOTE_COMMAND = (
     '/usr/bin/python3 -I -B "$HOME/.local/share/code-mirrors/scripts/fleet_docs/__main__.py"'
 )
+
+
+class ConfigurationRefused(snapshot.Refused):
+    """A validated source identity and fixed remediation, never provider diagnostics."""
+
+    def __init__(self, reason, source=None):
+        super().__init__(reason)
+        self.source = source
 
 
 def settings():
@@ -97,26 +106,25 @@ def parse_configuration(raw):
 
 @contextmanager
 def lifetime_lock(state):
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    snapshot.private(state, directory=True)
-    fd = os.open(
-        state / "pipeline.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600
-    )
-    try:
-        info = os.fstat(fd)
-        snapshot.require(
-            stat.S_ISREG(info.st_mode)
-            and info.st_uid == os.getuid()
-            and stat.S_IMODE(info.st_mode) == 0o600,
-            "unsafe-pipeline-lock",
+    with state_directory(state, private=True) as state_fd:
+        fd = os.open(
+            "pipeline.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=state_fd
         )
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            raise snapshot.Refused("docs-pipeline-already-running") from None
-        yield
-    finally:
-        os.close(fd)
+            info = os.fstat(fd)
+            snapshot.require(
+                stat.S_ISREG(info.st_mode)
+                and info.st_uid == os.getuid()
+                and stat.S_IMODE(info.st_mode) == 0o600,
+                "unsafe-pipeline-lock",
+            )
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                raise snapshot.Refused("docs-pipeline-already-running") from None
+            yield
+        finally:
+            os.close(fd)
 
 
 def load_exporter():
@@ -217,17 +225,23 @@ def collection_batches(code_root, configuration, descriptors):
     c = snapshot.collector()
     local = c.discover_repositories(code_root)[0]
     batches = []
+    public = []
     for repo in local:
         identity = repo.owner + "/" + repo.name
         optin = next(
             (
                 name
                 for name in configuration["private_docs"]
-                if name.casefold() == identity.casefold()
+                if canonical_identity(name) == canonical_identity(identity)
             ),
             None,
         )
-        batches.append(({"repo_paths": [repo.path], "private_docs_repo": optin}, ([repo], [])))
+        if optin is None:
+            public.append(repo)
+        else:
+            batches.append(({"repo_paths": [repo.path], "private_docs_repo": optin}, ([repo], [])))
+    if public:
+        batches.insert(0, ({"repo_paths": [repo.path for repo in public]}, (public, [])))
     for path, identity in descriptors:
         discovered = c.discover_repositories(
             None, git_source_descriptors=[path], private_docs_repo=identity
@@ -236,14 +250,17 @@ def collection_batches(code_root, configuration, descriptors):
     return batches
 
 
+def canonical_identity(owner_repo):
+    from fleet_lanes.code_main_sync import CANONICAL_OWNERS
+
+    owner, name = owner_repo.split("/", 1)
+    return CANONICAL_OWNERS.get(owner.casefold(), owner).casefold() + "/" + name.casefold()
+
+
 def validate_existing_profile(root, configuration, batches):
     """Preserve the already approved private opt-ins and refuse silently stale collections."""
     c = snapshot.collector()
-    from fleet_lanes.code_main_sync import CANONICAL_OWNERS
-
-    def identity(owner_repo):
-        owner, name = owner_repo.split("/", 1)
-        return CANONICAL_OWNERS.get(owner.casefold(), owner).casefold() + "/" + name.casefold()
+    identity = canonical_identity
 
     identities = {
         identity(repo.owner + "/" + repo.name)
@@ -253,23 +270,21 @@ def validate_existing_profile(root, configuration, batches):
     manifests = {}
     for path in root.glob("*/manifest.json"):
         value = c.parse_existing_manifest(snapshot.read_file(path), path.parent.name)
-        canonical_identity = identity(value["owner_repo"])
-        manifests[canonical_identity] = value
-        snapshot.require(canonical_identity in identities, "docs-source-profile-incomplete")
+        source_identity = identity(value["owner_repo"])
+        manifests[source_identity] = value
+        if source_identity not in identities:
+            raise ConfigurationRefused("docs-source-profile-incomplete", value["owner_repo"])
         optin = value.get("private_docs_opt_in")
-        snapshot.require(
-            optin is None or optin in configuration["private_docs"],
-            "existing-private-opt-in-missing",
-        )
+        if optin is not None and not any(identity(optin) == identity(configured) for configured in configuration["private_docs"]):
+            raise ConfigurationRefused("existing-private-opt-in-missing", value["owner_repo"])
     for optin in configuration["private_docs"]:
         previous = manifests.get(identity(optin))
-        snapshot.require(
-            previous is not None and previous.get("private_docs_opt_in") == optin,
-            "new-private-opt-in-not-authorized-by-library",
-        )
+        if not (previous is not None and previous.get("private_docs_opt_in") is not None
+                and identity(previous["private_docs_opt_in"]) == identity(optin)):
+            raise ConfigurationRefused("new-private-opt-in-not-authorized-by-library", optin)
 
 
-def peer_status(peer, run=subprocess.run):
+def peer_status(peer, run=run_child):
     result = run(
         [
             "ssh",
@@ -297,7 +312,7 @@ def peer_status(peer, run=subprocess.run):
     return value
 
 
-def replicate(root, desired, configuration, *, status=peer_status, popen=subprocess.Popen):
+def replicate(root, desired, configuration, *, status=peer_status, runner=run_child):
     previous = status(configuration["peer"])
     if previous.get("sha256") == desired["sha256"]:
         return {
@@ -310,32 +325,31 @@ def replicate(root, desired, configuration, *, status=peer_status, popen=subproc
         snapshot.write_snapshot(root, desired, payload, previous.get("sha256"))
         payload.seek(0)
         # The payload is private disk-backed staging and stdin, never argv or logs.
-        process = popen(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "ConnectTimeout=10",
-                configuration["peer"],
-                REMOTE_COMMAND + " receive",
-            ],
-            stdin=payload,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
         try:
-            output, _ = process.communicate(timeout=300)
+            result = runner(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=yes",
+                    "-o",
+                    "ConnectTimeout=10",
+                    configuration["peer"],
+                    REMOTE_COMMAND + " receive",
+                ],
+                stdin=payload,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=300,
+            )
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
             raise snapshot.Refused("docs-peer-transfer-timeout") from None
-    snapshot.require(process.returncode == 0 and len(output) <= 4096, "docs-peer-transfer-failed")
+    output = result.stdout or b""
+    snapshot.require(result.returncode == 0 and len(output) <= 4096, "docs-peer-transfer-failed")
     receipt = json.loads(output)
     snapshot.require(
-        receipt.get("state") == "synced"
+        isinstance(receipt, dict) and receipt.get("state") == "synced"
         and receipt.get("sha256") == desired["sha256"]
         and receipt.get("files") == len(desired["files"])
         and receipt.get("bytes") == desired["bytes"],
@@ -380,23 +394,21 @@ def refresh(code_root, state, configuration, *, remote=prepare_remote_sources, t
 
 
 def record(state, receipt):
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    snapshot.private(state, directory=True)
-    path = state / "receipt.json"
-    previous = None
-    if path.exists():
-        previous = json.loads(snapshot.read_file(path))
-    receipt = {**receipt, "checked_epoch": time.time()}
-    fd, temporary = tempfile.mkstemp(prefix=".receipt-", dir=state)
-    try:
-        with os.fdopen(fd, "wb") as output:
-            output.write(snapshot.canonical(receipt))
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    with state_directory(state, private=True) as state_fd:
+        previous = None
+        try:
+            fd = os.open("receipt.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=state_fd)
+        except FileNotFoundError:
+            pass
+        else:
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                snapshot.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                                 and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 1024 * 1024,
+                                 "unsafe-docs-receipt")
+                previous = json.loads(source.read(1024 * 1024 + 1))
+        receipt = {**receipt, "docs_exit": int(receipt["state"] == "unavailable"), "checked_epoch": time.time()}
+        snapshot.atomic_write(state, "receipt.json", snapshot.canonical(receipt), directory_fd=state_fd)
     changed = previous is None or (previous.get("state"), previous.get("reason")) != (
         receipt.get("state"),
         receipt.get("reason"),
@@ -444,7 +456,10 @@ def run(mirror_command, *, read=settings, update=refresh, state=None, code_root=
             pass
         return git_status
     try:
-        configuration = read()
+        try:
+            configuration = read()
+        except Exception:
+            raise ConfigurationRefused("trusted-docs-configuration-unavailable") from None
         receipt = (
             {"state": "disabled"}
             if configuration is None
@@ -458,6 +473,9 @@ def run(mirror_command, *, read=settings, update=refresh, state=None, code_root=
     except Exception as error:
         reason = str(error) if isinstance(error, snapshot.Refused) else "docs-refresh-failed"
         receipt = {"state": "unavailable", "reason": reason}
+        if isinstance(error, ConfigurationRefused):
+            receipt.update(setting="DOCS_SYNC_CONFIGURATION", source=error.source,
+                           remediation="restore-configured-source-or-review-preservation-plan")
     try:
         record(state, receipt)
     except Exception:

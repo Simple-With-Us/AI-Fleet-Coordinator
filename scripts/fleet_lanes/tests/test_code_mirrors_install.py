@@ -16,6 +16,28 @@ spec.loader.exec_module(installer)
 
 
 class InstalledRuntimeTests(unittest.TestCase):
+    def test_post_promotion_directory_fsync_failure_restores_entire_previous_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "installed"
+            installer.install(SCRIPTS.parent, dest, "0" * 40)
+            def snapshot():
+                return {path.relative_to(dest).as_posix(): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                        for path in dest.rglob("*") if path.is_file()}
+            before = snapshot()
+            original = installer._fsync_directory
+            failed = False
+            def sync(path):
+                nonlocal failed
+                if not failed and Path(path) == dest.parent and dest.exists() and '"source_commit": "' + '1' * 40 in (dest / "manifest.json").read_text():
+                    failed = True
+                    raise OSError("fixture durable-promotion failure")
+                return original(path)
+            with mock.patch.object(installer, "_fsync_directory", side_effect=sync), self.assertRaises(OSError):
+                installer.install(SCRIPTS.parent, dest, "1" * 40)
+            self.assertTrue(failed)
+            self.assertEqual(snapshot(), before)
+            self.assertFalse(list(dest.parent.glob(".code-mirrors-stage-*")))
+
     def test_previous_mirror_only_closure_upgrades_to_shared_docs_closure(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "installed"
@@ -34,28 +56,32 @@ class InstalledRuntimeTests(unittest.TestCase):
             entry = dest/"scripts/fleet_lanes/code_main_sync.py"
             env = {"HOME": str(root), "PATH": os.environ["PATH"], "FLEET_CODE_ROOT":str(root/"Code"),
                    "FLEET_APPS_ROOT":str(root/"apps"), "FLEET_LANES_ROOT":str(root/"apps/lanes")}
-            result = subprocess.run([sys.executable,"-I",str(entry),"--help"],env=env,capture_output=True,text=True)
+            result = subprocess.run([sys.executable,"-I",str(entry),"--help"],env=env,capture_output=True,text=True,timeout=15)
             self.assertEqual(result.returncode,0,result.stderr)
             docs = dest / "scripts/fleet_docs/__main__.py"
-            result = subprocess.run([sys.executable, "-I", "-B", str(docs), "--help"], env=env, capture_output=True, text=True)
+            result = subprocess.run([sys.executable, "-I", "-B", str(docs), "--help"], env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("receive", result.stdout)
+            result = subprocess.run([sys.executable, "-I", "-B", str(dest / "scripts/export-repo-git-source.py"), "--help"],
+                                    env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--expected-repository-id", result.stdout)
             repo = root/"Code/BotFleet"
             repo.mkdir(parents=True)
             def git(*args):
-                return subprocess.run(["/usr/bin/git","-C",str(repo),*args],env={**env,"GIT_AUTHOR_NAME":"fixture","GIT_AUTHOR_EMAIL":"fixture@example.invalid","GIT_COMMITTER_NAME":"fixture","GIT_COMMITTER_EMAIL":"fixture@example.invalid"},capture_output=True,text=True,check=True).stdout.strip()
+                return subprocess.run(["/usr/bin/git","-C",str(repo),*args],env={**env,"GIT_AUTHOR_NAME":"fixture","GIT_AUTHOR_EMAIL":"fixture@example.invalid","GIT_COMMITTER_NAME":"fixture","GIT_COMMITTER_EMAIL":"fixture@example.invalid"},capture_output=True,text=True,check=True,timeout=15).stdout.strip()
             git("init","-q","-b","main")
             git("commit","-q","--allow-empty","-m","fixture")
             git("remote","add","origin","https://github.com/Simple-With-Us/BotFleet.git")
             git("update-ref","refs/remotes/origin/main",git("rev-parse","HEAD"))
             git("branch","--set-upstream-to=origin/main","main")
-            result = subprocess.run([sys.executable,"-I",str(entry),"--dry-run"],env=env,capture_output=True,text=True)
+            result = subprocess.run([sys.executable,"-I",str(entry),"--dry-run"],env=env,capture_output=True,text=True,timeout=15)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertIn("current=1",result.stdout)
             self.assertFalse(list(dest.rglob("__pycache__")))
             # Dynamic settings helper discovery must find this bundle's own core.
             code = "import sys;sys.path.insert(0,"+repr(str(dest/"scripts"))+");from fleet_knobs import source;assert source._load_helper() is not None"
-            result = subprocess.run([sys.executable,"-I","-B","-c",code],env=env,capture_output=True,text=True)
+            result = subprocess.run([sys.executable,"-I","-B","-c",code],env=env,capture_output=True,text=True,timeout=15)
             self.assertEqual(result.returncode,0,result.stderr)
             upgraded = installer.install(SCRIPTS.parent, dest, "1"*40)
             self.assertTrue(Path(upgraded["backup"]).is_dir())

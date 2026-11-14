@@ -13,6 +13,55 @@ from fleet_docs import pipeline, snapshot
 
 
 class PipelineTests(unittest.TestCase):
+    def test_configuration_failure_has_specific_receipt_without_failing_git(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("fleet_lanes.code_main_sync.run_sweep_command", return_value=0):
+            def unavailable():
+                raise ValueError("private-provider-sentinel")
+            self.assertEqual(pipeline.run(["/fixture/bootstrap"], read=unavailable, state=Path(tmp)), 0)
+            receipt = json.loads((Path(tmp) / "receipt.json").read_text())
+            self.assertEqual(receipt["setting"], "DOCS_SYNC_CONFIGURATION")
+            self.assertEqual(receipt["docs_exit"], 1)
+            self.assertNotIn("private-provider-sentinel", json.dumps(receipt))
+
+    def test_state_symlink_and_symlinked_parent_are_refused_without_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            target.mkdir()
+            (root / "link").symlink_to(target, target_is_directory=True)
+            for state in (root / "link", root / "link/nested"):
+                with self.subTest(state=state), self.assertRaises((ValueError, OSError)):
+                    pipeline.record(state, {"state": "disabled"})
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_public_repositories_share_one_collection_batch(self):
+        c = snapshot.collector()
+        public = [c.RepoInfo(Path(name), "Simple-With-Us", name, "origin/main", "0" * 40)
+                  for name in ("ExampleOne", "ExampleTwo")]
+        private = c.RepoInfo(Path("Fleet-OPS"), "Simple-With-Us", "Fleet-OPS", "origin/main", "0" * 40)
+        with patch.object(c, "discover_repositories", return_value=(public + [private], [])):
+            batches = pipeline.collection_batches(Path("."), {"private_docs": ["Simple-With-Us/Fleet-OPS"]}, [])
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[0][1][0], public)
+        self.assertEqual(batches[1][0]["private_docs_repo"], "Simple-With-Us/Fleet-OPS")
+
+    def test_private_stored_owner_alias_preserves_the_existing_opt_in(self):
+        c = snapshot.collector()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "Fleet-OPS/manifest.json"
+            path.parent.mkdir()
+            value = {"schema_version": 2, "generated_by": "collect-repo-documents.py", "repo": "Fleet-OPS",
+                     "source_ref": "origin/main", "source_commit": "0" * 40,
+                     "owner_repo": "jaywedgeworth22/Fleet-OPS", "private_docs_opt_in": "jaywedgeworth22/Fleet-OPS", "files": {}}
+            path.write_text(json.dumps(value))
+            repo = c.RepoInfo(Path("."), "Simple-With-Us", "Fleet-OPS", "origin/main", "0" * 40)
+            pipeline.validate_existing_profile(root, {"private_docs": ["Simple-With-Us/Fleet-OPS"]}, [({}, ([repo], []))])
+            with self.assertRaises(pipeline.ConfigurationRefused) as refused:
+                pipeline.validate_existing_profile(root, {"private_docs": ["Simple-With-Us/Fleet-OPS"]}, [])
+            self.assertEqual(refused.exception.source, "jaywedgeworth22/Fleet-OPS")
+            self.assertTrue(path.exists())
+
     def test_offline_peer_retries_next_cycle_without_changing_git_result(self):
         with (
             tempfile.TemporaryDirectory() as tmp,
@@ -98,7 +147,7 @@ class PipelineTests(unittest.TestCase):
                 desired,
                 {"peer": "mac"},
                 status=lambda _: {"state": "ready", "sha256": "0" * 64},
-                popen=process,
+                runner=process,
             )
         self.assertEqual(result["state"], "current")
         process.assert_not_called()
