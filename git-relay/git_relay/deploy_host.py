@@ -23,7 +23,6 @@ from urllib.request import urlopen
 from .deploy_guard import freeze_qualified
 from .deploy_transaction import TransactionError, read_regular
 
-
 # Loopback readiness is bounded but must cover a cold start: on the
 # production host the relay's start-to-healthy exceeded the previous fixed
 # 8s window twice on 2026-11-14 (fresh-service proofs failed at ~7-15s while
@@ -31,6 +30,7 @@ from .deploy_transaction import TransactionError, read_regular
 # healthy old image.  45s keeps readiness well inside the transaction's 90s
 # deadline; the own-App provider probes below remain one-shot.
 READINESS_SECONDS = 45
+
 
 class StartingProcess(TransactionError):
     """An exact service process whose executable has not qualified yet."""
