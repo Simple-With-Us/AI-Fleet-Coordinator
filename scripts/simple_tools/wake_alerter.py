@@ -21,26 +21,27 @@ small state file, and reacts to each new wake event one of two ways:
   id is marked seen only after the hook exits 0, so a failed hook retries
   on the next poll.
 
-Either way it holds no Zulip key, no Infisical access and no listener state:
+Either way it holds no Zulip key or listener state:
 if it is down, the events wait in the ledger and are handled on its return;
 if the server is down, the next poll retries.
 
 One-shot by default so launchd owns the cadence (StartInterval);  --loop N
 runs forever for a supervisor that prefers a resident process.
 
-Config (no secrets in the environment or in any file):
+Config (secret values are never command arguments or settings text):
     OPERATOR_SEAT              seat name (for example ECHO)
     OPERATOR_LISTENER_URL      tailnet base URL, for example
                                http://listener.example.ts.net:8788
     OPERATOR_STATE             state file path (default
                                ~/.local/state/operator/wake-alerter.json)
     OPERATOR_SECRET_PATH, OPERATOR_SECRET_PROJECT
-                               optional `fleet-secrets get --path / --project`
-                               values when the key does not live at the default
+                               optional exact folder and project selection
+                               (defaults: `/`, `fleet-ops`)
 
 The seat's routine HMAC key (<CODE>_ROUTINE_KEY, the name overridable with
-OPERATOR_ROUTINE_KEY_NAME) is read with `fleet-secrets get` on every poll and
-never lands in the environment, a file or a log.
+OPERATOR_ROUTINE_KEY_NAME) is read directly through the shared Infisical library on every poll.  The caller
+binds its own project-scoped service token; no CLI login, credential-store fallback or fleet-secrets app runs.
+The routine key stays in memory, and the bootstrap binding is stripped from child hook environments.
 
 Python 3.9+ (the Mac's /usr/bin/python3), standard library only.
 """
@@ -137,7 +138,15 @@ def _hook_argv(template: str, seat: str, item: dict) -> list[str]:
 
 def _hook_env(item: dict) -> dict:
     # The seat's routine HMAC key authorizes the read API;  the hook never needs it.
-    env = {k: v for k, v in os.environ.items() if not k.endswith("_ROUTINE_KEY")}
+    auth_names = _infisical_reader().AUTH_ENV_VARS
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.endswith("_ROUTINE_KEY")
+        and k not in auth_names
+        and not k.endswith("_INFISICAL_TOKEN")
+        and k != "FLEET_KNOBS_WRITE_TOKEN"
+    }
     key_name = os.environ.get("OPERATOR_ROUTINE_KEY_NAME")
     if key_name:
         env.pop(key_name, None)
@@ -314,51 +323,49 @@ _KEY_RE = re.compile(r"^[\x21-\x7e]{8,512}$")
 SECRET_TIMEOUT_SECONDS = 30
 
 
+def _infisical_reader():
+    """Load the one shared module beside this managed scripts tree, including under Python's isolated mode."""
+    scripts = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    if scripts in sys.path:
+        sys.path.remove(scripts)
+    sys.path.insert(0, scripts)
+    import fleet_infisical
+
+    return fleet_infisical
+
+
 def _read_key(name: str, run=None) -> tuple[str, str]:
     """(key, "") on success, or ("", reason) where the reason never holds a value.
 
-    Only the name goes on the command line;  the value is read from the child's
-    stdout and never printed.  The name must be a plain identifier so it cannot be
-    read as a fleet-secrets option;  the value must look like a key (printable
-    ASCII, no whitespace) so a stray error line is not signed with."""
-    import shutil
-    import subprocess
-
+    The shared direct reader verifies this consumer's own project and exact-folder grant.
+    The legacy `run` argument is a compatibility seam only; no reader subprocess is started."""
     if not _SECRET_NAME_RE.match(name or ""):
         return "", "the key name is not a plain identifier"
-    binary = (os.environ.get("FLEET_SECRETS_BIN") or "").strip()
-    if binary:
-        binary = os.path.expanduser(binary)
-    else:
-        home = os.path.expanduser("~/.local/bin/fleet-secrets")
-        binary = home if os.access(home, os.X_OK) else (shutil.which("fleet-secrets") or "")
-    if not binary:
-        return "", "fleet-secrets is not installed"
-    argv = [binary, "get", name]
-    for flag, var in (("--path", "OPERATOR_SECRET_PATH"), ("--project", "OPERATOR_SECRET_PROJECT")):
-        value = (os.environ.get(var) or "").strip()
-        if value:
-            argv += [flag, value]
     try:
-        done = (run or subprocess.run)(
-            argv, capture_output=True, timeout=SECRET_TIMEOUT_SECONDS, check=False
+        FI = _infisical_reader()
+        scoped = dict(os.environ)
+        project_name = (scoped.get("OPERATOR_SECRET_PROJECT") or "fleet-ops").strip()
+        path = (scoped.get("OPERATOR_SECRET_PATH") or "/").strip()
+        scoped[FI.ENV_READ_PATHS] = path
+        project = FI.infisical_project_id(scoped, FI.home_dir(scoped), project_name)
+        binding = FI.resolve_token(scoped, project_name=project_name)
+        values = FI.fetch_project(
+            project, path, scoped, token=binding, names=(name,), timeout=SECRET_TIMEOUT_SECONDS
         )
-    except subprocess.TimeoutExpired:
-        return "", f"fleet-secrets timed out after {SECRET_TIMEOUT_SECONDS}s"
-    except (OSError, subprocess.SubprocessError) as exc:
-        return "", f"fleet-secrets could not run ({type(exc).__name__})"
-    if done.returncode:
-        return "", f"fleet-secrets exited {done.returncode}"
-    value = done.stdout.decode("utf-8", "replace").strip()
+    except TimeoutError:
+        return "", f"Infisical timed out after {SECRET_TIMEOUT_SECONDS}s"
+    except Exception:
+        return "", "Infisical lookup unavailable"
+    value = values.get(name, "").strip()
     if not value:
-        return "", "fleet-secrets returned an empty value"
+        return "", "Infisical returned an empty value"
     if not _KEY_RE.match(value):
         return "", "the value does not look like a routine key"
     return value, ""
 
 
 def _fleet_secrets_get(name: str, run=None) -> str:
-    """The named secret via `fleet-secrets get`, or "" when it cannot be read."""
+    """Compatibility name for a direct, scoped secret read, or an empty value on failure."""
     return _read_key(name, run)[0]
 
 

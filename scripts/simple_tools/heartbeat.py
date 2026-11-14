@@ -16,7 +16,7 @@ single blip (a queue that failed one poll) sends an `error` check-in and no even
 
 Secrets:  the DSN comes from `SIMPLE_TOOLS_SENTRY_DSN` or `SENTRY_FLEET_DSN` in the environment (the server:
 Infisical `prod` `/zulip`, loaded at start by `server/infisical_env.py`), else (the Mac)
-`fleet-secrets get SENTRY_FLEET_DSN --path /simple-tools` from Infisical Fleet-OPS.  Those two sources are
+the shared direct Infisical reader for Fleet-OPS `/simple-tools/SENTRY_FLEET_DSN`.  Those two sources are
 the only ones:  a caller-named file is not a secret source, because a file path picks the secret rather
 than the approved store (owner ruling, Oct 22 2026, Kody review on AFC-473).
 No credential file is read (AFC-359).  The DSN
@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import re
 import threading
 import urllib.error
@@ -108,37 +107,32 @@ def parse_dsn(text: str) -> Dsn | None:
 
 
 def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
-    """SENTRY_FLEET_DSN from Infisical Fleet-OPS /simple-tools through fleet-secrets, or '' (absent, not
-    installed, or a failure:  the heartbeat is then off and says so;  no output is ever read out)."""
-    import subprocess
+    """Read the named DSN directly with this consumer's own scoped service token, or return an empty value."""
     from pathlib import Path
 
-    binary = Z.fleet_secrets_bin(env, Path(home))
-    if not binary:
-        return ""
-    child = dict(env)
-    child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
     try:
-        proc = subprocess.run(
-            [binary, "get", "SENTRY_FLEET_DSN", "--path", INFISICAL_DSN_PATH],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
+        import fleet_infisical as FI
+
+        scoped = dict(env, HOME=home)
+        scoped[FI.ENV_READ_PATHS] = INFISICAL_DSN_PATH
+        project = FI.infisical_project_id(scoped, Path(home))
+        binding = FI.resolve_token(scoped)
+        values = FI.fetch_project(
+            project,
+            INFISICAL_DSN_PATH,
+            scoped,
+            token=binding,
+            names=("SENTRY_FLEET_DSN",),
             timeout=DSN_FETCH_TIMEOUT,
-            cwd="/",
-            env=child,
-            check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    if proc.returncode != 0:
-        return ""
-    try:
-        return proc.stdout.decode("utf-8").strip()
-    except UnicodeDecodeError:
+        return values.get("SENTRY_FLEET_DSN", "").strip()
+    except (
+        Exception
+    ):  # The optional heartbeat must not fail the listener or expose an external error.
         return ""
 
 
-# The name tests replace (simple_tools/tests/__init__.py), so none can reach the real fleet-secrets.
+# Compatibility function name; tests replace this seam so no live Infisical request can escape.
 _default_dsn_fetch = _fleet_secrets_dsn
 
 

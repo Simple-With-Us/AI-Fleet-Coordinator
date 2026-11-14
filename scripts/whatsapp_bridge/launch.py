@@ -108,8 +108,8 @@ def arguments(mode, release, request_id=None):
 def run_poll_with_optional_send(command, prepared):
     # Same isolated /jet service scope and fixed allowlist as cmd_run. SEND is
     # the only optional entry, and absent means off; required secrets stay strict.
-    from fleet_secrets import core
-    from fleet_secrets.cli import SecretsError
+    import fleet_infisical as core
+    from fleet_infisical import SecretsError
 
     secrets = core.fetch_all(core.check_path("/jet"), prepared)
     chosen = {}

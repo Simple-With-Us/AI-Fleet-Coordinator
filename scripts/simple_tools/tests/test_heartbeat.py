@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import fleet_infisical as FI
+
 from simple_tools import heartbeat as HB
 from simple_tools.tests.listener_harness import FakeClock, ListenerHarness
 
@@ -133,25 +135,34 @@ class PureTests(unittest.TestCase):
             with mock.patch.object(HB, "_default_dsn_fetch", lambda env, h: ""):
                 self.assertEqual(HB.resolve_dsn({}, str(home)), "")  # the old file is never read
 
-    def test_the_default_dsn_fetch_asks_fleet_secrets_for_one_name_in_simple_tools(self) -> None:
-        import json
-        import os
+    def test_the_default_dsn_fetch_reads_one_name_with_its_exact_scope(self) -> None:
         import tempfile
 
-        fake = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
         with tempfile.TemporaryDirectory() as tmp:
-            data = Path(tmp) / "f.json"
-            data.write_text(
-                json.dumps({"/simple-tools": {"SENTRY_FLEET_DSN": "https://a@h/5", "OTHER": "x"}})
-            )
             env = {
-                "FLEET_SECRETS_BIN": str(fake),
-                "FAKE_FLEET_SECRETS_FILE": str(data),
-                "PATH": os.environ["PATH"],
+                FI.ENV_PROJECT: "11111111-2222-3333-4444-555555555555",
+                FI.ENV_TOKEN: "st." + "synthetic-" * 4,
+                FI.ENV_READ_PATHS: "/simple-tools,/unrelated",
             }
-            self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "https://a@h/5")
-            data.write_text(json.dumps({"/simple-tools": {}}))
-            self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
+            with mock.patch.object(FI, "fetch_project", return_value={"SENTRY_FLEET_DSN": "https://a@h/5"}) as fetch:
+                self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "https://a@h/5")
+            self.assertEqual(fetch.call_args.args[:2], (env[FI.ENV_PROJECT], "/simple-tools"))
+            self.assertEqual(fetch.call_args.args[2][FI.ENV_READ_PATHS], "/simple-tools")
+            self.assertEqual(fetch.call_args.kwargs["names"], ("SENTRY_FLEET_DSN",))
+            self.assertEqual(fetch.call_args.kwargs["timeout"], HB.DSN_FETCH_TIMEOUT)
+
+    def test_missing_binding_or_failed_direct_read_leaves_the_heartbeat_off(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {FI.ENV_PROJECT: "11111111-2222-3333-4444-555555555555"}
+            with mock.patch.object(FI, "fetch_project") as fetch:
+                self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
+                fetch.assert_not_called()
+            env[FI.ENV_TOKEN] = "st." + "synthetic-" * 4
+            for failure in (FI.SecretsError("untrusted failure"), TimeoutError("untrusted failure")):
+                with self.subTest(failure=type(failure).__name__), mock.patch.object(FI, "fetch_project", side_effect=failure):
+                    self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
 
     def test_monitor_slug_per_instance(self) -> None:
         self.assertEqual(HB.monitor_slug("mac"), "operator-mac")

@@ -6,15 +6,16 @@
   event (adapters.osascript_argv; bodies never reach a banner).  This is the
   thin Mac client for the hosted-listener cutover:  it holds no Zulip key,
   no listener state.  Its one secret, the seat's routine key, is read with
-  `fleet-secrets get` (Infisical).
+  the shared direct Infisical reader.
 
-  No secret lives in this plist or in any file:  the client reads the seat's
-  routine key with `fleet-secrets get` (Infisical) on every poll.  Set
+  No secret lives in this plist: the client uses its own scoped service-token
+  binding and reads the routine key directly from Infisical on every poll.  Set
   OPERATOR_SEAT and OPERATOR_LISTENER_URL below before installing;  SET_ME makes
   the client refuse to run.
   The client runs by script path (not -m):  -I strips the working directory
   from sys.path, so -m cannot resolve the package, and the vendored helpers in
-  wake_alerter.py keep it on the Mac's /usr/bin/python3 (3.9).
+  wake_alerter.py keep it on the Mac's /usr/bin/python3 (3.9).  The shared
+  fleet_infisical.py module ships beside the managed scripts tree.
   Install:  cp this file to ~/Library/LaunchAgents/ and
             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.operator-wake-alerter.plist
   Stop:     launchctl bootout gui/$(id -u)/com.jay.operator-wake-alerter
