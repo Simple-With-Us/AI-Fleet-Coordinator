@@ -23,7 +23,7 @@ PROOF = "7ae4f7a61849e91360620cab38d556690612cddb88d66b64f0e40d28a302660e"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "3acb883f2163f7acf23d50213c259a17792761003e277157a5193f4e248e0aba",
-    "deploy_host.py": "eaa8fc8bde34e0714f61e4f758911c81beac51d6218c030f259b48c3fd33b695",
+    "deploy_host.py": "9c8fca4fca6dc20bdccac4704c19ba1d9029acd37ac48b7167583d74dc852804",
     "deploy_journal.py": "bb39bbe7ced794771aa419c357509cf2a30bc719d68cdb5c29557f7cec74a2a0",
     "deploy_recovery.py": "e362ba890b0e19fa8fbd07a23096358bfbc8b29b5a9524da09546b4f4c5619d1",
     "deploy_runner.py": "bb11dcc965a7aa49a29d7b0ab8583e3486c9a7af9f0d932a6a89bbac115b5267",
