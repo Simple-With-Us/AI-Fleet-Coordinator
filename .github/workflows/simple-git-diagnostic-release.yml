@@ -18,3 +18,7 @@ jobs:
           python-version: '3.13'
       - name: Exact-source complete client suite including category and file guards
         run: python3 -m unittest discover -s scripts/git-tools -p 'test*.py' -v
+      - name: Exact-source generic-fixture scanner boundaries
+        env:
+          PYTHONPATH: scripts
+        run: python3 -m unittest discover -s scripts/simple_tools/tests -p 'test_reviewed_generic_fixtures.py' -v
