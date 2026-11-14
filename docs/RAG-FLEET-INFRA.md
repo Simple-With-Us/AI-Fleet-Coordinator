@@ -602,7 +602,7 @@ Orphaned chunks are points whose `doc_id` is absent from the latest ingest state
 
 Growth is the difference in points and documents, overall and per source, against the previous `latest.json`.  The first run records growth as unavailable.  Orphan growth is included when both reports had a manifest.
 
-The job reads Qdrant with the read-only key when that key is present, through the same recall service token the nightly job uses (`FLEET_RECALL_INFISICAL_TOKEN_FILE`).  It does not request an embedding key.  It does not read a Linear token, and it does not post to Zulip.  A machine-identity variable in the environment refuses the run.  The unit asks systemd to start `code-main-sync` first, the same way the nightly unit does, and still writes the report if that sync did not succeed.
+The job reads Qdrant with the read-only key when that key is present, through the same explicit own recall binding the nightly job uses (`FLEET_RECALL_INFISICAL_TOKEN`, or its authorized current-store selector `FLEET_RECALL_INFISICAL_TOKEN_FILE`).  There is no retired flat-file default or ambient project-token fallback.  It does not request an embedding key.  It does not read a Linear token, and it does not post to Zulip.  A machine-identity variable in the environment refuses the run.  The unit asks systemd to start `code-main-sync` first, the same way the nightly unit does, and still writes the report if that sync did not succeed.
 
 Install it on the host the same way as the nightly job.  This repository does not run these commands.
 

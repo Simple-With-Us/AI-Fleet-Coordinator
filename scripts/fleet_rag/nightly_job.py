@@ -46,7 +46,7 @@ from fleet_infisical import (
 )
 from simple_tools.secretscan import scan as scan_secrets
 
-from fleet_rag import ingest, mirror
+from fleet_rag import core, ingest, mirror
 from fleet_rag.core import FleetRagError, infisical_api, infisical_project
 
 # The command the timer runs.  --no-heartbeat keeps the process off fleet-secrets.
@@ -75,9 +75,7 @@ TOKEN_FILE_LINEAR = "FLEET_RAG_LINEAR_INFISICAL_TOKEN_FILE"
 LINEAR_PROJECT_ENV = "FLEET_RAG_LINEAR_INFISICAL_PROJECT"
 RECALL_PROJECT_ENV = "FLEET_RAG_INFISICAL_PROJECT"
 TOKEN_FILE_ZULIP = "FLEET_RAG_ZULIP_INFISICAL_TOKEN_FILE"
-# The server file from AFC-677 (#1729).  It holds FLEET_RECALL_INFISICAL_TOKEN=...
-# An export prefix and quotes are allowed.  TOKEN_FILE_RECALL overrides this path.
-DEFAULT_RECALL_TOKEN_FILE = "/home/jay/.secrets/fleet-recall-infisical.env"
+# Recall has only the explicitly configured own bootstrap binding; no server-file default.
 RECALL_TOKEN_KEY = "FLEET_RECALL_INFISICAL_TOKEN"
 
 MACHINE_IDENTITY_ENV = (
@@ -114,10 +112,9 @@ def machine_identity_name(env: dict) -> str | None:
     return None
 
 
-def recall_token_path(env: dict) -> Path:
-    """The recall reader file.  Unset uses the server file that is already in place."""
-    named = (env.get(TOKEN_FILE_RECALL) or "").strip()
-    return Path(named).expanduser() if named else Path(DEFAULT_RECALL_TOKEN_FILE)
+def recall_token_path(env: dict) -> Path | None:
+    """The explicit current-store selector only; no authentication or default discovery."""
+    return core._read_token_file_path(env)
 
 
 def _service_token_text(text: str) -> str:
@@ -200,7 +197,16 @@ def load_credentials(
         raise NightlyError("token-file-unset")
     project = (env.get(RECALL_PROJECT_ENV) or "").strip() or infisical_project()
     linear_project = linear_project_id(env)
-    recall = _call_fetch(fetch, project, "/", read_file(recall_token_path(env)), RECALL_KEYS)
+    try:
+        recall_binding = core.read_token_binding(env)
+    except core._ReadTokenError as exc:
+        binding_name = (
+            TOKEN_FILE_RECALL if exc.code.startswith("token-file") else RECALL_TOKEN_KEY
+        )
+        raise NightlyError(exc.code + ":" + binding_name) from None
+    if recall_binding is None:
+        raise NightlyError("recall-binding-unset:" + RECALL_TOKEN_KEY)
+    recall = _call_fetch(fetch, project, "/", recall_binding, RECALL_KEYS)
     linear = _call_fetch(
         fetch, linear_project, "/linear", read_file(Path(linear_file)), LINEAR_KEYS
     )
