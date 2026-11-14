@@ -933,7 +933,7 @@ class MirrorSkipTests(unittest.TestCase):
                 grok_home=self.grok,
             )
         )
-        warnings = sources.take_warnings()
+        warnings = [warning for warning in sources.take_warnings() if warning.startswith('doc: skipped ')]
         self.assertEqual(len(warnings), 3)
         by_rule = {w.split()[3]: w for w in warnings}
         self.assertEqual(
@@ -952,7 +952,7 @@ class MirrorSkipTests(unittest.TestCase):
         # the (rule, path) pairs stay available until consumed, then the list is empty
         self.assertEqual(len(sources.take_doc_skips()), 7)
         self.assertEqual(sources.take_doc_skips(), [])
-        # a walk with nothing to skip logs nothing
+        # A walk with nothing to skip emits no skip-rule warning.
         for f in list(self.fleet.rglob("*.md")) + list(self.st.rglob("*.md")):
             f.unlink()
         list(
@@ -965,7 +965,7 @@ class MirrorSkipTests(unittest.TestCase):
                 grok_home=self.grok,
             )
         )
-        self.assertEqual(sources.take_warnings(), [])
+        self.assertEqual([warning for warning in sources.take_warnings() if warning.startswith('doc: skipped ')], [])
 
     def test_mirror_skip_reason_unit(self):
         r = sources.mirror_skip_reason

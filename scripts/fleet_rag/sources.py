@@ -81,7 +81,7 @@ EXTRA_DOCS = (
     APPS_DIR / "FLEET-UI-COPY.md",
     HOME / ".claude" / "CLAUDE.md",
 )
-SKILL_DIRS = (HOME / ".claude" / "skills", HOME / ".cursor" / "skills", GROK_HOME / "skills")
+SKILL_DIRS = tuple(HOME / directory / "skills" for _name, directory in mirror.SKILL_TREES)
 CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 CODEX_MEMORIES = HOME / ".codex" / "memories"
 DOC_MAX_BYTES = 400 * 1024
@@ -246,6 +246,11 @@ DOC_EXCLUDED_NEW: list[tuple[str, pathlib.Path]] = []
 DOC_HELD_IDS: set[str] = set()
 # {"kept": [Path], "excluded_new": [(reason, Path)]} from the last iter_docs, or None.
 LAST_DOC_WALK: dict | None = None
+SOURCE_READ_RECEIPTS: dict[str, dict] = {}
+
+
+def take_source_read_receipt(name: str) -> dict | None:
+    return SOURCE_READ_RECEIPTS.pop(name, None)
 
 
 def take_doc_skips() -> list[tuple[str, str]]:
@@ -817,7 +822,7 @@ def _diet_dir_parts(p: pathlib.Path) -> set[str]:
     return {part.casefold() for part in rel.parts}
 
 
-def doc_exclude_reason(p: pathlib.Path) -> str | None:
+def doc_exclude_reason(p: pathlib.Path, data: bytes | None = None) -> str | None:
     """Why the doc walk drops ``p``, or None to keep it.
 
     ``legacy-dir``, ``reviews-raw``, ``too-large`` and ``unreadable`` are the old
@@ -840,14 +845,17 @@ def doc_exclude_reason(p: pathlib.Path) -> str | None:
     if "reviews" in p.parts and "raw" in p.name.lower():
         return "reviews-raw"
     try:
-        size = p.stat().st_size
+        size = len(data) if data is not None else p.stat().st_size
     except OSError:
         return "unreadable"
     if size > DOC_MAX_BYTES:
         return "too-large"
     try:
-        with open(p, "rb") as fh:
-            sample = fh.read(8192)
+        if data is not None:
+            sample = data[:8192]
+        else:
+            with open(p, "rb") as fh:
+                sample = fh.read(8192)
     except OSError:
         return "unreadable"
     if b"\x00" in sample:
@@ -855,7 +863,11 @@ def doc_exclude_reason(p: pathlib.Path) -> str | None:
     if size == 0:
         return None
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")
+        text = (
+            data.decode("utf-8", errors="replace")
+            if data is not None
+            else p.read_text(encoding="utf-8", errors="replace")
+        )
     except OSError:
         return "unreadable"
     if not any(len(line) >= MINIFIED_LINE_CHARS for line in text.splitlines()):
@@ -1063,11 +1075,40 @@ def doc_id_for_path(p: pathlib.Path, doc_prefix: str = "doc") -> str:
     return f"{doc_prefix}/local/{home_rel}"
 
 
-def _dedupe_docs(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
+def _dedupe_docs(files: Iterable[pathlib.Path], repositories=()) -> list[pathlib.Path]:
     seen: set[tuple] = set()
     out: list[pathlib.Path] = []
     for f in files:
         try:
+            authoritative = None
+            repository_match = False
+            normalized = f.parent.resolve() / f.name
+            for repository in repositories:
+                try:
+                    relative = normalized.relative_to(repository.root).as_posix()
+                except ValueError:
+                    continue
+                repository_match = True
+                try:
+                    authoritative = repository.blob(relative)
+                except (ValueError, UnicodeError):
+                    authoritative = None
+                if authoritative is None:
+                    DOC_HELD_IDS.add(doc_id_for_path(f))
+                    break
+            if authoritative is not None:
+                reason = doc_exclude_reason(f, authoritative)
+                if reason is not None:
+                    DOC_SKIPS.append((reason, str(f)))
+                    DOC_HELD_IDS.add(doc_id_for_path(f))
+                    continue
+                key = fs_key(f)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(f)
+                continue
+            if repository_match:
+                continue
             # _skip_doc stays the predicate tests patch.  OSError, including a patch
             # that raises, drops the file the way the pre-diet walk did and does not
             # hold it.
@@ -1128,6 +1169,7 @@ def _doc_files(
     warning per rule.
     """
     files: list[pathlib.Path] = []
+    repositories = []
     files += _collect_repo_docs(fleet_repo, root_all_md=True)
     files += _collect_repo_docs(fleet_ops, root_all_md=True)
     files += _collect_handbook_pages(fleet_ops)
@@ -1139,12 +1181,58 @@ def _doc_files(
         ops_repos.append(code_dir / "fleet-ops")
         for repo_dir in _unique_repo_dirs(code_dir):
             files += _collect_repo_docs(repo_dir, root_all_md=False)
+        from .docs_library import discover_repositories
+
+        repositories = discover_repositories(code_dir)
+        for discovered in repositories:
+            broad = discovered.name.casefold() in ("ai-fleet-coordinator", "fleet-ops")
+            files += _collect_repo_docs(discovered.root, root_all_md=broad)
+            if discovered.name.casefold() == "fleet-ops":
+                ops_repos.append(discovered.root)
+                files += _collect_handbook_pages(discovered.root)
     live: list[pathlib.Path] = [pathlib.Path(x) for x in extra if pathlib.Path(x).exists()]
     if apps_dir is not None:
         apps = pathlib.Path(apps_dir)
         if apps.is_dir():
             live += sorted(apps.glob("*.md"))
     files += live
+    # Never read the bodies of newly discovered untracked repository files.
+    filtered = []
+    for path in files:
+        normalized = path.parent.resolve() / path.name
+        allowed = True
+        if code_dir is not None:
+            try:
+                child_name = normalized.relative_to(pathlib.Path(code_dir).resolve()).parts[0]
+                child = pathlib.Path(code_dir).resolve() / child_name
+                if (child / ".git").exists() and all(
+                    repository.root != child for repository in repositories
+                ):
+                    allowed = False
+                    DOC_HELD_IDS.add(doc_id_for_path(path))
+                    DOC_SKIPS.append(("unapproved-repository-origin", str(path)))
+            except (ValueError, IndexError):
+                pass
+        for repository in repositories:
+            try:
+                relative = normalized.relative_to(repository.root).as_posix()
+            except ValueError:
+                continue
+            from .docs_library import _tracked_tree, relative_path
+
+            try:
+                allowed = relative_path(relative).as_posix() in _tracked_tree(
+                    repository.root, repository.commit
+                )
+            except ValueError:
+                allowed = False
+            if not allowed:
+                DOC_HELD_IDS.add(doc_id_for_path(path))
+                DOC_SKIPS.append(("untracked-or-unsafe-git-document", str(path)))
+            break
+        if allowed:
+            filtered.append(path)
+    files = filtered
     if grok_home is not None:
         grok = pathlib.Path(grok_home)
         docs = grok / "docs"
@@ -1187,7 +1275,7 @@ def _doc_files(
             DOC_SKIPS.append((reason, str(f)))
             continue
         kept.append(f)
-    return _dedupe_docs(kept)
+    return _dedupe_docs(kept, repositories)
 
 
 def doc_from_file(
@@ -1261,6 +1349,7 @@ def iter_docs(
     grok_home: pathlib.Path | str | None = GROK_HOME,
 ) -> Iterator[Doc]:
     global LAST_DOC_WALK
+    warnings_before = len(WARNINGS)
     repo = (
         _default_checkout("AI-Fleet-Coordinator")
         if fleet_repo is _CALLER_DEFAULT
@@ -1284,10 +1373,163 @@ def iter_docs(
     )
     LAST_DOC_WALK = {"kept": list(files), "excluded_new": list(DOC_EXCLUDED_NEW)}
     _log_doc_skips()
-    for i, p in enumerate(files):
-        if limit and i >= limit:
+    from . import docs_library
+
+    code_root = _configured_dir(code_dir, "FLEET_CODE_ROOT", CODE_DIR)
+    repositories = docs_library.discover_repositories(code_root) if code_root else []
+    canonical = {}
+    documents = []
+    for p in files:
+        document = None
+        repository_match = False
+        for repository in repositories:
+            try:
+                relative = (p.parent.resolve() / p.name).relative_to(repository.root).as_posix()
+            except ValueError:
+                continue
+            repository_match = True
+            try:
+                raw = repository.blob(relative)
+            except (OSError, ValueError):
+                raw = None
+            if raw is not None:
+                text = docs_library.text_from_bytes(raw, p.suffix)
+                document = Doc(
+                    doc_id="doc/" + repository.name + "/" + relative,
+                    title=first_heading(text, p.name),
+                    text_markdown=text,
+                    source="doc",
+                    app=app_slug(repository.name),
+                    category="doc",
+                    seat="FLEET",
+                    path=str(p),
+                    url="https://github.com/"
+                    + repository.owner
+                    + "/"
+                    + repository.name
+                    + "/blob/"
+                    + repository.commit
+                    + "/"
+                    + relative,
+                    created_at_ms=mtime_ms(p),
+                    updated_at_ms=mtime_ms(p),
+                )
+                document.extra.update(
+                    source_commit=repository.commit, source_sha256=hashlib.sha256(raw).hexdigest()
+                )
+                canonical[document.doc_id] = (document, raw)
             break
-        yield doc_from_file(p, app=app_from_path(p, fleet_ops=ops))
+        if document is not None:
+            documents.append(document)
+        elif repository_match:
+            DOC_HELD_IDS.add(doc_id_for_path(p))
+            warn("doc: untracked or unsafe repository document excluded and held from prune")
+        else:
+            documents.append(doc_from_file(p, app=app_from_path(p, fleet_ops=ops)))
+    legacy = []
+    library_hashes = {}
+    if code_root:
+
+        def library_doc(path):
+            return Doc(
+                doc_id="",
+                title=path.stem,
+                text_markdown="",
+                source="doc",
+                app=app_from_path(path),
+                category="doc",
+                seat="FLEET",
+                path=str(path),
+                created_at_ms=mtime_ms(path),
+                updated_at_ms=mtime_ms(path),
+            )
+
+        def library_excluded(path):
+            # Path-only checks: library bytes are opened beneath a no-follow dirfd chain.
+            folded = {part.casefold() for part in path.parts}
+            return (
+                bool(folded & {part.casefold() for part in DOC_SKIP_DIR_NAMES})
+                or _is_effort_log_name(path.name)
+                or (path.name == "SKILL.md" and bool(folded & {"skills", "fleet-skills"}))
+                or (".min." in path.name.casefold())
+                or ("reviews" in folded and "raw" in path.name.casefold())
+            )
+
+        legacy = list(
+            docs_library.library_documents(
+                pathlib.Path(code_root) / "Docs",
+                repositories,
+                canonical,
+                library_doc,
+                library_excluded,
+                warn,
+                known_library_hashes=library_hashes,
+            )
+        )
+        mirrored = mirror.configured_root()
+        if mirrored is not None:
+            status = mirror.mirror_status(mirrored, time.time(), mirror.max_age_s())
+            if status.fresh:
+                if not (mirrored / "docs" / "legacy").is_dir():
+                    warn("doc: legacy Docs mirror tree missing from the otherwise fresh mirror")
+                legacy += list(
+                    docs_library.library_documents(
+                        mirrored / "docs" / "legacy",
+                        repositories,
+                        canonical,
+                        library_doc,
+                        library_excluded,
+                        warn,
+                        known_library_hashes=library_hashes,
+                    )
+                )
+            else:
+                warn("doc: legacy Docs mirror unavailable or stale; legacy prune must remain held")
+    known = {document.doc_id for document in documents}
+    documents += [entry[0] for did, entry in canonical.items() if did not in known]
+    documents += legacy
+    source_warnings = WARNINGS[warnings_before:]
+    incomplete = any(
+        any(
+            token in message
+            for token in (
+                "invalid or unreadable generated",
+                "symlink refused",
+                "PDF not indexed",
+                "pdf-extract",
+                "unavailable or stale",
+                "mirror tree missing",
+                "unreadable-or-excluded",
+            )
+        )
+        for message in source_warnings
+    )
+    selected = documents[:limit] if limit else documents
+    SOURCE_READ_RECEIPTS["doc"] = {
+        "source_complete": limit is None and not incomplete,
+        "deletion_authorized": False,
+        "selected_repositories": [repo.owner + "/" + repo.name for repo in repositories],
+        "repository_document_counts": {
+            repo.name: sum(doc.doc_id.startswith("doc/" + repo.name + "/") for doc in selected)
+            for repo in repositories
+        },
+        "supported_library_types": sorted(docs_library.HUMAN_SUFFIXES),
+        "unsupported_library_types": "JSON, JSONL, logs, code, archives, images and video; image-only PDFs receive no OCR",
+        "selected_document_count": len(selected),
+        "documents": {
+            doc.doc_id: {
+                "body_sha256": hashlib.sha256(doc.text_markdown.encode()).hexdigest(),
+                "source_sha256": doc.extra.get("source_sha256"),
+                "alias_count": len(doc.extra.get("source_aliases", [])),
+            }
+            for doc in selected
+        },
+        "receiver_coverage_verified": False,
+    }
+    for index, document in enumerate(documents):
+        if limit and index >= limit:
+            break
+        yield document
 
 
 def _log_doc_skips() -> None:
@@ -1354,10 +1596,17 @@ def iter_skills(
         if not d.exists():
             continue
         tree = skill_tree(d)
-        for p in sorted(d.glob("*/SKILL.md")):
+        for p in sorted(d.rglob("SKILL.md")):
             if limit and n >= limit:
                 return
-            md = read_text(p)
+            from .docs_library import safe_file
+
+            relative = p.relative_to(d).as_posix()
+            try:
+                md = safe_file(d, relative).decode("utf-8")
+            except (OSError, ValueError, UnicodeError):
+                warn("skill: unsafe or unreadable skill file skipped")
+                continue
             h = hashlib.sha256(md.encode("utf-8")).hexdigest()
             if h in seen_hash:
                 continue
@@ -1367,7 +1616,7 @@ def iter_skills(
             ts = mtime_ms(p)
             n += 1
             yield Doc(
-                doc_id=f"skill/{tree}/{p.parent.name}",
+                doc_id=f"skill/{tree}/{p.parent.relative_to(d).as_posix()}",
                 title=name,
                 text_markdown=md,
                 source="skill",
@@ -1443,8 +1692,8 @@ def app_from_path(path: pathlib.Path, fleet_ops: pathlib.Path | str | None = Non
     return app_from_project(slug)
 
 
-def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str) -> Doc:
-    md = read_text(p)
+def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str, text: str | None = None) -> Doc:
+    md = read_text(p) if text is None else text
     meta, _ = frontmatter(md)
     cat = _MEMORY_TYPES.get((meta.get("type") or "").lower(), "lesson")
     title = meta.get("name") or first_heading(md, p.stem)
@@ -1477,22 +1726,42 @@ def iter_memory(
     if cp.exists():
         for mem_dir in sorted(cp.glob("*/memory")):
             slug = project_slug(mem_dir.parent.name)
-            for p in sorted(mem_dir.glob("*.md")):
+            for p in sorted(mem_dir.rglob("*.md")):
                 if p.name == "MEMORY.md":
                     continue
                 if limit and n >= limit:
                     return
+                from .docs_library import safe_file
+
+                relative = p.relative_to(mem_dir).as_posix()
+                try:
+                    text = safe_file(mem_dir, relative).decode("utf-8")
+                except (OSError, ValueError, UnicodeError):
+                    warn("memory: unsafe or unreadable memory file skipped")
+                    continue
                 n += 1
                 yield _memory_doc(
-                    p, "CLAUDE", f"memory/claude/{slug}/{p.name}", app_from_project(slug)
+                    p,
+                    "CLAUDE",
+                    f"memory/claude/{slug}/{relative}",
+                    app_from_project(slug),
+                    text=text,
                 )
     cm = pathlib.Path(default_codex if codex_memories is None else codex_memories)
     if cm.exists():
-        for p in sorted(cm.glob("*.md")):
+        for p in sorted(cm.rglob("*.md")):
             if limit and n >= limit:
                 return
+            from .docs_library import safe_file
+
+            relative = p.relative_to(cm).as_posix()
+            try:
+                text = safe_file(cm, relative).decode("utf-8")
+            except (OSError, ValueError, UnicodeError):
+                warn("memory: unsafe or unreadable memory file skipped")
+                continue
             n += 1
-            yield _memory_doc(p, "CODEX", f"memory/codex/{p.name}", "fleet")
+            yield _memory_doc(p, "CODEX", f"memory/codex/{relative}", "fleet", text=text)
 
 
 # --------------------------------------------------------------------------- apple notes
