@@ -78,7 +78,9 @@ class Supervisor:
                 stopped = False
                 self.check()
                 if not self.host.prove_new_runtime(expected, self.rows):
-                    raise TransactionError("new runtime proof failed: " + getattr(self.host, "last_phase", "unknown"))
+                    raise TransactionError(
+                        "new runtime proof failed: " + getattr(self.host, "last_phase", "unknown")
+                    )
                 self.transaction.commit(
                     self.rows, lambda: self.host.prove_new_runtime(expected, self.rows)
                 )
@@ -106,7 +108,10 @@ class Supervisor:
                     if self.host.confirmed_stopped(None):
                         self.host.start()
                         if not self.host.prove_old_runtime(self.rows):
-                            raise TransactionError("aborted old runtime unverified: " + getattr(self.host, "last_phase", "unknown")) from None
+                            raise TransactionError(
+                                "aborted old runtime unverified: "
+                                + getattr(self.host, "last_phase", "unknown")
+                            ) from None
                     self.host.finish_recovery()
                     raise
                 if not stopped:
@@ -119,6 +124,9 @@ class Supervisor:
                 self.host.allow_old_start(self.rows)
                 self.host.start()
                 if not self.host.prove_old_runtime(self.rows):
-                    raise TransactionError("old runtime unverified; recovery stays armed: " + getattr(self.host, "last_phase", "unknown")) from None
+                    raise TransactionError(
+                        "old runtime unverified; recovery stays armed: "
+                        + getattr(self.host, "last_phase", "unknown")
+                    ) from None
                 self.host.finish_recovery()
                 raise

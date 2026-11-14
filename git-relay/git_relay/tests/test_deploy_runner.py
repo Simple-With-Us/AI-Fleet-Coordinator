@@ -242,9 +242,11 @@ class ImageGenerationSentinelTests(unittest.TestCase):
             response = MagicMock()
             response.__enter__.return_value.status = 200
             response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
-            with patch.object(host, "process_identity", return_value=identity), patch.object(
-                host, "hashes", return_value=old
-            ), patch("git_relay.deploy_host.urlopen", return_value=response):
+            with (
+                patch.object(host, "process_identity", return_value=identity),
+                patch.object(host, "hashes", return_value=old),
+                patch("git_relay.deploy_host.urlopen", return_value=response),
+            ):
                 self.assertTrue(host.prove_old_runtime([{"root": "code"}]))
             proof.assert_called_once_with(identity, old)
             self.assertIn("code/provenance_patch.py", proof.call_args[0][1])

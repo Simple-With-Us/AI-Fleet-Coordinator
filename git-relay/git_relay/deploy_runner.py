@@ -252,7 +252,10 @@ class Runner:
                     # no file writes or handler interruption are needed.
                     self.host.resume_if_same(self.host.process_identity())
                     if not self.host.prove_old_runtime(self.rows):
-                        raise TransactionError("unchanged old runtime proof failed: " + getattr(self.host, "last_phase", "unknown"))
+                        raise TransactionError(
+                            "unchanged old runtime proof failed: "
+                            + getattr(self.host, "last_phase", "unknown")
+                        )
                     self.recovery.finish()
                     return "aborted"
             self.host.stop_for_recovery()
