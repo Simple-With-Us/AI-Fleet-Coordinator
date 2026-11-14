@@ -4,12 +4,12 @@ import contextlib
 import io
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 import uuid
+from pathlib import Path
 from unittest import mock
 
 from git_relay import app_tokens, outcomes, server
@@ -32,44 +32,68 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
         env = {
             "GIT_RELAY_APP_MINT": "1" if enabled else "0",
             "GIT_RELAY_APPS_CREDENTIAL_FILE": "/synthetic/apps-token",
-            "GIT_RELAY_SEATS_JSON": json.dumps({
-                "swu-echo": {
-                    "token": uuid.uuid4().hex,
-                    "actions": ["open_pr"],
-                    "repos": ["example/fixture-repo"],
+            "GIT_RELAY_SEATS_JSON": json.dumps(
+                {
+                    "swu-echo": {
+                        "token": uuid.uuid4().hex,
+                        "actions": ["open_pr"],
+                        "repos": ["example/fixture-repo"],
+                    }
                 }
-            }),
+            ),
             **overrides,
         }
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         stack.enter_context(mock.patch.dict(os.environ, env, clear=True))
         stack.enter_context(mock.patch.object(server, "_build_shared_verifier", return_value=None))
-        stack.enter_context(mock.patch.object(server, "_build_assertion_verifier", return_value=None))
-        owner = stack.enter_context(mock.patch.object(
-            server, "_owner_token_from_cli", return_value=uuid.uuid4().hex
-        ))
-        discovered = stack.enter_context(mock.patch.object(server.shutil, "which", return_value="synthetic-cli"))
-        constructor = stack.enter_context(mock.patch.object(app_tokens, "FleetSecretsSource", return_value=source))
-        minter = stack.enter_context(mock.patch.object(app_tokens, "AppTokenMinter", wraps=app_tokens.AppTokenMinter))
+        stack.enter_context(
+            mock.patch.object(server, "_build_assertion_verifier", return_value=None)
+        )
+        owner = stack.enter_context(
+            mock.patch.object(server, "_owner_token_from_cli", return_value=uuid.uuid4().hex)
+        )
+        discovered = stack.enter_context(
+            mock.patch.object(server.shutil, "which", return_value="synthetic-cli")
+        )
+        constructor = stack.enter_context(
+            mock.patch.object(app_tokens, "FleetSecretsSource", return_value=source)
+        )
+        minter = stack.enter_context(
+            mock.patch.object(app_tokens, "AppTokenMinter", wraps=app_tokens.AppTokenMinter)
+        )
 
         def adopt(path):
             events.append("adopt")
             return path
 
-        adoption = stack.enter_context(mock.patch.object(server, "adopt_legacy_state", side_effect=adopt))
+        adoption = stack.enter_context(
+            mock.patch.object(server, "adopt_legacy_state", side_effect=adopt)
+        )
         audit = stack.enter_context(mock.patch.object(server, "AuditLog"))
 
         def store(path, **kwargs):
             events.append("store")
             return outcomes.OutcomeStore(None, **kwargs)
 
-        store_factory = stack.enter_context(mock.patch.object(server, "OutcomeStore", side_effect=store))
-        return source, constructor, minter, adoption, audit, store_factory, owner, discovered, events
+        store_factory = stack.enter_context(
+            mock.patch.object(server, "OutcomeStore", side_effect=store)
+        )
+        return (
+            source,
+            constructor,
+            minter,
+            adoption,
+            audit,
+            store_factory,
+            owner,
+            discovered,
+            events,
+        )
 
     def test_enabled_startup_reads_once_before_state_and_reuses_the_same_source(self):
-        source, constructor, minter, adoption, audit, store, owner, discovered, events = self._factory(
-            GIT_RELAY_OUTCOMES_MAX_ENTRIES="50000"
+        source, constructor, minter, adoption, audit, store, owner, discovered, events = (
+            self._factory(GIT_RELAY_OUTCOMES_MAX_ENTRIES="50000")
         )
         relay = server.from_env()
         source.verified_secret.assert_called_once_with(server.OUTCOMES_CAPACITY_KEY)
@@ -93,10 +117,27 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
         source.verified_secret.assert_called_once_with(server.OUTCOMES_CAPACITY_KEY)
 
     def test_invalid_setting_refuses_before_state_or_owner_credentials_and_never_echoes_it(self):
-        for value in (None, True, 20000, "", " 20000", "20000 ", "020000", "+20000", "2e4", "20000.0", "4999", "50001", "9" * 100, "bad-value"):
+        for value in (
+            None,
+            True,
+            20000,
+            "",
+            " 20000",
+            "20000 ",
+            "020000",
+            "+20000",
+            "2e4",
+            "20000.0",
+            "4999",
+            "50001",
+            "9" * 100,
+            "bad-value",
+        ):
             with self.subTest(value=value):
                 fields = self._factory(value, GIT_RELAY_OUTCOMES_MAX_ENTRIES="20000")
-                source, constructor, minter, adoption, audit, store, owner, discovered, events = fields
+                source, constructor, minter, adoption, audit, store, owner, discovered, events = (
+                    fields
+                )
                 with self.assertRaises(SystemExit) as caught:
                     server.from_env()
                 self.assertIn(server.OUTCOMES_CAPACITY_KEY, str(caught.exception))
@@ -111,9 +152,11 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
                 self.doCleanups()
 
     def test_missing_or_unreadable_setting_does_not_fall_back_to_an_environment_value(self):
-        source, constructor, minter, adoption, audit, store, owner, discovered, events = self._factory(
-            error=app_tokens.AppTokenError("capacity setting unavailable"),
-            GIT_RELAY_OUTCOMES_MAX_ENTRIES="20000",
+        source, constructor, minter, adoption, audit, store, owner, discovered, events = (
+            self._factory(
+                error=app_tokens.AppTokenError("capacity setting unavailable"),
+                GIT_RELAY_OUTCOMES_MAX_ENTRIES="20000",
+            )
         )
         with self.assertRaises(SystemExit):
             server.from_env()
@@ -122,8 +165,8 @@ class OutcomeCapacityConfigurationTests(unittest.TestCase):
             boundary.assert_not_called()
 
     def test_app_disabled_keeps_the_default_without_a_source_or_new_authentication(self):
-        source, constructor, minter, adoption, audit, store, owner, discovered, events = self._factory(
-            enabled=False, GIT_RELAY_OUTCOMES_MAX_ENTRIES="not-a-setting-source"
+        source, constructor, minter, adoption, audit, store, owner, discovered, events = (
+            self._factory(enabled=False, GIT_RELAY_OUTCOMES_MAX_ENTRIES="not-a-setting-source")
         )
         relay = server.from_env()
         self.assertEqual(relay.outcomes._max_entries, 5000)
@@ -174,7 +217,9 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
             # runner routes the real CLI to its synthetic loopback provider.
             child = {**env, "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"]}
             code = self.cli.main(argv[1:], env=child, out=out, err=err)
-            return subprocess.CompletedProcess(argv, code, out.getvalue().encode(), err.getvalue().encode())
+            return subprocess.CompletedProcess(
+                argv, code, out.getvalue().encode(), err.getvalue().encode()
+            )
 
         self.source = app_tokens.FleetSecretsSource(
             executable="synthetic-cli",
@@ -193,14 +238,26 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
         self.assertEqual(server._outcome_capacity_from_source(self.source), 20000)
         self.assertEqual(len(self.calls), 1)
         argv, env, timeout = self.calls[0]
-        self.assertEqual(argv, ["synthetic-cli", "get-verified", server.OUTCOMES_CAPACITY_KEY, "--path", "/github-apps"])
+        self.assertEqual(
+            argv,
+            [
+                "synthetic-cli",
+                "get-verified",
+                server.OUTCOMES_CAPACITY_KEY,
+                "--path",
+                "/github-apps",
+            ],
+        )
         self.assertEqual(timeout, 30)
-        self.assertEqual(env, {
-            "PATH": os.defpath,
-            "INFISICAL_FLEET_OPS_PROJECT_ID": self.api.project,
-            "INFISICAL_TOKEN": self.api.token,
-            "INFISICAL_ENVIRONMENT": "prod",
-        })
+        self.assertEqual(
+            env,
+            {
+                "PATH": os.defpath,
+                "INFISICAL_FLEET_OPS_PROJECT_ID": self.api.project,
+                "INFISICAL_TOKEN": self.api.token,
+                "INFISICAL_ENVIRONMENT": "prod",
+            },
+        )
         self.assertEqual(len(self.api.requests), 2)
         self.assertEqual(self.api.requests[0], "/api/v2/service-token")
         self.assertIn("/raw/" + server.OUTCOMES_CAPACITY_KEY + "?", self.api.requests[1])
@@ -215,7 +272,10 @@ class OutcomeCapacityRealSourceTests(unittest.TestCase):
             self.api.metadata_override = {"expiresAt": "2099-01-01T00:00:00Z", **metadata}
             self.api.status = status
             self.api.requests.clear()
-            with self.subTest(metadata=metadata, status=status), self.assertRaises(app_tokens.AppTokenError):
+            with (
+                self.subTest(metadata=metadata, status=status),
+                self.assertRaises(app_tokens.AppTokenError),
+            ):
                 server._outcome_capacity_from_source(self.source)
             self.assertEqual(self.api.requests, ["/api/v2/service-token"])
 
