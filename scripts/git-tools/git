@@ -759,7 +759,11 @@ def _scan_arguments(arguments, bearer: str, tool: str | None = None) -> str | No
             else:
                 hit = scanner.scan(value, known=known)
             if hit is not None:
-                return "secret_scan:" + (path or "arguments") + " [category=" + _scan_category(hit) + "]"
+                # Path keys are untrusted. Escape delimiters, backslashes and
+                # controls so only our final marker can be read as a category.
+                safe_path = json.dumps(path or "arguments", ensure_ascii=True)[1:-1]
+                safe_path = safe_path.replace("[", "\\u005b").replace("]", "\\u005d")
+                return "secret_scan:" + safe_path + " [category=" + _scan_category(hit) + "]"
         elif isinstance(value, dict):
             stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
         elif isinstance(value, (list, tuple)):
