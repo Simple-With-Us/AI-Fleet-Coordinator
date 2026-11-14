@@ -414,7 +414,8 @@ ZCODE_IDENTITY = (
 ZCODE_EXTRA = (
     "> **Runtime (Z Code).**\u00a0 Z Code desktop IDE (`/Applications/ZCode.app`) with config in "
     "`~/.zcode`.\u00a0 Skills installed here (`~/.zcode/skills`) are loaded by Z Code.\u00a0 "
-    "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>`).\u00a0 A seat a launcher assigned "
+    "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or "
+    "`~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).\u00a0 A seat a launcher assigned "
     "beats the ZC default.\n\n"
 )
 

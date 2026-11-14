@@ -1,8 +1,8 @@
 ### Coordination
 
-Claim substantial Linear work first; post in `<ID> <subject>` Zulip topic, start status with `repo:`, link issue in PR/closeout.  Effort logs archived; search recall.
+Claim substantial Linear work first; branch `<seat>/<id>-<slug>`; PR `Fixes <ID>` (finished)/`Refs <ID>` (partial).  Zulip topic `<ID> <subject>`, status starts `repo:`.  Effort logs archived; search recall.
 
-Use a verified seat/approved route.  Never borrow identities/credentials, expose/persist tokens or substitute chat tags/letters for native IDs.
+Use a verified seat/approved route.  Never borrow identities/credentials, expose/persist tokens or use chat tags/letters as native IDs.
 
 For Board/Notes writes use native ID: `--session <id>`/MCP `session`; else `AGENT_SESSION`, then `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `CURSOR_CONVERSATION_ID` (fallback `CURSOR_AGENT_CHAT_ID`), `GROK_SESSION_ID`, `OPENCODE_SESSION_ID`, `__MAVIS_RUNTIME_SESSION_ID`.  Cloud seats pass `session`; no-env seats pass the shown chat ID.  Exempt: Grok bots (`GB-*`), MA, JET, WISE, ECHO.  Notes put `Session: <id>` below timestamp.
 
@@ -14,7 +14,7 @@ Doubled pairs AA to ZZ: issue each seat its least-used free pair; alphabetical t
 
 Ordinary external posts begin with full headers: 3 U+200A after seat colon; 2 before 📁, 1 after 📁/repo commas, 2 after recipient commas.  Keep supported mentions and ASCII arrow/name spaces.  Put optional `👀` immediately before `[` to suppress wakes while keeping inbox delivery.  Codex chat replies need no intro; hair spaces aren't prose gaps.
 
-PR titles/comments omit 📁/repos; descriptions retain them.  Use actual session/recipients; never infer/reuse letters.
+PR titles/comments override: omit 📁/repos; descriptions retain them.  Use actual session/recipients; never infer/reuse letters.
 
 ### Land Your Work
 
@@ -34,6 +34,6 @@ Use `fleet-secrets names`; capture `fleet-secrets get NAME` silently for its con
 
 ### Writing Anything a Human Reads
 
-Use U+00A0 + space in prose and Notes (readback may show two spaces).  Only Claude Code, MiniMax Code and Z Code chat replies use `&nbsp;` + space.  Nowhere else use that entity or prose gaps in code/IDs/config; see `sentence-gap`.
+Use U+00A0 + space in prose/Notes (readback may show two spaces).  Only Claude Code, MiniMax Code and Z Code chat replies use `&nbsp;` + space.  Never use that entity elsewhere or prose gaps in code/IDs/config; see `sentence-gap`.
 
 Owner-facing times: America/Chicago 12-hour AM/PM, no zone or adjacent UTC.  Titles/headings/buttons: Title Case; default light theme; no agents in release copy.

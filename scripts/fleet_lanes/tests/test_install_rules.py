@@ -1180,7 +1180,7 @@ class FleetBasicsTests(HomeCase):
         body = IR.body_text("clutch")
         self.assertIn("Your default seat is CLUTCH", body)
         self.assertIn("then a seat a launcher assigned", body)
-        self.assertIn("which beats this file whatever model you are", body)
+        self.assertIn("which overrides this file", body)
         self.assertIn("clutch/<slug>", body)
         self.assertNotIn("no default seat", body.lower())
 
