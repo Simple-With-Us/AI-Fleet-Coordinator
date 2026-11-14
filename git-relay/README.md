@@ -400,6 +400,14 @@ reconciles them (fail closed - never evict a held side effect).  Writes go throu
 full-write loop, so a short write fails loudly instead of renaming a truncated registry.  `mint_token` is exempt:  it returns a raw
 credential (never cached in the store) and a re-mint is safe under the minter's own lock.
 
+## Outcome Capacity Policy
+
+With App minting enabled, the relay requires the nonsecret Infisical key `GIT_RELAY_OUTCOMES_MAX_ENTRIES` from Fleet-OPS `prod` in its existing App-source folder, normally `/github-apps` or the already configured `GIT_RELAY_SECRETS_PATH`.  It reads the value once through that Source's folder-proven `verified_secret` method and reuses the exact Source object for App-token minting.  Only a canonical decimal integer from 5,000 through 50,000 is accepted; the intended production value is `20000`.  This key is not an environment override and has no fallback value or source.
+
+Provision it in the service's actual configured folder and verify a cold read through its own existing binding before activating this source.  Missing, unreadable or invalid policy fails startup before any legacy-state adoption or outcome-store loading.  Keep the existing outcome file; never clear it or trim recent successful, pending or unknown rows to make room.  A capacity increase retains the complete 24-hour successful replay window and permanent pending/unknown holds.  A lower capacity never removes those protected rows; fresh writes remain refused until permitted expiry or reconciliation makes room.
+
+Explicit `GIT_RELAY_APP_MINT=0` preserves the existing legacy startup behavior: no App Source or new authentication is required, and the outcome store keeps its 5,000-row library default.  Direct `OutcomeStore` callers also remain auth-free with that default.  The new production policy applies at qualified startup, and source tests do not establish provisioning, deployment or runtime acceptance.
+
 ## Configuration and running
 
 | Env var | Default | Purpose |
