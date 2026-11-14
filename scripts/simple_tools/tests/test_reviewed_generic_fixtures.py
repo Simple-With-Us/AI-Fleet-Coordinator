@@ -38,7 +38,7 @@ class ReviewedGenericTests(unittest.TestCase):
             (
                 "Simple-With-Us/AI-Fleet-Coordinator",
                 "git-relay/git_relay/server.py",
-                "2c06fe036dac53cf0be463e3e6c4c4912524edf75b4a8190316fd180f27e853d",
+                "0d7371110d7b59af92415da4892ebaab46b2ed841e8d8623248fc0a0ef21f2de",
             ),
         }))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))

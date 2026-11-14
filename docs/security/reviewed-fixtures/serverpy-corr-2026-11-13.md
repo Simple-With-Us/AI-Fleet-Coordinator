@@ -52,20 +52,37 @@ before its scanner is installed.  Do not patch a live registry to unblock
 publication.  This record is an independent source review;  it is not an
 owner approval.
 
-## v3 correction (2026-11-14): digest re-admitted over current main bytes
+## v3 (2026-11-14): admission advanced to the final wired bytes - independent verdict
 
-The v2 admission above recorded sha256 873109fe... over the reviewed 1,728-line
-bytes, which included a +15/-1 attempt-corr patch that never landed on main.
-Main's actual server.py drifted, so the admitted digest matched nothing live
-(found by Kody/Sentry on #2219): the waiver was inert and the scanner still
-refused the file.
+Causal record: the v2 admission (873109fe) covered pristine main plus the +15/-1
+corr wiring, and the wiring had not landed, so it matched no live branch:  not
+main (2c06fe03, byte-identical to the ce6fd24a pristine baseline) and not the
+PR branches (older pre-#2122 bytes).  Kody and Sentry detected the inert waiver
+on #2219.  An intermediate re-admission of 2c06fe03 based on Echo's own delta
+review was held:  a delta review is not the independent exact-file review this
+process requires.
 
-Current main bytes (origin/main at ad56cff9): 78,304 UTF-8 bytes, 1,714 lines,
-sha256 2c06fe036dac53cf0be463e3e6c4c4912524edf75b4a8190316fd180f27e853d.
-The reviewed-to-current delta is 15 removed / 1 changed lines, all correlation
-plumbing (uuid import, attempt_corr capture, outcome_corr audit detail); the
-flagged generic-assignment construct (token_for_namespace) is verbatim-identical
-at line 1037 of the current numbering. Full delta review and byte copies:
-evidence repo afc-serverpy-corr-evidence-20261114-v2 commit 1c29f67 (v3/).
-The admitted digest is updated to the current-bytes value above; any future
-server.py change requires re-admission by design.
+Final admitted bytes:  pristine main + corr wiring + the begin() caller-error
+400 arm (a malformed corr is a definite 400 bad_request, never the capacity
+503), 1,735 lines / 79,506 UTF-8 bytes,
+SHA-256 0d7371110d7b59af92415da4892ebaab46b2ed841e8d8623248fc0a0ef21f2de.
+
+Independent reviewer agent-01M5DQZ8N090A65VBX6ZN99WKD verdict (renewed
+whole-file review, 2026-11-14):  independently recomputed the digest (1,735
+lines / 79,506 bytes), compiled the file, reproduced pristine-main + wiring +
+arm byte-identically, enumerated the full file, and executed the scanner:  the
+only hit is the same generic-assignment false positive (line 1058 of the final
+numbering);  the exact admission clears it;  absolute loaded-credential
+protections are unchanged.  The current-main bytes independently match the
+reconstructed pristine base;  no drift.
+
+Conditions recorded with the verdict:  this registry admits EXACTLY the final
+triple - no dead v1/v2 entries alongside;  the relay host's vendored scanner is
+synced to this admission before the final bytes are written through it;  any
+further byte change renews independent exact-file review.  Echo-side checks:
+begin() raises the caller-input ValueError before any durable row write
+(pinned by test_begin_rejects_a_non_string_corr_before_it_can_persist and
+test_held_key_replay_wins_over_corr_validation), so a 400 audit stamp cannot
+misrepresent an existing ledger row.  Landing path:  #2219 admits the final
+triple;  #2216 then syncs main and lands the wiring plus the 400 arm as
+exactly these bytes.
