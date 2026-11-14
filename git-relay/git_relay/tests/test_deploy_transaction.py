@@ -122,3 +122,45 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(TransactionError):
             self.t.recover(rows)
         self.assertEqual((self.code / "old.py").read_bytes(), b"new code")
+    def test_recover_without_journal_verifies_intact_old_image(self):
+        # Failure before prepare() wrote the journal: nothing staged, nothing
+        # applied; recovery is a pure source-bound verification of the old
+        # image's bytes and metadata, and creates no state.
+        rows = [{k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes]
+        self.assertFalse(self.t.backup.exists())
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        self.assertFalse(self.t.backup.exists())
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+
+    def test_recover_without_journal_refuses_drift_partial_and_remnants(self):
+        rows = [{k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes]
+        # A target carrying the after bytes is a partial write; never blessed.
+        (self.code / "old.py").write_bytes(b"new code")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        # Any other content is a foreign write.
+        (self.code / "old.py").write_bytes(b"foreign")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.code / "old.py").write_bytes(b"old code")
+        # Metadata drift is drift.
+        os.chmod(self.code / "old.py", 0o600)
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        os.chmod(self.code / "old.py", 0o644)
+        # A staged remnant without its journal is a partial prepare.
+        self.t.backup.mkdir()
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        import shutil
+
+        shutil.rmtree(self.t.backup)
+        # A manifest-created file appearing early is drift for a before=None row.
+        (self.code / "new.py").write_bytes(b"new module")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.code / "new.py").unlink()
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()

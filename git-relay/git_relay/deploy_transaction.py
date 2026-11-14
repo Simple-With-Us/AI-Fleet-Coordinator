@@ -171,7 +171,29 @@ class Transaction:
         self.write_journal(doc)
 
     def recover(self, expected_rows):
-        doc = self.load(expected_rows)
+        try:
+            doc = self.load(expected_rows)
+        except FileNotFoundError:
+            # Failure before prepare() wrote the backup journal: no before or
+            # after images were staged, so nothing was applied.  Only a
+            # genuinely absent journal takes this path - an unreadable or
+            # malformed journal still raises.  Any staged remnant is a partial
+            # prepare this path cannot judge.  Verify every target's live
+            # bytes AND metadata against the pinned before-image; an
+            # after-image or any other content is a partial or foreign write
+            # that must be reconciled by hand, never blessed here.
+            if self.backup.exists():
+                raise TransactionError("staged remnants without journal")
+            for row in expected_rows:
+                try:
+                    current, meta = read_regular(self.target(row))
+                except FileNotFoundError:
+                    current, meta = None, None
+                if (sha(current) if current is not None else None) != row["before"]:
+                    raise TransactionError("target drift without journal")
+                if current is not None and meta != row["meta"]:
+                    raise TransactionError("target metadata drift without journal")
+            return "aborted-no-write"
         if doc["phase"] in {"committed", "restored"}:
             return doc["phase"]
         if doc["phase"] not in {"prepared", "applying", "applied"} or not self.stopped():
