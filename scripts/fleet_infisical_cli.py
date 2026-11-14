@@ -323,7 +323,9 @@ def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
 
 def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     if "--" not in args:
-        raise UsageError("run needs `--` before the command:  fleet-secrets run --only NAME -- CMD [ARG...]")
+        raise UsageError(
+            "run needs `--` before the command:  fleet-secrets run --only NAME -- CMD [ARG...]"
+        )
     split = list(args).index("--")
     opts = _parse(args[:split], True, 0)
     command = list(args[split + 1 :])

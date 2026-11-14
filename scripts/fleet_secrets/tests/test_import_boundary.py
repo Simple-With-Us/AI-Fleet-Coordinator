@@ -1,4 +1,4 @@
-"""The compatibility import must resolve its packaged sibling without reading any credentials."""
+"""Declared-origin compatibility routing and shared import identity; no credential reads."""
 
 import os
 import shutil
@@ -63,7 +63,7 @@ print('identity-preserved')
             (result.returncode, result.stdout.strip()), (0, "identity-preserved"), result.stderr
         )
 
-    def test_preloaded_foreign_missing_or_forged_file_only_origin_fails_fixed(self):
+    def test_preloaded_missing_or_inconsistent_declared_origin_fails_fixed(self):
         result = self.run_probe("""
 import importlib, importlib.util, types
 for kind in ('foreign','missing','file-only','foreign-spec','lazy-marker','blocked'):

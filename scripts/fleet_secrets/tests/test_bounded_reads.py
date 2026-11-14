@@ -177,10 +177,18 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
             accepted.append(count)
             return count
 
-        with self.scripted(program), mock.patch.object(core.os, "write", side_effect=partial_then_blocked):
+        with (
+            self.scripted(program),
+            mock.patch.object(core.os, "write", side_effect=partial_then_blocked),
+        ):
             result = core.bounded_fetch_project(
-                self.project, "/operator-registry", self.env, token=self.sample,
-                names=names, timeout=2.0, strict_records=True,
+                self.project,
+                "/operator-registry",
+                self.env,
+                token=self.sample,
+                names=names,
+                timeout=2.0,
+                strict_records=True,
             )
         self.assertEqual(result, {"A_KEY": "fixture"})
         self.assertGreater(sum(accepted), 65536)
@@ -191,7 +199,9 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
     def test_repeated_eagain_keeps_original_deadline_and_reaps_the_real_child(self):
         with (
             self.scripted("import sys;sys.stdin.buffer.read()"),
-            mock.patch.object(core.os, "write", side_effect=BlockingIOError(errno.EAGAIN, "fixture")),
+            mock.patch.object(
+                core.os, "write", side_effect=BlockingIOError(errno.EAGAIN, "fixture")
+            ),
             self.assertRaisesRegex(core.SecretsError, "bounded-read-timeout"),
         ):
             started = time.monotonic()
@@ -217,10 +227,16 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
         self.assertEqual(caught.exception.code, 5)
         self.assertEqual(str(caught.exception), "unresolved-reference")
         self.assertEqual(observed["returncode"], 5)
-        self.assertEqual(observed["reply"], {
-            "schema": 1, "ok": False, "reason": "unresolved-reference",
-            "code": 5, "failure_kind": None,
-        })
+        self.assertEqual(
+            observed["reply"],
+            {
+                "schema": 1,
+                "ok": False,
+                "reason": "unresolved-reference",
+                "code": 5,
+                "failure_kind": None,
+            },
+        )
         self.assertEqual(len(self.calls), 3)
 
     def test_unresolved_wire_reason_requires_exact_typed_code_and_child_exit(self):
@@ -237,7 +253,8 @@ print(json.dumps(dict(schema=1,ok=True,values=dict(A_KEY='fixture'))))
             reply = dict(schema=1, ok=False, reason=reason, code=code, failure_kind=None)
             reply.update(extra)
             program = "import json,sys;sys.stdin.buffer.read();print(%r);sys.exit(%d)" % (
-                json.dumps(reply), status,
+                json.dumps(reply),
+                status,
             )
             with self.subTest(code=code, status=status), self.scripted(program):
                 with self.assertRaises(core.SecretsError) as caught:

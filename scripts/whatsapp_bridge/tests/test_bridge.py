@@ -493,6 +493,7 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(query["secretPath"], [folder])
             for field in ("recursive", "include_imports", "expandSecretReferences"):
                 self.assertEqual(query[field], ["false"])
+
             def row(name):
                 return {
                     "secretKey": name,
