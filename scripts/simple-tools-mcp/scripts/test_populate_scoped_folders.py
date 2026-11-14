@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Mocked-API contract tests for populate-scoped-folders.py.
 
-No network and no real fleet-secrets:  urllib.request.urlopen is stubbed with a
-fake Infisical (token metadata and the upsert write), and subprocess.run
-with a fake `fleet-secrets get` over the same values (every read).  Values are
+No network or child process: the gate/write HTTP transport and shared named-read
+function are stubbed over the same fake store.  Values are
 sentinel strings ("VALUE-<name>"); every test asserts they never appear in any
 printed output (names-only reporting, redacted errors)."""
 
@@ -16,20 +15,26 @@ import pathlib
 import secrets
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
+import uuid
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-from fleet_secrets import core as fleet_secrets_core
-
-os.environ.setdefault("INFISICAL_FLEET_OPS_PROJECT_ID", "00000000-0000-4000-8000-000000000099")
+import fleet_infisical as FI
 
 spec = importlib.util.spec_from_file_location(
     "psf", str(pathlib.Path(__file__).with_name("populate-scoped-folders.py"))
 )
 psf = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(psf)
+with (
+    tempfile.TemporaryDirectory() as fixture_home,
+    mock.patch.object(pathlib.Path, "home", return_value=pathlib.Path(fixture_home)),
+    mock.patch.dict(os.environ, {"INFISICAL_FLEET_OPS_PROJECT_ID": str(uuid.uuid4())}),
+):
+    spec.loader.exec_module(psf)
 
 DEST_PATHS = {(psf.ENV, p) for _, _, _, p, _ in psf.MAPPING}
 
@@ -39,8 +44,8 @@ def fixture_service_token():
 
 
 class FakeInfisical:
-    """Routes urlopen calls and `fleet-secrets get` runs over one store.
-    values[(ws, path, name)] -> value;  a missing key is fleet-secrets' exit 3."""
+    """Routes gate/write HTTP and shared named reads over one store.
+    values[(ws, path, name)] -> value; a missing key returns no named value."""
 
     def __init__(self, scopes=None, values=None, fail=None, read_tokens=None, write_token=None):
         self.scopes = scopes
@@ -55,7 +60,7 @@ class FakeInfisical:
         self.upserts = []
         self.agents = []  # the User-Agent of every API call
         self.authorizations = []
-        self.reads = []  # every fleet-secrets run:  (argv, child env)
+        self.reads = []  # project, path, isolated bindings, own token, names, deadline
 
     def default_metadata(self, token):
         if token == self.read_tokens[psf.AFC]:
@@ -86,7 +91,7 @@ class FakeInfisical:
             "projectId": project,
             "permissions": permissions,
             "scopes": scopes,
-            "expiresAt": None,
+            "expiresAt": "2099-01-01T00:00:00Z",
         }
 
     def _err(self, url, code, body="server message"):
@@ -94,23 +99,17 @@ class FakeInfisical:
             url, code, "err", {}, io.BytesIO(json.dumps({"message": body}).encode())
         )
 
-    def run(self, argv, env=None, **kwargs):
-        """A fake `fleet-secrets get NAME --path P --project SLUG`:  the project id
-        comes from the variable fleet-secrets reads for SLUG, as the real one does."""
-        self.reads.append((list(argv), dict(env or {})))
-        if argv[1:2] != ["get"] or argv[3] != "--path" or argv[5] != "--project":
-            raise AssertionError("unexpected fleet-secrets call: " + " ".join(argv[1:]))
-        name, path, slug = argv[2], argv[4], argv[6]
-        id_var = {
-            "ai-fleet-coordinator": "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
-            "fleet-ops": "INFISICAL_FLEET_OPS_PROJECT_ID",
-        }[slug]
-        key = (env[id_var], path, name)
+    def fetch_project(self, project, path, env, *, token, names, timeout):
+        self.reads.append((project, path, dict(env), token, tuple(names), timeout))
+        if len(names) != 1:
+            raise AssertionError("expected one named read")
+        name = names[0]
+        key = (project, path, name)
         if ("read", key) in self.fail:
-            return subprocess.CompletedProcess(argv, self.fail[("read", key)], b"", None)
+            raise FI.SecretsError("untrusted provider VALUE-message", self.fail[("read", key)])
         if key not in self.values:
-            return subprocess.CompletedProcess(argv, 3, b"", None)
-        return subprocess.CompletedProcess(argv, 0, self.values[key].encode("utf-8"), None)
+            return {}
+        return {name: self.values[key]}
 
     def open(self, request, timeout=35):
         url, method = request.full_url, request.get_method()
@@ -138,8 +137,8 @@ class Base(unittest.TestCase):
         self.fake = FakeInfisical(read_tokens=self.read_tokens, write_token=self.write_token)
         self._orig = psf.urlopen
         psf.urlopen = self.fake.open
-        self._orig_run = subprocess.run
-        subprocess.run = self.fake.run
+        self._orig_fetch = psf.FI.fetch_project
+        psf.FI.fetch_project = self.fake.fetch_project
         self._env = dict(os.environ)
         os.environ[psf.READ_TOKEN_ENVS[psf.AFC]] = self.read_tokens[psf.AFC]
         os.environ[psf.READ_TOKEN_ENVS[psf.FLEETOPS]] = self.read_tokens[psf.FLEETOPS]
@@ -147,7 +146,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         psf.urlopen = self._orig
-        subprocess.run = self._orig_run
+        psf.FI.fetch_project = self._orig_fetch
         os.environ.clear()
         os.environ.update(self._env)
 
@@ -173,6 +172,38 @@ class TestMapping(Base):
 
 
 class TestGate(Base):
+    def test_invalid_expiry_refuses_dry_run_and_apply_before_any_copy(self):
+        original_metadata = self.fake.default_metadata
+        missing = object()
+        roles = ("AFC read", "FleetOPS read", "FleetOPS write")
+        for role, bad_token in zip(roles, (*self.read_tokens.values(), self.write_token)):
+            for expiry in (
+                missing,
+                None,
+                "",
+                "not-a-timestamp",
+                "2000-01-01T00:00:00Z",
+                "2099-01-01T00:00:00",
+            ):
+                for args in ((), ("--apply",)):
+                    with self.subTest(role=role, expiry=expiry, args=args):
+
+                        def metadata(token):
+                            data = original_metadata(token)
+                            if token == bad_token:
+                                if expiry is missing:
+                                    data.pop("expiresAt")
+                                else:
+                                    data["expiresAt"] = expiry
+                            return data
+
+                        with mock.patch.object(self.fake, "default_metadata", side_effect=metadata):
+                            code, out = self.run_main(*args)
+                        self.assertEqual(code, 1)
+                        self.assertIn("token-expired-or-invalid", out)
+                        self.assertEqual(self.fake.reads, [])
+                        self.assertEqual(self.fake.upserts, [])
+
     def test_full_coverage_passes(self):
         reads = {ws: os.environ[name] for ws, name in psf.READ_TOKEN_ENVS.items()}
         self.assertTrue(psf.check_scoped_tokens(reads, self.write_token))
@@ -267,6 +298,65 @@ class TestGate(Base):
         )
 
 
+class TestSharedReader(Base):
+    def api(self, method, path, token, body, env, **limits):
+        self.calls.append((method, path, token, dict(env)))
+        if path == "/v2/service-token":
+            return 200, self.metadata
+        self.assertTrue(path.startswith("/v3/secrets/raw/WANTED?"))
+        return self.status, {"secret": self.row}
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self.metadata = self.fake.default_metadata(self.read_tokens[psf.AFC])
+        self.status = 200
+        self.row = {
+            "secretKey": "WANTED",
+            "secretValue": "VALUE-padded é\n",
+            "secretValueHidden": False,
+            "workspace": psf.AFC,
+            "environment": "prod",
+            "secretPath": "/",
+            "type": "shared",
+        }
+        self.fetch = mock.patch.object(psf.FI, "fetch_project", self._orig_fetch)
+        self.api_patch = mock.patch.object(psf.FI, "_api_json", side_effect=self.api)
+        self.fetch.start()
+        self.api_patch.start()
+
+    def tearDown(self):
+        self.api_patch.stop()
+        self.fetch.stop()
+        super().tearDown()
+
+    def test_actual_shared_reader_verifies_grant_and_provenance_before_value(self):
+        value = psf.scoped_get(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED")
+        self.assertEqual(value, "VALUE-padded é\n")
+        self.assertEqual(len(self.calls), 2)
+        self.assertTrue(all(call[2] == self.read_tokens[psf.AFC] for call in self.calls))
+        self.metadata["permissions"] = ["read", "write"]
+        self.calls.clear()
+        with self.assertRaises(psf.ReadError):
+            psf.scoped_get(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_actual_shared_reader_rejects_wrong_folder_and_unresolved_reference(self):
+        for field, value in (("secretPath", "/unrelated"), ("secretValue", "${OTHER_KEY}")):
+            with self.subTest(field=field):
+                original = self.row[field]
+                self.row[field] = value
+                with self.assertRaises(psf.ReadError) as caught:
+                    psf.scoped_get(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED")
+                self.assertNotIn(value, str(caught.exception))
+                self.row[field] = original
+
+    def test_actual_shared_reader_absence_does_not_fetch_another_name(self):
+        self.status = 404
+        self.assertIsNone(psf.scoped_get(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED"))
+        self.assertEqual(len(self.calls), 2)
+
+
 class TestDryRun(Base):
     def test_dry_run_writes_nothing(self):
         code, out = self.run_main()
@@ -328,7 +418,7 @@ class TestApply(Base):
         code, out = self.run_main("--apply")
         self.assertEqual(code, 1)
         self.assertIn("STOP at 6/72", out)
-        self.assertIn("fleet-secrets get exit 4", out)
+        self.assertIn("Infisical named read exit 4", out)
         self.assertIn(victim, out)  # the NAME is fine
         self.assertNotIn("VALUE-", out)  # values never printed
         self.assertEqual(len(self.fake.upserts), 5)
@@ -357,69 +447,68 @@ class TestApply(Base):
         self.assertIn(f"reading the destination Fleet-OPS {dpath}/{dname}", out)
         self.assertNotIn((dpath, dname), self.fake.upserts)
 
-    def test_reads_go_through_fleet_secrets_with_project_and_path(self):
-        # kody 4365621961:  every value read is `fleet-secrets get NAME --path P
-        # --project SLUG`, pinned to the MAPPING's workspace, on the login's token.
+    def test_reads_use_only_own_token_exact_project_path_and_name(self):
         seeded(self.fake)
-        code, _out = self.run_main("--apply")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "INFISICAL_TOKEN": "ambient-other-reader",
+                "INFISICAL_WRITE_TOKEN": "ambient-writer",
+                "FLEET_SECRETS_API": "https://untrusted.example.test/api",
+                "INFISICAL_READ_PATHS": "/unrelated",
+                "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "letter-only-reader",
+            },
+        ):
+            code, _out = self.run_main("--apply")
         self.assertIsNone(code)
-        self.assertEqual(len(self.fake.reads), 144)  # 72 sources + 72 destinations
+        self.assertEqual(len(self.fake.reads), 144)
         expected = []
         for sws, spath, sname, dpath, dname in psf.MAPPING:
-            expected.append((sname, spath, psf.FLEET_SECRETS_PROJECT[sws], sws))
-            expected.append((dname, dpath, "fleet-ops", psf.FLEETOPS))
+            expected.extend(((sws, spath, sname), (psf.FLEETOPS, dpath, dname)))
         seen = []
-        for argv, env in self.fake.reads:
-            slug = argv[6]
-            id_var = psf.FLEET_SECRETS_PROJECT_ID_ENV[
-                psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
-            ]
-            seen.append((argv[2], argv[4], slug, env[id_var]))
-            expected_token = os.environ[
-                psf.READ_TOKEN_ENVS[psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS]
-            ]
-            token_var = (
-                "INFISICAL_AI_FLEET_COORDINATOR_TOKEN"
-                if slug == "ai-fleet-coordinator"
-                else "INFISICAL_TOKEN"
-            )
-            self.assertEqual(env[token_var], expected_token)
-            workspace = psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
+        for project, path, env, token, names, timeout in self.fake.reads:
+            self.assertEqual(len(names), 1)
+            seen.append((project, path, names[0]))
+            self.assertEqual(token, self.read_tokens[project])
             self.assertEqual(
-                fleet_secrets_core.declared_paths(env, argv[4]),
-                psf.READ_PATHS_BY_PROJECT[workspace],
-            )
-            self.assertNotIn(
-                "INFISICAL_TOKEN"
-                if token_var != "INFISICAL_TOKEN"
-                else "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
                 env,
+                {
+                    FI.ENV_API: psf.BASE + "/api",
+                    FI.ENV_READ_PATHS: ",".join(psf.READ_PATHS_BY_PROJECT[project]),
+                },
             )
-            for dropped in psf.CHILD_DROPPED_ENV:
-                if dropped == token_var:
-                    continue
-                self.assertNotIn(dropped, env, f"{dropped} never reaches the child")
+            self.assertEqual(FI.declared_paths(env, path), psf.READ_PATHS_BY_PROJECT[project])
+            self.assertEqual(timeout, 90)
         self.assertEqual(seen, expected)
-        # Metadata checks and writes use the dedicated Fleet-OPS write token.
         self.assertEqual(len(self.fake.upserts), 72)
         self.assertEqual(
             [token for method, token in self.fake.authorizations if method == "POST"],
             ["Bearer " + self.write_token] * 72,
         )
-        self.assertEqual(
-            [token for method, token in self.fake.authorizations if method == "GET"],
-            [
-                "Bearer " + self.read_tokens[psf.AFC],
-                "Bearer " + self.read_tokens[psf.FLEETOPS],
-                "Bearer " + self.write_token,
-            ],
-        )
+
+    def test_partial_name_result_is_absent_without_another_route(self):
+        with mock.patch.object(
+            psf.FI, "fetch_project", return_value={"OTHER_NAME": "VALUE-other"}
+        ) as read:
+            self.assertIsNone(
+                psf.read_secret_opt(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED")
+            )
+            with self.assertRaises(psf.ReadError) as caught:
+                psf.read_secret(self.read_tokens[psf.AFC], psf.AFC, "/", "WANTED")
+        self.assertEqual(caught.exception.code, 3)
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_args.kwargs["names"], ("WANTED",))
 
     def test_values_are_not_taken_from_the_environment(self):
         # A same-named variable in the shell must never be copied in place of the source.
         seeded(self.fake)
-        _sws, _spath, sname, dpath, dname = psf.MAPPING[4]
+        sws, spath, sname, dpath, dname = psf.MAPPING[4]
         os.environ[sname] = "VALUE-shell-shadow"
+        qualified = (
+            f"INFISICAL_SCOPED_{sws.replace('-', '_').upper()}_"
+            f"{spath.strip('/').replace('/', '_').upper() or 'ROOT'}_{sname}"
+        )
+        os.environ[qualified] = "VALUE-qualified-shell-shadow"
         code, out = self.run_main("--apply")
         self.assertIsNone(code)
         self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-" + sname)
@@ -433,44 +522,31 @@ class TestApply(Base):
         self.assertIsNone(code)
         self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-padded é\n")
 
-    def test_missing_fleet_secrets_exits_127(self):
-        # kody 4366921905:  a missing executable is the shell's 127, apart from 1.
+    def test_copy_needs_no_installed_application_or_child_environment(self):
         seeded(self.fake)
+        with mock.patch.object(subprocess, "run", side_effect=AssertionError("no child allowed")):
+            code, out = self.run_main("--apply")
+        self.assertIsNone(code)
+        self.assertEqual(len(self.fake.upserts), 72)
+        self.assertNotIn("VALUE-", out)
 
-        def missing(argv, **kwargs):
-            raise FileNotFoundError(argv[0])
-
-        subprocess.run = missing
-        code, out = self.run_main("--apply")
-        self.assertEqual(code, psf.MISSING_EXECUTABLE)
-        self.assertEqual(code, 127)
-        self.assertIn("fleet-secrets get is not installed", out)
-        self.assertEqual(self.fake.upserts, [])
-
-    def test_fleet_secrets_read_timeout_exits_124(self):
-        # kody 4367021960:  a timed-out read is timeout(1)'s 124, apart from 1 and 127.
+    def test_direct_read_timeout_exits_124(self):
         seeded(self.fake)
-
-        def slow(argv, **kwargs):
-            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
-
-        subprocess.run = slow
-        code, out = self.run_main("--apply")
+        with mock.patch.object(psf.FI, "fetch_project", side_effect=TimeoutError("VALUE-provider")):
+            code, out = self.run_main("--apply")
         self.assertEqual(code, psf.TIMED_OUT)
         self.assertEqual(code, 124)
-        self.assertIn("fleet-secrets get timed out, reading the source", out)
+        self.assertIn("Infisical named read timed out, reading the source", out)
         self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)
 
-    def test_fleet_secrets_own_exit_124_is_a_timeout(self):
-        # kody 4368415894:  fleet-secrets' own 124 (its Linux entry point's login
-        # timeout) exits 124 too, not as a generic "exit 124" failure.
+    def test_shared_reader_exit_124_is_a_timeout(self):
         seeded(self.fake)
         sws, spath, sname, _dpath, _dname = psf.MAPPING[0]
         self.fake.fail[("read", (sws, spath, sname))] = 124
         code, out = self.run_main("--apply")
         self.assertEqual(code, psf.TIMED_OUT)
-        self.assertIn("fleet-secrets get timed out, reading the source", out)
+        self.assertIn("Infisical named read timed out, reading the source", out)
         self.assertNotIn("exit 124", out)
         self.assertEqual(self.fake.upserts, [])
         self.assertNotIn("VALUE-", out)
@@ -509,7 +585,7 @@ class TestApply(Base):
         self.assertEqual(code, 1)
         self.assertIn(
             f"STOP at 41/72 ({psf.MAPPING[40][3]}/{victim}): the Infisical write timed out, "
-            "so its outcome is unknown.  40 copied, 0 already in sync.  Re-run reconciles;",
+            "so its outcome is unknown.\u00a0 40 copied, 0 already in sync.\u00a0 Re-run reconciles;",
             out,
         )
         self.assertNotIn("VALUE-", out)
@@ -521,15 +597,15 @@ class TestApply(Base):
         for sws, spath, sname, dpath, dname in psf.MAPPING:
             self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-" + sname)
 
-    def test_terminal_messages_use_two_spaces_between_sentences(self):
-        # Kody issue comment 6383398733:  plain-text output takes two ASCII spaces.
+    def test_terminal_messages_use_current_owner_sentence_gap(self):
+        # The current owner rule supersedes the old plain-ASCII exception.
         seeded(self.fake)
         sws, spath, victim, _dpath, _dname = psf.MAPPING[5]
         self.fake.fail[("read", (sws, spath, victim))] = 4
         _code, out = self.run_main("--apply")
-        self.assertIn("5 copied, 0 already in sync.  Re-run reconciles;  equal values", out)
+        self.assertIn("5 copied, 0 already in sync.\u00a0 Re-run reconciles; equal values", out)
         self.assertNotRegex(out, r"[a-z)]\. [A-Z]")
-        self.assertNotIn(" ", out)
+        self.assertIn("\u00a0 ", out)
 
     def test_partial_write_stop_then_rerun_completes(self):
         seeded(self.fake)
