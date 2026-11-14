@@ -177,12 +177,14 @@ class Transaction:
             # Failure before prepare() wrote the backup journal: no before or
             # after images were staged, so nothing was applied.  Only a
             # genuinely absent journal takes this path - an unreadable or
-            # malformed journal still raises.  Any staged remnant is a partial
-            # prepare this path cannot judge.  Verify every target's live
-            # bytes AND metadata against the pinned before-image; an
-            # after-image or any other content is a partial or foreign write
-            # that must be reconciled by hand, never blessed here.
-            if self.backup.exists():
+            # malformed journal still raises.  Any staged remnant (including
+            # a dangling symlink, which stat misses but lstat catches) is a
+            # partial prepare or tamper this path cannot judge.  Verify every
+            # target's live bytes AND metadata against the pinned
+            # before-image; an after-image or any other content is a partial
+            # or foreign write that must be reconciled by hand, never blessed
+            # here.
+            if self.backup.is_symlink() or self.backup.exists():
                 raise TransactionError("staged remnants without journal")
             for row in expected_rows:
                 try:

@@ -162,6 +162,11 @@ class TransactionTests(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self.t.backup)
+        # A dangling symlink at the backup path is tamper, not absence.
+        self.t.backup.symlink_to(self.root / "nonexistent")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        self.t.backup.unlink()
         # A manifest-created file appearing early is drift for a before=None row.
         (self.code / "new.py").write_bytes(b"new module")
         with self.assertRaises(TransactionError):
