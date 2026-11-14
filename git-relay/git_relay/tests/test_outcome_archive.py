@@ -480,9 +480,7 @@ class ReconciliationHardeningTests(ArchiveTestCase):
         self.assertTrue(held.get("archived"))
         # No release marker was appended for the non-definitive outcome.
         entries = self.read_archive()
-        self.assertFalse(
-            any("released_at" in e and e["key"] == archived_key for e in entries)
-        )
+        self.assertFalse(any("released_at" in e and e["key"] == archived_key for e in entries))
         # The denial survives a restart (crash-window proof: index intact).
         reloaded = OutcomeStore(self.path, clock=self.clock)
         self.assertIsNotNone(reloaded.begin(archived_key))
