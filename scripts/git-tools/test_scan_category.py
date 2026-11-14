@@ -11,7 +11,9 @@ class CategoryTests(unittest.TestCase):
     def test_fixed_public_vocabulary_matches_loaded_scanner(self):
         scanner = git._scanner()
         labels = {label for label, pattern in scanner._PATTERNS}
-        self.assertEqual(git._SCAN_CATEGORIES, labels | {"a Zulip-shaped API key", "a loaded credential"})
+        self.assertEqual(
+            git._SCAN_CATEGORIES, labels | {"a Zulip-shaped API key", "a loaded credential"}
+        )
 
     def test_public_labels_only(self):
         for label in git._SCAN_CATEGORIES:
@@ -70,7 +72,11 @@ class CategoryTests(unittest.TestCase):
                 if isinstance(repo, str) and isinstance(rows, list):
                     for i, row in enumerate(rows):
                         if isinstance(row, dict) and isinstance(row.get("path"), str):
-                            field = "content_b64" if tool == "gr_wf_file_put" else f"files[{i}].content_b64"
+                            field = (
+                                "content_b64"
+                                if tool == "gr_wf_file_put"
+                                else f"files[{i}].content_b64"
+                            )
                             files[field] = (repo, row["path"])
             stack = [("", arguments)]
             while stack:
@@ -80,7 +86,9 @@ class CategoryTests(unittest.TestCase):
                         # Base64 of ordinary bytes looks like a token, and it hides a real one, so the decoded text is what is
                         # scanned.  Anything that does not decode is scanned as it came.
                         try:
-                            value = base64.b64decode(value, validate=True).decode("utf-8", "replace")
+                            value = base64.b64decode(value, validate=True).decode(
+                                "utf-8", "replace"
+                            )
                         except (git.binascii.Error, ValueError):
                             pass
                     known = [bearer] if bearer else []
@@ -99,7 +107,12 @@ class CategoryTests(unittest.TestCase):
         cases = [
             {"text": "ordinary"},
             {"text": "synthetic-bearer"},
-            {"repo": "o/r", "files": [{"path": "file-aware.py", "content_b64": base64.b64encode(b"ordinary").decode()}]},
+            {
+                "repo": "o/r",
+                "files": [
+                    {"path": "file-aware.py", "content_b64": base64.b64encode(b"ordinary").decode()}
+                ],
+            },
             {"text": "synthetic-token"},
             {"nested": [{"value": "synthetic-token"}]},
             {
