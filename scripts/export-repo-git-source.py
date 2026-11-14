@@ -66,6 +66,17 @@ def relay_read(tool: str, arguments: dict) -> dict:
         raise remote.SourceError("Assigned Git relay read could not complete: " + tool) from exc
 
 
+def _load_collector():
+    collector_path = Path(__file__).with_name("collect-repo-documents.py")
+    spec = importlib.util.spec_from_file_location("collect_repo_documents", collector_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load collector module from {collector_path}")
+    collector = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = collector
+    spec.loader.exec_module(collector)
+    return collector
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--owner-repo", required=True)
@@ -73,19 +84,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--visibility", choices=("public", "private"), required=True)
     parser.add_argument("--commit", required=True, help="expected immutable default-branch commit")
     parser.add_argument(
-        "--private-docs-repo", help="exact private repository opt-in, also required on import"
+        "--private-docs-repo",
+        help="private repository opt-in (case-insensitive), also required on import",
     )
     parser.add_argument(
         "--output", type=Path, required=True, help="new descriptor path in an owner-only directory"
     )
     args = parser.parse_args(argv)
-    spec = importlib.util.spec_from_file_location(
-        "collect_repo_documents", Path(__file__).with_name("collect-repo-documents.py")
-    )
-    assert spec is not None and spec.loader is not None
-    collector = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = collector
-    spec.loader.exec_module(collector)
+    collector = _load_collector()
     try:
         if (
             remote.REPOSITORY.fullmatch(args.owner_repo) is None
@@ -94,12 +100,19 @@ def main(argv: list[str] | None = None) -> int:
             raise remote.SourceError(
                 "Exporter requires an exact GitHub repository and full SHA-1 commit"
             )
-        if args.visibility == "private" and args.private_docs_repo != args.owner_repo:
+        private_identity = collector._private_opt_in_identity(args.private_docs_repo)
+        owner_identity = collector._private_opt_in_identity(args.owner_repo)
+        private_opt_in_matches = (
+            private_identity is not None
+            and owner_identity is not None
+            and private_identity == owner_identity
+        )
+        if args.visibility == "private" and not private_opt_in_matches:
             raise remote.SourceError(
                 "Private export requires its exact --private-docs-repo identity"
             )
         if args.private_docs_repo is not None and (
-            args.visibility != "private" or args.private_docs_repo != args.owner_repo
+            args.visibility != "private" or not private_opt_in_matches
         ):
             raise remote.SourceError("Private-docs opt-in must name this exact private source")
         if (
@@ -126,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         selected, _, _ = collector._select_blobs(
             repo,
             collector._parse_tree(repo),
-            include_private_audits=args.private_docs_repo == args.owner_repo,
+            include_private_audits=private_opt_in_matches,
         )
         snapshot.require_selected(set(selected))
         remote.write_descriptor(snapshot, args.output)
