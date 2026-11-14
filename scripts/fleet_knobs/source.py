@@ -5,12 +5,13 @@ The REST helper verifies grant metadata and exact project, prod environment, and
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import re
 import shutil
 from collections.abc import Callable, Iterable, Mapping
 from types import ModuleType
+
+import fleet_infisical
 
 PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 ENVIRONMENT = "prod"
@@ -35,9 +36,6 @@ ENV_KNOBS_TOKEN = "FLEET_KNOBS_INFISICAL_TOKEN"
 # Legacy identity names are stripped from helper environments and never authenticate a request.
 ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
 ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
-ENV_HELPER_HOME = "FLEET_SECRETS_HOME"
-HELPER_HOME = "~/.local/share/fleet-secrets"
-HELPER_MODULE = "_fleet_knobs_fleet_secrets_core"
 
 
 class FetchFailed(Exception):
@@ -157,41 +155,11 @@ def _scoped_fetch(
     return _pick(result, wanted)
 
 
-def _helper_candidates() -> list:
-    """Where fleet-secrets' ``core.py`` may be, in order.  Paths only;  nothing is imported."""
-    out = []
-    home = (os.environ.get(ENV_HELPER_HOME) or "").strip()
-    if home:
-        out.append(os.path.join(os.path.expanduser(home), "fleet_secrets", "core.py"))
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    out.append(os.path.join(here, "fleet_secrets", "core.py"))
-    out.append(os.path.join(os.path.expanduser(HELPER_HOME), "fleet_secrets", "core.py"))
-    return out
-
-
 def _load_helper() -> ModuleType | None:
-    """fleet-secrets' core module, loaded from a file under a private name, or None."""
-    cached = _HELPER_CACHE.get("core")
-    if cached is not None:
-        return cached
-    for candidate in _helper_candidates():
-        if not os.path.isfile(candidate):
-            continue
-        try:
-            spec = importlib.util.spec_from_file_location(HELPER_MODULE, candidate)
-            if spec is None or spec.loader is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        except Exception:  # noqa: BLE001 - optional helper
-            continue
-        if all(hasattr(module, n) for n in ("fetch_project", "SecretsError")):
-            _HELPER_CACHE["core"] = module
-            return module
-    return None
+    """The packaged shared REST client; no application install or path override is consulted."""
+    return fleet_infisical
 
 
-_HELPER_CACHE: dict = {}
 # Tests replace this with a callable that returns a fake helper, or None for "no helper".
 HELPER_LOADER: Callable[[], ModuleType | None] = _load_helper
 
