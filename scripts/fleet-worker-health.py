@@ -4,7 +4,7 @@
 POSTs a signed request to https://agents.simplewithus.com/internal/health/linear
 (src/health.js) and writes ~/.local/state/fleet-tools/worker-health.json, mode 0600,
 atomically.  The answer holds ages, counts and fixed codes only.  The signing key is
-HEALTH_HMAC_KEY from Fleet-OPS (`fleet-secrets get`), read into memory and never printed
+HEALTH_HMAC_KEY from Fleet-OPS through the shared direct reader, held in memory and never printed
 or written.  A reader treats a file older than 45 minutes, missing, malformed or with
 another schemaVersion as unknown.  Python 3.9, standard library only.
 
@@ -19,11 +19,10 @@ import argparse
 import errno
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 import secrets
-import shutil
-import subprocess
 import sys
 import time
 import urllib.error
@@ -35,6 +34,10 @@ USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")
 SCHEMA_VERSION = 1
+READ_BINDING = "FLEET_WORKER_HEALTH_INFISICAL_READ_TOKEN"
+PROJECT_BINDING = "FLEET_WORKER_HEALTH_INFISICAL_PROJECT_ID"
+SECRET_NAME = "HEALTH_HMAC_KEY"
+READ_TIMEOUT = 20.0
 
 
 def sign(key, body):
@@ -48,18 +51,47 @@ def request_body(now=None):
     ).encode("utf-8")
 
 
-def read_key():
-    key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
+def _shared_client():
+    """Load only the reviewed sibling client, including under the LaunchAgent's -I."""
+    directory = os.path.dirname(os.path.realpath(__file__))
+    path = os.path.join(directory, "fleet_infisical.py")
+    client = sys.modules.get("fleet_infisical")
+    if client is not None:
+        if os.path.realpath(getattr(client, "__file__", "")) != path:
+            raise ImportError("shared reader origin refused")
+        return client
+    spec = importlib.util.spec_from_file_location("fleet_infisical", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("shared reader unavailable")
+    client = importlib.util.module_from_spec(spec)
+    sys.modules["fleet_infisical"] = client
+    try:
+        spec.loader.exec_module(client)
+    except Exception:
+        if sys.modules.get("fleet_infisical") is client:
+            sys.modules.pop("fleet_infisical")
+        raise
+    return client
+
+
+def read_key(env=None, reader=None):
+    source = dict(os.environ if env is None else env)
+    # Keep the existing Infisical-synced value transport; never hand-set it here.
+    key = source.get(SECRET_NAME, "").strip()
     if key:
         return key
-    binary = shutil.which("fleet-secrets") or os.path.expanduser("~/.local/bin/fleet-secrets")
-    try:
-        out = subprocess.run(
-            [binary, "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.SubprocessError):
+    token = (source.get(READ_BINDING) or "").strip()
+    project = (source.get(PROJECT_BINDING) or "").strip()
+    if not token or not project:
         return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    try:
+        fetch = reader if reader is not None else _shared_client().fetch_project
+        values = fetch(project, "/", {}, token=token, names=(SECRET_NAME,), timeout=READ_TIMEOUT)
+        value = values.get(SECRET_NAME)
+        return value.strip() if isinstance(value, str) else ""
+    except Exception:
+        # Fixed no_key health state below; no provider body, credential or fallback.
+        return ""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

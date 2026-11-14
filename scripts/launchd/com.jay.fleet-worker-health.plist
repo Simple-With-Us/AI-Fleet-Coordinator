@@ -4,8 +4,11 @@
   com.jay.fleet-worker-health (Muster ops control, AFC-478 follow-up):  every 15 minutes, write
   the hosted Worker's Linear token health that Muster reads, ~/.local/state/fleet-tools/worker-health.json
   (0600, atomic).  It runs the managed runtime's copy of fleet-worker-health.py, so it moves with main,
-  under /usr/bin/python3 -I (Python 3.9 on macOS).  The signing key HEALTH_HMAC_KEY comes from
-  `fleet-secrets get` (hence ~/.local/bin on PATH), is held in memory and is never printed or written.
+  under /usr/bin/python3 -I (Python 3.9 on macOS).  An existing Infisical-synced HEALTH_HMAC_KEY
+  remains the first source; otherwise the shared sibling fleet_infisical.py reads only that name
+  from Fleet-OPS prod / with this consumer's explicit read-token/project bindings.  No token is
+  embedded by this plist and no installed fleet-secrets app is required.  Bindings must be verified
+  before this source reaches the automatically updated runtime; see the worker-health rollout note.
   A failed call still writes the file, with state "unknown" and a fixed error code, and exits 1.
   It changes nothing else.
   Install:  cp this file to ~/Library/LaunchAgents/ and

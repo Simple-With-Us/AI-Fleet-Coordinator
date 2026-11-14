@@ -163,7 +163,7 @@ def read_token(environ: dict[str, str], platform: str, runner: Runner) -> str:
 
 def verify_writer(token: str, environ: dict[str, str], folder: str = KNOB_PATH) -> None:
     """Require metadata to prove this project's prod write grant on `folder` before CLI use."""
-    from fleet_secrets import core as secrets
+    import fleet_infisical as secrets
 
     try:
         secrets.verify_service_token(token, source.PROJECT_ID, folder, environ, writer=True)
