@@ -734,9 +734,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
                                 owner_age is not None
                                 and process_started_at is not None
                                 and process_started_at > started_at + 1
-                            ):
-                                stale = True
-                            elif (
+                            ) or (
                                 process_started_at is None
                                 and owner_age is not None
                                 and owner_age >= SCHEDULER_LOCK_STALE_S
