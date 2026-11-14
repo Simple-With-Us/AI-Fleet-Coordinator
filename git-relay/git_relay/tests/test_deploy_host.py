@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from git_relay.deploy_host import LinuxHost
+from git_relay.deploy_host import READINESS_SECONDS, LinuxHost
 from git_relay.deploy_transaction import TransactionError
 
 
@@ -146,8 +146,38 @@ class LinuxHostTests(unittest.TestCase):
             patch("git_relay.deploy_host.urlopen", side_effect=URLError("not bound")),
         ):
             self.assertFalse(self.h.runtime({"code/x": "new"}, {"pid": 42}))
-            self.assertLess(ticks[0], 8.2)
+            self.assertLess(ticks[0], READINESS_SECONDS + 0.2)
             proof.assert_not_called()
+
+    def test_cold_start_health_within_readiness_budget_passes(self):
+        # Health that only binds at t=20s fails the historical 8s window but
+        # passes inside the readiness budget, with the proof still one-shot.
+        import io
+        from unittest.mock import MagicMock
+        from urllib.error import URLError
+
+        identity = {"pid": 43}
+        ticks = [0.0]
+        self.h.clock = lambda ticks=ticks: ticks[0]
+        self.h.sleep = lambda n, ticks=ticks: ticks.__setitem__(0, ticks[0] + n)
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+        proof = MagicMock(return_value=True)
+        self.h.proof = proof
+
+        def flaky(url, timeout=None):
+            if ticks[0] < 20:
+                raise URLError("not bound")
+            return response
+
+        with (
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch("git_relay.deploy_host.urlopen", side_effect=flaky),
+        ):
+            self.assertTrue(self.h.runtime({"code/x": "new"}, {"pid": 42}))
+            proof.assert_called_once()
 
     def test_presignal_failure_thaws_exact_process(self):
         expected = {"pid": 42}
@@ -435,7 +465,7 @@ class LinuxHostTests(unittest.TestCase):
             patch("git_relay.deploy_host.urlopen") as health,
         ):
             self.assertFalse(self.h.runtime({}, None))
-            self.assertLess(ticks[0], 8.2)
+            self.assertLess(ticks[0], READINESS_SECONDS + 0.2)
             health.assert_not_called()
             self.h.proof.assert_not_called()
         (self.proc / "42/cgroup").write_text("0::/system.slice/not-git-relay.service\n")
