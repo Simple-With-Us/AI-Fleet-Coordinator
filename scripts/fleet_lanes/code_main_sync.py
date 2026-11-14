@@ -41,6 +41,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -692,34 +693,74 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
         lock_dir = state / "code-main-sync-scheduler.lock"
         owner_file = lock_dir / "owner.json"
+        guard_path = state / "code-main-sync-scheduler-takeover.lock"
         acquired = False
         for _ in range(2):
+            if lock_dir.is_symlink():
+                raise PermissionError(f"refusing symlinked lock directory: {lock_dir}")
             try:
                 os.mkdir(lock_dir, 0o700)
                 acquired = True
                 break
             except FileExistsError:
-                stale = False
+                guard_fd = os.open(guard_path, os.O_CREAT | os.O_RDWR, 0o600)
                 try:
-                    owner = json.loads(owner_file.read_text(encoding="utf-8"))
-                    pid = owner.get("pid")
-                    if isinstance(pid, int) and pid > 0:
-                        try:
-                            os.kill(pid, 0)
-                        except ProcessLookupError:
-                            stale = True
-                        except PermissionError:
-                            stale = False
-                    else:
-                        stale = True
-                except (OSError, ValueError, TypeError):
+                    fcntl.flock(guard_fd, fcntl.LOCK_EX)
+                    stale = False
                     try:
-                        stale = (time.time() - lock_dir.stat().st_mtime) >= SCHEDULER_LOCK_STALE_S
-                    except OSError:
-                        stale = False
-                if stale:
-                    shutil.rmtree(lock_dir, ignore_errors=True)
-                    continue
+                        owner = json.loads(owner_file.read_text(encoding="utf-8"))
+                        pid = owner.get("pid")
+                        started_at = owner.get("started_at")
+                        owner_age = (
+                            time.time() - started_at
+                            if isinstance(started_at, (int, float)) and not isinstance(started_at, bool)
+                            else None
+                        )
+                        if isinstance(pid, int) and pid > 0:
+                            if owner_age is not None and owner_age >= SCHEDULER_LOCK_STALE_S:
+                                stale = True
+                            else:
+                                process_started_at = None
+                                try:
+                                    stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+                                    stat_fields = stat_text[stat_text.rfind(")") + 2 :].split()
+                                    start_ticks = int(stat_fields[19])
+                                    boot_time = next(
+                                        line.split()[1]
+                                        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines()
+                                        if line.startswith("btime ")
+                                    )
+                                    process_started_at = int(boot_time) + start_ticks / os.sysconf("SC_CLK_TCK")
+                                except (OSError, ValueError, IndexError, StopIteration):
+                                    pass
+                                if owner_age is not None and process_started_at is not None and process_started_at > started_at + 1:
+                                    stale = True
+                                else:
+                                    try:
+                                        os.kill(pid, 0)
+                                    except ProcessLookupError:
+                                        stale = True
+                                    except PermissionError:
+                                        stale = False
+                        else:
+                            stale = True
+                    except (OSError, ValueError, TypeError):
+                        try:
+                            stale = (time.time() - lock_dir.stat().st_mtime) >= SCHEDULER_LOCK_STALE_S
+                        except OSError:
+                            stale = False
+                    if stale:
+                        aside = lock_dir.with_name(lock_dir.name + ".stale-" + uuid.uuid4().hex)
+                        try:
+                            os.rename(lock_dir, aside)
+                        except OSError:
+                            print("Code mirror scheduler is already running", file=sys.stderr)
+                            return 0
+                        shutil.rmtree(aside, ignore_errors=True)
+                        continue
+                finally:
+                    fcntl.flock(guard_fd, fcntl.LOCK_UN)
+                    os.close(guard_fd)
                 print("Code mirror scheduler is already running", file=sys.stderr)
                 return 0
         if not acquired:
