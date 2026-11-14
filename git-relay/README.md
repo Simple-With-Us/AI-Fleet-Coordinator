@@ -399,9 +399,10 @@ a store full of held unknown rows archives the oldest unknowns to an append-only
 `<outcomes file>.archive.jsonl` sidecar (with a `<outcomes file>.archive-index.json` duplicate-denial
 index) to make room - an archived unknown still refuses a replay exactly as a live one, and an
 operator releases it by reconciling the key to a definitive `ok` or `refused` (a non-definitive
-reconciliation keeps the denial).  Only a store full of held pending rows with nothing left to
-archive refuses new writes with 503 until an operator reconciles them (fail closed - never
-evict a held side effect).  Writes go through a
+reconciliation keeps the denial).  Only a store full of rows that can neither evict nor
+archive - held pending rows and successful rows still inside their 24 h replay window -
+refuses new writes with 503 until an operator reconciles them or the window expires (fail
+closed - never evict a held side effect).  Writes go through a
 full-write loop, so a short write fails loudly instead of renaming a truncated registry.  `mint_token` is exempt:  it returns a raw
 credential (never cached in the store) and a re-mint is safe under the minter's own lock.
 

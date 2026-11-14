@@ -257,7 +257,7 @@ class OutcomeStore:
                     if (
                         isinstance(released_at, bool)
                         or not isinstance(released_at, (int, float))
-                        or marker_state not in STATES
+                        or marker_state not in ("ok", "refused")
                     ):
                         raise OutcomeStoreError(f"invalid release marker for {key!r}")
                     held.pop(key, None)
@@ -440,6 +440,11 @@ class OutcomeStore:
         a duplicate write.
         """
         with self._lock:
+            if corr is not None and (not isinstance(corr, str) or not corr):
+                # A non-string corr would persist verbatim, get archived, and
+                # then fail the archive's own type check on every later load:
+                # reject it before it can poison the store.
+                raise OutcomeStoreError("corr must be a non-empty string when supplied")
             existing = self._rows.get(key)
             if existing and (
                 existing["state"] in ("unknown", "pending")

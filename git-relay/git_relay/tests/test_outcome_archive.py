@@ -420,11 +420,36 @@ class ArchiveHardeningTests(ArchiveTestCase):
 
     def test_marker_with_bad_state_fails_closed(self):
         key = hexkey(0)
-        self.write_raw_archive([self.row_line(key), self.marker_line(key, state="junk")])
-        with self.assertRaises(OutcomeStoreError):
-            OutcomeStore(self.path, clock=self.clock)
+        # Non-definitive states must not release a denial either:  finish()
+        # never writes them, so a marker carrying one is corrupt or crafted.
+        for bad in ("junk", "unknown", "pending"):
+            self.write_raw_archive([self.row_line(key), self.marker_line(key, state=bad)])
+            with self.assertRaises(OutcomeStoreError, msg=f"state={bad!r}"):
+                OutcomeStore(self.path, clock=self.clock)
         # Evidence file untouched by the refused fold.
         self.assertEqual(len(self.read_archive()), 2)
+
+    def test_begin_rejects_a_non_string_corr_before_it_can_persist(self):
+        store = OutcomeStore(self.path, clock=self.clock)
+        for bad in (123, "", {"corr": 1}):
+            with self.assertRaises(OutcomeStoreError, msg=f"corr={bad!r}"):
+                store.begin("a" * 64, corr=bad)
+        self.assertEqual(store._rows, {}, "a refused corr must not persist")
+        self.assertIsNone(store.begin("a" * 64, corr="good-corr"))
+
+    def test_torn_tail_quarantine_preserves_the_whole_fragment(self):
+        # Fragment longer than the intact prefix:  every discarded byte must
+        # reach quarantine before the log is truncated (the pread count is the
+        # fragment length, not the prefix length).
+        line = self.row_line(hexkey(0))
+        fragment = b'{"key": "torn' + b"x" * 300
+        with open(self.archive, "wb") as fh:
+            fh.write(line + b"\n" + fragment)
+        OutcomeStore(self.path, clock=self.clock)
+        quarantined = [p for p in self.dir.iterdir() if ".corrupt-" in p.name]
+        self.assertEqual(len(quarantined), 1)
+        self.assertEqual(quarantined[0].read_bytes(), fragment)
+        self.assertEqual(open(self.archive, "rb").read(), line + b"\n")
 
     def test_archived_row_with_bad_corr_fails_closed(self):
         for bad in (123, ""):
