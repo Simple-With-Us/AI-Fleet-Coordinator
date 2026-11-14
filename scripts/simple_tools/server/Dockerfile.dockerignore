@@ -3,6 +3,7 @@
 *
 !scripts/simple-chat
 !scripts/simple_tools/
+!scripts/fleet_infisical.py
 !scripts/linear_project_linkifiers.py
 !scripts/zulip_linkifiers.py
 !docs/protocols/simple-tools-partition.toml
