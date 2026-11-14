@@ -429,24 +429,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["setup", "update", "rollback", "status"])
     parser.add_argument("--home", type=Path, default=Path.home())
     args = parser.parse_args(argv)
-    # Unlettered-repair tick:  replay the start of this host's chats still showing "??: " - an app-driven
-    # chat's hook never runs, so only a scheduled tick reaches it.  platform-letter's own stamp throttles the
-    # pass;  a failure here never fails the update.
-    try:
-        subprocess.run(
-            [
-                str(args.home / ".local" / "bin" / "platform-letter"),
-                "repair",
-                "--location",
-                "server",
-            ],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=90,
-            check=False,
-        )
-    except Exception:  # noqa: BLE001 - the tick is best-effort
-        pass
+    if args.command == "update":
+        # Unlettered-repair tick:  replay the start of this host's chats still showing "??: " - an app-driven
+        # chat's hook never runs, so only the scheduled update reaches it.  platform-letter's own stamp
+        # throttles the pass;  a failure here never fails the update, but names itself on stderr for the
+        # unit's journal (the command's own exit code stays the update's).
+        try:
+            ticked = subprocess.run(
+                [
+                    str(args.home / ".local" / "bin" / "platform-letter"),
+                    "repair",
+                    "--location",
+                    "server",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=90,
+                check=False,
+            )
+            if (
+                ticked.stderr
+            ):  # the verb's own failures reach the unit's journal, stdout stays the command's
+                sys.stderr.write(ticked.stderr.decode(errors="replace")[:2000])
+        except subprocess.TimeoutExpired:
+            print(json.dumps({"repair_tick": "timeout"}), file=sys.stderr)
+        except FileNotFoundError:
+            print(json.dumps({"repair_tick": "platform-letter missing"}), file=sys.stderr)
+        except Exception:  # noqa: BLE001 - the tick is best-effort
+            pass
     try:
         result = {"setup": setup, "update": update, "rollback": rollback, "status": status}[
             args.command
