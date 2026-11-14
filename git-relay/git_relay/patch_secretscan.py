@@ -172,7 +172,7 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "git-relay/git_relay/server.py",
-            "395d4567b2d28579d5311c620031153a04f08f262de09a6d4b05446d1988cf25",
+            "873109fe354a21ea6907722ebb14d35907f2c06fbbedd6dc49b1d48e99c0e4d1",
         ),
     }
 )
