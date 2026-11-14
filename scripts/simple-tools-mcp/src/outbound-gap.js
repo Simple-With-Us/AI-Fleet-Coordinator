@@ -13,8 +13,25 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { houseGap } from "./textfmt.js";
+import { normalizeHeader } from "./contract.js";
 
 export const SENTENCE_GAP_ARG = "sentence_gap";
+
+/** Only explicit PR routes supply PR context; ordinary issue routes keep their repository headers. */
+export const GITHUB_PR_HEADER_FIELDS = Object.freeze({
+  open_pr: ["title"],
+  edit_pr: ["title"],
+  comment_pr: ["body"],
+  reply_thread: ["body"],
+  wf_pr_create: ["title"],
+  wf_pr_edit: ["title"],
+  wf_review_submit: ["body"],
+  wf_review_inline: ["body"],
+  wf_review_update: ["body"],
+  wf_review_dismiss: ["message"],
+  wf_review_comment_reply: ["body"],
+  wf_review_comment_update: ["body"],
+});
 
 /** The text fields each GitHub verb persists, keyed by the relay action name. */
 export const GITHUB_GAP_FIELDS = Object.freeze({
@@ -41,7 +58,8 @@ export const GITHUB_GAP_FIELDS = Object.freeze({
   wf_merge_guarded: ["commit_message"],
   // Commit messages, check-run summaries and milestone descriptions are prose too (AFC-722 review).  Label,
   // deployment and commit-status descriptions are not listed:  they are short machine-facing metadata under a
-  // 100- or 140-byte cap, and titles, names, branches and file content are never touched.
+  // 100- or 140-byte cap.  Title prose, names, branches and file content are not gapped;
+  // explicit PR title headers still use the separate compact-context map above.
   wf_git_commit_create: ["message"],
   wf_file_put: ["message"],
   wf_files_put: ["message"],
@@ -104,10 +122,27 @@ export function outboundGap(text) {
 }
 
 /**
- * A copy of `args` with the house gap written into `action`'s text fields (unless the call opted out).  With
- * `byteCap`, a field that fit the cap as typed and would not once gapped keeps its typed text, with a notice.
+ * Compact only explicit PR headers; the byte-for-byte opt-out keeps supplied text unchanged.
  */
-export function gapGitHubArgs(action, args, { byteCap = null } = {}) {
+export function compactGitHubArgs(action, args, { seat = null } = {}) {
+  const fields = GITHUB_PR_HEADER_FIELDS[action];
+  if (!fields || !args || typeof args !== "object" || !gapEnabled()) return args;
+  let out = args;
+  for (const field of fields) {
+    if (typeof args[field] !== "string") continue;
+    const context = field === "title" ? "github-pr-title" : "github-pr";
+    const header = normalizeHeader(args[field], { seat, context });
+    if (header !== args[field]) {
+      if (out === args) out = { ...args };
+      out[field] = header;
+    }
+  }
+  return out;
+}
+
+/** Add prose gaps after PR context, preserving compact headers when only the added gaps exceed a cap. */
+export function gapGitHubArgs(action, args, { byteCap = null, seat = null } = {}) {
+  args = compactGitHubArgs(action, args, { seat });
   const fields = GITHUB_GAP_FIELDS[action];
   if (!fields || !args || typeof args !== "object" || !gapEnabled()) return args;
   let out = args;

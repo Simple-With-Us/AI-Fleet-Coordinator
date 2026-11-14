@@ -9,17 +9,36 @@ if (!Array.isArray(fixtures) || fixtures.length === 0 || !fixtures.every((entry)
   entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
   ["name", "input", "expected"].every((key) => typeof entry[key] === "string") &&
   (entry.seat === undefined || entry.seat === null || typeof entry.seat === "string") &&
+  (entry.context === undefined || ["message", "github-pr", "github-pr-body", "github-pr-title"].includes(entry.context)) &&
   ["repos", "peers"].every((key) => entry[key] === undefined || (Array.isArray(entry[key]) && entry[key].every((v) => typeof v === "string")))
 )) throw new Error("Invalid header-spacing.json fixture shape");
 
 test("OPS-1086 golden headers survive JSON and UTF-8 without changing body gaps", () => {
   for (const entry of fixtures) {
-    const options = entry.seat ? { seat: entry.seat } : {};
+    const options = { ...(entry.seat ? { seat: entry.seat } : {}), ...(entry.context ? { context: entry.context } : {}) };
     const actual = normalizeHeader(entry.input, options);
     assert.equal(actual, entry.expected, entry.name);
     assert.equal(normalizeHeader(actual, options), actual, entry.name);
     const wire = Buffer.from(JSON.stringify({ content: actual }), "utf8");
     assert.equal(JSON.parse(wire.toString("utf8")).content, entry.expected, entry.name);
+  }
+});
+
+test("PR body readiness prefix has the same exact line and UTF-8 byte bounds as Python", () => {
+  const full = "[CODEX: EE.1.S 📁AFC] Body";
+  const compact = "[CODEX:\u200a\u200a\u200aEE.1.S] Body";
+  for (const [prefix, accepted] of [
+    ["- Wait\n".repeat(31) + "\n", true],
+    ["- Wait\n".repeat(32) + "\n", false],
+    ["1. Wait\n".repeat(31) + "\n", true],
+    ["1. Wait\n".repeat(32) + "\n", false],
+    ["- " + "é".repeat(4094) + "\n\n", true],
+    ["- " + "é".repeat(4094) + "x\n\n", false],
+  ]) {
+    for (const command of ["", "@kody start-review\r\n"]) {
+      assert.equal(normalizeHeader(command + prefix + full, { context: "github-pr-body" }),
+        command + prefix + (accepted ? compact : full), `prefix bytes=${Buffer.byteLength(prefix)}`);
+    }
   }
 });
 
@@ -59,10 +78,14 @@ test("quiet marker survives hosted composition with the same header bytes", () =
   assert.equal(composeBody(tagPrefix("CODEX", "deadbeef"), input), ":eyes: " + fixtures[0].expected);
 });
 
-test("GitHub prose verbs preserve all exact header spaces through gap handling and JSON", () => {
+test("PR comments omit repository context while descriptions and issues retain it", () => {
   const body = fixtures[0].expected;
-  for (const verb of ["open_pr", "edit_pr", "comment_pr", "reply_thread", "wf_pr_edit", "wf_issue_comment"]) {
+  for (const verb of ["comment_pr", "reply_thread"]) {
     const wire = JSON.parse(JSON.stringify(gapGitHubArgs(verb, { body })));
-    assert.equal(wire.body, body, verb);
+    assert.equal(wire.body, normalizeHeader(body, { context: "github-pr" }), verb);
   }
+  for (const verb of ["open_pr", "edit_pr", "wf_pr_create", "wf_pr_edit"]) {
+    assert.equal(gapGitHubArgs(verb, { body }).body, body, verb);
+  }
+  assert.equal(gapGitHubArgs("wf_issue_comment", { body }).body, body);
 });
