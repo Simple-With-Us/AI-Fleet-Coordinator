@@ -21,6 +21,27 @@ from .deploy_supervisor import Supervisor
 from .deploy_transaction import Transaction, TransactionError, read_regular
 
 
+def _pin_image_generation(old, new, code):
+    """Derive the deployed image proof generation from verified evidence.
+
+    The runtime proof discriminates the image dispatch generation by the
+    presence of provenance_patch.py, but manifest rows name only files this
+    transaction changes - a scanner-only change never names it. Read the
+    unchanged sentinel in place (O_NOFOLLOW, single regular file) and pin
+    its live digest into both hash views; a genuine old-generation image
+    has no such file, and a row already naming it wins.
+    """
+    if "code/provenance_patch.py" in old:
+        return
+    try:
+        data, _meta = read_regular(code / "provenance_patch.py")
+    except FileNotFoundError:
+        return
+    digest = hashlib.sha256(data).hexdigest()
+    old["code/provenance_patch.py"] = digest
+    new["code/provenance_patch.py"] = digest
+
+
 def duration_us(text):
     units = {"us": 1, "ms": 1000, "s": 1000000, "min": 60000000, "h": 3600000000, "d": 86400000000}
     parts = re.findall(r"([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)", text)
@@ -104,6 +125,7 @@ class Runner:
         self.rows = [{k: v for k, v in row.items() if k != "data"} for row in self.changes]
         old = {r["root"] + "/" + r["name"]: r["before"] for r in self.rows}
         new = {r["root"] + "/" + r["name"]: r["after"] for r in self.rows}
+        _pin_image_generation(old, new, LinuxHost.CODE)
         self.host = LinuxHost(self.doc["config"], old, new, None, proof)
         self.journal = Journal(
             directory,
@@ -230,7 +252,7 @@ class Runner:
                     # no file writes or handler interruption are needed.
                     self.host.resume_if_same(self.host.process_identity())
                     if not self.host.prove_old_runtime(self.rows):
-                        raise TransactionError("unchanged old runtime proof failed")
+                        raise TransactionError("unchanged old runtime proof failed: " + getattr(self.host, "last_phase", "unknown"))
                     self.recovery.finish()
                     return "aborted"
             self.host.stop_for_recovery()

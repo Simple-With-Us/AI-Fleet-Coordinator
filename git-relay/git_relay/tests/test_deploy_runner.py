@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from git_relay.deploy_runner import Runner, executor_identity, load_manifest
+from git_relay.deploy_runner import Runner, _pin_image_generation, executor_identity, load_manifest
 from git_relay.deploy_transaction import TransactionError
 
 
@@ -177,3 +177,75 @@ class RunnerTests(unittest.TestCase):
         for s in ["infinity", "", "120", "2minjunk", "-120s", "0.1us"]:
             with self.assertRaises(TransactionError):
                 duration_us(s)
+
+
+class ImageGenerationSentinelTests(unittest.TestCase):
+    def test_scanner_only_change_pins_sentinel_from_verified_image_evidence(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as d:
+            code = Path(d)
+            (code / "provenance_patch.py").write_bytes(b"sentinel-bytes")
+            old = {"code/patch_secretscan.py": "before"}
+            new = {"code/patch_secretscan.py": "after"}
+            _pin_image_generation(old, new, code)
+            want = hashlib.sha256(b"sentinel-bytes").hexdigest()
+            self.assertEqual(old["code/provenance_patch.py"], want)
+            self.assertEqual(new["code/provenance_patch.py"], want)
+
+    def test_genuine_old_generation_image_gets_no_sentinel(self):
+        with tempfile.TemporaryDirectory() as d:
+            old = {"code/patch_secretscan.py": "before"}
+            new = {"code/patch_secretscan.py": "after"}
+            _pin_image_generation(old, new, Path(d))
+            self.assertNotIn("code/provenance_patch.py", old)
+            self.assertNotIn("code/provenance_patch.py", new)
+
+    def test_manifest_row_naming_the_sentinel_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "provenance_patch.py").write_bytes(b"on-disk")
+            old = {"code/provenance_patch.py": "row-before"}
+            new = {"code/provenance_patch.py": "row-after"}
+            _pin_image_generation(old, new, Path(d))
+            self.assertEqual(old["code/provenance_patch.py"], "row-before")
+            self.assertEqual(new["code/provenance_patch.py"], "row-after")
+
+    def test_runner_recovery_proof_path_carries_pinned_generation(self):
+        # The exact recover-leg chain: the pinned hash views flow through
+        # prove_old_runtime -> runtime -> proof with the sentinel visible.
+        import io
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from git_relay.deploy_host import LinuxHost
+
+        with tempfile.TemporaryDirectory() as d:
+            code = Path(d) / "code"
+            code.mkdir()
+            (code / "provenance_patch.py").write_bytes(b"sentinel-bytes")
+            old = {"code/patch_secretscan.py": "before"}
+            new = {"code/patch_secretscan.py": "after"}
+            _pin_image_generation(old, new, code)
+
+            proc = Path(d) / "proc"
+            (proc / "sys/kernel/random").mkdir(parents=True)
+            (proc / "sys/kernel/random/boot_id").write_text("boot-a")
+
+            def run(args, **kw):
+                return SimpleNamespace(
+                    returncode=0, stdout="MainPID=42\nActiveState=active\nWatchdogUSec=0\n"
+                )
+
+            proof = MagicMock(return_value=True)
+            host = LinuxHost("x", old, new, None, proof, run=run, proc=proc)
+            identity = {"pid": 43}
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+            with patch.object(host, "process_identity", return_value=identity), patch.object(
+                host, "hashes", return_value=old
+            ), patch("git_relay.deploy_host.urlopen", return_value=response):
+                self.assertTrue(host.prove_old_runtime([{"root": "code"}]))
+            proof.assert_called_once_with(identity, old)
+            self.assertIn("code/provenance_patch.py", proof.call_args[0][1])
+            self.assertEqual(host.last_phase, "final")

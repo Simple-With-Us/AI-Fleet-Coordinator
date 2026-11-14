@@ -544,3 +544,104 @@ class LinuxHostTests(unittest.TestCase):
                 self.h.process_identity()
             self.assertFalse(self.h.runtime({}, None))
             self.h.proof.assert_not_called()
+
+
+class RuntimePhaseAttributionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.proc = Path(self.temp.name)
+        (self.proc / 'sys/kernel/random').mkdir(parents=True)
+        (self.proc / 'sys/kernel/random/boot_id').write_text('boot-a')
+        p = self.proc / '42'
+        p.mkdir()
+        (p / 'stat').write_text(
+            '42 (python unusual (name)) ' + ' '.join(['S'] + ['0'] * 18 + ['12345'])
+        )
+        (p / 'cgroup').write_text('0::/system.slice/git-relay.service\n')
+        (p / 'exe').symlink_to('/usr/bin/python3')
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0, stdout='MainPID=42\nActiveState=active\nWatchdogUSec=0\n'
+            )
+
+        self.h = LinuxHost('x', {}, {}, None, lambda *args: True, run=run, proc=self.proc)
+
+    def _healthy(self):
+        import io
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+        return response
+
+    def test_each_refusal_records_its_nonsecret_phase(self):
+        from unittest.mock import MagicMock
+        from urllib.error import URLError
+
+        identity = {'pid': 43}
+        response = self._healthy()
+
+        with patch.object(self.h, 'hashes', return_value={}), patch.object(
+            self.h, 'process_identity', return_value=identity
+        ):
+            self.assertFalse(self.h.runtime({'code/x': 'new'}, None))
+            self.assertEqual(self.h.last_phase, 'hashes')
+
+        with patch.object(self.h, 'hashes', return_value={'code/x': 'new'}), patch.object(
+            self.h, 'process_identity', side_effect=TransactionError('nope')
+        ):
+            self.assertFalse(self.h.runtime({'code/x': 'new'}, None))
+            self.assertEqual(self.h.last_phase, 'identity')
+
+        with patch.object(self.h, 'hashes', return_value={'code/x': 'new'}), patch.object(
+            self.h, 'process_identity', return_value=identity
+        ):
+            self.assertFalse(self.h.runtime({'code/x': 'new'}, identity))
+            self.assertEqual(self.h.last_phase, 'prior-image')
+
+        ticks = [0.0]
+        self.h.clock = lambda ticks=ticks: ticks[0]
+        self.h.sleep = lambda n, ticks=ticks: ticks.__setitem__(0, ticks[0] + n)
+        with patch.object(self.h, 'hashes', return_value={'code/x': 'new'}), patch.object(
+            self.h, 'process_identity', return_value=identity
+        ), patch('git_relay.deploy_host.urlopen', side_effect=URLError('not bound')):
+            self.assertFalse(self.h.runtime({'code/x': 'new'}, None))
+            self.assertEqual(self.h.last_phase, 'health')
+
+        ticks[0] = 0.0
+        self.h.proof = MagicMock(return_value=False)
+        with patch.object(self.h, 'hashes', return_value={'code/x': 'new'}), patch.object(
+            self.h, 'process_identity', return_value=identity
+        ), patch('git_relay.deploy_host.urlopen', return_value=response):
+            self.assertFalse(self.h.runtime({'code/x': 'new'}, None))
+            self.assertEqual(self.h.last_phase, 'proof')
+
+        ticks[0] = 0.0
+        self.h.proof = MagicMock(return_value=True)
+        states = iter([{'code/x': 'new'}, {'code/x': 'tampered'}])
+        with patch.object(self.h, 'hashes', side_effect=lambda e: next(states)), patch.object(
+            self.h, 'process_identity', return_value=identity
+        ), patch('git_relay.deploy_host.urlopen', return_value=self._healthy()):
+            self.assertFalse(self.h.runtime({'code/x': 'new'}, None))
+            self.assertEqual(self.h.last_phase, 'final')
+
+    def test_runtime_proof_receives_pinned_image_generation(self):
+        from unittest.mock import MagicMock
+
+        identity = {'pid': 43}
+        response = self._healthy()
+        proof = MagicMock(return_value=True)
+        self.h.proof = proof
+        expected = {
+            'code/patch_secretscan.py': 'after',
+            'code/provenance_patch.py': 'sentinel-digest',
+        }
+        with patch.object(self.h, 'process_identity', return_value=identity), patch.object(
+            self.h, 'hashes', return_value=expected
+        ), patch('git_relay.deploy_host.urlopen', return_value=response):
+            self.assertTrue(self.h.runtime(expected, None))
+            self.assertEqual(self.h.last_phase, 'final')
+        proof.assert_called_once_with(identity, expected)
