@@ -169,6 +169,11 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
             "scripts/linear-board/test_board.py",
             "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3",
         ),
+        (
+            "Simple-With-Us/AI-Fleet-Coordinator",
+            "git-relay/git_relay/server.py",
+            "0d7371110d7b59af92415da4892ebaab46b2ed841e8d8623248fc0a0ef21f2de",
+        ),
     }
 )
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
