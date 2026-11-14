@@ -651,6 +651,8 @@ def _read_worker_pipes(child, request: bytes, limit: int, deadline: float) -> by
                 if key.data == "input":
                     try:
                         position += os.write(key.fd, request[position : position + 65536])
+                    except BlockingIOError:
+                        continue
                     except BrokenPipeError:
                         position = len(request)
                     if position == len(request):
@@ -712,6 +714,18 @@ def _bounded_read_request(request: dict, deadline: float) -> dict:
         ):
             raise SecretsError("bounded-read-failed", failure_kind="unavailable")
         if not reply["ok"] or child.returncode != 0:
+            if (
+                set(reply) == {"schema", "ok", "reason", "code", "failure_kind"}
+                and reply["ok"] is False
+                and reply.get("reason") == "unresolved-reference"
+                and type(reply.get("code")) is int
+                and reply["code"] == 5
+                and child.returncode == 5
+                and reply.get("failure_kind") in (None, "refused", "unavailable")
+            ):
+                raise SecretsError(
+                    "unresolved-reference", 5, failure_kind=reply.get("failure_kind")
+                )
             reason = (
                 "token-expired-or-invalid"
                 if reply.get("reason") == "token-expired-or-invalid"
@@ -886,6 +900,8 @@ def _bounded_read_worker() -> int:
             strict_records=request["strict_records"],
         )
         reply = {"schema": 1, "ok": True, "values": values}
+    except UnresolvedReferenceError as exc:
+        reply.update(reason="unresolved-reference", code=5, failure_kind=exc.failure_kind)
     except SecretsError as exc:
         reply["reason"] = (
             "token-expired-or-invalid"
@@ -905,7 +921,9 @@ def _bounded_read_worker() -> int:
         }
         output = json.dumps(reply).encode("utf-8")
     sys.stdout.buffer.write(output)
-    return 0 if reply["ok"] else 4
+    if reply["ok"]:
+        return 0
+    return 5 if reply.get("reason") == "unresolved-reference" else 4
 
 
 def list_project_names(
