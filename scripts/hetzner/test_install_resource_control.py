@@ -16,8 +16,8 @@ from unittest import mock
 # Standalone discovery also needs the resolved repo-only fixture package.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
 from fleet_knobs.tests._fake import ScopedReadAPI
+from fleet_secrets.tests.installed_writer_fixture import assert_installed_writer
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -190,8 +190,7 @@ print(json.dumps({
                 "TEST_HOME": str(home),
                 "FLEET_OPS_CONTROL_INFISICAL_TOKEN": api.token,
                 "INFISICAL_FLEET_OPS_PROJECT_ID": project,
-                "FLEET_SECRETS_API": "http://127.0.0.1:%d/api"
-                % api.server.server_address[1],
+                "FLEET_SECRETS_API": "http://127.0.0.1:%d/api" % api.server.server_address[1],
                 "INFISICAL_ENVIRONMENT": "prod",
             }
             result = subprocess.run(
@@ -240,7 +239,9 @@ print(json.dumps({
             target = reader_only / name
             target.write_bytes((self.destination / name).read_bytes())
             target.chmod(0o600)
-        with ScopedReadAPI({"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify") as api:
+        with ScopedReadAPI(
+            {"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify"
+        ) as api:
             api.record_override = {"secretValueHidden": False}
             isolated = invoke(api, reader_only)
             self.assertEqual(isolated["status"], 0, isolated)
@@ -266,7 +267,9 @@ print(json.dumps({
         original = reader.read_bytes()
         try:
             reader.unlink()
-            with ScopedReadAPI({"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify") as api:
+            with ScopedReadAPI(
+                {"COOLIFY_API_TOKEN": coolify_token}, project=project, path="/coolify"
+            ) as api:
                 missing = invoke(api)
                 self.assertEqual(missing["status"], 1, missing)
                 self.assertEqual(missing["httpCalls"], [])
