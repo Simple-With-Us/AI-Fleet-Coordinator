@@ -1,13 +1,16 @@
-"""Offline routing tests; all network, subprocesses and credential stores are faked."""
+"""Offline routing tests with fake providers and one real bounded-reader worker."""
 
+import contextlib
 import io
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 from fleet_knobs import source as knobs
+from fleet_knobs.tests._fake import ScopedReadAPI
 from fleet_rag import core as rag
 from fleet_rag import infisical_settings as settings
 
@@ -26,7 +29,7 @@ def grant(project=PROJECT, paths=("/",), permissions=("read",)):
         "workspace": project,
         "permissions": list(permissions),
         "scopes": [{"environment": "prod", "secretPath": path} for path in paths],
-        "expiresAt": None,
+        "expiresAt": "2099-01-01T00:00:00Z",
     }
 
 
@@ -58,6 +61,7 @@ class ScopedTokens(unittest.TestCase):
         self.api = mock.patch.object(core, "_api_json", self.respond)
         self.api.start()
         self.addCleanup(self.api.stop)
+        self.original_open = os.open
         for target in ("subprocess.run", "os.open"):
             patch = mock.patch(
                 "fleet_secrets.core." + target,
@@ -71,12 +75,32 @@ class ScopedTokens(unittest.TestCase):
         if path == "/v2/service-token":
             return 200, self.metadata[token]
         if method in ("PATCH", "POST"):
-            return 200, {"secret": dict(self.records[0], secretValue=body["secretValue"])}
+            name = urlparse(path).path.rsplit("/", 1)[-1]
+            record = dict(
+                secretKey=name,
+                secretValue=body["secretValue"],
+                type="shared",
+                workspace=body["workspaceId"],
+                environment=body["environment"],
+                secretPath=body["secretPath"],
+            )
+            self.records = [row for row in self.records if row["secretKey"] != name] + [record]
+            kwargs["on_status"](200)
+            return 200, {"secret": record}
         if "/raw/" in path:
             name = urlparse(path).path.rsplit("/", 1)[-1]
             matching = next((row for row in self.records if row["secretKey"] == name), None)
             return (200, {"secret": matching}) if matching else (404, {})
         return 200, {"secrets": self.records}
+
+    @contextlib.contextmanager
+    def writer_journal(self):
+        # Reader credential-store guards remain intact; this writer owns only a temporary journal.
+        with (
+            mock.patch.object(core.os, "open", self.original_open),
+            tempfile.TemporaryDirectory() as root,
+        ):
+            yield lambda: core.new_write_intent(Path(root) / "writer", "routing-test")
 
     def test_reader_metadata_precedes_bounded_v3_request_without_expansion(self):
         self.assertEqual(core.fetch_all("/", self.env), {"ALPHA": VALUE})
@@ -136,22 +160,35 @@ class ScopedTokens(unittest.TestCase):
 
     def test_writer_is_distinct_and_allowlist_precedes_metadata_or_values(self):
         self.metadata[WRITE] = grant(paths=("/linear",), permissions=("read", "write"))
-        self.assertEqual(core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env), "updated")
+        with self.writer_journal() as intent:
+            self.assertEqual(
+                core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent()).result,
+                "updated",
+            )
         self.assertTrue(all(call[2] == WRITE for call in self.calls))
         self.calls.clear()
         with self.assertRaises(core.SecretsError):
-            core.put_secret("ARBITRARY_SECRET", "/linear", VALUE, self.env)
+            core.put_secret(
+                "ARBITRARY_SECRET",
+                "/linear",
+                VALUE,
+                self.env,
+                intent=core.new_write_intent(Path("/unused"), "routing-test"),
+            )
         self.assertEqual(self.calls, [])
 
     def test_writer_never_borrows_reader_and_readonly_writer_is_rejected(self):
         self.env.pop(core.ENV_WRITE_TOKEN)
-        with self.assertRaisesRegex(core.SecretsError, "INFISICAL_WRITE_TOKEN"):
-            core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env)
+        with (
+            self.writer_journal() as intent,
+            self.assertRaisesRegex(core.SecretsError, "INFISICAL_WRITE_TOKEN"),
+        ):
+            core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent())
         self.assertEqual(self.calls, [])
         self.env[core.ENV_WRITE_TOKEN] = READ
         self.metadata[READ] = grant(paths=("/linear",))
-        with self.assertRaises(core.SecretsError):
-            core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env)
+        with self.writer_journal() as intent, self.assertRaises(core.SecretsError):
+            core.put_secret("CACHE_CODEX", "/linear", VALUE, self.env, intent=intent())
         self.assertEqual(len(self.calls), 1)
 
     def test_bad_optional_writer_binding_does_not_disable_valid_reader(self):
@@ -245,19 +282,6 @@ class ScopedTokens(unittest.TestCase):
             knobs.fetch_named(["ALPHA"], project_id=PROJECT, path="/")
         self.assertEqual(self.calls, [])
 
-    def test_rag_load_rejects_foreign_binding_instead_of_fleet_secrets_fallback(self):
-        env = dict(self.env, FLEET_RAG_INFISICAL_PROJECT=OTHER, FLEET_RECALL_INFISICAL_TOKEN=READ)
-        env.pop(core.ENV_TOKEN)
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            mock.patch.object(
-                rag, "fleet_secrets_many", side_effect=AssertionError("foreign fallback")
-            ),
-            self.assertRaises(rag.FleetRagError),
-        ):
-            rag.load_config()
-        self.assertEqual(len(self.calls), 1)
-
     def test_settings_default_never_reads_shared_identity_file(self):
         env = {
             "INFISICAL_AUTOMATION_CLIENT_ID": VALUE,
@@ -280,6 +304,40 @@ class ScopedTokens(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             service = settings.InfisicalSettings(project_id=PROJECT, identity_prefixes=("OWN_APP",))
             self.assertEqual(service._credential(writer=True), (None, ""))
+
+
+class RagWorkerScopedTokens(unittest.TestCase):
+    def test_rag_load_rejects_foreign_binding_instead_of_fleet_secrets_fallback(self):
+        with ScopedReadAPI({}, project=PROJECT) as api:
+            env = {
+                "FLEET_RAG_INFISICAL_PROJECT": OTHER,
+                "FLEET_RAG_INFISICAL_API": api.env["FLEET_SECRETS_API"],
+                "FLEET_RECALL_INFISICAL_TOKEN": api.token,
+                core.ENV_AI_FLEET_COORDINATOR_TOKEN: COORDINATOR_READ,
+                core.ENV_WRITE_TOKEN: WRITE,
+            }
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(
+                    rag, "fleet_secrets_many", side_effect=AssertionError("foreign fallback")
+                ) as fallback,
+                mock.patch.object(
+                    rag, "_read_token_file", side_effect=AssertionError("file token fallback")
+                ) as token_file,
+                mock.patch("subprocess.run", side_effect=AssertionError("credential login")),
+                mock.patch.object(
+                    core, "bounded_fetch_project", wraps=core.bounded_fetch_project
+                ) as bounded,
+                self.assertRaises(rag.FleetRagError),
+            ):
+                rag.load_config()
+            bounded.assert_called_once()
+            self.assertEqual(bounded.call_args.args[:2], (OTHER, "/"))
+            self.assertEqual(bounded.call_args.kwargs["token"], api.token)
+            self.assertEqual(bounded.call_args.kwargs["timeout"], 30.0)
+            fallback.assert_not_called()
+            token_file.assert_not_called()
+            self.assertEqual(api.requests, ["/api/v2/service-token"])
 
 
 if __name__ == "__main__":

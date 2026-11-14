@@ -1,8 +1,8 @@
 """Tests for fleet-ops-control.py:  the allowlist, the ssh gate, the plans and the audit.
 
-Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify: every runner is a fake,
-except that the bounded reader of `server eavesdropper-status` is also tried against small
-Python child processes of its own (and a stand-in `docker` script).
+Nothing here runs launchctl, systemctl, fleet-secrets, docker or Coolify.  Control runners are
+fake; credential tests use only a loopback provider and the actual isolated canonical worker.
+The bounded status reader also runs small Python children and a stand-in `docker` script.
 
   python3 scripts/test_fleet_ops_control.py
 """
@@ -20,8 +20,11 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
+
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC = importlib.util.spec_from_file_location("foc", os.path.join(HERE, "fleet-ops-control.py"))
@@ -118,8 +121,6 @@ class FakeRunner:
             return 0, update_state()
         if argv[1:2] == ["print"]:
             return (0 if self.loaded else 113), b""
-        if argv[1:2] == ["get"]:
-            return (0, self.secret.encode()) if self.secret else (3, b"")
         if argv[-1:] == ["jlist"]:
             return self.status, (self.jlist if want_stdout and self.jlist is not None else b"")
         if "journalctl" in argv[0]:
@@ -128,6 +129,8 @@ class FakeRunner:
 
 
 class Base(unittest.TestCase):
+    fake_credential_read = True
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
@@ -158,7 +161,6 @@ class Base(unittest.TestCase):
             http=self.http,
             now=lambda: NOW,
             config_path=self.config_path,
-            fleet_secrets="/fake/bin/fleet-secrets",
             pm2_node="/fake/bin/node",
             pm2_script="/fake/lib/pm2",
             sleep=lambda _: None,
@@ -166,7 +168,22 @@ class Base(unittest.TestCase):
 
     def run_main(self, argv, ctx):
         out = io.StringIO()
-        code = foc.main(argv, ctx=ctx, out=out)
+
+        def fixture_token(_ctx):
+            value = getattr(_ctx.runner, "secret", TOKEN)
+            if not value:
+                raise foc.Failed("the Coolify token is not available")
+            return value
+
+        # Pure control-flow tests retain their explicit synthetic credential seam.  The
+        # CredentialTests subclass disables it and crosses the actual provider/worker path.
+        isolated = (
+            mock.patch.object(foc, "read_coolify_token", side_effect=fixture_token)
+            if self.fake_credential_read
+            else contextlib.nullcontext()
+        )
+        with isolated:
+            code = foc.main(argv, ctx=ctx, out=out)
         text = out.getvalue()
         return code, (json.loads(text) if text.startswith("{") else text)
 
@@ -2729,11 +2746,11 @@ class RedeployResourceNameTests(Base):
 
 
 class CredentialTests(Base):
-    """A caller-scoped service token reaches only the fleet-secrets child."""
+    """Own custody and strict rows cross the actual canonical worker, never an app fake."""
 
+    fake_credential_read = False
     ROWS = RedeployTests.ROWS
     TOKEN = "FLEET_OPS_CONTROL_INFISICAL_TOKEN"
-    VALUE = "st." + "scoped-fleet-ops-control-token"
     SHARED_AUTH = {
         name: "synthetic-unrelated-credential"
         for name in (
@@ -2749,9 +2766,57 @@ class CredentialTests(Base):
             "INFISICAL_SHARED_CLIENT_ID",
             "INFISICAL_SHARED_CLIENT_SECRET",
             "WISE_RELAY_INFISICAL_TOKEN",
+            "FLEET_KNOBS_INFISICAL_TOKEN",
+            "FLEET_RECALL_INFISICAL_TOKEN",
         )
     }
-    COORDINATES = {"INFISICAL_PROJECT_ID": "preserved-project", "INFISICAL_READ_PATHS": "/coolify"}
+
+    def setUp(self):
+        super().setUp()
+        # Source lanes may intentionally be group-writable.  Exercise the unchanged custody
+        # guard against an actual private copied reader, rather than relaxing that guard.
+        reader_dir = self.home / "reader-payload"
+        reader_dir.mkdir(mode=0o700)
+        reader_file = reader_dir / "fleet_infisical.py"
+        reader_file.write_bytes(Path(HERE, "fleet_infisical.py").read_bytes())
+        reader_file.chmod(0o600)
+        self.enterContext(mock.patch.object(foc, "HELPER_DIR", reader_dir))
+        self.project = str(uuid.uuid4())
+        self.api = ScopedReadAPI(
+            {foc.COOLIFY_TOKEN_NAME: TOKEN}, project=self.project, path="/coolify"
+        )
+        self.api.record_override = {"secretValueHidden": False}
+        self.api.__enter__()
+        self.addCleanup(self.api.__exit__, None, None, None)
+        self.VALUE = self.api.token
+        self.read_calls = []
+        actual_loader = foc._load_infisical_reader
+
+        def observed_loader(ctx):
+            reader = actual_loader(ctx)
+            actual_fetch = reader.bounded_fetch_project
+
+            def observed_fetch(project, folder, env, **kwargs):
+                self.read_calls.append((project, folder, dict(env), dict(kwargs)))
+                return actual_fetch(project, folder, env, **kwargs)
+
+            reader.bounded_fetch_project = observed_fetch
+            return reader
+
+        loader_patch = mock.patch.object(foc, "_load_infisical_reader", side_effect=observed_loader)
+        self.loader = loader_patch.start()
+        self.addCleanup(loader_patch.stop)
+
+    def env(self, **extra):
+        return {
+            "HOME": str(self.home),
+            "PATH": "/no-secret-application",
+            "INFISICAL_FLEET_OPS_PROJECT_ID": self.project,
+            "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+            "INFISICAL_ENVIRONMENT": "prod",
+            self.TOKEN: self.VALUE,
+            **extra,
+        }
 
     def credentials(self, text, mode=0o600):
         folder = self.home / ".config" / "fleet-tools"
@@ -2766,78 +2831,164 @@ class CredentialTests(Base):
 
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
-        environ = environ or {"PATH": "/usr/bin", "INFISICAL_TOKEN": "stale-token-from-env"}
         return self.run_main(
-            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(environ=environ)
+            ["server", "redeploy", UUID, "--yes", "--json"],
+            self.ctx(environ=self.env() if environ is None else environ),
         )
 
-    def secrets_env(self):
-        ((argv, env),) = [c for c in self.runner.calls if c[0][1:2] == ["get"]]
-        return env
-
-    def test_file_scoped_token_reaches_only_fleet_secrets(self):
+    def test_file_binding_wins_and_only_the_exact_named_strict_read_runs(self):
         self.credentials(self.pair_text())
-        inherited = {
-            "PATH": "/usr/bin",
-            **self.SHARED_AUTH,
-            **self.COORDINATES,
-            self.TOKEN: "st.different-process-reader-token",
-        }
+        inherited = self.env(**self.SHARED_AUTH)
+        inherited[self.TOKEN] = "st.different-process-reader-token"
+        inherited["INFISICAL_READ_PATHS"] = "/,/coolify,/other"
         code, ans = self.redeploy(inherited)
-        # A server redeploy is submitted rather than run inline:  the merged code answers
-        # "submitted" for that action, so the expectation follows the code.
-        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
-        env = self.secrets_env()
-        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
-        self.assertNotIn(self.TOKEN, env)
-        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
-        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
+        self.assertEqual((code, ans["result"], ans["verified"]), (0, "submitted", False), ans)
+        ((project, folder, env, kwargs),) = self.read_calls
+        self.assertEqual((project, folder), (self.project, "/coolify"))
+        self.assertEqual(
+            env,
+            {
+                "FLEET_SECRETS_API": self.api.env["FLEET_SECRETS_API"],
+                "INFISICAL_ENVIRONMENT": "prod",
+                "INFISICAL_READ_PATHS": "/coolify",
+            },
+        )
+        self.assertEqual(
+            kwargs,
+            {
+                "token": self.VALUE,
+                "names": ("COOLIFY_API_TOKEN",),
+                "timeout": 30,
+                "writer": False,
+                "max_output_bytes": 8192,
+                "strict_records": True,
+            },
+        )
+        self.assertEqual(len(self.api.requests), 2)
+        self.assertEqual(self.api.requests[0], "/api/v2/service-token")
+        self.assertTrue(self.api.requests[1].startswith("/api/v3/secrets/raw/COOLIFY_API_TOKEN?"))
         text = json.dumps(ans) + (self.state / "ops-audit.jsonl").read_text()
         self.assertNotIn(self.VALUE, text)
-        for argv, _env in self.runner.calls:
-            self.assertNotIn(self.VALUE, " ".join(argv))
-        # A systemctl child never sees it.
+        self.assertNotIn(TOKEN, text)
+        self.assertEqual(self.runner.calls, [])
         self.runner.calls.clear()
         self.run_main(
             ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
             self.ctx(environ=inherited),
         )
-        ((argv, env),) = self.runner.calls
-        self.assertNotIn("INFISICAL_TOKEN", env)
-        self.assertNotIn(self.TOKEN, env)
-        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+        ((argv, child_env),) = self.runner.calls
+        self.assertNotIn(self.VALUE, " ".join(argv))
+        self.assertNotIn(self.TOKEN, child_env)
+        self.assertFalse(self.SHARED_AUTH.keys() & child_env.keys())
 
-    def test_process_scoped_token_is_mapped_for_the_child(self):
-        inherited = {
-            "PATH": "/usr/bin",
-            **self.SHARED_AUTH,
-            **self.COORDINATES,
-            self.TOKEN: self.VALUE,
-        }
-        code, _ = self.redeploy(inherited)
-        self.assertEqual(code, 0)
-        env = self.secrets_env()
-        self.assertEqual(env["INFISICAL_TOKEN"], self.VALUE)
-        self.assertNotIn(self.TOKEN, env)
-        self.assertFalse((self.SHARED_AUTH.keys() - {"INFISICAL_TOKEN"}) & env.keys())
-        self.assertEqual({key: env[key] for key in self.COORDINATES}, self.COORDINATES)
-        self.runner.calls.clear()
-        self.run_main(
-            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"],
-            self.ctx(environ=inherited),
+    def test_process_binding_and_existing_project_metadata_file_are_supported(self):
+        coordinate = self.home / ".simple-tools" / "fleet-ops-project-id"
+        coordinate.parent.mkdir()
+        coordinate.write_text(self.project + "\n")
+        env = self.env()
+        env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
+        code, ans = self.redeploy(env)
+        self.assertEqual((code, ans["result"]), (0, "submitted"), ans)
+        self.assertEqual(self.read_calls[0][3]["token"], self.VALUE)
+
+    def test_missing_own_binding_never_uses_ambient_writer_recall_or_machine_auth(self):
+        env = self.env(**self.SHARED_AUTH)
+        env.pop(self.TOKEN)
+        code, ans = self.redeploy(env)
+        self.assertEqual(
+            (code, ans["result"], ans["detail"]),
+            (1, "failed", "the Coolify token is not available"),
         )
-        ((argv, env),) = self.runner.calls
-        self.assertNotIn(self.TOKEN, env)
-        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+        self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
-    def test_no_file_discards_broad_token_and_machine_credentials(self):
-        code, _ = self.redeploy({"PATH": "/usr/bin", **self.SHARED_AUTH})
-        self.assertEqual(code, 0)
-        env = self.secrets_env()
-        self.assertNotIn("INFISICAL_TOKEN", env)
-        self.assertFalse(self.SHARED_AUTH.keys() & env.keys())
+    def test_missing_or_malformed_project_refuses_before_the_provider(self):
+        for value in (None, "invalid-project"):
+            with self.subTest(value=value):
+                env = self.env()
+                env.pop("INFISICAL_FLEET_OPS_PROJECT_ID")
+                if value is not None:
+                    env["INFISICAL_FLEET_OPS_PROJECT_ID"] = value
+                code, ans = self.redeploy(env)
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual(
+                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
+                )
 
-    def test_a_shared_or_malformed_file_fails_before_fleet_secrets_runs(self):
+    def test_wrong_scope_permission_project_and_expiry_stop_before_named_values(self):
+        cases = (
+            {"workspace": str(uuid.uuid4())},
+            {"scopes": [{"environment": "prod", "secretPath": "/"}]},
+            {"scopes": [{"environment": "dev", "secretPath": "/coolify"}]},
+            {
+                "scopes": [
+                    {"environment": "prod", "secretPath": "/coolify"},
+                    {"environment": "prod", "secretPath": "/other"},
+                ]
+            },
+            {"permissions": ["read", "write"]},
+            {"expiresAt": None},
+            {"expiresAt": "2000-01-01T00:00:00Z"},
+            {"expiresAt": "2099-01-01T00:00:00"},
+        )
+        for metadata in cases:
+            with self.subTest(fields=tuple(metadata)):
+                self.api.metadata_override = metadata
+                self.api.requests.clear()
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual(self.api.requests, ["/api/v2/service-token"])
+                self.assertEqual(self.http_calls, [])
+
+    def test_strict_named_record_failures_never_reach_coolify(self):
+        cases = (
+            {},
+            {"secretValueHidden": True},
+            {"secretValueHidden": "false"},
+            {"secretKey": "OTHER_NAME"},
+            {"workspace": str(uuid.uuid4())},
+            {"environment": "dev"},
+            {"secretPath": "/other"},
+            {"type": "personal"},
+            {"secretValue": ""},
+            {"secretValue": None},
+            {"secretValue": "${UNRESOLVED}"},
+        )
+        for record in cases:
+            with self.subTest(fields=tuple(record)):
+                self.api.record_override = {"secretValueHidden": False, **record} if record else {}
+                self.api.record_omissions = () if record else ("secretValueHidden",)
+                self.api.requests.clear()
+                self.http_calls.clear()
+                self.assertEqual((self.api.requests, self.http_calls), ([], []))
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
+                self.assertEqual(len(self.api.requests), 2)
+                self.assertEqual(self.http_calls, [])
+
+    def test_absent_whitespace_and_oversized_values_fail_closed(self):
+        for value in (None, " ", "two words", "z" * 9000):
+            with self.subTest(kind=type(value).__name__, length=len(value or "")):
+                self.api.values.clear()
+                if value is not None:
+                    self.api.values[foc.COOLIFY_TOKEN_NAME] = value
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual(self.http_calls, [])
+                self.assertNotIn(self.VALUE, json.dumps(ans))
+
+    def test_non_prod_and_invalid_own_binding_never_contact_the_provider(self):
+        for change in (
+            {"INFISICAL_ENVIRONMENT": "dev"},
+            {"INFISICAL_ENV": "staging"},
+            {self.TOKEN: "malformed"},
+        ):
+            with self.subTest(fields=tuple(change)):
+                self.api.requests.clear()
+                code, ans = self.redeploy(self.env(**change))
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertEqual((self.api.requests, self.http_calls), ([], []))
+
+    def test_private_file_custody_failures_stop_before_any_reader_or_coolify_call(self):
         cases = [
             (self.pair_text(), 0o640),
             (self.pair_text(), 0o604),
@@ -2845,62 +2996,80 @@ class CredentialTests(Base):
             ('FLEET_OPS_CONTROL_INFISICAL_TOKEN="quoted"\n', 0o600),
             ("PATH=/tmp/evil\n", 0o600),
             ("FLEET_OPS_CONTROL_INFISICAL_TOKEN=a b\n", 0o600),
-            (
-                "FLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
-                + "x" * 20
-                + "\nFLEET_OPS_CONTROL_INFISICAL_TOKEN=st."
-                + "y" * 20
-                + "\n",
-                0o600,
-            ),
-            ("export FLEET_OPS_CONTROL_INFISICAL_TOKEN=st." + "x" * 25 + "\n", 0o600),
+            (self.pair_text() + self.pair_text(), 0o600),
+            ("export " + self.pair_text().splitlines()[1] + "\n", 0o600),
             ("# nothing\n", 0o600),
         ]
         for text, mode in cases:
-            self.credentials(text, mode)
-            code, ans = self.redeploy()
-            self.assertEqual((code, ans["result"]), (1, "failed"), (text, oct(mode)))
-            self.assertIn(
-                ans["detail"],
-                (
-                    "the Infisical credential file is not private",
-                    "the Infisical credential file is malformed",
-                ),
-            )
-            self.assertEqual([c for c in self.runner.calls if c[0][1:2] == ["get"]], [])
-            self.assertEqual(self.http_calls, [])
+            with self.subTest(mode=mode):
+                self.credentials(text, mode)
+                code, ans = self.redeploy()
+                self.assertEqual((code, ans["result"]), (1, "failed"))
+                self.assertIn(
+                    ans["detail"],
+                    (
+                        "the Infisical credential file is not private",
+                        "the Infisical credential file is malformed",
+                    ),
+                )
+                self.assertEqual(
+                    (self.api.requests, self.read_calls, self.http_calls), ([], [], [])
+                )
 
-    def test_a_symlinked_file_is_refused(self):
+    def test_symlinked_credential_file_is_refused(self):
         real = self.home / "elsewhere.env"
         real.write_text(self.pair_text())
-        os.chmod(real, 0o600)
+        real.chmod(0o600)
         folder = self.home / ".config" / "fleet-tools"
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(parents=True)
         (folder / "ops-control.env").symlink_to(real)
         code, ans = self.redeploy()
         self.assertEqual((code, ans["detail"]), (1, "the Infisical credential file cannot be read"))
+        self.assertEqual((self.api.requests, self.read_calls, self.http_calls), ([], [], []))
 
-    def test_check_token_reads_the_token_and_asks_coolify_for_its_version(self):
-        self.credentials(self.pair_text())
-        code, ans = self.run_main(["--check-token"], self.ctx())
+    def test_plan_does_not_load_reader_or_read_even_a_malformed_credential_file(self):
+        self.credentials("malformed", 0o644)
+        self.write_status(self.ROWS)
+        code, ans = self.run_main(["server", "redeploy", UUID, "--plan", "--json"], self.ctx())
+        self.assertEqual((code, ans["result"]), (0, "planned"))
+        self.loader.assert_not_called()
+        self.assertEqual((self.api.requests, self.http_calls), ([], []))
+
+    def test_read_timeout_is_known_failure_but_sent_coolify_failure_stays_uncertain(self):
+        ctx = self.ctx(environ=self.env())
+        commands = [["coolify", "GET", "/api/v1/deploy?uuid=" + UUID]]
+        with mock.patch.object(foc, "SECRET_TIMEOUT", 0.001):
+            with self.assertRaises(foc.Failed) as caught:
+                foc.execute(ctx, "server", "redeploy", UUID, commands)
+        self.assertFalse(caught.exception.timed_out)
+        self.assertEqual(self.http_calls, [])
+        ctx = self.ctx(environ=self.env(), http_status=foc.NoAnswer(0))
+        with self.assertRaises(foc.Failed) as caught:
+            foc.execute(ctx, "server", "redeploy", UUID, commands)
+        self.assertTrue(caught.exception.timed_out)
+        self.assertEqual(len(self.http_calls), 1)
+
+    def test_check_token_uses_same_real_reader_without_an_audit_write(self):
+        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
         ((url, headers),) = self.http_calls
         self.assertEqual(url, "http://127.0.0.1:8000/api/v1/version")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
         self.assertNotIn(TOKEN, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
-        self.assertEqual(self.secrets_env()["INFISICAL_TOKEN"], self.VALUE)
 
-    def test_check_token_failures(self):
-        code, ans = self.run_main(["--check-token"], self.ctx(runner=FakeRunner(secret="")))
+    def test_check_token_failures_keep_fixed_diagnostics_and_host_gate(self):
+        self.api.values.clear()
+        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env()))
         self.assertEqual((code, ans["detail"]), (1, "the Coolify token is not available"))
         self.assertEqual(self.http_calls, [])
-        code, ans = self.run_main(["--check-token"], self.ctx(http_status=401))
+        self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN
+        code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env(), http_status=401))
         self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 401"))
-        code, ans = self.run_main(["--check-token"], self.ctx("darwin"))
+        self.api.requests.clear()
+        code, ans = self.run_main(["--check-token"], self.ctx("darwin", environ=self.env()))
         self.assertEqual((code, ans["result"]), (2, "refused"))
-        code, ans = self.run_main(["--check-token", "--json"], self.ctx())
-        self.assertEqual((code, ans["result"]), (2, "refused"))
+        self.assertEqual(self.api.requests, [])
 
 
 class SshGateTests(Base):

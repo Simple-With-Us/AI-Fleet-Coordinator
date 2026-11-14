@@ -36,9 +36,10 @@ This module gives those two surfaces a fast, actionable alternative:
   3. The public retry needs three names: `RECALL_API_TOKEN` and `CF_ACCESS_CLIENT_ID` /
      `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token) -- see
      docs/RECALL-ACCESS-CHECK.md.  A value already in the environment wins; otherwise each is
-     read from Infisical through `fleet-secrets get` (RECALL_API_TOKEN, and the Access pair under
-     its AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix) so this works from the stock
-     `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper.  The request also
+     read through this consumer's explicitly bound default Fleet-OPS reader (RECALL_API_TOKEN,
+     and the Access pair under its AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix).
+     Missing names are read together once per public operation.  An absent reader binding
+     leaves the optional credential absent.  The request also
      carries a real `User-Agent` (core.http_json sends none, and urllib's default trips
      Cloudflare's bot management -- 403, "error code: 1010").  A missing name, or a failure on
      the public path too (a rejected bearer, Access rejecting the service token, the box itself
@@ -110,8 +111,9 @@ USER_AGENT = (
 # (no shell wrapper, no env sourcing -- see install-fleet-rag.sh), so these three names are
 # rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
 # requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
-# a name not in the environment comes from Infisical through `fleet-secrets get` (AFC-359:  no
-# credential file is read).  RECALL_API_TOKEN is a root key of that name;  the Cloudflare
+# a name not in the environment uses the shared named reader with this consumer's explicit
+# default Fleet-OPS binding, never the separate recall-project token.  RECALL_API_TOKEN is a
+# root key of that name; the Cloudflare
 # Access service token (docs/RECALL-ACCESS-CHECK.md, shared with agents.jays.services) lives
 # under the AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix.  A value already in the
 # environment always wins.
@@ -405,31 +407,30 @@ def using_fake_backend() -> bool:
 def public_credentials() -> dict[str, str] | None:
     """The three names the public REST twin needs, or None if any is missing/blank.
 
-    Environment first (a value there always wins, and is all the unit tests ever set); when a
-    name is not in the environment, read it from Infisical through `fleet-secrets` the same
-    way core.load_config() falls back to Infisical for TEI_URL / QDRANT_URL -- so the fallback
-    works from the stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper
-    and no change to any client's MCP config.
+    Environment first; a missing name uses the shared default Fleet-OPS reader only when
+    this consumer's own binding is configured.  The separate recall-project token does not
+    cover this route, and missing values remain optional.
     """
     vals = _resolve_public_env()
     return vals if all(vals[k] for k in PUBLIC_ENV_KEYS) else None
 
 
-def _resolve_public_env() -> dict[str, str]:
-    """Every required PUBLIC_ENV_KEYS name resolved env-then-Infisical; a name found nowhere maps
-    to "" so the caller can still tell which one(s) are missing.  RECALL_OWNER_TOKEN is resolved
-    lazily for OWNER mutations only, so ordinary calls do not need an owner credential."""
-    vals = {}
-    for k in PUBLIC_ENV_KEYS:
-        vals[k] = _resolve_public_env_key(k)
+def _resolve_public_env(keys: tuple[str, ...] = PUBLIC_ENV_KEYS) -> dict[str, str]:
+    """Resolve only missing names in one batch; absent values remain empty for diagnostics.
+
+    The owner token is requested only by an OWNER mutation, never by an ordinary call.
+    """
+    vals = {key: (os.environ.get(key) or "").strip() for key in keys}
+    missing = [key for key in keys if not vals[key]]
+    if missing:
+        found = core.fleet_secrets_many([PUBLIC_INFISICAL_NAMES.get(key, key) for key in missing])
+        for key in missing:
+            vals[key] = (found.get(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
     return vals
 
 
 def _resolve_public_env_key(key: str) -> str:
-    v = (os.environ.get(key) or "").strip()
-    if not v:
-        v = (core.fleet_secret(PUBLIC_INFISICAL_NAMES.get(key, key)) or "").strip()
-    return v
+    return _resolve_public_env((key,))[key]
 
 
 def _public_headers(
@@ -450,21 +451,22 @@ def call_public(name: str, kwargs: dict) -> dict:
     `call_with_fallback` prefixes it with why the local path was skipped."""
     if name not in REST_PATH:
         raise FleetRagError(f"no public REST route for {name!r}")
-    creds = public_credentials()
-    if creds is None:
-        resolved = _resolve_public_env()
-        missing = [k for k in PUBLIC_ENV_KEYS if not resolved[k]]
+    owner_mutation = (
+        name in ("recall_correct", "recall_retract")
+        and str(kwargs.get("seat") or "").strip().upper() == "OWNER"
+    )
+    creds = _resolve_public_env(
+        PUBLIC_ENV_KEYS + PUBLIC_OPTIONAL_ENV_KEYS if owner_mutation else PUBLIC_ENV_KEYS
+    )
+    missing = [k for k in PUBLIC_ENV_KEYS if not creds[k]]
+    if missing:
         raise FleetRagError(
             "public fallback (recall.jays.services) needs "
             + ", ".join(missing)
             + " -- set them in the environment, or see docs/RECALL-ACCESS-CHECK.md for the"
             " credential sources that normally supply them"
         )
-    owner_mutation = (
-        name in ("recall_correct", "recall_retract")
-        and str(kwargs.get("seat") or "").strip().upper() == "OWNER"
-    )
-    owner_token = _resolve_public_env_key("RECALL_OWNER_TOKEN") if owner_mutation else ""
+    owner_token = creds["RECALL_OWNER_TOKEN"] if owner_mutation else ""
     if owner_mutation and not owner_token:
         raise FleetRagError(
             "public fallback needs RECALL_OWNER_TOKEN for an OWNER recall mutation; "

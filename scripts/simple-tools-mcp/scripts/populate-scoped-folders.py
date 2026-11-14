@@ -53,7 +53,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-from fleet_secrets import core as fleet_secrets_core
+import fleet_infisical as fleet_secrets_core
 
 # Pinned on purpose (kody 4365623903, 4366921599):  every copy must read from and
 # write to exactly these two projects.  The AFC id is documented in INFISICAL.md.
