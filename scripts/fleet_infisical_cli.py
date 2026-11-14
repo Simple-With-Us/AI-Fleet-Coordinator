@@ -1,6 +1,6 @@
 """The shared direct Infisical command, invoked by its isolated absolute script path.
 
-  run [--path /] [--only NAME,NAME] -- CMD [ARG...]
+  run [--path /] --only NAME,NAME -- CMD [ARG...]
         exec CMD with the secrets as environment variables.  Existing variables of the same
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
   get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]
@@ -46,7 +46,7 @@ from fleet_infisical import SecretsError, UsageError
 MAX_RUN_NAMES = core.MAX_OUTPUT_BYTES // core.MAX_VERIFIED_BYTES
 
 USAGE = (
-    "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
+    "usage: fleet-secrets run [--path /] --only NAME,NAME -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
@@ -323,31 +323,28 @@ def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
 
 def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     if "--" not in args:
-        raise UsageError("run needs `--` before the command:  fleet-secrets run -- CMD [ARG...]")
+        raise UsageError("run needs `--` before the command:  fleet-secrets run --only NAME -- CMD [ARG...]")
     split = list(args).index("--")
     opts = _parse(args[:split], True, 0)
     command = list(args[split + 1 :])
     if not command or not command[0]:
         raise UsageError("run needs a command after `--`")
     only = _only_names(opts["only"])
-    if only is not None:
-        reserved = [n for n in only if not core.injectable(n)]
-        if reserved:
-            raise UsageError(
-                f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
-                "variables are never injected);  read it with `get` if you really need the value"
-            )
+    if only is None:
+        raise UsageError("run requires --only with one or more explicit key names")
+    reserved = [n for n in only if not core.injectable(n)]
+    if reserved:
+        raise UsageError(
+            f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
+            "variables are never injected);  read it with `get` if you really need the value"
+        )
     path = core.check_path(str(opts["path"]))
-    if only is not None:
-        project = core.infisical_project_id(env, core.home_dir(env), core.DEFAULT_PROJECT)
-        secrets = core.fetch_project(project, path, env, names=tuple(only))
-        for name in only:
-            if name not in secrets:
-                raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
-        chosen = {n: secrets[n] for n in only}
-    else:
-        secrets = core.fetch_all(path, env)
-        chosen = {n: v for n, v in secrets.items() if core.injectable(n)}
+    project = core.infisical_project_id(env, core.home_dir(env), core.DEFAULT_PROJECT)
+    secrets = core.fetch_project(project, path, env, names=tuple(only))
+    for name in only:
+        if name not in secrets:
+            raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
+    chosen = {n: secrets[n] for n in only}
     core.reject_unresolved(chosen)
     child_env = {k: v for k, v in env.items() if k not in core.AUTH_ENV_VARS}
     child_env.update(chosen)

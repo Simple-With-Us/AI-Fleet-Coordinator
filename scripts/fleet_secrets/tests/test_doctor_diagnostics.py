@@ -53,10 +53,10 @@ class DoctorDiagnosticsTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("ai_fleet_coordinator_fetch_ok", report)
 
-    def test_actual_default_get_and_run_still_refuse_unresolved_values(self):
+    def test_actual_get_and_selected_run_still_refuse_unresolved_values(self):
         for args in (
             ["get", "UNREQUESTED"],
-            ["run", "--", "synthetic-command"],
+            ["run", "--only", "UNREQUESTED", "--", "synthetic-command"],
             ["run", "--only", "SECOND_REFERENCE", "--", "synthetic-command"],
         ):
             with self.subTest(args=args):
