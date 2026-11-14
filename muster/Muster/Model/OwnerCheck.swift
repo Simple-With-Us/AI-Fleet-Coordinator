@@ -6,10 +6,8 @@ import LocalAuthentication
 /// not only where Touch ID is not set up.  So the words on the screen say "approval",
 /// never Touch ID alone.
 ///
-/// It is asked in the view layer,  after the plan is on screen and before anything runs.  A
-/// cancel or a refused approval leaves the plan on screen with a plain note,  so the owner
-/// can approve it after all.  A Mac that cannot ask ends the sheet.  Nothing is ever retried
-/// on its own.
+/// Action sheets ask after showing their plan; settings autosave asks automatically before
+/// sending the edit.  Cancellation keeps the plan or draft, and never retries a write.
 enum OwnerCheck {
     /// Ask the owner.
     @MainActor

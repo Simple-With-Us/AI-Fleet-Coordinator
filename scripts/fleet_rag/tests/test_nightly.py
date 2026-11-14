@@ -482,11 +482,8 @@ class NightlyJobTests(unittest.TestCase):
         self.assertEqual(summary["errors"], ["machine-identity:INFISICAL_CLIENT_SECRET"])
         self.assertNotIn(TOKEN, json.dumps(summary))
 
-    def test_the_recall_file_defaults_to_the_server_path_and_reads_the_assignment(self) -> None:
-        self.assertEqual(
-            nightly_job.recall_token_path({}),
-            Path("/home/jay/.secrets/fleet-recall-infisical.env"),
-        )
+    def test_recall_has_no_default_but_explicit_assignment_remains_supported(self) -> None:
+        self.assertIsNone(nightly_job.recall_token_path({}))
         self.assertEqual(
             nightly_job.recall_token_path({nightly_job.TOKEN_FILE_RECALL: "/tmp/other.env"}),
             Path("/tmp/other.env"),
@@ -525,7 +522,7 @@ class NightlyJobTests(unittest.TestCase):
                 ingest_runner=lambda: (_ for _ in ()).throw(AssertionError("ingested")),
                 post=lambda *args: None,
             )
-        self.assertEqual(summary["errors"], ["token-file-mode"])
+        self.assertEqual(summary["errors"], ["token-file-mode:" + nightly_job.TOKEN_FILE_RECALL])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = _ready(root)
@@ -540,7 +537,43 @@ class NightlyJobTests(unittest.TestCase):
                 ingest_runner=lambda: (_ for _ in ()).throw(AssertionError("ingested")),
                 post=lambda *args: None,
             )
-        self.assertEqual(summary["errors"], ["token-file"])
+        self.assertEqual(summary["errors"], ["token-file:" + nightly_job.TOKEN_FILE_RECALL])
+
+    def test_missing_retired_and_empty_recall_bindings_fail_before_any_fetch(self) -> None:
+        for kind in ("missing", "retired", "empty-process"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = _ready(root)
+                retired = root / ".secrets" / "fleet-recall-infisical.env"
+                retired.parent.mkdir(mode=0o700)
+                retired.write_text(TOKEN)
+                retired.chmod(0o600)
+                if kind == "missing":
+                    env.pop(nightly_job.TOKEN_FILE_RECALL)
+                elif kind == "retired":
+                    env[nightly_job.TOKEN_FILE_RECALL] = str(retired)
+                else:
+                    env[nightly_job.RECALL_TOKEN_KEY] = ""
+                fetched = []
+                summary = nightly_job.execute(env, read_file=nightly_job.read_token_file,
+                    fetch=lambda *args: fetched.append(args) or {}, sync=lambda: 0,
+                    ingest_runner=lambda: (_ for _ in ()).throw(AssertionError("ingested")),
+                    post=lambda *args: None)
+                self.assertFalse(summary["ok"])
+                self.assertEqual(fetched, [])
+                self.assertNotIn(TOKEN, json.dumps(summary))
+
+    def test_provided_process_binding_wins_without_opening_an_irrelevant_retired_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = _ready(root)
+            env[nightly_job.RECALL_TOKEN_KEY] = TOKEN
+            env[nightly_job.TOKEN_FILE_RECALL] = str(root / ".secrets" / "must-not-open.env")
+            summary = nightly_job.execute(env, read_file=nightly_job.read_token_file, fetch=_fetch,
+                sync=lambda: 0,
+                ingest_runner=lambda: (0, {"ok": True, "errors": [], "guard_trips": [], "warnings": []}),
+                post=lambda *args: None)
+        self.assertTrue(summary["ok"], summary)
 
     def test_a_missing_linear_pair_refuses(self) -> None:
         def fetch(project, path, token, names):  # noqa: ANN001
@@ -792,7 +825,8 @@ class NightlyJobTests(unittest.TestCase):
         self.assertIn("02:30:00 America/Chicago", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("FLEET_RAG_NIGHTLY=0", example)
-        self.assertIn("/home/jay/.secrets/fleet-recall-infisical.env", example)
+        self.assertNotIn(".secrets/", example)
+        self.assertIn("# FLEET_RECALL_INFISICAL_TOKEN_FILE=", example)
         self.assertNotIn("systemctl enable", example)
         self.assertNotIn(needle, example)
         self.assertNotIn(needle, plist)

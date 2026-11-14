@@ -7,7 +7,6 @@ import fcntl
 import json
 import os
 import pathlib
-import stat
 import time
 from collections.abc import Callable
 from typing import Any
@@ -31,13 +30,7 @@ def rag_install_root(
 
 
 def _token_file_path(env: dict[str, str]) -> pathlib.Path | None:
-    named = (env.get(core.INFISICAL_READ_TOKEN_FILE) or "").strip()
-    home = (env.get("HOME") or "").strip()
-    if named:
-        return pathlib.Path(named).expanduser()
-    if home:
-        return pathlib.Path(home, *core.DEFAULT_READ_TOKEN_FILE)
-    return None
+    return core._read_token_file_path(env)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -69,55 +62,42 @@ def nightly_applies(env: dict[str, str]) -> bool:
 
 
 def _token_file_row(env: dict[str, str]) -> dict:
-    if (env.get(core.INFISICAL_READ_TOKEN) or "").strip():
-        return _row(
-            "OK", "infisical:token-file", "bound via FLEET_RECALL_INFISICAL_TOKEN in environment"
-        )
-    if all((env.get(k) or "").strip() for k in core.READ_KEYS) and not core._read_token_bound():
-        return _row(
-            "SKIP", "infisical:token-file", "not needed (all read keys already in environment)"
-        )
-    path = _token_file_path(env)
-    if path is None:
-        return _row(
-            "FAIL",
-            "infisical:token-file",
-            "no token file path (set HOME or FLEET_RECALL_INFISICAL_TOKEN_FILE)",
-            hint="create ~/.secrets/fleet-recall-infisical.env with FLEET_RECALL_INFISICAL_TOKEN=st.… and chmod 600",
-        )
+    hint = (
+        f"configure this reader's authorized {core.INFISICAL_READ_TOKEN} "
+        f"or {core.INFISICAL_READ_TOKEN_FILE} binding"
+    )
     try:
-        fd = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-        )
-    except FileNotFoundError:
-        return _row(
-            "FAIL",
-            "infisical:token-file",
-            f"{path.name} absent",
-            hint="mint a scoped recall read token and install it mode 600 (see docs/RAG-NIGHTLY-INGEST.md)",
-        )
-    except OSError as exc:
-        return _row(
-            "FAIL",
-            "infisical:token-file",
-            f"cannot open ({type(exc).__name__})",
-            hint="fix permissions on the recall Infisical token file",
-        )
-    try:
-        info = os.fstat(fd)
-        owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
-        mode = stat.S_IMODE(info.st_mode)
-        if not stat.S_ISREG(info.st_mode) or not owner_ok or mode & 0o077:
+        if core._process_read_token(env) is not None:
+            return _row(
+                "OK",
+                "infisical:token-file",
+                "own process binding configured; grant verification is separate",
+            )
+        if all((env.get(k) or "").strip() for k in core.READ_KEYS) and not core._read_token_bound(
+            env
+        ):
+            return _row(
+                "SKIP",
+                "infisical:token-file",
+                "not needed (all read keys already in environment)",
+            )
+        selected = core._open_read_token_file(env)
+        if selected is None:
             return _row(
                 "FAIL",
                 "infisical:token-file",
-                f"{path.name} must be a regular file mode 600 owned by you",
-                hint=f"chmod 600 {path.name}",
+                f"{core.INFISICAL_READ_TOKEN} / {core.INFISICAL_READ_TOKEN_FILE} is not configured",
+                hint=hint,
             )
-    finally:
+        _path, fd = selected
         os.close(fd)
-    return _row("OK", "infisical:token-file", f"{path.name} present mode 600")
+        return _row(
+            "OK",
+            "infisical:token-file",
+            "explicit recall bootstrap file present in a protected store; grant verification is separate",
+        )
+    except FleetRagError as exc:
+        return _row("FAIL", "infisical:token-file", str(exc), hint=hint)
 
 
 def _infisical_read_row(load_config: Callable[..., dict[str, str]]) -> dict:

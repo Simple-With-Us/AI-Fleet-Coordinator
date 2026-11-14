@@ -1,110 +1,109 @@
-# CLI login sync
+# CLI Login Sync
 
-A seat's CLI login lives in that CLI's own store on the machine where the seat works:
-the GitHub CLI keeps an OAuth token in its keychain, the Copilot CLI keeps one in the
-system credential store, and so on.  A seat that also runs somewhere else — a bot on
-the shared VPS, a helper on the local VM — needs the same login there, and copying
-credential files between hosts is the thing the fleet does not do.
+The shared helper copies one explicitly supplied CLI credential into its approved
+Infisical Fleet-OPS prod folder.  It uses a scoped service token, never a machine
+identity, CLI login session or implicit credential-store lookup.  This source
+contract does not establish that a host has the grant or installed payload.
 
-So the login goes where every host already reads from: Infisical, Fleet-OPS, prod,
-under `/cli-logins/<seat>`.
+## Scope And Inputs
 
-## The path
+The reviewed write allowlist accepts GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN
+and COPILOT_GITHUB_TOKEN under `/cli-logins/<SEAT>`, or the corresponding
+seat-suffixed names under `/cli-logins`.  Widening it requires a code change.
+The destination folder must already exist; this helper never provisions folders.
 
-One folder per seat, `/cli-logins/<SEAT>`, and inside it the names the CLIs actually
-read out of their environment:
+The caller explicitly chooses one source:
 
-| Name | Read by |
+| Source | Access |
 |---|---|
-| `GH_TOKEN` | the GitHub CLI, and anything else that speaks to GitHub as the owner |
-| `GITHUB_TOKEN` | the same, for a tool that looks for that name |
-| `GH_ENTERPRISE_TOKEN` | the GitHub CLI against a GitHub Enterprise host |
-| `COPILOT_GITHUB_TOKEN` | the Copilot CLI |
+| `--from env` (default) | The named variable already supplied to this process |
+| `--from fleet-secrets --from-path PATH` | Compatibility spelling for one named direct shared-client read through its explicit scoped reader; no application subprocess |
+| `--from file --file PATH` | The owner-provided regular input file with mode 0600 |
 
-The seat is in the path, so the name is the same on every host and the consumer's
-command line is the same everywhere.  A consumer whose own table of secrets is static
-— BotFleet's secret map names one secret per bot — reads the other shape, one folder
-with the seat in the name (`GH_TOKEN_OPENCODE`), and renames the value to the
-environment variable the CLI expects.
-
-## The write
-
-From the machine where the seat works, on demand:
+The source selection never falls back to another source.  In particular, a CLI's
+private credential store is not read.  An input environment value must already
+belong to this use case; a shared shell variable does not prove that ownership.
 
 ```
 python3 scripts/fleet_secrets/sync_cli_login.py --name GH_TOKEN --path /cli-logins/OPENCODE
 ```
 
-The source is one of:
+The destination requires its own `INFISICAL_WRITE_TOKEN`, with read/write access
+to exactly the declared Fleet-OPS prod folder and a finite future expiry.
+`INFISICAL_FLEET_OPS_PROJECT_ID` declares the destination project.  A separately
+selected Infisical source read uses `INFISICAL_TOKEN` and its own exact grant;
+neither binding substitutes for the other.  Values and tokens never enter argv,
+the journal, output or logs.
 
-| `--from` | Reads |
-|---|---|
-| `env` | the environment variable `--name`.  This is what `fleet-secrets run --only` injects, and it is what the Mac's own shell already exports for the GitHub CLI |
-| `fleet-secrets` | the value, read with `fleet-secrets get NAME --path <from-path>` |
-| `file` | a 0600 file the owner handed over, which is how the owner hands a secret to a seat at all |
+## Durable Intent And Recovery
 
-The GitHub CLI's own keychain entry and a generic keychain lookup are deliberately not
-sources here.  The keychain is reserved for the machine identity,  and a path-less
-lookup can reach an item in another account or in the System keychain and can raise an
-unlock prompt on the owner's screen.  The approved order is the environment first and
-`fleet-secrets get` second.
+The shared CLI caller and login-sync caller explicitly choose the same protected
+state root, `~/.local/state/fleet-infisical-writes`, unless an absolute
+`--state-dir` is supplied.  The library itself chooses no state location.
+Changing the state location is outside the existing history guarantee; do not use
+it to bypass a held operation.
 
-The value never appears in an argument list, a message or a log.  The command checks
-the policy before it reads the value, so a name or a path outside the allowlist never
-reaches a child process and never touches the network.  Then it reads the source,
-writes it, reads it back, compares the digests, and prints the name and the path:
+Each explicit attempt allocates a UUID and creation time.  Before dispatch the
+shared writer durably records that identity and a typed target/value digest in
+the existing protected NonceLedger, then fsyncs Sending before each mutation.
+The provider/project/folder barrier spans names and purposes in this store.
+The journal contains no credential value or bootstrap token.
 
-```
-synced GH_TOKEN at /cli-logins/OPENCODE
-```
-
-The token is resolved once and used for the folder, the write and the read-back, so a
-sync does not log in three times.  The folder is created on demand, and the API's
-"already exists" answer is read rather than assumed, so a rejected request is not
-mistaken for a folder that is there.
-
-The write is a reviewed class and not a general write.  The path names the seat, the
-name is one of the four above, and the allowlist is code, so widening it takes a
-reviewed change — the same rule the minted Linear token class follows.  The folder is
-created on demand, because an empty folder is not a secret and no seat should need a
-human to make one before its first sync.
-
-## The read
-
-On the host that needs the login, the consumer runs the CLI with the credential in its
-environment:
+An automated retry must retain and supply the **same** original UUID and epoch
+milliseconds; allocating a new ID is a new explicit intent, not a global
+exactly-once promise:
 
 ```
-fleet-secrets run --path /cli-logins/OPENCODE --only GH_TOKEN -- gh api user
+python3 scripts/fleet_secrets/sync_cli_login.py --name GH_TOKEN --path /cli-logins/OPENCODE --request-id ORIGINAL_UUID --request-created-at ORIGINAL_EPOCH_MS
 ```
 
-`run` injects the value as the environment variable that CLI already reads, so the CLI
-prefers it over whatever it has in its own store, and the value never lands in an
-argument list.  The server's fleet tools already read Fleet-OPS prod, so this is the
-same read they already do.
+A genuine synchronous HTTP 200/201 acknowledgment is persisted before readback.
+Success additionally requires the exact scoped named value to match.  An accepted
+write whose readback fails stays held; its original identity can reconcile
+read-only when that acknowledgment and exact readback are both available.
+HTTP 202 is not synchronous success.
 
-## What is not in this
+```
+python3 scripts/fleet_secrets/sync_cli_login.py --name GH_TOKEN --path /cli-logins/OPENCODE --request-id ORIGINAL_UUID --request-created-at ORIGINAL_EPOCH_MS --reconcile
+```
 
-* No credential file is copied between hosts.  The Mac does not push a file to the
-  server, and the server does not pull one from the Mac.
-* The GitHub CLI's own keychain entry is not a source,  and neither is a path-less
-  keychain lookup.  The keychain is for the machine identity.
-* No value goes in the repository, a log, a pull request or a chat message.  The
-  repository carries names and paths only.
-* The GitHub CLI's own token stays in the GitHub CLI's own store on the machine where
-  it was made.  The sync copies the value into the shared store; it does not take the
-  keychain entry away.
+Reconciliation reads no source value and never retries a mutation.  An absent or
+proven pre-Sending intent receives a non-rearming cancellation tombstone.
+Timeouts, resets and lost acknowledgments remain unknown; current-value equality
+alone cannot settle them.  A fresh invocation is blocked behind an unknown
+operation and reports the **original** bounded UUID/time/name/purpose for recovery.
+Only a failed connection proven to precede every response, a definitive provider
+refusal, or a preflight failure is definitely unsent.  Retryable refusal metadata
+is retained, and the original ID stays terminal; a correction uses a new explicit
+intent after the refusal is known.  There is no automatic replay or row release.
 
-## The owner-only identity
+Success prints safe request identity plus the name/path confirmation.  Failure
+prints a fixed outcome and recovery identity, never a value, value digest,
+credential prefix or provider body.  A cached successful receipt describes a known
+past completion and does not assert that external writers left the value unchanged.
 
-The write needs a machine identity on the machine where the seat works, and the
-read needs one on the host that consumes it.  The Mac has one for Fleet-OPS, and so
-does the shared VPS, which is why the same store is visible from both.  The local VM
-reads the same store once it has an identity for it; until it does, the local VM's
-consumers need the value passed in by whoever runs them.
+## Storage And Deployment Boundaries
 
-## A token that has been printed is a token to rotate
+The retained ledger requires protected ancestors, a 0700 directory and 0600
+single-link regular files without symlinks.  Durable initialization evidence makes
+a missing database fail closed instead of silently resetting history.  Never delete
+the ledger or its marker to clear an unknown result.  Protect and back up the
+caller-owned durable state; loss of the entire state directory cannot be detected
+from a new empty location.
 
-A CLI login that appears in a transcript, a log or a chat message is exposed, and it
-has to be rotated.  That is the reason the command prints a name and a path, and the
-reason the extractors read from a store rather than from an argument.
+Unsettled outcomes survive expiry and restart and are never evicted to make room.
+Terminal identities retain their original 24-hour fence; the 1000-row capacity
+fails closed.  Metadata, fingerprints and immutable expiry are validated before
+pruning, and one UUID cannot bind a second target within retained history.
+
+The guarantee covers cooperating callers sharing this state and lock.  It is not
+provider CAS, cross-host serialization, protection against a different state
+location, or a guarantee for direct external writers.  The independent
+`fleet_knobs.setter` Infisical CLI writes and the Linear board's own REST writer
+do not call `put_secret` and are not covered by this protocol.
+
+Writer-capable standalone installs must ship the same shared ledger module and
+inert package initializer with the shared client and CLI.  Read-only shared-client
+installs never import SQLite, initialize writer state or require that payload.
+Review, source CI, installed payload, existing own grants and runtime acceptance
+remain separate gates; this document authorizes no credential or service change.

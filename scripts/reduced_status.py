@@ -165,6 +165,8 @@ What the source does NOT carry, and so is null here (or never produced) whatever
 
 Deliberately never read: `config_errors`, `reload_refused`, `reload_at`, `partition_file`,
 `owner_user_id`, `loop_guard`, `chat_nudges`, `pid`, `version`, `started`, each
+canonical settings revision (`operator_settings_revision`, `operator_settings_snapshot_revision`)
+and `channel_names`, which only the separately authenticated settings editor reads, each
 seat's `creds`, `cursor` and its `webhook_high_water` (both internal ingestion positions), `claude`, `muse`, `pin`, `pinned`, `model`, `red`, `live`,
 `budget`, `routes_24h`, `route_enabled`, `provider` and `fallback` (beyond `stands_in`), and a
 lease's `lease_id`, `session_id` and `title`.  `drain` is not read either:  it is the AFC-652

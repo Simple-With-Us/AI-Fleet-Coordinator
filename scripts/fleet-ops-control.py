@@ -12,6 +12,7 @@
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
   python3 scripts/fleet-ops-control.py server eavesdropper-settings server    (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py eavesdropper-settings get|plan|apply [--set KEY=VALUE ...]
+  python3 scripts/fleet-ops-control.py --receive-operator-settings-bootstrap  (local stdin handoff only)
                                        [--remove KEY.SUBKEY ...] [--file PATH]
                                        [--expect SHA256] [--yes] [--json]
   python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
@@ -46,9 +47,9 @@ What it promises:
     is refused at plan time rather than recreated from the ecosystem file.
   * `redeploy` takes a uuid only when the latest `server-status.json` lists it as a Coolify
     resource, so no uuid or host is kept in this repo.  The Coolify token is read through
-    `fleet-secrets` into memory, sent in one request header and never printed, logged or
-    passed in an argv.  A forced command has only the environment sshd gives it, so
-    `fleet-secrets` receives the scoped Fleet Ops Control token from `ops-control.env` (0600).
+    the adjacent shared Infisical reader into memory, sent in one request header and never
+    printed, logged or passed in an argv.  The reader accepts only the control consumer's
+    scoped token from `ops-control.env` (0600) or its existing explicit process binding.
     `--check-token` reads the token the same way and asks
     Coolify for its version, which proves the whole path and changes nothing.
   * `--from-ssh` is the forced command of the `fleet-ops-ctl` key.  It reads
@@ -164,6 +165,7 @@ import re
 import secrets
 import selectors
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -172,6 +174,7 @@ import time
 import types
 import urllib.error
 import urllib.parse
+import uuid
 from pathlib import Path
 
 TOOL = "fleet-ops-control"
@@ -256,7 +259,8 @@ REDUCED_STATUS_MAX_BYTES = 256 * 1024
 # container the module is at its image path.  Every word of the docker argv is a constant here.
 EAVESDROPPER_SETTINGS_VERB = "eavesdropper-settings"
 EAVESDROPPER_SETTINGS_TARGET = "server"
-EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply")
+# The server-route action set; direct CLI choices remain get/plan/apply.
+EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply", "save", "initialize", "reconcile")
 EAVESDROPPER_SETTINGS_ALLOWLIST_NAME = "fleet-ops-eavesdropper-settings.json"
 EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES = 64 * 1024
 EAVESDROPPER_SETTINGS_EDITOR_PARTS = ("simple_tools", "server", "eavesdropper_settings_edit.py")
@@ -268,10 +272,27 @@ EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES = 512 * 1024
 EAVESDROPPER_SETTINGS_EDIT_TIMEOUT = 180
 EAVESDROPPER_SETTINGS_STDIN_TIMEOUT = 5
 EAVESDROPPER_SETTINGS_AUDIT_TARGET = "eavesdropper settings"
+SETTINGS_RECEIVE = "--receive-operator-settings-bootstrap"
+SETTINGS_PROJECT = "INFISICAL_OPERATOR_SETTINGS_PROJECT_ID"
+SETTINGS_WRITER = "OPERATOR_SETTINGS_INFISICAL_WRITE_TOKEN"
+SETTINGS_STORE = "operator-settings.env"
+SETTINGS_IMAGE = "operator-settings-image.json"
+SETTINGS_BOOTSTRAP_MAX = 64 * 1024
+SETTINGS_IMAGE_RE = re.compile(r"sha256:[0-9a-f]{64}")
+SETTINGS_CID_RE = re.compile(r"[0-9a-f]{64}")
 EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 # The shape of a plan's `planSHA256`, which the server `--yes` form must carry as `expectPlanSHA256`.
 EAVESDROPPER_SETTINGS_PLAN_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "refused", "failed")
+EAVESDROPPER_SETTINGS_RESULTS = (
+    "read",
+    "planned",
+    "unchanged",
+    "applied",
+    "saved",
+    "initialized",
+    "refused",
+    "failed",
+)
 
 EAVESDROPPER_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
@@ -638,17 +659,18 @@ PM2_CANDIDATES = (
     "/opt/homebrew/lib/node_modules/pm2/bin/pm2",
     "/usr/local/lib/node_modules/pm2/bin/pm2",
 )
-FLEET_SECRETS_CANDIDATES = ("~/.local/bin/fleet-secrets", "/usr/local/bin/fleet-secrets")
 COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
 COOLIFY_TOKEN_PATH = "/coolify"
+COOLIFY_READER_MAX_OUTPUT_BYTES = 8192
+INFISICAL_READER_NAME = "fleet_infisical.py"
+INFISICAL_READER_MAX_BYTES = 512 * 1024
 # Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
 # never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
-# The Infisical identity fleet-secrets may be handed from the credential file, and nothing
-# else from it.
+# The control consumer's Infisical binding, and nothing else from its credential file.
 CREDENTIAL_NAMES = ("FLEET_OPS_CONTROL_INFISICAL_TOKEN",)
 SCOPED_TOKEN_NAME = CREDENTIAL_NAMES[0]
-# Keep this boundary independent of optional fleet-secrets imports.
+# Keep this custody boundary independent of the optional shared reader.
 SHARED_AUTH_ENV_NAMES = frozenset(
     {
         "INFISICAL_TOKEN",
@@ -1299,7 +1321,6 @@ class Context:
         config_path=CONFIG_PATH,
         status_path=None,
         audit_path=None,
-        fleet_secrets=None,
         credentials_path=None,
         pm2_node=None,
         pm2_script=None,
@@ -1320,7 +1341,6 @@ class Context:
         self.status_path = status_path or (
             self.home / ".local" / "state" / "fleet-tools" / "server-status.json"
         )
-        self.fleet_secrets = fleet_secrets
         self.credentials_path = credentials_path or (
             self.home / ".config" / "fleet-tools" / "ops-control.env"
         )
@@ -1725,15 +1745,296 @@ def _load_eavesdropper_settings_editor(ctx):
     return module
 
 
+def _settings_refusal():
+    return Refused("the settings bootstrap is unavailable", error_code="bootstrap_unavailable")
+
+
+def _settings_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise _settings_refusal()
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(raw, object_pairs_hook=pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise _settings_refusal() from None
+
+
+@contextlib.contextmanager
+def _settings_directory(ctx, create=False):
+    import pwd
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    opened = []
+    try:
+        home = Path(pwd.getpwuid(ctx.uid).pw_dir)
+        if not home.is_absolute() or ".." in home.parts:
+            raise _settings_refusal()
+        fd = os.open("/", flags)
+        opened.append(fd)
+        components = (*home.parts[1:], ".config", "fleet-tools")
+        for index, name in enumerate(components):
+            if create and index >= len(home.parts) - 1:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            fd = os.open(name, flags, dir_fd=fd)
+            opened.append(fd)
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in (0, ctx.uid)
+                or info.st_mode & 0o022
+            ):
+                raise _settings_refusal()
+        info = os.fstat(fd)
+        if info.st_uid != ctx.uid or stat.S_IMODE(info.st_mode) != 0o700:
+            raise _settings_refusal()
+        yield fd
+    except OSError:
+        raise _settings_refusal() from None
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+
+
+def _settings_read(parent, name, uid):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != uid
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > SETTINGS_BOOTSTRAP_MAX
+        ):
+            raise _settings_refusal()
+        raw = bytearray()
+        while chunk := os.read(fd, 4096):
+            raw.extend(chunk)
+            if len(raw) > SETTINGS_BOOTSTRAP_MAX:
+                raise _settings_refusal()
+        after = os.fstat(fd)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if len(raw) > SETTINGS_BOOTSTRAP_MAX or any(
+            getattr(info, field) != getattr(after, field) for field in fields
+        ):
+            raise _settings_refusal()
+        return bytes(raw), info.st_ino
+    finally:
+        os.close(fd)
+
+
+def _settings_publish(parent, name, raw):
+    temporary = ".operator-settings-" + secrets.token_hex(16)
+    fd = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        remaining = memoryview(raw)
+        while remaining:
+            count = os.write(fd, remaining)
+            if count <= 0:
+                raise _settings_refusal()
+            remaining = remaining[count:]
+        os.fsync(fd)
+        # link is atomic and refuses an existing destination; replace would overwrite it.
+        os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(fd)
+        os.unlink(temporary, dir_fd=parent)
+        os.fsync(parent)
+
+
+def _settings_values(raw):
+    try:
+        values = {}
+        for line in raw.decode("ascii").splitlines():
+            key, separator, value = line.partition("=")
+            if (
+                not separator
+                or key not in (SETTINGS_PROJECT, SETTINGS_WRITER)
+                or key in values
+                or not value
+                or any(c.isspace() or c in "\"'" for c in value)
+            ):
+                raise _settings_refusal()
+            values[key] = value
+        if (
+            set(values) != {SETTINGS_PROJECT, SETTINGS_WRITER}
+            or not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", values[SETTINGS_PROJECT]
+            )
+            or not values[SETTINGS_WRITER].startswith("st.")
+            or not 20 <= len(values[SETTINGS_WRITER]) <= 8192
+        ):
+            raise _settings_refusal()
+        return values
+    except (UnicodeError, KeyError, TypeError):
+        raise _settings_refusal() from None
+
+
+def _settings_container(ctx, target=EAVESDROPPER_CONTAINER):
+    with tempfile.TemporaryDirectory(prefix="fleet-ops-docker-") as scratch:
+        status, out, _, over = ctx.reader(
+            [_docker(), "inspect", "--format", "{{.Id}} {{.Image}} {{.State.Running}}", target],
+            timeout=5,
+            env=_docker_env(scratch),
+            max_bytes=256,
+        )
+    try:
+        cid, image, running = out.decode("ascii").strip().split(" ")
+    except (ValueError, UnicodeError):
+        raise _settings_refusal() from None
+    if (
+        status
+        or over
+        or not SETTINGS_CID_RE.fullmatch(cid)
+        or not SETTINGS_IMAGE_RE.fullmatch(image)
+        or running != "true"
+    ):
+        raise _settings_refusal()
+    return cid, image
+
+
+def _settings_writer_request(ctx, request):
+    """Image/CID qualification precedes the only writer-store open."""
+    values = {}
+    try:
+        with _settings_directory(ctx) as parent:
+            raw, _ = _settings_read(parent, SETTINGS_IMAGE, ctx.uid)
+            image = _settings_json(raw)
+            if (
+                not isinstance(image, dict)
+                or set(image) != {"protocol", "imageID", "storeInode"}
+                or image["protocol"] != "operator-settings-image/1"
+                or not isinstance(image["imageID"], str)
+                or not SETTINGS_IMAGE_RE.fullmatch(image["imageID"])
+                or type(image["storeInode"]) is not int
+                or image["storeInode"] <= 0
+            ):
+                raise _settings_refusal()
+            cid, actual_image = _settings_container(ctx)
+            if actual_image != image["imageID"]:
+                raise _settings_refusal()
+            raw, inode = _settings_read(parent, SETTINGS_STORE, ctx.uid)
+            if inode != image["storeInode"]:
+                raise _settings_refusal()
+            values = _settings_values(raw)
+            if _settings_container(ctx, cid) != (cid, actual_image):
+                raise _settings_refusal()
+            envelope = json.dumps(
+                dict(protocol="operator-settings-bootstrap/1", request=request, bootstrap=values),
+                separators=(",", ":"),
+            ).encode()
+            if len(envelope) > SETTINGS_BOOTSTRAP_MAX:
+                raise _settings_refusal()
+            return cid, envelope
+    except OSError:
+        raise _settings_refusal() from None
+    finally:
+        values.clear()
+        raw = envelope = b""
+
+
+def receive_settings_bootstrap(ctx):
+    """Local installer only; credentials remain unusable until grant/image checks pass."""
+    values = {}
+    raw = None
+    try:
+        raw = ctx.stdin()
+        if not ctx.platform.startswith("linux") or ctx.uid == 0:
+            raise _settings_refusal()
+        if raw is None or len(raw) > SETTINGS_BOOTSTRAP_MAX:
+            raise _settings_refusal()
+        envelope = _settings_json(raw)
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != {"protocol", "imageID", "bootstrap"}
+            or envelope["protocol"] != "operator-settings-install/1"
+            or not isinstance(envelope["imageID"], str)
+            or not SETTINGS_IMAGE_RE.fullmatch(envelope["imageID"])
+            or not isinstance(envelope["bootstrap"], dict)
+            or set(envelope["bootstrap"]) != {SETTINGS_PROJECT, SETTINGS_WRITER}
+            or any(not isinstance(value, str) for value in envelope["bootstrap"].values())
+        ):
+            raise _settings_refusal()
+        payload = "".join(
+            key + "=" + envelope["bootstrap"][key] + "\n"
+            for key in (SETTINGS_PROJECT, SETTINGS_WRITER)
+        ).encode("ascii")
+        values = _settings_values(payload)
+        cid, image = _settings_container(ctx)
+        if image != envelope["imageID"]:
+            raise _settings_refusal()
+        reader = _load_infisical_reader(ctx)
+        with _settings_directory(ctx, create=True) as parent:
+            # Do not overwrite either half of an existing or incomplete handoff.
+            for name in (SETTINGS_STORE, SETTINGS_IMAGE):
+                try:
+                    os.stat(name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise _settings_refusal()
+            _settings_publish(parent, SETTINGS_STORE, payload)
+            stored, inode = _settings_read(parent, SETTINGS_STORE, ctx.uid)
+            values.clear()
+            values = _settings_values(stored)
+            original = reader.validate_service_metadata
+
+            def finite_grant(metadata, project, paths, permissions):
+                original(metadata, project, paths, permissions)
+                expiry = datetime.datetime.fromisoformat(
+                    metadata["expiresAt"].replace("Z", "+00:00")
+                )
+                if expiry > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                    days=90
+                ):
+                    raise _settings_refusal()
+
+            reader.validate_service_metadata = finite_grant
+            try:
+                reader.verify_service_token(
+                    values[SETTINGS_WRITER],
+                    values[SETTINGS_PROJECT],
+                    "/operator-settings",
+                    {},
+                    writer=True,
+                    deadline=time.monotonic() + 20,
+                )
+            finally:
+                reader.validate_service_metadata = original
+            if _settings_container(ctx, cid) != (cid, image):
+                raise _settings_refusal()
+            metadata = dict(protocol="operator-settings-image/1", imageID=image, storeInode=inode)
+            _settings_publish(parent, SETTINGS_IMAGE, json.dumps(metadata).encode())
+        return {"ok": True, "result": "installed"}, 0
+    except Exception:  # noqa: BLE001 - no input, provider prose or credential can become an answer
+        return {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"}, 2
+    finally:
+        values.clear()
+        raw = payload = stored = b""
+        if "envelope" in locals() and isinstance(envelope, dict):
+            if isinstance(envelope.get("bootstrap"), dict):
+                envelope["bootstrap"].clear()
+            envelope.clear()
+
+
 def run_eavesdropper_settings_editor_in_container(ctx, request):
     """(the editor's answer document, its exit status) for `request`, run inside the eavesdropper
     container, or Failed.
 
-    One argv, no shell, no sudo:  `docker exec -i --user simpletools eavesdropper
-    /usr/local/bin/python3 -I <the image's editor> --request-stdin`.  The request goes in on
-    standard input, so no setting, value or path from a caller is ever a word of the argv, and the
-    file it edits is the one the container's own SIMPLE_TOOLS_CONFIG names.  The environment is
-    the pinned docker one.  Docker's own words are only classified, never kept."""
+    No shell or sudo; requests travel on stdin with a pinned Docker environment.
+    Writer actions additionally require the private store and qualified image, use the
+    captured container ID, and pass one private envelope to the same editor process.
+    No caller or credential selects an argv, file path or destination."""
     try:
         payload = json.dumps(
             request, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -1749,30 +2050,37 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
         ) from None
     if len(payload) > EAVESDROPPER_SETTINGS_REQUEST_MAX_BYTES:
         raise Refused("the request is too large", error_code="request_too_large")
+    target, flag = EAVESDROPPER_CONTAINER, "--request-stdin"
+    if request.get("action") in ("save", "initialize", "reconcile"):
+        target, payload = _settings_writer_request(ctx, request)
+        flag = "--bootstrap-request-stdin"
     argv = [
         _docker(),
         "exec",
         "-i",
         "--user",
         EAVESDROPPER_USER,
-        EAVESDROPPER_CONTAINER,
+        target,
         EAVESDROPPER_SETTINGS_EDITOR_PYTHON,
         "-I",
         EAVESDROPPER_SETTINGS_EDITOR_PATH,
-        "--request-stdin",
+        flag,
     ]
     try:
         scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
     except OSError:
         raise Failed("docker cannot be run", error_code="docker_unavailable") from None
     with scratch as config_dir:
-        status, out, err, over = ctx.reader(
-            argv,
-            timeout=EAVESDROPPER_SETTINGS_EDIT_TIMEOUT,
-            env=_docker_env(config_dir),
-            max_bytes=EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES,
-            data=payload,
-        )
+        try:
+            status, out, err, over = ctx.reader(
+                argv,
+                timeout=EAVESDROPPER_SETTINGS_EDIT_TIMEOUT,
+                env=_docker_env(config_dir),
+                max_bytes=EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES,
+                data=payload,
+            )
+        finally:
+            payload = b""
     if over:
         raise Failed("the editor's answer is too large", error_code="too_large")
     if status == 127:
@@ -1796,22 +2104,28 @@ def run_eavesdropper_settings_editor_in_container(ctx, request):
     return document, (status if status in (0, 1, 2) else 1)
 
 
-def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=None):
+def eavesdropper_settings(
+    ctx, action, changes, expect=None, file=None, remove=None, request_id=None, created_at=None
+):
     """(answer fields, exit status) of one eavesdropper-settings request, or Refused / Failed.
 
     `file` runs the editor in this process on that file;  without it the editor runs in the
     server's container.  The fields are the usual `ok`, `result`, `detail` (and `errorCode`), the
     editor's whole answer as `eavesdropperSettings`, and a plain-text `output` for a terminal."""
     if action not in EAVESDROPPER_SETTINGS_ACTIONS:
-        raise Refused("the eavesdropper settings action is get, plan or apply")
+        raise Refused("unsupported eavesdropper settings action")
     request = {"action": action, "allowlist": load_eavesdropper_settings_allowlist(ctx)}
-    if action != "get":
+    if action in ("save", "initialize", "reconcile"):
+        request.update(requestID=request_id, requestCreatedAt=created_at)
+    if action not in ("get", "initialize", "reconcile"):
         if not isinstance(changes, dict) or not changes:
             raise Refused("name at least one setting to change", error_code="usage")
         request["set"] = changes
         if remove:
             request["remove"] = list(remove)
-    if action == "apply" and expect is not None:
+    if action in ("save", "initialize") and expect is not None:
+        request["expectBaseSHA256"] = expect
+    elif action == "apply" and expect is not None:
         request["expectPlanSHA256"] = expect
     if file is not None:
         module = _load_eavesdropper_settings_editor(ctx)
@@ -1851,6 +2165,12 @@ def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=N
                     "take" if check.get("ok") else "NOT take",
                 )
             )
+        elif result == "initialized":
+            fields["detail"] = (
+                "canonical settings initialized and read back; runtime source is not activated"
+            )
+        elif result == "saved":
+            fields["detail"] = "saved to Infisical and verified by the listener"
         else:
             reload = document.get("reload") if isinstance(document.get("reload"), dict) else {}
             fields["detail"] = "%d setting(s) changed; %s" % (
@@ -1903,14 +2223,56 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
     if not raw.strip():
         if mode != "plan":
             raise Refused("an apply needs the changes on standard input", error_code="usage")
-        return "get", None, None, None
+        return "get", None, None, None, None, None
     try:
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         request = None
+    request_id = created_at = None
+    if isinstance(request, dict) and request.get("action") in ("save", "initialize", "reconcile"):
+        request_id, created_at = request.get("requestID"), request.get("requestCreatedAt")
+        try:
+            if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
+                raise ValueError()
+        except (ValueError, AttributeError):
+            raise Refused(
+                "a canonical requestID is required", error_code="request_id_required"
+            ) from None
+        if type(created_at) is not int or created_at <= 0:
+            raise Refused("requestCreatedAt is required", error_code="request_time_required")
+    if isinstance(request, dict) and request.get("action") == "reconcile":
+        if set(request) != {"action", "requestID", "requestCreatedAt"} or mode != "yes":
+            raise Refused(
+                "reconcile requires --yes and the original request identity only",
+                error_code="usage",
+            )
+        return "reconcile", None, None, None, request_id, created_at
+    if isinstance(request, dict) and request.get("action") == "initialize":
+        if (
+            set(request) != {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"}
+            or mode != "yes"
+        ):
+            raise Refused(
+                "initialize requires --yes and the runtime-file revision only", error_code="usage"
+            )
+        expected = request["expectBaseSHA256"]
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(
+            expected
+        ):
+            raise Refused("initialize requires expectBaseSHA256", error_code="version_required")
+        return "initialize", None, None, expected, request_id, created_at
     if (
         not isinstance(request, dict)
-        or set(request) - {"set", "remove", "expectPlanSHA256"}
+        or set(request)
+        - {
+            "action",
+            "set",
+            "remove",
+            "expectPlanSHA256",
+            "expectBaseSHA256",
+            "requestID",
+            "requestCreatedAt",
+        }
         or not isinstance(request.get("set"), dict)
         or not request["set"]
         or not isinstance(request.get("remove", []), list)
@@ -1918,6 +2280,17 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
         raise Refused(
             "standard input must be one JSON object with a non-empty set", error_code="usage"
         )
+    if request.get("action") == "save":
+        expected = request.get("expectBaseSHA256")
+        if mode != "yes" or request.get("expectPlanSHA256") is not None:
+            raise Refused("save requires --yes and a canonical revision", error_code="usage")
+        if not isinstance(expected, str) or not EAVESDROPPER_SETTINGS_PLAN_SHA256_RE.fullmatch(
+            expected
+        ):
+            raise Refused("save requires expectBaseSHA256", error_code="version_required")
+        return "save", request["set"], request.get("remove"), expected, request_id, created_at
+    if set(request) & {"action", "expectBaseSHA256", "requestID", "requestCreatedAt"}:
+        raise Refused("unknown settings action or revision field", error_code="usage")
     expect = request.get("expectPlanSHA256")
     if mode != "yes":
         if expect is not None:
@@ -1933,7 +2306,7 @@ def eavesdropper_settings_request_from_stdin(ctx, mode):
             error_code="plan_hash_invalid",
         )
     action = "plan" if mode == "plan" else "apply"
-    return action, request["set"], request.get("remove"), expect
+    return action, request["set"], request.get("remove"), expect, None, None
 
 
 # MARK: - The server Operator's sessions and wakes (read only)
@@ -3044,35 +3417,65 @@ def coolify_base(ctx):
     return base
 
 
+def _load_infisical_reader(ctx):
+    """Load only the checked adjacent canonical source, never an import-cache substitute."""
+    source = _read_module_source(ctx, (INFISICAL_READER_NAME,), INFISICAL_READER_MAX_BYTES)
+    module = None
+    if source is not None:
+        try:
+            path = str(HELPER_DIR / INFISICAL_READER_NAME)
+            code = compile(source, path, "exec", dont_inherit=True)
+            module = types.ModuleType("_fleet_ops_control_infisical")
+            # The canonical bounded reader launches this exact sibling in Python's isolated mode.
+            module.__file__ = path
+            exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+        except (Exception, SystemExit):  # noqa: BLE001 - unusable code has one fixed answer
+            module = None
+    if module is None or not all(
+        callable(getattr(module, name, None))
+        for name in ("bounded_fetch_project", "infisical_project_id")
+    ):
+        raise Failed("the shared Infisical reader is not available")
+    return module
+
+
 def read_coolify_token(ctx):
-    """The Coolify API token, from fleet-secrets, into memory only.  Raises Failed."""
-    binary = ctx.fleet_secrets
-    for candidate in () if binary else FLEET_SECRETS_CANDIDATES:
-        path = os.path.expanduser(candidate)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            binary = path
-            break
-    if binary is None:
-        raise Failed("fleet-secrets is not installed")
-    status, out = ctx.runner(
-        [binary, "get", COOLIFY_TOKEN_NAME, "--path", COOLIFY_TOKEN_PATH],
-        timeout=SECRET_TIMEOUT,
-        env=secrets_env(ctx),
-        want_stdout=True,
-    )
-    token = out.decode("utf-8", "replace").strip() if status == 0 else ""
-    out = b""
+    """One strict named read through this control consumer's own binding.  Raises Failed."""
+    reader = _load_infisical_reader(ctx)
+    env = secrets_env(ctx)
+    binding = env.pop("INFISICAL_TOKEN", "")
+    if not binding:
+        raise Failed("the Coolify token is not available")
+    try:
+        project = reader.infisical_project_id(env, ctx.home, "fleet-ops")
+        scoped = {name: env[name] for name in (reader.ENV_API, *reader.ENV_NAMES) if name in env}
+        scoped[reader.ENV_READ_PATHS] = COOLIFY_TOKEN_PATH
+        values = reader.bounded_fetch_project(
+            project,
+            COOLIFY_TOKEN_PATH,
+            scoped,
+            token=binding,
+            names=(COOLIFY_TOKEN_NAME,),
+            timeout=SECRET_TIMEOUT,
+            writer=False,
+            max_output_bytes=COOLIFY_READER_MAX_OUTPUT_BYTES,
+            strict_records=True,
+        )
+        token = values.get(COOLIFY_TOKEN_NAME, "").strip()
+    except Exception:  # noqa: BLE001 - provider/source text and values never become diagnostics
+        # A read failure cannot have sent a mutating Coolify request.  Keep timed_out=False.
+        raise Failed("the Coolify token is not available") from None
     if not token or any(c.isspace() or ord(c) < 33 for c in token):
         raise Failed("the Coolify token is not available")
     return token
 
 
 def secrets_env(ctx):
-    """The environment the fleet-secrets child runs with.  Raises Failed.
+    """Resolve this control consumer's private reader binding.  Raises Failed.
 
     The private file supplies only this caller's scoped read-only service token.  It is mapped
-    to INFISICAL_TOKEN for the one fleet-secrets child, never to an argv or a service-control
-    child.  Inherited shared token and machine-identity bindings are discarded."""
+    to INFISICAL_TOKEN for this reader only, never to an argv or a service-control child.
+    Inherited shared token and machine-identity bindings are discarded."""
     env = dict(ctx.environ)
     process_token = env.pop(SCOPED_TOKEN_NAME, "")
     for name in SHARED_AUTH_ENV_NAMES:
@@ -3561,14 +3964,20 @@ def handle(
             _server_only(ctx)
             if target != EAVESDROPPER_SETTINGS_TARGET:
                 raise Refused("only the server's Eavesdropper has settings here")
-            edit_action, changes, remove, expect = eavesdropper_settings_request_from_stdin(
-                ctx, mode
+            edit_action, changes, remove, expect, request_id, created_at = (
+                eavesdropper_settings_request_from_stdin(ctx, mode)
             )
             with contextlib.ExitStack() as held:
                 if mode == "yes" and not lock_held:
                     held.enter_context(action_lock(ctx))
                 fields, code = eavesdropper_settings(
-                    ctx, edit_action, changes, expect, remove=remove
+                    ctx,
+                    edit_action,
+                    changes,
+                    expect,
+                    remove=remove,
+                    request_id=request_id,
+                    created_at=created_at,
                 )
             answer.update(fields)
             if mode == "yes":
@@ -4177,7 +4586,9 @@ def run_eavesdropper_settings(argv, ctx, out):
     code = 2
     try:
         parser = _QuietParser(prog=TOOL, add_help=False)
-        parser.add_argument("action", choices=EAVESDROPPER_SETTINGS_ACTIONS)
+        # Canonical writes use only the owner-authenticated server route, which
+        # requires --yes and owns the action lock and audit row.
+        parser.add_argument("action", choices=("get", "plan", "apply"))
         parser.add_argument("--set", action="append", default=[], dest="changes")
         parser.add_argument("--remove", action="append", default=[])
         parser.add_argument("--file")
@@ -4307,6 +4718,34 @@ def emit(answer, as_json, out):
 
 def main(argv=None, ctx=None, out=None, muster=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if SETTINGS_RECEIVE in argv:
+        out = out or sys.stdout
+        environment = os.environ if ctx is None else ctx.environ
+        if argv != [SETTINGS_RECEIVE] or "SSH_ORIGINAL_COMMAND" in environment:
+            out.write('{"ok":false,"result":"refused","errorCode":"bootstrap_unavailable"}\n')
+            return 2
+        if ctx is None:
+            import pwd
+
+            ctx = Context(home=Path(pwd.getpwuid(os.getuid()).pw_dir), environ={})
+
+        def expired(signum, frame):
+            raise TimeoutError()
+
+        prior = signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, 30)
+        try:
+            answer, code = receive_settings_bootstrap(ctx)
+        except Exception:  # noqa: BLE001 - the local receiver never emits input or provider text
+            answer, code = (
+                {"ok": False, "result": "refused", "errorCode": "bootstrap_unavailable"},
+                2,
+            )
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, prior)
+        out.write(json.dumps(answer, sort_keys=True) + "\n")
+        return code
     if MUSTER_ENTRY in argv:
         # Before anything reads the environment into a Context: this branch builds its own.
         return run_from_muster(argv, ctx, out, muster)
