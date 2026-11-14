@@ -730,7 +730,17 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
                                 process_started_at = int(boot_time) + start_ticks / os.sysconf("SC_CLK_TCK")
                             except (OSError, ValueError, IndexError, StopIteration):
                                 pass
-                            if owner_age is not None and process_started_at is not None and process_started_at > started_at + 1:
+                            if (
+                                owner_age is not None
+                                and process_started_at is not None
+                                and process_started_at > started_at + 1
+                            ):
+                                stale = True
+                            elif (
+                                process_started_at is None
+                                and owner_age is not None
+                                and owner_age >= SCHEDULER_LOCK_STALE_S
+                            ):
                                 stale = True
                             else:
                                 try:
