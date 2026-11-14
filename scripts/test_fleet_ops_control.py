@@ -3005,10 +3005,10 @@ class CredentialTests(Base):
         self.api.values[foc.COOLIFY_TOKEN_NAME] = TOKEN
         code, ans = self.run_main(["--check-token"], self.ctx(environ=self.env(), http_status=401))
         self.assertEqual((code, ans["detail"]), (1, "Coolify answered HTTP 401"))
-        code, ans = self.run_main(["--check-token"], self.ctx("darwin"))
+        self.api.requests.clear()
+        code, ans = self.run_main(["--check-token"], self.ctx("darwin", environ=self.env()))
         self.assertEqual((code, ans["result"]), (2, "refused"))
-        code, ans = self.run_main(["--check-token", "--json"], self.ctx())
-        self.assertEqual((code, ans["result"]), (2, "refused"))
+        self.assertEqual(self.api.requests, [])
 
 
 class SshGateTests(Base):
