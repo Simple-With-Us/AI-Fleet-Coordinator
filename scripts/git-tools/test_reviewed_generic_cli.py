@@ -36,7 +36,8 @@ class CliFixtureTests(unittest.TestCase):
             self.assertIsNotNone(git._scan_arguments(args, ""))
             args["message"] = body
             self.assertEqual(
-                git._scan_arguments(args, "", "gr_wf_files_put"), "secret_scan:message [category=assigned secret]"
+                git._scan_arguments(args, "", "gr_wf_files_put"),
+                "secret_scan:message [category=assigned secret]",
             )
             args["message"] = "fix"
             args["repo"] = repo + "2"
