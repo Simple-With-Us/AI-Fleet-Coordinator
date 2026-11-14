@@ -132,6 +132,48 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(r.recover(), "aborted")
         self.assertEqual(events, ["aborted", "resume", "proof", "finish"])
 
+    def test_restore_leg_proof_failure_names_last_phase(self):
+        events = []
+        r = Runner.__new__(Runner)
+
+        class Host:
+            last_phase = "sentinel"
+            old_hashes = {"code/old.py": "old"}
+
+            def lock(self):
+                import contextlib
+
+                return contextlib.nullcontext()
+
+            def hashes(self, _):
+                return {"code/old.py": "drifted"}
+
+            def stop_for_recovery(self):
+                events.append("stop")
+
+            def confirmed_stopped(self, _):
+                return True
+
+            def start(self):
+                events.append("start")
+
+            def prove_old_runtime(self, _):
+                return False
+
+        class Journal:
+            path = type("P", (), {"exists": lambda _: True})()
+
+            def read(self):
+                return {"phase": "applied"}
+
+        r.host, r.journal, r.rows = Host(), Journal(), []
+        r.reconcile_commit = lambda: False
+        r.restore_stopped = lambda: events.append("restore")
+        with self.assertRaises(TransactionError) as ctx:
+            r.recover()
+        self.assertEqual(str(ctx.exception), "old runtime proof failed: sentinel")
+        self.assertEqual(events, ["stop", "restore", "start"])
+
     def test_verify_unit_exact_realistic_renderings_and_drift(self):
         r = Runner.__new__(Runner)
         r.doc = {"runner": "/opt/recovery/run.py", "unit": "git-relay-patch-1429.service"}
