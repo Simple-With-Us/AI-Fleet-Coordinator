@@ -3061,7 +3061,7 @@ def _load_infisical_reader(ctx):
         callable(getattr(module, name, None))
         for name in ("bounded_fetch_project", "infisical_project_id")
     ):
-        raise Failed("the shared Infisical reader is not available")
+        raise Failed("fleet_infisical.py is not available")
     return module
 
 
