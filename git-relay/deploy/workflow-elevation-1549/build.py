@@ -19,11 +19,11 @@ UNIT = "git-relay-workflow-1549.service"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "3acb883f2163f7acf23d50213c259a17792761003e277157a5193f4e248e0aba",
-    "deploy_host.py": "8f0b13e601466217421359d0b2d65ab0a647d4b37ec5182fd91f221730fb4433",
+    "deploy_host.py": "bbb1d3906e89f9f83f10c0a0f6976aa1e72244bbc9d112a0f841b49bbb89fce5",
     "deploy_journal.py": "bb39bbe7ced794771aa419c357509cf2a30bc719d68cdb5c29557f7cec74a2a0",
     "deploy_recovery.py": "e362ba890b0e19fa8fbd07a23096358bfbc8b29b5a9524da09546b4f4c5619d1",
-    "deploy_runner.py": "bb11dcc965a7aa49a29d7b0ab8583e3486c9a7af9f0d932a6a89bbac115b5267",
-    "deploy_supervisor.py": "1a1b9f45adb6498d78811d1c7742257440043c19e3fbaf9f174e66ca88081040",
+    "deploy_runner.py": "36a9033e2678ae57b071c391d2dee954b4ec818419433c00d06eb7250954db72",
+    "deploy_supervisor.py": "cab9dd1336c7f9eafd81fa9327bf4eb613363bd9486cb17ae3b491cc3f82c115",
     "deploy_transaction.py": "a6bf527f0cf9946ea352c84372fb49df3682cd163f2c91d46ddf301521d50852",
 }
 
