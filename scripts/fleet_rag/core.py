@@ -293,9 +293,7 @@ def fleet_secrets_many(names: Iterable[str]) -> dict[str, str]:
     ):
         return {}
     try:
-        project = secrets.infisical_project_id(
-            source, secrets.home_dir(source), default_project
-        )
+        project = secrets.infisical_project_id(source, secrets.home_dir(source), default_project)
         # The shared API validates and bounds the iterator before starting its read-only worker.
         # No ambient read-path declaration can widen this exact default-root consumer route.
         got = secrets.bounded_fetch_project(
