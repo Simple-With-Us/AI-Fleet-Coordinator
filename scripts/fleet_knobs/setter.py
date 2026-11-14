@@ -165,7 +165,7 @@ def verify_writer(token: str, environ: dict[str, str], folder: str = KNOB_PATH) 
     """Require metadata to prove this project's prod write grant on `folder` before CLI use."""
     secrets = source._load_helper()
     if secrets is None:
-        raise Refused("write token verifier unavailable")
+        raise Refused("fleet_infisical write token verifier unavailable")
 
     try:
         secrets.verify_service_token(token, source.PROJECT_ID, folder, environ, writer=True)
