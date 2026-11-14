@@ -30,7 +30,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from itertools import chain
 from typing import Any
 
 from .storage_guard import StorageGuard, StorageGuardError
@@ -46,11 +47,10 @@ NAMESPACE = uuid.UUID("00000000-0000-0000-0000-00000000fee7")
 
 READ_KEYS = ("TEI_URL", "TEI_API_KEY", "QDRANT_URL", "QDRANT_FLEET_COLLECTION")
 INFISICAL_READ_TOKEN: str = "FLEET_RECALL_INFISICAL_TOKEN"
-# The same binding kept in a file of the caller's own, so every caller of recall (the CLI, the MCP servers, the
-# nightly) gets it without the value sitting in a config file or a shell profile.  FLEET_RECALL_INFISICAL_TOKEN_FILE
-# names it;  otherwise ~/.secrets/fleet-recall-infisical.env is used when it exists.  The variable always wins.
+# Only an explicit binding to this consumer's authorized bootstrap store is accepted.
+# No retired flat-file path is discovered.  The process binding, including an explicit empty
+# marker, takes precedence over the optional caller-declared protected file.
 INFISICAL_READ_TOKEN_FILE = "FLEET_RECALL_INFISICAL_TOKEN_FILE"
-DEFAULT_READ_TOKEN_FILE = (".secrets", "fleet-recall-infisical.env")
 READ_TOKEN_FILE_MAX = 16384
 WRITE_KEYS = ("QDRANT_API_KEY",)
 OPTIONAL_KEYS = (
@@ -310,71 +310,205 @@ def fleet_secret_get(name: str) -> str | None:
     return value or None
 
 
-def _read_token_file() -> str | None:
-    """FLEET_RECALL_INFISICAL_TOKEN from the reader's token file, or None when there is no file.
+class _ReadTokenError(FleetRagError):
+    """Closed bootstrap reasons shared by the reader, nightly and metadata-only doctor."""
 
-    The file holds `FLEET_RECALL_INFISICAL_TOKEN=<st. token>` (an `export ` prefix and quotes are allowed).  It must be a
-    regular file, not a symlink, owned by this user and closed to group and other (mode 600);  anything else is refused
-    rather than read.  A file named by FLEET_RECALL_INFISICAL_TOKEN_FILE must exist.  The value is never logged."""
-    named = (os.environ.get(INFISICAL_READ_TOKEN_FILE) or "").strip()
-    home = (os.environ.get("HOME") or "").strip()
-    if named:
-        path = pathlib.Path(named).expanduser()
-    elif home:
-        path = pathlib.Path(home, *DEFAULT_READ_TOKEN_FILE)
+    _MESSAGES = {
+        "token-binding-empty": f"{INFISICAL_READ_TOKEN} is explicitly empty; no file fallback is allowed",
+        "token-file-empty": f"{INFISICAL_READ_TOKEN_FILE} is explicitly empty",
+        "token-file-path": f"{INFISICAL_READ_TOKEN_FILE} must name an absolute authorized bootstrap file",
+        "token-file-retired": f"{INFISICAL_READ_TOKEN_FILE} cannot select a retired .secrets source or alias",
+        "token-file": f"{INFISICAL_READ_TOKEN_FILE} is missing, unreadable or symlinked",
+        "token-file-mode": f"{INFISICAL_READ_TOKEN_FILE} must be an owned regular mode 600 or 400 file in a protected store",
+        "token-file-size": f"{INFISICAL_READ_TOKEN_FILE} exceeds the bootstrap size limit",
+        "token-invalid": f"{INFISICAL_READ_TOKEN} must contain only this reader's scoped service token",
+    }
+
+    def __init__(self, code: str):
+        self.code = code if code in self._MESSAGES else "token-invalid"
+        super().__init__(self._MESSAGES[self.code])
+
+
+def _checked_read_token(value: str) -> str:
+    try:
+        from fleet_secrets import core as secrets
+
+        return secrets.check_service_token(value)
+    except (ImportError, ValueError, TypeError):
+        raise _ReadTokenError("token-invalid") from None
+    except secrets.SecretsError:
+        raise _ReadTokenError("token-invalid") from None
+
+
+def _process_read_token(env: Mapping[str, str]) -> str | None:
+    if INFISICAL_READ_TOKEN not in env:
+        return None
+    value = env[INFISICAL_READ_TOKEN]
+    if not isinstance(value, str) or not value.strip():
+        raise _ReadTokenError("token-binding-empty")
+    return _checked_read_token(value.strip())
+
+
+def _read_token_file_path(env: Mapping[str, str] | None = None) -> pathlib.Path | None:
+    """Only the explicit current-store selector; no default and no token content read."""
+    source = os.environ if env is None else env
+    if INFISICAL_READ_TOKEN_FILE not in source:
+        return None
+    named = source[INFISICAL_READ_TOKEN_FILE]
+    if not isinstance(named, str) or not named.strip():
+        raise _ReadTokenError("token-file-empty")
+    named = named.strip()
+    if "\x00" in named:
+        raise _ReadTokenError("token-file-path")
+    if named == "~" or named.startswith("~/"):
+        home = source.get("HOME") or ""
+        if not isinstance(home, str) or not pathlib.Path(home).is_absolute():
+            raise _ReadTokenError("token-file-path")
+        path = pathlib.Path(home) / named[2:]
+    elif named.startswith("~"):
+        raise _ReadTokenError("token-file-path")
     else:
-        return None
+        path = pathlib.Path(named)
+    if not path.is_absolute() or ".." in path.parts or not path.name:
+        raise _ReadTokenError("token-file-path")
+    if any(part.casefold() == ".secrets" for part in path.parts):
+        raise _ReadTokenError("token-file-retired")
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
-    except FileNotFoundError:
-        if named:
-            raise FleetRagError(
-                f"{INFISICAL_READ_TOKEN_FILE} names a file that does not exist"
-            ) from None
+        parent = path.parent.resolve()
+    except (OSError, RuntimeError, ValueError):
+        raise _ReadTokenError("token-file-path") from None
+    if any(part.casefold() == ".secrets" for part in parent.parts):
+        raise _ReadTokenError("token-file-retired")
+    return parent / path.name
+
+
+def _open_read_token_file(
+    env: Mapping[str, str] | None = None,
+) -> tuple[pathlib.Path, int] | None:
+    """Checked explicit bootstrap (path, fd), or None; never read its contents."""
+    path = _read_token_file_path(env)
+    if path is None:
         return None
-    except OSError as exc:
-        raise FleetRagError(
-            f"the recall reader token file cannot be opened ({type(exc).__name__})"
-        ) from None
-    try:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    opened = []
+    file_fd = None
+    uid = os.getuid()
+
+    def check_directory(fd: int, location: pathlib.Path) -> None:
         info = os.fstat(fd)
-        owner_ok = not hasattr(os, "getuid") or info.st_uid == os.getuid()
-        if not stat.S_ISREG(info.st_mode) or not owner_ok or info.st_mode & 0o077:
-            raise FleetRagError(
-                "the recall reader token file must be a regular file owned by this user with mode 600"
-            )
-        data = os.read(fd, READ_TOKEN_FILE_MAX + 1)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid):
+            raise _ReadTokenError("token-file-mode")
+        if info.st_mode & 0o022:
+            # Only the standard root-owned sticky temporary anchors may be shared.
+            # Sticky custody protects each caller's owned subtree beneath them.
+            if not (
+                info.st_uid == 0
+                and info.st_mode & stat.S_ISVTX
+                and location in (pathlib.Path("/tmp"), pathlib.Path("/private/tmp"))
+            ):
+                raise _ReadTokenError("token-file-mode")
+
+    try:
+        directory = os.open(path.anchor, flags)
+        opened.append(directory)
+        location = pathlib.Path(path.anchor)
+        check_directory(directory, location)
+        for part in path.parent.parts[1:]:
+            directory = os.open(part, flags, dir_fd=directory)
+            opened.append(directory)
+            location /= part
+            check_directory(directory, location)
+        file_fd = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory,
+        )
+        info = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != uid
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
+        ):
+            raise _ReadTokenError("token-file-mode")
+        if info.st_size > READ_TOKEN_FILE_MAX:
+            raise _ReadTokenError("token-file-size")
+        result = path, file_fd
+        file_fd = None
+        return result
+    except OSError:
+        raise _ReadTokenError("token-file") from None
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        for descriptor in reversed(opened):
+            os.close(descriptor)
+
+
+def _decode_read_token(text: str) -> str:
+    """A single raw token or this consumer's existing assignment format, never dotenv."""
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if len(lines) != 1:
+        raise _ReadTokenError("token-invalid")
+    value = lines[0]
+    if not value.startswith("st."):
+        if value.startswith("export "):
+            value = value[len("export ") :].lstrip()
+        key, sep, value = value.partition("=")
+        if not sep or key.strip() != INFISICAL_READ_TOKEN:
+            raise _ReadTokenError("token-invalid")
+        value = value.strip()
+        if value[:1] in ("'", '"'):
+            if len(value) < 2 or value[-1] != value[0]:
+                raise _ReadTokenError("token-invalid")
+            value = value[1:-1]
+    return _checked_read_token(value)
+
+
+def _read_token_file(env: Mapping[str, str] | None = None) -> str | None:
+    selected = _open_read_token_file(env)
+    if selected is None:
+        return None
+    _path, fd = selected
+    try:
+        data = bytearray()
+        while len(data) <= READ_TOKEN_FILE_MAX:
+            chunk = os.read(fd, min(4096, READ_TOKEN_FILE_MAX + 1 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+        if len(data) > READ_TOKEN_FILE_MAX:
+            raise _ReadTokenError("token-file-size")
+        return _decode_read_token(bytes(data).decode("utf-8"))
+    except (OSError, UnicodeError):
+        raise _ReadTokenError("token-invalid") from None
     finally:
         os.close(fd)
-    if len(data) > READ_TOKEN_FILE_MAX:
-        raise FleetRagError("the recall reader token file is too large")
-    for line in data.decode("utf-8", "replace").splitlines():
-        line = line.strip()
-        if line.startswith("export "):
-            line = line[len("export ") :].lstrip()
-        key, sep, value = line.partition("=")
-        if sep and key.strip() == INFISICAL_READ_TOKEN:
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            if value:
-                return value
-    raise FleetRagError(f"the recall reader token file has no {INFISICAL_READ_TOKEN} line")
 
 
-def _read_token_bound() -> bool:
-    """Whether a reader binding is configured (the variable, a named file, or the default file), without reading it."""
-    if (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or (
-        os.environ.get(INFISICAL_READ_TOKEN_FILE) or ""
-    ).strip():
-        return True
-    home = (os.environ.get("HOME") or "").strip()
-    return bool(home) and os.path.lexists(os.path.join(home, *DEFAULT_READ_TOKEN_FILE))
+def _read_token_bound(env: Mapping[str, str] | None = None) -> bool:
+    """An explicit binding was configured, including an invalid/empty marker; not grant proof."""
+    source = os.environ if env is None else env
+    return INFISICAL_READ_TOKEN in source or INFISICAL_READ_TOKEN_FILE in source
 
 
-def read_token_binding() -> str | None:
-    """The recall reader's service token:  the environment variable, else its token file, else None."""
-    return (os.environ.get(INFISICAL_READ_TOKEN) or "").strip() or _read_token_file()
+def read_token_binding(env: Mapping[str, str] | None = None) -> str | None:
+    """Only this reader's explicit process or authorized current-store file binding."""
+    source = os.environ if env is None else env
+    process = _process_read_token(source)
+    return process if process is not None else _read_token_file(source)
 
 
 def infisical_login() -> str | None:
@@ -405,12 +539,30 @@ def infisical_fetch(wanted: Iterable[str]) -> dict[str, str]:
     from fleet_secrets import core as secrets
 
     infisical_env()
-    env = dict(os.environ)
+    iterator = iter(wanted)
+    empty = object()
+    first = next(iterator, empty)
+    if first is empty:
+        return {}
+    read_token = read_token_binding()
+    if read_token is None:
+        raise FleetRagError(
+            f"bind the recall reader as {INFISICAL_READ_TOKEN} or {INFISICAL_READ_TOKEN_FILE}"
+        )
+    env = {name: os.environ[name] for name in secrets.ENV_NAMES if name in os.environ}
     env[secrets.ENV_API] = infisical_api()
+    env[secrets.ENV_READ_PATHS] = "/"
     try:
-        project = infisical_project()
-        read_token = read_token_binding()
-        return secrets.fetch_project(project, "/", env, token=read_token, names=wanted)
+        return secrets.bounded_fetch_project(
+            infisical_project(),
+            "/",
+            env,
+            token=read_token,
+            names=chain((first,), iterator),
+            timeout=30.0,
+        )
+    except TimeoutError:
+        raise FleetRagError("Infisical scoped read timed out") from None
     except secrets.SecretsError as exc:
         raise FleetRagError("Infisical scoped read failed: " + exc.message) from None
 
