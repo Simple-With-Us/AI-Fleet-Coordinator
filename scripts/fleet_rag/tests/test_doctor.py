@@ -1145,7 +1145,7 @@ def setup_home(root: pathlib.Path, *, token_mode: int = 0o600, with_install: boo
         rag.mkdir(parents=True)
         write(rag / "linear-board" / "board", "#!/usr/bin/env python3\n")
         write(rag / "simple_tools" / "secretscan.py", "def scan(t): return None\n")
-    write_token(home / ".secrets" / "fleet-recall-infisical.env", mode=token_mode)
+    write_token(home / "current-store" / "recall.token", mode=token_mode)
     return home
 
 
@@ -1178,6 +1178,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
         env = {
             "HOME": str(home),
             "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(home / "current-store" / "recall.token"),
         }
         with mock.patch.object(doctor.core, "embedder_healthy", return_value=True):
             rep = doctor_setup.setup_report(
@@ -1196,7 +1197,8 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
 
     def test_token_file_bad_mode_fails(self):
         home = setup_home(self.root, token_mode=0o644)
-        env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
+        env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(home / "current-store" / "recall.token")}
         rep = doctor_setup.setup_report(
             home=home,
             env=env,
@@ -1212,7 +1214,8 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
         lock = home / "apps" / "fleet-rag" / "state" / "ingest.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_text("999999 dead\n", encoding="utf-8")
-        env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
+        env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(home / "current-store" / "recall.token")}
         rep = doctor_setup.setup_report(
             home=home,
             env=env,
@@ -1231,7 +1234,8 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.ftruncate(fd, 0)
             os.write(fd, b"999999 stale\n")
-            env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag")}
+            env = {"HOME": str(home), "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(home / "current-store" / "recall.token")}
             rep = doctor_setup.setup_report(
                 home=home,
                 env=env,
@@ -1258,6 +1262,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
         env = {
             "HOME": str(home),
             "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(home / "current-store" / "recall.token"),
             "FLEET_RAG_MIRROR": str(mirror_live),
         }
         rep = doctor_setup.setup_report(
@@ -1274,6 +1279,7 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
         env = {
             "HOME": str(home),
             "FLEET_RAG_HOME": str(home / "apps" / "fleet-rag"),
+            "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(home / "current-store" / "recall.token"),
             **self.cfg,
         }
         with (
@@ -1289,6 +1295,33 @@ class SetupReportTests(HermeticCredentialsMixin, unittest.TestCase):
             payload = json.loads(buf.getvalue())
             self.assertTrue(payload["ok"])
             self.assertIn("SKIP", payload["counts"])
+
+
+    def test_supplied_binding_map_does_not_probe_the_retired_default_or_global_binding(self):
+        home = setup_home(self.root)
+        retired = home / ".secrets" / "fleet-recall-infisical.env"
+        write_token(retired)
+        with (mock.patch.dict(os.environ, {"FLEET_RECALL_INFISICAL_TOKEN": "unrelated-process"}, clear=True),
+              mock.patch.object(doctor_setup.core.os, "open", side_effect=AssertionError("default probe"))):
+            row = doctor_setup._token_file_row({"HOME": str(home)})
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("FLEET_RECALL_INFISICAL_TOKEN", row["detail"])
+        self.assertNotIn("create", row.get("hint", ""))
+        with mock.patch.object(doctor_setup.core.os, "read", side_effect=AssertionError("retired content")):
+            row = doctor_setup._token_file_row({"HOME": str(home),
+                "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(retired)})
+        self.assertEqual(row["status"], "FAIL")
+
+    def test_file_presence_is_metadata_only_and_empty_process_binding_refuses(self):
+        home = setup_home(self.root)
+        env = {"HOME": str(home), "FLEET_RECALL_INFISICAL_TOKEN_FILE": str(home / "current-store" / "recall.token")}
+        with mock.patch.object(doctor_setup.core.os, "read", side_effect=AssertionError("doctor read token")):
+            row = doctor_setup._token_file_row(env)
+        self.assertEqual(row["status"], "OK")
+        self.assertIn("grant verification is separate", row["detail"])
+        row = doctor_setup._token_file_row({**env, "FLEET_RECALL_INFISICAL_TOKEN": ""})
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("FLEET_RECALL_INFISICAL_TOKEN", row["detail"])
 
 
 if __name__ == "__main__":

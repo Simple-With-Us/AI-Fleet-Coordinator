@@ -631,6 +631,11 @@ class SeatConfig:
 class Config:
     def __init__(self) -> None:
         self.raw: dict[str, Any] = {}
+        self.operator_settings_revision: str | None = None
+        self.operator_settings_document: dict | None = None
+        self.operator_settings_source: str | None = None
+        self.operator_settings_error = False
+        self.operator_settings_snapshot_revision: str | None = None
         # `[decider.consult_backup]`:  the decider's OpenRouter declaration as written (None when the
         # file has none), its parsed form (None when absent or malformed), and the table it was read
         # from ("decider", or "muse_bridge" for a config that still holds the old location).
@@ -1826,10 +1831,30 @@ def _refuse_shared_env(cfg: Config) -> None:
             cfg.skipped_seats.setdefault(seat, []).append(reason)
 
 
-def load(root: str, path: str | None = None) -> Config:
+def load(root: str, path: str | None = None, *, environ=None) -> Config:
     path = path or os.path.join(root, L.CONFIG_NAME)
     raw, error = L.load_config(root, path)
+    settings_metadata = None
+    settings_error = False
+    env = os.environ if environ is None else environ
+    if not error and env.get("OPERATOR_SETTINGS_INFISICAL_READ_TOKEN"):
+        from .server import operator_settings
+
+        try:
+            raw, settings_metadata = operator_settings.load_runtime(raw, path, environ=env)
+        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
+            error = "canonical Operator settings unavailable; no verified configuration was loaded"
+            settings_error = True
     cfg = from_dict(raw)
+    cfg.operator_settings_error = settings_error
+    if settings_metadata:
+        cfg.operator_settings_revision = settings_metadata["revision"]
+        cfg.operator_settings_document = settings_metadata["document"]
+        cfg.operator_settings_source = settings_metadata["source"]
+    if cfg.operator_settings_source == "verified-copy":
+        cfg.warnings.append(
+            "Operator settings refresh failed; using the verified last-known-good copy"
+        )
     if error:
         cfg.errors.insert(0, error)
     elif not raw:
@@ -1839,6 +1864,16 @@ def load(root: str, path: str | None = None) -> Config:
             "daemon.owner_user_id is 0 (not pinned): nothing is treated as the owner and nothing wakes; "
             "run simple-chat daemon init"
         )
+    if cfg.instance == "server" and not cfg.errors:
+        from .server import operator_settings
+
+        try:
+            snapshot = operator_settings.accepted_snapshot(raw, operator_settings._manifest())
+            cfg.operator_settings_snapshot_revision = operator_settings.revision(snapshot)
+        except (operator_settings.SettingsError, operator_settings.editor.Refusal, OSError):
+            # Existing listeners remain usable before migration; initialization
+            # refuses when no complete schema-valid accepted snapshot exists.
+            pass
     return cfg
 
 

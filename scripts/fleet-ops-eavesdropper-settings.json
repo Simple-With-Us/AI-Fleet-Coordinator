@@ -1,5 +1,11 @@
 {
   "schemaVersion": 1,
+  "canonicalHome": {
+    "key": "OPERATOR_SETTINGS",
+    "environment": "prod",
+    "folder": "/operator-settings",
+    "writer": "eavesdropper-settings save"
+  },
   "notes": [
     "The one allowlist of scripts/simple_tools/server/eavesdropper_settings_edit.py: the settings of the Eavesdropper's live config (/data/listener.toml) a tool may change, and the type and range each may take.",
     "applyEnabled is false until the owner turns it on. While it is false, get and plan work and every apply is refused (apply_disabled).",

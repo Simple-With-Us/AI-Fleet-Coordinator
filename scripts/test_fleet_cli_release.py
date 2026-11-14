@@ -283,6 +283,16 @@ class ReleaseTests(unittest.TestCase):
             self.assertFalse(release.allowed_path(path), path)
 
     def test_scoped_verifier_is_required_only_for_new_bundles_and_excludes_the_cli(self):
+        self.assertIn("scripts/fleet_infisical.py", release.TOOL_REQUIRED)
+        self.assertNotIn("scripts/fleet_infisical.py", release.BASE_REQUIRED)
+        ledger = "scripts/simple_tools/operator_github_state.py"
+        self.assertIn(ledger, release.TOOL_REQUIRED)
+        self.assertNotIn(ledger, release.BASE_REQUIRED)
+        bundle = make_bundle()
+        bundle["files"].pop(ledger)
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(bundle).encode())
         for name in ("__init__", "core"):
             path = "scripts/fleet_secrets/%s.py" % name
             self.assertTrue(release.allowed_path(path), path)
@@ -330,6 +340,7 @@ class ReleaseTests(unittest.TestCase):
             package.mkdir()
             for name in release.KNOB_MODULES:
                 shutil.copy(root / (name + ".py"), package / (name + ".py"))
+            shutil.copy(root.parent / "fleet_infisical.py", Path(tmp) / "fleet_infisical.py")
             # Only the shipped files, a clean environment and no infisical CLI:  the lookup must answer with a labelled default.
             code = (
                 "import sys; sys.path.insert(0, %r); from fleet_knobs import knobs; "
