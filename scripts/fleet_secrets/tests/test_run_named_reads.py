@@ -117,12 +117,15 @@ class RunNamedReadTests(unittest.TestCase):
         self.assertNotIn("UNREQUESTED", child)
         self.assertEqual(self.env, original)
 
-    def test_plain_run_still_refuses_an_unresolved_folder_value(self):
-        code, out, err = self.run_cli()
-        self.assertEqual((code, out), (5, ""))
-        self.assertIn("unresolved-reference", err)
-        self.assertEqual(self.requests, ["/v2/service-token", "/v3/secrets/raw"])
-        self.assertFalse(self.executions)
+    def test_plain_run_refuses_before_auth_value_read_or_execution(self):
+        for values in ({"ALPHA": self.values["ALPHA"]}, self.values):
+            with self.subTest(unresolved="UNREQUESTED" in values):
+                self.values = values
+                code, out, err = self.run_cli()
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("run requires --only", err)
+                self.assertFalse(self.requests)
+                self.assertFalse(self.executions)
 
     def test_selection_limit_refuses_before_auth_or_any_value_read(self):
         names = [f"SELECTED_{i}" for i in range(cli.MAX_RUN_NAMES + 1)]
