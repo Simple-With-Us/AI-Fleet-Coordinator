@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 
+from .patch_secretscan import scan as patch_scan
+
 _PATTERNS = (
     ("github_fine_grained_pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
     ("github_token", re.compile(r"gh[opusr]_[A-Za-z0-9]{20,}")),
@@ -110,6 +112,32 @@ def category_id(category: object) -> str:
     return _LABEL_CATEGORY_IDS.get(category, "credential")
 
 
+# Every front vouches for the refusal shape with a field prefix of at most
+# 200 characters (gr-refusal.js, gr-tools.js, hosted-tools.js) and reads the
+# relay's error body under a 1000-character cap, so a refusal field must fit
+# the prefix bound with room to spare for the fixed tail.
+_FIELD_PREFIX_MAX = 200
+
+
+def _refusal_field(field: str) -> str:
+    """The field label a scanner refusal may carry.
+
+    The label is caller-shaped text (usually a repo path), and the refusal
+    text is persisted as an audit reason, so the label is echoed only when
+    it fits the fronts' vouched shape and no scanner reads the label itself
+    as a credential.  Anything else collapses to a fixed label:  the
+    category still names what matched, and no credential-shaped value is
+    written down.
+    """
+    if (
+        len(field) <= _FIELD_PREFIX_MAX
+        and find_secret(field) is None
+        and patch_scan(field) is None
+    ):
+        return field
+    return "args.path"
+
+
 def scan_refusal(field: str, category: object) -> str:
     """The refusal text for a scanner hit in a verb-scanned field.
 
@@ -118,8 +146,8 @@ def scan_refusal(field: str, category: object) -> str:
     identifier, never the matched content.
     """
     return (
-        f"{field} looks like it contains a credential ({category_id(category)}); "
-        "refusing to relay it"
+        f"{_refusal_field(field)} looks like it contains a credential "
+        f"({category_id(category)}); refusing to relay it"
     )
 
 

@@ -20,10 +20,14 @@ from git_relay.secret_scan import category_id, scan_refusal
 from git_relay.workflow_verbs import Refused
 
 # Obviously synthetic fixtures, one per scanner category exercised below.
-AWS_FIXTURE = "AKIAIOSFODNN7EXAMPLE"  # AWS's published example access key id
+# The AWS and JWT fixtures are assembled from pieces so the source file does
+# not itself carry a contiguous credential-shaped literal (gitleaks flags the
+# JWT shape, and the relay's own scanner refuses the AWS shape); the runtime
+# values are exactly the shapes under test.
+AWS_FIXTURE = "AKIA" + "IOSFODNN7EXAMPLE"  # AWS's published example key id
 GITHUB_FIXTURE = "ghp_" + "A" * 36
 BEARER_FIXTURE = "Bearer " + "synthetic" * 3
-JWT_FIXTURE = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart"
+JWT_FIXTURE = "eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".signaturepart"
 SLACK_FIXTURE = "xoxb-1234567890ab"
 ASSIGNED_FIXTURE = "api_key = 'syntheticvalue123'"
 
@@ -54,6 +58,42 @@ class CategoryId(unittest.TestCase):
             "args.files[2].content_b64 looks like it contains a credential "
             "(aws_access_key_id); refusing to relay it",
         )
+
+
+class RefusalFieldGuard(unittest.TestCase):
+    # The fronts vouch for the refusal shape with a field prefix of at most
+    # 200 characters and read the error body under a 1000-character cap, and
+    # the refusal text is persisted as an audit reason:  a caller-supplied
+    # field (a repo path) is echoed only when it fits and is not itself
+    # credential-shaped.
+    FRONT_SHAPE = (
+        r"^[^\n]{1,200} looks like it contains a credential "
+        r"\([A-Za-z0-9_]{1,60}\); refusing to relay it$"
+    )
+
+    def test_short_plain_path_is_echoed(self):
+        self.assertEqual(
+            scan_refusal("docs/a.md", "jwt"),
+            "docs/a.md looks like it contains a credential (jwt); "
+            "refusing to relay it",
+        )
+
+    def test_long_path_collapses_to_the_fixed_label(self):
+        for path in ("d" * 201, "dir/" * 200 + "f.ts"):
+            message = scan_refusal(path, "AWS access key")
+            self.assertEqual(
+                message,
+                "args.path looks like it contains a credential "
+                "(aws_access_key_id); refusing to relay it",
+            )
+            self.assertRegex(message, self.FRONT_SHAPE)
+            self.assertLessEqual(len(message), 1000)
+
+    def test_credential_shaped_path_is_never_echoed(self):
+        for path in (AWS_FIXTURE, "keys/" + JWT_FIXTURE, "glpat-" + "a1" * 10):
+            message = scan_refusal(path, "jwt")
+            self.assertTrue(message.startswith("args.path looks like"))
+            self.assertNotIn(path, message)
 
 
 class FilesPutCategory(unittest.TestCase):
@@ -208,6 +248,44 @@ class FilePatchCategory(unittest.TestCase):
         )
         self.assertNotIn(GITHUB_FIXTURE, message)
         self.assertTrue(all(m == "GET" for m, *_ in c.calls))
+
+
+    def test_long_path_finding_keeps_the_category_under_a_fixed_label(self):
+        raw = ("key = '" + GITHUB_FIXTURE + "'\n").encode()
+        blob_sha = hashlib.sha1(
+            b"blob " + str(len(raw)).encode() + b"\0" + raw
+        ).hexdigest()
+        args = {
+            "repo": REPO,
+            "branch": "feature/x",
+            "path": "pkg/" * 60 + "index.ts",
+            "message": "fix",
+            "expected_head_sha": SHA,
+            "base_blob_sha": blob_sha,
+            "edits": [dict(start=0, end=3, text="key")],
+        }
+        replies = [
+            dict(default_branch="main"),
+            dict(ref="refs/heads/feature/x", object=dict(sha=SHA)),
+            dict(sha=SHA, tree=dict(sha="b" * 40)),
+            dict(
+                type="file",
+                path=args["path"],
+                sha=blob_sha,
+                encoding="base64",
+                content=b64(raw),
+            ),
+        ]
+        c = Client(*replies)
+        with self.assertRaises(Refused) as caught:
+            Multi(c).run("wf_file_patch", args)
+        message = str(caught.exception)
+        self.assertEqual(
+            message,
+            "args.path looks like it contains a credential "
+            "(github_token); refusing to relay it",
+        )
+        self.assertNotIn(args["path"], message)
 
 
 if __name__ == "__main__":
