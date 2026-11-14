@@ -233,8 +233,10 @@ class OutcomeStore:
             try:
                 entry = json.loads(raw_line.decode("utf-8"))
                 key = entry["key"]
-                if not isinstance(key, str) or len(key) != 64 or any(
-                    ch not in _KEY_HEX for ch in key
+                if (
+                    not isinstance(key, str)
+                    or len(key) != 64
+                    or any(ch not in _KEY_HEX for ch in key)
                 ):
                     raise OutcomeStoreError(f"invalid key {key!r}")
                 if "released_at" in entry:
@@ -282,9 +284,7 @@ class OutcomeStore:
             while view:
                 written = os.write(fd, view)
                 if written <= 0:
-                    raise OutcomeStoreError(
-                        f"short write to archive index {self._index_path!r}"
-                    )
+                    raise OutcomeStoreError(f"short write to archive index {self._index_path!r}")
                 view = view[written:]
             os.fsync(fd)
         finally:
@@ -324,10 +324,13 @@ class OutcomeStore:
         fd = os.open(self._archive_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             for _, key in candidates:
-                line = json.dumps(
-                    {"key": key, "archived_at": self._clock(), "row": self._rows[key]},
-                    sort_keys=True,
-                ).encode() + b"\n"
+                line = (
+                    json.dumps(
+                        {"key": key, "archived_at": self._clock(), "row": self._rows[key]},
+                        sort_keys=True,
+                    ).encode()
+                    + b"\n"
+                )
                 view = memoryview(line)
                 while view:
                     written = os.write(fd, view)
@@ -398,9 +401,9 @@ class OutcomeStore:
     def finish(self, key: str, state: str, result: dict | None = None) -> None:
         with self._lock:
             row: dict = {"state": state, "ts": self._clock()}
-            corr = (self._rows.get(key) or {}).get("corr") or (
-                self._archived.get(key) or {}
-            ).get("corr")
+            corr = (self._rows.get(key) or {}).get("corr") or (self._archived.get(key) or {}).get(
+                "corr"
+            )
             if corr:
                 row["corr"] = corr
             if result is not None:
@@ -412,10 +415,13 @@ class OutcomeStore:
                 # key denied (fail closed), never silently released;  an index
                 # rebuilt from the archive folds the marker and stays released.
                 if self._archive_path:
-                    line = json.dumps(
-                        {"key": key, "released_at": self._clock(), "state": state},
-                        sort_keys=True,
-                    ).encode() + b"\n"
+                    line = (
+                        json.dumps(
+                            {"key": key, "released_at": self._clock(), "state": state},
+                            sort_keys=True,
+                        ).encode()
+                        + b"\n"
+                    )
                     fd = os.open(self._archive_path, os.O_WRONLY | os.O_APPEND, 0o600)
                     try:
                         view = memoryview(line)

@@ -18,13 +18,13 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import git_relay.outcomes as outcomes  # noqa: E402
-from git_relay.outcomes import OutcomeStore, OutcomeStoreError  # noqa: E402
+from git_relay import outcomes
+from git_relay.outcomes import OutcomeStore, OutcomeStoreError
 
 # Small caps keep the proof fast; the logic is size-independent.
 MAX_ENTRIES = 20
@@ -232,7 +232,9 @@ class ArchiveTestCase(unittest.TestCase):
         reloaded = OutcomeStore(self.path, clock=self.clock)
         row = reloaded.begin(oldest)
         self.assertIsNotNone(row)
-        self.assertEqual(row["state"], "ok", "the reconciled row rules, never the stale archived unknown")
+        self.assertEqual(
+            row["state"], "ok", "the reconciled row rules, never the stale archived unknown"
+        )
         self.assertFalse(row.get("archived", False))
         # A later attempt carries its own fresh correlation, never the held one.
         self.assertIsNone(reloaded.begin(oldest, reapply_ok=True, corr="e" * 32))
