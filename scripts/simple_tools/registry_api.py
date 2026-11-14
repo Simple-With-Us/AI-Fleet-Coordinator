@@ -35,6 +35,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
@@ -50,6 +51,11 @@ PRINCIPAL_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
 #: The key's one variable name.  (Spelled KEY_VAR so the P2 acceptance grep, which bans
 #: the retired pointer's suffix, stays exact.)
 KEY_VAR = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
+TOKEN_ENV = "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN"
+REGISTRY_PATH = "/operator-registry"
+# Public project identifier; the listener payload deliberately omits fleet_knobs.
+REGISTRY_PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
+REGISTRY_FETCH_TIMEOUT = 3.0
 
 #: The fleet_knobs names this module falls back to for the process environment.  They are
 #: the same names as the environment's, so there is one name for each value.  A name the
@@ -85,6 +91,10 @@ _KNOB_REASONS: dict[str, str] = {}
 #: lives this long, so it still pays at most one read per name.
 KNOB_MISS_RETRY_S = 60.0
 _KNOB_MISS_UNTIL: dict[str, float] = {}
+_DIRECT_CACHE: dict[str, str] = {}
+_DIRECT_IDENTITY: tuple[str, str] | None = None
+_DIRECT_REASON = ""
+_DIRECT_MISS_UNTIL = 0.0
 
 
 def reset_knob_cache() -> None:
@@ -92,6 +102,74 @@ def reset_knob_cache() -> None:
     _KNOB_CACHE.clear()
     _KNOB_REASONS.clear()
     _KNOB_MISS_UNTIL.clear()
+    global _DIRECT_IDENTITY, _DIRECT_REASON, _DIRECT_MISS_UNTIL
+    _DIRECT_CACHE.clear()
+    _DIRECT_IDENTITY = None
+    _DIRECT_REASON = ""
+    _DIRECT_MISS_UNTIL = 0.0
+
+
+def _direct_values(env: Mapping[str, str]) -> dict[str, str]:
+    """Read only the two registry names with this consumer's own narrow grant."""
+    global _DIRECT_IDENTITY, _DIRECT_REASON, _DIRECT_MISS_UNTIL
+    token = env.get(TOKEN_ENV, "")
+    identity = (hashlib.sha256(token.encode()).hexdigest(), env.get("FLEET_SECRETS_API", ""))
+    if identity != _DIRECT_IDENTITY:
+        _DIRECT_CACHE.clear()
+        _DIRECT_MISS_UNTIL = 0.0
+        _DIRECT_IDENTITY = identity
+    if _DIRECT_CACHE or time.monotonic() < _DIRECT_MISS_UNTIL:
+        return _DIRECT_CACHE
+    _DIRECT_REASON = "%s is missing or invalid" % TOKEN_ENV
+    if token.startswith("st.") and len(token) >= 20:
+        try:
+            import fleet_infisical as FI
+
+            expected_reader = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fleet_infisical.py"
+            )
+            if os.path.realpath(getattr(FI, "__file__", "")) != expected_reader:
+                raise ImportError("foreign shared reader")
+            scoped_env = dict(env)
+            scoped_env[FI.ENV_READ_PATHS] = REGISTRY_PATH
+            values = FI.bounded_fetch_project(
+                REGISTRY_PROJECT_ID,
+                REGISTRY_PATH,
+                scoped_env,
+                token=token,
+                names=(URL_ENV, KEY_VAR),
+                timeout=REGISTRY_FETCH_TIMEOUT,
+                max_output_bytes=8192,
+                strict_records=True,
+            )
+            url, key = values.get(URL_ENV, ""), values.get(KEY_VAR, "")
+            missing = [name for name in (URL_ENV, KEY_VAR) if not values.get(name)]
+            if missing:
+                _DIRECT_REASON = "required registry setting missing (%s)" % ", ".join(missing)
+                _DIRECT_MISS_UNTIL = time.monotonic() + KNOB_MISS_RETRY_S
+                return _DIRECT_CACHE
+            parsed = urllib.parse.urlsplit(url)
+            loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            valid_url = (
+                bool(parsed.hostname)
+                and parsed.port != 0
+                and (parsed.scheme == "https" or (parsed.scheme == "http" and loopback))
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+                and parsed.username is None
+                and parsed.password is None
+            )
+            valid_key = 32 <= len(key) <= 512 and all(33 <= ord(c) <= 126 for c in key)
+            if valid_url and valid_key:
+                _DIRECT_CACHE.update({URL_ENV: url.rstrip("/"), KEY_VAR: key})
+                _DIRECT_REASON = ""
+                return _DIRECT_CACHE
+            _DIRECT_REASON = "registry URL or signing key failed validation"
+        except Exception:  # noqa: BLE001 - no provider payload or credential reaches diagnostics
+            _DIRECT_REASON = "registry-only Infisical read failed (%s required)" % TOKEN_ENV
+    _DIRECT_MISS_UNTIL = time.monotonic() + KNOB_MISS_RETRY_S
+    return _DIRECT_CACHE
 
 
 def _knob_value(name: str) -> str:
@@ -143,6 +221,8 @@ def _is_process_env(env: Mapping[str, str]) -> bool:
 def _setting(env: Mapping[str, str], env_name: str, knob_name: str) -> str:
     """One configuration value:  the environment's, else (for the process environment
     only) the knob's, else ""."""
+    if _is_process_env(env) and TOKEN_ENV in env:
+        return _direct_values(env).get(env_name, "")
     value = str(env.get(env_name) or "").strip()
     if value or not _is_process_env(env):
         return value
@@ -151,6 +231,8 @@ def _setting(env: Mapping[str, str], env_name: str, knob_name: str) -> str:
 
 def _unset_reason(env: Mapping[str, str], env_name: str, knob_name: str) -> str:
     """Why a setting reads as unset, by name only:  never a value."""
+    if _is_process_env(env) and TOKEN_ENV in env:
+        return _DIRECT_REASON or "%s is unavailable" % env_name
     if not _is_process_env(env):
         return (
             "%s is not set in the given environment (knobs are not consulted for an explicit mapping)"

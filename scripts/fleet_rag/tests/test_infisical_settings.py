@@ -71,7 +71,7 @@ class _HttpWorld:
             raise AssertionError("universal-auth login is retired")
         if path == "/api/v2/service-token":
             return _FakeHTTPResponse(200, {"workspace": PROJECT, "permissions": ["read", "write"] if auth == "Bearer " + WRITER_TOKEN else ["read"],
-                "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None})
+                "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"})
         if path.startswith("/api/v3/secrets/raw"):
             if method == "GET":
                 if self.fail_fetch:
@@ -215,7 +215,7 @@ class InitTests(_SettingsCase):
         s = self.make()
         with mock.patch.object(s, "_request", side_effect=[
             (200, {"workspace": PROJECT, "permissions": ["read"],
-                   "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+                   "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}),
             (200, {"secrets": [{"secretKey": "SOME_RANDOM_KEY", "secretValue": "ignored",
                                 "type": "shared", "workspace": "wrong-project"}]}),
         ]):
@@ -229,7 +229,7 @@ class InitTests(_SettingsCase):
                 record = {"secretKey": key, "secretValue": "synthetic", "type": "shared"}
                 with mock.patch.object(s, "_request", side_effect=[
                     (200, {"workspace": PROJECT, "permissions": ["read"],
-                           "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+                           "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}),
                     (200, {"secrets": [record, dict(record)]}),
                 ]):
                     with self.assertRaisesRegex(mod.SettingsError, "scope validation"):

@@ -41,7 +41,16 @@ if (
 # for every seat, so it must run whether or not SIMPLE_CHAT_REMOTE is set:  skipped, it would fall through to the
 # CLI's argument parser and exit 2, which blocks the prompt.
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "letter":
-    from simple_tools.platform_letter import main as letter_main  # noqa: E402
+    try:
+        from simple_tools.letter_registry_bootstrap import bind, report
+        from simple_tools.platform_letter import main as letter_main  # noqa: E402
+    except Exception:  # noqa: BLE001 - a partial runtime must never block chat startup
+        # A partial managed release must not prevent an interactive chat from starting.
+        sys.stderr.write("platform-letter: SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN "
+                         "unavailable (bootstrap or client module unavailable)\n")
+        sys.exit(0 if sys.argv[2:3] == ["hook"] else 1)
+    else:
+        report(bind())
 
     # The name it was run under goes along:  `simple-chat letter hook` with no --platform is the command the retired
     # Claude client installed, and it must go on working until someone runs `install`.
