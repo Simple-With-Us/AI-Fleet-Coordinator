@@ -200,9 +200,7 @@ def load_credentials(
     try:
         recall_binding = core.read_token_binding(env)
     except core._ReadTokenError as exc:
-        binding_name = (
-            TOKEN_FILE_RECALL if exc.code.startswith("token-file") else RECALL_TOKEN_KEY
-        )
+        binding_name = TOKEN_FILE_RECALL if exc.code.startswith("token-file") else RECALL_TOKEN_KEY
         raise NightlyError(exc.code + ":" + binding_name) from None
     if recall_binding is None:
         raise NightlyError("recall-binding-unset:" + RECALL_TOKEN_KEY)
