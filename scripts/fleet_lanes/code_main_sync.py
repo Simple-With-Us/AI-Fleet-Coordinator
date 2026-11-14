@@ -717,31 +717,28 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
                             else None
                         )
                         if isinstance(pid, int) and pid > 0:
-                            if owner_age is not None and owner_age >= SCHEDULER_LOCK_STALE_S:
+                            process_started_at = None
+                            try:
+                                stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+                                stat_fields = stat_text[stat_text.rfind(")") + 2 :].split()
+                                start_ticks = int(stat_fields[19])
+                                boot_time = next(
+                                    line.split()[1]
+                                    for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines()
+                                    if line.startswith("btime ")
+                                )
+                                process_started_at = int(boot_time) + start_ticks / os.sysconf("SC_CLK_TCK")
+                            except (OSError, ValueError, IndexError, StopIteration):
+                                pass
+                            if owner_age is not None and process_started_at is not None and process_started_at > started_at + 1:
                                 stale = True
                             else:
-                                process_started_at = None
                                 try:
-                                    stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-                                    stat_fields = stat_text[stat_text.rfind(")") + 2 :].split()
-                                    start_ticks = int(stat_fields[19])
-                                    boot_time = next(
-                                        line.split()[1]
-                                        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines()
-                                        if line.startswith("btime ")
-                                    )
-                                    process_started_at = int(boot_time) + start_ticks / os.sysconf("SC_CLK_TCK")
-                                except (OSError, ValueError, IndexError, StopIteration):
-                                    pass
-                                if owner_age is not None and process_started_at is not None and process_started_at > started_at + 1:
+                                    os.kill(pid, 0)
+                                except ProcessLookupError:
                                     stale = True
-                                else:
-                                    try:
-                                        os.kill(pid, 0)
-                                    except ProcessLookupError:
-                                        stale = True
-                                    except PermissionError:
-                                        stale = False
+                                except PermissionError:
+                                    stale = False
                         else:
                             stale = True
                     except (OSError, ValueError, TypeError):
@@ -753,6 +750,8 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
                         aside = lock_dir.with_name(lock_dir.name + ".stale-" + uuid.uuid4().hex)
                         try:
                             os.rename(lock_dir, aside)
+                        except FileNotFoundError:
+                            continue
                         except OSError:
                             print("Code mirror scheduler is already running", file=sys.stderr)
                             return 0
