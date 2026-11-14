@@ -67,10 +67,10 @@ LIVE_DEFAULTS: dict[str, int] = {}
 # `zulip.DEFAULT_CHANNEL`:  live.py sits on the hook fast path, and test_live.py forbids importing
 # simple_tools.zulip there.  test_default_channel.py holds the two in step.
 DEFAULT_PRESENCE = [
-    ["work-in-progress", "roll call"],
-    ["work-in-progress", "fleet"],
-    ["builds", "gates"],
-    ["alerts", "*"],
+    ["Work-In-Progress", "roll call"],
+    ["Work-In-Progress", "fleet"],
+    ["Builds", "gates"],
+    ["Alerts", "*"],
 ]
 MARKER_BEGIN = "BEGIN_UNTRUSTED_ZULIP"
 MARKER_END = "END_UNTRUSTED_ZULIP"

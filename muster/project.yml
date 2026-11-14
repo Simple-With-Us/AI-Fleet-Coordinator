@@ -133,6 +133,8 @@ targets:
       - path: Muster/Model/OpsAuditLog.swift
       - path: Muster/Model/OpsControl.swift
       - path: Muster/Model/ServerListenerSettings.swift
+      - path: Muster/Model/ServerSettingsAutosave.swift
+      - path: Muster/Model/OwnerCheck.swift
       - path: Muster/Model/ServerUnitStatus.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MachineStatus.swift
