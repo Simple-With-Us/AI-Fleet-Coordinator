@@ -90,7 +90,7 @@ Arm auto-merge with the relay tool `gr_wf_automerge_enable` (`repo`, `number`, `
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, announce the full gate in #builds topic `gates`: the MCP tool `zulip_post` (`channel` = `builds`, `topic` = `gates`, `text` = "gating now (<repo>, <branch or purpose>)"), then post `gate clear` in the same topic when it finishes.  The server writes the tag.  Wait on a peer's open `gating now` with the CLI fallback `simple-chat wait --channel builds --topic gates --timeout 900` (it needs a seat:  `AGENT_SEAT`, `--as NAME`, `--default-seat NAME` or `--rc`).  Use the fleet wake (`@**all**` in #Work-In-Progress topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
+If the box is gating several lanes, announce the full gate in #Builds topic `gates`: the MCP tool `zulip_post` (`channel` = `builds`, `topic` = `gates`, `text` = "gating now (<repo>, <branch or purpose>)"), then post `gate clear` in the same topic when it finishes.  The server writes the tag.  Wait on a peer's open `gating now` with the CLI fallback `simple-chat wait --channel builds --topic gates --timeout 900` (it needs a seat:  `AGENT_SEAT`, `--as NAME`, `--default-seat NAME` or `--rc`).  Use the fleet wake (`@**all**` in #Work-In-Progress topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
 
 ## After merge
 
