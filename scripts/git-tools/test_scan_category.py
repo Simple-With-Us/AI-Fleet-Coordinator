@@ -45,7 +45,9 @@ class CategoryTests(unittest.TestCase):
         }
         with mock.patch.object(git, "_scanner", return_value=scanner):
             result = git._scan_arguments(args, "synthetic-bearer", "gr_wf_files_put")
-        self.assertEqual(result, r"secret_scan:files\u005b0\u005d.content_b64 [category=assigned secret]")
+        self.assertEqual(
+            result, r"secret_scan:files\u005b0\u005d.content_b64 [category=assigned secret]"
+        )
         scanner.scan_file.assert_called_once_with(
             "o/r", "test.py", "synthetic text", ["synthetic-bearer"]
         )
@@ -100,14 +102,20 @@ class CategoryTests(unittest.TestCase):
                 after = git._scan_arguments(case, "", "gr_wf_files_put")
             self.assertEqual(before is None, after is None)
             if before is not None:
-                expected_path = fixture.json.dumps(before.removeprefix("secret_scan:"), ensure_ascii=True)[1:-1]
+                expected_path = fixture.json.dumps(
+                    before.removeprefix("secret_scan:"), ensure_ascii=True
+                )[1:-1]
                 expected_path = expected_path.replace("[", "\\u005b").replace("]", "\\u005d")
                 self.assertEqual(after.split(" [category=", 1)[0], "secret_scan:" + expected_path)
 
     def test_untrusted_path_cannot_spoof_category_or_control_output(self):
         scanner = mock.Mock()
         scanner.scan.return_value = "unclassified"
-        for key in ["x [category=assigned secret]", "x\n[category=assigned secret]", r"x\u005bcategory=assigned secret\u005d"]:
+        for key in [
+            "x [category=assigned secret]",
+            "x\n[category=assigned secret]",
+            r"x\u005bcategory=assigned secret\u005d",
+        ]:
             with self.subTest(key=key), mock.patch.object(git, "_scanner", return_value=scanner):
                 result = git._scan_arguments({key: "synthetic text"}, "")
             self.assertEqual(result.count("[category="), 1)
