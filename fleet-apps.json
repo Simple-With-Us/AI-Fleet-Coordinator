@@ -192,9 +192,10 @@
       "codeDir": "FleetLink",
       "worktreePrefix": "fleetlink",
       "badgeClass": "repo-fl",
+      "digestColor": "#155e75",
       "hasAppIcon": false,
       "kind": "product",
-      "notes": "Expiring artifact sharing and static hosting (fleetlink.online, fleetlink.app) with an iOS App Clip.  Public repo.  No digestColor and no digest badge:  FleetLink is not on the public-activity allowlist (scripts/public_activity_repos.py), so the daily digest and the calendar do not list it.  The acronym FL was chosen on 2026-10-11 (AFC-252):  no other registry row, Linear team key or Zulip linkifier uses it, and Jay creates the Linear team FL.  FL#n links to FleetLink issues and FL-n to its Linear team (zulip-fleet-guide.md, Current Linkifiers).  The live fleetlink.online worker (fleet-share-api) is still built from fleetlink-legacy until cutover, so a fix to production today lands there."
+      "notes": "Expiring artifact sharing and static hosting (fleetlink.online, fleetlink.app) with an iOS App Clip.  Public repo included in the public-activity allowlist (scripts/public_activity_repos.py); feed builds still verify current GitHub visibility.  The acronym FL was chosen on 2026-10-11 (AFC-252):  no other registry row, Linear team key or Zulip linkifier uses it, and Jay creates the Linear team FL.  FL#n links to FleetLink issues and FL-n to its Linear team (zulip-fleet-guide.md, Current Linkifiers).  The live fleetlink.online worker (fleet-share-api) is still built from fleetlink-legacy until cutover, so a fix to production today lands there."
     },
     {
       "repo": "fleetlink-legacy",
@@ -213,9 +214,11 @@
       "displayName": "Simple With Us",
       "codeDir": "Simple-With-Us",
       "worktreePrefix": "swu",
+      "badgeClass": "repo-swu",
+      "digestColor": "#4b5563",
       "hasAppIcon": false,
       "kind": "marketing",
-      "notes": "The fleet marketing repo:  the static catalog at https://simplewithus.com/ and one page per app.  It holds no product code;  each shipped tool lives in its own fleet repo.  Its row exists so lane new can make marketing-site lanes (AFC-297), and it is the reason the handbook records the swu lane prefix.  SWU is a registry key and the Linear team for Simple With Us website work.  No digestColor, no badge class and no public-activity feed:  it is not a shipped app, and a digest row for the catalog would crowd out the tools it lists.  Its integration tree is ~/Code/Simple-With-Us, reset by a daemon, so all agent work happens in a lane."
+      "notes": "The fleet marketing repo:  the static catalog at https://simplewithus.com/ and one page per app.  It holds no product code;  each shipped tool lives in its own fleet repo.  Its row exists so lane new can make marketing-site lanes (AFC-297), and it is the reason the handbook records the swu lane prefix.  SWU is a registry key and the Linear team for Simple With Us website work.  Public catalog activity is included in the public-activity allowlist (scripts/public_activity_repos.py); feed builds still verify current GitHub visibility.  Its integration tree is ~/Code/Simple-With-Us, reset by a daemon, so all agent work happens in a lane."
     }
   ],
   "seats": [
