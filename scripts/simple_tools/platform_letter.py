@@ -154,10 +154,12 @@ GONE_SENT_IDS = 2000
 # runs, so a letter whose hook run died after the register - or an ask that never reached the assigner - would
 # otherwise keep a chat "??: " until its next CLI or Desktop event;  the pass is the way back for those chats.
 REPAIR_SWEEP_SECONDS = 3600
-# The most wall-clock time one repair pass spends starting replays:  an implementation judgment, not a
-# platform-documented limit - the pass rides a chat's start hook, which the platform may cut off, so a slow
-# assigner must not stretch one chat's start.  A candidate the budget cuts waits for the next pass.
-REPAIR_PASS_SECONDS = 10
+# The most wall-clock time one repair pass spends STARTING replays.  The pass rides a SessionStart hook whose
+# timeout the codex adapter declares at 20s ("SessionStart": 20 there), and one replay in flight can outlast
+# this gate - a register call is up to _API_TIMEOUT seconds, a parent's ensure a second one, a rename up to
+# the adapter's RPC_SECONDS - so the gate leaves room for that one replay instead of pretending to bound the
+# whole pass.  A candidate the budget cuts waits for the next pass.
+REPAIR_PASS_SECONDS = 5
 #: The most chats one pass replays:  the repair is real work on a live chat's start budget.
 REPAIR_MAX_CHATS = 5
 #: What a chat with no letter carries where the letter goes ("??: Fix Login"), owner Nov 11, 2026:  "just make threads
@@ -3759,15 +3761,19 @@ def repair_unlettered(
     if not force and "at" in stamp and 0 <= now - _seconds(stamp["at"]) < REPAIR_SWEEP_SECONDS:
         return {"skipped": "not due"}
     if not _save_json(path, {"at": now}):
-        # No stamp, no throttle:  nothing is replayed.
-        return {"skipped": "the stamp could not be saved"}
+        # No stamp, no throttle:  nothing is replayed.  recorded=False:  the verb's caller hears it on stderr.
+        return {"skipped": "the stamp could not be saved", "recorded": False}
     try:
         found = [
             sid for sid in (spec.unlettered_sessions(env) or []) if isinstance(sid, str) and sid
         ]
     except Exception:  # noqa: BLE001 - a repair never blocks a chat, whatever an adapter or the host does
-        _save_json(path, {"at": now, "outcome": {"error": "the adapter could not list them"}})
-        return {"skipped": "the adapter could not list them"}
+        mark = {"at": now, "outcome": {"error": "the adapter could not list them"}}
+        recorded = _save_json(path, mark)
+        if not recorded:
+            # One retry:  an unsaved outcome reads as a pass that never finished.
+            recorded = _save_json(path, mark)
+        return {"skipped": "the adapter could not list them", "recorded": recorded}
     home = str(env.get("HOME") or os.path.expanduser("~"))
     started = time.monotonic()
     asked: list[str] = []
@@ -3796,20 +3802,20 @@ def repair_unlettered(
                 repaired.append(sid)
         except Exception:  # noqa: BLE001 - the note read is a report detail only
             pass
-    _save_json(
-        path,
-        {
-            "at": now,
-            "outcome": {
-                "found": len(found),
-                "asked": len(asked),
-                "repaired": len(repaired),
-                "failed": len(failures),
-                "failures": failures,
-            },
-        },
-    )
-    return {"asked": asked, "repaired": repaired, "failures": failures}
+    outcome = {
+        "found": len(found),
+        "asked": len(asked),
+        "repaired": len(repaired),
+        "failed": len(failures),
+        "failures": failures,
+    }
+    recorded = _save_json(path, {"at": now, "outcome": outcome})
+    if not recorded:
+        # One retry with a bare marker:  an unsaved outcome must not read as a pass that never finished.
+        recorded = _save_json(
+            path, {"at": now, "outcome": {"error": "the outcome could not be saved"}}
+        )
+    return {"asked": asked, "repaired": repaired, "failures": failures, "recorded": recorded}
 
 
 def _repair_unlettered_after_start(chat: Chat, stdout: TextIO) -> None:
@@ -3908,6 +3914,8 @@ def repair_main(
         head = "%s unlettered repair, %s:  " % (spec.display, where)
         if "skipped" in done:
             stdout.write(head + "skipped (%s)\n" % done["skipped"])
+            if done.get("recorded") is False:
+                sys.stderr.write(head + "the pass's outcome could not be recorded\n")
             continue
         asked = done.get("asked") or []
         fixed = set(done.get("repaired") or [])
@@ -3918,6 +3926,8 @@ def repair_main(
         for failed_chat in done.get("failures") or []:
             stdout.write(head + "%s failed (%s)\n" % (failed_chat["sid"][:8], failed_chat["error"]))
         stdout.write(head + "%d replayed, %d lettered\n" % (len(asked), len(fixed)))
+        if done.get("recorded") is False:
+            sys.stderr.write(head + "the pass's outcome could not be recorded\n")
     return 0
 
 
