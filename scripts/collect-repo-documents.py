@@ -328,12 +328,19 @@ def discover_repositories(
             if info is not None and (requested is None or info.name == requested):
                 candidates.append(info)
 
+    private_opt_in_identity = _private_opt_in_identity(private_docs_repo)
     for descriptor in git_source_descriptors or []:
         try:
             snapshot = remote_git_source.load_descriptor(Path(descriptor).expanduser())
             identity = snapshot.identity
             owner, name = identity["owner_repo"].split("/")
-            if identity["visibility"] == "private" and private_docs_repo != identity["owner_repo"]:
+            descriptor_identity = _private_opt_in_identity(identity["owner_repo"])
+            private_opt_in_matches = (
+                private_opt_in_identity is not None
+                and descriptor_identity is not None
+                and private_opt_in_identity == descriptor_identity
+            )
+            if identity["visibility"] == "private" and not private_opt_in_matches:
                 raise CollectionError(
                     "Private remote source requires its exact --private-docs-repo identity"
                 )
@@ -357,7 +364,7 @@ def discover_repositories(
             selected, _, _ = _select_blobs(
                 info,
                 _parse_tree(info),
-                include_private_audits=private_docs_repo == identity["owner_repo"],
+                include_private_audits=private_opt_in_matches,
             )
             snapshot.require_selected(set(selected))
             candidates.append(info)

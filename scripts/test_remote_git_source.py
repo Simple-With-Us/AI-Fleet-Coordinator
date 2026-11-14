@@ -58,6 +58,7 @@ class ProviderFixture:
             "docs/guide.md": ("100755", b"Guide.\n"),
             "docs/chart.png": ("100644", b"\x89PNG\r\n\x1a\nfixture"),
             "docs/evidence.json": ("100644", b'{"fixture":true}\n'),
+            "docs/private-audits/evidence.md": ("100644", b"Private audit evidence.\n"),
             "docs/link.png": ("120000", b"../../outside.png"),
             "docs/fixtures/excluded.md": ("100644", b"fixture data"),
             "src/app.py": ("100644", b"print('excluded')\n"),
@@ -178,7 +179,7 @@ class RemoteGitSourceTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def export(self):
+    def export(self, include_private_audits=False):
         snapshot = self.provider.snapshot()
         owner, name = snapshot.identity["owner_repo"].split("/")
         repo = collector.RepoInfo(
@@ -189,7 +190,11 @@ class RemoteGitSourceTests(unittest.TestCase):
             snapshot.identity["source_commit"],
             snapshot,
         )
-        selected, _, _ = collector._select_blobs(repo, collector._parse_tree(repo))
+        selected, _, _ = collector._select_blobs(
+            repo,
+            collector._parse_tree(repo),
+            include_private_audits=include_private_audits,
+        )
         snapshot.require_selected(set(selected))
         remote.write_descriptor(snapshot, self.descriptor)
         return snapshot
@@ -346,8 +351,14 @@ class RemoteGitSourceTests(unittest.TestCase):
 
     def test_private_source_requires_exact_opt_in_and_stays_out_of_index_previews(self):
         self.provider = ProviderFixture(private=True)
-        self.export()
-        for opt_in in (None, "other-owner/ExamplePrivate", "fixture-owner/exampleprivate"):
+        self.export(include_private_audits=True)
+        for opt_in in (
+            None,
+            "other-owner/ExamplePrivate",
+            "fixture-owner/ExampleRepo",
+            "fixture-owner/ExamplePrivate/extra",
+            " fixture-owner/ExamplePrivate",
+        ):
             with self.subTest(opt_in=opt_in), self.assertRaises(collector.CollectionError):
                 collector.collect(
                     None,
@@ -371,6 +382,89 @@ class RemoteGitSourceTests(unittest.TestCase):
                 ),
                 2,
             )
+
+    def test_casefold_private_descriptor_opt_in_discovers_and_refreshes_same_commit(self):
+        self.provider = ProviderFixture(private=True)
+        snapshot = self.export(include_private_audits=True)
+        opt_in = "FIXTURE-OWNER/exampleprivate"
+        private_path = "docs/private-audits/evidence.md"
+        private_content = self.provider.files[private_path][1]
+
+        with patch.object(
+            collector, "_run_git", side_effect=AssertionError("Remote collection used local Git")
+        ):
+            discovered, skipped = collector.discover_repositories(
+                None,
+                git_source_descriptors=[self.descriptor],
+                private_docs_repo=opt_in,
+            )
+            self.assertEqual(skipped, [])
+            self.assertEqual(len(discovered), 1)
+            repo = discovered[0]
+            self.assertEqual(repo.owner, "fixture-owner")
+            self.assertEqual(repo.name, "ExamplePrivate")
+            self.assertEqual(repo.commit, snapshot.identity["source_commit"])
+            self.assertEqual(repo.snapshot.contents[private_path], private_content)
+
+            collector.collect(
+                None,
+                self.output,
+                git_source_descriptors=[self.descriptor],
+                private_docs_repo=opt_in,
+            )
+            mirror = self.output / "ExamplePrivate"
+            first_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(first_manifest["owner_repo"], self.provider.owner_repo)
+            self.assertEqual(first_manifest["source_commit"], snapshot.identity["source_commit"])
+            self.assertEqual(first_manifest["private_docs_opt_in"], self.provider.owner_repo)
+            copied_path = "documents/docs/private-audits/evidence.md"
+            self.assertEqual((mirror / copied_path).read_bytes(), private_content)
+            first_file_record = first_manifest["files"][copied_path]
+            self.assertEqual(first_file_record["source_commit"], snapshot.identity["source_commit"])
+            self.assertEqual(
+                first_file_record["object_id"],
+                remote.object_id("blob", private_content),
+            )
+            report_history = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
+            }
+            self.assertTrue(report_history)
+
+            discovered_again, skipped_again = collector.discover_repositories(
+                None,
+                git_source_descriptors=[self.descriptor],
+                private_docs_repo=opt_in,
+            )
+            self.assertEqual(skipped_again, [])
+            self.assertEqual(discovered_again[0].commit, first_manifest["source_commit"])
+            self.assertEqual(
+                collector.collect(
+                    None,
+                    self.output,
+                    git_source_descriptors=[self.descriptor],
+                    private_docs_repo=opt_in,
+                ),
+                [],
+            )
+            refreshed_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(refreshed_manifest["owner_repo"], self.provider.owner_repo)
+            self.assertEqual(refreshed_manifest["source_commit"], first_manifest["source_commit"])
+            self.assertEqual(
+                refreshed_manifest["files"][copied_path]["object_id"],
+                first_file_record["object_id"],
+            )
+            for name, snapshot_bytes in report_history.items():
+                path = mirror / name
+                self.assertEqual(
+                    (path.read_bytes(), stat.S_IMODE(path.stat().st_mode)), snapshot_bytes
+                )
 
     def test_unmatched_private_opt_in_cannot_create_output_for_a_public_descriptor(self):
         self.export()
