@@ -23,31 +23,48 @@ What this does, in order:
      PUT, under the names the Worker asks for
      (workers/alert-ingress/src/index.js, credentialSlug()).
 
-Every credential is read from the environment first and from `fleet-secrets`
+Every credential is read from the environment first and the canonical named reader
 second, so a value the environment already holds is never fetched again.  Folder reads and
 generated-secret writes use separate, caller-scoped Infisical service tokens.
 
 Names and lengths are printed; no value is ever printed, logged or persisted.
 The values live in this process's memory for the length of the run.
 
-`fleet-secrets set` cannot write these names (its allowlist covers CACHE_*
-under /linear and the CLI logins), so writes use the scoped AFC write token.
+Generated-secret writes retain the separate scoped AFC write token and the
+existing direct-write approval and unknown-outcome contract.
 """
 
 import json
 import os
 import pathlib
-import re
 import secrets as _secrets
-import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from itertools import chain
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-import fleet_infisical as scoped_secrets
+# This checkout/payload must carry the canonical library beside scripts/alert-ingress.
+# A missing sibling never authorizes an executable, user-site or PATH fallback.
+SCRIPTS_ROOT = pathlib.Path(__file__).resolve().parent.parent
+CANONICAL_READER = SCRIPTS_ROOT / "fleet_infisical.py"
+EXIT_MISSING_EXECUTABLE = 127  # Compatibility exit: required code payload is unavailable.
+sys.path.insert(0, str(SCRIPTS_ROOT))
+try:
+    if CANONICAL_READER.is_symlink() or not CANONICAL_READER.is_file():
+        raise ImportError()
+    import fleet_infisical as scoped_secrets
+
+    if pathlib.Path(scoped_secrets.__file__).resolve() != CANONICAL_READER:
+        raise ImportError()
+    if not all(
+        callable(getattr(scoped_secrets, name, None))
+        for name in ("bounded_fetch_project", "infisical_project_id", "verify_service_token")
+    ):
+        raise ImportError()
+except (Exception, SystemExit):
+    print("STOP: shared Infisical reader is unavailable; nothing was written.", file=sys.stderr)
+    raise SystemExit(EXIT_MISSING_EXECUTABLE) from None
 
 # Project identifiers, pinned: a copy must read from and write to exactly this
 # project (populate-scoped-folders.py, kody 4365623903).  Neither is a credential.
@@ -106,24 +123,18 @@ GENERATED = (
 # there and says so when it is not.
 VENDOR_ISSUED = ("SENTRY_WEBHOOK_SECRET",)
 
-FLEET_SECRETS_ABSENT = 3
 READ_TOKEN_AFC = "ALERT_INGRESS_AFC_READ_TOKEN"
 READ_TOKEN_FLEETOPS = "ALERT_INGRESS_FLEETOPS_READ_TOKEN"
 WRITE_TOKEN_AFC = "ALERT_INGRESS_AFC_WRITE_TOKEN"
 
-# Exit codes the shell reads:  124 is a timeout, 127 a missing executable.
+# The read operation retains the old subprocess's 90-second limit and timeout exit.
 EXIT_TIMEOUT = 124
-EXIT_MISSING_EXECUTABLE = 127
+READ_TIMEOUT = 90.0
+READ_MAX_OUTPUT_BYTES = 1024 * 1024
 
 # The reason word for a write whose outcome the server never confirmed.  Such
 # a write may already have been applied, so it is never a definite failure.
 OUTCOME_UNKNOWN = "outcome_unknown"
-
-# `fleet-secrets get` answers a name the folder does not hold with this fixed
-# sentence and exit code 3.  Only the sentence is read, and only names that
-# were asked for are accepted, so nothing else in the stream can be mistaken
-# for a name.
-ABSENT_PATTERN = re.compile(r"key ([A-Za-z0-9_]+(?:, [A-Za-z0-9_]+)*) is not in Infisical at ")
 
 
 class ReadError(Exception):
@@ -150,190 +161,64 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def fleet_secrets_binary():
-    return shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
-
-
 def fleet_secrets_get(name, project, path):
-    """One value through `fleet-secrets get`, or None when it is absent.
-
-    fleet-secrets expands Infisical references and refuses an unresolved one,
-    so a literal ${...} is never returned.  Any other failure raises with a
-    reason word only;  stderr is discarded unread so no server text leaks.
-    """
-    argv, env = fleet_secrets_batch([name], project, path)
-    try:
-        proc = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=90,
-            check=False,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        raise ReadError(f"{name}:  fleet-secrets timed out", EXIT_TIMEOUT) from None
-    except FileNotFoundError:
-        raise ReadError(
-            f"{name}:  fleet-secrets is not installed", EXIT_MISSING_EXECUTABLE
-        ) from None
-    except OSError as error:
-        raise ReadError(f"{name}:  fleet-secrets could not run ({type(error).__name__})") from None
-    if proc.returncode == FLEET_SECRETS_ABSENT:
-        return None
-    if proc.returncode != 0:
-        raise ReadError(f"{name}:  fleet-secrets exited {proc.returncode}")
-    try:
-        return proc.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        raise ReadError(f"{name}:  fleet-secrets returned unreadable output")
-
-
-def _absent_names(stderr, requested):
-    """The names the CLI reported as absent, and only those."""
-    if stderr is None:
-        return set()
-    text = stderr.decode("utf-8", "replace")
-    absent = set()
-    for match in ABSENT_PATTERN.finditer(text):
-        for name in match.group(1).split(", "):
-            if name in requested:
-                absent.add(name)
-    return absent
-
-
-def fleet_secrets_batch(names, project, path):
-    """The command that reads several names in ONE Infisical export.
-
-    `fleet-secrets get NAME...` exports the folder once and answers with a JSON
-    object of name to value.  The copy installed on a machine may still be the
-    older one that takes a single name, so the repo's own copy is preferred
-    when it sits next to this script.
-    """
-    token_name = READ_TOKEN_AFC if project == AFC_SLUG else READ_TOKEN_FLEETOPS
-    token = (os.environ.get(token_name) or "").strip()
-    if (
-        not token.startswith("st.")
-        or not 20 <= len(token) <= 2048
-        or any(c.isspace() for c in token)
-    ):
-        raise ReadError(f"{token_name} is missing or invalid")
-    package = pathlib.Path(__file__).resolve().parent.parent / "fleet_secrets"
-    env = dict(os.environ)
-    for name in (
-        "INFISICAL_TOKEN",
-        "INFISICAL_AI_FLEET_COORDINATOR_TOKEN",
-        READ_TOKEN_AFC,
-        READ_TOKEN_FLEETOPS,
-    ):
-        env.pop(name, None)
-    if project == AFC_SLUG:
-        env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"] = token
-    else:
-        env["INFISICAL_TOKEN"] = token
-    env[scoped_secrets.ENV_READ_PATHS] = path
-    if project == AFC_SLUG:
-        env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = AFC
-    if (package / "__main__.py").is_file():
-        root = str(package.parent)
-        existing = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = root + (os.pathsep + existing if existing else "")
-        return (
-            [
-                sys.executable,
-                "-m",
-                "fleet_secrets",
-                "get",
-                *names,
-                "--path",
-                path,
-                "--project",
-                project,
-            ],
-            env,
-        )
-    return (
-        [fleet_secrets_binary(), "get", *names, "--path", path, "--project", project],
-        env,
-    )
+    """Compatibility entrypoint: one canonical named read, or None when absent."""
+    return fleet_secrets_get_many((name,), project, path).get(name)
 
 
 def fleet_secrets_get_many(names, project, path):
-    """Every requested name in ONE Infisical read.
+    """Read only the requested names using this provisioner's existing own binding.
 
-    `fleet-secrets get NAME...` exports the whole folder once and answers with
-    the names it holds, so ten per-name calls -- ten exports of the same
-    folder -- become one.  A name the folder does not hold is reported as
-    absent, not as an error:  the caller decides which ones it may do without.
-
-    The CLI names the absent ones in its own fixed sentence on stderr;  only
-    that sentence is read, and only names that were asked for are accepted.
+    Missing names are omitted by the shared reader.  No executable, CLI output,
+    absence parsing, batch retry or single-name fanout participates in the read.
     """
-    if not names:
+    iterator = iter(names)
+    empty = object()
+    first = next(iterator, empty)
+    if first is empty:
         return {}
-    found = {}
-    pending = list(names)
-    while pending:
-        argv, env = fleet_secrets_batch(pending, project, path)
-        try:
-            proc = subprocess.run(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=90,
-                check=False,
-                env=env,
+    if (project, path) == (AFC_SLUG, SECRET_PATH):
+        token_name = READ_TOKEN_AFC
+    elif (project, path) == (FLEETOPS_SLUG, "/"):
+        token_name = READ_TOKEN_FLEETOPS
+    else:
+        raise ReadError("unsupported provisioner read purpose")
+    read_token = require_service_token((os.environ.get(token_name) or "").strip(), token_name)
+    try:
+        project_id = (
+            AFC
+            if project == AFC_SLUG
+            else scoped_secrets.infisical_project_id(
+                os.environ, scoped_secrets.home_dir(os.environ), FLEETOPS_SLUG
             )
-        except subprocess.TimeoutExpired:
-            raise ReadError("fleet-secrets timed out reading the folder", EXIT_TIMEOUT) from None
-        except FileNotFoundError:
-            raise ReadError("fleet-secrets is not installed", EXIT_MISSING_EXECUTABLE) from None
-        except OSError as error:
-            raise ReadError(f"fleet-secrets could not run ({type(error).__name__})") from None
-        if proc.returncode == 0:
-            try:
-                raw = proc.stdout.decode("utf-8")
-            except UnicodeDecodeError:
-                raise ReadError("fleet-secrets returned unreadable output") from None
-            if len(pending) == 1:
-                # One name asked for:  the CLI answers with the raw value and
-                # no JSON wrapper (scripts/fleet_secrets/cli.py:133-134).  A
-                # one-name batch is the common case -- the retry after an
-                # absent name leaves exactly one -- so it must decode as
-                # itself and not as a JSON object.
-                found[pending[0]] = raw
-                break
-            try:
-                payload = json.loads(raw)
-            except ValueError:
-                raise ReadError("fleet-secrets returned unreadable output") from None
-            if not isinstance(payload, dict):
-                raise ReadError("fleet-secrets returned an unexpected shape")
-            found.update({name: payload[name] for name in pending if name in payload})
-            break
-        if proc.returncode == FLEET_SECRETS_ABSENT:
-            absent = _absent_names(proc.stderr, pending)
-            if absent:
-                pending = [name for name in pending if name not in absent]
-                continue
-        elif proc.returncode != 2:
-            raise ReadError(f"fleet-secrets exited {proc.returncode}")
-        # The slow path:  the CLI could not take the whole batch, so every
-        # remaining name is read on its own.
-        for name in pending:
-            value = fleet_secrets_get(name, project, path)
-            if value is not None:
-                found[name] = value
-        break
-    return found
+        )
+        env = {
+            key: os.environ[key]
+            for key in (scoped_secrets.ENV_API, *scoped_secrets.ENV_NAMES)
+            if key in os.environ
+        }
+        env[scoped_secrets.ENV_READ_PATHS] = path
+        return scoped_secrets.bounded_fetch_project(
+            project_id,
+            path,
+            env,
+            token=read_token,
+            names=chain((first,), iterator),
+            timeout=READ_TIMEOUT,
+            writer=False,
+            max_output_bytes=READ_MAX_OUTPUT_BYTES,
+            strict_records=True,
+        )
+    except TimeoutError:
+        raise ReadError("Infisical scoped read timed out", EXIT_TIMEOUT) from None
+    except scoped_secrets.SecretsError as error:
+        if error.message == "bounded-read-timeout":
+            raise ReadError("Infisical scoped read timed out", EXIT_TIMEOUT) from None
+        raise ReadError("Infisical scoped read failed") from None
 
 
 def batch_values(names, project, path):
-    """Every named value:  the environment first, one batched read second.
+    """Every named value:  the environment first, one bounded named read second.
 
     A name the folder does not hold is an error here, not a silent gap:  the
     caller asked for a value it cannot do without.  The names are ever
@@ -456,7 +341,7 @@ def main():
 
     print(f"{mode}: alert-ingress secret provisioning")
 
-    # 1. Every value this run needs, read in ONE Infisical export.  The
+    # 1. Every value this run needs, read in one canonical named batch.  The
     #    environment comes first for every name, so a value the environment
     #    already holds is never fetched again.
     bot_names = [infisical_name for _source, infisical_name, _binding in BOT_PAIRS]
@@ -502,10 +387,9 @@ def main():
         values[name] = value
         print(f"  read  {name}  (len {len(value)})")
 
-    # 2. The fleet-ops root:  the automation identity, and -- in apply mode --
-    #    the Cloudflare token.  One batched read of the folder, so it is
-    #    exported once for the whole run.  It is read before the login, so a
-    #    missing Cloudflare token is found before anything is written.
+    # 2. The existing own Fleet-OPS root reader fetches only the Cloudflare
+    #    token in apply mode, before anything is written.  No machine identity
+    #    or other consumer binding participates in this read.
     fleetops_names = []
     if not dry:
         fleetops_names.append("CLOUDFLARE_FLEET_API_TOKEN")
@@ -561,7 +445,7 @@ def main():
         return 0
 
     # 4. The Worker bindings.  The Cloudflare token came with the fleet-ops
-    #    batch above, so the folder is not exported a second time.
+    #    named batch above; no additional credential read occurs here.
     cloudflare_token = fleetops["CLOUDFLARE_FLEET_API_TOKEN"]
     bound = 0
     for name, value in values.items():
