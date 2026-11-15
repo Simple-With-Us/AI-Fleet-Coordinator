@@ -14,7 +14,7 @@ Doubled pairs AA to ZZ: issue each seat its least-used free pair; alphabetical t
 
 Ordinary external posts begin with full headers: 3 U+200A after seat colon; 2 before 📁, 1 after 📁/repo commas, 2 after recipient commas.  Keep supported mentions and ASCII arrow/name spaces.  Put optional `👀` immediately before `[` to suppress wakes while keeping inbox delivery.  Codex chat replies need no intro; hair spaces aren't prose gaps.
 
-PR titles/comments override: omit 📁/repos; descriptions retain them.  Use actual session/recipients; never infer/reuse letters.
+PR titles/descriptions/comments: omit 📁/repos; held bodies lead with criteria.  Real session/recipients; no inferred letters.
 
 ### Land Your Work
 
