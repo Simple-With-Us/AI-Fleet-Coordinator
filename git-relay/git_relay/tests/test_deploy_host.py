@@ -161,6 +161,17 @@ class LinuxHostTests(unittest.TestCase):
             self.h.stray_unit_processes()
         self.assertIn("malformed cgroup line", str(ctx.exception))
 
+    def test_v1_root_and_colon_paths_parse(self):
+        # A v1 hierarchy root has an empty path; a path may contain a colon.
+        # Neither is malformed, and the colon path still matches the unit.
+        (self.proc / "42" / "cgroup").write_text(
+            "1:name=systemd:\n0::/system.slice/git-relay.service/with:colon\n"
+        )
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+        (self.proc / "42" / "cgroup").write_text("1:name=systemd:\n0::/user.slice\n")
+        self.h._stray_cache = None
+        self.assertEqual(self.h.stray_unit_processes(), [])
+
     def test_subcgroup_descendant_counts_as_stray(self):
         (self.proc / "42" / "cgroup").write_text("0::/system.slice/git-relay.service/spawned\n")
         self.assertEqual(self.h.stray_unit_processes(), [42])

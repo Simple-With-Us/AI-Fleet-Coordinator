@@ -240,10 +240,13 @@ class LinuxHost:
                 )
             paths = []
             for line in lines:
-                fields = line.split(":")
-                if len(fields) != 3 or not fields[2]:
+                fields = line.split(":", 2)
+                if len(fields) != 3:
                     # Unvalidated external data must not silently read as a
-                    # non-unit path and hide a surviving process.
+                    # non-unit path and hide a surviving process.  An empty
+                    # path is valid (a v1 hierarchy root) and never matches
+                    # the unit marker; a colon inside the path survives the
+                    # bounded split.
                     raise TransactionError(
                         f"malformed cgroup line in /proc/{p.name}/cgroup; cannot prove no strays"
                     )
