@@ -745,7 +745,7 @@ address:
   branch and leave it without one. (Long-lived integration/release branches like
   `main` and the `agent/*` lanes, throwaway experiments, and stacked-PR bases are
   the only exceptions — none of which is normal change delivery.)
-- **Open merge-ready PRs as READY for review by default.**  Only use draft when work is incomplete and must not merge even if all review findings were addressed and all conflicts were resolved (e.g. unfinished work, unmerged dependencies, an active do-not-merge / human-approval hold, or a superseded PR awaiting closure).  PRs blocked only by CI, Kody review, or merge conflicts must NOT be marked or kept as draft.
+- **Open merge-ready PRs as READY for review by default.**  Only use draft when work is incomplete or must not merge even if all review findings were addressed and all conflicts were resolved (e.g. unfinished work, unmerged dependencies, an active do-not-merge / human-approval hold, or a superseded PR awaiting closure).  PRs blocked only by CI, Kody review, or merge conflicts must NOT be marked or kept as draft; mark any PR that is a draft for another reason ready.
 - **Keep every do-not-merge PR as a draft**, whether it is genuinely unfinished, awaiting a dependency or hold clearance, or superseded.  Put the readiness criteria at the very beginning of its description as bullets, following the rule below.  Mark it ready only when the applicable criteria are verified and existing holds are properly cleared.
 - **A required `verify` CI check gates every merge to `main`.**  A GitHub Actions
   workflow named `verify` runs `tsc --noEmit` → `npm test` → `npm run build` on each
@@ -771,7 +771,7 @@ Owner ruling, November 3, 2026, applies fleet-wide:
 - An agent may close a totally superseded PR if that agent made the PR being closed.
 - If another agent made the totally superseded PR, ask that agent first.  If no reply arrives within 20 minutes, ask Jay.  An agent may ask Jay first if urgent.
 - If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
-- Any agent may convert a PR to draft without anyone's permission ONLY when work is incomplete and must not merge even if all review findings were addressed and all conflicts were resolved (including an active do-not-merge or human-approval hold, an unmerged dependency, or a superseded PR awaiting closure).  PRs blocked only by CI, Kody review, or merge conflicts must NOT be converted to or kept as draft; anything in draft for another reason must be marked ready.  (Owner ruling, November 15, 2026.)
+- Any agent may convert a PR to draft without anyone's permission ONLY when work is incomplete or must not merge even if all review findings were addressed and all conflicts were resolved (including an active do-not-merge or human-approval hold, an unmerged dependency, or a superseded PR awaiting closure).  PRs blocked only by CI, Kody review, or merge conflicts must NOT be converted to or kept as draft; anything in draft for another reason must be marked ready.  (Owner ruling, November 15, 2026.)
 
 ### Do-not-merge PRs and readiness criteria
 
