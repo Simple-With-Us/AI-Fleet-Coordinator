@@ -1259,15 +1259,32 @@ def _delete_result(
     return result
 
 
+def _cancel_note_outbox(note_id: str, env: Mapping[str, str]) -> str | None:
+    """Cancel any queued outbox entry for note_id, retrying briefly on lock contention."""
+    from fleet_rag import note_outbox, note_upsert
+
+    root = Path(str(env.get("HOME") or Path.home())) / ".local/state/fleet-rag-note-outbox"
+    doc_id = note_upsert.note_doc_id(note_id)
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            note_outbox.cancel(doc_id, root=root)
+            return None
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return "rag-outbox-cancellation-unavailable"
+            time.sleep(0.05)
+        except Exception:
+            return "rag-outbox-cancellation-unavailable"
+
+
 def _fleet_rag_delete(note_id: str, env: Mapping[str, str]) -> dict[str, Any]:
     """Best-effort Fleet RAG delete after the Apple Note is gone (AFC-728).  Returns the child result dict."""
+    cancel_error: str | None = None
     try:
-        from fleet_rag import note_outbox, note_upsert
-
-        root = Path(str(env.get("HOME") or Path.home())) / ".local/state/fleet-rag-note-outbox"
-        note_outbox.cancel(note_upsert.note_doc_id(note_id), root=root)
+        cancel_error = _cancel_note_outbox(note_id, env)
     except Exception:
-        return {"ok": False, "error": "rag-outbox-cancellation-unavailable"}
+        cancel_error = "rag-outbox-cancellation-unavailable"
     payload = json.dumps({"note_id": note_id}, ensure_ascii=False).encode("utf-8")
     try:
         proc = subprocess.run(
@@ -1290,6 +1307,8 @@ def _fleet_rag_delete(note_id: str, env: Mapping[str, str]) -> dict[str, Any]:
     if proc.returncode != 0:
         err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:200]
         return {"ok": False, "error": err or "rag delete child exited %d" % proc.returncode}
+    if cancel_error is not None:
+        return {"ok": False, "error": cancel_error}
     return {"ok": True}
 
 

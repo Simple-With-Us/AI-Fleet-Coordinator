@@ -556,6 +556,17 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertFalse(result["apple_note_deleted"])
         self.assertTrue(result["rag_deleted"])
 
+    def test_fleet_rag_delete_runs_note_delete_after_outbox_lock_contention(self):
+        with (
+            mock.patch("fleet_rag.note_outbox.cancel", side_effect=BlockingIOError("locked")),
+            mock.patch.object(N.time, "sleep"),
+            mock.patch.object(N.subprocess, "run", return_value=mock.Mock(returncode=0, stderr=b"")) as sub_run,
+        ):
+            result = N._fleet_rag_delete("x-coredata://stub/note/9", self.ENV)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "rag-outbox-cancellation-unavailable")
+        sub_run.assert_called_once()
+
     def test_successful_write_triggers_fleet_rag_upsert(self):
         run = FakeRun()
         body = "Fleet RAG upsert integration body with enough text to index."
