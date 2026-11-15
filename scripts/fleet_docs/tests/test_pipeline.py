@@ -2,7 +2,6 @@
 
 import io
 import json
-import subprocess
 import tempfile
 import unittest
 from contextlib import nullcontext, redirect_stderr

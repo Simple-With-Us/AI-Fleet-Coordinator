@@ -43,7 +43,12 @@ MAX_JSON_NODES = 250_000
 
 
 def parse_bounded_json(
-    raw, *, reason="invalid-json", max_bytes=MAX_HEADER, max_depth=MAX_JSON_DEPTH, max_nodes=MAX_JSON_NODES
+    raw,
+    *,
+    reason="invalid-json",
+    max_bytes=MAX_HEADER,
+    max_depth=MAX_JSON_DEPTH,
+    max_nodes=MAX_JSON_NODES,
 ):
     data = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
     require(len(data) <= max_bytes, reason)

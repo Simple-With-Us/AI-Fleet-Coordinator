@@ -74,7 +74,9 @@ class CollectorEnvironmentTests(unittest.TestCase):
                 stderr=subprocess.DEVNULL,
             )
             gitconfig = root / "gitconfig"
-            gitconfig.write_text('[url "https://redirected.example/other/"]\n\tinsteadOf = https://github.com/\n')
+            gitconfig.write_text(
+                '[url "https://redirected.example/other/"]\n\tinsteadOf = https://github.com/\n'
+            )
             with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(gitconfig)}):
                 info = snapshot.collector()._repo_info(repo)
             self.assertIsNotNone(info)
