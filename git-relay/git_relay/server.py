@@ -513,11 +513,18 @@ class Relay:
                 except ValueError as exc:
                     # begin() raises ValueError for caller-input errors (e.g. a
                     # malformed corr):  a definite 400, never the capacity 503
-                    # below, which a retry could never satisfy.
+                    # below, which a retry could never satisfy.  No outcome row
+                    # exists on this path, so the audit row stamps no corr that
+                    # could never join.
+                    attempt_corr = None
                     outcome = "bad_request"
                     detail = {"reason": str(exc)}
                     return 400, {"error": str(exc)}
                 except OutcomeStoreError as exc:
+                    # Capacity refusal:  no outcome row was written, so the
+                    # audit row stamps no corr either - a stamped one would
+                    # dangle with no row to join to.
+                    attempt_corr = None
                     outcome = "unavailable"
                     detail = {"reason": type(exc).__name__}
                     return 503, {

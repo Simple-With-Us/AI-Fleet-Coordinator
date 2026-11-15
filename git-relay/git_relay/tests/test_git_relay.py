@@ -3174,3 +3174,99 @@ class TestRateEnvironmentErrors(unittest.TestCase):
                     self.assertIn("git-relay config:", str(raised.exception))
                     self.assertIn("not-a-number", str(raised.exception))
                     self.assertNotIn("file seat policy", str(raised.exception))
+
+
+CORR_SEAT = json.dumps(
+    {
+        "swu-echo": {
+            "token": SEAT_TOKEN,
+            "actions": ["comment_pr"],
+            "repos": ["example/fixture-repo"],
+            "app_slug": "swu-echo",
+            "mint_permissions": {"pull_requests": "write", "issues": "write"},
+        }
+    }
+)
+CORR_ARGS = {"repo": "example/fixture-repo", "number": 1, "body": "hi"}
+
+
+class TestOutcomeCorrAuditStamp(unittest.TestCase):
+    """An audit row's outcome_corr must always join to an outcome row.
+
+    Regression for the dangling-corr finding:  the corr was minted before
+    begin(), so the caller-error (400) and capacity-refusal (503) arms - which
+    write no outcome row - still stamped it on the audit row.  Refusals now
+    stamp no corr;  accepted and replayed attempts stamp the corr of the real
+    row the attempt joined.
+    """
+
+    def setUp(self):
+        from git_relay.outcomes import OutcomeStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.audit_path = os.path.join(self.tmp.name, "a.jsonl")
+        self.store_path = os.path.join(self.tmp.name, "outcomes.json")
+        self.relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(self.audit_path),
+            app_minter=FakeMinter(),
+            outcomes=OutcomeStore(self.store_path),
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def audit_rows(self):
+        with open(self.audit_path) as stream:
+            return [json.loads(line) for line in stream]
+
+    def stored_outcome_row(self):
+        with open(self.store_path) as stream:
+            store = json.load(stream)
+        self.assertEqual(len(store), 1)
+        return next(iter(store.values()))
+
+    def test_accepted_write_stamps_the_outcome_row_corr(self):
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 200)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        outcome_row = self.stored_outcome_row()
+        self.assertEqual(outcome_row["state"], "ok")
+        self.assertEqual(rows[0]["outcome_corr"], outcome_row["corr"])
+
+    def test_replay_stamps_the_original_corr(self):
+        first = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        second = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual((first[0], second[0]), (200, 200))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 2)
+        outcome_row = self.stored_outcome_row()
+        self.assertEqual(rows[0]["outcome_corr"], outcome_row["corr"])
+        self.assertEqual(rows[1]["outcome_corr"], outcome_row["corr"])
+
+    def test_capacity_refusal_stamps_no_outcome_corr(self):
+        from git_relay.outcomes import OutcomeStoreError
+
+        def full(key, **kwargs):
+            raise OutcomeStoreError("full")
+
+        self.relay.outcomes.begin = full
+        status, body = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 503)
+        self.assertTrue(body["retryable"])
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])
+
+    def test_caller_error_stamps_no_outcome_corr(self):
+        def malformed(key, **kwargs):
+            raise ValueError("corr must be a non-empty string when supplied")
+
+        self.relay.outcomes.begin = malformed
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 400)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])
