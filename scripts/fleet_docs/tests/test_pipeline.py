@@ -2,6 +2,7 @@
 
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from contextlib import nullcontext, redirect_stderr
@@ -255,6 +256,77 @@ class PipelineTests(unittest.TestCase):
         ):
             with self.assertRaises(snapshot.Refused):
                 pipeline.child_relay_environment({"actor": "CODEX"}, inherited)
+
+    def test_alias_owner_private_repo_refreshes_through_collector(self):
+        c = snapshot.collector()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(c, "VERIFIED_PRIVATE_DOC_REPOS", frozenset({"fixture-org/fixture-repo"})),
+            patch.dict(
+                "fleet_lanes.code_main_sync.CANONICAL_OWNERS",
+                {"fixture-alias": "Fixture-Org"},
+                clear=True,
+            ),
+        ):
+            root = Path(tmp)
+            code_root = root / "Code"
+            repo = code_root / "Fixture-Repo"
+            repo.mkdir(parents=True)
+            for args in (
+                ("init", "-q", "-b", "main"),
+                ("remote", "add", "origin", "https://github.com/Fixture-Alias/Fixture-Repo.git"),
+            ):
+                subprocess.check_call(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
+            (repo / "docs/private-audits").mkdir(parents=True)
+            (repo / "README.md").write_text("# Fixture Repo\n")
+            (repo / "docs/private-audits/2026-10-30-audit.md").write_text("Private audit.\n")
+            for args in (
+                ("add", "README.md", "docs/private-audits/2026-10-30-audit.md"),
+                (
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "-qm",
+                    "fixture",
+                ),
+            ):
+                subprocess.check_call(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
+            head = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+            ).strip()
+            subprocess.check_call(
+                ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", head],
+                stderr=subprocess.DEVNULL,
+            )
+            c.collect(
+                None,
+                code_root / "Docs",
+                repo_paths=[repo],
+                private_docs_repo="Fixture-Alias/Fixture-Repo",
+            )
+            result = pipeline.refresh(
+                code_root,
+                root / "state",
+                {
+                    "peer": "mac",
+                    "actor": "CODEX",
+                    "private_docs": ["Fixture-Org/Fixture-Repo"],
+                    "remote_sources": [],
+                },
+                transfer=lambda _root, desired, _cfg: {
+                    "state": "synced",
+                    "sha256": desired["sha256"],
+                },
+            )
+            self.assertEqual(result["state"], "synced")
+            self.assertTrue(
+                (
+                    code_root
+                    / "Docs/Fixture-Repo/documents/docs/private-audits/2026-10-30-audit.md"
+                ).exists()
+            )
 
 
 if __name__ == "__main__":

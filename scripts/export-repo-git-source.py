@@ -220,9 +220,9 @@ def main(argv: list[str] | None = None) -> int:
             args.visibility != "private" or not private_opt_in_matches
         ):
             raise remote.SourceError("Private-docs opt-in must name this exact private source")
-        if (
-            args.visibility == "private"
-            and args.owner_repo.casefold() not in collector.VERIFIED_PRIVATE_DOC_REPOS
+        if args.visibility == "private" and (
+            owner_identity is None
+            or not collector._is_verified_private_doc_repo(owner_identity[0], owner_identity[1])
         ):
             raise remote.SourceError(
                 "Private export is not configured for a verified private repository"

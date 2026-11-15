@@ -200,9 +200,11 @@ def validate_generated(root):
         require(read_file(root / ".collector.lock") == b"", "collector-lock-has-content")
         expected.add(".collector.lock")
     for repo_root in sorted(root.iterdir()):
-        if not repo_root.is_dir() or repo_root.name.casefold() == "private":
+        if not repo_root.is_dir():
             continue
-        if not (repo_root / "manifest.json").exists():
+        if repo_root.name.casefold() == "private" or not (repo_root / "manifest.json").exists():
+            prefix = repo_root.name + "/"
+            expected.update(name for name in current["files"] if name.startswith(prefix))
             continue
         manifest = c.parse_existing_manifest(read_file(repo_root / "manifest.json"), repo_root.name)
         require(bool(manifest), "unknown-library-directory")

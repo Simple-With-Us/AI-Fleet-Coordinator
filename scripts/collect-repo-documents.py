@@ -30,6 +30,7 @@ from urllib.parse import quote, unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import remote_git_source
 import repo_catalog
+from fleet_lanes.code_main_sync import CANONICAL_OWNERS
 
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSIONS = {1, 2}
@@ -280,6 +281,14 @@ def _private_opt_in_identity(value: Any) -> tuple[str, str] | None:
     return owner.casefold(), repo.casefold()
 
 
+def _is_verified_private_doc_repo(owner: str, repo: str) -> bool:
+    """Match VERIFIED_PRIVATE_DOC_REPOS against both exact and canonical fleet owners."""
+    exact = f"{owner}/{repo}".casefold()
+    canonical_owner = CANONICAL_OWNERS.get(owner.casefold(), owner)
+    canonical = f"{canonical_owner}/{repo}".casefold()
+    return exact in VERIFIED_PRIVATE_DOC_REPOS or canonical in VERIFIED_PRIVATE_DOC_REPOS
+
+
 def _repo_info(path: Path) -> RepoInfo | None:
     if path.is_symlink() or not path.is_dir() or repo_catalog.is_scratch_dir_name(path.name):
         return None
@@ -362,9 +371,8 @@ def discover_repositories(
                 raise CollectionError(
                     "Private remote source requires its exact --private-docs-repo identity"
                 )
-            if (
-                identity["visibility"] == "private"
-                and identity["owner_repo"].casefold() not in VERIFIED_PRIVATE_DOC_REPOS
+            if identity["visibility"] == "private" and not _is_verified_private_doc_repo(
+                owner, name
             ):
                 raise CollectionError(
                     "Private remote source is not configured for a verified private repository"
@@ -1749,7 +1757,7 @@ def _collect_unlocked(
             raise CollectionError(
                 "Private-docs opt-in must be an exact GitHub owner/repository name"
             )
-        if f"{private_repo[0]}/{private_repo[1]}".casefold() not in VERIFIED_PRIVATE_DOC_REPOS:
+        if not _is_verified_private_doc_repo(private_repo[0], private_repo[1]):
             raise CollectionError(
                 "Private-docs opt-in is not configured for a verified private repository"
             )
@@ -1922,7 +1930,7 @@ def collect(
         private_identity = _private_opt_in_identity(private_docs_repo)
         if (
             private_identity is None
-            or "/".join(private_identity) not in VERIFIED_PRIVATE_DOC_REPOS
+            or not _is_verified_private_doc_repo(private_identity[0], private_identity[1])
             or not any(
                 (repo.owner.casefold(), repo.name.casefold()) == private_identity
                 for repo in repositories

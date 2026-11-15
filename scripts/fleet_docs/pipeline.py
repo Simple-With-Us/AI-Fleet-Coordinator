@@ -71,14 +71,16 @@ def parse_configuration(raw):
         "invalid-docs-peer",
     )
     c = snapshot.collector()
+
+    def is_verified_optin(item):
+        parsed = c._private_opt_in_identity(item)
+        return parsed is not None and c._is_verified_private_doc_repo(*parsed)
+
     optins = value["private_docs"]
     snapshot.require(
         isinstance(optins, list)
         and len(optins) == len(set(optins))
-        and all(
-            isinstance(item, str) and item.casefold() in c.VERIFIED_PRIVATE_DOC_REPOS
-            for item in optins
-        ),
+        and all(isinstance(item, str) and is_verified_optin(item) for item in optins),
         "invalid-private-docs-opt-in",
     )
     sources = value["remote_sources"]
@@ -93,7 +95,7 @@ def parse_configuration(raw):
         name = source["owner_repo"]
         snapshot.require(
             isinstance(name, str)
-            and name.casefold() in c.VERIFIED_PRIVATE_DOC_REPOS
+            and is_verified_optin(name)
             and name in optins
             and name not in seen
             and type(source["repository_id"]) is int

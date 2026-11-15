@@ -1,5 +1,6 @@
 """Real collector output through the production snapshot and promotion paths."""
 
+import errno
 import io
 import os
 import shutil
@@ -330,6 +331,36 @@ class SnapshotTests(unittest.TestCase):
             )
         )
         self.assertEqual(events[-1], "parent-fsync")
+
+    def test_deep_archive_member_path_exceeding_max_depth_is_refused(self):
+        too_deep = "/".join(["part"] * (snapshot.MAX_PATH_DEPTH + 1))
+        with self.assertRaisesRegex(snapshot.Refused, "unsafe-snapshot-path"):
+            snapshot.relative(too_deep)
+
+    def test_anchored_propagates_caller_io_error(self):
+        target = self.root / "caller.txt"
+        target.write_text("fixture")
+        target.chmod(0o600)
+        with self.assertRaises(OSError) as raised:
+            with snapshot.anchored(target):
+                raise OSError(errno.ENOSPC, "No space left on device")
+        self.assertEqual(raised.exception.errno, errno.ENOSPC)
+
+    def test_validate_generated_retains_collector_skipped_directories(self):
+        private_dir = self.source / "private"
+        private_dir.mkdir(mode=0o700)
+        private_note = private_dir / "note.md"
+        private_note.write_text("private fixture")
+        private_note.chmod(0o600)
+        unmanifested = self.source / "Unmanifested"
+        unmanifested.mkdir(mode=0o700)
+        unmanifested_file = unmanifested / "draft.md"
+        unmanifested_file.write_text("draft fixture")
+        unmanifested_file.chmod(0o600)
+        desired = snapshot.validate_generated(self.source)
+        self.assertIn("private/note.md", desired["files"])
+        self.assertIn("Unmanifested/draft.md", desired["files"])
+        self.assertEqual(self.apply()["state"], "synced")
 
 
 if __name__ == "__main__":
