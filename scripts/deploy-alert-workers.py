@@ -135,9 +135,7 @@ def github_paginated(path, message, cap_pages=10, budget_seconds=60):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(message)
-        body = github(
-            path + separator + "per_page=100&page=" + str(page), timeout=remaining
-        )
+        body = github(path + separator + "per_page=100&page=" + str(page), timeout=remaining)
         if not isinstance(body, list):
             raise RuntimeError("Unexpected GitHub list evidence")
         items.extend(body)
