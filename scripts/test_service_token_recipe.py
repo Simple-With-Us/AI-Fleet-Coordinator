@@ -175,6 +175,8 @@ class Fixture:
         self.root = Path(self.temp.name)
         self.home = self.root / "home"
         self.private = self.home / ".config/infisical"
+        if self.private.is_symlink():
+            raise ValueError(f"refusing symlink: {self.private}")
         self.private.mkdir(parents=True, mode=0o700)
         self.private.chmod(0o700)
         self.empty_bin = self.root / "empty-bin"
@@ -509,9 +511,28 @@ class ServiceTokenRecipeTests(unittest.TestCase):
         self.assertIn("content_match_requires_reconciliation", result.stderr)
         self.assert_no_mutation(fixture)
 
+    def test_existing_token_id_with_different_metadata_requires_reconciliation(
+        self,
+    ) -> None:
+        fixture = self.fixture()
+        other = copy.deepcopy(fixture.metadata)
+        other["purpose"] = "Different existing metadata"
+        existing_row = expected_row(other)
+        fixture.change_state(rows=[existing_row])
+        result = fixture.run()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "Token ID exists with different metadata; stop and reconcile.",
+            result.stdout,
+        )
+        self.assertEqual(fixture.state()["rows"], [existing_row])
+        self.assert_no_mutation(fixture)
+
     def test_another_local_lock_is_never_removed_or_bypassed(self) -> None:
         fixture = self.fixture()
-        fixture.lock.parent.mkdir(mode=0o700)
+        if fixture.lock.parent.is_symlink():
+            raise ValueError(f"refusing symlink: {fixture.lock.parent}")
+        fixture.lock.parent.mkdir(parents=True, mode=0o700)
         fixture.lock.mkdir(mode=0o700)
         result = fixture.run()
         self.assertEqual(result.returncode, 1)
