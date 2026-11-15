@@ -38,11 +38,13 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -619,6 +621,79 @@ def shutdown_children() -> None:
         children = list(_ACTIVE_CHILDREN)
     for proc in children:
         _terminate_process_group(proc)
+
+
+@contextmanager
+def state_directory(path, *, private=False):
+    """Create missing directories and pin every component without following symlinks."""
+    path = Path(os.path.abspath(path))
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            created = False
+            try:
+                os.mkdir(component, 0o700, dir_fd=fd)
+                created = True
+            except FileExistsError:
+                pass
+            following = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            if created:
+                os.fchmod(following, 0o700)
+            os.close(fd)
+            fd = following
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022 or (private and stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError("state-directory-not-private")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def run_child(command, *, timeout, capture_output=False, input=None, **options):
+    """Bound a child session and reap it and its process group on interruption."""
+    process = None
+    previous = None
+
+    def interrupted(signum, frame):
+        raise SystemExit(128 + signum)
+
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        if capture_output:
+            options.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if input is not None:
+            options["stdin"] = subprocess.PIPE
+        options.pop("check", None)
+        options["start_new_session"] = True
+        process = subprocess.Popen(command, **options)
+        output, error = process.communicate(input=input, timeout=timeout)
+        return subprocess.CompletedProcess(command, process.returncode, output, error)
+    except BaseException:
+        if process is not None:
+            saved_handlers = {}
+            if threading.current_thread() is threading.main_thread():
+                saved_handlers = {
+                    value: signal.signal(value, signal.SIG_IGN)
+                    for value in (signal.SIGINT, signal.SIGTERM)
+                }
+            try:
+                for signum in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, signum)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                for value, handler in saved_handlers.items():
+                    signal.signal(value, handler)
+        raise
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
 
 
 def run_sweep_command(command: list[str]) -> int:
