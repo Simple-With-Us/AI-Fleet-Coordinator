@@ -924,6 +924,15 @@ class Tests(unittest.TestCase):
                 "submitted_at": "2026-11-15T19:30:00Z",
             }
 
+        thread_queries = []
+
+        def graphql(url, token, data=None, timeout=30):
+            thread_queries.append(json.loads(data.decode())["variables"]["number"])
+            return {
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }
+
         with (
             patch.object(
                 m,
@@ -938,10 +947,7 @@ class Tests(unittest.TestCase):
                     {"check_runs": []},
                 ],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(m, "request_json", side_effect=graphql),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
@@ -951,6 +957,10 @@ class Tests(unittest.TestCase):
             # evidence unavailable), raises nothing, and does not poison the
             # next candidate PR, whose clean evidence still qualifies.
             m.reviewed("a" * 40)
+        # Assert the observable outcome: only the good PR reaches the thread
+        # query. If the malformed payload let the bad head qualify, 1710
+        # would be queried instead and this fails.
+        self.assertEqual(thread_queries, [1711])
 
     def test_check_run_lookup_filters_by_name_and_paginates(self):
         head = "b" * 40

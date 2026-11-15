@@ -238,15 +238,23 @@ def _check_runs_for(head_sha):
         return _check_run_cache[head_sha]
     runs = []
     page = 1
+    # One absolute deadline for the whole walk, matching github_paginated:
+    # every page shares the remaining budget, so a slow or endless stream
+    # fails closed instead of getting a fresh timeout per request.
+    deadline = time.monotonic() + 60
     try:
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Kody check-run evidence exceeds bounded page limit")
             body = github(
                 "/commits/"
                 + head_sha
                 + "/check-runs?per_page=100&check_name="
                 + urllib.parse.quote(KODY_CHECK_NAME)
                 + "&page="
-                + str(page)
+                + str(page),
+                timeout=remaining,
             )
             if not isinstance(body, dict):
                 raise RuntimeError("check-runs evidence is not an object")
