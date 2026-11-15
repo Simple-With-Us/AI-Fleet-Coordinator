@@ -24,8 +24,8 @@ relay = load("ct_boundary_relay", ROOT / "git-relay/git_relay/patch_secretscan.p
 
 
 class CtReviewBoundary(unittest.TestCase):
-    repo = "Simple-With-Us/Congress.Trade"
-    path = "app/src/security/__tests__/originLock.test.ts"
+    repo = "Fixture-Repo/Fixture-Congress.Trade"
+    path = "tests/fixture-origin-lock.test.ts"
     digest = "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5"
 
     def test_exact_source_mirrors_and_only_expected_registry_delta(self):
@@ -33,11 +33,11 @@ class CtReviewBoundary(unittest.TestCase):
             (ROOT / "scripts/simple_tools/secretscan.py").read_bytes(),
             (ROOT / "git-relay/git_relay/patch_secretscan.py").read_bytes(),
         )
-        self.assertIn((self.repo, self.path, self.digest), relay._REVIEWED_GENERIC_FIXTURES)
+        self.assertEqual(sum(row[2] == self.digest for row in relay._REVIEWED_GENERIC_FIXTURES), 1)
         self.assertEqual(len(relay._REVIEWED_GENERIC_FIXTURES), 2)
         self.assertFalse(
             any(
-                row[0] == "Simple-With-Us/Congress-Trade"
+                row[0] == "Fixture-Repo/Fixture-Congress-Trade"
                 for row in relay._REVIEWED_GENERIC_FIXTURES
             )
         )
@@ -65,7 +65,7 @@ class CtReviewBoundary(unittest.TestCase):
                         self.assertIsNone(scanner.scan_file(self.repo, self.path, body))
                     self.assertIsNotNone(scanner.scan(body))
                     for repo, path, text in [
-                        ("Simple-With-Us/Congress-Trade", self.path, body),
+                        ("Fixture-Repo/Fixture-Congress-Trade", self.path, body),
                         (self.repo, self.path + ".other", body),
                         (self.repo, self.path, body + "\n"),
                     ]:

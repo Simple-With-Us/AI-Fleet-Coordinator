@@ -36,7 +36,7 @@ its scanner is installed. Do not patch a live registry to unblock publication.
 
 PROPOSAL ONLY. This record grants no publication, installation or admission authority.
 
-- Repository: `Simple-With-Us/Congress.Trade`, live repository ID 1275616664.
+- Repository: `Simple-With-Us/Congress.Trade`.
 - Path: `app/src/security/__tests__/originLock.test.ts`.
 - Candidate full-file SHA-256: `cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5`.
 - Size: 13,250 UTF-8 bytes, 363 lines.
