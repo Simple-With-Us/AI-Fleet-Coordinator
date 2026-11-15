@@ -1593,6 +1593,7 @@ class RetiredHookCommandTests(HookBase):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.home,
                "SIMPLE_TOOLS_STATE_DIR": self.state, "CLAUDE_CODE_ENTRYPOINT": "claude-desktop", **self.fake.env(),
                registry_api.URL_ENV: self.url, **extra}
+        env.update(self.fake.bootstrap_env(self.url))
         result = subprocess.run([sys.executable, "-I", "-B", str(SCRIPTS / "simple-chat"), "letter", "hook"],
                                 input=json.dumps(payload), capture_output=True, text=True, timeout=60, env=env)
         answer = json.loads(result.stdout)["hookSpecificOutput"] if result.stdout.strip() else {}

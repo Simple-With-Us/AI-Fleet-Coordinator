@@ -21,6 +21,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import secrets
 import tempfile
 import urllib.error
 import urllib.parse
@@ -94,6 +95,93 @@ class FakeRegistry:
             return reg.lookup(platform, location, scope, session_id)
         finally:
             reg.close_db()
+
+    def bootstrap_env(self, registry_url: str, *, home: str | None = None) -> dict[str, str]:
+        """A real scoped-token transport for entry-script tests, never ambient credentials.
+
+        The optional home exercises the launcher's protected store.  Other callers bind
+        their synthetic token explicitly; both use the real direct reader's HTTP checks.
+        """
+        import http.server
+        from pathlib import Path
+        import threading
+        from types import SimpleNamespace
+
+        from fleet_knobs.source import PROJECT_ID
+        from simple_tools.letter_registry_bootstrap import TOKEN_ENV
+
+        token = "st." + secrets.token_hex(24)
+        values = {
+            registry_api.URL_ENV: registry_url,
+            registry_api.KEY_VAR: self.keys["OPERATOR"],
+        }
+        calls = []
+        self.bootstrap_requests = calls
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                parts = urllib.parse.urlsplit(self.path)
+                calls.append(parts.path)
+                status, answer = 403, {}
+                if self.headers.get("Authorization") == "Bearer " + token:
+                    if parts.path == "/api/v2/service-token":
+                        status, answer = 200, {
+                            "projectId": PROJECT_ID,
+                            "workspace": PROJECT_ID,
+                            "permissions": ["read"],
+                            "scopes": [{"environment": "prod", "secretPath": "/operator-registry"}],
+                            "expiresAt": "2099-01-01T00:00:00Z",
+                        }
+                    elif parts.path.startswith("/api/v3/secrets/raw/"):
+                        name = urllib.parse.unquote(parts.path.rsplit("/", 1)[-1])
+                        query = urllib.parse.parse_qs(parts.query)
+                        if (
+                            query.get("workspaceId") == [PROJECT_ID]
+                            and query.get("environment") == ["prod"]
+                            and query.get("secretPath") == ["/operator-registry"]
+                            and name in values
+                        ):
+                            status, answer = 200, {
+                                "secret": {
+                                    "secretKey": name,
+                                    "secretValue": values[name],
+                                    "type": "shared",
+                                    "workspace": PROJECT_ID,
+                                    "environment": "prod",
+                                    "secretPath": "/operator-registry",
+                                }
+                            }
+                body = json.dumps(answer).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def close():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self._servers.append(SimpleNamespace(close=close))
+        env = {"FLEET_SECRETS_API": "http://127.0.0.1:%d/api" % server.server_address[1]}
+        if home is None:
+            env[TOKEN_ENV] = token
+        else:
+            directory = Path(home) / ".config" / "platform-letter"
+            directory.mkdir(parents=True, mode=0o700)
+            directory.chmod(0o700)
+            store = directory / "infisical-registry.token"
+            store.write_text(token + "\n", encoding="ascii")
+            store.chmod(0o600)
+        return env
 
     def serve(self, state_dir: str) -> str:
         """The same store behind a real listener on loopback, for a test that runs the client in a subprocess (the
