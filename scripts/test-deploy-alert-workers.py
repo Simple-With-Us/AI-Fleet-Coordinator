@@ -638,11 +638,14 @@ class Tests(unittest.TestCase):
 
     def test_workflow_is_main_ci_and_catchup_without_broad_gate(self):
         text = m.pathlib.Path(".github/workflows/alert-workers-deploy.yml").read_text()
-        self.assertIn("workflow_run:", text)
-        self.assertIn("workflows: [CI]", text)
+        # Fenced shape: dispatch-only until the watched qualify-only canary
+        # passes. The restore PR re-adds workflow_run/schedule and restores
+        # the original assertions below.
+        self.assertNotIn("workflow_run:", text)
+        self.assertNotIn("schedule:", text)
+        self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
         self.assertNotIn("simple-tools-mcp/wrangler", text)
-        self.assertIn("17,47 * * * *", text)
 
     def test_redirect_handler_refuses_forward(self):
         self.assertIsNone(
