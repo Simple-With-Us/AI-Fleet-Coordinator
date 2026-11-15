@@ -329,7 +329,9 @@ class ServiceTokenRecipeTests(unittest.TestCase):
         first = fixture.run()
         self.assertEqual(first.returncode, 3)
         self.assertIn("source=Infisical Service Tokens/final-readback", first.stderr)
-        self.assertEqual([call["method"] for call in fixture.state()["calls"]], ["GET", "POST", "GET", "GET"])
+        self.assertEqual(
+            [call["method"] for call in fixture.state()["calls"]], ["GET", "POST", "GET", "GET"]
+        )
         self.assertEqual(len(fixture.state()["rows"]), 2)
         self.assertEqual(json.loads(fixture.marker.read_text())["outcome"], "unknown")
         self.assertNotIn("appended and read back exactly", first.stdout)
@@ -341,7 +343,12 @@ class ServiceTokenRecipeTests(unittest.TestCase):
         self.assertEqual(json.loads(fixture.marker.read_text())["outcome"], "unknown")
 
     def test_final_tab_failure_or_drift_preserves_unknown(self) -> None:
-        for mode in ("final_read_failure", "final_header_drift", "final_malformed_row", "final_row_drift"):
+        for mode in (
+            "final_read_failure",
+            "final_header_drift",
+            "final_malformed_row",
+            "final_row_drift",
+        ):
             with self.subTest(mode=mode):
                 fixture = self.fixture()
                 fixture.change_state(mode=mode)
