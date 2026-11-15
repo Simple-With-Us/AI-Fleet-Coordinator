@@ -77,8 +77,29 @@ class Registered(Settings):
         self.assertEqual(BY_NAME[WS.MAC_SSH].default, CW.DEFAULTS["mac_ssh"])
 
     def test_every_tunable_is_a_knob_or_a_named_host_fact(self) -> None:
+        from simple_tools import antigravity_wake as AGW
+        from simple_tools import grok_wake as GW
+        from simple_tools import minimax_wake as MW
+
         handled = {*WS.INT_KNOBS, *WS.HOST_FACTS, "delivery_enabled", "retry_backoff", "mac_ssh"}
-        self.assertEqual(set(CW.DEFAULTS), handled)
+        defaults: set[str] = set()
+        for module in (CW, AGW, GW, MW):
+            defaults |= set(module.DEFAULTS)
+        self.assertEqual(defaults, handled)
+
+    def test_a_platforms_own_facts_reach_the_delivery(self) -> None:
+        from simple_tools import minimax_wake as MW
+
+        self.local(
+            workspace="/opt/work",
+            mcode_bin="/opt/bin/mcode",
+            mcode_model="minimax/Another-Served-Model",
+        )
+        settings = WS.WakeSettings(MW.SEAT, MW.DEFAULTS, self.local_path)
+        settings.load()
+        self.assertEqual(settings["workspace"], "/opt/work")
+        self.assertEqual(settings["mcode_bin"], "/opt/bin/mcode")
+        self.assertEqual(settings["mcode_model"], "minimax/Another-Served-Model")
 
     def test_every_router_knob_and_only_those_live_in_its_own_folder(self) -> None:
         names = {*WS.INT_KNOBS.values(), WS.DELIVERY_ENABLED, WS.DELIVERY_SEATS}

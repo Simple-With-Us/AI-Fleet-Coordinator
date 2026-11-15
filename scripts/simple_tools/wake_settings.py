@@ -32,9 +32,10 @@ as before at start.  It is applied to the held values on every refresh before th
 works as a brake during an outage too, and taking it away restores them.  A file that cannot be
 read at a refresh keeps the last narrowing that worked in force (none, if there never was one) and
 is logged, and the fetch still runs and is applied through that narrowing:  a broken file never
-widens anything and never freezes the settings.  `local_host` and `claude_bin` are
-not settings but facts about one host, which one Infisical value cannot hold, so they are still
-read from the file, by the seats that have them.
+widens anything and never freezes the settings.  `local_host` and `claude_bin`, and a
+platform's own `workspace`, `mcode_bin` and `mcode_model`, are not settings but facts about one
+host, which one Infisical value cannot hold, so they are still read from the file, by the seats
+that have them.
 
 What is not per-seat.  The knob registry is flat, with one name per value, so a seat is not a
 dimension of it.  The seats are a list of their own:  delivery runs for a seat only when
@@ -117,7 +118,10 @@ INT_KNOBS = {
 }
 NARROWABLE = {"delivery_enabled": DELIVERY_ENABLED, **INT_KNOBS}
 NOT_NARROWABLE = {"retry_backoff": RETRY_BACKOFF, "mac_ssh": MAC_SSH}
-HOST_FACTS = ("local_host", "claude_bin")
+#: The names the local file carries that are not settings:  facts about one host, or about one
+#: platform, which one Infisical value cannot hold.  A seat that does not have one of them
+#: ignores it.
+HOST_FACTS = ("local_host", "claude_bin", "workspace", "mcode_bin", "mcode_model")
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take

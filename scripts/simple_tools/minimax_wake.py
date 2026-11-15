@@ -7,9 +7,10 @@ The router itself is the one shared service for every platform (`wake_service`,
 `DEFAULTS` as its settings and `state_dir` as its state folder (`wake_service.BUILDERS`).
 
 The two routes, and the rule between them.  A MiniMax chat is woken through the MiniMax Code
-CLI:  `mcode exec --session <session_id> --cwd <workspace> <wake text>` runs one prompt in an
-existing session without starting the TUI.  The workspace comes from the settings (the
-deployment names it;  this file carries no private path literal), and it is also the binding,
+CLI:  `mcode exec --session <session_id> --cwd <workspace> --model <provider/model> --input -`
+runs one prompt, on the child's stdin, in an existing session without starting the TUI.  The
+workspace, the binary and the model come from the local settings file, where the deployment
+names them (this file carries no private path literal), and the workspace is also the binding,
 because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
 delivers locally under a per-session file lock in `state_dir(env) / "locks"`, re-reading
 MiniMax Code's own session store once the lock is acquired.  A session the store does not know
@@ -23,6 +24,11 @@ because the runtime's own log shows a failed turn exiting 0.  A timeout is neit
 the child was running the wake when the deadline passed, so the turn may have started.  It is a
 refusal whose code is outside `NEVER_RAN`, which the receipt records as nobody knows, and it is
 not retried, because a retry could run the turn twice.
+
+The one seam.  Every child in the fleet is run through a runner, and this module runs its
+`mcode` child through one too:  the default runner stops the child and reaps it before it
+raises, and a caller that hands over its own runner replaces the whole run, so a stub never
+runs beside the real binary.
 
 The store.  MiniMax Code's own SQLite table, `local_runtime_sessions` in
 `~/.minimax/v2/sqlite/runtime-state.sqlite` (MINIMAX_DATA_DIR moves `~/.minimax`), read only.
@@ -143,10 +149,9 @@ WAKE_TEXT = (
     "is not quoted here on purpose.\n{fields}"
 )
 
+#: The one seam a child is run through:  `subprocess.run`'s shape, so a caller that hands this
+#: module its own runner replaces the whole run and never only part of it.
 Runner = Callable[..., subprocess.CompletedProcess[Any]]
-#: The factory for the local `mcode` child:  anything with `subprocess.Popen`'s shape, so the
-#: tests can drive a run without one.
-Spawn = Callable[..., Any]
 
 
 def state_dir(env: Mapping[str, str]) -> Path:
@@ -164,10 +169,19 @@ def _private_dir(folder: Path) -> None:
     A new level is created with mode 0o700 and the folder itself is refused when it is a
     symlink:  a symlinked state folder would send the locks somewhere else.  `WR.private_dir`
     makes one level;  this makes the chain, because a level with default permissions lets
-    another user list what is under it."""
+    another user list what is under it.
+
+    Every level of the chain is checked, not only the missing ones:  a level that is already
+    there and is a symlink would redirect everything under it somewhere else, so it is refused
+    as well.  The walk stops at the first level that exists, because the levels above it are
+    the host's own and are none of this folder's business."""
     missing: list[Path] = []
     probe = folder
-    while not probe.exists():
+    while True:
+        if probe.is_symlink():
+            raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(probe))
+        if probe.exists():
+            break
         missing.append(probe)
         parent = probe.parent
         if parent == probe:
@@ -342,6 +356,60 @@ def _stop(proc: Any) -> None:
         pass
 
 
+def _run_child(
+    argv: list[str],
+    *,
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
+    stdin: int | None = None,
+    stdout: int | None = None,
+    stderr: int | None = None,
+    input: bytes | str | None = None,
+    timeout: float | None = None,
+    capture_output: bool = False,
+    text: bool = False,
+    check: bool = False,
+) -> subprocess.CompletedProcess[Any]:
+    """Run one child the way `subprocess.run` runs it, with one difference:  the child is asked
+    to stop before it is killed, and it is reaped before the exception goes on.
+
+    `subprocess.run` kills a child that runs past its deadline, and it kills it outright.  Here
+    the child gets the chance to stop first, and whatever happens, it is gone before this
+    returns or raises:  no wake keeps running behind the router's back.
+    """
+    if capture_output:
+        if stdout is not None or stderr is not None:
+            raise ValueError("capture_output cannot be used with stdout or stderr")
+        stdout = subprocess.PIPE
+        stderr = subprocess.PIPE
+    payload = input
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    if payload is not None and stdin is None:
+        stdin = subprocess.PIPE
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=dict(env) if env is not None else None,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    try:
+        out, err = proc.communicate(payload, timeout=timeout)
+    except BaseException:
+        # A timeout, an error or an interrupt:  the child is stopped and reaped before the
+        # exception goes on.
+        _stop(proc)
+        raise
+    if text:
+        out = out.decode("utf-8", "replace") if out is not None else None
+        err = err.decode("utf-8", "replace") if err is not None else None
+    if check and proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, argv, out, err)
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
 def wake_text(wake: WR.Wake) -> str:
     """Format the wake prompt without quoting the Zulip message body."""
     fields = {
@@ -370,8 +438,7 @@ def deliver_local(
     target: WR.Target | None = None,
     *,
     recheck_registry: bool = False,
-    runner: Runner = subprocess.run,
-    spawn: Spawn = subprocess.Popen,
+    runner: Runner = _run_child,
 ) -> WR.Delivery:
     """Deliver one wake to a chat on this host under the per-session lock."""
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
@@ -460,18 +527,19 @@ def deliver_local(
             text = wake_text(wake)
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
             try:
-                proc = spawn(
+                # The one seam:  an injected runner replaces the whole run, and the default
+                # runner stops and reaps the child before it raises, so no wake keeps running
+                # after the router has given up on it.
+                proc = runner(
                     argv,
                     cwd=recorded,
                     env=child_env,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    input=text.encode("utf-8"),
+                    timeout=timeout_seconds,
                 )
-            except OSError as exc:
-                return WR.Delivery("failed", "wake", code="wake-%s" % type(exc).__name__)
-            try:
-                proc.communicate(input=text.encode("utf-8"), timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 # The child was running the wake when the deadline passed, so the turn may have
                 # started:  the house outcome for that is a refusal whose code is outside
@@ -479,19 +547,11 @@ def deliver_local(
                 # A `busy` outcome would be a retry, and the house reserves a retry for a try
                 # that could not have run the wake;  `refused` is what a possibly-started turn
                 # gets, and it is what the sibling platforms return for a resume timeout.
-                _stop(proc)
                 return WR.Delivery("refused", "wake", code="wake-timeout")
             except OSError as exc:
-                _stop(proc)
                 return WR.Delivery("failed", "wake", code="wake-%s" % type(exc).__name__)
             except Exception as exc:  # noqa: BLE001 - may have started, so it is final
-                _stop(proc)
                 return WR.Delivery("refused", "wake", code="wake-error-%s" % type(exc).__name__)
-            except BaseException:
-                # An interrupt must not leave the child running:  it is stopped and reaped
-                # before the exception goes on.
-                _stop(proc)
-                raise
 
             if proc.returncode == 0:
                 return WR.Delivery("sent", "wake", ack="unknown", note="mcode-exit-0")
@@ -504,8 +564,7 @@ def make_deliver(
     env: Mapping[str, str],
     config: Mapping[str, Any],
     *,
-    runner: Runner = subprocess.run,
-    spawn: Spawn = subprocess.Popen,
+    runner: Runner = _run_child,
 ) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
     """MiniMax's `deliver`:  this host directly, the Mac over ssh, any other host refused."""
     local_host = str(config.get("local_host", "server"))
@@ -520,7 +579,6 @@ def make_deliver(
                 target=target,
                 recheck_registry=False,
                 runner=runner,
-                spawn=spawn,
             )
         if target.host == "mac":
             from . import claude_wake as CW
@@ -535,8 +593,7 @@ def router_platform(
     env: Mapping[str, str],
     config: Mapping[str, Any],
     *,
-    runner: Runner = subprocess.run,
-    spawn: Spawn = subprocess.Popen,
+    runner: Runner = _run_child,
 ) -> WR.Platform:
     """Build the MiniMax `Platform` for `wake_service.BUILDERS`."""
     return WR.Platform(
@@ -544,7 +601,7 @@ def router_platform(
         platform=PLATFORM,
         mention=MENTION,
         target_re=SESSION_RE,
-        deliver=make_deliver(env, config, runner=runner, spawn=spawn),
+        deliver=make_deliver(env, config, runner=runner),
         exclude=exclude_non_interactive(env, str(config.get("local_host", "server"))),
     )
 
@@ -664,23 +721,33 @@ def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
     )
 
 
-def _answer(request: Mapping[str, Any], delivery: WR.Delivery) -> dict[str, Any]:
-    target = request.get("target") if isinstance(request.get("target"), Mapping) else {}
-    wake = request.get("wake") if isinstance(request.get("wake"), Mapping) else {}
+def _correlation(request: Mapping[str, Any]) -> dict[str, Any]:
+    """The ids an answer repeats back.  One that is not validly shaped comes back blank, so a
+    bad request is never mistaken for an answer to a good one, and the Mac's own check of the
+    answer keeps this module's refusal instead of turning it into a platform mismatch."""
+    body = request if isinstance(request, Mapping) else {}
+    target = body.get("target") if isinstance(body.get("target"), Mapping) else {}
+    wake = body.get("wake") if isinstance(body.get("wake"), Mapping) else {}
+    wake_id, session_id = wake.get("wake_id"), target.get("session_id")
+    generation = target.get("generation")
+    good_wake = isinstance(wake_id, str) and WR.WAKE_ID_RE.fullmatch(wake_id)
+    good_session = isinstance(session_id, str) and SESSION_RE.fullmatch(session_id)
     return {
-        "wake_id": wake.get("wake_id"),
-        "session_id": target.get("session_id"),
-        "generation": target.get("generation"),
-        "delivery": asdict(delivery),
+        "wake_id": wake_id if good_wake else "",
+        "session_id": session_id if good_session else "",
+        "generation": generation if type(generation) is int and generation > 0 else None,
     }
+
+
+def _answer(request: Mapping[str, Any], delivery: WR.Delivery) -> dict[str, Any]:
+    return {**_correlation(request), "delivery": asdict(delivery)}
 
 
 def deliver_request(
     request: Mapping[str, Any],
     *,
     env: Mapping[str, str],
-    runner: Runner = subprocess.run,
-    spawn: Spawn = subprocess.Popen,
+    runner: Runner = _run_child,
 ) -> dict[str, Any]:
     """Mac-side one-delivery handler invoked by `simple-chat wake-deliver`."""
     if not isinstance(request, Mapping):
@@ -697,8 +764,10 @@ def deliver_request(
         from . import wake_settings as WS
 
         config = WS.read_once(SEAT, DEFAULTS, state_dir(env) / "config.json")
-    except (Exception, SystemExit) as exc:
-        return _answer(request, WR.Delivery("failed", code="settings-%s" % type(exc).__name__))
+    except (Exception, SystemExit):
+        # The settings could not be read:  fail closed, and name the source that could not be
+        # read, so the operator knows which dependency is missing.
+        return _answer(request, WR.Delivery("failed", code="settings-unavailable-config.json"))
 
     # The Mac-side handler requires target to belong to this execution host ("mac")
     if target.host != "mac":
@@ -717,7 +786,6 @@ def deliver_request(
             target=target,
             recheck_registry=True,
             runner=runner,
-            spawn=spawn,
         )
     except OSError as exc:
         delivery = WR.Delivery("failed", code="deliver-%s" % type(exc).__name__)
