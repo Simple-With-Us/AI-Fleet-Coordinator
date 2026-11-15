@@ -146,13 +146,13 @@ def load_folder_map(path=FOLDERS_PATH):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise SyncError("folder-map-unreadable") from exc
+        raise SyncError("folder-map-unreadable " + str(path)) from exc
     if not isinstance(data, dict) or not data:
-        raise SyncError("folder-map-unreadable")
+        raise SyncError("folder-map-unreadable " + str(path))
     parsed = {}
     for worker, row in data.items():
         if not WORKER_RE.fullmatch(worker) or not isinstance(row, dict):
-            raise SyncError("folder-map-unreadable")
+            raise SyncError("folder-map-unreadable " + str(path))
         project = row.get("project_id")
         environment = row.get("environment")
         folder = row.get("folder")
@@ -165,7 +165,7 @@ def load_folder_map(path=FOLDERS_PATH):
             or not isinstance(token_env, str)
             or not TOKEN_ENV_RE.fullmatch(token_env)
         ):
-            raise SyncError("folder-map-unreadable")
+            raise SyncError("folder-map-unreadable " + str(path))
         parsed[worker] = {
             "project_id": project,
             "environment": "prod",
@@ -526,9 +526,13 @@ def _cloudflare_token(token):
     return token
 
 
-def put_secret(transport, token, account, worker, name, value):
+def put_secret(transport, token, account, worker, name, value, existing_type=None):
     if not NAME_RE.fullmatch(name):
         raise SyncError("invalid-secret-name")
+    # A value put always writes secret_text; never silently convert a live
+    # binding of another type (for example secret_key) - refuse instead.
+    if existing_type is not None and existing_type != "secret_text":
+        raise SyncError("secret-type-preserved " + name)
     base = _worker_base(account, worker) + "/secrets"
     body = transport(
         "PUT",
@@ -541,16 +545,41 @@ def put_secret(transport, token, account, worker, name, value):
         raise SyncError("put-failed " + name)
 
 
+SETTINGS_WRITABLE = (
+    "compatibility_date",
+    "compatibility_flags",
+    "limits",
+    "logpush",
+    "placement",
+    "tags",
+    "tail_consumers",
+    "usage_model",
+)
+
+
 def write_digest_binding(transport, token, account, worker, settings, digest_text):
     bindings = bindings_for_digest_update(_settings_bindings(settings), digest_text)
+    result = settings["result"]  # envelope already validated by _settings_bindings
+    # Send the full current settings, not only bindings: if the API applies the
+    # body as a replacement rather than a patch, limits and other live settings
+    # survive unchanged.  ``migrations`` is deploy-time input, not stored state.
+    merged = {key: result[key] for key in SETTINGS_WRITABLE if key in result}
+    merged["bindings"] = bindings
     base = _worker_base(account, worker) + "/settings"
-    body = transport("PATCH", base, token, {"settings": {"bindings": bindings}}, {200})
+    body = transport("PATCH", base, token, {"settings": merged}, {200})
     if not isinstance(body, dict) or body.get("success") is not True:
         raise SyncError("digest-not-confirmed")
-    confirmed = parse_stored_digests(transport("GET", base, token, None, {200}))
+    after = transport("GET", base, token, None, {200})
+    confirmed = parse_stored_digests(after)
     expected = json.loads(digest_text)["keys"]
     if confirmed != expected:
         raise SyncError("digest-not-confirmed")
+    after_result = after.get("result") if isinstance(after, dict) else None
+    if not isinstance(after_result, dict):
+        raise SyncError("cloudflare-incomplete")
+    for key, value in result.items():
+        if key != "bindings" and after_result.get(key) != value:
+            raise SyncError("settings-drift " + str(key))
 
 
 def drift(diff):
@@ -591,8 +620,15 @@ def sync_worker(
     if guard(worker):
         raise SyncError("guard-tripped")
     chosen = puts_for_apply(diff, allowlist)
+    binding_types = {
+        item.get("name"): item.get("type")
+        for item in _settings_bindings(_settings)
+        if isinstance(item, dict)
+    }
     for name in chosen:
-        put_secret(transport, cf, account, worker, name, values[name])
+        put_secret(
+            transport, cf, account, worker, name, values[name], binding_types.get(name)
+        )
     if chosen:
         # Re-read after the puts.  A settings patch built from the pre-put
         # binding list would omit a secret that was missing and then drop it.
@@ -600,9 +636,11 @@ def sync_worker(
         if any(name not in names_after for name in chosen):
             raise SyncError("put-unconfirmed")
         recorded = {}
-        for name in allowlist:
+        for name in computed:
+            if name not in names_after:
+                continue
             previous = None if stored is None else stored.get(name)
-            if name in computed and (name in chosen or previous == computed[name]):
+            if name in chosen or previous == computed[name]:
                 recorded[name] = computed[name]
         write_digest_binding(transport, cf, account, worker, fresh, digest_document(recorded))
     lines = report + "apply: wrote " + str(len(chosen)) + "\n"
