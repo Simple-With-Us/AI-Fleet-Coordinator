@@ -1214,17 +1214,23 @@ class SessionFragments(Base):
         self.assertEqual(self.from_excerpt(excerpt).session_fragments, ())
 
     def test_the_senders_own_quoted_tag_is_not_an_address(self) -> None:
-        # A mid-body bracket line of the wake's own seat is the sender quoting itself;  its
+        # A mid-body bracket line of the sender's own seat is the sender quoting itself;  its
         # fragment would otherwise pick the sender's own chat (AFC-694 adversarial pass).
-        wake = self.from_excerpt("wake for the team\n[CLAUDE\u00b7aaaaaaaa] my own tag quoted later")
-        self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), ""))
+        wake = self.from_excerpt(self.HEADER + "team note\n[CLAUDE\u00b7aaaaaaaa] quoted later")
+        self.assertEqual((wake.session_fragments, wake.sender_fragment), ((), "aaaaaaaa"))
 
-    def test_the_senders_own_session_header_quote_is_not_an_address(self) -> None:
-        wake = self.from_excerpt("context below\n[CLAUDE: AA.4.S \U0001F4C1AFC] earlier status\nhey bbbbbbbb look")
+    def test_the_senders_own_quoted_tag_is_stripped_mid_line(self) -> None:
+        wake = self.from_excerpt(self.HEADER + "see [CLAUDE\u00b7aaaaaaaa] notes mid-line")
+        self.assertEqual(wake.session_fragments, ())
+
+    def test_stripping_the_own_span_keeps_another_address_on_the_same_line(self) -> None:
+        wake = self.from_excerpt(self.HEADER + "[CLAUDE\u00b7aaaaaaaa] earlier status, hey bbbbbbbb look")
         self.assertEqual(wake.session_fragments, ("bbbbbbbb",))
 
     def test_another_seats_quoted_tag_is_still_an_address(self) -> None:
-        wake = self.from_excerpt("wake for the team\n[ZC\u00b71bfb06c3] the zc chat asked")
+        # The strip keys on the sender header's seat, so a quote of another seat's tag — another
+        # chat that is a legitimate target — stays an address.
+        wake = self.from_excerpt(self.HEADER + "team note\n[ZC\u00b71bfb06c3] the zc chat asked")
         self.assertEqual(wake.session_fragments, ("1bfb06c3",))
 
     def test_the_header_is_found_after_the_no_wake_mark(self) -> None:
