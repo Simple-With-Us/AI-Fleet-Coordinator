@@ -3011,7 +3011,6 @@ class SeatGuardTest(unittest.TestCase):
             (ctx.exception.platform, ctx.exception.seat, ctx.exception.expected),
             ("claude", "ZC", ("CLAUDE",)),
         )
-        )
         self.assertEqual(self.counts(), (0, 0, 0, 0))
         self.legacy("claude", "ZC")
         code, answer = self.cli("relabel", *identity, "--seat", "ZC")
