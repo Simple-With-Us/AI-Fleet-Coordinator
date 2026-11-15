@@ -45,12 +45,14 @@ class ConfigureAgentsTests(unittest.TestCase):
         }
         self.project = "00000000-0000-4000-8000-000000000042"
         self.service_token = "st." + secrets.token_urlsafe(32)
+        self.ambient_token = "st." + secrets.token_urlsafe(32)
+        self.assertNotEqual(self.ambient_token, self.service_token)
         self.metadata = {
             "projectId": self.project,
             "workspace": self.project,
             "permissions": ["read"],
             "scopes": [{"environment": "prod", "secretPath": "/"}],
-            "expiresAt": None,
+            "expiresAt": "2099-01-01T00:00:00Z",
         }
         self.requests = []
         self.request_lock = threading.Lock()
@@ -196,7 +198,7 @@ class ConfigureAgentsTests(unittest.TestCase):
         proc = self._run(
             extra={
                 "INFISICAL_TELEMETRY_CONFIG_READ_TOKEN": "",
-                "INFISICAL_TOKEN": "st.generic-unrelated-token-fixture",
+                "INFISICAL_TOKEN": self.ambient_token,
                 "INFISICAL_AUTOMATION_CLIENT_ID": "legacy-id-fixture",
                 "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy-secret-fixture",
             }
@@ -265,7 +267,7 @@ class ConfigureAgentsTests(unittest.TestCase):
 
         env = {
             **self.env,
-            "INFISICAL_TOKEN": "st.generic-unrelated-token-fixture",
+            "INFISICAL_TOKEN": self.ambient_token,
             "INFISICAL_AUTOMATION_CLIENT_ID": "legacy-id-fixture",
             "INFISICAL_AUTOMATION_CLIENT_SECRET": "legacy-secret-fixture",
         }

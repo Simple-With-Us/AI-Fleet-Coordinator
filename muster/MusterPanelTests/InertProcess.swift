@@ -9,8 +9,8 @@ import Foundation
 /// the API the app uses.  `run()` never starts anything:  it records the executable and throws,
 /// so every reader takes its own launch-failure path and its panel shows that state.
 ///
-/// That covers each live reader a panel starts from `.task`:  `fleet-secrets names` and
-/// `doctor` (Secrets), the recall token read that comes before the recall request (Recall
+/// That covers each live reader a panel starts from `.task`: shared Infisical `names` and
+/// `doctor` (Secrets), the recall read that comes before the recall request (Recall
 /// Settings), `ssh` for `eavesdropper-status --plan` (`ServerEavesdropperStatusReader`), the
 /// Seats panel's sources (`SeatActivityReader`), the listener, engine, identity, config and
 /// Fleet View readers, and `StartupPolicy`'s commands.

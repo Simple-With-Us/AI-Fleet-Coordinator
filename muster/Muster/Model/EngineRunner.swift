@@ -134,11 +134,9 @@ struct EngineRunner {
 
     /// The environment the engine sees.
     ///
-    /// It is explicit because a GUI app inherits no useful shell environment:  an app
-    /// launched from Finder gets a minimal `PATH`, so `fleet-secrets` (which lives in
-    /// `~/.local/bin`) would not be found and every credential check would fail.  The
-    /// `PATH` below names that directory, and the secret store is the only outside
-    /// thing the checks reach for.
+    /// A GUI app inherits no useful shell environment.  PYTHONPATH pins the engine
+    /// and shared Infisical modules to the chosen checkout.  This base environment
+    /// carries no credential; a consumer must supply its own explicit read bindings.
     var environment: [String: String] {
         EngineRunner.childEnvironment(location: location, home: home)
     }

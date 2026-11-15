@@ -861,6 +861,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return status, answer
 
@@ -962,6 +963,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, None
 
@@ -987,6 +989,7 @@ class TestFetchVerified(unittest.TestCase):
                     "workspace": self.PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": self.PATH}],
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, {"secret": self._secret()}
 

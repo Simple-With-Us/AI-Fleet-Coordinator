@@ -495,7 +495,8 @@ final class SecretsDoctorPanelTests: XCTestCase {
     func test_a_doctor_that_found_a_problem_is_shown_not_hidden() throws {
         let fake = Commands()
         fake.failure = CommandExitError(output: #"{"ok": false, "cli_present": true}"#, status: 1)
-        let report = try FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example"))
+        let report = try FleetSecrets(commands: fake, home: URL(fileURLWithPath: "/Users/example"),
+                                      engineRoot: URL(fileURLWithPath: "/test/engine"))
             .doctorReport()
         XCTAssertEqual(report["ok"], "false")
         XCTAssertEqual(report["cli_present"], "true")

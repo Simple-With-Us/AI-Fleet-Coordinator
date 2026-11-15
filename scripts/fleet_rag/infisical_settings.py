@@ -193,7 +193,7 @@ class InfisicalSettings:
         if token:
             req.add_header("Authorization", "Bearer " + token)
         try:
-            from fleet_secrets.core import MAX_OUTPUT_BYTES, _opener
+            from fleet_infisical import MAX_OUTPUT_BYTES, _opener
 
             with _opener().open(req, timeout=HTTP_TIMEOUT) as resp:
                 raw = resp.read(MAX_OUTPUT_BYTES + 1)
@@ -208,7 +208,7 @@ class InfisicalSettings:
             return e.code, payload
 
     def _verify_service_scope(self, token: str, *, writer: bool = False) -> None:
-        from fleet_secrets.core import SecretsError, declared_paths, validate_service_metadata
+        from fleet_infisical import SecretsError, declared_paths, validate_service_metadata
 
         status, metadata = self._request("GET", "/api/v2/service-token", token=token)
         if status != 200:
@@ -250,7 +250,7 @@ class InfisicalSettings:
             raise SettingsError("Infisical secret response is invalid")
         for secret in payload["secrets"]:
             if source == SOURCE_SERVICE_TOKEN:
-                from fleet_secrets.core import (
+                from fleet_infisical import (
                     SecretsError,
                     declared_paths,
                     reject_unresolved,
