@@ -3213,6 +3213,29 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         # is guarded as well as the passthrough that runs it through simple-chat.
         print(json.dumps({"error": "no Operator registry on this host"}))
         return 3
+    if args.command in (
+        "register",
+        "relabel",
+        "update",
+        "close",
+        "touch",
+        "sweep",
+        "reopen",
+    ):
+        # AFC-723: session writes go only through the Operator's registry API, never
+        # against a caller-chosen local --db file (which would act as a second assigner).
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "operator-registry session writes require the registry API "
+                        "(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL)"
+                    ),
+                    "code": "not_configured",
+                }
+            )
+        )
+        return 2
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
         return 0
