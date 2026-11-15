@@ -343,7 +343,9 @@ def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
     workdir = home_dir(env) / ".config" / "fleet-secrets" / "cli-session"
     try:
         if workdir.is_symlink():
-            raise SecretsError("cli-session-workdir-symlink: refusing to follow a symlinked workdir")
+            raise SecretsError(
+                "cli-session-workdir-symlink: refusing to follow a symlinked workdir"
+            )
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
         payload = (
