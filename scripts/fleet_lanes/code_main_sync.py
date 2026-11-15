@@ -323,7 +323,7 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
     relay_env = None
     if not (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
         counters["failed"] += 1
-        log(f"fail {repo.name}: the required own-seat relay route is not configured")
+        log(f"fail {repo.name}: FLEET_SYNC_RELAY_URL is required (the required own-seat relay route is not configured)")
         return
     else:
         # The configured route is the only route:  every fetch runs as this job's seat, so nothing on this host (a login in
@@ -542,7 +542,7 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
             log("github route: unused (dry-run local refs only)")
         else:
             if not (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
-                log("fail job: the required own-seat relay route is not configured")
+                log("fail job: FLEET_SYNC_RELAY_URL is required (the required own-seat relay route is not configured)")
                 write_sync_stamp(env, 1)
                 return 1
             if relay_git_env(env) is None:

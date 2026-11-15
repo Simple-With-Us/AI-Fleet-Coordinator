@@ -376,6 +376,21 @@ class RelayRoute(SyncCase):
         self.assertNotIn("github route: own-seat relay", out)
         self.assertNotEqual(self.head(), self.origin())
 
+    def test_per_clone_unusable_origin_fails_inside_process_repo_when_job_preflight_passes(self) -> None:
+        self.route_vars()
+        real = S.git_full
+
+        def fake(repo, *args, **kwargs):
+            self.assertNotEqual(args[0], "fetch", "no fetch may run when per-clone origin_repo is None")
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 1, out)
+        self.assertIn("github route: own-seat relay configured", out)
+        self.assertIn("configured but not usable", out)
+        self.assertNotEqual(self.head(), self.origin())
+
     def test_bad_host_route_is_one_job_failure_without_clone_alerts(self) -> None:
         for route in ({}, {"FLEET_SYNC_RELAY_URL": "https://relay.example"},
                       {"FLEET_SYNC_RELAY_URL": "http://relay.example", "SIMPLE_TOOLS_BEARER": "fixture"}):
