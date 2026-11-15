@@ -44,6 +44,7 @@ class CollectorEnvironmentTests(unittest.TestCase):
     def test_repo_info_ignores_global_instead_of_rewrites(self):
         import tempfile
         from pathlib import Path
+
         from fleet_lanes.code_main_sync import run_child
 
         with tempfile.TemporaryDirectory() as tmp:
