@@ -118,6 +118,25 @@ def github(path):
     return body
 
 
+# A page shorter than the page size is the last one; the cap keeps the
+# evidence bounded so an endless stream still fails closed instead of
+# hanging the gate.
+def github_paginated(path, message, cap_pages=10):
+    items = []
+    separator = "&" if "?" in path else "?"
+    page = 1
+    while True:
+        body = github(path + separator + "per_page=100&page=" + str(page))
+        if not isinstance(body, list):
+            raise RuntimeError("Unexpected GitHub list evidence")
+        items.extend(body)
+        if len(body) < 100:
+            return items
+        page += 1
+        if page > cap_pages:
+            raise RuntimeError(message)
+
+
 def cloudflare(path):
     body = request_json(
         "https://api.cloudflare.com/client/v4/accounts/" + m.ACCOUNT + path,
@@ -183,16 +202,16 @@ def outstanding_requests(reviews):
 
 def reviewed(sha):
     # A target-changing commit must be the merge of a real, non-draft PR.
-    prs = github("/commits/" + sha + "/pulls")
-    if len(prs) >= 30:
-        raise RuntimeError("Incomplete commit PR association evidence")
+    prs = github_paginated(
+        "/commits/" + sha + "/pulls", "Commit PR association evidence exceeds bounded page limit"
+    )
     for pr in prs:
         if not pr.get("merged_at") or pr.get("draft") or pr.get("merge_commit_sha") != sha:
             continue
         number = str(pr["number"])
-        reviews = github("/pulls/" + number + "/reviews?per_page=100")
-        if len(reviews) >= 100:
-            raise RuntimeError("Review pagination needs explicit resolution")
+        reviews = github_paginated(
+            "/pulls/" + number + "/reviews", "Review evidence exceeds bounded page limit"
+        )
         if outstanding_requests(reviews):
             raise RuntimeError("Changes-requested review needs explicit resolution")
         head = pr.get("head", {}).get("sha")

@@ -453,6 +453,80 @@ class Tests(unittest.TestCase):
             opener.return_value.open.return_value = response
             m.reviewed("a" * 40)
 
+    def test_review_pages_beyond_one_hundred_are_followed(self):
+        import json
+        from unittest.mock import MagicMock
+
+        pr = {
+            "number": 1,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": "b" * 40},
+        }
+        page_one = [
+            {
+                "id": n,
+                "user": {"id": 10 + n, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "c" * 40,
+            }
+            for n in range(100)
+        ]
+        page_two = [
+            {
+                "id": 101,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "b" * 40,
+            }
+        ]
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "pageInfo": {"hasNextPage": False},
+                                "nodes": [{"isResolved": True}],
+                            }
+                        }
+                    }
+                }
+            }
+        ).encode()
+        with (
+            patch.object(m, "github", side_effect=[[pr], page_one, page_two]),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            patch.object(m.urllib.request, "build_opener") as opener,
+        ):
+            opener.return_value.open.return_value = response
+            m.reviewed("a" * 40)
+
+    def test_review_pages_beyond_the_cap_fail_closed(self):
+        pr = {
+            "number": 1,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": "b" * 40},
+        }
+        full_page = [
+            {
+                "id": n,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "b" * 40,
+            }
+            for n in range(100)
+        ]
+        with (
+            patch.object(m, "github", side_effect=[[pr]] + [list(full_page) for _ in range(10)]),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m.reviewed("a" * 40)
+
     def test_kody_check_receipt_without_pr_review_passes(self):
         import json
         from unittest.mock import MagicMock
