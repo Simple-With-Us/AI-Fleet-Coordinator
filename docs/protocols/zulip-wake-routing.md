@@ -13,10 +13,12 @@ clarify and an ambiguous wake is never held.
 ## The Chain
 
     a message tags a seat (any channel;  a direct mention in a presence topic still
-    wakes when no session follows it), or answers
-    one of the seat's chats without tagging anyone (owner, Nov 10, 2026: an untagged
-    post in a topic where the seat posted earlier wakes the chat it answers;  see
-    simple-tools-listener.md, "Replies wake the chat they answer")
+    wakes when no session follows it), or answers one of the seat's chats without
+    tagging anyone — but an untagged reply in a presence topic never wakes, even
+    when the seat posted in that topic earlier (owner, Nov 10, 2026:  an untagged
+    post in a non-presence topic where the seat posted earlier wakes the chat it
+    answers;  see simple-tools-listener.md, "Replies wake the chat they answer",
+    and the reply path, which skips presence topics)
       -> the listener (the eavesdropper instance that holds the seat) captures it to the
          seat inbox, always, and fires the seat's routine:  ONE signed POST
          (the simple-tools-wake/1 contract) to the platform's ROUTER
@@ -28,8 +30,10 @@ clarify and an ambiguous wake is never held.
               field (a wake that is an untagged reply to a chat of the seat carries one,
               with `linked_by: "reply"`), resolves through the Operator's registry
               (live holders only;  cross-host by design)
-           2. else a fragment of a session id — at least 8 hex characters (a longer
-              unbroken hex run is read as a commit or key id, not a fragment), compared
+           2. else a fragment of a session id — at least 8 hex characters, while a
+              plain unbroken hex run longer than 12 characters is read as a commit
+              or key id, not a fragment (9-12 plain hex characters stay eligible),
+              compared
               against the id's hex alone, matching exactly one live chat (transitional,
               while some seats still send a fragment;  the sender's own header fragment
               is excluded and never searched — only addressees after the arrow in a
@@ -44,15 +48,15 @@ clarify and an ambiguous wake is never held.
            recent of the tied chats;  the optional decider below may choose before
            recency is applied)
       -> the picked chat is DELIVERED TO AND WOKEN - on every path, the deterministic one
-         included ("why would I want to route things and not deliver them").  Each platform
+         included ("why would I want to route things and not deliver them").  Each platform
          uses whatever it needs to wake its chat (for ZCode, a headless resume of the picked
          session);  the delivery prompt carries metadata and the thread link, never the
          message body quoted, and names how the wake was linked (the `link_note`), saying
          for recency and for a decider pick that the router is not sure.
       -> the pick and the delivery are receipted (wakes.jsonl) with the fired rule's link
          note and the picked generation;  a wake addressed to a letter whose holder has
-         changed ends in a dead receipt (`target-released`) and is not delivered.  The
-         router retries delivery itself;  the listener never retries a 2xx.  The message
+         changed ends in a dead receipt (`target-released`) and is not delivered.  The
+         router retries delivery itself;  the listener never retries a 2xx.  The message
          also sits in the seat inbox and the Operator's pending-inbox, so a live session
          sees it either way.
 
@@ -73,11 +77,18 @@ clarify and an ambiguous wake is never held.
   pending answers 202 again and starts nothing.  The listener treats any 2xx as accepted
   and never retries after one;  the ROUTER retries delivery itself.  The receipt fields are
   the router's own record:
-  `{wake_id, letter, session_id, thread_link, picked, picked_generation, reason, link_note}`,
-  where `picked` is one of letter | reply | session-id | linear-issue | topic-match |
-  consultant | most-recent | "" and `reason` distinguishes the tie and decider cases
-  (linear-issue-tie, topic-tie, consultant-pick, sole-live-chat, most-recent); `link_note`
-  is the fixed sentence the receiving chat is told about the link.
+  `{receipt_id, wake_id, seat, at, test, status, letter, letter_live,
+  letter_other_seat, picked, picked_letter, picked_generation, session_id, host,
+  thread_link, reason, candidates, link_note, delivered, route, ack, code, note,
+  attempts, replayed, channel, topic, zulip_link}` — where `picked` is one of
+  letter | reply | session-id | linear-issue | topic-match | consultant |
+  most-recent | "" and `reason` distinguishes the tie and decider cases
+  (linear-issue-tie, topic-tie, consultant-pick, sole-live-chat, most-recent);
+  `status` covers the dead-receipt outcomes such as `target-released` — the letter
+  moved to another chat at that generation before the spawn, nothing has run, the
+  wake is not delivered — with `delivered` false on every such row and `attempts`
+  and `replayed` belonging to the retry loop;  `link_note` is the fixed
+  sentence the receiving chat is told about the link.
 - Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
 - Determinism first:  the rules above, in order.  ONE headless decider for every platform
   (the Operator's preset, via OpenRouter - the owner's words:  not "a bunch of different
@@ -89,12 +100,9 @@ clarify and an ambiguous wake is never held.
   sure.  It never answers;  the woken chat answers.
 - No secrets in the router's answer, none in its logs;  the signing key never leaves it.
 
-The reference implementation is `scripts/simple_tools/wake_router.py` and its tests;  each
-platform adds a thin native `deliver()` plugin to it rather than a router of its own
-(ZCode's and Antigravity's bridges are such plugins).
-## The Decider's Declaration
+The reference implementation is `scripts/simple_tools/wake_router.py` and its tests;  `scripts/simple_tools/claude_wake.py` is its current registered plugin.  The standalone `scripts/zc-wake-bridge` and `scripts/ag-wake-bridge` still run their own picks during the cutover, and their link and refusal semantics are not guaranteed to match the shared router's until each migrates.
 
-The decider's OpenRouter model is declared in the one server listener's settings, in `[decider.consult_backup]`.  It is the only record of the owner's preset for the decider, so it is kept even while Consult sits unarmed and no deployment arms it:
+The decider's OpenRouter model is declared in the live Mac listener's `listener.toml`, in `[decider.consult_backup]` — the one server listener carries no such table today.  It is the only record of the owner's preset for the decider, so it is kept even while Consult sits unarmed and no deployment arms it:
 
 ```toml
 [decider.consult_backup]
@@ -106,11 +114,11 @@ declared_at = 1762575240                     # epoch seconds
 # review_by = 1765000000                     # optional;  absent means it never expires
 ```
 
-The values above show the shape;  the live server listener's settings hold the owner's real reason and time.  The loader (`config.py`:  `parse_decider_declaration`, `select_decider_runtime`, `Config.decider_declaration`) applies the validation the deleted Muse inbox bridge used for the same table (AFC-649):  `runtime`, `model`, `reason` and `declared_at` are required;  an `@preset/` model also needs a non-empty `expected_models` of plain `provider/name` ids, because a preset's model list lives on the dashboard and this list is the only code-side fingerprint of it;  a `review_by` that is given must be a finite time after `declared_at`, and once it passes the decider holds.  No declaration selects the primary.  A declaration that is there but malformed is a warning in `simple-chat daemon check-config`, never an error, and the decider holds on it rather than calling anything.  An unknown key in `[decider]` is an error.
+The values above show the shape;  the live Mac file holds the owner's real reason and time.  The loader (`config.py`:  `parse_decider_declaration`, `select_decider_runtime`, `Config.decider_declaration`) applies the validation the deleted Muse inbox bridge used for the same table (AFC-649):  `runtime`, `model`, `reason` and `declared_at` are required;  an `@preset/` model also needs a non-empty `expected_models` of plain `provider/name` ids, because a preset's model list lives on the dashboard and this list is the only code-side fingerprint of it;  a `review_by` that is given must be a finite time after `declared_at`, and once it passes the decider holds.  No declaration selects the primary.  A declaration that is there but malformed is a warning in `simple-chat daemon check-config`, never an error, and the decider holds on it rather than calling anything.  An unknown key in `[decider]` is an error.
 
 ## Single-Threaded Platforms (The Grok Bots GB-*, MA, JET, WISE, ECHO)
 
-No router and no letters:  the seat is woken through its `wake = "http"` routine directly,
+Two groups.  JET and the Grok bots GB-* are woken through their `wake = "http"` routines directly;  MA, GROK-WEB, WISE and ECHO are `wake = "inbox"` seats with no routine and no pick at all:
 not by capture and surfacing alone;  there is no pick to make.
 ## What This Replaces
 
