@@ -219,8 +219,7 @@ def _newest_review_request(number):
         # Same detection as the auto-merge receipt contract: per-line,
         # case-insensitive pattern match on the comment body.
         if isinstance(body, str) and any(
-            re.search(REVIEW_REQUEST_PATTERN, line, re.IGNORECASE)
-            for line in body.split("\n")
+            re.search(REVIEW_REQUEST_PATTERN, line, re.IGNORECASE) for line in body.split("\n")
         ):
             if not isinstance(created, str):
                 raise RuntimeError("Invalid review-request evidence")
