@@ -108,6 +108,7 @@ BUILDERS: dict[str, Builder] = {
     "CLAUDE": Builder("claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude"),
     "CODEX": Builder("codex", "simple_tools.codex_wake"),
     "MC": Builder("muse", "simple_tools.muse_wake"),
+    "MM": Builder("minimax", "simple_tools.minimax_wake", session_re=r"^mvs_[0-9a-f]{32}$"),
     "ZC": Builder("zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"),
     # A live Grok TUI session id is a UUID, so the pattern is UUID_SESSION.
     "GROK": Builder("grok-leader", "simple_tools.grok_wake", session_re=UUID_SESSION),
