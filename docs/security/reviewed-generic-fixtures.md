@@ -71,3 +71,38 @@ repo/path/content returned None; original wrong Congress-Trade repo and a
 one-byte-different in-memory input both remained assigned-secret refusals. The
 actual candidate digest was unchanged. Verdicts only were returned. This
 preparer has not received, read or scanned the frozen file or its value.
+
+### Match-pinned correction for the whole-file review finding
+
+The CT tuple is NOT placed in the legacy whole-file generic-fixture set. Its
+separate match-pinned record requires the same exact repo/path/full-file digest
+plus the complete effective generic-match census. The only reviewed match is
+assigned secret, full regex character span [547,580), value-group span [557,580).
+These are zero-based Python Unicode-character offsets in the complete UTF-8
+text, end exclusive; they contain no captured value. The source owner recomputed
+this metadata with the installed source-expression exclusion and unchanged
+full-file digest: assigned credential effective count zero, assigned secret one.
+
+The scanner checks every effective generic match. An unrecorded match refuses;
+an empty, missing or stale census refuses. Updating only the full-file digest
+cannot admit an extra or moved generic match. The CT record skips exactly its
+reviewed match, not every generic category in the file. Dedicated/provider,
+bearer-header, Zulip-shaped and loaded values are still checked without this
+exclusion. The pre-existing CodeCaps legacy mechanism is unchanged and does not
+supply authority or precedent for CT. All source and full-content controls need
+normal review qualification before any separately scoped runtime effect.
+
+The source owner independently inspected the tightened implementation and reran
+full candidate checks with own WISE known-value guard and network denied, no
+main invocation or install: intended exact match accepted, original wrong repo
+and one-byte-changed memory input refused, original full-file digest unchanged.
+Local commands after tightening: `python3 -m unittest discover -s
+scripts/git-tools -p 'test*.py' -v` ran 277 tests, four skipped, no failures or
+errors; `PYTHONPATH=scripts python3 -m unittest discover -s
+scripts/simple_tools/tests -p 'test_reviewed_generic_fixtures.py' -v` ran four
+tests without skips, failures or errors. Artifact CI must qualify the new head.
+
+Parity claim is limited to the two byte-identical Python scanner sources and
+these tested library boundaries. The JavaScript contract's general scanSecret
+has no file-aware reviewed-match registry and remains unchanged. No live Worker
+or relay deployment parity or downstream packet acceptance is claimed here.

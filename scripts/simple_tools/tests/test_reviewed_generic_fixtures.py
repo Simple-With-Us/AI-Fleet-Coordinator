@@ -25,14 +25,12 @@ class ReviewedGenericTests(unittest.TestCase):
                 "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
                 "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
             ),
-            next(row for row in secretscan._REVIEWED_GENERIC_FIXTURES
-                 if row[2] == "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5"),
+
         }))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))
 
     def test_approved_path_does_not_approve_other_bytes_or_quoted_credentials(self):
-        repo, path, _digest = next(row for row in secretscan._REVIEWED_GENERIC_FIXTURES
-                                  if row[2] == "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5")
+        repo, path, _digest = next(iter(secretscan._REVIEWED_GENERIC_FIXTURES))
         for body in (
             self.body,
             "let token = Widget" + "Presentation.shortCadence(cadence: cadence, label: label)\n",
