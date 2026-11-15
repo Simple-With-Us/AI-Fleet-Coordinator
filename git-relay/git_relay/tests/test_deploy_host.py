@@ -94,6 +94,27 @@ class LinuxHostTests(unittest.TestCase):
                 self.h.stop_for_recovery()
         self.assertEqual(str(ctx.exception), "failed unit retains live processes; guard retained")
 
+    def test_unreadable_extant_cgroup_fails_closed(self):
+        # An extant process whose cgroup cannot be read is not proof of no
+        # strays: the scan must refuse, keeping the guard retained.
+        (self.proc / "42" / "cgroup").unlink()
+        (self.proc / "42" / "cgroup").mkdir()  # extant but unreadable as a file
+        with self.assertRaises(TransactionError) as ctx:
+            self.h.stray_unit_processes()
+        self.assertIn("cannot prove no strays", str(ctx.exception))
+
+        # confirmed_stopped propagates the refusal instead of reporting stopped.
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0, stdout="MainPID=0\nActiveState=failed\nWatchdogUSec=0\n"
+            )
+
+        with (
+            patch.object(self.h, "run_command", new=run),
+            self.assertRaises(TransactionError),
+        ):
+            self.h.confirmed_stopped(None)
+
     def test_stray_scan_ignores_other_units_and_vanishing_processes(self):
         other = self.proc / "43"
         other.mkdir()

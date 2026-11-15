@@ -225,8 +225,15 @@ class LinuxHost:
                 continue
             try:
                 lines = (p / "cgroup").read_text().splitlines()
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
-                continue
+            except FileNotFoundError:
+                continue  # process vanished mid-scan
+            except OSError as e:
+                # An extant process whose cgroup cannot be read (e.g.
+                # permission denied) is not proof of no strays: fail closed
+                # and keep the guard retained.
+                raise TransactionError(
+                    f"cannot scan /proc/{p.name} cgroup ({e.strerror or e}); cannot prove no strays"
+                )
             if any(line.split(":", 2)[-1].endswith(marker) for line in lines):
                 strays.append(int(p.name))
         return sorted(strays)
