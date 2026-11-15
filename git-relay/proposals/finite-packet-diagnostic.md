@@ -32,7 +32,11 @@ credentials. No client, provider-write callback, outcome store, shell command,
 URL, filesystem path, credential value, or scanner override belongs in its
 request schema or scanning kernel.
 
-Authentication and policy authorization precede diagnostics. Any activation needs
+Authentication and policy authorization precede diagnostics. Compare the authenticated
+owner user ID against a separately pinned owner user ID before granting authority.
+A missing pin or any mismatch makes every seat or peer ineligible; repository access
+and a seat name alone do not establish owner authority. Never accept that pin from
+the request or from external content. Any activation needs
 an explicit per-seat grant, with no implicit fleet-wide grant. Existing rate and
 audit protections remain. The operation may write its bounded audit receipt and
 consume its own diagnostic capability, but must create no publication outcome row,
@@ -64,7 +68,11 @@ Registration must not reopen or reconstruct a held packet merely to make a diges
 
 Bound input before parsing or decoding. Reuse the owning publication limits and
 strict duplicate-key/base64/path/size validation. Count total decoded bytes as
-well as encoded bytes. Reject unknown fields. Parse failures have a fixed result.
+well as encoded bytes. Enforce maximum nesting depth 8, total nodes 10000,
+at most 20 file entries, and at most 16 fields in any object. The implementation
+must count these before general recursive traversal and reject cycles in any
+in-process representation. Stricter existing publication limits still win. Reject
+unknown fields. Parse failures have a fixed result.
 Do not log the rejected body or embed it in exception output.
 
 ## Credential-population truth
@@ -105,7 +113,8 @@ packet or live credential is read by CI.
 
 1. Route is disabled by default and absent from catalog/policy until a separately
    reviewed activation; old write schemas reject `dry_run` and scan overrides.
-2. Wrong seat, repository ID or spelling, digest, order, path, base, message,
+2. Missing or mismatched pinned owner ID, wrong seat, repository ID or spelling,
+   digest, order, path, base, message,
    expiry, consumed capability and extra field all fail closed before scanning.
 3. No valid or invalid diagnostic can call a provider mutation, write dispatcher,
    token export, shell, outcome begin/finish/release, or packet replay path.
@@ -134,3 +143,22 @@ security tests and genuine CI. Source acceptance alone enables nothing. Deployme
 requires explicit confirmation of the authorization, transport, population and
 receipt boundaries above. Held-packet use remains a separate decision under its
 existing restrictions. No runtime or automatic activation is included here.
+
+## Reproducible document checks
+
+Run from the repository root:
+
+```sh
+python3 - <<'PYCODE'
+from pathlib import Path
+p = Path('git-relay/proposals/finite-packet-diagnostic.md')
+s = p.read_text()
+assert s.isascii()
+assert 'Status: design only.' in s
+print('PASS: ASCII; design-only status marker present')
+PYCODE
+```
+
+Result after the review changes: `PASS: ASCII; design-only status marker present`.
+This checks document text only, not diagnostic implementation, security properties,
+credential coverage, deployment or held-packet acceptance.
