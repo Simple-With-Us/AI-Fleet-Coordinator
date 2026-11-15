@@ -18,25 +18,23 @@ stopped-service guard, durable before-images and file journal, bounded systemd
 execution, exact image/config checks, rollback and failed-exit recovery. Existing
 transaction regression tests remain required. The package is not a new daemon.
 
-## Own-seat runtime proof
+## Own-seat runtime proof is not qualified
 
-The server has no existing canonical WISE bearer file. Historical transaction
-entries name other seats and are not reused. The proof adapter uses the already
-working, host-key-pinned server-to-Mac SSH route as jay. It invokes WISE's exact
-immutable five-file client on that Mac, reads ONLY its existing own bearer there,
-checks authenticated seat WISE, reads the expected repository/default branch,
-then expects the exact default-branch refusal to a mutation-impossible null-OID
-patch. Both expected-head and base-blob IDs are null. No credential is copied,
-returned, logged, placed on argv, written to a manifest or bound on the server.
-No persistent tunnel or extra runtime is introduced. The adapter has a fixed
-command and one finite subprocess; unknown output, wrong seat/image or timeout
-refuses the deployment proof. The server supervisor independently verifies the
-actual process and exact new or rollback image. Healthz alone is not proof.
+The previous proposed adapter embedded private operator inventory and used a local
+credential-file read. Those routes are removed from the current source. No proof
+was executed and no credential content was published. Historical commits remain.
 
-This is preparation, not a claim that runtime proof succeeded. The fixed adapter
-must itself pass normal review and CI. Before activation, validate existing SSH
-reachability and the exact proof result without weakening it, final immutable
-source and all pins, live baseline/config/metadata, rollback and recovery. A busy
-relay or failed proof aborts safely; do not force a restart or use another seat.
-Keep the original refused source packet and CT packet frozen until their own
-complete qualification. No alternate publication route is introduced.
+`wise_runtime_proof.py` is now an explicitly unqualified, I/O-free, fail-closed
+placeholder: every proof returns false without starting a transport or reading a
+credential. This package cannot qualify a deployment. The existing supervisor
+must therefore reject deployment or roll back, never accept missing proof.
+
+Restoring an executable adapter requires independent destination pinning from
+private inventory, a verified own-seat scoped secret loader, bounded transport,
+and review plus tests. No arbitrary environment-selected destination, new binding,
+credential copy, daemon or tunnel is a substitute. No runtime activation is ready.
+
+The pure builder independently pins the proof module bytes as well as the eight
+established transaction modules. Scratch directories must be owner-private actual
+directories; symlink components and broad permissions refuse. Existing outputs
+are never overwritten.

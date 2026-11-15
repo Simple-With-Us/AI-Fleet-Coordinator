@@ -9,6 +9,8 @@ import argparse
 import ast
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 BEFORE = "8762d7c50c0c09b92e34f640643f77b71f78524e412233ecb266f9f9a4b84802"
@@ -16,6 +18,7 @@ AFTER = "8bd0ea0b3a9fe2782d490c97065e4aff2ec7f38a2630abb04e98eca8e491e235"
 CONFIG = "af09bf3b8e0679ec50c7bf3808fb11e203a46ac2ab32e8652961182f38c9e29b"
 ROOT = "/opt/git-relay/transactions/ct-match-pinned"
 UNIT = "git-relay-ct-match-pinned.service"
+PROOF = "11eb8a0aa36e97c28884d708284f532575a0993cec7619d207f146ac4651c2a6"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "3acb883f2163f7acf23d50213c259a17792761003e277157a5193f4e248e0aba",
@@ -30,6 +33,20 @@ MODULES = {
 
 def digest(raw):
     return hashlib.sha256(raw).hexdigest()
+
+
+def private_dir(path):
+    path = Path(path)
+    if any(parent.is_symlink() for parent in (path, *path.parents)):
+        raise ValueError("symlinked scratch component")
+    path.mkdir(mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise ValueError("scratch directory not owner-private")
 
 
 def build(repo, before, output):
@@ -54,6 +71,8 @@ def build(repo, before, output):
             raw = raw.replace(b"git-relay-patch-1429.service", UNIT.encode())
         sources["git_relay/" + name] = raw
     sources["git_relay/wise_runtime_proof.py"] = (here / "wise_runtime_proof.py").read_bytes()
+    if digest(sources["git_relay/wise_runtime_proof.py"]) != PROOF:
+        raise ValueError("runtime proof module drift")
     ast.parse(sources["git_relay/wise_runtime_proof.py"].decode())
     manifest = {
         "config": CONFIG,
@@ -83,10 +102,14 @@ def build(repo, before, output):
     ast.parse(entry)
     # New scratch directory only. Never overwrites a prior release or host target.
     output = Path(output)
+    if any(parent.is_symlink() for parent in (output, *output.parents)):
+        raise ValueError("symlinked scratch component")
     output.mkdir(mode=0o700, exist_ok=False)
+    private_dir(output)
     for name, raw in sources.items():
         target = output / "runner-package" / name
-        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_dir(output / "runner-package")
+        private_dir(target.parent)
         target.write_bytes(raw)
     for name, raw in {
         "0.candidate": candidate,

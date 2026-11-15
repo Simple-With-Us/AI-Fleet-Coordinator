@@ -1,106 +1,52 @@
+"""No private inventory and no effects from an unqualified proof adapter."""
+
+import ast
 import importlib.util
-import json
 import subprocess
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location(
-    "wise_proof", Path(__file__).with_name("wise_runtime_proof.py")
+    "ct_proof_test_target", Path(__file__).with_name("wise_runtime_proof.py")
 )
 proof = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proof)
 
 
 class OwnWiseProofTests(unittest.TestCase):
-    def response(self, **changes):
-        result = dict(returncode=0, stderr=b"", stdout=json.dumps(proof.EXPECTED).encode())
-        result.update(changes)
-        return SimpleNamespace(**result)
+    def test_unqualified_adapter_never_starts_transport(self):
+        run = Mock(side_effect=AssertionError("transport must not start"))
+        for hashes in ({}, {"code/patch_secretscan.py": "a" * 64}):
+            self.assertIs(proof.prove(hashes, run), False)
+        run.assert_not_called()
+        self.assertFalse(proof.QUALIFIED)
+        self.assertIs(proof.make_proof()(None, {}), False)
 
-    def test_no_process_for_unqualified_image(self):
-        def bad(*args, **kwargs):
-            self.fail("must not run")
-
-        for hashes in ({}, {"code/patch_secretscan.py": "0" * 64}):
-            self.assertFalse(proof.prove(hashes, bad))
-
-    def test_fixed_command_no_credential_transfer(self):
-        calls = []
-
-        def run(argv, **kwargs):
-            calls.append((argv, kwargs))
-            key_option = next(s for s in argv if s.startswith("UserKnownHostsFile="))
-            path = Path(key_option.split("=", 1)[1])
-            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o755)
-            self.assertEqual(path.read_text(), proof.MAC_HOST + " " + proof.MAC_HOST_KEY + "\n")
-            self.assertEqual(kwargs["input"], proof.REMOTE_SOURCE.encode())
-            self.assertEqual(kwargs["timeout"], 35)
-            self.assertEqual(kwargs["env"], {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
-            self.assertIn("StrictHostKeyChecking=yes", argv)
-            self.assertIn("BatchMode=yes", argv)
-            self.assertEqual(argv[-2:], ["jay@" + proof.MAC_HOST, "python3 -"])
-            return self.response()
-
-        for digest in (proof.BEFORE, proof.AFTER):
-            self.assertTrue(proof.prove({"code/patch_secretscan.py": digest}, run))
-        self.assertEqual(len(calls), 2)
-
-    def test_unexpected_transport_output_refuses(self):
-        for result in (
-            self.response(returncode=1),
-            self.response(stderr=b"warning"),
-            self.response(stdout=b"not json"),
-            self.response(stdout=b"x" * 513),
-            self.response(stdout=b'{"ok":true,"seat":"ECHO"}'),
-            self.response(stdout=b'{"ok":false}'),
+    def test_no_embedded_route_or_secret_loader(self):
+        source = Path(proof.__file__).read_text()
+        ast.parse(source)
+        for marker in (
+            "REMOTE_SOURCE",
+            "known_hosts",
+            "simple-tools-bearer",
+            "/Users/",
+            "fleet-secrets get",
+            "MAC_HOST",
         ):
-            self.assertFalse(
-                proof.prove({"code/patch_secretscan.py": proof.AFTER}, lambda *a, **k: result)
-            )
-
-    def test_timeout_and_exception_refuse(self):
-        for error in (OSError("failure"), subprocess.TimeoutExpired("fixed", 35)):
-
-            def run(*a, **k):
-                raise error
-
-            self.assertFalse(proof.prove({"code/patch_secretscan.py": proof.AFTER}, run))
+            self.assertNotIn(marker, source)
 
     def test_timeout_kills_and_reaps_entire_transport_group(self):
-        class Process:
-            pid = 12345
-            returncode = -9
-            calls = 0
-
-            def communicate(self, **kwargs):
-                self.calls += 1
-                if self.calls == 1:
-                    raise subprocess.TimeoutExpired("fixed", 35)
-                return b"", b""
-
-        process = Process()
+        process = Mock(pid=123)
+        process.communicate.side_effect = [subprocess.TimeoutExpired("fixture", 1), (b"", b"")]
         with (
-            patch.object(proof.subprocess, "Popen", return_value=process) as popen,
+            patch.object(proof.subprocess, "Popen", return_value=process),
             patch.object(proof.os, "killpg") as kill,
         ):
             with self.assertRaises(subprocess.TimeoutExpired):
-                proof.run_bounded(
-                    ["fixed"], input=b"source", capture_output=True, timeout=35, env={}
-                )
-            self.assertTrue(popen.call_args.kwargs["start_new_session"])
-            kill.assert_called_once_with(12345, proof.signal.SIGKILL)
-            self.assertEqual(process.calls, 2)
-
-    def test_remote_source_is_syntax_valid_and_null_fenced(self):
-        compile(proof.REMOTE_SOURCE, "fixed-remote-proof", "exec")
-        self.assertIn("'expected_head_sha':'0'*40", proof.REMOTE_SOURCE)
-        self.assertIn("'base_blob_sha':'0'*40", proof.REMOTE_SOURCE)
-        self.assertNotIn("ECHO", proof.REMOTE_SOURCE)
-        self.assertNotIn("CODEX", proof.REMOTE_SOURCE)
-        self.assertNotIn("originLock", proof.REMOTE_SOURCE)
-        self.assertNotIn("content_b64", proof.REMOTE_SOURCE)
+                proof.run_bounded(["fixture"], input=b"", capture_output=True, timeout=1, env={})
+        kill.assert_called_once_with(123, proof.signal.SIGKILL)
+        self.assertEqual(process.communicate.call_count, 2)
 
 
 if __name__ == "__main__":

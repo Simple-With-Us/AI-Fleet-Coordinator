@@ -89,6 +89,37 @@ class BuilderTests(unittest.TestCase):
                         builder.build(repo, before, output)
                     self.assertFalse(output.exists())
 
+    def test_private_dir_rejects_redirect_and_broad_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.mkdir(mode=0o700)
+            (root / "redirect").symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                builder.private_dir(root / "redirect")
+            with self.assertRaises(ValueError):
+                builder.private_dir(root / "redirect" / "child")
+            broad = root / "broad"
+            broad.mkdir(mode=0o755)
+            with self.assertRaises(ValueError):
+                builder.private_dir(broad)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_proof_drift_refuses_before_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, before, sources = self.prepare(root)
+            pins = {n: builder.digest(raw) for n, raw in sources.items()}
+            with (
+                patch.object(builder, "BEFORE", builder.digest(b"baseline")),
+                patch.object(builder, "AFTER", builder.digest(b"candidate")),
+                patch.object(builder, "MODULES", pins),
+                patch.object(builder, "PROOF", "0" * 64),
+            ):
+                with self.assertRaisesRegex(ValueError, "proof module drift"):
+                    builder.build(repo, before, root / "out")
+                self.assertFalse((root / "out").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
