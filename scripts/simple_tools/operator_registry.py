@@ -3183,6 +3183,29 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         answer = registry_api.call(env, *_api_call_for(args))
         print(json.dumps(answer))
         return 0 if "error" not in answer else 2
+    if args.command in (
+        "register",
+        "relabel",
+        "update",
+        "close",
+        "touch",
+        "sweep",
+        "reopen",
+    ):
+        # AFC-723: session writes go only through the Operator's registry API, never
+        # against a caller-chosen local --db file (which would act as a second assigner).
+        print(
+            json.dumps(
+                {
+                    "error": (
+                        "operator-registry session writes require the registry API "
+                        "(SIMPLE_TOOLS_OPERATOR_REGISTRY_URL)"
+                    ),
+                    "code": "not_configured",
+                }
+            )
+        )
+        return 2
     db = getattr(args, "db", "") or default_db(env)
     if not os.path.isfile(db):
         # Never bring a registry into being:  a second registry would hand out letters
@@ -3206,190 +3229,6 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
             print(json.dumps({"error": str(exc), "found": False}))
             return 2
         print(json.dumps(found if found else {"label": args.letter, "found": False}))
-        return 0
-    if args.command == "register":
-        try:
-            out = register_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                seat=args.seat,
-                source=args.source,
-                title=args.title,
-                project=args.project,
-                thread_link=args.thread_link,
-                apple_note_link=args.apple_note_link,
-                wake_capability=args.wake_capability,
-                issuer=ISSUER_OPERATOR,
-                letter_space=args.letter_space,
-                letter_pick=args.letter_pick,
-                parent_session_id=args.parent_session_id,
-                parent_letter=args.parent_letter,
-            )
-        except LabelExhausted as exc:
-            # A platform that asks for a letter gets an answer it can read, never a traceback and an empty line.
-            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
-            return 2
-        except SeatPlatformMismatch as exc:
-            print(json.dumps(exc.answer()))
-            return 2
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "relabel":
-        try:
-            out = relabel_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                seat=args.seat,
-                source=args.source,
-                letter_space=args.letter_space,
-                letter_pick=args.letter_pick,
-                parent_session_id=args.parent_session_id,
-                parent_letter=args.parent_letter,
-                issuer=ISSUER_OPERATOR,
-                force=args.force,
-            )
-        except LabelExhausted as exc:
-            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
-            return 2
-        except SessionClosed as exc:
-            print(json.dumps({"error": str(exc), "code": "closed_session"}))
-            return 2
-        except SessionUnknown as exc:
-            print(json.dumps({"error": str(exc), "code": "not_registered"}))
-            return 2
-        except SeatPlatformMismatch as exc:
-            print(json.dumps(exc.answer()))
-            return 2
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "update":
-        try:
-            out = update_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                title=args.title,
-                project=args.project,
-                thread_link=args.thread_link,
-                apple_note_link=args.apple_note_link,
-                wake_capability=args.wake_capability,
-                issues=None if args.issues is None else _issues_arg(args.issues),
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "close":
-        try:
-            out = close_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-                reason=args.reason,
-                actor=args.actor,
-                source=args.source,
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "touch":
-        try:
-            out = touch_session(
-                db,
-                platform=args.platform,
-                verified_host=args.location,
-                profile_scope=args.scope,
-                native_session_id=args.session_id,
-            )
-        except ValueError as exc:
-            print(json.dumps({"error": str(exc)}))
-            return 2
-        print(json.dumps(out))
-        return 0
-    if args.command == "sweep":
-        ended = sweep_stale(
-            db,
-            platform=args.platform,
-            seat=args.seat,
-            stale_after_minutes=args.stale_after_minutes,
-        )
-        print(json.dumps({"ended": ended, "count": len(ended)}))
-        return 0
-    if args.command == "reopen":
-        # The reopen shares the platform's own rule, the one every hook uses, so the
-        # pair space is kept the same way here as it is in the hook.  It lives behind
-        # this verb because a host that keeps no registry asks the host that holds one.
-        from . import platform_letter
-
-        reg = None
-        try:
-            reg = SessionRegistry(db)
-            letter, generation, previous = platform_letter.operator_reopen(
-                sys.modules[__name__],
-                db,
-                reg,
-                args.record_id,
-                actor=args.actor,
-                source=args.source,
-                pick=args.letter_pick,
-                parent=args.parent_session_id,
-            )
-        except platform_letter.SpaceLost as exc:
-            # A chat that held a pair would come back with a single letter.  That is
-            # refused before anything is written.
-            print(
-                json.dumps({"error": str(exc), "code": "space_lost", "outcome": "reopen_refused"})
-            )
-            return 2
-        except LabelExhausted as exc:
-            print(
-                json.dumps(
-                    {"error": str(exc), "code": "labels_exhausted", "outcome": "reopen_refused"}
-                )
-            )
-            return 2
-        except (UnknownRecord, KeyError, ValueError, OSError, sqlite3.Error) as exc:
-            # A database that faults is a refusal, not a traceback:  the far host has
-            # to answer with something the caller can read.
-            print(
-                json.dumps(
-                    {"error": str(exc), "code": "reopen_failed", "outcome": "reopen_refused"}
-                )
-            )
-            return 2
-        finally:
-            if reg is not None:
-                reg.close_db()
-        print(
-            json.dumps(
-                {
-                    "record_id": args.record_id,
-                    "label": letter,
-                    "generation": generation,
-                    "previous": previous,
-                    "outcome": "reopened",
-                }
-            )
-        )
         return 0
     if args.command == "history":
         try:
