@@ -3,6 +3,7 @@
 import hashlib
 import unittest
 from unittest.mock import patch
+
 from git_relay import patch_secretscan as relay
 from git_relay.reviewed_fixtures import unreviewed_file_secret
 
