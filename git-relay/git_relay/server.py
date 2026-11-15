@@ -761,6 +761,10 @@ class Relay:
             # unknowable here, so hold the key as unknown (fail closed) and
             # still record the audit row in finally.
             self._release(key, "unknown")
+            # Bind the audit row only to a corr the stored row actually
+            # carries:  when begin() itself failed before writing a row, the
+            # minted corr never landed anywhere and would dangle.
+            attempt_corr = self.outcomes.corr_of(key) if key is not None else None
             outcome = "error"
             detail = {"exception": type(exc).__name__}
             return 500, {"error": "internal relay error"}
