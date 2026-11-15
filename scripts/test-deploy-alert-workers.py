@@ -612,10 +612,11 @@ class Tests(unittest.TestCase):
                         "check_runs": [
                             {
                                 "name": m.KODY_CHECK_NAME,
-                                "app": {"slug": m.KODY_APP_SLUG},
+                                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
                                 "status": "completed",
                                 "conclusion": "success",
                                 "head_sha": head,
+                                "started_at": "2026-11-15T19:00:00Z",
                                 "output": {
                                     "title": m.KODY_CHECK_TITLE,
                                     "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
@@ -623,12 +624,61 @@ class Tests(unittest.TestCase):
                             }
                         ]
                     },
+                    [],
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
+            m.reviewed("a" * 40)
+
+    def test_stale_kody_check_receipt_does_not_qualify(self):
+        import json
+        from unittest.mock import MagicMock
+
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    {
+                        "check_runs": [
+                            {
+                                "name": m.KODY_CHECK_NAME,
+                                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                                "status": "completed",
+                                "conclusion": "success",
+                                "head_sha": head,
+                                "started_at": "2026-11-15T19:00:00Z",
+                                "output": {
+                                    "title": m.KODY_CHECK_TITLE,
+                                    "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                                },
+                            }
+                        ]
+                    },
+                    [
+                        {
+                            "body": "@kody start-review",
+                            "created_at": "2026-11-15T20:00:00Z",
+                        }
+                    ],
+                ],
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
             m.reviewed("a" * 40)
 
     def test_release_review_paths_exclude_receipt_only(self):
