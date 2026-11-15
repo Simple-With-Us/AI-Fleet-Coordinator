@@ -354,6 +354,11 @@ def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
             raise SecretsError(
                 "cli-session-workdir-symlink: refusing to follow a symlinked workdir"
             )
+        # mode applies only to the mkdir leaf: create the intermediate base
+        # explicitly and chmod it too, or it keeps the umask default (0755)
+        # and local users can enumerate the per-project directory names.
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(base, 0o700)
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
         payload = (

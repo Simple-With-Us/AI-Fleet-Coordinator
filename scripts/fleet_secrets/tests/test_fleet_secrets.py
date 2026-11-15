@@ -347,6 +347,11 @@ class RunTests(Base):
         for cwd in world.export_cwds:
             self.assertEqual(cwd, str(workdir))
         self.assertEqual(oct(workdir.stat().st_mode & 0o777), "0o700")
+        # The intermediate base must be owner-only too: mkdir's mode applies
+        # only to the leaf, so without an explicit base chmod the per-project
+        # directory names (Infisical project ids) are enumerable by local users.
+        base = self.home / ".config" / "fleet-secrets" / "cli-session"
+        self.assertEqual(oct(base.stat().st_mode & 0o777), "0o700")
         config = workdir / ".infisical.json"
         self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
         payload = json.loads(config.read_text())
