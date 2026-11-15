@@ -183,6 +183,10 @@ REVIEW_REQUEST_PATTERN = "@kody start-review"
 # head through several candidate PRs, and each fetch is an authenticated call.
 _check_run_cache = {}
 
+# Same for review-request history: reviewed() consults it for the
+# review-object branch and kody_check_receipt() for the check-run receipt.
+_review_request_cache = {}
+
 
 def _check_runs_for(head_sha):
     if head_sha in _check_run_cache:
@@ -207,6 +211,8 @@ def _check_runs_for(head_sha):
 
 def _newest_review_request(number):
     """Newest manual review-request timestamp on the PR, or None in auto mode."""
+    if number in _review_request_cache:
+        return _review_request_cache[number]
     comments = github_paginated(
         "/issues/" + str(number) + "/comments",
         "Review-request history exceeds bounded page limit",
@@ -235,6 +241,7 @@ def _newest_review_request(number):
                 raise RuntimeError("Invalid review-request evidence")
             if newest is None or created > newest:
                 newest = created
+    _review_request_cache[number] = newest
     return newest
 
 
@@ -256,6 +263,7 @@ def kody_check_receipt(head_sha, number=None):
         title = output.get("title") or ""
         summary = output.get("summary") or ""
         started = run.get("started_at")
+        completed = run.get("completed_at")
         if (
             run.get("name") == KODY_CHECK_NAME
             and app.get("slug") == KODY_APP_SLUG
@@ -265,9 +273,27 @@ def kody_check_receipt(head_sha, number=None):
             and title == KODY_CHECK_TITLE
             and summary.startswith(KODY_CHECK_SUMMARY_PREFIX)
             and run.get("head_sha") == head_sha
-            and (requested is None or (isinstance(started, str) and started >= requested))
+            and isinstance(started, str)
+            and isinstance(completed, str)
+            and completed >= started
+            and (requested is None or started >= requested)
         ):
-            return True
+            # A newer Kody-owned run still queued or in progress on this head
+            # supersedes the completed success; qualification waits for it.
+            superseded = any(
+                other.get("name") == KODY_CHECK_NAME
+                and isinstance(other.get("app"), dict)
+                and other["app"].get("id") == KODY_APP_ID
+                and other.get("head_sha") == head_sha
+                and other.get("status") in ("queued", "in_progress")
+                and (
+                    not isinstance(other.get("started_at"), str)
+                    or other["started_at"] >= started
+                )
+                for other in runs
+            )
+            if not superseded:
+                return True
     return False
 
 
@@ -306,18 +332,30 @@ def reviewed(sha):
         head = pr.get("head", {}).get("sha")
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
             continue
-        qualified = [
+        candidates = [
             r
             for r in reviews
             if isinstance(r.get("user"), dict)
             and r["user"].get("login") == "kody-ai[bot]"
             and r.get("state") in ("APPROVED", "COMMENTED")
         ]
-        # COMMENTED is a completed substantive Kody review, not an issue comment.
-        # Manual Kody mode can leave only the check run; that receipt matches auto-merge.
-        kody_qualified = any(r.get("commit_id") == head for r in qualified) or kody_check_receipt(
-            head, number
-        )
+        matching = [r for r in candidates if r.get("commit_id") == head]
+        if matching:
+            # A review predating the newest actual human re-review request is
+            # stale: only reviews submitted at or after it qualify, matching
+            # the freshness rule in the check-run receipt branch.
+            requested = _newest_review_request(number)
+            fresh = [
+                r
+                for r in matching
+                if requested is None
+                or (isinstance(r.get("submitted_at"), str) and r["submitted_at"] >= requested)
+            ]
+            # COMMENTED is a completed substantive Kody review, not an issue comment.
+            # Manual Kody mode can leave only the check run; that receipt matches auto-merge.
+            kody_qualified = bool(fresh) or kody_check_receipt(head, number)
+        else:
+            kody_qualified = kody_check_receipt(head, number)
         if not kody_qualified:
             continue
         # GraphQL includes actual thread resolution, unlike review state.

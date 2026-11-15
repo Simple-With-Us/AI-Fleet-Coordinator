@@ -361,6 +361,7 @@ class Tests(unittest.TestCase):
                         {"state": "COMMENTED", "user": "invalid"},
                         review,
                     ],
+                    [],
                 ],
             ),
             patch.object(m, "kody_check_receipt", return_value=False),
@@ -412,6 +413,7 @@ class Tests(unittest.TestCase):
                         {"state": "COMMENTED", "user": "invalid"},
                         review,
                     ],
+                    [],
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
@@ -464,6 +466,7 @@ class Tests(unittest.TestCase):
                         {"state": "COMMENTED", "user": "invalid"},
                         review,
                     ],
+                    [],
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
@@ -471,6 +474,7 @@ class Tests(unittest.TestCase):
         ):
             opener.return_value.open.return_value = response
             m._check_run_cache.clear()
+            m._review_request_cache.clear()
             m.reviewed("a" * 40)
 
     def test_review_pages_beyond_one_hundred_are_followed(self):
@@ -517,12 +521,13 @@ class Tests(unittest.TestCase):
             }
         ).encode()
         with (
-            patch.object(m, "github", side_effect=[[pr], page_one, page_two]),
+            patch.object(m, "github", side_effect=[[pr], page_one, page_two, []]),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
             m._check_run_cache.clear()
+            m._review_request_cache.clear()
             m.reviewed("a" * 40)
 
     def test_review_pages_beyond_the_cap_fail_closed(self):
@@ -619,6 +624,7 @@ class Tests(unittest.TestCase):
                                 "conclusion": "success",
                                 "head_sha": head,
                                 "started_at": "2026-11-15T19:00:00Z",
+                                "completed_at": "2026-11-15T19:05:00Z",
                                 "output": {
                                     "title": m.KODY_CHECK_TITLE,
                                     "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
@@ -634,6 +640,55 @@ class Tests(unittest.TestCase):
         ):
             opener.return_value.open.return_value = response
             m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            m.reviewed("a" * 40)
+
+    def test_pending_newer_kody_run_blocks_stale_success(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        completed = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": head,
+            "started_at": "2026-11-15T19:00:00Z",
+            "completed_at": "2026-11-15T19:05:00Z",
+            "output": {
+                "title": m.KODY_CHECK_TITLE,
+                "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+            },
+        }
+        pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "in_progress",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T19:30:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], [], {"check_runs": [completed, pending]}, []],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Thread evidence is clean, so only the pending-run block can raise.
             m.reviewed("a" * 40)
 
     def test_stale_kody_check_receipt_does_not_qualify(self):
@@ -661,6 +716,7 @@ class Tests(unittest.TestCase):
                                 "conclusion": "success",
                                 "head_sha": head,
                                 "started_at": "2026-11-15T19:00:00Z",
+                                "completed_at": "2026-11-15T19:05:00Z",
                                 "output": {
                                     "title": m.KODY_CHECK_TITLE,
                                     "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
@@ -676,10 +732,17 @@ class Tests(unittest.TestCase):
                     ],
                 ],
             ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             self.assertRaises(RuntimeError),
         ):
             m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Thread evidence is mocked clean, so only the freshness guard can
+            # raise here; without it the stale receipt would pass silently.
             m.reviewed("a" * 40)
 
     def test_wrong_app_id_receipt_does_not_qualify(self):
@@ -706,6 +769,7 @@ class Tests(unittest.TestCase):
                                 "conclusion": "success",
                                 "head_sha": head,
                                 "started_at": "2026-11-15T19:00:00Z",
+                                "completed_at": "2026-11-15T19:05:00Z",
                                 "output": {
                                     "title": m.KODY_CHECK_TITLE,
                                     "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
@@ -720,6 +784,7 @@ class Tests(unittest.TestCase):
             self.assertRaises(RuntimeError),
         ):
             m._check_run_cache.clear()
+            m._review_request_cache.clear()
             m.reviewed("a" * 40)
 
     def test_fresh_receipt_after_request_qualifies(self):
@@ -746,6 +811,7 @@ class Tests(unittest.TestCase):
                                 "conclusion": "success",
                                 "head_sha": head,
                                 "started_at": "2026-11-15T20:05:00Z",
+                                "completed_at": "2026-11-15T20:06:00Z",
                                 "output": {
                                     "title": m.KODY_CHECK_TITLE,
                                     "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
@@ -768,6 +834,7 @@ class Tests(unittest.TestCase):
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
+            m._review_request_cache.clear()
             # A check started after the newest request qualifies; detection is
             # per-line and case-insensitive, matching the auto-merge contract.
             # reviewed() returns without raising on success.
@@ -797,6 +864,7 @@ class Tests(unittest.TestCase):
                                 "conclusion": "success",
                                 "head_sha": head,
                                 "started_at": "2026-11-15T19:00:00Z",
+                                "completed_at": "2026-11-15T19:05:00Z",
                                 "output": {
                                     "title": m.KODY_CHECK_TITLE,
                                     "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
@@ -806,7 +874,7 @@ class Tests(unittest.TestCase):
                     },
                     [
                         {
-                            "body": "Manual mode requires @kody start-review",
+                            "body": "@kody start-review\n\nManual mode requires this invocation",
                             "created_at": "2026-11-15T20:00:00Z",
                             "user": {"login": m.KODY_APP_SLUG + "[bot]"},
                         }
@@ -820,6 +888,7 @@ class Tests(unittest.TestCase):
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
+            m._review_request_cache.clear()
             # The bot's own notice quotes the invocation but is not a request,
             # so no freshness requirement applies and the receipt qualifies.
             m.reviewed("a" * 40)
