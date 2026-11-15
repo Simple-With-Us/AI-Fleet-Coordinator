@@ -216,7 +216,12 @@ def _newest_review_request(number):
             raise RuntimeError("Invalid review-request evidence")
         body = comment.get("body")
         created = comment.get("created_at")
-        if isinstance(body, str) and REVIEW_REQUEST_PATTERN in body:
+        # Same detection as the auto-merge receipt contract: per-line,
+        # case-insensitive pattern match on the comment body.
+        if isinstance(body, str) and any(
+            re.search(REVIEW_REQUEST_PATTERN, line, re.IGNORECASE)
+            for line in body.split("\n")
+        ):
             if not isinstance(created, str):
                 raise RuntimeError("Invalid review-request evidence")
             if newest is None or created > newest:
