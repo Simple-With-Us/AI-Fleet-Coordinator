@@ -225,22 +225,48 @@ def _kody_run_pending(runs, head_sha):
 
 
 def _check_runs_for(head_sha):
+    """Kody-named check runs on the head, or None when evidence is unavailable.
+
+    The mirrored auto-merge contract filters server-side by check name and
+    paginates: an unfiltered first page can truncate the Kody runs out of a
+    busy commit's listing.  Any lookup or evidence failure for one head is no
+    evidence for that head - it fails the head closed on both acceptance
+    routes, without aborting qualification of the commit's other candidate
+    PRs.
+    """
     if head_sha in _check_run_cache:
         return _check_run_cache[head_sha]
+    runs = []
+    page = 1
     try:
-        body = github("/commits/" + head_sha + "/check-runs?per_page=100")
-    except RuntimeError:
-        # An API failure for one head is no receipt for that head, not a reason
-        # to abort qualification of the commit's other candidate PRs.
-        body = None
-    if body is None:
+        while True:
+            body = github(
+                "/commits/"
+                + head_sha
+                + "/check-runs?per_page=100&check_name="
+                + urllib.parse.quote(KODY_CHECK_NAME)
+                + "&page="
+                + str(page)
+            )
+            if not isinstance(body, dict):
+                raise RuntimeError("check-runs evidence is not an object")
+            batch = body.get("check_runs")
+            if not isinstance(batch, list) or not all(
+                isinstance(run, dict) for run in batch
+            ):
+                raise RuntimeError("check-runs evidence is not shaped entries")
+            runs.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+            if page > 10:
+                raise RuntimeError("Kody check-run evidence exceeds bounded page limit")
+    except (RuntimeError, OSError):
+        # A failed, malformed or oversized lookup proves nothing about pending
+        # runs: the head cannot qualify on either route, but the release
+        # gate's other candidate PRs are unaffected.
         _check_run_cache[head_sha] = None
         return None
-    runs = body.get("check_runs") if isinstance(body, dict) else None
-    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
-        raise RuntimeError("Invalid Kody check-run evidence")
-    if len(runs) >= 100:
-        raise RuntimeError("Incomplete Kody check-run evidence")
     _check_run_cache[head_sha] = runs
     return runs
 

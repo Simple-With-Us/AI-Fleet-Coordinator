@@ -899,6 +899,118 @@ class Tests(unittest.TestCase):
             # well-formed review still does.
             m.reviewed("a" * 40)
 
+    def test_malformed_check_run_payload_fails_closed_per_head(self):
+        bad_head = "b" * 40
+        good_head = "c" * 40
+        bad_pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": bad_head},
+        }
+        good_pr = {
+            "number": 1711,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": good_head},
+        }
+
+        def review(rid, head):
+            return {
+                "id": rid,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": head,
+                "submitted_at": "2026-11-15T19:30:00Z",
+            }
+
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [bad_pr, good_pr],
+                    [review(1, bad_head)],
+                    [],
+                    {"check_runs": ["not-a-run", None]},
+                    [review(2, good_head)],
+                    [],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A malformed check_runs payload fails its own head closed on BOTH
+            # routes (the fresh review object cannot qualify with pending-run
+            # evidence unavailable), raises nothing, and does not poison the
+            # next candidate PR, whose clean evidence still qualifies.
+            m.reviewed("a" * 40)
+
+    def test_check_run_lookup_filters_by_name_and_paginates(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        filler = [
+            {
+                "name": m.KODY_CHECK_NAME,
+                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": head,
+                "started_at": "2026-11-15T18:00:00Z",
+                "completed_at": "2026-11-15T18:05:00Z",
+                "output": {"title": None, "summary": None},
+            }
+            for _ in range(100)
+        ]
+        pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "in_progress",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T19:00:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        seen_paths = []
+
+        def fake_github(path, timeout=None):
+            seen_paths.append(path)
+            if path.startswith("/commits/" + "a" * 40 + "/pulls"):
+                return [pr]
+            if path.startswith("/pulls/1710/reviews"):
+                return []
+            if "check-runs" in path and path.endswith("&page=1"):
+                return {"check_runs": filler}
+            if "check-runs" in path and path.endswith("&page=2"):
+                return {"check_runs": [pending]}
+            raise AssertionError("unexpected path " + path)
+
+        with (
+            patch.object(m, "github", side_effect=fake_github),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # The pending run sits on page 2: only a check_name-filtered,
+            # paginated lookup sees it and blocks qualification.
+            m.reviewed("a" * 40)
+        check_calls = [p for p in seen_paths if "check-runs" in p]
+        self.assertEqual(len(check_calls), 2)
+        self.assertIn("check_name=Kody%20Code%20Review", check_calls[0])
+        self.assertIn("page=2", check_calls[1])
+
     def test_stale_kody_check_receipt_does_not_qualify(self):
 
         head = "b" * 40
