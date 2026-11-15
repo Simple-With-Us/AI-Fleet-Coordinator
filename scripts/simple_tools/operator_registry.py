@@ -40,7 +40,6 @@ import random
 import re
 import secrets
 import sqlite3
-import sys
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
