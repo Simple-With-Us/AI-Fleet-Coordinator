@@ -527,6 +527,34 @@ class Tests(unittest.TestCase):
         ):
             m.reviewed("a" * 40)
 
+    def test_pagination_walk_shares_one_absolute_deadline(self):
+        pr = {
+            "number": 1,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": "b" * 40},
+        }
+        full_page = [
+            {
+                "id": n,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "b" * 40,
+            }
+            for n in range(100)
+        ]
+        # The reviews walk starts a fresh deadline; its second page request
+        # happens after that deadline, so the walk fails closed instead of
+        # getting a fresh per-request timeout.
+        clock = iter([0.0, 0.0, 0.0, 0.0, 61.0])
+        with (
+            patch.object(m, "github", side_effect=[[pr], list(full_page)]),
+            patch.object(m.time, "monotonic", side_effect=lambda: next(clock)),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m.reviewed("a" * 40)
+
     def test_kody_check_receipt_without_pr_review_passes(self):
         import json
         from unittest.mock import MagicMock

@@ -8,6 +8,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -91,7 +92,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request_json(url, token, data=None):
+def request_json(url, token, data=None, timeout=30):
     req = urllib.request.Request(
         url,
         data=data,
@@ -102,16 +103,17 @@ def request_json(url, token, data=None):
             "User-Agent": m.USER_AGENT,
         },
     )
-    with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as response:
+    with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
         if 300 <= response.status < 400:
             raise RuntimeError("Redirect not allowed")
         return json.load(response)
 
 
-def github(path):
+def github(path, timeout=30):
     body = request_json(
         "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + path,
         os.environ["GH_TOKEN"],
+        timeout=timeout,
     )
     if isinstance(body, dict) and "message" in body:
         raise RuntimeError("GitHub read rejected")
@@ -121,12 +123,21 @@ def github(path):
 # A page shorter than the page size is the last one; the cap keeps the
 # evidence bounded so an endless stream still fails closed instead of
 # hanging the gate.
-def github_paginated(path, message, cap_pages=10):
+def github_paginated(path, message, cap_pages=10, budget_seconds=60):
     items = []
     separator = "&" if "?" in path else "?"
     page = 1
+    # One absolute deadline for the whole walk: every page shares it, so a
+    # slow or endless stream still exhausts the budget and fails closed
+    # instead of getting a fresh timeout per request.
+    deadline = time.monotonic() + budget_seconds
     while True:
-        body = github(path + separator + "per_page=100&page=" + str(page))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(message)
+        body = github(
+            path + separator + "per_page=100&page=" + str(page), timeout=remaining
+        )
         if not isinstance(body, list):
             raise RuntimeError("Unexpected GitHub list evidence")
         items.extend(body)
