@@ -202,6 +202,7 @@ def exclude_non_interactive(
     env: Mapping[str, str], local_host: str
 ) -> Callable[[list[WR.Target]], set[str]]:
     """Return session ids of local targets that are sub-agent children or not in the index."""
+
     def exclude(targets: list[WR.Target]) -> set[str]:
         local_ids = [t.session_id for t in targets if t.host == local_host]
         if not local_ids:
