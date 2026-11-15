@@ -564,8 +564,11 @@ def write_digest_binding(transport, token, account, worker, settings, digest_tex
     # replace (already sent complete) and annotations are not inherited across
     # settings updates (omitting them clears them), so the just-fetched
     # current annotations are sent back to preserve them.  Annotations change
-    # only at upload/deploy time; the post-write comparison below verifies the
-    # preserved state actually survived and fails loudly on any drift.
+    # only at upload/deploy time, and nothing serializes a deploy against this
+    # sync: a deploy landing between the GET above and the PATCH below would
+    # have its annotations written back to the fetched value.  That residual
+    # window is real; the post-write comparison below verifies only the state
+    # this write intended - it cannot detect a clobbered concurrent write.
     patch = {"bindings": bindings}
     annotations = result.get("annotations")
     if annotations is not None:
