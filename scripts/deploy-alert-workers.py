@@ -293,12 +293,11 @@ def _newest_review_request(number):
     for comment in comments:
         if not isinstance(comment, dict):
             raise RuntimeError("Invalid review-request evidence")
-        # kody-ai[bot] notices quote the invocation ("Manual mode requires
-        # @kody start-review"); they are not requests and must not reset
-        # freshness.
-        user = comment.get("user")
-        if isinstance(user, dict) and user.get("login") == KODY_APP_SLUG + "[bot]":
-            continue
+        # Canonical parity: the auto-merge receipt contract counts EVERY issue
+        # comment carrying the invocation on its own line, with no author
+        # filter (.github/workflows/auto-merge-reusable.yml request flag), so
+        # this script applies none either. A spurious match only resets
+        # freshness and delays qualification - the fail-safe direction.
         body = comment.get("body")
         created = comment.get("created_at")
         # Only a line whose stripped form STARTS with the invocation counts as
@@ -414,9 +413,9 @@ def reviewed(sha):
         ]
         matching = [r for r in candidates if r["commit_id"] == head]
         if matching:
-            # A review predating the newest actual human re-review request is
-            # stale: only reviews submitted at or after it qualify, matching
-            # the freshness rule in the check-run receipt branch.
+            # A review predating the newest review request is stale: only
+            # reviews submitted at or after it qualify, matching the
+            # freshness rule in the check-run receipt branch.
             requested = _newest_review_request(number)
             fresh = [
                 r

@@ -375,6 +375,13 @@ class Tests(unittest.TestCase):
         import json
         from unittest.mock import MagicMock
 
+        # Clear the module-level caches as the sibling tests do: this test
+        # reuses PR number 1 and head "b"*40 from
+        # test_exact_review_and_resolved_threads_pass, which runs earlier
+        # under unittest's alphabetical ordering and would otherwise leave
+        # warm-cache values that bypass the real lookup path.
+        m._check_run_cache.clear()
+        m._review_request_cache.clear()
         pr = {
             "number": 1,
             "merged_at": "now",
@@ -1000,6 +1007,36 @@ class Tests(unittest.TestCase):
                 # A tab- or multi-space invocation is still a request: the
                 # 19:00:01 review is fresh against the 19:00:00.500 request.
                 m.reviewed(head)
+                # Decisive guard: without request detection the cache stays
+                # None and reviewed() would pass identically via the
+                # requested-is-None branch, so assert the boundary populated.
+                self.assertIsNotNone(m._review_request_cache["1710"])
+        # A request AFTER the review invalidates it: recognition makes the
+        # review stale and reviewed() rejects the head, while broken
+        # recognition would leave the older review valid and not raise.
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [review],
+                    [{"body": "@kody\tstart-review", "created_at": "2026-11-15T19:00:02Z"}],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            with self.assertRaisesRegex(
+                RuntimeError, "Target commit lacks qualified merged Kody-reviewed PR"
+            ):
+                m.reviewed(head)
 
     def test_non_json_check_run_body_fails_closed_without_poisoning(self):
         bad_head = "b" * 40
@@ -1268,7 +1305,7 @@ class Tests(unittest.TestCase):
             # reviewed() returns without raising on success.
             m.reviewed("a" * 40)
 
-    def test_kody_notice_comment_is_not_a_request(self):
+    def test_kody_notice_comment_follows_canonical_request_contract(self):
         head = "b" * 40
         pr = {
             "number": 1710,
@@ -1276,6 +1313,32 @@ class Tests(unittest.TestCase):
             "merge_commit_sha": "a" * 40,
             "head": {"sha": head},
         }
+        receipt_runs = {
+            "check_runs": [
+                {
+                    "name": m.KODY_CHECK_NAME,
+                    "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_sha": head,
+                    "started_at": "2026-11-15T19:00:00Z",
+                    "completed_at": "2026-11-15T19:05:00Z",
+                    "output": {
+                        "title": m.KODY_CHECK_TITLE,
+                        "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                    },
+                }
+            ]
+        }
+        threads = {
+            "data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+        }
+        # Canonical parity: the auto-merge receipt contract counts every
+        # issue comment whose own line carries the invocation, with no
+        # author filter. A kody-ai[bot] comment with the invocation at line
+        # start is therefore a request: the 19:00 receipt predates the
+        # 20:00 request and must not qualify.
         with (
             patch.object(
                 m,
@@ -1283,23 +1346,7 @@ class Tests(unittest.TestCase):
                 side_effect=[
                     [pr],
                     [],
-                    {
-                        "check_runs": [
-                            {
-                                "name": m.KODY_CHECK_NAME,
-                                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
-                                "status": "completed",
-                                "conclusion": "success",
-                                "head_sha": head,
-                                "started_at": "2026-11-15T19:00:00Z",
-                                "completed_at": "2026-11-15T19:05:00Z",
-                                "output": {
-                                    "title": m.KODY_CHECK_TITLE,
-                                    "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
-                                },
-                            }
-                        ]
-                    },
+                    receipt_runs,
                     [
                         {
                             "body": "@kody start-review\n\nManual mode requires this invocation",
@@ -1309,17 +1356,42 @@ class Tests(unittest.TestCase):
                     ],
                 ],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(m, "request_json", return_value=threads),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
             m._review_request_cache.clear()
-            # The bot's own notice quotes the invocation but is not a request,
-            # so no freshness requirement applies and the receipt qualifies.
+            with self.assertRaisesRegex(
+                RuntimeError, "Target commit lacks qualified merged Kody-reviewed PR"
+            ):
+                m.reviewed("a" * 40)
+        # A bot notice that mentions the invocation only mid-line is not a
+        # request under the canonical start-of-line pattern, whoever posted
+        # it, so the receipt still qualifies.
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    receipt_runs,
+                    [
+                        {
+                            "body": "Manual mode requires @kody start-review in a comment",
+                            "created_at": "2026-11-15T20:00:00Z",
+                            "user": {"login": m.KODY_APP_SLUG + "[bot]"},
+                        }
+                    ],
+                ],
+            ),
+            patch.object(m, "request_json", return_value=threads),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
             m.reviewed("a" * 40)
+            self.assertIsNone(m._review_request_cache["1710"])
 
     def test_release_review_paths_exclude_receipt_only(self):
         self.assertNotIn("docs/releases/alert-credentials-qualified.json", m.RELEASE_REVIEW_PATHS)
