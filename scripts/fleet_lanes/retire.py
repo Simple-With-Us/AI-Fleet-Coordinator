@@ -680,7 +680,7 @@ def _manifest_seat(
         return None
     suffix, tag = manifest.get("seat"), manifest.get("tag")
     if isinstance(suffix, str) and suffix.strip():
-        return suffix.strip().lower()[:40]
+        return _norm_seat(suffix.strip(), registry)[:40]
     if isinstance(tag, str) and tag.strip():
         seat = registry.seat_by_name(tag.strip())
         return seat.suffix.lower() if seat is not None else tag.strip().lower()[:40]
@@ -1691,13 +1691,26 @@ def _find_by_slug(
     except L.LayoutError as exc:
         raise K.Refusal(str(exc))
     hits: list[tuple[L.App, str]] = []
+    suffixes = {seat.suffix.lower()}
+    suffixes.update(
+        alias for alias in L.seat_alias_map(ctx.registry)
+        if L.normalize_seat(alias, ctx.registry) == seat.suffix.lower()
+    )
     for app in _lane_apps(ctx, repo):
         try:
             path = L.expected_lane_path(app, seat.suffix, slug, ctx.roots, ctx.registry)
         except L.LayoutError:
             continue
-        if os.path.lexists(path):
-            hits.append((app, str(path)))
+        for suffix in sorted(suffixes):
+            # Preserve the spelling for lookup; expected_lane_path canonicalizes new lanes.
+            name = (
+                L.lane_dir_name(app.prefix, suffix, slug)
+                if ctx.roots.layout_mode == L.LAYOUT_FLAT
+                else L.nested_dir_name(suffix, slug)
+            )
+            candidate = path.parent / name
+            if os.path.lexists(candidate):
+                hits.append((app, str(candidate)))
     if not hits:
         raise K.Refusal(
             f"no lane {seat.suffix}-{slug} of seat {seat.name} under {ctx.roots.lanes_root}"
