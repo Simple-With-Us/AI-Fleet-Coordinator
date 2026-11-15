@@ -72,7 +72,8 @@ class LinuxHostTests(unittest.TestCase):
 
         def run(args, **kw):
             return SimpleNamespace(
-                returncode=0, stdout="MainPID=0\nActiveState=failed\nWatchdogUSec=0\n"
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
             )
 
         with patch.object(self.h, "run_command", new=run):
@@ -85,7 +86,8 @@ class LinuxHostTests(unittest.TestCase):
         # of the crash and must keep recovery refused, named as such.
         def run(args, **kw):
             return SimpleNamespace(
-                returncode=0, stdout="MainPID=0\nActiveState=failed\nWatchdogUSec=0\n"
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
             )
 
         with patch.object(self.h, "run_command", new=run):
@@ -106,7 +108,8 @@ class LinuxHostTests(unittest.TestCase):
         # confirmed_stopped propagates the refusal instead of reporting stopped.
         def run(args, **kw):
             return SimpleNamespace(
-                returncode=0, stdout="MainPID=0\nActiveState=failed\nWatchdogUSec=0\n"
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
             )
 
         with (
@@ -114,6 +117,47 @@ class LinuxHostTests(unittest.TestCase):
             self.assertRaises(TransactionError),
         ):
             self.h.confirmed_stopped(None)
+
+    def test_failed_before_auto_restart_is_never_stopped(self):
+        # systemd 259 leaves a crashed unit in failed/failed-before-auto-restart
+        # while the RestartUSec timer runs; recovery must not race the pending
+        # reactivation with a restore.
+        shutil.rmtree(self.proc / "42")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed-before-auto-restart\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertFalse(self.h.confirmed_stopped(None))
+            with self.assertRaises(TransactionError) as ctx:
+                self.h.stop_for_recovery()
+        self.assertEqual(
+            str(ctx.exception), "failed unit has a pending systemd action; guard retained"
+        )
+
+    def test_zombie_unit_process_is_not_a_stray(self):
+        (self.proc / "42" / "stat").write_text("42 (python) Z 1 0 0")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertTrue(self.h.confirmed_stopped(None))
+
+    def test_unreadable_stat_retains_stray_fail_closed(self):
+        (self.proc / "42" / "stat").unlink()
+        (self.proc / "42" / "stat").mkdir()
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+
+    def test_subcgroup_descendant_counts_as_stray(self):
+        (self.proc / "42" / "cgroup").write_text("0::/system.slice/git-relay.service/spawned\n")
+        self.assertEqual(self.h.stray_unit_processes(), [42])
 
     def test_stray_scan_ignores_other_units_and_vanishing_processes(self):
         other = self.proc / "43"

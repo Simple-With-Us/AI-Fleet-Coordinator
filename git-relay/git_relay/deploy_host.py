@@ -62,6 +62,7 @@ class LinuxHost:
         self.old_hashes, self.new_hashes = old_hashes, new_hashes
         self.recovery, self.proof = recovery, proof
         self.run_command, self.proc, self.clock, self.sleep = run, proc, clock, sleep
+        self._stray_cache = None
 
     def command(self, *args):
         out = self.run_command(list(args), capture_output=True, text=True, timeout=20, check=False)
@@ -218,7 +219,10 @@ class LinuxHost:
             pass
 
     def stray_unit_processes(self):
-        marker = "system.slice/" + self.UNIT
+        cached = self._stray_cache
+        if cached is not None and self.clock() - cached[0] < 0.1:
+            return list(cached[1])
+        marker_prefix = "/system.slice/" + self.UNIT
         strays = []
         for p in self.proc.iterdir():
             if not p.name.isdigit():
@@ -234,8 +238,29 @@ class LinuxHost:
                 raise TransactionError(
                     f"cannot scan /proc/{p.name} cgroup ({e.strerror or e}); cannot prove no strays"
                 )
-            if any(line.split(":", 2)[-1].endswith(marker) for line in lines):
+            if not any(
+                (path := line.split(":", 2)[-1]) == marker_prefix
+                or path.startswith(marker_prefix + "/")
+                for line in lines
+            ):
+                continue
+            try:
+                state = (p / "stat").read_text()
+            except FileNotFoundError:
+                continue  # process vanished mid-scan
+            except OSError:
+                # Extant but its state cannot be read: retain it as a stray
+                # so the guard stays fail-closed.
                 strays.append(int(p.name))
+                continue
+            # The state field follows the last ')' of the (possibly spaced)
+            # comm; zombies and dead tasks cannot hold the service runtime.
+            tail = state[state.rfind(")") + 2 :] if ")" in state else ""
+            state = tail.split(" ", 1)[0] if tail else ""
+            if state in ("Z", "X", "x"):
+                continue
+            strays.append(int(p.name))
+        self._stray_cache = (self.clock(), tuple(strays))
         return sorted(strays)
 
     def confirmed_stopped(self, expected):
@@ -247,11 +272,14 @@ class LinuxHost:
         state = p.get("ActiveState")
         if state == "inactive":
             return True
-        if state == "failed":
+        if state == "failed" and p.get("SubState") == "failed":
             # A crashed image (e.g. an import failure on a new deployment) is
             # a stopped service, not a live one: recovery must not demand an
-            # active process to stop.  Stopped only once no stray unit
-            # process (such as a spawned child outliving the crash) remains.
+            # active process to stop.  SubState "failed" exactly: a pending
+            # automatic restart (failed-before-auto-restart) is left to
+            # systemd and the guard, never raced with a restore.  Stopped
+            # only once no stray unit process (such as a spawned child
+            # outliving the crash) remains.
             return not self.stray_unit_processes()
         return False
 
@@ -397,9 +425,12 @@ class LinuxHost:
             return
         state = self.properties()
         if state.get("MainPID") == "0" and state.get("ActiveState") == "failed":
-            # confirmed_stopped refused only because a crashed unit still has
-            # live stray processes; name that instead of "relay not active",
-            # which masked the original failure being recovered from.
+            # confirmed_stopped refused: name why instead of "relay not
+            # active", which masked the original failure being recovered from.
+            if state.get("SubState") != "failed":
+                # e.g. failed-before-auto-restart: systemd is about to act;
+                # recovery must not race it with a restore.
+                raise TransactionError("failed unit has a pending systemd action; guard retained")
             raise TransactionError("failed unit retains live processes; guard retained")
         expected = self.process_identity()
         try:
