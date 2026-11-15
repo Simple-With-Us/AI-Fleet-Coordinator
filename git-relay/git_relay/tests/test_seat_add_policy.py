@@ -26,14 +26,16 @@ def synthetic_policy():
 
 class SeatAddPolicyTests(unittest.TestCase):
     def test_first_seat_admission_reproduces_the_reviewed_zc_row_byte_for_byte(self):
-        # The policy image carries no ZC row until the documented first-seat admission;
-        # prepare() must insert exactly the fleet-profile render of the owner-added seat.
-        base = SEATS
-        self.assertNotIn(ZC, base, "the image excludes the seat pending first-seat admission")
+        # The first-seat admission landed 2026-11-15, so the reviewed image carries the
+        # ZC row.  prepare() must still reproduce exactly that admitted row when run
+        # against an image that lacks it.
+        base = {slug: cfg for slug, cfg in SEATS.items() if slug != ZC}
+        self.assertNotIn(ZC, base, "the pre-admission image excludes the seat")
         original = copy.deepcopy(base)
         result = prepare(base, ZC, copy.deepcopy(SEATS_WITH_ZC[ZC]), digest(base))
         self.assertEqual(base, original, "the input is never mutated")
-        self.assertEqual(result, SEATS_WITH_ZC)
+        self.assertEqual(result, {**base, ZC: SEATS_WITH_ZC[ZC]})
+        self.assertEqual(result[ZC], SEATS_WITH_ZC[ZC], "the admitted row is byte-for-byte the image row")
         # Digest and the deployed line both canonicalize with sorted keys, so the
         # only order contract is that original seats keep their relative order.
         self.assertEqual(list(result), list(base) + [ZC], "the new seat appends; nothing moves")
