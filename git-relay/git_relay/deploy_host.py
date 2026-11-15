@@ -217,13 +217,36 @@ class LinuxHost:
         except (TransactionError, ValueError, KeyError, OSError):
             pass
 
+    def stray_unit_processes(self):
+        marker = "system.slice/" + self.UNIT
+        strays = []
+        for p in self.proc.iterdir():
+            if not p.name.isdigit():
+                continue
+            try:
+                lines = (p / "cgroup").read_text().splitlines()
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            if any(line.split(":", 2)[-1].endswith(marker) for line in lines):
+                strays.append(int(p.name))
+        return sorted(strays)
+
     def confirmed_stopped(self, expected):
         p = self.properties()
-        return (
-            p.get("MainPID") == "0"
-            and p.get("ActiveState") == "inactive"
-            and (expected is None or not (self.proc / str(expected["pid"])).exists())
-        )
+        if p.get("MainPID") != "0":
+            return False
+        if expected is not None and (self.proc / str(expected["pid"])).exists():
+            return False
+        state = p.get("ActiveState")
+        if state == "inactive":
+            return True
+        if state == "failed":
+            # A crashed image (e.g. an import failure on a new deployment) is
+            # a stopped service, not a live one: recovery must not demand an
+            # active process to stop.  Stopped only once no stray unit
+            # process (such as a spawned child outliving the crash) remains.
+            return not self.stray_unit_processes()
+        return False
 
     def stop_without_kill(self, expected):
         # Caller has established the frozen process has no handler or child.
@@ -365,6 +388,12 @@ class LinuxHost:
     def stop_for_recovery(self):
         if self.confirmed_stopped(None):
             return
+        state = self.properties()
+        if state.get("MainPID") == "0" and state.get("ActiveState") == "failed":
+            # confirmed_stopped refused only because a crashed unit still has
+            # live stray processes; name that instead of "relay not active",
+            # which masked the original failure being recovered from.
+            raise TransactionError("failed unit retains live processes; guard retained")
         expected = self.process_identity()
         try:
             self.freeze(expected)

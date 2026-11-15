@@ -1,3 +1,4 @@
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,6 +62,49 @@ class LinuxHostTests(unittest.TestCase):
                 self.h.stop_for_recovery()
             resume.assert_called_once_with(expected)
             stop.assert_not_called()
+
+    def test_failed_unit_without_strays_counts_as_stopped(self):
+        # A crashed image (e.g. a new deployment that fails on import) leaves
+        # the unit failed with no main process: that is a stopped service,
+        # not "relay not active".  Regression: stop_for_recovery rejected
+        # this state, masking the original exception and blocking recovery.
+        shutil.rmtree(self.proc / "42")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0, stdout="MainPID=0\nActiveState=failed\nWatchdogUSec=0\n"
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertTrue(self.h.confirmed_stopped(None))
+            # Returns without demanding a live process to freeze or stop.
+            self.assertIsNone(self.h.stop_for_recovery())
+
+    def test_failed_unit_with_stray_process_refuses_recovery_stop(self):
+        # proc/42 from setUp carries the unit cgroup: it is a stray survivor
+        # of the crash and must keep recovery refused, named as such.
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0, stdout="MainPID=0\nActiveState=failed\nWatchdogUSec=0\n"
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertFalse(self.h.confirmed_stopped(None))
+            with self.assertRaises(TransactionError) as ctx:
+                self.h.stop_for_recovery()
+        self.assertEqual(
+            str(ctx.exception), "failed unit retains live processes; guard retained"
+        )
+
+    def test_stray_scan_ignores_other_units_and_vanishing_processes(self):
+        other = self.proc / "43"
+        other.mkdir()
+        (other / "cgroup").write_text("0::/system.slice/other.service\n")
+        gone = self.proc / "44"
+        gone.mkdir()
+        (gone / "cgroup").write_text("0::/system.slice/git-relay.service\n")
+        shutil.rmtree(gone)
+        self.assertEqual(self.h.stray_unit_processes(), [42])
 
     def test_hash_target_anchor(self):
         with self.assertRaises(TransactionError):
