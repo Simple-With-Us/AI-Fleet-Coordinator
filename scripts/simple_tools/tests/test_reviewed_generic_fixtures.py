@@ -25,6 +25,7 @@ class ReviewedGenericTests(unittest.TestCase):
                 "ios/CodeCapsCompanion/Widgets/WidgetPresentation.swift",
                 "d6bd7e7ff0a69af9cfd4002f1e21db90f66b87315a4dc69cbd2fc1c585be0b2b",
             ),
+
         }))
         self.assertIsNotNone(secretscan.scan_file(self.repo, self.path, self.body))
 
