@@ -39,7 +39,10 @@ def main():
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(package))
     from git_relay.deploy_runner import Runner
-    from git_relay.wise_runtime_proof import make_proof
+    from git_relay.wise_runtime_proof import QUALIFIED, make_proof
+
+    if not QUALIFIED:
+        raise SystemExit("runtime proof is not qualified; no transaction may start")
 
     # Proof construction is I/O-free. Guard/recovery can run while service is down.
     runner = Runner(DIRECTORY, MANIFEST_DIGEST, make_proof())

@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import json
 import tempfile
@@ -49,12 +50,31 @@ class BuilderTests(unittest.TestCase):
                 self.assertEqual(manifest["unit"], builder.UNIT)
                 self.assertEqual(manifest["runner"], builder.ROOT + "/runner.py")
                 self.assertEqual(
-                    result["manifest"], builder.digest((output / "manifest.json").read_bytes())
+                    result["manifest"],
+                    builder.digest((output / "manifest.json").read_bytes()),
                 )
                 runner = (output / "runner.py").read_text()
                 self.assertNotIn("PLACEHOLDER", runner)
                 self.assertNotIn("PROOF_BEARER", runner)
                 self.assertIn("wise_runtime_proof", runner)
+                parsed = ast.parse(runner)
+                main = next(
+                    n for n in parsed.body if isinstance(n, ast.FunctionDef) and n.name == "main"
+                )
+                gate = next(
+                    i
+                    for i, n in enumerate(main.body)
+                    if isinstance(n, ast.If) and ast.unparse(n.test) == "not QUALIFIED"
+                )
+                constructor = next(
+                    i
+                    for i, n in enumerate(main.body)
+                    if isinstance(n, ast.Assign)
+                    and isinstance(n.value, ast.Call)
+                    and ast.unparse(n.value.func) == "Runner"
+                )
+                self.assertLess(gate, constructor)
+                self.assertIsInstance(main.body[gate].body[0], ast.Raise)
                 transformed = (output / "runner-package/git_relay/deploy_runner.py").read_bytes()
                 self.assertEqual(
                     transformed,

@@ -26,8 +26,9 @@ was executed and no credential content was published. Historical commits remain.
 
 `wise_runtime_proof.py` is now an explicitly unqualified, I/O-free, fail-closed
 placeholder: every proof returns false without starting a transport or reading a
-credential. This package cannot qualify a deployment. The existing supervisor
-must therefore reject deployment or roll back, never accept missing proof.
+credential. This package cannot qualify a deployment. The fixed entry checks QUALIFIED before
+constructing Runner, so every operation refuses before recovery arming, freeze,
+stop, candidate application or service start. Missing proof cannot begin a transaction.
 
 Restoring an executable adapter requires independent destination pinning from
 private inventory, a verified own-seat scoped secret loader, bounded transport,
