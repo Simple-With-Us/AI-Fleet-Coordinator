@@ -176,6 +176,14 @@ class UpdateBranchBaseSnapshotTests(unittest.TestCase):
         self.assertEqual([call[:2] for call in client.calls], [("GET", PR), ("GET", REF)])
         self.assert_no_write_or_elevation(client, minter)
 
+    def test_missing_recheck_base_ref_is_fixed_refusal_without_write(self):
+        client = RoutedClient()
+        client.tips[1] = RelayGitHubError(404, "synthetic missing base on recheck")
+        handle, args, minter = self.handle(client)
+        with self.assertRaisesRegex(Refused, "PR base not matched"):
+            handle.run("wf_update_branch", args)
+        self.assert_no_write_or_elevation(client, minter)
+
     def test_initial_ref_other_errors_and_pr_404_keep_original_provider_classification(self):
         for phase, status in (("pr", 404), ("ref", 403), ("ref", 422)):
             with self.subTest(phase=phase, status=status):
