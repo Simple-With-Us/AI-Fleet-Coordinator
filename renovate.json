@@ -67,7 +67,8 @@
       "matchDepNames": [
         "ubuntu"
       ],
-      "allowedVersions": "24.04"
+      "allowedVersions": "24.04",
+      "matchCurrentValue": "24.04"
     }
   ],
   "vulnerabilityAlerts": {
