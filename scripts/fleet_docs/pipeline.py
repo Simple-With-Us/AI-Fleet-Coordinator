@@ -41,7 +41,7 @@ def settings():
         enabled = knobs.resolve("DOCS_SYNC_ENABLED")
         snapshot.require(
             enabled.source in ("infisical", "lkg") and type(enabled.value) is bool,
-            "trusted-docs-configuration-unavailable",
+            "trusted-docs-enabled-unavailable",
         )
         if enabled.value is not True:
             return None
@@ -144,6 +144,7 @@ def load_exporter():
 def child_relay_environment(configuration, inherited=None):
     """Bind the explicit trusted profile actor only in a child; never override a declaration."""
     env = dict(os.environ if inherited is None else inherited)
+    env.pop("SIMPLE_TOOLS_BEARER", None)
     actor = configuration.get("actor")
     snapshot.require(
         isinstance(actor, str) and re.fullmatch(r"[A-Z][A-Z0-9_-]{0,31}", actor),
@@ -326,11 +327,23 @@ def peer_status(peer, run=run_child):
         timeout=45,
         check=False,
     )
-    snapshot.require(
-        result.returncode == 0 and len(result.stdout) <= snapshot.MAX_HEADER,
-        "docs-peer-unavailable",
-    )
+    snapshot.require(len(result.stdout) <= snapshot.MAX_HEADER, "docs-peer-unavailable")
+    if result.returncode == 1 and result.stdout.strip():
+        try:
+            refused = json.loads(result.stdout)
+        except ValueError:
+            refused = None
+        if isinstance(refused, dict) and refused.get("state") == "refused":
+            reason = refused.get("reason")
+            if isinstance(reason, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reason):
+                raise snapshot.Refused(reason)
+            raise snapshot.Refused("docs-peer-not-ready")
+    snapshot.require(result.returncode == 0, "docs-peer-unavailable")
     value = json.loads(result.stdout)
+    if isinstance(value, dict) and value.get("state") == "refused":
+        reason = value.get("reason")
+        if isinstance(reason, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reason):
+            raise snapshot.Refused(reason)
     snapshot.require(
         isinstance(value, dict) and value.get("state") in ("empty", "ready"), "docs-peer-not-ready"
     )
@@ -496,8 +509,17 @@ def run(mirror_command, *, read=settings, update=refresh, state=None, code_root=
     try:
         try:
             configuration = read()
+        except ConfigurationRefused:
+            raise
+        except snapshot.Refused as error:
+            reason = str(error)
+            source = "DOCS_SYNC_ENABLED" if "enabled" in reason else "DOCS_SYNC_CONFIGURATION"
+            raise ConfigurationRefused(reason, source=source) from None
         except Exception:
-            raise ConfigurationRefused("trusted-docs-configuration-unavailable") from None
+            raise ConfigurationRefused(
+                "trusted-docs-configuration-unavailable",
+                source="DOCS_SYNC_ENABLED/DOCS_SYNC_CONFIGURATION",
+            ) from None
         receipt = (
             {"state": "disabled"}
             if configuration is None

@@ -272,11 +272,22 @@ class PipelineTests(unittest.TestCase):
             code_root = root / "Code"
             repo = code_root / "Fixture-Repo"
             repo.mkdir(parents=True)
+            from fleet_lanes.code_main_sync import run_child
+
+            def run_git(*git_args):
+                completed = run_child(
+                    ["git", "-C", str(repo), *git_args],
+                    capture_output=True,
+                    timeout=30,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                return completed.stdout.decode("utf-8").strip()
+
             for args in (
                 ("init", "-q", "-b", "main"),
                 ("remote", "add", "origin", "https://github.com/Fixture-Alias/Fixture-Repo.git"),
             ):
-                subprocess.check_call(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
+                run_git(*args)
             (repo / "docs/private-audits").mkdir(parents=True)
             (repo / "README.md").write_text("# Fixture Repo\n")
             (repo / "docs/private-audits/2026-10-30-audit.md").write_text("Private audit.\n")
@@ -292,14 +303,9 @@ class PipelineTests(unittest.TestCase):
                     "fixture",
                 ),
             ):
-                subprocess.check_call(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
-            head = subprocess.check_output(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
-            ).strip()
-            subprocess.check_call(
-                ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", head],
-                stderr=subprocess.DEVNULL,
-            )
+                run_git(*args)
+            head = run_git("rev-parse", "HEAD")
+            run_git("update-ref", "refs/remotes/origin/main", head)
             c.collect(
                 None,
                 code_root / "Docs",
@@ -327,6 +333,43 @@ class PipelineTests(unittest.TestCase):
                     / "Docs/Fixture-Repo/documents/docs/private-audits/2026-10-30-audit.md"
                 ).exists()
             )
+
+    def test_child_relay_environment_strips_ambient_bearer(self):
+        env = pipeline.child_relay_environment(
+            {"actor": "CODEX"},
+            inherited={"SIMPLE_TOOLS_BEARER": "stale-bearer"},
+        )
+        self.assertNotIn("SIMPLE_TOOLS_BEARER", env)
+        self.assertEqual(env["AGENT_SEAT"], "CODEX")
+
+    def test_peer_status_preserves_safe_refused_reason(self):
+        completed = SimpleNamespace(
+            returncode=1,
+            stdout=b'{"state":"refused","reason":"unsafe-generated-parent"}\n',
+        )
+        with self.assertRaisesRegex(snapshot.Refused, "^unsafe-generated-parent$"):
+            pipeline.peer_status("mac", run=lambda *_args, **_kwargs: completed)
+
+    def test_run_names_docs_knobs_when_read_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            with patch("fleet_lanes.code_main_sync.run_sweep_command", return_value=0):
+                status = pipeline.run(
+                    ["/usr/bin/true"],
+                    read=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+                    state=state,
+                )
+            self.assertEqual(status, 0)
+            receipt = json.loads((state / "receipt.json").read_text())
+            self.assertEqual(receipt["setting"], "DOCS_SYNC_CONFIGURATION")
+            self.assertEqual(receipt["source"], "DOCS_SYNC_ENABLED/DOCS_SYNC_CONFIGURATION")
+
+    def test_cli_sweep_rejects_flag_arguments(self):
+        from fleet_docs import __main__ as cli
+
+        with patch("sys.stderr"), self.assertRaises(SystemExit) as exited:
+            cli.main(["sweep", "--mirror-command", "/usr/bin/true", "--bad-flag"])
+        self.assertEqual(exited.exception.code, 2)
 
 
 if __name__ == "__main__":

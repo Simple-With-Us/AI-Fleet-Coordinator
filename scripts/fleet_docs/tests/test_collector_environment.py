@@ -40,3 +40,42 @@ class CollectorEnvironmentTests(unittest.TestCase):
         self.assertEqual(actual["GIT_NO_LAZY_FETCH"], "1")
         self.assertEqual(actual["GIT_OPTIONAL_LOCKS"], "0")
         self.assertEqual(actual["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_repo_info_ignores_global_instead_of_rewrites(self):
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "Fixture-Repo"
+            repo.mkdir()
+            for args in (
+                ("init", "-q", "-b", "main"),
+                ("remote", "add", "origin", "https://github.com/Simple-With-Us/BotFleet.git"),
+                (
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "fixture",
+                ),
+            ):
+                subprocess.check_call(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
+            head = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+            ).strip()
+            subprocess.check_call(
+                ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", head],
+                stderr=subprocess.DEVNULL,
+            )
+            gitconfig = root / "gitconfig"
+            gitconfig.write_text('[url "https://redirected.example/other/"]\n\tinsteadOf = https://github.com/\n')
+            with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(gitconfig)}):
+                info = snapshot.collector()._repo_info(repo)
+            self.assertIsNotNone(info)
+            self.assertEqual((info.owner, info.name), ("Simple-With-Us", "BotFleet"))

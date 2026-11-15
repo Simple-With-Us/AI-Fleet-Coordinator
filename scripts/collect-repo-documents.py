@@ -297,7 +297,7 @@ def _repo_info(path: Path) -> RepoInfo | None:
         resolved = path.resolve()
         if top != resolved:
             return None
-        remote = os.fsdecode(_run_git(path, "remote", "get-url", "origin").strip())
+        remote = os.fsdecode(_run_git(path, "config", "--get", "remote.origin.url").strip())
         parsed = _github_owner_repo(remote)
         if parsed is None:
             return None

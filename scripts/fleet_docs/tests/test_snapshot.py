@@ -361,6 +361,22 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("Unmanifested/draft.md", desired["files"])
         self.assertEqual(self.apply()["state"], "synced")
 
+    def test_receiver_lock_creates_missing_docs_parent_safely(self):
+        code_dir = self.root / "FreshCode"
+        code_dir.mkdir(mode=0o700)
+        generated = code_dir / "Docs/Generated"
+        with snapshot.receiver_lock(generated):
+            self.assertTrue((code_dir / "Docs").is_dir())
+            self.assertTrue((code_dir / "Docs/.generated-docs-sync.lock").is_file())
+
+    def test_parse_bounded_json_rejects_excessive_depth_and_nodes(self):
+        nested = "[" * (snapshot.MAX_JSON_DEPTH + 1) + "]" * (snapshot.MAX_JSON_DEPTH + 1)
+        with self.assertRaisesRegex(snapshot.Refused, "invalid-json"):
+            snapshot.parse_bounded_json(nested)
+        wide = "[" + ",".join(["0"] * 20) + "]"
+        with self.assertRaisesRegex(snapshot.Refused, "invalid-json"):
+            snapshot.parse_bounded_json(wide, max_nodes=10)
+
 
 if __name__ == "__main__":
     unittest.main()

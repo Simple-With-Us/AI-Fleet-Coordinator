@@ -38,6 +38,52 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
 
+MAX_JSON_DEPTH = 32
+MAX_JSON_NODES = 250_000
+
+
+def parse_bounded_json(
+    raw, *, reason="invalid-json", max_bytes=MAX_HEADER, max_depth=MAX_JSON_DEPTH, max_nodes=MAX_JSON_NODES
+):
+    data = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
+    require(len(data) <= max_bytes, reason)
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in data:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 92:  # backslash
+                escaped = True
+            elif byte == 34:  # quote
+                in_string = False
+        elif byte == 34:
+            in_string = True
+        elif byte in (91, 123):  # [ or {
+            depth += 1
+            require(depth <= max_depth, reason)
+        elif byte in (93, 125):  # ] or }
+            depth -= 1
+    try:
+        value = json.loads(data)
+    except (ValueError, RecursionError):
+        raise Refused(reason) from None
+    nodes = 0
+    stack = [(value, 1)]
+    while stack:
+        current, level = stack.pop()
+        nodes += 1
+        require(level <= max_depth and nodes <= max_nodes, reason)
+        if isinstance(current, dict):
+            for item in current.values():
+                stack.append((item, level + 1))
+        elif isinstance(current, list):
+            for item in current:
+                stack.append((item, level + 1))
+    return value
+
+
 def collector():
     name = "_fleet_docs_collector"
     if name not in sys.modules:
@@ -233,7 +279,7 @@ def validate_generated(root):
                 hashlib.sha256(data).hexdigest() == manifest.get("catalog_sha256"),
                 "generated-catalog-edited",
             )
-            catalog = json.loads(data)
+            catalog = parse_bounded_json(data, reason="unrecognized-catalog")
             require(
                 catalog.get("source_commit") == manifest["source_commit"]
                 and catalog.get("owner_repo") == manifest["owner_repo"],
@@ -293,10 +339,17 @@ def validate_generated(root):
 
 @contextmanager
 def receiver_lock(root):
-    require(
-        root.name == "Generated" and root.parent.is_dir() and not root.parent.is_symlink(),
-        "unsafe-generated-root",
-    )
+    require(root.name == "Generated", "unsafe-generated-root")
+    if not root.parent.exists() and not root.parent.is_symlink():
+        grandparent = root.parent.parent
+        require(grandparent.is_dir() and not grandparent.is_symlink(), "unsafe-generated-root")
+        gp_info = grandparent.lstat()
+        require(
+            gp_info.st_uid == os.getuid() and not gp_info.st_mode & 0o022,
+            "unsafe-generated-parent",
+        )
+        root.parent.mkdir(mode=0o700, exist_ok=True)
+    require(root.parent.is_dir() and not root.parent.is_symlink(), "unsafe-generated-root")
     parent = root.parent.lstat()
     require(parent.st_uid == os.getuid() and not parent.st_mode & 0o022, "unsafe-generated-parent")
     path = root.parent / ".generated-docs-sync.lock"
@@ -404,7 +457,7 @@ def recover(root, *, rename=os.rename):
     path = transaction_path(root)
     if not path.exists() and not path.is_symlink():
         return
-    document = json.loads(read_file(path))
+    document = parse_bounded_json(read_file(path), reason="unrecognized-receiver-transaction")
     require(
         document.get("schema") == 1
         and isinstance(document.get("after"), str)
@@ -474,7 +527,7 @@ def receive(root, source, *, rename=os.rename):
     recover(root, rename=rename)
     header = source.readline(MAX_HEADER + 1)
     require(len(header) <= MAX_HEADER and header.endswith(b"\n"), "snapshot-header-bound")
-    envelope = json.loads(header)
+    envelope = parse_bounded_json(header, reason="snapshot-header-bound")
     desired = validate_manifest(envelope.get("manifest"))
     before = validate_generated(root) if root.exists() else None
     require(

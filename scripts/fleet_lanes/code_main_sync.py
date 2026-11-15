@@ -667,6 +667,11 @@ def run_child(command, *, timeout, capture_output=False, input=None, **options):
         options.pop("check", None)
         options["start_new_session"] = True
         process = subprocess.Popen(command, **options)
+        with _CHILD_LOCK:
+            if _SHUTTING_DOWN:
+                _terminate_process_group(process)
+                raise SystemExit(130)
+            _ACTIVE_CHILDREN.add(process)
         output, error = process.communicate(input=input, timeout=timeout)
         return subprocess.CompletedProcess(command, process.returncode, output, error)
     except BaseException:
@@ -692,6 +697,9 @@ def run_child(command, *, timeout, capture_output=False, input=None, **options):
                     signal.signal(value, handler)
         raise
     finally:
+        if process is not None:
+            with _CHILD_LOCK:
+                _ACTIVE_CHILDREN.discard(process)
         if previous is not None:
             signal.signal(signal.SIGTERM, previous)
 

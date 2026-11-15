@@ -37,8 +37,9 @@ def main(argv=None):
             or not os.path.isabs(command[0])
             or not os.path.isfile(command[0])
             or not os.access(command[0], os.X_OK)
+            or any(argument.startswith("-") for argument in command[1:])
         ):
-            parser.error("--mirror-command requires an absolute executable")
+            parser.error("--mirror-command requires an absolute executable without flags")
         return pipeline.run(command)
     code_root = Path(os.environ.get("FLEET_CODE_ROOT") or Path.home() / "Code").resolve()
     root = code_root / "Docs/Generated"
