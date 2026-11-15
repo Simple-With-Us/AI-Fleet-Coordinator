@@ -725,7 +725,7 @@ class SettingsTests(Base):
                 runner=self._runner(0),
             )
         self.assertEqual(answer["delivery"]["outcome"], "failed")
-        self.assertEqual(answer["delivery"]["code"], "settings-unavailable-config.json")
+        self.assertEqual(answer["delivery"]["code"], "settings-unavailable-config-json")
 
     def test_a_malformed_generation_is_not_echoed_back(self):
         answer = minimax_wake.deliver_request(

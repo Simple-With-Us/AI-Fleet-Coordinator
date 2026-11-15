@@ -54,7 +54,7 @@ Mac side, `simple-chat wake-deliver` looks up `"minimax"` in `wake_service.BUILD
 dispatches to `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before
 calling local delivery, ensuring the letter was not released or reassigned.
 
-Python 3.9+, standard library only.
+Python 3.11+, standard library only.
 """
 
 from __future__ import annotations
@@ -766,8 +766,10 @@ def deliver_request(
         config = WS.read_once(SEAT, DEFAULTS, state_dir(env) / "config.json")
     except (Exception, SystemExit):
         # The settings could not be read:  fail closed, and name the source that could not be
-        # read, so the operator knows which dependency is missing.
-        return _answer(request, WR.Delivery("failed", code="settings-unavailable-config.json"))
+        # read, so the operator knows which dependency is missing.  The name is spelled with a
+        # hyphen, because the Mac's own `_short` keeps only `[A-Za-z0-9:_-]` and a dot in the
+        # code would reach the router as "unreadable", which is no name at all.
+        return _answer(request, WR.Delivery("failed", code="settings-unavailable-config-json"))
 
     # The Mac-side handler requires target to belong to this execution host ("mac")
     if target.host != "mac":
