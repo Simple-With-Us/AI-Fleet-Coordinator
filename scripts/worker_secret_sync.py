@@ -146,13 +146,13 @@ def load_folder_map(path=FOLDERS_PATH):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise SyncError("folder-map-unreadable") from exc
+        raise SyncError("folder-map-unreadable " + str(path)) from exc
     if not isinstance(data, dict) or not data:
-        raise SyncError("folder-map-unreadable")
+        raise SyncError("folder-map-unreadable " + str(path))
     parsed = {}
     for worker, row in data.items():
         if not WORKER_RE.fullmatch(worker) or not isinstance(row, dict):
-            raise SyncError("folder-map-unreadable")
+            raise SyncError("folder-map-unreadable " + str(path))
         project = row.get("project_id")
         environment = row.get("environment")
         folder = row.get("folder")
@@ -165,7 +165,7 @@ def load_folder_map(path=FOLDERS_PATH):
             or not isinstance(token_env, str)
             or not TOKEN_ENV_RE.fullmatch(token_env)
         ):
-            raise SyncError("folder-map-unreadable")
+            raise SyncError("folder-map-unreadable " + str(path))
         parsed[worker] = {
             "project_id": project,
             "environment": "prod",
@@ -526,9 +526,21 @@ def _cloudflare_token(token):
     return token
 
 
-def put_secret(transport, token, account, worker, name, value):
+# Binding state sentinel: "no binding exists" is not the same as "a binding
+# exists whose type is unknown" - only the former may be written freely.
+ABSENT_BINDING = object()
+
+
+def put_secret(
+    transport, token, account, worker, name, value, existing_type=ABSENT_BINDING
+):
     if not NAME_RE.fullmatch(name):
         raise SyncError("invalid-secret-name")
+    # A value put always writes secret_text; never silently convert a live
+    # binding of another type (for example secret_key) or a binding whose type
+    # could not be determined - refuse instead.
+    if existing_type is not ABSENT_BINDING and existing_type != "secret_text":
+        raise SyncError("secret-type-preserved " + name)
     base = _worker_base(account, worker) + "/secrets"
     body = transport(
         "PUT",
@@ -541,16 +553,86 @@ def put_secret(transport, token, account, worker, name, value):
         raise SyncError("put-failed " + name)
 
 
+CONTROLLED_ANNOTATION_KEYS = ("workers/tag", "workers/message")
+
+
+def _controlled_annotations(value):
+    """Return the user-controlled annotation subset of a settings value.
+
+    workers/triggered_by is read-only and set by the server on every version
+    (Cloudflare script-and-version-settings docs), so neither the write nor
+    the drift guard may treat it as content this flow manages.
+    """
+    if not isinstance(value, dict):
+        return None
+    return {key: value[key] for key in CONTROLLED_ANNOTATION_KEYS if key in value}
+
+
 def write_digest_binding(transport, token, account, worker, settings, digest_text):
     bindings = bindings_for_digest_update(_settings_bindings(settings), digest_text)
+    result = settings["result"]  # envelope already validated by _settings_bindings
     base = _worker_base(account, worker) + "/settings"
-    body = transport("PATCH", base, token, {"settings": {"bindings": bindings}}, {200})
+    # The settings endpoint is a partial update (omitted fields keep their
+    # current values), so the write stays narrow on purpose: echoing the whole
+    # fetched settings object would race unrelated live changes.  Two fields
+    # are the documented exceptions to partial update: bindings are full
+    # replace (already sent complete) and annotations are not inherited across
+    # settings updates (omitting them clears them), so the user-controlled
+    # annotation keys are sent back to preserve them (workers/triggered_by is
+    # read-only per the same docs and is dropped from the echo).  Annotations change
+    # only at upload/deploy time, and nothing serializes a deploy against this
+    # sync: a deploy landing between the GET above and the PATCH below would
+    # have its annotations written back to the fetched value.  That residual
+    # window is real; the post-write comparison below verifies only the state
+    # this write intended - it cannot detect a clobbered concurrent write.
+    patch = {"bindings": bindings}
+    annotations = result.get("annotations")
+    if annotations is not None:
+        if not isinstance(annotations, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in annotations.items()
+        ):
+            raise SyncError("settings-incomplete annotations")
+        # Echo only the user-controlled annotation keys: workers/triggered_by
+        # is read-only and set by the server on every version, so re-sending
+        # it would be noise and can be rejected.
+        patch_annotations = _controlled_annotations(annotations)
+        if patch_annotations:
+            patch["annotations"] = patch_annotations
+    body = transport("PATCH", base, token, {"settings": patch}, {200})
     if not isinstance(body, dict) or body.get("success") is not True:
         raise SyncError("digest-not-confirmed")
-    confirmed = parse_stored_digests(transport("GET", base, token, None, {200}))
+    after = transport("GET", base, token, None, {200})
+    confirmed = parse_stored_digests(after)
     expected = json.loads(digest_text)["keys"]
     if confirmed != expected:
         raise SyncError("digest-not-confirmed")
+    after_result = after.get("result") if isinstance(after, dict) else None
+    if not isinstance(after_result, dict):
+        raise SyncError("cloudflare-incomplete")
+    # Every binding this write sent must survive with its name and type, not
+    # only the digest binding: a replaced or dropped non-digest binding is
+    # otherwise invisible until the next upload.
+    sent = {(item.get("name"), item.get("type")) for item in bindings if isinstance(item, dict)}
+    if len(sent) != len(bindings):
+        raise SyncError("cloudflare-incomplete")
+    after_bindings = after_result.get("bindings")
+    if not isinstance(after_bindings, list):
+        raise SyncError("cloudflare-incomplete")
+    got = {(item.get("name"), item.get("type")) for item in after_bindings if isinstance(item, dict)}
+    if got != sent:
+        raise SyncError("bindings-not-confirmed")
+    for key, value in result.items():
+        if key == "bindings":
+            continue
+        if key == "annotations":
+            before_controlled = _controlled_annotations(value) or {}
+            after_controlled = _controlled_annotations(after_result.get("annotations")) or {}
+            if after_controlled != before_controlled:
+                raise SyncError("settings-drift " + str(key))
+            continue
+        if after_result.get(key) != value:
+            raise SyncError("settings-drift " + str(key))
 
 
 def drift(diff):
@@ -591,8 +673,37 @@ def sync_worker(
     if guard(worker):
         raise SyncError("guard-tripped")
     chosen = puts_for_apply(diff, allowlist)
+    binding_types = {
+        item.get("name"): item.get("type")
+        for item in _settings_bindings(_settings)
+        if isinstance(item, dict)
+    }
+    # Pre-flight: refuse the whole apply before any write when a live binding
+    # has an unsupported or unknown type, so the refusal stays atomic instead
+    # of aborting after earlier secrets in the same folder already applied.
     for name in chosen:
-        put_secret(transport, cf, account, worker, name, values[name])
+        existing = binding_types.get(name, ABSENT_BINDING)
+        if existing is not ABSENT_BINDING and existing != "secret_text":
+            raise SyncError("secret-type-preserved " + name)
+    # Puts are not atomic: a refusal after earlier puts leaves those earlier
+    # writes applied, so the error names what was already written.
+    written = []
+    for name in chosen:
+        if name in binding_types:
+            existing_type = binding_types[name]
+        else:
+            existing_type = ABSENT_BINDING
+        try:
+            put_secret(
+                transport, cf, account, worker, name, values[name], existing_type
+            )
+        except SyncError as exc:
+            if written:
+                raise SyncError(
+                    str(exc) + " (partial application: wrote " + ", ".join(written) + ")"
+                ) from exc
+            raise
+        written.append(name)
     if chosen:
         # Re-read after the puts.  A settings patch built from the pre-put
         # binding list would omit a secret that was missing and then drop it.
@@ -600,11 +711,20 @@ def sync_worker(
         if any(name not in names_after for name in chosen):
             raise SyncError("put-unconfirmed")
         recorded = {}
-        for name in allowlist:
+        for name in computed:
+            if name not in names_after:
+                continue
             previous = None if stored is None else stored.get(name)
-            if name in computed and (name in chosen or previous == computed[name]):
+            if name in chosen or previous == computed[name]:
                 recorded[name] = computed[name]
-        write_digest_binding(transport, cf, account, worker, fresh, digest_document(recorded))
+        try:
+            write_digest_binding(transport, cf, account, worker, fresh, digest_document(recorded))
+        except SyncError as exc:
+            if written:
+                raise SyncError(
+                    str(exc) + " (partial application: wrote " + ", ".join(written) + ")"
+                ) from exc
+            raise
     lines = report + "apply: wrote " + str(len(chosen)) + "\n"
     for name in chosen:
         lines += "apply: wrote " + name + "\n"
