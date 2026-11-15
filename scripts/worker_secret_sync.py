@@ -545,28 +545,16 @@ def put_secret(transport, token, account, worker, name, value, existing_type=Non
         raise SyncError("put-failed " + name)
 
 
-SETTINGS_WRITABLE = (
-    "compatibility_date",
-    "compatibility_flags",
-    "limits",
-    "logpush",
-    "placement",
-    "tags",
-    "tail_consumers",
-    "usage_model",
-)
-
-
 def write_digest_binding(transport, token, account, worker, settings, digest_text):
     bindings = bindings_for_digest_update(_settings_bindings(settings), digest_text)
     result = settings["result"]  # envelope already validated by _settings_bindings
-    # Send the full current settings, not only bindings: if the API applies the
-    # body as a replacement rather than a patch, limits and other live settings
-    # survive unchanged.  ``migrations`` is deploy-time input, not stored state.
-    merged = {key: result[key] for key in SETTINGS_WRITABLE if key in result}
-    merged["bindings"] = bindings
     base = _worker_base(account, worker) + "/settings"
-    body = transport("PATCH", base, token, {"settings": merged}, {200})
+    # The settings endpoint is a partial update (omitted fields keep their
+    # current values), so the write stays bindings-only on purpose: echoing the
+    # whole fetched settings object would race unrelated live changes.  What the
+    # old code lacked was verification - the post-write comparison below now
+    # fails loudly if any unrelated setting does not survive.
+    body = transport("PATCH", base, token, {"settings": {"bindings": bindings}}, {200})
     if not isinstance(body, dict) or body.get("success") is not True:
         raise SyncError("digest-not-confirmed")
     after = transport("GET", base, token, None, {200})
