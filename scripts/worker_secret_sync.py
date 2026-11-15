@@ -526,12 +526,20 @@ def _cloudflare_token(token):
     return token
 
 
-def put_secret(transport, token, account, worker, name, value, existing_type=None):
+# Binding state sentinel: "no binding exists" is not the same as "a binding
+# exists whose type is unknown" - only the former may be written freely.
+ABSENT_BINDING = object()
+
+
+def put_secret(
+    transport, token, account, worker, name, value, existing_type=ABSENT_BINDING
+):
     if not NAME_RE.fullmatch(name):
         raise SyncError("invalid-secret-name")
     # A value put always writes secret_text; never silently convert a live
-    # binding of another type (for example secret_key) - refuse instead.
-    if existing_type is not None and existing_type != "secret_text":
+    # binding of another type (for example secret_key) or a binding whose type
+    # could not be determined - refuse instead.
+    if existing_type is not ABSENT_BINDING and existing_type != "secret_text":
         raise SyncError("secret-type-preserved " + name)
     base = _worker_base(account, worker) + "/secrets"
     body = transport(
@@ -613,8 +621,25 @@ def sync_worker(
         for item in _settings_bindings(_settings)
         if isinstance(item, dict)
     }
+    # Puts are not atomic: a refusal after earlier puts leaves those earlier
+    # writes applied, so the error names what was already written.
+    written = []
     for name in chosen:
-        put_secret(transport, cf, account, worker, name, values[name], binding_types.get(name))
+        if name in binding_types:
+            existing_type = binding_types[name]
+        else:
+            existing_type = ABSENT_BINDING
+        try:
+            put_secret(
+                transport, cf, account, worker, name, values[name], existing_type
+            )
+        except SyncError as exc:
+            if written:
+                raise SyncError(
+                    str(exc) + " (partial application: wrote " + ", ".join(written) + ")"
+                ) from exc
+            raise
+        written.append(name)
     if chosen:
         # Re-read after the puts.  A settings patch built from the pre-put
         # binding list would omit a secret that was missing and then drop it.
