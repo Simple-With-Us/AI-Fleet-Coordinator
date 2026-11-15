@@ -1,0 +1,56 @@
+{
+  "all_original_bytes_prefix_preserved": true,
+  "dataflow_proof": "Immutable source verified by SHA256. Global mock fixture written into fake vault through BoardTest.setUp. Rotation fixture used by AuthTests then restored finally. Expression is MockInfisical Authorization-header derivation and grants lookup. Seat fixture changes mock.clients and fake vault via seat_app/afc_put. Actual ephemeral servers bind127.0.0.1, subprocess API/token URLs explicitly loopback and network sandbox blocks external DNS/connect. No actual credential use inferred from document claims.",
+  "dedicated_shape_count": 0,
+  "effective_matches": [
+    [
+      "assigned credential",
+      5876,
+      5917,
+      5893,
+      5917
+    ],
+    [
+      "assigned credential",
+      5935,
+      5972,
+      5952,
+      5972
+    ],
+    [
+      "assigned secret",
+      6085,
+      6115,
+      6093,
+      6115
+    ],
+    [
+      "assigned secret",
+      6278,
+      6312,
+      6286,
+      6312
+    ]
+  ],
+  "immutable_source_bytes": 245684,
+  "immutable_source_commit": "cb1c965713ef093f49023a655e122e6635715bd1",
+  "immutable_source_lines": 5513,
+  "immutable_source_sha256": "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3",
+  "original_doc_sha256": "59341534f6ffec424266db33841b13668c2de2fbe36774c1ab4227e23414e10b",
+  "original_immutable_main": "19d007f911891b78f67a396a99ff4b48edd82e99",
+  "other_liveknown_assessed": false,
+  "own_WISE_present": false,
+  "path": "docs/security/reviewed-generic-fixtures.md",
+  "refused_packet_unchanged": true,
+  "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+  "review": "Complete doc prose/source provenance, four original illustrative excerpts individually traced to local loopback mock source. No values reproduced. Source and gates still need independent review/CI and separately qualified immutable deployment.",
+  "sha256": "825f87972a207b3ad52a99250f230db13ef55777be78eb566208d674d24419c6",
+  "source_match_lines": [
+    51,
+    2070,
+    930,
+    3737
+  ],
+  "status": "SOURCE_ONLY_REVIEW_PROPOSAL",
+  "zulip_shape_count": 0
+}
