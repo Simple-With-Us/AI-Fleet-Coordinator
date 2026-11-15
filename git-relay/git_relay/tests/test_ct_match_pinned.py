@@ -3,6 +3,8 @@
 import hashlib
 import unittest
 from unittest.mock import patch
+from pathlib import Path
+import json
 
 from git_relay import patch_secretscan as relay
 from git_relay.reviewed_fixtures import unreviewed_file_secret
@@ -147,3 +149,41 @@ class DocCensusTests(unittest.TestCase):
                 self.assertEqual(
                     unreviewed_file_secret(repo, path, text.encode(), known) is None, accepts
                 )
+
+
+class DurableReviewTests(unittest.TestCase):
+    def test_document_provenance_and_pending_target_census(self):
+        root = Path(__file__).resolve().parents[3]
+        record = json.loads(
+            (root / "docs/security/ct-match-pinned-remediation-review.json").read_text()
+        )
+        doc = record["reviewed_document"]
+        source = record["provenance_source"]
+        self.assertEqual(source["path"], "scripts/linear-board/test_board.py")
+        self.assertEqual(
+            source["sha256"], "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3"
+        )
+        self.assertEqual(source["source_match_lines"], [51, 2070, 930, 3737])
+        raw = (root / doc["path"]).read_bytes()
+        current_digest = hashlib.sha256(raw).hexdigest()
+        # The future target is deliberately not smuggled into this source repair.
+        # The exact main original remains a complete prefix, with all four
+        # original match coordinates unchanged. Once the frozen candidate is
+        # independently released, the same test also binds its full digest.
+        self.assertIn(current_digest, {doc["current_main_prefix"]["sha256"], doc["sha256"]})
+        expected = frozenset(tuple(row) for row in doc["effective_matches"])
+        computed = MatchPinnedReview().metadata(relay, raw.decode("utf-8"))
+        self.assertEqual(computed, expected)
+        key = (doc["repository"], doc["path"], doc["sha256"])
+        self.assertEqual(relay._REVIEWED_GENERIC_MATCHES[key], computed)
+        if current_digest == doc["sha256"]:
+            self.assertEqual(len(raw), doc["bytes"])
+        else:
+            self.assertEqual(len(raw), doc["current_main_prefix"]["bytes"])
+            self.assertIsNotNone(relay.scan_file(doc["repository"], doc["path"], raw.decode()))
+        ct = record["reviewed_CT_fixture"]
+        ct_key = (ct["repository"], ct["path"], ct["sha256"])
+        self.assertEqual(
+            relay._REVIEWED_GENERIC_MATCHES[ct_key],
+            frozenset(tuple(row) for row in ct["effective_matches"]),
+        )

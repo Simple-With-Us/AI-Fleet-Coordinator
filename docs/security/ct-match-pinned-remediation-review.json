@@ -1,56 +1,97 @@
 {
-  "all_original_bytes_prefix_preserved": true,
-  "dataflow_proof": "Immutable source verified by SHA256. Global mock fixture written into fake vault through BoardTest.setUp. Rotation fixture used by AuthTests then restored finally. Expression is MockInfisical Authorization-header derivation and grants lookup. Seat fixture changes mock.clients and fake vault via seat_app/afc_put. Actual ephemeral servers bind127.0.0.1, subprocess API/token URLs explicitly loopback and network sandbox blocks external DNS/connect. No actual credential use inferred from document claims.",
-  "dedicated_shape_count": 0,
-  "effective_matches": [
-    [
-      "assigned credential",
-      5876,
-      5917,
-      5893,
-      5917
-    ],
-    [
-      "assigned credential",
-      5935,
-      5972,
-      5952,
-      5972
-    ],
-    [
-      "assigned secret",
-      6085,
-      6115,
-      6093,
-      6115
-    ],
-    [
-      "assigned secret",
-      6278,
-      6312,
-      6286,
-      6312
+  "boundaries": {
+    "dedicated_and_loaded_guards": "absolute",
+    "no_other_live_credential_claim": true,
+    "no_runtime_effect": true,
+    "no_values_reproduced": true,
+    "refused_packet_unchanged": true
+  },
+  "provenance_source": {
+    "bytes": 245684,
+    "commit": "cb1c965713ef093f49023a655e122e6635715bd1",
+    "dataflow_review": "Immutable source verified by SHA256. Global mock fixture written into fake vault through BoardTest.setUp. Rotation fixture used by AuthTests then restored finally. Expression is MockInfisical Authorization-header derivation and grants lookup. Seat fixture changes mock.clients and fake vault via seat_app/afc_put. Actual ephemeral servers bind127.0.0.1, subprocess API/token URLs explicitly loopback and network sandbox blocks external DNS/connect. No actual credential use inferred from document claims.",
+    "lines": 5513,
+    "path": "scripts/linear-board/test_board.py",
+    "repository": "Simple-With-Us/AI-Fleet-Coordinator",
+    "sha256": "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3",
+    "source_match_lines": [
+      51,
+      2070,
+      930,
+      3737
     ]
-  ],
-  "immutable_source_bytes": 245684,
-  "immutable_source_commit": "cb1c965713ef093f49023a655e122e6635715bd1",
-  "immutable_source_lines": 5513,
-  "immutable_source_sha256": "9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3",
-  "original_doc_sha256": "59341534f6ffec424266db33841b13668c2de2fbe36774c1ab4227e23414e10b",
-  "original_immutable_main": "19d007f911891b78f67a396a99ff4b48edd82e99",
-  "other_liveknown_assessed": false,
-  "own_WISE_present": false,
-  "path": "docs/security/reviewed-generic-fixtures.md",
-  "refused_packet_unchanged": true,
-  "repo": "Simple-With-Us/AI-Fleet-Coordinator",
-  "review": "Complete doc prose/source provenance, four original illustrative excerpts individually traced to local loopback mock source. No values reproduced. Source and gates still need independent review/CI and separately qualified immutable deployment.",
-  "sha256": "825f87972a207b3ad52a99250f230db13ef55777be78eb566208d674d24419c6",
-  "source_match_lines": [
-    51,
-    2070,
-    930,
-    3737
-  ],
-  "status": "SOURCE_ONLY_REVIEW_PROPOSAL",
-  "zulip_shape_count": 0
+  },
+  "reviewed_CT_fixture": {
+    "base": "63c22bb447e74e15c68f6b2fed814ba7545c04c4",
+    "bytes": 13250,
+    "census": "One effective assigned secret, zero assigned credential/dedicated/provider/private-key/JWT/bearer/Zulip. Own WISE absent; other loaded values not assessed.",
+    "coordinates": "zero-based Python Unicode character offsets, full/value end exclusive",
+    "dataflow": "Single quoted declaration at line21 used only in constructed Request headers, OriginLockConfig.secret acceptance/rejection tests, fake Env and in-process Hono.request. Full imports/calls and two wiring filesystem reads inspected by source owner. No provider/network/credential read dataflow; changed wiring assertions357-361 leave declaration unchanged. Pre-existence is provenance, not a waiver.",
+    "declaration_provenance": "c862d5c0f61e521368ea47af76eb9f06d2bbda45",
+    "effective_matches": [
+      [
+        "assigned secret",
+        547,
+        580,
+        557,
+        580
+      ]
+    ],
+    "lines": 363,
+    "offline_source_owner_checks": "Exact intended repo/path/full unchanged candidate accepted; original wrong Congress-Trade repo and one-byte changed in-memory input refused. Network denied, no main invocation or installation. Values withheld.",
+    "path": "app/src/security/__tests__/originLock.test.ts",
+    "publication_status": "Whole four-file packet frozen and unpublished; wrong-target history preserved; no downstream acceptance or release authority supplied.",
+    "repository": "Simple-With-Us/Congress.Trade",
+    "review_record": "https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2233",
+    "review_source": "PR2233 complete source-owner review and independent source-owner offline checks; current preparer never received the held file or value.",
+    "reviewed_implementation": "0fac2e8417218ff8791da9d699b66de0770bddca",
+    "sha256": "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5"
+  },
+  "reviewed_document": {
+    "bytes": 14259,
+    "coordinates": "zero-based Python Unicode character offsets, full/value end exclusive",
+    "current_main_prefix": {
+      "bytes": 7541,
+      "commit": "19d007f911891b78f67a396a99ff4b48edd82e99",
+      "lines": 124,
+      "sha256": "59341534f6ffec424266db33841b13668c2de2fbe36774c1ab4227e23414e10b"
+    },
+    "effective_matches": [
+      [
+        "assigned credential",
+        5876,
+        5917,
+        5893,
+        5917
+      ],
+      [
+        "assigned credential",
+        5935,
+        5972,
+        5952,
+        5972
+      ],
+      [
+        "assigned secret",
+        6085,
+        6115,
+        6093,
+        6115
+      ],
+      [
+        "assigned secret",
+        6278,
+        6312,
+        6286,
+        6312
+      ]
+    ],
+    "lines": 228,
+    "path": "docs/security/reviewed-generic-fixtures.md",
+    "publication_status": "Future target; exact seven-file source packet remains frozen and unpublished. Current main original is a byte-exact prefix with unchanged four match coordinates.",
+    "repository": "Simple-With-Us/AI-Fleet-Coordinator",
+    "review_scope": "Complete 228-line candidate read; review prose/source locators only, no executable dispatch or credential reads. Dedicated/provider/private-key/JWT/bearer/Zulip census zero. Own WISE absent; other live loaded values not assessed.",
+    "sha256": "825f87972a207b3ad52a99250f230db13ef55777be78eb566208d674d24419c6"
+  },
+  "status": "SOURCE_ONLY_REVIEW_PROPOSAL_NOT_AUTHORITY"
 }
