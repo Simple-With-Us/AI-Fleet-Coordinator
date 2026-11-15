@@ -301,9 +301,9 @@ def reviewed(sha):
         ]
         # COMMENTED is a completed substantive Kody review, not an issue comment.
         # Manual Kody mode can leave only the check run; that receipt matches auto-merge.
-        kody_qualified = any(
-            r.get("commit_id") == head for r in qualified
-        ) or kody_check_receipt(head, number)
+        kody_qualified = any(r.get("commit_id") == head for r in qualified) or kody_check_receipt(
+            head, number
+        )
         if not kody_qualified:
             continue
         # GraphQL includes actual thread resolution, unlike review state.

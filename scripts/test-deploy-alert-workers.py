@@ -634,8 +634,6 @@ class Tests(unittest.TestCase):
             m.reviewed("a" * 40)
 
     def test_stale_kody_check_receipt_does_not_qualify(self):
-        import json
-        from unittest.mock import MagicMock
 
         head = "b" * 40
         pr = {
