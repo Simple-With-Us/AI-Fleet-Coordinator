@@ -767,11 +767,12 @@ class AuditTests(unittest.TestCase):
     def test_the_app_list_comes_from_the_seat_registry(self) -> None:
         slugs = A.seat_app_slugs()
         self.assertIn("swu-claude", slugs)
-        # swu-zc stays out while the seat is pending its proven first-seat admission
-        # (owner 2026-11-02;  git-relay README "Admitting one new seat"):  the policy
-        # image never carries an unproven row, so the registry - and this pin - name
-        # the seat again only after the admission lands and the source file is updated.
-        self.assertNotIn("swu-zc", slugs)
+        # swu-zc and swu-kimi completed their proven first-seat admissions on
+        # 2026-11-15 (relay audit open_pr swu-zc corr 04e7118be2a04c6b94fb5e9ee5c4a890,
+        # HogHunter PR #368 authored by jaywedgeworth22):  the registry now names
+        # both seats, so this pin requires them.
+        self.assertIn("swu-zc", slugs)
+        self.assertIn("swu-kimi", slugs)
         self.assertEqual(A.DEFAULT_ALLOWED_APP_DISMISSERS, slugs)
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "nope.json"
