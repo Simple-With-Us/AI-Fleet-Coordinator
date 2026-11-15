@@ -60,10 +60,13 @@ class PipelineTests(unittest.TestCase):
 
     def test_private_stored_owner_alias_preserves_the_existing_opt_in(self):
         c = snapshot.collector()
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            "fleet_lanes.code_main_sync.CANONICAL_OWNERS",
-            {"fixture-alias": "Fixture-Org"},
-            clear=True,
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(
+                "fleet_lanes.code_main_sync.CANONICAL_OWNERS",
+                {"fixture-alias": "Fixture-Org"},
+                clear=True,
+            ),
         ):
             root = Path(tmp)
             path = root / "Fixture-Repo/manifest.json"
@@ -153,9 +156,7 @@ class PipelineTests(unittest.TestCase):
             "private_docs": ["Fixture-Org/Fixture-Repo"],
             "remote_sources": [],
         }
-        with patch.object(
-            c, "VERIFIED_PRIVATE_DOC_REPOS", frozenset({"fixture-org/fixture-repo"})
-        ):
+        with patch.object(c, "VERIFIED_PRIVATE_DOC_REPOS", frozenset({"fixture-org/fixture-repo"})):
             self.assertEqual(pipeline.parse_configuration(json.dumps(good)), good)
             for bad in (
                 {**good, "peer": "-oProxyCommand=bad"},
@@ -186,10 +187,13 @@ class PipelineTests(unittest.TestCase):
 
     def test_existing_profile_covers_every_collection_and_cannot_add_private_opt_in(self):
         c = snapshot.collector()
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            "fleet_lanes.code_main_sync.CANONICAL_OWNERS",
-            {"fixture-alias": "Fixture-Org"},
-            clear=True,
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(
+                "fleet_lanes.code_main_sync.CANONICAL_OWNERS",
+                {"fixture-alias": "Fixture-Org"},
+                clear=True,
+            ),
         ):
             root = Path(tmp)
             path = root / "Existing/manifest.json"

@@ -255,7 +255,9 @@ def collection_batches(code_root, configuration, descriptors):
         if optin is None:
             public.append(repo)
         else:
-            batches.append(({"repo_paths": [repo.path], "private_docs_repo": identity}, ([repo], [])))
+            batches.append(
+                ({"repo_paths": [repo.path], "private_docs_repo": identity}, ([repo], []))
+            )
     if public:
         batches.insert(0, ({"repo_paths": [repo.path for repo in public]}, (public, [])))
     for path, identity in descriptors:
