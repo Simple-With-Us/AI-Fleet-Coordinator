@@ -6,44 +6,54 @@ The router itself is the one shared service for every platform (`wake_service`,
 `simple-chat wake-router serve`), which builds the MM seat from `router_platform` here, with
 `DEFAULTS` as its settings and `state_dir` as its state folder (`wake_service.BUILDERS`).
 
-The two routes, and the rule between them.  A MiniMax chat is woken through the MiniMax Code
+The two routes, and the rule between them.  A MiniMax chat is woken through the MiniMax Code
 CLI:  `mcode exec --session <session_id> --cwd <workspace> <wake text>` runs one prompt in an
-existing session without starting the TUI.  The workspace comes from the settings (the
+existing session without starting the TUI.  The workspace comes from the settings (the
 deployment names it;  this file carries no private path literal), and it is also the binding,
-because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
+because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
 delivers locally under a per-session file lock in `state_dir(env) / "locks"`, re-reading
-MiniMax Code's own session store once the lock is acquired.  A session the store does not know
+MiniMax Code's own session store once the lock is acquired.  A session the store does not know
 refuses (`session-not-found`);  one whose recorded workspace is gone refuses
 (`session-cwd-gone`);  one that is not a chat (a `cron` run) refuses (`session-not-a-chat`);  a
 row with a `parent_session_id` is a sub-agent child and refuses (`session-subagent`);  an
 archived chat refuses (`session-archived`);  a session whose status says a turn is running is
-`busy` and retried after `busy_retry_seconds`.  Once `mcode` has started, any exit code other
+`busy` and retried after `busy_retry_seconds`.  Once `mcode` has started, any exit code other
 than 0 is final (`refused`), because the turn may have already run;  exit 0 is only `sent`,
-because the runtime's own log shows a failed turn exiting 0.
+because the runtime's own log shows a failed turn exiting 0.  A timeout is neither of those:
+the child was running the wake when the deadline passed, so the turn may have started.  It is a
+refusal whose code is outside `NEVER_RAN`, which the receipt records as nobody knows, and it is
+not retried, because a retry could run the turn twice.
 
-The store.  MiniMax Code's own SQLite table, `local_runtime_sessions` in
+The store.  MiniMax Code's own SQLite table, `local_runtime_sessions` in
 `~/.minimax/v2/sqlite/runtime-state.sqlite` (MINIMAX_DATA_DIR moves `~/.minimax`), read only.
 The columns this module uses are `session_id`, `session_kind`, `parent_session_id`, `archived`,
-`status` and `workspace_dir`.  A `conversation` or a `task` row is a chat, a row with a
+`status` and `workspace_dir`.  A `conversation` or a `task` row is a chat, a row with a
 `parent_session_id` is a sub-thread of that chat, and any other kind (a `cron` run) is not a
-chat.  The same store is the one `platform_letter_minimax` reads, so the letter half and the
+chat.  The same store is the one `platform_letter_minimax` reads, so the letter half and the
 wake half agree on what a chat is.
 
 The wake text is metadata:  who, where, the link and an instruction to read the message in
-Zulip.  The message body is never in it.  Topic and sender are Zulip-authored data, so they go
+Zulip.  The message body is never in it.  Topic and sender are Zulip-authored data, so they go
 into a fenced JSON block under an explicit notice that they are data and not instructions.
+Every one of those fields is scanned for credential material before the prompt is built, and a
+hit refuses the delivery (`wake-secret`):  the name of the field is recorded and the value never
+is.  The router's own note is kept only when it is one of the sentences the router writes
+(`WR.link_note_ok`), and the prompt reaches `mcode` on its stdin, so none of it shows up in a
+process listing.  The model is named on the command line, because `mcode` otherwise inherits the
+install's own `defaultModel`, which can be an id the catalog no longer serves.
 
-A chat on the Mac.  When the router runs on the server and reaches a Mac target, delivery
-delegates to `claude_wake.deliver_remote` over ssh, specifying `platform="minimax"`.  On the
+A chat on the Mac.  When the router runs on the server and reaches a Mac target, delivery
+delegates to `claude_wake.deliver_remote` over ssh, specifying `platform="minimax"`.  On the
 Mac side, `simple-chat wake-deliver` looks up `"minimax"` in `wake_service.BUILDERS` and
-dispatches to `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before
+dispatches to `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before
 calling local delivery, ensuring the letter was not released or reassigned.
 
-Python 3.11+, standard library only.
+Python 3.9+, standard library only.
 """
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -56,18 +66,35 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from . import secretscan
 from . import wake_router as WR
+from .config import MCODE_DEFAULT_MODEL
 
 SEAT = "MM"
 PLATFORM = "minimax"
 MENTION = "MiniMax"
-# A MiniMax Code session id:  "mvs_" and 32 lowercase hex digits.  The store holds 1608 of
+# A MiniMax Code session id:  "mvs_" and 32 lowercase hex digits.  The store holds 1608 of
 # them and no other shape, and the registry's live MiniMax rows carry the same shape.
 SESSION_RE = re.compile(r"^mvs_[0-9a-f]{32}$")
 LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 BAD_REQUEST = "bad-request"
-TARGET_FIELDS = frozenset({"session_id", "letter", "host", "generation"})
-#: The session kinds the runtime store uses for a chat.  A `cron` row is a scheduled run, not
+#: The refusal code for a Zulip-authored field that carries credential material.  The field name
+#: goes in the delivery's note;  the value, and any prefix of it, never leaves the scanner.
+SECRET_FIELD = "wake-secret"
+#: The wake fields that carry Zulip-authored text into the prompt.  Every one of them is scanned
+#: before the prompt is built.
+SCANNED_FIELDS = ("channel", "topic", "sender", "zulip_link", "link_note")
+#: The fields a request's target may carry:  the ones `WR.Target` has.
+TARGET_FIELDS = frozenset(WR.Target.__dataclass_fields__)
+#: The model `mcode exec` runs on:  `provider/model`, named on the command line.
+MODEL_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+#: The bound on a link in a request, the same one the router keeps.
+MAX_LINK = 500
+#: How long a stopped child is given to go away before it is killed.
+STOP_SECONDS = 5
+#: The refusal code for a state folder that cannot be made private.
+STATE_UNAVAILABLE = "state-unavailable"
+#: The session kinds the runtime store uses for a chat.  A `cron` row is a scheduled run, not
 #: a chat, and a wake into one would be a wrong-chat delivery.
 CHAT_KINDS = ("conversation", "task")
 #: The store's status values that mean a turn is running in that chat right now.
@@ -82,6 +109,9 @@ DEFAULTS: Mapping[str, Any] = {
     # the wrong-chat delivery this platform exists to refuse.
     "workspace": "",
     "mcode_bin": "",
+    # The model `mcode exec` runs on, named on the command line:  without it mcode inherits the
+    # install's own `defaultModel`, which can be an id the catalog no longer serves.
+    "mcode_model": MCODE_DEFAULT_MODEL,
 }
 
 NEVER_RAN: frozenset[str] = frozenset(
@@ -94,6 +124,8 @@ NEVER_RAN: frozenset[str] = frozenset(
         "session-cwd-gone",
         "workspace-mismatch",
         "mcode-not-found",
+        SECRET_FIELD,
+        STATE_UNAVAILABLE,
         "unknown-host",
         "unknown-platform",
         "platform-handler-missing",
@@ -112,6 +144,9 @@ WAKE_TEXT = (
 )
 
 Runner = Callable[..., subprocess.CompletedProcess[Any]]
+#: The factory for the local `mcode` child:  anything with `subprocess.Popen`'s shape, so the
+#: tests can drive a run without one.
+Spawn = Callable[..., Any]
 
 
 def state_dir(env: Mapping[str, str]) -> Path:
@@ -121,6 +156,28 @@ def state_dir(env: Mapping[str, str]) -> Path:
         return Path(explicit)
     base = os.path.join(str(env.get("HOME") or os.path.expanduser("~")), ".local", "state")
     return Path(base) / "wake-router" / "minimax"
+
+
+def _private_dir(folder: Path) -> None:
+    """Make this folder private, and every level of it that is missing.
+
+    A new level is created with mode 0o700 and the folder itself is refused when it is a
+    symlink:  a symlinked state folder would send the locks somewhere else.  `WR.private_dir`
+    makes one level;  this makes the chain, because a level with default permissions lets
+    another user list what is under it."""
+    missing: list[Path] = []
+    probe = folder
+    while not probe.exists():
+        missing.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    for part in reversed(missing):
+        if part.is_symlink():
+            raise OSError(errno.ELOOP, "refusing a symlinked state folder", str(part))
+        part.mkdir(mode=0o700, exist_ok=True)
+    WR.private_dir(folder)
 
 
 def store_path(env: Mapping[str, str]) -> Path:
@@ -152,11 +209,12 @@ def _child_env(env: Mapping[str, str]) -> dict[str, str]:
     return res
 
 
-def _find_mcode_binary(child_env: Mapping[str, str]) -> str | None:
-    """Locate the `mcode` CLI binary, checking MCODE_BIN, PATH, and the runtime's own folder."""
-    explicit = child_env.get("MCODE_BIN")
-    if explicit and os.path.isfile(explicit) and os.access(explicit, os.X_OK):
-        return explicit
+def _find_mcode_binary(child_env: Mapping[str, str], configured: str = "") -> str | None:
+    """Locate the `mcode` CLI binary:  the setting, then MCODE_BIN, then PATH, then the runtime's
+    own folder.  The setting comes first, because a deployment that names its binary means it."""
+    for candidate in (configured, child_env.get("MCODE_BIN")):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
     found = shutil.which("mcode", path=child_env.get("PATH"))
     if found:
         return found
@@ -241,13 +299,47 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
         return WR.Delivery("failed", code="registry-unavailable")
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.Delivery("failed", code="registry-unavailable")
+        # A host with no registry address or key is not an outage, and the house code says so.
+        return WR.Delivery("failed", code=WR.registry_trouble(answer))
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
     if not held:
         return WR.Delivery("refused", code=WR.RELEASED)
     return None
+
+
+def _secret_field(wake: WR.Wake) -> str:
+    """The name of the first wake field that carries credential material, or "".
+
+    The scanner reports the kind of match only:  the value, and any prefix of it, never leave
+    this function."""
+    for name in SCANNED_FIELDS:
+        value = getattr(wake, name, "")
+        if isinstance(value, str) and value and secretscan.scan(value):
+            return name
+    return ""
+
+
+def _stop(proc: Any) -> None:
+    """Stop the child and reap it:  it is gone before this returns, whatever it was doing."""
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=STOP_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=STOP_SECONDS)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    except OSError:
+        pass
 
 
 def wake_text(wake: WR.Wake) -> str:
@@ -259,10 +351,13 @@ def wake_text(wake: WR.Wake) -> str:
         "sender": wake.sender,
         "topic": wake.topic,
     }
+    # The note is the router's own sentence, and it stays outside the data fence, where
+    # `claude_wake` puts it:  the fence is for the fields, not for the prose around them.
+    note = wake.link_note if WR.link_note_ok(wake.link_note) else ""
     return WAKE_TEXT.format(
         wake_id=wake.wake_id,
         message_id=wake.message_id,
-        note=wake.link_note + "\u00a0 " if wake.link_note else "",
+        note=note + "\u00a0 " if note else "",
         fields=json.dumps(fields, ensure_ascii=False, sort_keys=True),
     )
 
@@ -276,6 +371,7 @@ def deliver_local(
     *,
     recheck_registry: bool = False,
     runner: Runner = subprocess.run,
+    spawn: Spawn = subprocess.Popen,
 ) -> WR.Delivery:
     """Deliver one wake to a chat on this host under the per-session lock."""
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
@@ -287,9 +383,27 @@ def deliver_local(
         # unknown directory is the wrong-chat delivery this platform exists to refuse.
         return WR.Delivery("failed", code="settings-missing")
 
+    model = str(config.get("mcode_model") or "") or MCODE_DEFAULT_MODEL
+    if not MODEL_RE.fullmatch(model):
+        # The model is an argv value:  a name that is not `provider/model` is refused rather
+        # than handed to `mcode`, which would read it as a flag.
+        return WR.Delivery("failed", "wake", code="settings-bad-model")
+
+    field = _secret_field(wake)
+    if field:
+        # A Zulip-authored field carries credential material:  the delivery is refused before
+        # anything is started, and only the name of the field is recorded.
+        return WR.Delivery("refused", "wake", code=SECRET_FIELD, note=field)
+
     folder = state_dir(env) / "locks"
-    WR.private_dir(folder)
-    fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        _private_dir(state_dir(env))
+        _private_dir(folder)
+        fd = os.open(folder / ("session-%s.lock" % session_id), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        # The state folder cannot be made private:  a symlinked one would send the lock
+        # somewhere else, so nothing is delivered.
+        return WR.Delivery("failed", "wake", code=STATE_UNAVAILABLE)
     with os.fdopen(fd, "w") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -327,29 +441,57 @@ def deliver_local(
                 return WR.Delivery("refused", "wake", code="workspace-mismatch")
 
             child_env = _child_env(env)
-            binary = _find_mcode_binary(child_env)
+            binary = _find_mcode_binary(child_env, str(config.get("mcode_bin") or ""))
             if not binary:
                 return WR.Delivery("failed", "wake", code="mcode-not-found")
 
-            argv = [binary, "exec", "--session", session_id, "--cwd", recorded, wake_text(wake)]
+            argv = [
+                binary,
+                "exec",
+                "--session",
+                session_id,
+                "--cwd",
+                recorded,
+                "--model",
+                model,
+                "--input",
+                "-",
+            ]
+            text = wake_text(wake)
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
             try:
-                proc = runner(
+                proc = spawn(
                     argv,
                     cwd=recorded,
                     env=child_env,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=timeout_seconds,
-                    check=False,
                 )
-            except subprocess.TimeoutExpired:
-                return WR.Delivery("refused", "wake", code="wake-timeout")
             except OSError as exc:
                 return WR.Delivery("failed", "wake", code="wake-%s" % type(exc).__name__)
+            try:
+                proc.communicate(input=text.encode("utf-8"), timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                # The child was running the wake when the deadline passed, so the turn may have
+                # started:  the house outcome for that is a refusal whose code is outside
+                # NEVER_RAN, which the receipt records as "nobody knows" (delivered: null).
+                # A `busy` outcome would be a retry, and the house reserves a retry for a try
+                # that could not have run the wake;  `refused` is what a possibly-started turn
+                # gets, and it is what the sibling platforms return for a resume timeout.
+                _stop(proc)
+                return WR.Delivery("refused", "wake", code="wake-timeout")
+            except OSError as exc:
+                _stop(proc)
+                return WR.Delivery("failed", "wake", code="wake-%s" % type(exc).__name__)
             except Exception as exc:  # noqa: BLE001 - may have started, so it is final
+                _stop(proc)
                 return WR.Delivery("refused", "wake", code="wake-error-%s" % type(exc).__name__)
+            except BaseException:
+                # An interrupt must not leave the child running:  it is stopped and reaped
+                # before the exception goes on.
+                _stop(proc)
+                raise
 
             if proc.returncode == 0:
                 return WR.Delivery("sent", "wake", ack="unknown", note="mcode-exit-0")
@@ -363,6 +505,7 @@ def make_deliver(
     config: Mapping[str, Any],
     *,
     runner: Runner = subprocess.run,
+    spawn: Spawn = subprocess.Popen,
 ) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
     """MiniMax's `deliver`:  this host directly, the Mac over ssh, any other host refused."""
     local_host = str(config.get("local_host", "server"))
@@ -377,6 +520,7 @@ def make_deliver(
                 target=target,
                 recheck_registry=False,
                 runner=runner,
+                spawn=spawn,
             )
         if target.host == "mac":
             from . import claude_wake as CW
@@ -392,6 +536,7 @@ def router_platform(
     config: Mapping[str, Any],
     *,
     runner: Runner = subprocess.run,
+    spawn: Spawn = subprocess.Popen,
 ) -> WR.Platform:
     """Build the MiniMax `Platform` for `wake_service.BUILDERS`."""
     return WR.Platform(
@@ -399,7 +544,7 @@ def router_platform(
         platform=PLATFORM,
         mention=MENTION,
         target_re=SESSION_RE,
-        deliver=make_deliver(env, config, runner=runner),
+        deliver=make_deliver(env, config, runner=runner, spawn=spawn),
         exclude=exclude_non_interactive(env, str(config.get("local_host", "server"))),
     )
 
@@ -409,46 +554,113 @@ def router_platform(
 # --------------------------------------------------------------------------------------------
 
 
+class SecretField(ValueError):
+    """A Zulip-authored field that carries credential material:  the name of the field, never
+    the value."""
+
+    def __init__(self, field: str) -> None:
+        super().__init__(field)
+        self.field = field
+
+
 def _target_from(value: object) -> WR.Target:
-    if not isinstance(value, Mapping):
-        raise ValueError("target is not an object")
-    session_id = str(value.get("session_id") or "")
-    if not SESSION_RE.fullmatch(session_id):
-        raise ValueError("bad session id")
+    """The Target a request names, or ValueError.
+
+    Every field it reads is checked for its type and its bound first:  a request is data, and a
+    field that is not the shape it claims is refused, not coerced."""
+    if not isinstance(value, Mapping) or not set(value) <= TARGET_FIELDS:
+        raise ValueError("target")
+    session_id = value.get("session_id")
+    letter = value.get("letter")
+    host = value.get("host")
     generation = value.get("generation")
-    if type(generation) is not int or generation < 1:
-        raise ValueError("bad generation")
+    title = value.get("title", "")
+    thread_link = value.get("thread_link", "")
+    if (
+        not isinstance(session_id, str)
+        or not SESSION_RE.fullmatch(session_id)
+        or not isinstance(letter, str)
+        or not LETTER_RE.fullmatch(letter)
+        or not isinstance(host, str)
+        or not host
+        or type(generation) is not int
+        or generation < 1
+        or not isinstance(title, str)
+        or len(title) > WR.NAME_CHARS
+        or not isinstance(thread_link, str)
+        or len(thread_link) > MAX_LINK
+    ):
+        raise ValueError("target")
     return WR.Target(
         session_id=session_id,
-        letter=str(value.get("letter") or ""),
-        host=str(value.get("host") or ""),
-        title=str(value.get("title") or ""),
-        thread_link=str(value.get("thread_link") or ""),
+        letter=letter,
+        host=host,
+        title=title,
+        thread_link=thread_link,
         generation=generation,
     )
 
 
+def _text(data: Mapping[str, Any], name: str, limit: int = WR.NAME_CHARS) -> str:
+    """One text field of a request, of the type it claims and within its bound."""
+    value = data.get(name, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(name)
+    return value
+
+
+def _zulip_field(data: Mapping[str, Any], name: str, limit: int = WR.NAME_CHARS) -> str:
+    """One Zulip-authored field:  scanned for credential material, then cleaned.
+
+    A hit refuses the delivery by name:  the value is never kept, never logged and never put in
+    the prompt."""
+    value = data.get(name, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(name)
+    if value and secretscan.scan(value):
+        raise SecretField(name)
+    return WR.clean(value, limit)
+
+
 def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
-    """The Wake a request carries, validated on this side."""
-    if not WR.WAKE_ID_RE.fullmatch(str(data.get("wake_id") or "")):
+    """The Wake a request carries, with every Zulip-authored field cleaned again on this side.
+
+    A field that is not the type it claims is refused, not coerced, and a field that carries
+    credential material is refused by name before it is cleaned."""
+    if not isinstance(data, Mapping):
+        raise ValueError("wake")
+    wake_id = data.get("wake_id")
+    if not isinstance(wake_id, str) or not WR.WAKE_ID_RE.fullmatch(wake_id):
         raise ValueError("bad wake id")
     message_id = data.get("message_id", 0)
     if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id < 0:
         raise ValueError("bad message id")
+    dm = data.get("dm", False)
+    if not isinstance(dm, bool):
+        raise ValueError("bad dm")
+    link_note = data.get("link_note", "")
+    if not isinstance(link_note, str):
+        raise ValueError("bad link note")
     return WR.Wake(
-        wake_id=str(data.get("wake_id")),
-        seat=str(data.get("seat") or ""),
+        wake_id=wake_id,
+        seat=_text(data, "seat"),
         message_id=message_id,
-        channel=str(data.get("channel") or ""),
-        topic=str(data.get("topic") or ""),
-        zulip_link=str(data.get("zulip_link") or ""),
-        sender=str(data.get("sender") or ""),
-        dm=bool(data.get("dm")),
-        letter=str(data.get("letter") or ""),
-        picked=str(data.get("picked") or ""),
-        reason=str(data.get("reason") or ""),
-        link_note=str(data.get("link_note") or ""),
-        linked_by=str(data.get("linked_by") or ""),
+        channel=_zulip_field(data, "channel"),
+        topic=_zulip_field(data, "topic"),
+        zulip_link=_zulip_field(data, "zulip_link", MAX_LINK),
+        sender=_zulip_field(data, "sender"),
+        dm=dm,
+        letter=_text(data, "letter"),
+        picked=_text(data, "picked"),
+        reason=_text(data, "reason"),
+        # The note goes into the prompt outside the data fence, so only the router's own
+        # sentences are allowed there.
+        link_note=link_note if WR.link_note_ok(link_note) else "",
+        linked_by=_text(data, "linked_by"),
     )
 
 
@@ -468,11 +680,16 @@ def deliver_request(
     *,
     env: Mapping[str, str],
     runner: Runner = subprocess.run,
+    spawn: Spawn = subprocess.Popen,
 ) -> dict[str, Any]:
     """Mac-side one-delivery handler invoked by `simple-chat wake-deliver`."""
+    if not isinstance(request, Mapping):
+        return _answer({}, WR.Delivery("refused", code=BAD_REQUEST))
     try:
         target = _target_from(request.get("target"))
         wake = _wake_from(request["wake"])
+    except SecretField as exc:
+        return _answer(request, WR.Delivery("refused", code=SECRET_FIELD, note=exc.field))
     except (ValueError, KeyError, TypeError, AttributeError):
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))
 
@@ -500,6 +717,7 @@ def deliver_request(
             target=target,
             recheck_registry=True,
             runner=runner,
+            spawn=spawn,
         )
     except OSError as exc:
         delivery = WR.Delivery("failed", code="deliver-%s" % type(exc).__name__)

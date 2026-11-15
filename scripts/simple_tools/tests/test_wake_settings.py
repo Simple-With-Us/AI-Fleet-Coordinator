@@ -740,7 +740,8 @@ class Wiring(Settings):
             served = SVC.build({"HOME": str(self.home)}, importer=importer)
         self.assertEqual(served.seats.not_installed, {"CODEX", "MC", "ZC"})
         self.assertEqual(
-            (served.seats.down, sorted(served.seats.routers)), ({}, ["AG", CW.SEAT, "GROK"])
+            (served.seats.down, sorted(served.seats.routers)),
+            ({}, ["AG", CW.SEAT, "GROK", "MM"]),
         )
         status, health = served.seats.health()
         self.assertEqual(status, 200)
@@ -781,7 +782,7 @@ class Wiring(Settings):
                 with mock.patch.object(CW, "state_dir", return_value=self.state):
                     served = SVC.build({"HOME": str(self.home)}, importer=importer)
                 self.assertEqual(served.seats.down, {"MC": reason})
-                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK"])
+                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK", "MM"])
                 status, health = served.seats.health()
                 self.assertEqual(status, 503, "a module that is there and broken is a fault")
                 self.assertEqual(
@@ -793,7 +794,9 @@ class Wiring(Settings):
                 claude = served.seats.routers[CW.SEAT]
                 wake = WR.Wake(wake_id="w-%s" % reason, seat=CW.SEAT)
                 self.assertEqual(claude.accept(wake)[0], 202)
-                self.assertEqual([m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK"])
+                self.assertEqual(
+                    [m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK", "MM"]
+                )
 
     def test_a_non_prod_environment_stops_the_service(self) -> None:
         os.environ[source.ENV_NAMES[0]] = "dev"
@@ -1188,6 +1191,8 @@ class OneService(Settings):
                        r"^sess_[A-Za-z0-9._-]{1,123}$"),
                 "GROK": ("grok-leader", "simple_tools.grok_wake", "router_platform",
                          "deliver_request", uuid),
+                "MM": ("minimax", "simple_tools.minimax_wake", "router_platform",
+                       "deliver_request", r"^mvs_[0-9a-f]{32}$"),
             },
         )
 
