@@ -737,6 +737,28 @@ class RequestShapeTests(Base):
         answer = self._deliver(self._request(wake=wake))
         self.assertEqual(answer["delivery"]["code"], "bad-request")
 
+    def test_a_request_nested_past_the_recursion_limit_is_refused(self):
+        # The depth and node ceilings are walked before anything is serialized:  a request
+        # nested past the interpreter's own recursion limit would raise inside the encoder,
+        # and it is a refusal here like any other.
+        nested: dict = {"value": 1}
+        for _ in range(100000):
+            nested = {"nested": nested}
+        wake = {**self._request()["wake"], "extra": nested}
+        answer = self._deliver(self._request(wake=wake))
+        self.assertEqual(answer["delivery"]["code"], "bad-request")
+
+    def test_the_request_is_walked_before_it_is_serialized(self):
+        # The walk is what measures the ceilings, so it runs first:  a request that is over
+        # the depth ceiling is refused without the encoder ever seeing it.
+        nested: dict = {"value": 1}
+        for _ in range(50):
+            nested = {"nested": nested}
+        wake = {**self._request()["wake"], "extra": nested}
+        with patch.object(minimax_wake.json, "dumps", side_effect=AssertionError("serialized")):
+            answer = self._deliver(self._request(wake=wake))
+        self.assertEqual(answer["delivery"]["code"], "bad-request")
+
     def test_a_deeply_nested_request_is_refused(self):
         nested: dict = {"value": 1}
         for _ in range(20):

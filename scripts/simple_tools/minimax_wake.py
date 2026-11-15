@@ -889,12 +889,9 @@ def _bounded_request(request: object) -> Mapping[str, Any]:
     reads it."""
     if not isinstance(request, Mapping) or set(request) != REQUEST_FIELDS:
         raise ValueError("request")
-    try:
-        encoded = json.dumps(request, ensure_ascii=False).encode("utf-8")
-    except (TypeError, ValueError):
-        raise ValueError("request") from None
-    if len(encoded) > MAX_REQUEST_BYTES:
-        raise ValueError("request")
+    # The walk comes first:  a request nested past the interpreter's recursion limit raises
+    # inside the encoder, so the depth and node ceilings are measured before anything is
+    # serialized, and the encoder's own RecursionError is a refusal like any other.
     nodes = 0
     stack = [(request, 0)]
     while stack:
@@ -906,6 +903,12 @@ def _bounded_request(request: object) -> Mapping[str, Any]:
             stack.extend((value, depth + 1) for value in node.values())
         elif isinstance(node, (list, tuple)):
             stack.extend((value, depth + 1) for value in node)
+    try:
+        encoded = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("request") from None
+    if len(encoded) > MAX_REQUEST_BYTES:
+        raise ValueError("request")
     return request
 
 
