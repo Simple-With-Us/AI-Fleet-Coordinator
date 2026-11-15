@@ -1,5 +1,6 @@
 """Release only reviewed alert Workers after successful exact-main CI."""
 
+import datetime
 import glob
 import importlib.util
 import json
@@ -188,6 +189,41 @@ _check_run_cache = {}
 _review_request_cache = {}
 
 
+def _epoch(value):
+    """Parse a GitHub timestamp to epoch seconds, or None for a missing or invalid value.
+
+    Lexical string comparison misorders fractional seconds ("...:00.5Z" sorts
+    before "...:00Z"), so every freshness and ordering comparison parses first.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed.timestamp()
+
+
+def _kody_run_pending(runs, head_sha):
+    """Any Kody-owned run still queued or in progress on the head.
+
+    The mirrored auto-merge contract blocks qualification while any such run
+    exists, regardless of when it started, so both acceptance routes consult
+    this before qualifying.
+    """
+    return any(
+        isinstance(run, dict)
+        and run.get("name") == KODY_CHECK_NAME
+        and isinstance(run.get("app"), dict)
+        and run["app"].get("id") == KODY_APP_ID
+        and run.get("head_sha") == head_sha
+        and run.get("status") in ("queued", "in_progress")
+        for run in runs
+    )
+
+
 def _check_runs_for(head_sha):
     if head_sha in _check_run_cache:
         return _check_run_cache[head_sha]
@@ -237,10 +273,11 @@ def _newest_review_request(number):
             re.match(REVIEW_REQUEST_PATTERN, line.strip(), re.IGNORECASE)
             for line in body.split("\n")
         ):
-            if not isinstance(created, str):
+            epoch = _epoch(created)
+            if epoch is None:
                 raise RuntimeError("Invalid review-request evidence")
-            if newest is None or created > newest:
-                newest = created
+            if newest is None or epoch > newest:
+                newest = epoch
     _review_request_cache[number] = newest
     return newest
 
@@ -256,14 +293,18 @@ def kody_check_receipt(head_sha, number=None):
     runs = _check_runs_for(head_sha)
     if runs is None:
         return False
+    # A Kody-owned run still queued or in progress on this head supersedes any
+    # completed success, whenever it started; qualification waits for it.
+    if _kody_run_pending(runs, head_sha):
+        return False
     requested = _newest_review_request(number) if number is not None else None
     for run in runs:
         app = run.get("app") if isinstance(run.get("app"), dict) else {}
         output = run.get("output") if isinstance(run.get("output"), dict) else {}
         title = output.get("title") or ""
         summary = output.get("summary") or ""
-        started = run.get("started_at")
-        completed = run.get("completed_at")
+        started = _epoch(run.get("started_at"))
+        completed = _epoch(run.get("completed_at"))
         if (
             run.get("name") == KODY_CHECK_NAME
             and app.get("slug") == KODY_APP_SLUG
@@ -273,27 +314,12 @@ def kody_check_receipt(head_sha, number=None):
             and title == KODY_CHECK_TITLE
             and summary.startswith(KODY_CHECK_SUMMARY_PREFIX)
             and run.get("head_sha") == head_sha
-            and isinstance(started, str)
-            and isinstance(completed, str)
+            and started is not None
+            and completed is not None
             and completed >= started
             and (requested is None or started >= requested)
         ):
-            # A newer Kody-owned run still queued or in progress on this head
-            # supersedes the completed success; qualification waits for it.
-            superseded = any(
-                other.get("name") == KODY_CHECK_NAME
-                and isinstance(other.get("app"), dict)
-                and other["app"].get("id") == KODY_APP_ID
-                and other.get("head_sha") == head_sha
-                and other.get("status") in ("queued", "in_progress")
-                and (
-                    not isinstance(other.get("started_at"), str)
-                    or other["started_at"] >= started
-                )
-                for other in runs
-            )
-            if not superseded:
-                return True
+            return True
     return False
 
 
@@ -301,7 +327,11 @@ def outstanding_requests(reviews):
     # COMMENTED does not clear a formal request. Only a later decisive review
     # by that same reviewer supersedes its prior decision; never mutate history.
     decisions = {}
-    decisive = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+    decisive = [
+        r
+        for r in reviews
+        if isinstance(r, dict) and r.get("state") in ("APPROVED", "CHANGES_REQUESTED")
+    ]
     if any(type(r.get("id")) is not int for r in decisive):
         raise RuntimeError("Missing formal review sequence")
     for review in sorted(decisive, key=lambda r: r["id"]):
@@ -332,14 +362,21 @@ def reviewed(sha):
         head = pr.get("head", {}).get("sha")
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
             continue
+        # Only fully shaped review objects are evidence: a malformed entry is
+        # not a candidate (and never crashes the gate), while well-formed
+        # candidates are unaffected.
         candidates = [
             r
             for r in reviews
-            if isinstance(r.get("user"), dict)
-            and r["user"].get("login") == "kody-ai[bot]"
+            if isinstance(r, dict)
+            and type(r.get("id")) is int
+            and isinstance(r.get("user"), dict)
+            and type(r["user"].get("id")) is int
+            and r["user"].get("login") == KODY_APP_SLUG + "[bot]"
             and r.get("state") in ("APPROVED", "COMMENTED")
+            and isinstance(r.get("commit_id"), str)
         ]
-        matching = [r for r in candidates if r.get("commit_id") == head]
+        matching = [r for r in candidates if r["commit_id"] == head]
         if matching:
             # A review predating the newest actual human re-review request is
             # stale: only reviews submitted at or after it qualify, matching
@@ -349,11 +386,18 @@ def reviewed(sha):
                 r
                 for r in matching
                 if requested is None
-                or (isinstance(r.get("submitted_at"), str) and r["submitted_at"] >= requested)
+                or (
+                    _epoch(r.get("submitted_at")) is not None
+                    and _epoch(r.get("submitted_at")) >= requested
+                )
             ]
-            # COMMENTED is a completed substantive Kody review, not an issue comment.
-            # Manual Kody mode can leave only the check run; that receipt matches auto-merge.
-            kody_qualified = bool(fresh) or kody_check_receipt(head, number)
+            # The review-object path is blocked by a pending Kody run exactly
+            # like the receipt path; an unavailable check-run list proves
+            # nothing, so it cannot qualify either.
+            runs = _check_runs_for(head)
+            kody_qualified = (
+                bool(fresh) and runs is not None and not _kody_run_pending(runs, head)
+            ) or kody_check_receipt(head, number)
         else:
             kody_qualified = kody_check_receipt(head, number)
         if not kody_qualified:

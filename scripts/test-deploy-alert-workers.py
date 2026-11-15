@@ -362,6 +362,7 @@ class Tests(unittest.TestCase):
                         review,
                     ],
                     [],
+                    {"check_runs": []},
                 ],
             ),
             patch.object(m, "kody_check_receipt", return_value=False),
@@ -414,6 +415,7 @@ class Tests(unittest.TestCase):
                         review,
                     ],
                     [],
+                    {"check_runs": []},
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
@@ -467,6 +469,7 @@ class Tests(unittest.TestCase):
                         review,
                     ],
                     [],
+                    {"check_runs": []},
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
@@ -521,7 +524,7 @@ class Tests(unittest.TestCase):
             }
         ).encode()
         with (
-            patch.object(m, "github", side_effect=[[pr], page_one, page_two, []]),
+            patch.object(m, "github", side_effect=[[pr], page_one, page_two, [], {"check_runs": []}]),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
@@ -689,6 +692,211 @@ class Tests(unittest.TestCase):
             m._check_run_cache.clear()
             m._review_request_cache.clear()
             # Thread evidence is clean, so only the pending-run block can raise.
+            m.reviewed("a" * 40)
+
+    def test_older_pending_kody_run_blocks_stale_success(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        completed = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": head,
+            "started_at": "2026-11-15T19:00:00Z",
+            "completed_at": "2026-11-15T19:05:00Z",
+            "output": {
+                "title": m.KODY_CHECK_TITLE,
+                "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+            },
+        }
+        older_pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "queued",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T18:00:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], [], {"check_runs": [completed, older_pending]}, []],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A pending run blocks however old it is; only that block raises here.
+            m.reviewed("a" * 40)
+
+    def test_pending_kody_run_blocks_review_object_qualification(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:30:00Z",
+        }
+        pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "in_progress",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T19:35:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], [review], [], {"check_runs": [pending]}],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A fresh review object cannot qualify while a Kody run is pending.
+            m.reviewed("a" * 40)
+
+    def test_fractional_request_orders_before_whole_second_review(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:00:01Z",
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [review],
+                    [{"body": "@kody start-review", "created_at": "2026-11-15T19:00:00.500Z"}],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # 19:00:01 is after 19:00:00.500: parsed ordering qualifies the review.
+            m.reviewed("a" * 40)
+
+    def test_whole_second_review_before_fractional_request_is_stale(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:00:00Z",
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [review],
+                    [{"body": "@kody start-review", "created_at": "2026-11-15T19:00:00.500Z"}],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Lexical comparison would call 19:00:00 fresh after 19:00:00.500Z;
+            # parsed ordering calls it stale and only that raises here.
+            m.reviewed("a" * 40)
+
+    def test_malformed_review_entries_fail_closed_without_poisoning(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        good = {
+            "id": 3,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:30:00Z",
+        }
+        malformed = [
+            "not-a-review",
+            {"id": "x", "user": {"id": 10, "login": "kody-ai[bot]"}, "state": "COMMENTED", "commit_id": head},
+            {"id": 2, "user": {"login": "kody-ai[bot]"}, "state": "COMMENTED", "commit_id": head},
+            {"id": 1, "state": "COMMENTED", "commit_id": head},
+        ]
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], malformed + [good], [], {"check_runs": []}],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Malformed entries neither crash the gate nor qualify; the one
+            # well-formed review still does.
             m.reviewed("a" * 40)
 
     def test_stale_kody_check_receipt_does_not_qualify(self):
