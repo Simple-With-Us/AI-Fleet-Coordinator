@@ -19,12 +19,12 @@ export const SENTENCE_GAP_ARG = "sentence_gap";
 
 /** Only explicit PR routes supply PR context; ordinary issue routes keep their repository headers. */
 export const GITHUB_PR_HEADER_FIELDS = Object.freeze({
-  open_pr: ["title", "body"],
-  edit_pr: ["title", "body"],
+  open_pr: ["title"],
+  edit_pr: ["title"],
   comment_pr: ["body"],
   reply_thread: ["body"],
-  wf_pr_create: ["title", "body"],
-  wf_pr_edit: ["title", "body"],
+  wf_pr_create: ["title"],
+  wf_pr_edit: ["title"],
   wf_review_submit: ["body"],
   wf_review_inline: ["body"],
   wf_review_update: ["body"],
@@ -130,8 +130,7 @@ export function compactGitHubArgs(action, args, { seat = null } = {}) {
   let out = args;
   for (const field of fields) {
     if (typeof args[field] !== "string") continue;
-    const description = field === "body" && ["open_pr", "edit_pr", "wf_pr_create", "wf_pr_edit"].includes(action);
-    const context = field === "title" ? "github-pr-title" : description ? "github-pr-body" : "github-pr";
+    const context = field === "title" ? "github-pr-title" : "github-pr";
     const header = normalizeHeader(args[field], { seat, context });
     if (header !== args[field]) {
       if (out === args) out = { ...args };

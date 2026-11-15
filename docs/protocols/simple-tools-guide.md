@@ -211,7 +211,7 @@ Hosted only, JET-CHAT (the full Jet login) only, and only while the WhatsApp bri
 
 ## GitHub Tools: git-relay and GR-MCP
 
-PR titles, descriptions and comments use the actual writing session in a compact header, for example `[CODEX:   EE.1.S]`, without the folder symbol or repository names.  Kody requests retain the literal command on line 1, that header on line 2 and the full reviewed head SHA and context afterward.  Hosted explicit PR text routes normalize supplied headers; direct GR-MCP/HTTP callers and byte-for-byte opt-outs supply the compact form themselves.  Generic workflow issue-comment verbs preserve ordinary issue context; use the explicit PR comment verb for PR context.  Ordinary GitHub issue, Zulip and Linear headers retain repository names, and no formatter assigns or infers a session letter.
+PR titles and comments use the actual writing session in a compact header, for example `[CODEX:   GG.1.S]`, without the folder symbol or repository names.  PR descriptions keep the full fleet header.  Kody requests retain the literal command on line 1, that header on line 2 and the full reviewed head SHA and context afterward.  Hosted explicit PR text routes normalize supplied headers; direct GR-MCP/HTTP callers and byte-for-byte opt-outs supply the form required for that field.  Generic workflow issue-comment verbs preserve ordinary issue context; use the explicit PR comment verb for PR context.  Ordinary GitHub issue, Zulip and Linear headers retain repository names, and no formatter assigns or infers a session letter.
 
 GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 

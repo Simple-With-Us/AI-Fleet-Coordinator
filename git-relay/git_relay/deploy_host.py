@@ -23,6 +23,14 @@ from urllib.request import urlopen
 from .deploy_guard import freeze_qualified
 from .deploy_transaction import TransactionError, read_regular
 
+# Loopback readiness is bounded but must cover a cold start: on the
+# production host the relay's start-to-healthy exceeded the previous fixed
+# 8s window twice on 2026-11-14 (fresh-service proofs failed at ~7-15s while
+# the settled service passed), so a refusing transaction cascaded despite a
+# healthy old image.  45s keeps readiness well inside the transaction's 90s
+# deadline; the own-App provider probes below remain one-shot.
+READINESS_SECONDS = 45
+
 
 class StartingProcess(TransactionError):
     """An exact service process whose executable has not qualified yet."""
@@ -399,15 +407,21 @@ class LinuxHost:
         self.recovery.finish()
 
     def runtime(self, expected, prior):
+        # Non-secret failing-phase attribution: the bare False below otherwise
+        # forces timing inference on a refuse (2026-11-14 recover-leg proof
+        # refusal was indistinguishable from a readiness expiry in journals).
+        self.last_phase = "hashes"
         identity = None
         starting = None
         # Health is only one signal. Separate proof must perform actual own-App
         # negative patch validation and read-only action against the new process.
         healthy = False
-        deadline = self.clock() + 8
+        deadline = self.clock() + READINESS_SECONDS
         while self.clock() < deadline:
+            self.last_phase = "hashes"
             if self.hashes(expected) != expected:
                 return False
+            self.last_phase = "identity"
             try:
                 observed = self.process_identity()
             except StartingProcess as pending:
@@ -428,6 +442,7 @@ class LinuxHost:
                 return False
             if identity is None:
                 if prior is not None and observed == prior:
+                    self.last_phase = "prior-image"
                     return False
                 identity = observed
             elif observed != identity:
@@ -442,8 +457,13 @@ class LinuxHost:
             self.sleep(0.1)
         # Only loopback readiness is polled. Own-App provider probes are never
         # retried and remain bounded by their individual HTTP timeouts.
-        if not healthy or not self.proof(identity, expected):
+        if not healthy:
+            self.last_phase = "health"
             return False
+        self.last_phase = "proof"
+        if not self.proof(identity, expected):
+            return False
+        self.last_phase = "final"
         try:
             return self.process_identity() == identity and self.hashes(expected) == expected
         except (TransactionError, OSError, ValueError, KeyError):

@@ -6,9 +6,9 @@ description: >-
 
 # Deploy verification (ZC)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 Read `~/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).

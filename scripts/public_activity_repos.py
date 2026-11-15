@@ -31,6 +31,8 @@ PUBLIC_REPOS = (
     "HogHunter",
     "Clutch",
     "codecaps",
+    "FleetLink",
+    "Simple-With-Us",
 )
 
 HISTORICAL_PUBLIC_REPO_ALIASES = {

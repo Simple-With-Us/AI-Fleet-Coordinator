@@ -86,3 +86,36 @@ test_held_key_replay_wins_over_corr_validation), so a 400 audit stamp cannot
 misrepresent an existing ledger row.  Landing path:  #2219 admits the final
 triple;  #2216 then syncs main and lands the wiring plus the 400 arm as
 exactly these bytes.
+## v4 - D2 import-order correction (2026-11-14, UTC)
+
+The v3 final bytes (0d737111) carried an isort violation: the corr wiring had
+placed "import uuid" between shutil and tempfile. autofix.ci (ruff format +
+ruff check --fix-only, default rule set) would have rewritten that one line on
+any branch landing the bytes, breaking byte equality with the admission. The
+bytes were corrected BEFORE any landing: the import moved to sorted position,
+one line moved, no other byte change. Corrected candidate: sha256
+320d5958b16102a222434e8513c64c9df1f1758446f1c67b17a422868824cb15 (1,735 lines,
+79,506 bytes), qualified with ruff 0.17.5 format --check (already formatted),
+ruff check --fix-only --diff (no changes - exact autofix.ci reproduction),
+py_compile, and the 96-test outcome_archive/capacity/typed_gateway suites.
+
+Independent renewed whole-file review of the corrected bytes: digest
+recomputed, compiles, the supplied one-line diff reproduces the candidate
+exactly; full enumeration found zero dedicated-credential, high-entropy or
+instruction hits; the verified scanner reports only the same benign
+generic-assignment false positive (line 1058), which this exact D2 triple
+clears without broadening. The reviewer holds no Ruff; formatter and test
+results are Echo source evidence plus CI. Verdict: suitable for exact-file
+admission. This PR replaces the 0d737111 triple with the D2 triple only; no
+dead entries are retained.
+
+### Recorded retractions (Echo, 2026-11-14)
+
+1. The outcome-archive branch was reported as carrying pre-#2122 server.py
+   bytes. Verified false: 2581f00b's server.py is pristine 2c06fe03. The write
+   refusal's sole cause was the missing installed admission.
+2. The "Signal the server to update its fleet tools" workflow was treated as
+   deploying the relay service. Verified false: it updates only the fleet-cli
+   tools tree (journal: UPDATED ad56cff9 -> c0d0f74e, 08:29:46Z). The relay
+   service under /opt/git-relay has no auto-sync; it updates only through a
+   reviewed, hash-pinned transaction package activated on the host.

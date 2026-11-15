@@ -261,7 +261,7 @@ class MacTests(NotesCliHarness):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
             result.out,
-            "Thu, Oct 22, 5:03pm  %s\nMon, Jan 5, 12:30pm  %s\n(2 of 40 shown;  raise --limit or narrow --query)\n" % (TITLE, MASTER),
+            "Thu, Oct 22, 5:03 PM  %s\nMon, Jan 5, 12:30 PM  %s\n(2 of 40 shown;  raise --limit or narrow --query)\n" % (TITLE, MASTER),
         )
         self.assertEqual(run.calls[0]["argv"][1:], ["--list", "--limit", "2", "--query", "a"])
         a, b = self.direct(FakeRun(stdout=json.dumps(answer)))
@@ -320,7 +320,7 @@ class MacTests(NotesCliHarness):
         self.assertEqual(result.code, 0, result.err)
         lines = result.out.splitlines()
         self.assertEqual(len(lines), 3)
-        time_re = r"\w{3}, \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m"
+        time_re = r"\w{3}, \w{3} \d{1,2}, \d{1,2}:\d{2} (?:AM|PM)"
         self.assertRegex(lines[0], r"^%s  pin  3  CODEX  mcp  %s$" % (time_re, re.escape(TITLE)))
         self.assertRegex(lines[1], r"^%s  update  ok  CLAUDE  runner  reformatted 2 dates, 1 gaps  %s$" % (time_re, re.escape(MASTER)))
         self.assertEqual(lines[2], "(2 entries from the mac log)")
@@ -565,7 +565,7 @@ class GatewayTests(NotesCliHarness):
         self.assertEqual(status.code, 0, status.err)
         self.assertEqual(status.out, "cli-status-0001:  refused, not_found:  no note with that title\n")
         self.assertEqual(read.out, "<div>Jobs</div>\n")
-        self.assertEqual(log.out, "Thu, Oct 22, 5:03pm  update  ok  CODEX  runner  %s\n(1 entries from the operator log)\n" % MASTER)
+        self.assertEqual(log.out, "Thu, Oct 22, 5:03 PM  update  ok  CODEX  runner  %s\n(1 entries from the operator log)\n" % MASTER)
         self.assertEqual(gw.calls[-1][:2], ("notes_log", {"limit": 5, "by_seat": "CODEX"}))
         self.assertEqual(self.audit_rows(), [], "status, read and log leave no audit row")
     def test_log_honors_explicit_seat_and_platform_default_without_env_seat(self):

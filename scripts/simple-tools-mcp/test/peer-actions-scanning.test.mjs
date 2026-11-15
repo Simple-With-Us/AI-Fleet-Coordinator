@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync } from "node:crypto";
+import { scanSecret } from "../src/contract.js";
 
 import { buildPeerActionsRow, PEER_ACTIONS_METHODS } from "../src/peer_actions.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
@@ -50,8 +51,21 @@ test("a missing transport credential list fails before dry-run output", async ()
 
 test("compact fetched PEM body refuses before OAuth or row publication", async () => {
   // Fresh test-only PEM is generated in memory and never authenticates.
-  const { privateKey: key } = generateKeyPairSync("ed25519", { privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
-  const compact = key.split(/\r?\n/).filter(line => !line.startsWith("-----")).join("");
+  // This test covers the fetched-loaded-key guard, not generic shape scanning.
+  // Random base64 sometimes matches a general credential pattern first; select
+  // only a fresh synthetic fixture that reaches the fetched-key guard. No real
+  // credential or production scanner rule is changed. The loop is bounded.
+  let key, compact;
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const pair = generateKeyPairSync("ed25519", { privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
+    const candidate = pair.privateKey.split(/\r?\n/).filter(line => !line.startsWith("-----")).join("");
+    if (!scanSecret(candidate, [])) {
+      key = pair.privateKey;
+      compact = candidate;
+      break;
+    }
+  }
+  assert.ok(key && compact, "could not generate a bounded synthetic loaded-key fixture");
   const args = { requesting_seat: "CLAUDE", request: compact, action_taken: "reviewed code", result: "complete" };
   const context = { seat: "CODEX", known: [], workerEnv: { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "project-test", INFISICAL_SHEETS_SA_TOKEN: "synthetic own reader" }, reserve: async () => {} };
   const original = globalThis.fetch;
