@@ -760,7 +760,15 @@ class Relay:
             # An unexpected relay failure:  whether GitHub was reached is
             # unknowable here, so hold the key as unknown (fail closed) and
             # still record the audit row in finally.
-            self._release(key, "unknown")
+            try:
+                self._release(key, "unknown")
+            except (OSError, OutcomeStoreError):
+                # The release's own durable write failed:  no stored row is
+                # known to carry the minted corr, so the audit row in the
+                # finally below must not advertise it.  The release failure
+                # itself still propagates exactly as before.
+                attempt_corr = None
+                raise
             # Bind the audit row only to a corr the stored row actually
             # carries:  when begin() itself failed before writing a row, the
             # minted corr never landed anywhere and would dangle.

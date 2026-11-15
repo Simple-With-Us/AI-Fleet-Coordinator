@@ -3348,3 +3348,43 @@ class TestOutcomeCorrUnexpectedFailure(unittest.TestCase):
         stored = self.store.corr_of(next(iter(store)))
         self.assertIsNotNone(stored)
         self.assertEqual(rows[0]["outcome_corr"], stored)
+
+
+class TestOutcomeCorrReleaseFailure(unittest.TestCase):
+    """A failed release must not leave the minted corr on the audit row.
+
+    Regression for the reviewer cascade residual:  when begin() fails AND
+    the fail-closed release's own durable write also fails, the release
+    exception propagates - and the audit row recorded in finally must not
+    advertise the minted corr, which no stored row is known to carry.
+    """
+
+    def test_release_failure_after_begin_failure_stamps_no_outcome_corr(self):
+        from git_relay.outcomes import OutcomeStore
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        audit_path = os.path.join(tmp.name, "a.jsonl")
+        store = OutcomeStore(os.path.join(tmp.name, "outcomes.json"))
+        relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(audit_path),
+            app_minter=FakeMinter(),
+            outcomes=store,
+        )
+
+        def broken_begin(key, **kwargs):
+            raise OSError("begin save failed")
+
+        def broken_finish(key, state, result=None):
+            raise OSError("release save failed")
+
+        relay.outcomes.begin = broken_begin
+        relay.outcomes.finish = broken_finish
+        with self.assertRaises(OSError):
+            relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        with open(audit_path) as stream:
+            rows = [json.loads(line) for line in stream]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])
