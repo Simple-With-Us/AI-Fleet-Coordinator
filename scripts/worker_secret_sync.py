@@ -626,9 +626,7 @@ def sync_worker(
         if isinstance(item, dict)
     }
     for name in chosen:
-        put_secret(
-            transport, cf, account, worker, name, values[name], binding_types.get(name)
-        )
+        put_secret(transport, cf, account, worker, name, values[name], binding_types.get(name))
     if chosen:
         # Re-read after the puts.  A settings patch built from the pre-put
         # binding list would omit a secret that was missing and then drop it.
