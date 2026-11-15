@@ -92,9 +92,7 @@ class LinuxHostTests(unittest.TestCase):
             self.assertFalse(self.h.confirmed_stopped(None))
             with self.assertRaises(TransactionError) as ctx:
                 self.h.stop_for_recovery()
-        self.assertEqual(
-            str(ctx.exception), "failed unit retains live processes; guard retained"
-        )
+        self.assertEqual(str(ctx.exception), "failed unit retains live processes; guard retained")
 
     def test_stray_scan_ignores_other_units_and_vanishing_processes(self):
         other = self.proc / "43"
