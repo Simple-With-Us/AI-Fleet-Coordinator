@@ -7,11 +7,13 @@ CLI login session or credential-file fallback runs.  Values stay in memory.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 import time
 import urllib.error
@@ -351,24 +353,34 @@ def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
         payload = (
             json.dumps({"workspaceId": project, "defaultEnvironment": ENVIRONMENT}, indent=2) + "\n"
         )
-        # Durable owner-only install: write a sibling temp file (refusing a
-        # planted link), fsync it, atomically replace the project file so a
-        # crash cannot leave it truncated and a pre-existing file or link is
-        # swapped out wholesale, then fsync the directory.  The temp file's
-        # creation mode makes the result 0600 regardless of any prior mode.
-        tmp = workdir / ".infisical.json.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, workdir / ".infisical.json")
-        dir_fd = os.open(workdir, os.O_RDONLY)
+        # Durable owner-only install: write a UNIQUE sibling temp file (a
+        # per-process name, so two concurrent exports never share it; mkstemp
+        # creates it 0600 with O_EXCL, so no planted link is followed), fsync
+        # it, atomically replace the project file, and fsync the directory.
+        # The temp file's creation mode makes the result 0600 regardless of
+        # any prior mode.
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=workdir, prefix=".infisical.json.", suffix=".tmp")
         try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+            with os.fdopen(tmp_fd, "w") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, workdir / ".infisical.json")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+        try:
+            dir_fd = os.open(workdir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            # Some filesystems refuse to fsync a directory (EINVAL); the file
+            # itself is already durable, so durability of the name is best-effort.
+            pass
     except OSError as exc:
         raise SecretsError("cli-session-workdir-unavailable: " + str(exc)) from exc
     return workdir

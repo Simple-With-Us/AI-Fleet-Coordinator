@@ -451,6 +451,65 @@ class RunTests(Base):
         self.assertIn("fleet-secrets: cli-session-workdir-unavailable", err)
         self.assertNotIn("Traceback", err)
 
+    def test_cli_session_uses_unique_temp_names_and_leaves_none(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        seen = []
+        real_mkstemp = core.tempfile.mkstemp
+
+        def spy(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            seen.append(name)
+            return fd, name
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+            mock.patch.object(core.tempfile, "mkstemp", side_effect=spy),
+        ):
+            code1, out1, _ = self.call("get", "ALPHA", env=env)
+            code2, out2, _ = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code1, out1, code2, out2), (0, VAL_A, 0, VAL_A))
+        self.assertEqual(len(seen), 2)
+        self.assertNotEqual(seen[0], seen[1])
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        leftovers = [p.name for p in workdir.iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_cli_session_tolerates_dir_fsync_einval(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        real_fsync = core.os.fsync
+        import errno as _errno
+        import stat as _stat
+
+        def picky(fd):
+            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
+                raise OSError(_errno.EINVAL, "fsync not supported on directory")
+            return real_fsync(fd)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+            mock.patch.object(core.os, "fsync", side_effect=picky),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        self.assertTrue((workdir / ".infisical.json").exists())
+
     def test_interactive_export_refreshes_a_stale_project_file(self):
         world = self.use(World())
         env = dict(self.env)
