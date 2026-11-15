@@ -42,9 +42,12 @@ class CliTest(unittest.TestCase):
         self.assertEqual(doc["ok"], False)
         self.assertEqual(doc["code"], "refused_secret")
         self.assertEqual(doc["kind"], "assigned secret")
-        # The no-echo rule: no substring of the scanned value appears in output.
+        # The no-echo rule: no substring of the scanned value appears in output,
+        # pinned against partial echoes too: every 8-character window is absent.
         self.assertNotIn(value, raw)
         self.assertNotIn(text.decode(), raw)
+        for i in range(len(value) - 7):
+            self.assertNotIn(value[i : i + 8], raw, f"partial echo at offset {i}")
 
     def test_field_allow_list(self) -> None:
         for field in ("request", "body", "topic", "status_text"):
