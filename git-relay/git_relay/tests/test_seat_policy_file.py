@@ -47,7 +47,7 @@ DOC = seat_policy.load()
 SEATS = seat_policy.render(DOC)
 # ZC's seat row is in the reviewed image since the first-seat admission landed
 # (2026-11-15;  the executed run's relay audit open_pr correlation is in the
-# relay host's root-only audit log;  HogHunter PR #368 under the owner account).  The auth-reason behaviour for that
+# relay host's root-only audit log;  the admission PR ran under the owner account).  The auth-reason behaviour for that
 # seat shape stays pinned here against the admitted policy itself.
 SEATS_WITH_ZC = SEATS
 ORG = "Simple-With-Us/"
