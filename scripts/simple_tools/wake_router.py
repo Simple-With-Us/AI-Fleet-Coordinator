@@ -707,13 +707,28 @@ def fragments_in(text: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _drop_own_seat_quotes(addressing: str, seat: str) -> str:
+    """`addressing` without lines that open with a bracketed tag of the wake's own seat.  Such a
+    line is the sender writing about itself -- quoting its own tag -- and never an address:  the
+    sender is never the target, and its own tag would otherwise become a fragment that picks the
+    sender's own chat.  Same-seat cross-session addressing goes by letter, which this leaves
+    alone, and another seat's quoted tag is a different line that also stays."""
+    if not seat:
+        return addressing
+    pattern = re.compile(r"^\s*\[" + re.escape(seat) + r"(?:[·:\]]|\s|\])")
+    kept = [line for line in addressing.split("\n") if not pattern.match(line)]
+    return "\n".join(kept)
+
+
 def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
     message_id = payload.get("message_id")
     excerpt = str(payload.get("excerpt") or "")
+    seat = str(payload.get("seat") or "")
     sender_part, addressing = split_excerpt(excerpt)
+    addressing = _drop_own_seat_quotes(addressing, seat)
     return Wake(
         wake_id=str(payload.get("wake_id") or ""),
-        seat=str(payload.get("seat") or ""),
+        seat=seat,
         message_id=message_id if type(message_id) is int else 0,
         channel=clean(payload.get("channel")),
         topic=clean(payload.get("topic")),
