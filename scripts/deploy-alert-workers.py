@@ -178,7 +178,9 @@ def guard_tripped(name):
     return m.guard_tripped(name, cloudflare)
 
 
-REVIEW_REQUEST_PATTERN = "@kody start-review"
+# Canonical trigger shape, mirrored from .github/workflows/auto-merge-reusable.yml:
+# tabs and repeated spaces between the mention and the verb still count as requests.
+REVIEW_REQUEST_PATTERN = r"^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)"
 
 # One check-run fetch per head per gate run: reviewed() can ask for the same
 # head through several candidate PRs, and each fetch is an authenticated call.
@@ -269,10 +271,10 @@ def _check_runs_for(head_sha):
             page += 1
             if page > 10:
                 raise RuntimeError("Kody check-run evidence exceeds bounded page limit")
-    except (RuntimeError, OSError):
-        # A failed, malformed or oversized lookup proves nothing about pending
-        # runs: the head cannot qualify on either route, but the release
-        # gate's other candidate PRs are unaffected.
+    except (RuntimeError, OSError, ValueError):
+        # A failed, malformed, non-JSON or oversized lookup proves nothing
+        # about pending runs: the head cannot qualify on either route, but
+        # the release gate's other candidate PRs are unaffected.
         _check_run_cache[head_sha] = None
         return None
     _check_run_cache[head_sha] = runs

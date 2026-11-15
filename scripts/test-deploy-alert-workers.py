@@ -962,6 +962,104 @@ class Tests(unittest.TestCase):
         # would be queried instead and this fails.
         self.assertEqual(thread_queries, [1711])
 
+    def test_review_request_pattern_tolerates_tabs_and_extra_spaces(self):
+        head = "a" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": head,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:00:01Z",
+        }
+        for body in ("@kody\tstart-review", "@kody  start-review", "  @kody start-review "):
+            with (
+                patch.object(
+                    m,
+                    "github",
+                    side_effect=[
+                        [pr],
+                        [review],
+                        [{"body": body, "created_at": "2026-11-15T19:00:00.500Z"}],
+                        {"check_runs": []},
+                    ],
+                ),
+                patch.object(m, "request_json", return_value={
+                    "data": {"repository": {"pullRequest": {"reviewThreads": {
+                        "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+                }),
+                patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            ):
+                m._check_run_cache.clear()
+                m._review_request_cache.clear()
+                # A tab- or multi-space invocation is still a request: the
+                # 19:00:01 review is fresh against the 19:00:00.500 request.
+                m.reviewed(head)
+
+    def test_non_json_check_run_body_fails_closed_without_poisoning(self):
+        bad_head = "b" * 40
+        good_head = "c" * 40
+        bad_pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": bad_head},
+        }
+        good_pr = {
+            "number": 1711,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": good_head},
+        }
+
+        def review(rid, head):
+            return {
+                "id": rid,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": head,
+                "submitted_at": "2026-11-15T19:30:00Z",
+            }
+
+        thread_queries = []
+
+        def graphql(url, token, data=None, timeout=30):
+            thread_queries.append(json.loads(data.decode())["variables"]["number"])
+            return {
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }
+
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [bad_pr, good_pr],
+                    [review(1, bad_head)],
+                    [],
+                    m.json.JSONDecodeError("Expecting value", "", 0),
+                    [review(2, good_head)],
+                    [],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(m, "request_json", side_effect=graphql),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A 200 body that is not JSON raises JSONDecodeError (a ValueError)
+            # inside request_json; it must fail only that head closed, not
+            # abort the gate before the good PR's clean evidence qualifies.
+            m.reviewed("a" * 40)
+        self.assertEqual(thread_queries, [1711])
+
     def test_check_run_lookup_filters_by_name_and_paginates(self):
         head = "b" * 40
         pr = {
