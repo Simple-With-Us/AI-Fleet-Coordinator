@@ -250,6 +250,7 @@ class FakeCloud:
             {"type": "plain_text", "name": "PUBLIC_HOST", "text": "agents.example"},
         ]
         self.digest = None
+        self.annotations = None
         self.puts = []
         self.patches = []
         self.bearers = set()
@@ -282,7 +283,10 @@ class FakeCloud:
                 bindings.append(
                     {"type": "plain_text", "name": sync.DIGEST_BINDING, "text": self.digest}
                 )
-            return {"success": True, "result": {"bindings": bindings}}
+            result = {"bindings": bindings}
+            if self.annotations is not None:
+                result["annotations"] = dict(self.annotations)
+            return {"success": True, "result": result}
         if path.endswith("/settings") and method == "PATCH":
             self.patches.append(payload)
             for binding in payload["settings"]["bindings"]:
@@ -416,6 +420,31 @@ class Cli(unittest.TestCase):
         recorded = json.loads(cloud.digest)
         self.assertIn("ACCESS_AUD", recorded["keys"])
         self.assertNotIn(AUD, json.dumps(recorded))
+
+    def test_digest_patch_preserves_current_annotations(self):
+        cloud = FakeCloud(None)
+        cloud.infisical_body = cloud.folder()
+        cloud.annotations = {"workers/tag": "deploy-1", "workers/message": "release"}
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 0, err)
+        sent = cloud.patches[0]["settings"]
+        self.assertEqual(sent.get("annotations"), cloud.annotations)
+        self.assertEqual(set(sent), {"bindings", "annotations"})
+
+    def test_annotation_loss_fails_the_write(self):
+        class AnnotationDroppingCloud(FakeCloud):
+            def __call__(self, method, url, token, payload, accept_status):
+                if url.split("?", 1)[0].endswith("/settings") and method == "PATCH":
+                    self.annotations = None
+                return super().__call__(method, url, token, payload, accept_status)
+
+        cloud = AnnotationDroppingCloud(None)
+        cloud.infisical_body = cloud.folder()
+        cloud.annotations = {"workers/tag": "deploy-1"}
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("settings-drift annotations", err)
+        self.assertNotIn(AUD, err)
 
     def test_settings_drift_fails_the_write(self):
         class DriftingCloud(FakeCloud):

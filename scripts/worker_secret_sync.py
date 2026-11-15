@@ -558,11 +558,19 @@ def write_digest_binding(transport, token, account, worker, settings, digest_tex
     result = settings["result"]  # envelope already validated by _settings_bindings
     base = _worker_base(account, worker) + "/settings"
     # The settings endpoint is a partial update (omitted fields keep their
-    # current values), so the write stays bindings-only on purpose: echoing the
-    # whole fetched settings object would race unrelated live changes.  What the
-    # old code lacked was verification - the post-write comparison below now
-    # fails loudly if any unrelated setting does not survive.
-    body = transport("PATCH", base, token, {"settings": {"bindings": bindings}}, {200})
+    # current values), so the write stays narrow on purpose: echoing the whole
+    # fetched settings object would race unrelated live changes.  Two fields
+    # are the documented exceptions to partial update: bindings are full
+    # replace (already sent complete) and annotations are not inherited across
+    # settings updates (omitting them clears them), so the just-fetched
+    # current annotations are sent back to preserve them.  Annotations change
+    # only at upload/deploy time; the post-write comparison below verifies the
+    # preserved state actually survived and fails loudly on any drift.
+    patch = {"bindings": bindings}
+    annotations = result.get("annotations")
+    if annotations is not None:
+        patch["annotations"] = annotations
+    body = transport("PATCH", base, token, {"settings": patch}, {200})
     if not isinstance(body, dict) or body.get("success") is not True:
         raise SyncError("digest-not-confirmed")
     after = transport("GET", base, token, None, {200})
