@@ -35,7 +35,9 @@ class SeatAddPolicyTests(unittest.TestCase):
         result = prepare(base, ZC, copy.deepcopy(SEATS_WITH_ZC[ZC]), digest(base))
         self.assertEqual(base, original, "the input is never mutated")
         self.assertEqual(result, {**base, ZC: SEATS_WITH_ZC[ZC]})
-        self.assertEqual(result[ZC], SEATS_WITH_ZC[ZC], "the admitted row is byte-for-byte the image row")
+        self.assertEqual(
+            result[ZC], SEATS_WITH_ZC[ZC], "the admitted row is byte-for-byte the image row"
+        )
         # Digest and the deployed line both canonicalize with sorted keys, so the
         # only order contract is that original seats keep their relative order.
         self.assertEqual(list(result), list(base) + [ZC], "the new seat appends; nothing moves")
