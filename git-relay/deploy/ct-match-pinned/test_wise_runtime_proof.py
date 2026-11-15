@@ -38,13 +38,16 @@ class OwnWiseProofTests(unittest.TestCase):
 
     def test_timeout_kills_and_reaps_entire_transport_group(self):
         process = Mock(pid=123)
-        process.communicate.side_effect = [subprocess.TimeoutExpired("fixture", 1), (b"", b"")]
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("fixture", 1),
+            (b"", b""),
+        ]
         with (
             patch.object(proof.subprocess, "Popen", return_value=process),
             patch.object(proof.os, "killpg") as kill,
+            self.assertRaises(subprocess.TimeoutExpired),
         ):
-            with self.assertRaises(subprocess.TimeoutExpired):
-                proof.run_bounded(["fixture"], input=b"", capture_output=True, timeout=1, env={})
+            proof.run_bounded(["fixture"], input=b"", capture_output=True, timeout=1, env={})
         kill.assert_called_once_with(123, proof.signal.SIGKILL)
         self.assertEqual(process.communicate.call_count, 2)
 
