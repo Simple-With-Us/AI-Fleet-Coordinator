@@ -6,6 +6,8 @@ separately binds actual service identity/config/code digests before this proof.
 """
 
 import json
+import os
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,7 +17,7 @@ MAC_HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH7VILvQ5Z8jfqRY8QYhbNwlHDxg
 BEFORE = "8762d7c50c0c09b92e34f640643f77b71f78524e412233ecb266f9f9a4b84802"
 AFTER = "8bd0ea0b3a9fe2782d490c97065e4aff2ec7f38a2630abb04e98eca8e491e235"
 REMOTE_SOURCE = r"""
-import hashlib,json,os,stat,subprocess
+import hashlib,json,os,signal,stat,subprocess
 from pathlib import Path
 ROOT=Path('/Users/jay/.local/share/simple-git/releases/0fac2e8417218ff8791da9d699b66de0770bddca')
 PINS={
@@ -37,7 +39,14 @@ def main():
  secret=read(Path('/Users/jay/.config/wise/simple-tools-bearer'),0o600).decode().strip()
  env={'HOME':'/Users/jay','PATH':'/usr/bin:/bin:/opt/homebrew/bin','LANG':'C.UTF-8','AGENT_SEAT':'WISE','SIMPLE_GIT_REMOTE':'1','SIMPLE_TOOLS_BEARER':secret,'PYTHONDONTWRITEBYTECODE':'1'}
  def call(argv):
-  p=subprocess.run([str(ROOT/'scripts/simple-git'),*argv],env=env,capture_output=True,timeout=20)
+  process=subprocess.Popen([str(ROOT/'scripts/simple-git'),*argv],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+  try:out,err=process.communicate(timeout=8)
+  except BaseException:
+   try:os.killpg(process.pid,signal.SIGKILL)
+   except ProcessLookupError:pass
+   process.communicate()
+   raise
+  p=subprocess.CompletedProcess(argv,process.returncode,out,err)
   if max(len(p.stdout),len(p.stderr))>65536 or secret.encode() in p.stdout or secret.encode() in p.stderr:raise ValueError()
   return p
  p=call(['whoami','--json'])
@@ -70,7 +79,29 @@ EXPECTED = {
 }
 
 
-def prove(hashes, run=subprocess.run):
+def run_bounded(argv, *, input, capture_output, timeout, env):
+    """Reap the whole local transport group on timeout, not only runuser."""
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(input=input, timeout=timeout)
+    except BaseException:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def prove(hashes, run=run_bounded):
     """No dynamic command, seat, URL, path, credential or packet argument."""
     if hashes.get("code/patch_secretscan.py") not in {BEFORE, AFTER}:
         return False

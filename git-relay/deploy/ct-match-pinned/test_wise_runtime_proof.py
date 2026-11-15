@@ -4,6 +4,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "wise_proof", Path(__file__).with_name("wise_runtime_proof.py")
@@ -66,6 +67,31 @@ class OwnWiseProofTests(unittest.TestCase):
                 raise error
 
             self.assertFalse(proof.prove({"code/patch_secretscan.py": proof.AFTER}, run))
+
+    def test_timeout_kills_and_reaps_entire_transport_group(self):
+        class Process:
+            pid = 12345
+            returncode = -9
+            calls = 0
+
+            def communicate(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise subprocess.TimeoutExpired("fixed", 35)
+                return b"", b""
+
+        process = Process()
+        with (
+            patch.object(proof.subprocess, "Popen", return_value=process) as popen,
+            patch.object(proof.os, "killpg") as kill,
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                proof.run_bounded(
+                    ["fixed"], input=b"source", capture_output=True, timeout=35, env={}
+                )
+            self.assertTrue(popen.call_args.kwargs["start_new_session"])
+            kill.assert_called_once_with(12345, proof.signal.SIGKILL)
+            self.assertEqual(process.calls, 2)
 
     def test_remote_source_is_syntax_valid_and_null_fenced(self):
         compile(proof.REMOTE_SOURCE, "fixed-remote-proof", "exec")
