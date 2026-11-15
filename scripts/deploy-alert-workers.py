@@ -112,9 +112,10 @@ def request_json(url, token, data=None, timeout=30):
                 raise RuntimeError("Redirect not allowed")
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError("GitHub HTTP " + str(exc.code)) from exc
+        # Shared by GitHub and Cloudflare calls; name the URL, not a provider.
+        raise RuntimeError("HTTP " + str(exc.code) + " for " + url) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError("GitHub request failed: " + str(exc.reason)) from exc
+        raise RuntimeError("Request failed for " + url + ": " + str(exc.reason)) from exc
 
 
 def github(path, timeout=30):
@@ -214,12 +215,21 @@ def _newest_review_request(number):
     for comment in comments:
         if not isinstance(comment, dict):
             raise RuntimeError("Invalid review-request evidence")
+        # kody-ai[bot] notices quote the invocation ("Manual mode requires
+        # @kody start-review"); they are not requests and must not reset
+        # freshness.
+        user = comment.get("user")
+        if isinstance(user, dict) and user.get("login") == KODY_APP_SLUG + "[bot]":
+            continue
         body = comment.get("body")
         created = comment.get("created_at")
-        # Same detection as the auto-merge receipt contract: per-line,
-        # case-insensitive pattern match on the comment body.
+        # Only a line whose stripped form STARTS with the invocation counts as
+        # a request: quoted or mid-sentence mentions must not reset freshness,
+        # while a legitimate invocation on its own line still matches
+        # case-insensitively.
         if isinstance(body, str) and any(
-            re.search(REVIEW_REQUEST_PATTERN, line, re.IGNORECASE) for line in body.split("\n")
+            re.match(REVIEW_REQUEST_PATTERN, line.strip(), re.IGNORECASE)
+            for line in body.split("\n")
         ):
             if not isinstance(created, str):
                 raise RuntimeError("Invalid review-request evidence")

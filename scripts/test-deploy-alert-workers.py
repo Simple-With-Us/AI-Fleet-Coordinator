@@ -773,6 +773,57 @@ class Tests(unittest.TestCase):
             # reviewed() returns without raising on success.
             m.reviewed("a" * 40)
 
+    def test_kody_notice_comment_is_not_a_request(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    {
+                        "check_runs": [
+                            {
+                                "name": m.KODY_CHECK_NAME,
+                                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                                "status": "completed",
+                                "conclusion": "success",
+                                "head_sha": head,
+                                "started_at": "2026-11-15T19:00:00Z",
+                                "output": {
+                                    "title": m.KODY_CHECK_TITLE,
+                                    "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                                },
+                            }
+                        ]
+                    },
+                    [
+                        {
+                            "body": "Manual mode requires @kody start-review",
+                            "created_at": "2026-11-15T20:00:00Z",
+                            "user": {"login": m.KODY_APP_SLUG + "[bot]"},
+                        }
+                    ],
+                ],
+            ),
+            patch.object(m, "request_json", return_value={
+                "data": {"repository": {"pullRequest": {"reviewThreads": {
+                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            }),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            # The bot's own notice quotes the invocation but is not a request,
+            # so no freshness requirement applies and the receipt qualifies.
+            m.reviewed("a" * 40)
+
     def test_release_review_paths_exclude_receipt_only(self):
         self.assertNotIn("docs/releases/alert-credentials-qualified.json", m.RELEASE_REVIEW_PATHS)
         self.assertIn("scripts/simple-tools-mcp/package-lock.json", m.RELEASE_REVIEW_PATHS)
