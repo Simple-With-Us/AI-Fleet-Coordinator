@@ -470,6 +470,7 @@ class Tests(unittest.TestCase):
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
+            m._check_run_cache.clear()
             m.reviewed("a" * 40)
 
     def test_review_pages_beyond_one_hundred_are_followed(self):
@@ -521,6 +522,7 @@ class Tests(unittest.TestCase):
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
+            m._check_run_cache.clear()
             m.reviewed("a" * 40)
 
     def test_review_pages_beyond_the_cap_fail_closed(self):
@@ -631,6 +633,7 @@ class Tests(unittest.TestCase):
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
+            m._check_run_cache.clear()
             m.reviewed("a" * 40)
 
     def test_stale_kody_check_receipt_does_not_qualify(self):
