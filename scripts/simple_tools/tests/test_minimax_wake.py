@@ -8,6 +8,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -236,11 +237,11 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.note, "mcode-exit-0")
         argv = self.calls[0]
         self.assertIn("exec", argv)
-        # Every value is bound to its option with `=`, so a value that begins with a dash is
-        # never an option of its own.
-        self.assertIn("--session=%s" % SID, argv)
-        self.assertIn("--cwd=%s" % self.workspace, argv)
-        self.assertIn("--input=-", argv)
+        # Every flag is its own element and every value is the element after it, the way the
+        # `mcode exec` help shows them and the way the house fallback runtime passes them.
+        self.assertEqual(argv[argv.index("--session") + 1], SID)
+        self.assertEqual(argv[argv.index("--cwd") + 1], str(self.workspace))
+        self.assertEqual(argv[argv.index("--input") + 1], "-")
         self.assertFalse(any(part.startswith("--cwd") and " " in part for part in argv))
         self.assertFalse(any("wake id w1-abcdef" in str(part) for part in argv))
         prompt = self.inputs[0]
@@ -306,11 +307,39 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "workspace-mismatch")
 
-    def test_settings_missing_fails_and_holds(self):
+    def test_a_missing_workspace_names_the_setting(self):
+        # The delivery is a bounded failure, like a missing binary in the sibling modules, and
+        # the code names the setting that is missing so an operator knows what to configure.
         delivery = self._deliver_local(config={"workspace": ""})
         self.assertEqual(delivery.outcome, "failed")
-        self.assertEqual(delivery.code, "settings-missing")
+        self.assertEqual(delivery.code, "missing-workspace")
         self.assertEqual(self.calls, [])
+
+    def test_the_store_path_is_percent_encoded(self):
+        # A store whose path holds a URI-significant character is still read, and read from the
+        # store itself:  an unencoded path would truncate at the "?" and open another file.
+        holder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, holder, True)
+        decoy = holder / "decoy"
+        real = holder / "decoy?and#more" / "runtime-state.sqlite"
+        minimax_wake._private_dir(real.parent)
+        for path, kind in ((decoy, "cron"), (real, "conversation")):
+            con = sqlite3.connect(path)
+            con.execute(
+                "CREATE TABLE local_runtime_sessions ("
+                "session_id TEXT, session_kind TEXT, parent_session_id TEXT, archived INTEGER, "
+                "status TEXT, workspace_dir TEXT)"
+            )
+            con.execute(
+                "INSERT INTO local_runtime_sessions VALUES (?, ?, '', 0, 'idle', ?)",
+                (SID, kind, str(self.workspace)),
+            )
+            con.commit()
+            con.close()
+        self.env["MINIMAX_WAKE_STORE"] = str(real)
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "sent")
+        self.assertEqual(len(self.calls), 1)
 
     def test_nonzero_exit_is_refused(self):
         delivery = self._deliver_local(exit_code=3)
@@ -344,6 +373,35 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "failed")
         self.assertEqual(delivery.code, "mcode-not-found")
         self.assertEqual(self.calls, [])
+
+
+class StoreLimitTests(Base):
+    """A candidate list longer than SQLite's variable limit still gets filtered."""
+
+    def test_a_long_candidate_list_is_still_filtered(self):
+        # 600 cron rows:  a single query binding one placeholder for each would fail on a
+        # build whose variable limit is below that, and the filter would fall open.
+        con = sqlite3.connect(self.store)
+        ids = ["mvs_%032x" % (i + 1) for i in range(600)]
+        con.executemany(
+            "INSERT INTO local_runtime_sessions VALUES (?, 'cron', '', 0, 'idle', ?)",
+            [(sid, str(self.workspace)) for sid in ids],
+        )
+        con.commit()
+        con.close()
+        real_connect = sqlite3.connect
+
+        def limited_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            # The limit a build before SQLite 3.32 had:  below one chunk, so a query that
+            # binds them all would fail.
+            conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 250)
+            return conn
+
+        targets = [WR.Target(session_id=sid, letter="", host="server", generation=1) for sid in ids]
+        with patch.object(minimax_wake.sqlite3, "connect", side_effect=limited_connect):
+            excluded = minimax_wake.exclude_non_interactive(self.env, "server")(targets)
+        self.assertEqual(len(excluded), 600)
 
 
 class ExcludeTests(Base):
@@ -395,7 +453,8 @@ class RouterPlatformTests(Base):
             WR.Wake(wake_id="w2-abcdef", message_id=1),
         )
         self.assertEqual(delivery.outcome, "sent")
-        self.assertIn("--cwd=%s" % self.workspace, self.calls[0])
+        argv = self.calls[0]
+        self.assertEqual(argv[argv.index("--cwd") + 1], str(self.workspace))
 
     def test_an_unknown_host_is_refused(self):
         platform = self._platform()
@@ -515,12 +574,12 @@ class ModelTests(Base):
     def test_the_default_model_is_named(self):
         self._deliver_local()
         argv = self.calls[0]
-        self.assertIn("--model=%s" % minimax_wake.DEFAULTS["mcode_model"], argv)
+        self.assertEqual(argv[argv.index("--model") + 1], minimax_wake.DEFAULTS["mcode_model"])
 
     def test_a_configured_model_is_named(self):
         self._deliver_local(config={"mcode_model": "minimax/Another-Served-Model"})
         argv = self.calls[0]
-        self.assertIn("--model=minimax/Another-Served-Model", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], "minimax/Another-Served-Model")
 
     def test_a_model_that_is_not_provider_slash_model_is_refused(self):
         delivery = self._deliver_local(config={"mcode_model": "--not-a-model"})
@@ -602,6 +661,9 @@ class RequestShapeTests(Base):
 
     def _request(self, target=None, wake=None):
         return {
+            # The router's request names the platform too:  the Mac-side handler is dispatched
+            # on it, so it is one of the three top-level sections.
+            "platform": "minimax",
             "target": target
             if target is not None
             else {
@@ -624,6 +686,18 @@ class RequestShapeTests(Base):
 
     def _deliver(self, request):
         return minimax_wake.deliver_request(request, env=self.env, runner=self._runner(0))
+
+    def test_an_unknown_top_level_section_is_refused(self):
+        request = self._request()
+        request["extra"] = {"section": True}
+        answer = self._deliver(request)
+        self.assertEqual(answer["delivery"]["code"], "bad-request")
+
+    def test_a_request_without_a_section_is_refused(self):
+        request = self._request()
+        del request["wake"]
+        answer = self._deliver(request)
+        self.assertEqual(answer["delivery"]["code"], "bad-request")
 
     def test_a_request_without_a_target_is_refused(self):
         answer = self._deliver({"wake": self._request()["wake"]})
@@ -677,6 +751,43 @@ class RequestShapeTests(Base):
         self.assertEqual(answer["delivery"]["code"], minimax_wake.SECRET_FIELD)
         self.assertEqual(answer["delivery"]["note"], "topic")
         self.assertNotIn(self.SAMPLE, repr(answer))
+
+
+class ArgvTests(Base):
+    """The command line:  every flag its own element, and the run bounded."""
+
+    def test_every_flag_is_its_own_element(self):
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "sent")
+        argv = self.calls[0]
+        self.assertEqual(argv[1], "exec")
+        for flag, value in (
+            ("--session", SID),
+            ("--cwd", str(self.workspace)),
+            ("--model", minimax_wake.DEFAULTS["mcode_model"]),
+            ("--permission", "off"),
+            ("--max-steps", str(minimax_wake.MCODE_MAX_STEPS)),
+            ("--input", "-"),
+        ):
+            self.assertIn(flag, argv)
+            self.assertEqual(argv[argv.index(flag) + 1], value)
+        # No value is bound to its flag with `=`:  the `mcode exec` help shows the flags as
+        # separate elements, and that is the form the house fallback runtime uses.
+        self.assertFalse([part for part in argv if part.startswith("--") and "=" in part])
+
+    def test_a_workspace_path_that_starts_with_a_dash_is_refused(self):
+        # A path that begins with a dash would be read as an option of its own, so a
+        # deployment that names one is refused before anything is started.
+        delivery = self._deliver_local(config={"workspace": "-odd-workspace"})
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "bad-workspace-path")
+        self.assertEqual(self.calls, [])
+
+    def test_a_model_that_starts_with_a_dash_is_refused(self):
+        delivery = self._deliver_local(config={"mcode_model": "-evil/model"})
+        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.code, "settings-bad-model")
+        self.assertEqual(self.calls, [])
 
 
 class RunnerSeamTests(Base):
@@ -743,6 +854,7 @@ class SettingsTests(Base):
         ):
             answer = minimax_wake.deliver_request(
                 {
+                    "platform": "minimax",
                     "target": {
                         "session_id": SID,
                         "letter": "CC",
@@ -771,10 +883,42 @@ class SettingsTests(Base):
         self.assertEqual(config["workspace"], str(self.workspace))
         self.assertEqual(config["local_host"], "mac")
 
+    def test_the_shared_file_may_name_a_setting_of_another_seat(self):
+        # The shared file is one file for every seat, so it carries every seat's settings.  A
+        # key this host cannot attribute belongs to a seat whose module is not installed here:
+        # it is skipped, and the delivery is not held by a setting that is not this seat's.
+        shared = minimax_wake.state_dir(self.env).parent / "config.json"
+        minimax_wake._private_dir(shared.parent)
+        shared.write_text(
+            json.dumps({"workspace": str(self.workspace), "zcode_bin": "/opt/zcode"}),
+            encoding="utf-8",
+        )
+        config = minimax_wake._delivery_config(self.env)
+        self.assertEqual(config["workspace"], str(self.workspace))
+
+    def test_a_per_seat_file_cannot_lift_the_shared_cap(self):
+        # The shared file is the operator's brake for every seat:  a per-seat file cannot
+        # widen a cap the shared file set.
+        shared = minimax_wake.state_dir(self.env).parent / "config.json"
+        seat_file = minimax_wake.state_dir(self.env) / "config.json"
+        minimax_wake._private_dir(shared.parent)
+        minimax_wake._private_dir(seat_file.parent)
+        shared.write_text(
+            json.dumps({"workspace": str(self.workspace), "resume_timeout_seconds": 600}),
+            encoding="utf-8",
+        )
+        seat_file.write_text(
+            json.dumps({"workspace": str(self.workspace), "resume_timeout_seconds": 900}),
+            encoding="utf-8",
+        )
+        config = minimax_wake._delivery_config(self.env)
+        self.assertEqual(config["resume_timeout_seconds"], 600)
+
     def test_a_settings_failure_names_the_source(self):
         with patch.object(minimax_wake, "_delivery_config", side_effect=RuntimeError("boom")):
             answer = minimax_wake.deliver_request(
-                {"target": {"session_id": SID, "letter": "CC", "host": "mac", "generation": 2},
+                {"platform": "minimax",
+                 "target": {"session_id": SID, "letter": "CC", "host": "mac", "generation": 2},
                  "wake": {"wake_id": "w1-abcdef", "message_id": 1}},
                 env=self.env,
                 runner=self._runner(0),
@@ -784,7 +928,8 @@ class SettingsTests(Base):
 
     def test_a_malformed_generation_is_not_echoed_back(self):
         answer = minimax_wake.deliver_request(
-            {"target": {"session_id": SID, "letter": "CC", "host": "mac", "generation": "two"},
+            {"platform": "minimax",
+             "target": {"session_id": SID, "letter": "CC", "host": "mac", "generation": "two"},
              "wake": {"wake_id": "w1-abcdef", "message_id": 1}},
             env=self.env,
             runner=self._runner(0),
@@ -794,7 +939,8 @@ class SettingsTests(Base):
 
     def test_a_malformed_wake_id_is_not_echoed_back(self):
         answer = minimax_wake.deliver_request(
-            {"target": {"session_id": SID, "letter": "CC", "host": "mac", "generation": 2},
+            {"platform": "minimax",
+             "target": {"session_id": SID, "letter": "CC", "host": "mac", "generation": 2},
              "wake": {"wake_id": "not a wake id", "message_id": 1}},
             env=self.env,
             runner=self._runner(0),

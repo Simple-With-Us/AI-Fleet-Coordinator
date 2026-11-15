@@ -264,11 +264,20 @@ def narrowed(
 
 
 def read_local(
-    path: Path, defaults: Mapping[str, Any], *, required: bool = False
+    path: Path,
+    defaults: Mapping[str, Any],
+    *,
+    required: bool = False,
+    allow_unknown: bool = False,
 ) -> dict[str, Any]:
     """The local file, checked against `defaults` and the seat list (wake_router.read_local_config,
-    with its refusals)."""
-    return WR.read_local_config(path, defaults, required=required, seat_lists=(LOCAL_SEATS,))
+    with its refusals).
+
+    `allow_unknown` is for the file every seat shares:  a key this host cannot attribute is
+    another seat's setting, and skipping it is this reader's business."""
+    return WR.read_local_config(
+        path, defaults, required=required, seat_lists=(LOCAL_SEATS,), allow_unknown=allow_unknown
+    )
 
 
 def read_once(seat: str, defaults: Mapping[str, Any], local_path: Path) -> dict[str, Any]:

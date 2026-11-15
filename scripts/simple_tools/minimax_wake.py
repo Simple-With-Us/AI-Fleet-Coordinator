@@ -72,6 +72,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from . import secretscan
 from . import wake_router as WR
@@ -96,7 +97,7 @@ TARGET_FIELDS = frozenset(WR.Target.__dataclass_fields__)
 #: The fields a request's wake may carry:  the ones `WR.Wake` has.
 WAKE_FIELDS = frozenset(WR.Wake.__dataclass_fields__)
 #: The model `mcode exec` runs on:  `provider/model`, named on the command line.
-MODEL_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: The bound on a link in a request, the same one the router keeps.
 MAX_LINK = 500
 #: The bounds on a request that arrives from another host:  how big it may be, how deep it may
@@ -114,6 +115,22 @@ STATE_UNAVAILABLE = "state-unavailable"
 CHAT_KINDS = ("conversation", "task")
 #: The store's status values that mean a turn is running in that chat right now.
 BUSY_STATUSES = ("started",)
+#: The top-level sections a delivery request carries:  the platform it names, the chat it
+#: addresses and the wake itself.  This is the request the router builds and sends over ssh
+#: (`claude_wake.deliver_remote` sends exactly these three), so a request with any other section,
+#: or with one of them missing, is refused before anything reads it.
+REQUEST_FIELDS = frozenset({"platform", "target", "wake"})
+#: The permission posture a woken chat runs under:  `off`.  mcode's own local config defaults to
+#: bypassing permissions, and a headless run cannot answer a prompt for one.
+MCODE_PERMISSION = "off"
+#: The step cap `mcode exec` runs under, the same value the house fallback runtime uses
+#: (`adapters.MCODE_MAX_STEPS`):  at 8 the wake contract does not fit, and 16 is the cap the
+#: fleet measured.
+MCODE_MAX_STEPS = 16
+#: How many session ids one store query binds.  SQLite's variable limit is 999 on the builds
+#: before 3.32 and 32766 after, and a candidate list longer than the limit would fail the whole
+#: query and leave the non-interactive filter off.
+STORE_CHUNK = 200
 
 DEFAULTS: Mapping[str, Any] = {
     **WR.ROUTER_DEFAULTS,
@@ -141,6 +158,7 @@ NEVER_RAN: frozenset[str] = frozenset(
         "session-archived",
         "session-cwd-gone",
         "workspace-mismatch",
+        "bad-workspace-path",
         "mcode-not-found",
         SECRET_FIELD,
         STATE_UNAVAILABLE,
@@ -270,15 +288,21 @@ def _session_rows(
     if not ids:
         return "ok", {}
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
+        conn = sqlite3.connect(f"file:{quote(str(db))}?mode=ro", uri=True, timeout=2.0)
     except (OSError, sqlite3.Error):
         return "error", {}
     try:
-        rows = conn.execute(
-            "SELECT session_id, session_kind, parent_session_id, archived, status, workspace_dir "
-            "FROM local_runtime_sessions WHERE session_id IN (%s)" % ",".join("?" * len(ids)),
-            ids,
-        ).fetchall()
+        rows: list[tuple[Any, ...]] = []
+        for start in range(0, len(ids), STORE_CHUNK):
+            chunk = ids[start : start + STORE_CHUNK]
+            rows.extend(
+                conn.execute(
+                    "SELECT session_id, session_kind, parent_session_id, archived, status, "
+                    "workspace_dir FROM local_runtime_sessions WHERE session_id IN (%s)"
+                    % ",".join("?" * len(chunk)),
+                    chunk,
+                ).fetchall()
+            )
     except sqlite3.Error:
         return "error", {}
     finally:
@@ -486,10 +510,17 @@ def deliver_local(
         return WR.Delivery("refused", code="bad-session-id")
 
     workspace = str(config.get("workspace") or "")
+    if workspace.startswith("-"):
+        # A path that begins with a dash would be read as an option of its own, so a
+        # deployment that names one is refused before anything is started.
+        return WR.Delivery("refused", "wake", code="bad-workspace-path")
     if not workspace:
-        # Hold and retry:  the deployment has not named a workspace, and delivering into an
-        # unknown directory is the wrong-chat delivery this platform exists to refuse.
-        return WR.Delivery("failed", code="settings-missing")
+        # The deployment has not named a workspace, and delivering into an unknown directory is
+        # the wrong-chat delivery this platform exists to refuse.  A missing deployment setting
+        # is a bounded failure, exactly like a missing binary (`claude-not-found`,
+        # `agy-not-found` in the sibling modules):  the delivery is retried up to `max_attempts`
+        # and then ends in a dead receipt, and the code names the setting that is missing.
+        return WR.Delivery("failed", code="missing-workspace")
 
     model = str(config.get("mcode_model") or "") or MCODE_DEFAULT_MODEL
     if not MODEL_RE.fullmatch(model):
@@ -557,15 +588,26 @@ def deliver_local(
             if not binary:
                 return WR.Delivery("failed", "wake", code="mcode-not-found")
 
-            # Every value is bound to its option with `=`, so a value that begins with a dash
-            # is a value and never an option of its own.
+            # Every flag is its own element and every value is the element after it, the way the
+            # house fallback runtime passes them (`adapters.mcode_argv`), which is the form the
+            # `mcode exec` help shows.  A value that could be read as an option of its own is
+            # refused before it reaches the command line:  the session id and the model have
+            # their own shapes, and the workspace was checked above.
             argv = [
                 binary,
                 "exec",
-                "--session=%s" % session_id,
-                "--cwd=%s" % recorded,
-                "--model=%s" % model,
-                "--input=-",
+                "--session",
+                session_id,
+                "--cwd",
+                recorded,
+                "--model",
+                model,
+                "--permission",
+                MCODE_PERMISSION,
+                "--max-steps",
+                str(MCODE_MAX_STEPS),
+                "--input",
+                "-",
             ]
             text = wake_text(wake)
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
@@ -812,25 +854,40 @@ def _delivery_config(env: Mapping[str, str]) -> dict[str, Any]:
     The shared file (`<state root>/config.json`) names the platform's own facts for every seat,
     and the per-seat file (`<state root>/minimax/config.json`) may name them for this seat.  The
     per-seat file wins where both name one, and a file that cannot be read refuses the delivery
-    rather than quietly narrowing it."""
+    rather than quietly narrowing it.  The one thing a per-seat file cannot do is lift a cap the
+    shared file set:  the shared file is the operator's brake for every seat, so the narrower of
+    the two wins for every narrowable setting."""
     from . import wake_service as SVC
     from . import wake_settings as WS
 
     seat_path = state_dir(env) / "config.json"
     shared_path = SVC.state_root(env) / "config.json"
-    local = {
-        **WS.read_local(shared_path, _shared_defaults()),
-        **WS.read_local(seat_path, DEFAULTS),
-    }
-    return WS.narrowed(WS.from_knobs(SEAT, DEFAULTS), local, SEAT)[0]
+    base = WS.from_knobs(SEAT, DEFAULTS)
+    # The shared file is one file for every seat, so it carries every seat's settings:  a key
+    # this host cannot attribute belongs to a seat whose module is not installed here, and it is
+    # skipped rather than refused.  The per-seat file holds this seat's settings only, so an
+    # unknown key there is a mistyped one and is refused.
+    shared = WS.read_local(shared_path, _shared_defaults(), allow_unknown=True)
+    seat = WS.read_local(seat_path, DEFAULTS)
+    local = {**shared, **seat}
+    # The shared file is the operator's brake for every seat, so a per-seat file cannot lift a
+    # cap the shared file set:  the narrower of the two wins for every narrowable setting.
+    for key in WS.NARROWABLE:
+        if key in shared and key in seat:
+            local[key] = min(shared[key], seat[key])
+    return WS.narrowed(base, local, SEAT)[0]
 
 
 def _bounded_request(request: object) -> Mapping[str, Any]:
-    """The request, if it is within the house bounds:  its size, its depth and its node count.
+    """The request, if it is within the house bounds:  its sections, its size, its depth and its
+    node count.
 
     A request arrives from another host over ssh, so it is untrusted input, and a huge or
-    deeply nested one must not cost the router more than a small one."""
-    if not isinstance(request, Mapping):
+    deeply nested one must not cost the router more than a small one.  Its sections are checked
+    too:  a request carries exactly the platform, the target and the wake, so one with a section
+    this module does not know, or with one of the three missing, is refused before anything
+    reads it."""
+    if not isinstance(request, Mapping) or set(request) != REQUEST_FIELDS:
         raise ValueError("request")
     try:
         encoded = json.dumps(request, ensure_ascii=False).encode("utf-8")
