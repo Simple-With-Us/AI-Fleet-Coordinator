@@ -155,6 +155,12 @@ class LinuxHostTests(unittest.TestCase):
         (self.proc / "42" / "stat").mkdir()
         self.assertEqual(self.h.stray_unit_processes(), [42])
 
+    def test_malformed_cgroup_line_fails_closed(self):
+        (self.proc / "42" / "cgroup").write_text("not-a-cgroup-line\n")
+        with self.assertRaises(TransactionError) as ctx:
+            self.h.stray_unit_processes()
+        self.assertIn("malformed cgroup line", str(ctx.exception))
+
     def test_subcgroup_descendant_counts_as_stray(self):
         (self.proc / "42" / "cgroup").write_text("0::/system.slice/git-relay.service/spawned\n")
         self.assertEqual(self.h.stray_unit_processes(), [42])

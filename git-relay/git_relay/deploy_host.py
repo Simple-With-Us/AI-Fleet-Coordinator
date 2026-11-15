@@ -238,10 +238,18 @@ class LinuxHost:
                 raise TransactionError(
                     f"cannot scan /proc/{p.name} cgroup ({e.strerror or e}); cannot prove no strays"
                 )
+            paths = []
+            for line in lines:
+                fields = line.split(":")
+                if len(fields) != 3 or not fields[2]:
+                    # Unvalidated external data must not silently read as a
+                    # non-unit path and hide a surviving process.
+                    raise TransactionError(
+                        f"malformed cgroup line in /proc/{p.name}/cgroup; cannot prove no strays"
+                    )
+                paths.append(fields[2])
             if not any(
-                (path := line.split(":", 2)[-1]) == marker_prefix
-                or path.startswith(marker_prefix + "/")
-                for line in lines
+                path == marker_prefix or path.startswith(marker_prefix + "/") for path in paths
             ):
                 continue
             try:
