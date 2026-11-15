@@ -122,6 +122,25 @@ class Tests(unittest.TestCase):
             m.qualify_credentials()
         self.assertEqual(checked, ["alert-ingress"])
 
+    def test_qualification_prints_the_live_baseline(self):
+        with (
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "guard_tripped", return_value=False),
+            patch.object(m, "cloudflare", return_value={}),
+            patch.object(m, "preflight_config"),
+            patch.object(m, "deployed_tag", return_value="b" * 40),
+            patch.object(m, "probe"),
+            patch("builtins.print") as out,
+        ):
+            m.qualify_credentials()
+        printed = [c.args[0] for c in out.call_args_list if c.args]
+        self.assertIn("Baseline: alert-ingress " + "b" * 40, printed)
+        self.assertIn(
+            "Existing credential delivery and scoped live reads qualified; no deployment",
+            printed,
+        )
+
     def test_tripped_target_does_not_fail_qualification_for_the_other(self):
         # The qualify step runs first on every trigger, so a raise here would skip the
         # release step and stop the healthy Worker's release too.
