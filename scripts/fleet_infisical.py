@@ -360,7 +360,11 @@ def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> d
             env=child,
             check=False,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        # Distinct code and exit status so callers can tell a deadline from a launch
+        # failure (Kody, medium):  124 is the conventional timeout status.
+        raise SecretsError("interactive-session-read-timed-out") from None
+    except OSError:
         raise SecretsError("interactive-session-read-failed") from None
     if proc.returncode or len(proc.stdout) > MAX_OUTPUT_BYTES:
         raise SecretsError("interactive-session-read-failed")

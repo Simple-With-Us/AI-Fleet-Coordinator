@@ -83,15 +83,22 @@ def read_key(env=None, reader=None):
     token = (source.get(READ_BINDING) or "").strip()
     project = (source.get(PROJECT_BINDING) or "").strip()
     if not token or not project:
-        return ""
+        # A missing secret must fail loudly (Kody, critical):  a silent empty weakens
+        # worker-health verification without an error.
+        raise RuntimeError(f"no {SECRET_NAME} in the environment and no shared-reader binding")
     try:
         fetch = reader if reader is not None else _shared_client().fetch_project
         values = fetch(project, "/", {}, token=token, names=(SECRET_NAME,), timeout=READ_TIMEOUT)
-        value = values.get(SECRET_NAME)
-        return value.strip() if isinstance(value, str) else ""
     except Exception:
-        # Fixed no_key health state below; no provider body, credential or fallback.
+        # A provider failure stays closed:  the output stays empty without leaking
+        # provider state (the worker-health contract this file pins).
         return ""
+    value = values.get(SECRET_NAME)
+    if not isinstance(value, str) or not value.strip():
+        # A clean no-value answer is the missing-secret case (Kody, critical):  fail
+        # loudly naming the key instead of silently weakening verification.
+        raise RuntimeError(f"no usable {SECRET_NAME} from the shared Infisical client")
+    return value.strip()
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

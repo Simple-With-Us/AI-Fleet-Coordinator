@@ -161,6 +161,11 @@ def _load_helper() -> ModuleType | None:
         if exc.name != "fleet_infisical":
             raise
         return None
+    except (ImportError, SyntaxError):
+        # A malformed or partially copied shared client must not abort knob reads (Kody,
+        # high):  treat it the same as an absent helper so the scoped-reader-unavailable
+        # path maps it and aborts the job with a named reason.
+        return None
     return fleet_infisical
 
 

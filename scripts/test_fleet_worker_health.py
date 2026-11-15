@@ -75,7 +75,9 @@ class WorkerHealthReader(unittest.TestCase):
             }
             env.pop(missing)
             reader = mock.Mock(side_effect=AssertionError("must not read"))
-            self.assertEqual(fwh.read_key(env, reader), "")
+            with self.assertRaises(RuntimeError) as raised:
+                fwh.read_key(env, reader)
+            self.assertIn("HEALTH_HMAC_KEY", str(raised.exception))
             reader.assert_not_called()
 
     def test_direct_read_is_named_exact_folder_bounded_and_has_no_ambient_environment(self):
@@ -101,20 +103,29 @@ class WorkerHealthReader(unittest.TestCase):
         import io
 
         env = {fwh.READ_BINDING: "st." + secrets.token_urlsafe(32), fwh.PROJECT_BINDING: "project"}
-        for value in ({}, {fwh.SECRET_NAME: None}, RuntimeError("provider-private-text")):
-            reader = (
-                mock.Mock(side_effect=value)
-                if isinstance(value, Exception)
-                else mock.Mock(return_value=value)
-            )
+        for value in ({}, {fwh.SECRET_NAME: None}):
+            reader = mock.Mock(return_value=value)
             output = io.StringIO()
             with (
                 contextlib.redirect_stdout(output),
                 contextlib.redirect_stderr(output),
                 mock.patch("subprocess.run", side_effect=AssertionError("no fallback")),
             ):
-                self.assertEqual(fwh.read_key(env, reader), "")
+                with self.assertRaises(RuntimeError) as raised:
+                    fwh.read_key(env, reader)
+                self.assertIn("HEALTH_HMAC_KEY", str(raised.exception))
             self.assertEqual(output.getvalue(), "")
+        # A provider failure stays closed:  read_key answers "" with no output and no
+        # subprocess, the pinned worker-health contract.
+        reader = mock.Mock(side_effect=RuntimeError("provider-private-text"))
+        output = io.StringIO()
+        with (
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(output),
+            mock.patch("subprocess.run", side_effect=AssertionError("no fallback")),
+        ):
+            self.assertEqual(fwh.read_key(env, reader), "")
+        self.assertEqual(output.getvalue(), "")
 
     def test_actual_shared_verifier_reads_only_the_named_root_secret(self):
         client = fwh._shared_client()
@@ -221,8 +232,9 @@ class WorkerHealthReader(unittest.TestCase):
             code = (
                 "import runpy,sys; m=runpy.run_path(sys.argv[1]); "
                 "assert m['read_key']({'HEALTH_HMAC_KEY':'synced-test-value'})=='synced-test-value'; "
-                "assert m['read_key']({'FLEET_WORKER_HEALTH_INFISICAL_READ_TOKEN':'test-only',"
-                "'FLEET_WORKER_HEALTH_INFISICAL_PROJECT_ID':'test-project'})==''"
+                "assert m['read_key']({'FLEET_WORKER_HEALTH_INFISICAL_READ_TOKEN':'t',"
+                "'FLEET_WORKER_HEALTH_INFISICAL_PROJECT_ID':'p'})==''; "
+                "assert m['read_key']({'HEALTH_HMAC_KEY':'fallback'})=='fallback'"
             )
             out = subprocess.run(
                 [sys.executable, "-I", "-c", code, entry],
