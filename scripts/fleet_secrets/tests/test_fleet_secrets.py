@@ -352,6 +352,105 @@ class RunTests(Base):
         payload = json.loads(config.read_text())
         self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
 
+    def test_cli_session_refuses_a_symlinked_workdir(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        elsewhere = self.home / "elsewhere"
+        elsewhere.mkdir()
+        link_parent = self.home / ".config" / "fleet-secrets"
+        link_parent.mkdir(parents=True)
+        (link_parent / "cli-session").symlink_to(elsewhere, target_is_directory=True)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual(out, "")
+        self.assertNotEqual(code, 0)
+        self.assertIn("cli-session-workdir-symlink", err)
+        self.assertEqual(oct(elsewhere.stat().st_mode & 0o777), "0o755")
+
+    def test_cli_session_replaces_a_symlinked_project_file_without_touching_target(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir.mkdir(parents=True)
+        target = self.home / "sensitive.txt"
+        target.write_text("keep-me")
+        (workdir / ".infisical.json").symlink_to(target)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(target.read_text(), "keep-me")
+        config = workdir / ".infisical.json"
+        self.assertFalse(config.is_symlink())
+        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
+        payload = json.loads(config.read_text())
+        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
+
+    def test_cli_session_enforces_0600_on_a_preexisting_project_file(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir.mkdir(parents=True)
+        config = workdir / ".infisical.json"
+        config.write_text("{}")
+        config.chmod(0o644)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
+
+    def test_cli_session_maps_oserror_to_a_clean_secrets_error(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        parent = self.home / ".config" / "fleet-secrets"
+        parent.mkdir(parents=True)
+        (parent / "cli-session").write_text("not a directory")
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual(out, "")
+        self.assertNotEqual(code, 0)
+        self.assertIn("fleet-secrets: cli-session-workdir-unavailable", err)
+        self.assertNotIn("Traceback", err)
+
     def test_interactive_export_refreshes_a_stale_project_file(self):
         world = self.use(World())
         env = dict(self.env)

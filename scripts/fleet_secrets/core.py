@@ -341,14 +341,34 @@ def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
     project id and environment and carries no secret material.
     """
     workdir = home_dir(env) / ".config" / "fleet-secrets" / "cli-session"
-    workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(workdir, 0o700)
-    payload = (
-        json.dumps({"workspaceId": project, "defaultEnvironment": ENVIRONMENT}, indent=2) + "\n"
-    )
-    fd = os.open(workdir / ".infisical.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        handle.write(payload)
+    try:
+        if workdir.is_symlink():
+            raise SecretsError("cli-session-workdir-symlink: refusing to follow a symlinked workdir")
+        workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(workdir, 0o700)
+        payload = (
+            json.dumps({"workspaceId": project, "defaultEnvironment": ENVIRONMENT}, indent=2) + "\n"
+        )
+        # Durable owner-only install: write a sibling temp file (refusing a
+        # planted link), fsync it, atomically replace the project file so a
+        # crash cannot leave it truncated and a pre-existing file or link is
+        # swapped out wholesale, then fsync the directory.  The temp file's
+        # creation mode makes the result 0600 regardless of any prior mode.
+        tmp = workdir / ".infisical.json.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, workdir / ".infisical.json")
+        dir_fd = os.open(workdir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as exc:
+        raise SecretsError("cli-session-workdir-unavailable: " + str(exc)) from exc
     return workdir
 
 
