@@ -286,9 +286,7 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
         state_dir=opts.get("state-dir"),
     )
     if opts["reconcile"] or opts["clear_unsettled"]:
-        action = (
-            core.clear_unsettled_write if opts["clear_unsettled"] else core.reconcile_secret
-        )
+        action = core.clear_unsettled_write if opts["clear_unsettled"] else core.reconcile_secret
         try:
             result = action(name, path, env, intent=intent)
         except core.WriteError as exc:

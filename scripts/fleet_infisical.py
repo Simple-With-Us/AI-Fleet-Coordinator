@@ -1968,7 +1968,6 @@ def reconcile_secret(
         raise WriteError("state_unavailable", intent) from None
 
 
-
 def clear_unsettled_write(
     name: str,
     path: str,
@@ -2024,6 +2023,7 @@ def clear_unsettled_write(
         raise
     except Exception:
         raise WriteError("state_unavailable", intent) from None
+
 
 if __name__ == "__main__":
     raise SystemExit(_bounded_read_worker() if sys.argv[1:] == ["--bounded-read-worker"] else 2)
