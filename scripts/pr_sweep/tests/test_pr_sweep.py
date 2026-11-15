@@ -768,8 +768,8 @@ class AuditTests(unittest.TestCase):
         slugs = A.seat_app_slugs()
         self.assertIn("swu-claude", slugs)
         # swu-zc and swu-kimi completed their proven first-seat admissions on
-        # 2026-11-15 (relay audit open_pr swu-zc corr 04e7118be2a04c6b94fb5e9ee5c4a890,
-        # HogHunter PR #368 authored by jaywedgeworth22):  the registry now names
+        # 2026-11-15 (the executed run's relay audit open_pr correlation is in the
+        # relay host's root-only audit log;  HogHunter PR #368 authored by jaywedgeworth22):  the registry now names
         # both seats, so this pin requires them.
         self.assertIn("swu-zc", slugs)
         self.assertIn("swu-kimi", slugs)
