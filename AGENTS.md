@@ -64,7 +64,7 @@ Owner ruling, November 3, 2026, applies fleet-wide:
 - An agent may close a totally superseded PR if that agent made the PR being closed.
 - If another agent made the totally superseded PR, ask that agent first.  If no reply arrives within 20 minutes, ask Jay.  An agent may ask Jay first if urgent.
 - If 3 agents from 2 platforms agree to close a totally superseded PR, closure may proceed without Jay's or the PR owner's input.
-- Any agent may convert any PR to draft without anyone's permission.  Agents are encouraged to do so whenever a PR is not ready to merge.
+- Any agent may convert a PR to draft without anyone's permission ONLY when work is incomplete and must not merge even if all review findings were addressed and all conflicts were resolved (including an active do-not-merge or human-approval hold, or an unmerged dependency).  PRs blocked only by CI, Kody review, or merge conflicts must NOT be converted to or kept as draft; anything in draft for another reason must be marked ready.  (Owner ruling, November 15, 2026.)
 
 ### Do-not-merge PRs and readiness criteria
 
