@@ -11,12 +11,40 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
-SUMMARY:Fleet: 1 merged · 0 opened · 0 closed
-DESCRIPTION:1 PRs merged · 0 issues opened · 0 issues closed\n\nMerged PR
- s:\n- [BotFleet#2083] Update non-major dependencies
+SUMMARY:Fleet: 26 merged · 0 opened · 0 closed
+DESCRIPTION:26 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#2202] (codex) Resolve Temporary Fixture Roots
+  Before Unsafe Paths\n- [AI-Fleet-Coordinator#2214] (codex) Complete Docs 
+ And Notes Recall Coverage\n- [AI-Fleet-Coordinator#2239] fix: make Renovat
+ e respect the Python3.9 CI runner pin\n- [AI-Fleet-Coordinator#2241] (kimi
+ ) seat policy: carry the live-admitted ZC and — seats\n- [AI-Fleet-Coord
+ inator#2242] fix(alert-deploy): paginate the release review evidence fetch
+ \n- [BotFleet#2083] Update non-major dependencies\n- [BotFleet#2084] Updat
+ e non-major dependencies\n- [BotFleet#2086] (ag) Rewrite retired model ids
+  on per-turn overrides (BF-2525)\n- [Clutch#279] Update dependency CometCh
+ atUIKitSwift to v5.2.4\n- [Congress.Trade#3179] chore(renovate): keep app 
+ TypeScript inside parser support\n- [DealDex#599] chore(renovate): cap Typ
+ eScript shim to installed typescript-eslint range (<6.1.0)\n- [DealDex#600
+ ] Update non-major dependencies\n- [Personal-Site#292] chore(renovate): ca
+ p TypeScript to installed typescript-eslint range (<6.1.0)\n- [Socratic-Tr
+ ade#5142] (sentry) 4611: Filter transient iOS 5xx from — auto-capture an
+ d retry GETs\n- [Socratic-Trade#5155] 4618: iOS Dynamic Type chrome and 44
+ pt tap targets\n- [Socratic-Trade#5157] 2797: honest JSON errors on broker
+ -backed GET routes\n- [Socratic-Trade#5158] 4622: scheduled weekly B2 rest
+ ore drill on host\n- [Socratic-Trade#5170] UI polish: phone bar\, plain co
+ py\, scan and settings\n- [Socratic-Trade#5172] 4631: session-gate and rat
+ e-limit the flatfile route\n- [Socratic-Trade#5395] fix(rag): index manage
+ d filing form lookups without duplicate resolution\n- [Socratic-Trade#5397
+ ] test(ios): keep signing harness on fake Apple tools\n- [Socratic-Trade#5
+ 398] fix(console): remember validated scan tab per account session\n- [Soc
+ ratic-Trade#5405] fix(proxy-use): bound and retry the Mango probe so one s
+ low connect cannot fake an outage\n- [Socratic-Trade#5408] fix(renovate): 
+ migrate deprecated package grouping matchers\n- [Socratic-Trade#5409] chor
+ e(deps): update observability to v11.12.0\n- [codecaps#525] (sentry) chore
+ (renovate): preserve the — Cocoa major contract
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-15
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -24,7 +52,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -85,7 +113,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -143,7 +171,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -206,7 +234,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -274,7 +302,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -338,7 +366,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -400,7 +428,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -470,7 +498,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 125 merged · 0 opened · 0 closed
@@ -537,7 +565,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 92 merged · 0 opened · 0 closed
@@ -596,7 +624,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -656,7 +684,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 65 merged · 0 opened · 0 closed
@@ -715,7 +743,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 152 merged · 0 opened · 0 closed
@@ -777,7 +805,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 107 merged · 0 opened · 0 closed
@@ -837,7 +865,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261101
 DTEND;VALUE=DATE:20261102
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -897,7 +925,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-31@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261031
 DTEND;VALUE=DATE:20261101
 SUMMARY:Fleet: 49 merged · 0 opened · 0 closed
@@ -955,56 +983,54 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-30@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261030
 DTEND;VALUE=DATE:20261031
-SUMMARY:Fleet: 89 merged · 0 opened · 0 closed
-DESCRIPTION:89 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#1136] fix(notes): read the scoped service tok
- en without env credentials\n- [AI-Fleet-Coordinator#1162] Document Operato
- r handbook notice transport\n- [AI-Fleet-Coordinator#1170] fix(fleet): rai
- se all-seat routine tool budgets with bounded history\n- [AI-Fleet-Coordin
- ator#1175] fix(operator): post the daemon's own text as the Operator\, nev
- er as a seat's bot\n- [AI-Fleet-Coordinator#1178] feat(platform-letter): t
- he OpenCode adapter\, session letters for OpenCode chats (AFC-564)\n- [AI-
- Fleet-Coordinator#1179] Give Coding Workloads Borrowable Low-Priority RAM\
- n- [AI-Fleet-Coordinator#1180] chore: record com.socratictrade.ios 0.1.0 i
- n the fleet iOS manifest\n- [AI-Fleet-Coordinator#1181] feat(auth): add Am
- p own bearer login and hosted agent registration\n- [AI-Fleet-Coordinator#
- 1182] Add The Repository Document Library\n- [AI-Fleet-Coordinator#1183] f
- eat(auth): enable Amp own Linear and GitHub apps\n- [AI-Fleet-Coordinator#
- 1184] (grok\, ag\, muse-assist) feat(platform-letter): the \, — and — 
- adapters\, session letters (AFC-564)\n- [AI-Fleet-Coordinator#1186] feat(l
- istener): run the headless wake through OpenRouter\, as the wake or as a f
- allback\n- [AI-Fleet-Coordinator#1187] fix(auth): require own bearer for l
- ocal fleet stdio tools\n- [AI-Fleet-Coordinator#1188] Close Out Server Lan
- e Preservation (AFC-499)\n- [AI-Fleet-Coordinator#1189] Docs: Clarify Must
- er Status Timer Account\n- [AI-Fleet-Coordinator#1190] fix(git): wire host
- ed OAuth Git with isolated one-use assertions\n- [AI-Fleet-Coordinator#119
- 2] Docs: Register Usage Monitor Telemetry Processes\n- [AI-Fleet-Coordinat
- or#1193] fix(test): build PR1190 vector key at runtime so gitleaks stays g
- reen\n- [AI-Fleet-Coordinator#1194] fix(auth): initialize OAuth helpers fo
- r cold Git callbacks\n- [AI-Fleet-Coordinator#1195] Record Active Telemetr
- y Hub And Native Schedule Rollout\n- [BotFleet#1416] (muse-assist) Fix —
-  Lifecycle Reporting And Transient Capacity Recovery\n- [BotFleet#1417] Ad
- d report index\n- [BotFleet#1418] Port upstream runtime reliability fixes 
- into native Swift\n- [BotFleet#1419] Record merged native upstream ports i
- n the audit ledger\n- [BotFleet#1420] Fix Control’s Invented Remote Serv
- er Default\n- [BotFleet#1421] Define Dedicated Pre-Login Native Host Bound
- ary\n- [BotFleet#1422] Keep Cache Quota Failures Out Of The CI Test Budget
- \n- [BotFleet#1423] (claude) feat(telemetry): prove reconciled single — 
- calls\n- [BotFleet#1424] Complete Native Companion Pairing Contract\n- [Bo
- tFleet#1425] Report Native Listener Failures After Readiness\n- [BotFleet#
- 1426] Add Placement Contracts And Stable Host Identity\n- [BotFleet#1427] 
- Offer Explicit Control Updates After Version Handshake\n- [BotFleet#1429] 
- Start Packaged Mac Owner Before Source Watchdog\n- [BotFleet#1431] Add A B
- ounded Read-Only Host Inventory Collector\n- [BotFleet#1432] Guard Linux S
- torage And Render Explicit Resource Limits\n- [BotFleet#1433] Rerun Requir
- ed Lifecycle During Cached Linux Installs\n- [BotFleet#1434] Add Native Se
- rvers Settings And Safe Local Startup\n- [Clutch#234] (muse-assist) Preser
- ve Safe — Login Failure Reasons\n- [Clutch#235] Wait For Permission Repl
- ies In Sidecar Tests\n- [Clutch#236] (muse-assist) Launch — In The Deskt
- op Session And Keep Catalog Browsing Passive\n  … +49 more
+SUMMARY:Fleet: 80 merged · 0 opened · 0 closed
+DESCRIPTION:80 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#1180] chore: record com.socratictrade.ios 0.1
+ .0 in the fleet iOS manifest\n- [AI-Fleet-Coordinator#1184] (grok\, ag\, m
+ use-assist) feat(platform-letter): the \, — and — adapters\, session l
+ etters (AFC-564)\n- [AI-Fleet-Coordinator#1186] feat(listener): run the he
+ adless wake through OpenRouter\, as the wake or as a fallback\n- [AI-Fleet
+ -Coordinator#1187] fix(auth): require own bearer for local fleet stdio too
+ ls\n- [AI-Fleet-Coordinator#1188] Close Out Server Lane Preservation (AFC-
+ 499)\n- [AI-Fleet-Coordinator#1189] Docs: Clarify Muster Status Timer Acco
+ unt\n- [AI-Fleet-Coordinator#1190] fix(git): wire hosted OAuth Git with is
+ olated one-use assertions\n- [AI-Fleet-Coordinator#1192] Docs: Register Us
+ age Monitor Telemetry Processes\n- [AI-Fleet-Coordinator#1193] fix(test): 
+ build PR1190 vector key at runtime so gitleaks stays green\n- [AI-Fleet-Co
+ ordinator#1194] fix(auth): initialize OAuth helpers for cold Git callbacks
+ \n- [AI-Fleet-Coordinator#1195] Record Active Telemetry Hub And Native Sch
+ edule Rollout\n- [BotFleet#1416] (muse-assist) Fix — Lifecycle Reporting
+  And Transient Capacity Recovery\n- [BotFleet#1417] Add report index\n- [B
+ otFleet#1418] Port upstream runtime reliability fixes into native Swift\n-
+  [BotFleet#1419] Record merged native upstream ports in the audit ledger\n
+ - [BotFleet#1420] Fix Control’s Invented Remote Server Default\n- [BotFl
+ eet#1421] Define Dedicated Pre-Login Native Host Boundary\n- [BotFleet#142
+ 2] Keep Cache Quota Failures Out Of The CI Test Budget\n- [BotFleet#1423] 
+ (claude) feat(telemetry): prove reconciled single — calls\n- [BotFleet#1
+ 424] Complete Native Companion Pairing Contract\n- [BotFleet#1425] Report 
+ Native Listener Failures After Readiness\n- [BotFleet#1426] Add Placement 
+ Contracts And Stable Host Identity\n- [BotFleet#1427] Offer Explicit Contr
+ ol Updates After Version Handshake\n- [BotFleet#1429] Start Packaged Mac O
+ wner Before Source Watchdog\n- [BotFleet#1431] Add A Bounded Read-Only Hos
+ t Inventory Collector\n- [BotFleet#1432] Guard Linux Storage And Render Ex
+ plicit Resource Limits\n- [BotFleet#1433] Rerun Required Lifecycle During 
+ Cached Linux Installs\n- [BotFleet#1434] Add Native Servers Settings And S
+ afe Local Startup\n- [Clutch#234] (muse-assist) Preserve Safe — Login Fa
+ ilure Reasons\n- [Clutch#235] Wait For Permission Replies In Sidecar Tests
+ \n- [Clutch#236] (muse-assist) Launch — In The Desktop Session And Keep 
+ Catalog Browsing Passive\n- [Clutch#237] Add report index\n- [Congress.Tra
+ de#2900] fleet backups: CT-time per-app schedule\, 2-day local\, B2 3+2 wi
+ th hard 14-day cap\n- [Congress.Trade#2901] ops: Central-time backup cron 
+ (host TZ America/Chicago)\n- [Congress.Trade#2902] ops: Central time + off
+ set on fleet backup log lines\n- [Congress.Trade#2903] Fleet backup: zstd-
+ compress B2 dump sets (.db.zst)\, keep UTC names\n- [Congress.Trade#2904] 
+ chore(deps): update non-major dependencies\n- [Congress.Trade#2905] Add Th
+ e Reports Index\n- [Congress.Trade#2906] Add Trading-Proxy Watchdog Under 
+ scripts/ops\n- [Congress.Trade#2907] Document completed central reports pl
+ acement\n  … +40 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-10-30
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1012,7 +1038,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-29@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261029
 DTEND;VALUE=DATE:20261030
 SUMMARY:Fleet: 108 merged · 0 opened · 0 closed
@@ -1075,7 +1101,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-28@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261028
 DTEND;VALUE=DATE:20261029
 SUMMARY:Fleet: 38 merged · 0 opened · 0 closed
@@ -1130,7 +1156,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-27@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261027
 DTEND;VALUE=DATE:20261028
 SUMMARY:Fleet: 60 merged · 0 opened · 0 closed
@@ -1191,7 +1217,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-26@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261026
 DTEND;VALUE=DATE:20261027
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -1251,7 +1277,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-25@AI-Fleet-Coordinator
-DTSTAMP:20261115T075647Z
+DTSTAMP:20261115T192441Z
 DTSTART;VALUE=DATE:20261025
 DTEND;VALUE=DATE:20261026
 SUMMARY:Fleet: 50 merged · 0 opened · 0 closed
