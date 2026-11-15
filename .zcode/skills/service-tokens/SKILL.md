@@ -6,7 +6,7 @@ description: >-
 
 # Service Tokens
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 Give each consumer its own token scoped to exactly the project, environment and folder it needs, read-only unless write access is proven necessary, with an expiry.  Never create or use retired machine identities, borrow another consumer's token, or fall back to `fleet-secrets`.  If the issuer session, consumer, scope or approved registry access is uncertain, stop before issuance or write.
@@ -184,7 +184,7 @@ try {
   marker = join(stateDir, key + '.json');
   lock = join(stateDir, key + '.lock');
   try { await mkdir(lock, { mode: 0o700 }); lockOwned = true; }
-  catch { refuse('local_lock_unavailable', source); }
+  catch (error) { if (error.code === 'EEXIST') refuse('local_lock_unavailable', source); throw error; }
   try {
     const info = await lstat(marker);
     if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o600) refuse('unsafe_attempt_state', source);

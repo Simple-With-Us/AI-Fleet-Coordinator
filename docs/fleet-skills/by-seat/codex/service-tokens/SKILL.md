@@ -181,7 +181,7 @@ try {
   marker = join(stateDir, key + '.json');
   lock = join(stateDir, key + '.lock');
   try { await mkdir(lock, { mode: 0o700 }); lockOwned = true; }
-  catch { refuse('local_lock_unavailable', source); }
+  catch (error) { if (error.code === 'EEXIST') refuse('local_lock_unavailable', source); throw error; }
   try {
     const info = await lstat(marker);
     if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o777) !== 0o600) refuse('unsafe_attempt_state', source);
