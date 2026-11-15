@@ -350,9 +350,7 @@ class RunTests(Base):
         config = workdir / ".infisical.json"
         self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
         payload = json.loads(config.read_text())
-        self.assertEqual(
-            payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT}
-        )
+        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
 
     def test_interactive_export_refreshes_a_stale_project_file(self):
         world = self.use(World())
@@ -375,9 +373,7 @@ class RunTests(Base):
             code, out, err = self.call("get", "ALPHA", env=env)
         self.assertEqual((code, out, err), (0, VAL_A, ""))
         payload = json.loads(config.read_text())
-        self.assertEqual(
-            payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT}
-        )
+        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
