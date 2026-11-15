@@ -1,10 +1,10 @@
 """Match census invariants on the real server outbound file guard; no held file."""
 
 import hashlib
-import unittest
-from unittest.mock import patch
-from pathlib import Path
 import json
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from git_relay import patch_secretscan as relay
 from git_relay.reviewed_fixtures import unreviewed_file_secret
