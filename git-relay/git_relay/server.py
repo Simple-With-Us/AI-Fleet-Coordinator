@@ -32,6 +32,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import git_read
@@ -436,6 +437,7 @@ class Relay:
             # never reach the audit log verbatim.
             repo = ""
         key = None
+        attempt_corr: str | None = None
         # Every allowed or denied call writes exactly one audit row, from the
         # finally block below:  no branch (including an unexpected exception
         # from key_for, the outcome store, or dispatch) can skip it or double it.
@@ -501,7 +503,20 @@ class Relay:
                 # the hour and the minter's per-key lock dedups concurrent calls.
                 key = key_for(seat, action, canonical)
                 try:
-                    prior = self.outcomes.begin(key, reapply_ok=action in _REAPPLY_STATE_ACTIONS)
+                    attempt_corr = uuid.uuid4().hex
+                    prior = self.outcomes.begin(
+                        key, reapply_ok=action in _REAPPLY_STATE_ACTIONS, corr=attempt_corr
+                    )
+                    if prior is not None:
+                        # The audit binds the ORIGINAL attempt's id, not a new one.
+                        attempt_corr = prior.get("corr") or self.outcomes.corr_of(key)
+                except ValueError as exc:
+                    # begin() raises ValueError for caller-input errors (e.g. a
+                    # malformed corr):  a definite 400, never the capacity 503
+                    # below, which a retry could never satisfy.
+                    outcome = "bad_request"
+                    detail = {"reason": str(exc)}
+                    return 400, {"error": str(exc)}
                 except OutcomeStoreError as exc:
                     outcome = "unavailable"
                     detail = {"reason": type(exc).__name__}
@@ -746,6 +761,12 @@ class Relay:
             # Successful reads leave no row (SeatPolicy.audits);  every denial,
             # error and write still records exactly one.
             if SeatPolicy.audits(action, outcome):
+                if key is not None and attempt_corr:
+                    # The correlation id captured at begin() binds this audit
+                    # entry to this attempt's outcome row exactly, even if a
+                    # later request has already replaced the row;  no argument
+                    # content is derivable from it.
+                    detail = {**detail, "outcome_corr": attempt_corr}
                 self.audit.record(seat, action, repo, outcome, detail)
 
     def _moved_repository(self, seat: str, repo_id: int) -> str | None:
