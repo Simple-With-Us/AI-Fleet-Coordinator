@@ -136,27 +136,29 @@ def install(source, destination, source_commit):
             target = destination / "scripts" / name
             if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != digest:
                 raise ValueError("Existing bundle differs from its source manifest")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".code-mirrors-stage-", dir=destination.parent))
     backup = None
     try:
         for name, data in payload.items():
             target = stage / "scripts" / name
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            target.write_bytes(data)
-            target.chmod(0o700 if name == "code-main-keeper.sh" else 0o600)
-            with target.open("rb") as stream:
+            with target.open("wb") as stream:
+                stream.write(data)
+                stream.flush()
                 os.fsync(stream.fileno())
+            target.chmod(0o700 if name == "code-main-keeper.sh" else 0o600)
         manifest = {
             "schema": 1,
             "source_commit": source_commit,
             "files": {name: hashlib.sha256(data).hexdigest() for name, data in payload.items()},
         }
         manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-        (stage / "manifest.json").write_bytes(manifest_bytes)
-        (stage / "manifest.json").chmod(0o600)
-        with (stage / "manifest.json").open("rb") as stream:
+        with (stage / "manifest.json").open("wb") as stream:
+            stream.write(manifest_bytes)
+            stream.flush()
             os.fsync(stream.fileno())
+        (stage / "manifest.json").chmod(0o600)
         for root, dirs, files in os.walk(stage):
             os.chmod(root, 0o700)
         for root, dirs, files in os.walk(stage, topdown=False):
@@ -185,6 +187,20 @@ def install(source, destination, source_commit):
                 os.rename(backup, destination)
             _fsync_directory(destination.parent)
             raise
+        backup_prefix = destination.name + ".backup-"
+        for old_backup in destination.parent.iterdir():
+            if (
+                old_backup.name.startswith(backup_prefix)
+                and old_backup != backup
+                and old_backup.is_dir()
+            ):
+                try:
+                    shutil.rmtree(old_backup)
+                except OSError as error:
+                    print(
+                        f"Warning: failed to remove old backup {old_backup}: {error}",
+                        file=sys.stderr,
+                    )
         return {
             "destination": str(destination),
             "backup": str(backup) if backup else None,

@@ -42,17 +42,27 @@ class CollectorEnvironmentTests(unittest.TestCase):
         self.assertEqual(actual["GIT_TERMINAL_PROMPT"], "0")
 
     def test_repo_info_ignores_global_instead_of_rewrites(self):
-        import subprocess
         import tempfile
         from pathlib import Path
+        from fleet_lanes.code_main_sync import run_child
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "Fixture-Repo"
             repo.mkdir()
+
+            def run_git(*git_args):
+                completed = run_child(
+                    ["git", "-C", str(repo), *git_args],
+                    capture_output=True,
+                    timeout=30,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                return completed.stdout.decode("utf-8").strip()
+
             for args in (
                 ("init", "-q", "-b", "main"),
-                ("remote", "add", "origin", "https://github.com/Simple-With-Us/BotFleet.git"),
+                ("remote", "add", "origin", "https://github.com/Fixture-Org/Fixture-Repo.git"),
                 (
                     "-c",
                     "user.name=fixture",
@@ -65,14 +75,9 @@ class CollectorEnvironmentTests(unittest.TestCase):
                     "fixture",
                 ),
             ):
-                subprocess.check_call(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL)
-            head = subprocess.check_output(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
-            ).strip()
-            subprocess.check_call(
-                ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", head],
-                stderr=subprocess.DEVNULL,
-            )
+                run_git(*args)
+            head = run_git("rev-parse", "HEAD")
+            run_git("update-ref", "refs/remotes/origin/main", head)
             gitconfig = root / "gitconfig"
             gitconfig.write_text(
                 '[url "https://redirected.example/other/"]\n\tinsteadOf = https://github.com/\n'
@@ -80,4 +85,4 @@ class CollectorEnvironmentTests(unittest.TestCase):
             with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(gitconfig)}):
                 info = snapshot.collector()._repo_info(repo)
             self.assertIsNotNone(info)
-            self.assertEqual((info.owner, info.name), ("Simple-With-Us", "BotFleet"))
+            self.assertEqual((info.owner, info.name), ("Fixture-Org", "Fixture-Repo"))

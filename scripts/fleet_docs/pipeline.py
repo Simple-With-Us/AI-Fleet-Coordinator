@@ -54,8 +54,14 @@ def settings():
 
 
 def parse_configuration(raw):
-    snapshot.require(isinstance(raw, str) and len(raw) <= 16384, "invalid-docs-configuration")
-    value = json.loads(raw)
+    snapshot.require(isinstance(raw, str), "invalid-docs-configuration")
+    value = snapshot.parse_bounded_json(
+        raw,
+        reason="invalid-docs-configuration",
+        max_bytes=16384,
+        max_depth=16,
+        max_nodes=1000,
+    )
     snapshot.require(
         isinstance(value, dict)
         and set(value) == {"peer", "actor", "private_docs", "remote_sources"},
@@ -201,7 +207,8 @@ def prepare_remote_sources(configuration, stage):
             isinstance(branch_response, dict)
             and isinstance(branch_response.get("branch"), dict)
             and isinstance(branch_response["branch"].get("commit"), dict)
-            and isinstance(branch_response["branch"]["commit"].get("sha"), str),
+            and isinstance(branch_response["branch"]["commit"].get("sha"), str)
+            and bool(branch_response["branch"]["commit"]["sha"]),
             "invalid-remote-branch-response",
         )
         commit = branch_response["branch"]["commit"]["sha"]
@@ -451,7 +458,8 @@ def record(state, receipt):
                     and info.st_size <= 1024 * 1024,
                     "unsafe-docs-receipt",
                 )
-                previous = json.loads(source.read(1024 * 1024 + 1))
+                parsed = json.loads(source.read(1024 * 1024 + 1))
+                previous = parsed if isinstance(parsed, dict) else None
         receipt = {
             **receipt,
             "docs_exit": int(receipt["state"] == "unavailable"),

@@ -114,6 +114,12 @@ class InstalledRuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stderr)
             upgraded = installer.install(SCRIPTS.parent, dest, "1"*40)
             self.assertTrue(Path(upgraded["backup"]).is_dir())
+            upgraded_again = installer.install(SCRIPTS.parent, dest, "2" * 40)
+            self.assertFalse(Path(upgraded["backup"]).exists())
+            self.assertEqual(
+                [p.name for p in root.glob("installed.backup-*")],
+                [Path(upgraded_again["backup"]).name],
+            )
             self.assertFalse(list(dest.rglob("__pycache__")))
 
     def test_failed_upgrade_restores_executable_entrypoint_mode(self):

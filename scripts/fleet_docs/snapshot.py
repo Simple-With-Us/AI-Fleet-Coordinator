@@ -71,7 +71,7 @@ def parse_bounded_json(
         elif byte in (93, 125):  # ] or }
             depth -= 1
     try:
-        value = json.loads(data)
+        value = json.loads(data, parse_constant=lambda _constant: require(False, reason))
     except (ValueError, RecursionError):
         raise Refused(reason) from None
     nodes = 0
@@ -285,6 +285,7 @@ def validate_generated(root):
                 "generated-catalog-edited",
             )
             catalog = parse_bounded_json(data, reason="unrecognized-catalog")
+            require(isinstance(catalog, dict), "unrecognized-catalog")
             require(
                 catalog.get("source_commit") == manifest["source_commit"]
                 and catalog.get("owner_repo") == manifest["owner_repo"],
@@ -533,6 +534,7 @@ def receive(root, source, *, rename=os.rename):
     header = source.readline(MAX_HEADER + 1)
     require(len(header) <= MAX_HEADER and header.endswith(b"\n"), "snapshot-header-bound")
     envelope = parse_bounded_json(header, reason="snapshot-header-bound")
+    require(isinstance(envelope, dict), "invalid-snapshot-envelope")
     desired = validate_manifest(envelope.get("manifest"))
     before = validate_generated(root) if root.exists() else None
     require(
