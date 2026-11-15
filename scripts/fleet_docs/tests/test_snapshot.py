@@ -341,9 +341,8 @@ class SnapshotTests(unittest.TestCase):
         target = self.root / "caller.txt"
         target.write_text("fixture")
         target.chmod(0o600)
-        with self.assertRaises(OSError) as raised:
-            with snapshot.anchored(target):
-                raise OSError(errno.ENOSPC, "No space left on device")
+        with self.assertRaises(OSError) as raised, snapshot.anchored(target):
+            raise OSError(errno.ENOSPC, "No space left on device")
         self.assertEqual(raised.exception.errno, errno.ENOSPC)
 
     def test_validate_generated_retains_collector_skipped_directories(self):
