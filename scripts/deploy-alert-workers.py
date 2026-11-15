@@ -293,6 +293,10 @@ def qualify_credentials():
             tag = deployed_tag(name)
             if not isinstance(tag, str) or not re.fullmatch(r"[0-9a-f]{40}", tag):
                 raise RuntimeError("Missing qualified live version baseline")
+            # Bounded live-state evidence for release review: the exact
+            # deployed ref per target - worker name and commit sha only, the
+            # same value a real release prints in its verification line.
+            print("Baseline: " + name + " " + tag)
         except (RuntimeError, OSError, KeyError, ValueError):
             if not stopped:
                 raise
