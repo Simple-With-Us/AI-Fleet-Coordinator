@@ -47,6 +47,7 @@ class World:
         self.login_rc = login_rc
         self.calls = []
         self.fetches = []
+        self.export_cwds = []
 
     def fetch_project(
         self, project, path, env, *, token=None, writer=False, names=None, timeout=None
@@ -97,6 +98,7 @@ class World:
                 )
             return subprocess.CompletedProcess(argv, 0, (ACCESS_TOKEN + "\n").encode(), b"")
         if argv[1] == "export":
+            self.export_cwds.append(kw.get("cwd"))
             if self.export_rc:
                 leak = ("denied " + VAL_A).encode()
                 return subprocess.CompletedProcess(argv, self.export_rc, leak, leak)
@@ -322,6 +324,60 @@ class RunTests(Base):
         ):
             code, out, err = self.call("get", "ALPHA", env=env)
         self.assertEqual((code, out, err), (0, VAL_A, ""))
+
+    def test_interactive_export_runs_in_an_owned_workdir(self):
+        world = self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        self.assertTrue(world.export_cwds)
+        self.assertNotIn("/", world.export_cwds)
+        for cwd in world.export_cwds:
+            self.assertEqual(cwd, str(workdir))
+        self.assertEqual(oct(workdir.stat().st_mode & 0o777), "0o700")
+        config = workdir / ".infisical.json"
+        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
+        payload = json.loads(config.read_text())
+        self.assertEqual(
+            payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT}
+        )
+
+    def test_interactive_export_refreshes_a_stale_project_file(self):
+        world = self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir.mkdir(parents=True)
+        config = workdir / ".infisical.json"
+        config.write_text('{"workspaceId": "stale", "defaultEnvironment": "dev", "extra": 1}')
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        payload = json.loads(config.read_text())
+        self.assertEqual(
+            payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT}
+        )
 
     def test_only_filters_to_the_named_keys(self):
         self.use(World())

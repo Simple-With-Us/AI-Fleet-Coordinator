@@ -330,6 +330,28 @@ def project_name_for_id(project_id: str, env: Mapping[str, str]) -> str:
     raise SecretsError("project-token-binding-missing: project id has no configured token binding")
 
 
+def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
+    """Owned workdir for the interactive CLI-session route.
+
+    The Infisical CLI resolves the project from a .infisical.json beside the
+    working directory even when --projectId is passed, so the export cannot
+    run from "/": an unowned directory could hold a stale or hostile project
+    file, and a root shell's "/" simply has none.  Keep one owned directory
+    (0700) holding only the two-field project file (0600); the file names the
+    project id and environment and carries no secret material.
+    """
+    workdir = home_dir(env) / ".config" / "fleet-secrets" / "cli-session"
+    workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(workdir, 0o700)
+    payload = (
+        json.dumps({"workspaceId": project, "defaultEnvironment": ENVIRONMENT}, indent=2) + "\n"
+    )
+    fd = os.open(workdir / ".infisical.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(payload)
+    return workdir
+
+
 def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> dict[str, str]:
     """Explicit interactive read-only admin route; automation must pass a scoped token."""
     if not sys.stdin.isatty():
@@ -338,6 +360,7 @@ def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> d
     if not cli:
         raise SecretsError("cli-missing")
     child = _base_env(env)
+    workdir = cli_session_workdir(env, project)
     argv = [
         cli,
         "export",
@@ -353,7 +376,7 @@ def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> d
             stdin=None,
             capture_output=True,
             timeout=EXPORT_TIMEOUT,
-            cwd="/",
+            cwd=str(workdir),
             env=child,
             check=False,
         )
