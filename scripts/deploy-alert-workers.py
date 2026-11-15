@@ -8,6 +8,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -91,7 +92,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request_json(url, token, data=None):
+def request_json(url, token, data=None, timeout=30):
     req = urllib.request.Request(
         url,
         data=data,
@@ -102,20 +103,47 @@ def request_json(url, token, data=None):
             "User-Agent": m.USER_AGENT,
         },
     )
-    with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as response:
+    with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
         if 300 <= response.status < 400:
             raise RuntimeError("Redirect not allowed")
         return json.load(response)
 
 
-def github(path):
+def github(path, timeout=30):
     body = request_json(
         "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"] + path,
         os.environ["GH_TOKEN"],
+        timeout=timeout,
     )
     if isinstance(body, dict) and "message" in body:
         raise RuntimeError("GitHub read rejected")
     return body
+
+
+# A page shorter than the page size is the last one; the cap keeps the
+# evidence bounded so an endless stream still fails closed instead of
+# hanging the gate.
+def github_paginated(path, message, cap_pages=10, budget_seconds=60):
+    items = []
+    separator = "&" if "?" in path else "?"
+    page = 1
+    # One absolute deadline for the whole walk: every page shares it, so a
+    # slow or endless stream still exhausts the budget and fails closed
+    # instead of getting a fresh timeout per request.
+    deadline = time.monotonic() + budget_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(message)
+        body = github(path + separator + "per_page=100&page=" + str(page), timeout=remaining)
+        if not isinstance(body, list):
+            raise RuntimeError("Unexpected GitHub list evidence")
+        items.extend(body)
+        if len(body) < 100:
+            return items
+        page += 1
+        if page > cap_pages:
+            raise RuntimeError(message)
 
 
 def cloudflare(path):
@@ -183,16 +211,16 @@ def outstanding_requests(reviews):
 
 def reviewed(sha):
     # A target-changing commit must be the merge of a real, non-draft PR.
-    prs = github("/commits/" + sha + "/pulls")
-    if len(prs) >= 30:
-        raise RuntimeError("Incomplete commit PR association evidence")
+    prs = github_paginated(
+        "/commits/" + sha + "/pulls", "Commit PR association evidence exceeds bounded page limit"
+    )
     for pr in prs:
         if not pr.get("merged_at") or pr.get("draft") or pr.get("merge_commit_sha") != sha:
             continue
         number = str(pr["number"])
-        reviews = github("/pulls/" + number + "/reviews?per_page=100")
-        if len(reviews) >= 100:
-            raise RuntimeError("Review pagination needs explicit resolution")
+        reviews = github_paginated(
+            "/pulls/" + number + "/reviews", "Review evidence exceeds bounded page limit"
+        )
         if outstanding_requests(reviews):
             raise RuntimeError("Changes-requested review needs explicit resolution")
         head = pr.get("head", {}).get("sha")

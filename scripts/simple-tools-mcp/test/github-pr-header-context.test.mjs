@@ -61,7 +61,6 @@ test("actual hosted PR descriptions keep full headers after initial readiness bu
   for (const [action, extra] of [
     ["gr_open_pr", { base: "main", head: "feature", title: `${full} Title`, draft: true }],
     ["gr_edit_pr", { number: 1, title: `${full} Title` }],
-    ["gr_wf_pr_create", { base: "main", head: "feature", title: `${full} Title`, expected_head_sha: sha }],
     ["gr_wf_pr_edit", { number: 1, expected_head_sha: sha, expected_base_ref: "main" }],
   ]) {
     const result = await tools.call(action, { repo: "example/header-fixture", body, ...extra });

@@ -27,14 +27,21 @@ clone that should have moved did not.  Python 3.9 safe.  Tests: fleet_lanes/test
 """
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import argparse
 import fcntl
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
-import sys
+import threading
 import time
+import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -534,11 +541,252 @@ def write_sync_stamp(env: Mapping[str, str], exit_code: int, now: float | None =
         log(f"stamp: state write failed ({type(exc).__name__})")
 
 
+def read_interval() -> int:
+    """Read the shared interval from Infisical or its verified last-known-good copy."""
+    from fleet_knobs import knobs
+
+    from fleet_lanes.code_mirror_credentials import settings_read_binding
+    with settings_read_binding():
+        knobs.refresh()
+        answer = knobs.resolve("CODE_MIRROR_INTERVAL_SECONDS")
+    source = answer.source if answer.source in ("infisical", "lkg", "default") else "unknown"
+    if source not in ("infisical", "lkg") or type(answer.value) is not int or not 30 <= answer.value <= 86400:
+        print(f"CODE_MIRROR_INTERVAL_SECONDS source={source} reason=trusted-value-unavailable", file=sys.stderr)
+        raise ValueError("trusted-interval-unavailable")
+    print(f"CODE_MIRROR_INTERVAL_SECONDS source={source} reason=accepted", file=sys.stderr)
+    return answer.value
+
+
+def run_loop(run, read=read_interval, sleep=time.sleep) -> int:
+    """One sweep and one settings refresh per loop; outages retain the accepted interval."""
+    interval = None
+    try:
+        while True:
+            try:
+                candidate = read()
+                if type(candidate) is not int or not 30 <= candidate <= 86400:
+                    raise ValueError("invalid-interval")
+                interval = candidate
+            except Exception:
+                source = "memory" if interval is not None else "unavailable"
+                log(f"CODE_MIRROR_INTERVAL_SECONDS source={source} reason=refresh-unavailable")
+                if interval is None:
+                    return 1
+            run()
+            sleep(interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+SCHEDULER_LOCK_STALE_S = 3600
+_CHILD_LOCK = threading.Lock()
+_ACTIVE_CHILDREN: set[subprocess.Popen] = set()
+_SHUTTING_DOWN = False
+
+
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Terminate a child and its entire process group, escalating to SIGKILL if needed."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (OSError, TypeError):
+        try:
+            proc.terminate()
+        except OSError:
+            return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (OSError, TypeError):
+            try:
+                proc.kill()
+            except OSError:
+                return
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def shutdown_children() -> None:
+    """Terminate all active sweep child process groups during scheduler shutdown."""
+    with _CHILD_LOCK:
+        global _SHUTTING_DOWN
+        _SHUTTING_DOWN = True
+        children = list(_ACTIVE_CHILDREN)
+    for proc in children:
+        _terminate_process_group(proc)
+
+
+def run_sweep_command(command: list[str]) -> int:
+    """Keep the host's existing authorization bootstrap inside every sweep."""
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError:
+        print("Code mirror sweep command exit=127", file=sys.stderr)
+        return 127
+    with _CHILD_LOCK:
+        if _SHUTTING_DOWN:
+            _terminate_process_group(proc)
+            return 130
+        _ACTIVE_CHILDREN.add(proc)
+    try:
+        stdout, _stderr = proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        print("Code mirror sweep command exit=124", file=sys.stderr)
+        return 124
+    except BaseException:
+        _terminate_process_group(proc)
+        raise
+    finally:
+        with _CHILD_LOCK:
+            _ACTIVE_CHILDREN.discard(proc)
+    # Only the fixed counter receipt crosses the bootstrap boundary; never relay child diagnostics.
+    summary_pattern = re.compile(
+        r"(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2}) )?"
+        r"(summary: updated=[0-9]{1,6} current=[0-9]{1,6} would_update=[0-9]{1,6} skipped=[0-9]{1,6} failed=[0-9]{1,6})"
+    )
+    for line in (stdout or b"").decode("utf-8", errors="replace").splitlines():
+        match = summary_pattern.fullmatch(line)
+        if match:
+            log(match.group(1))
+    if proc.returncode:
+        print(f"Code mirror sweep command exit={int(proc.returncode)}", file=sys.stderr)
+    return proc.returncode
+
+
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description="Fetch and fast-forward clean clones in the Code root to origin/main.")
     parser.add_argument("--dry-run", action="store_true", help="Inspect local refs only; fetch and change nothing.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--loop", action="store_true", help="Run the existing mirror job on its shared Infisical interval.")
+    mode.add_argument("--print-interval", action="store_true", help="Print the trusted shared interval and exit.")
+    parser.add_argument("--sweep-command", nargs=argparse.REMAINDER, default=None,
+                        help="With --loop, run the existing host bootstrap once per sweep.")
     args = parser.parse_args(argv)
+    if args.sweep_command is not None:
+        if not args.loop or args.dry_run or args.print_interval:
+            parser.error("--sweep-command requires --loop and excludes --dry-run and --print-interval")
+        if not args.sweep_command or not os.path.isabs(args.sweep_command[0]) or not os.path.isfile(args.sweep_command[0]) or not os.access(args.sweep_command[0], os.X_OK):
+            parser.error("--sweep-command requires a nonempty absolute executable")
+    if args.print_interval:
+        try:
+            print(read_interval())
+            return 0
+        except Exception:
+            print("CODE_MIRROR_INTERVAL_SECONDS source=unavailable reason=read-failed", file=sys.stderr)
+            return 1
+    if args.loop:
+        home = Path(env.get("HOME") or os.path.expanduser("~"))
+        state = Path(env.get("FLEET_LANE_GUARD_STATE_DIR") or home / ".local" / "state")
+        state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_dir = state / "code-main-sync-scheduler.lock"
+        owner_file = lock_dir / "owner.json"
+        guard_path = state / "code-main-sync-scheduler-takeover.lock"
+        acquired = False
+        for _ in range(2):
+            if lock_dir.is_symlink():
+                raise PermissionError(f"refusing symlinked lock directory: {lock_dir}")
+            try:
+                os.mkdir(lock_dir, 0o700)
+                acquired = True
+                break
+            except FileExistsError:
+                guard_fd = os.open(guard_path, os.O_CREAT | os.O_RDWR, 0o600)
+                try:
+                    fcntl.flock(guard_fd, fcntl.LOCK_EX)
+                    stale = False
+                    try:
+                        owner = json.loads(owner_file.read_text(encoding="utf-8"))
+                        pid = owner.get("pid")
+                        started_at = owner.get("started_at")
+                        owner_age = (
+                            time.time() - started_at
+                            if isinstance(started_at, (int, float)) and not isinstance(started_at, bool)
+                            else None
+                        )
+                        if isinstance(pid, int) and pid > 0:
+                            process_started_at = None
+                            try:
+                                stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+                                stat_fields = stat_text[stat_text.rfind(")") + 2 :].split()
+                                start_ticks = int(stat_fields[19])
+                                boot_time = next(
+                                    line.split()[1]
+                                    for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines()
+                                    if line.startswith("btime ")
+                                )
+                                process_started_at = int(boot_time) + start_ticks / os.sysconf("SC_CLK_TCK")
+                            except (OSError, ValueError, IndexError, StopIteration):
+                                pass
+                            if (
+                                owner_age is not None
+                                and process_started_at is not None
+                                and process_started_at > started_at + 1
+                            ) or (
+                                process_started_at is None
+                                and owner_age is not None
+                                and owner_age >= SCHEDULER_LOCK_STALE_S
+                            ):
+                                stale = True
+                            else:
+                                try:
+                                    os.kill(pid, 0)
+                                except ProcessLookupError:
+                                    stale = True
+                                except PermissionError:
+                                    stale = False
+                        else:
+                            stale = True
+                    except (OSError, ValueError, TypeError):
+                        try:
+                            stale = (time.time() - lock_dir.stat().st_mtime) >= SCHEDULER_LOCK_STALE_S
+                        except OSError:
+                            stale = False
+                    if stale:
+                        aside = lock_dir.with_name(lock_dir.name + ".stale-" + uuid.uuid4().hex)
+                        try:
+                            os.rename(lock_dir, aside)
+                        except FileNotFoundError:
+                            continue
+                        except OSError:
+                            print("Code mirror scheduler is already running", file=sys.stderr)
+                            return 0
+                        shutil.rmtree(aside, ignore_errors=True)
+                        continue
+                finally:
+                    fcntl.flock(guard_fd, fcntl.LOCK_UN)
+                    os.close(guard_fd)
+                print("Code mirror scheduler is already running", file=sys.stderr)
+                return 0
+        if not acquired:
+            print("Code mirror scheduler is already running", file=sys.stderr)
+            return 0
+        try:
+            with _CHILD_LOCK:
+                global _SHUTTING_DOWN
+                _SHUTTING_DOWN = False
+            fd = os.open(owner_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid(), "started_at": time.time()}, handle)
+            sweep = (lambda: run_sweep_command(args.sweep_command)) if args.sweep_command is not None else (lambda: main(["--dry-run"] if args.dry_run else [], env=env))
+            return run_loop(sweep)
+        finally:
+            shutdown_children()
+            with _CHILD_LOCK:
+                _SHUTTING_DOWN = False
+            shutil.rmtree(lock_dir, ignore_errors=True)
     home = Path(env.get("HOME") or os.path.expanduser("~"))
     root = Path(env.get("FLEET_CODE_ROOT") or home / "Code")
     if not root.is_dir():
