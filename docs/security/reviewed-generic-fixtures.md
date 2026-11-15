@@ -106,3 +106,10 @@ Parity claim is limited to the two byte-identical Python scanner sources and
 these tested library boundaries. The JavaScript contract's general scanSecret
 has no file-aware reviewed-match registry and remains unchanged. No live Worker
 or relay deployment parity or downstream packet acceptance is claimed here.
+
+Future census changes are security-sensitive source changes. A second reviewed
+constant requires a separately visible census edit AND a new whole-file digest,
+with complete-content/provenance review of every effective generic match. The
+code cannot determine whether a reviewer actually performed that review; normal
+review gates enforce it. A digest-only update is insufficient, and the current
+single-match record supplies no authority for any future census expansion.
