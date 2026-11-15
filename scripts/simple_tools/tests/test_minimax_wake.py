@@ -6,6 +6,7 @@ its argv in a list - never a real `mcode` run."""
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import sqlite3
 import subprocess
@@ -152,7 +153,7 @@ class Base(unittest.TestCase):
             message_id=639428919,
             channel="Work-In-Progress",
             topic="AFC-804 MiniMax wake delivery platform",
-            zulip_link="https://simplewithus.zulipchat.com/narrow/topic/1",
+            zulip_link="https://zulip.example.test/narrow/topic/1",
             sender="ZCode",
             letter="CC",
             picked="letter",
@@ -195,7 +196,7 @@ class Base(unittest.TestCase):
             message_id=639428919,
             channel="Work-In-Progress",
             topic="AFC-804 MiniMax wake delivery platform",
-            zulip_link="https://simplewithus.zulipchat.com/narrow/topic/1",
+            zulip_link="https://zulip.example.test/narrow/topic/1",
             sender="ZCode",
             letter="CC",
             picked="letter",
@@ -235,17 +236,25 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.note, "mcode-exit-0")
         argv = self.calls[0]
         self.assertIn("exec", argv)
-        self.assertIn("--session", argv)
-        self.assertIn(SID, argv)
-        self.assertIn("--cwd", argv)
-        self.assertIn(str(self.workspace), argv)
-        # The prompt is on the child's stdin, so no Zulip metadata is in the process table.
-        self.assertIn("--input", argv)
-        self.assertEqual(argv[argv.index("--input") + 1], "-")
+        # Every value is bound to its option with `=`, so a value that begins with a dash is
+        # never an option of its own.
+        self.assertIn("--session=%s" % SID, argv)
+        self.assertIn("--cwd=%s" % self.workspace, argv)
+        self.assertIn("--input=-", argv)
+        self.assertFalse(any(part.startswith("--cwd") and " " in part for part in argv))
         self.assertFalse(any("wake id w1-abcdef" in str(part) for part in argv))
         prompt = self.inputs[0]
         self.assertIn("wake id w1-abcdef", prompt)
         self.assertIn("the sender addressed its letter", prompt)
+
+    def test_a_store_that_is_not_there_is_a_bounded_failure(self):
+        # MiniMax Code is not installed on this host:  the delivery is held and retried, not
+        # refused as a session that does not exist.
+        os.remove(self.store)
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "failed")
+        self.assertEqual(delivery.code, "platform-not-installed")
+        self.assertEqual(self.calls, [])
 
     def test_session_not_found_refuses(self):
         con = sqlite3.connect(self.store)
@@ -386,7 +395,7 @@ class RouterPlatformTests(Base):
             WR.Wake(wake_id="w2-abcdef", message_id=1),
         )
         self.assertEqual(delivery.outcome, "sent")
-        self.assertIn(str(self.workspace), self.calls[0])
+        self.assertIn("--cwd=%s" % self.workspace, self.calls[0])
 
     def test_an_unknown_host_is_refused(self):
         platform = self._platform()
@@ -476,6 +485,24 @@ class BinarySettingTests(Base):
         self.assertEqual(self.calls[0][0], str(configured))
         self.assertNotEqual(self.calls[0][0], self.env["MCODE_BIN"])
 
+    def test_a_relative_binary_resolves_against_this_process(self):
+        # The child starts in the chat's workspace, so a relative name must not be looked up
+        # there.
+        work = self.home / "work"
+        minimax_wake._private_dir(work)
+        script = work / "bin" / "mcode"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o755)
+        previous = os.getcwd()
+        os.chdir(work)
+        try:
+            delivery = self._deliver_local(config={"mcode_bin": "bin/mcode"})
+        finally:
+            os.chdir(previous)
+        self.assertEqual(delivery.outcome, "sent")
+        self.assertEqual(os.path.realpath(self.calls[0][0]), os.path.realpath(str(script)))
+
     def test_the_environment_is_used_when_no_binary_is_configured(self):
         delivery = self._deliver_local()
         self.assertEqual(delivery.outcome, "sent")
@@ -488,13 +515,12 @@ class ModelTests(Base):
     def test_the_default_model_is_named(self):
         self._deliver_local()
         argv = self.calls[0]
-        self.assertIn("--model", argv)
-        self.assertEqual(argv[argv.index("--model") + 1], minimax_wake.DEFAULTS["mcode_model"])
+        self.assertIn("--model=%s" % minimax_wake.DEFAULTS["mcode_model"], argv)
 
     def test_a_configured_model_is_named(self):
         self._deliver_local(config={"mcode_model": "minimax/Another-Served-Model"})
         argv = self.calls[0]
-        self.assertEqual(argv[argv.index("--model") + 1], "minimax/Another-Served-Model")
+        self.assertIn("--model=minimax/Another-Served-Model", argv)
 
     def test_a_model_that_is_not_provider_slash_model_is_refused(self):
         delivery = self._deliver_local(config={"mcode_model": "--not-a-model"})
@@ -592,7 +618,7 @@ class RequestShapeTests(Base):
                 "channel": "Work-In-Progress",
                 "topic": "AFC-804 MiniMax wake delivery platform",
                 "sender": "ZCode",
-                "zulip_link": "https://simplewithus.zulipchat.com/narrow/topic/1",
+                "zulip_link": "https://zulip.example.test/narrow/topic/1",
             },
         }
 
@@ -618,6 +644,11 @@ class RequestShapeTests(Base):
         answer = self._deliver(self._request(target={**target, "extra": "field"}))
         self.assertEqual(answer["delivery"]["code"], "bad-request")
 
+    def test_a_wake_with_an_unknown_field_is_refused(self):
+        wake = self._request()["wake"]
+        answer = self._deliver(self._request(wake={**wake, "extra": "field"}))
+        self.assertEqual(answer["delivery"]["code"], "bad-request")
+
     def test_a_wake_that_is_not_an_object_is_refused(self):
         answer = self._deliver(self._request(wake=["not", "an", "object"]))
         self.assertEqual(answer["delivery"]["code"], "bad-request")
@@ -625,6 +656,19 @@ class RequestShapeTests(Base):
     def test_a_field_that_would_be_coerced_is_refused(self):
         wake = self._request()["wake"]
         answer = self._deliver(self._request(wake={**wake, "topic": 1234}))
+        self.assertEqual(answer["delivery"]["code"], "bad-request")
+
+    def test_an_oversized_request_is_refused(self):
+        wake = {**self._request()["wake"], "topic": "x" * 70000}
+        answer = self._deliver(self._request(wake=wake))
+        self.assertEqual(answer["delivery"]["code"], "bad-request")
+
+    def test_a_deeply_nested_request_is_refused(self):
+        nested: dict = {"value": 1}
+        for _ in range(20):
+            nested = {"nested": nested}
+        wake = {**self._request()["wake"], "extra": nested}
+        answer = self._deliver(self._request(wake=wake))
         self.assertEqual(answer["delivery"]["code"], "bad-request")
 
     def test_a_secret_in_a_request_refuses_by_name(self):
@@ -692,7 +736,7 @@ class SettingsTests(Base):
             "mcode_model": minimax_wake.DEFAULTS["mcode_model"],
         }
         with (
-            patch("simple_tools.wake_settings.read_once", return_value=config),
+            patch.object(minimax_wake, "_delivery_config", return_value=config),
             patch.object(
                 minimax_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
             ),
@@ -716,8 +760,19 @@ class SettingsTests(Base):
         self.assertEqual(answer["generation"], 2)
         self.assertEqual(len(self.calls), 1)
 
+    def test_the_shared_file_names_the_workspace(self):
+        # The documented channel is the shared file, and the Mac-side delivery reads it.
+        shared = minimax_wake.state_dir(self.env).parent / "config.json"
+        minimax_wake._private_dir(shared.parent)
+        shared.write_text(
+            json.dumps({"workspace": str(self.workspace), "local_host": "mac"}), encoding="utf-8"
+        )
+        config = minimax_wake._delivery_config(self.env)
+        self.assertEqual(config["workspace"], str(self.workspace))
+        self.assertEqual(config["local_host"], "mac")
+
     def test_a_settings_failure_names_the_source(self):
-        with patch("simple_tools.wake_settings.read_once", side_effect=RuntimeError("boom")):
+        with patch.object(minimax_wake, "_delivery_config", side_effect=RuntimeError("boom")):
             answer = minimax_wake.deliver_request(
                 {"target": {"session_id": SID, "letter": "CC", "host": "mac", "generation": 2},
                  "wake": {"wake_id": "w1-abcdef", "message_id": 1}},

@@ -61,13 +61,14 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import importlib
 import json
 import os
 import re
 import shutil
 import sqlite3
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -92,10 +93,18 @@ SECRET_FIELD = "wake-secret"
 SCANNED_FIELDS = ("channel", "topic", "sender", "zulip_link", "link_note")
 #: The fields a request's target may carry:  the ones `WR.Target` has.
 TARGET_FIELDS = frozenset(WR.Target.__dataclass_fields__)
+#: The fields a request's wake may carry:  the ones `WR.Wake` has.
+WAKE_FIELDS = frozenset(WR.Wake.__dataclass_fields__)
 #: The model `mcode exec` runs on:  `provider/model`, named on the command line.
 MODEL_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 #: The bound on a link in a request, the same one the router keeps.
 MAX_LINK = 500
+#: The bounds on a request that arrives from another host:  how big it may be, how deep it may
+#: nest and how many values it may hold.  A request is untrusted input, so it is walked with
+#: ceilings before anything is read out of it.
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_REQUEST_DEPTH = 6
+MAX_REQUEST_NODES = 4096
 #: How long a stopped child is given to go away before it is killed.
 STOP_SECONDS = 5
 #: The refusal code for a state folder that cannot be made private.
@@ -119,6 +128,9 @@ DEFAULTS: Mapping[str, Any] = {
     # install's own `defaultModel`, which can be an id the catalog no longer serves.
     "mcode_model": MCODE_DEFAULT_MODEL,
 }
+
+#: Every seat's settings, once:  the shared file is checked against the union of them.
+_SHARED_DEFAULTS: dict[str, Any] | None = None
 
 NEVER_RAN: frozenset[str] = frozenset(
     {
@@ -227,8 +239,13 @@ def _find_mcode_binary(child_env: Mapping[str, str], configured: str = "") -> st
     """Locate the `mcode` CLI binary:  the setting, then MCODE_BIN, then PATH, then the runtime's
     own folder.  The setting comes first, because a deployment that names its binary means it."""
     for candidate in (configured, child_env.get("MCODE_BIN")):
-        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+        if not candidate:
+            continue
+        # A relative path is resolved here, against this process's directory, because the child
+        # starts in the chat's workspace and would look in the wrong place for it.
+        resolved = os.path.abspath(candidate)
+        if os.path.isfile(resolved) and os.access(resolved, os.X_OK):
+            return resolved
     found = shutil.which("mcode", path=child_env.get("PATH"))
     if found:
         return found
@@ -239,34 +256,55 @@ def _find_mcode_binary(child_env: Mapping[str, str], configured: str = "") -> st
     return None
 
 
-def _session_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, Any] | None]:
-    """(`ok`|`missing`|`error`, row) for one session from the MiniMax Code store, read only."""
+def _session_rows(
+    env: Mapping[str, str], session_ids: Sequence[str]
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """(`ok`|`store-missing`|`error`, rows) for these sessions from the MiniMax Code store.
+
+    One connection reads the whole list:  the store is the runtime's own file and it is open
+    while the runtime runs, so a pick does not open one connection per candidate."""
     db = store_path(env)
     if not db.is_file():
-        return "missing", None
+        return "store-missing", {}
+    ids = list(dict.fromkeys(session_ids))
+    if not ids:
+        return "ok", {}
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
     except (OSError, sqlite3.Error):
-        return "error", None
+        return "error", {}
     try:
-        row = conn.execute(
-            "SELECT session_kind, parent_session_id, archived, status, workspace_dir "
-            "FROM local_runtime_sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
+        rows = conn.execute(
+            "SELECT session_id, session_kind, parent_session_id, archived, status, workspace_dir "
+            "FROM local_runtime_sessions WHERE session_id IN (%s)" % ",".join("?" * len(ids)),
+            ids,
+        ).fetchall()
     except sqlite3.Error:
-        return "error", None
+        return "error", {}
     finally:
         conn.close()
-    if not row:
-        return "missing", None
     return "ok", {
-        "session_kind": row[0],
-        "parent_session_id": row[1],
-        "archived": row[2],
-        "status": row[3],
-        "workspace_dir": row[4],
+        row[0]: {
+            "session_kind": row[1],
+            "parent_session_id": row[2],
+            "archived": row[3],
+            "status": row[4],
+            "workspace_dir": row[5],
+        }
+        for row in rows
     }
+
+
+def _session_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, Any] | None]:
+    """(`ok`|`missing`|`store-missing`|`error`, row) for one session from the MiniMax Code
+    store, read only.  A store that is not there is not a session that is not there."""
+    status, rows = _session_rows(env, [session_id])
+    if status != "ok":
+        return status, None
+    row = rows.get(session_id)
+    if row is None:
+        return "missing", None
+    return "ok", row
 
 
 def exclude_non_interactive(
@@ -278,10 +316,13 @@ def exclude_non_interactive(
         local_ids = [t.session_id for t in targets if t.host == local_host]
         if not local_ids:
             return set()
+        status, rows = _session_rows(env, local_ids)
+        if status != "ok":
+            return set()
         excluded: set[str] = set()
         for sid in local_ids:
-            status, row = _session_row(env, sid)
-            if status != "ok" or not row:
+            row = rows.get(sid)
+            if not row:
                 continue
             if str(row.get("session_kind") or "") not in CHAT_KINDS:
                 excluded.add(sid)
@@ -359,13 +400,13 @@ def _stop(proc: Any) -> None:
 def _run_child(
     argv: list[str],
     *,
+    timeout: float,
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
     stdin: int | None = None,
     stdout: int | None = None,
     stderr: int | None = None,
     input: bytes | str | None = None,
-    timeout: float | None = None,
     capture_output: bool = False,
     text: bool = False,
     check: bool = False,
@@ -486,6 +527,10 @@ def deliver_local(
             status, row = _session_row(env, session_id)
             if status == "error":
                 return WR.Delivery("failed", "wake", code="store-session-store")
+            if status == "store-missing":
+                # MiniMax Code is not installed on this host:  a bounded failure, because the
+                # store may be there later, and not a refusal that would end the wake.
+                return WR.Delivery("failed", "wake", code="platform-not-installed")
             if status == "missing":
                 return WR.Delivery("refused", "wake", code="session-not-found")
             if str(row.get("session_kind") or "") not in CHAT_KINDS:
@@ -512,17 +557,15 @@ def deliver_local(
             if not binary:
                 return WR.Delivery("failed", "wake", code="mcode-not-found")
 
+            # Every value is bound to its option with `=`, so a value that begins with a dash
+            # is a value and never an option of its own.
             argv = [
                 binary,
                 "exec",
-                "--session",
-                session_id,
-                "--cwd",
-                recorded,
-                "--model",
-                model,
-                "--input",
-                "-",
+                "--session=%s" % session_id,
+                "--cwd=%s" % recorded,
+                "--model=%s" % model,
+                "--input=-",
             ]
             text = wake_text(wake)
             timeout_seconds = int(config.get("resume_timeout_seconds") or 900)
@@ -688,7 +731,7 @@ def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
 
     A field that is not the type it claims is refused, not coerced, and a field that carries
     credential material is refused by name before it is cleaned."""
-    if not isinstance(data, Mapping):
+    if not isinstance(data, Mapping) or not set(data) <= WAKE_FIELDS:
         raise ValueError("wake")
     wake_id = data.get("wake_id")
     if not isinstance(wake_id, str) or not WR.WAKE_ID_RE.fullmatch(wake_id):
@@ -743,6 +786,72 @@ def _answer(request: Mapping[str, Any], delivery: WR.Delivery) -> dict[str, Any]
     return {**_correlation(request), "delivery": asdict(delivery)}
 
 
+def _shared_defaults() -> dict[str, Any]:
+    """Every seat's settings, which is what the shared file is checked against.
+
+    The shared file is one file for every seat, so it carries every seat's names;  the service
+    checks it against the union of them, and so does this reader."""
+    global _SHARED_DEFAULTS
+    if _SHARED_DEFAULTS is None:
+        from . import wake_service as SVC
+
+        union: dict[str, Any] = {}
+        for builder in SVC.BUILDERS.values():
+            try:
+                module = importlib.import_module(builder.module)
+            except ImportError:
+                continue
+            union.update(getattr(module, "DEFAULTS", WR.ROUTER_DEFAULTS))
+        _SHARED_DEFAULTS = union
+    return _SHARED_DEFAULTS
+
+
+def _delivery_config(env: Mapping[str, str]) -> dict[str, Any]:
+    """This host's settings for one delivery.
+
+    The shared file (`<state root>/config.json`) names the platform's own facts for every seat,
+    and the per-seat file (`<state root>/minimax/config.json`) may name them for this seat.  The
+    per-seat file wins where both name one, and a file that cannot be read refuses the delivery
+    rather than quietly narrowing it."""
+    from . import wake_service as SVC
+    from . import wake_settings as WS
+
+    seat_path = state_dir(env) / "config.json"
+    shared_path = SVC.state_root(env) / "config.json"
+    local = {
+        **WS.read_local(shared_path, _shared_defaults()),
+        **WS.read_local(seat_path, DEFAULTS),
+    }
+    return WS.narrowed(WS.from_knobs(SEAT, DEFAULTS), local, SEAT)[0]
+
+
+def _bounded_request(request: object) -> Mapping[str, Any]:
+    """The request, if it is within the house bounds:  its size, its depth and its node count.
+
+    A request arrives from another host over ssh, so it is untrusted input, and a huge or
+    deeply nested one must not cost the router more than a small one."""
+    if not isinstance(request, Mapping):
+        raise ValueError("request")
+    try:
+        encoded = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError):
+        raise ValueError("request") from None
+    if len(encoded) > MAX_REQUEST_BYTES:
+        raise ValueError("request")
+    nodes = 0
+    stack = [(request, 0)]
+    while stack:
+        node, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_REQUEST_NODES or depth > MAX_REQUEST_DEPTH:
+            raise ValueError("request")
+        if isinstance(node, Mapping):
+            stack.extend((value, depth + 1) for value in node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend((value, depth + 1) for value in node)
+    return request
+
+
 def deliver_request(
     request: Mapping[str, Any],
     *,
@@ -750,7 +859,9 @@ def deliver_request(
     runner: Runner = _run_child,
 ) -> dict[str, Any]:
     """Mac-side one-delivery handler invoked by `simple-chat wake-deliver`."""
-    if not isinstance(request, Mapping):
+    try:
+        request = _bounded_request(request)
+    except ValueError:
         return _answer({}, WR.Delivery("refused", code=BAD_REQUEST))
     try:
         target = _target_from(request.get("target"))
@@ -761,9 +872,7 @@ def deliver_request(
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))
 
     try:
-        from . import wake_settings as WS
-
-        config = WS.read_once(SEAT, DEFAULTS, state_dir(env) / "config.json")
+        config = _delivery_config(env)
     except (Exception, SystemExit):
         # The settings could not be read:  fail closed, and name the source that could not be
         # read, so the operator knows which dependency is missing.  The name is spelled with a
