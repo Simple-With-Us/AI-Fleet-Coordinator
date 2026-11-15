@@ -8,6 +8,7 @@ CLI login session or credential-file fallback runs.  Values stay in memory.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import re
@@ -342,9 +343,14 @@ def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
     (0700) holding only the two-field project file (0600); the file names the
     project id and environment and carries no secret material.
     """
-    workdir = home_dir(env) / ".config" / "fleet-secrets" / "cli-session"
+    # One owned directory PER PROJECT: two concurrent exports for different
+    # projects then race only on their own project file (same project means
+    # an identical payload, so the atomic replace stays benign).
+    safe_project = re.sub(r"[^A-Za-z0-9._-]+", "_", project) or "project"
+    base = home_dir(env) / ".config" / "fleet-secrets" / "cli-session"
+    workdir = base / safe_project
     try:
-        if workdir.is_symlink():
+        if base.is_symlink() or workdir.is_symlink():
             raise SecretsError(
                 "cli-session-workdir-symlink: refusing to follow a symlinked workdir"
             )
@@ -377,9 +383,12 @@ def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
                 os.fsync(dir_fd)
             finally:
                 os.close(dir_fd)
-        except OSError:
-            # Some filesystems refuse to fsync a directory (EINVAL); the file
-            # itself is already durable, so durability of the name is best-effort.
+        except OSError as exc:
+            if exc.errno != errno.EINVAL:
+                raise SecretsError("cli-session-workdir-unavailable: " + str(exc)) from exc
+            # Some filesystems refuse to fsync a directory at all (EINVAL);
+            # failing there would break those systems outright.  The file
+            # itself is already durable; the name is best-effort only there.
             pass
     except OSError as exc:
         raise SecretsError("cli-session-workdir-unavailable: " + str(exc)) from exc

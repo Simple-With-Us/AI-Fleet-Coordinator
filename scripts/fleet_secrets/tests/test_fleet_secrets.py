@@ -341,7 +341,7 @@ class RunTests(Base):
         ):
             code, out, err = self.call("get", "ALPHA", env=env)
         self.assertEqual((code, out, err), (0, VAL_A, ""))
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
         self.assertTrue(world.export_cwds)
         self.assertNotIn("/", world.export_cwds)
         for cwd in world.export_cwds:
@@ -382,7 +382,7 @@ class RunTests(Base):
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
         env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
         workdir.mkdir(parents=True)
         target = self.home / "sensitive.txt"
         target.write_text("keep-me")
@@ -410,7 +410,7 @@ class RunTests(Base):
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
         env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
         workdir.mkdir(parents=True)
         config = workdir / ".infisical.json"
         config.write_text("{}")
@@ -478,7 +478,7 @@ class RunTests(Base):
         self.assertEqual((code1, out1, code2, out2), (0, VAL_A, 0, VAL_A))
         self.assertEqual(len(seen), 2)
         self.assertNotEqual(seen[0], seen[1])
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
         leftovers = [p.name for p in workdir.iterdir() if p.name.endswith(".tmp")]
         self.assertEqual(leftovers, [])
 
@@ -507,15 +507,75 @@ class RunTests(Base):
         ):
             code, out, err = self.call("get", "ALPHA", env=env)
         self.assertEqual((code, out, err), (0, VAL_A, ""))
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
         self.assertTrue((workdir / ".infisical.json").exists())
+
+    def test_cli_session_uses_a_separate_workdir_per_project(self):
+        world = self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, _ = self.call("get", "ALPHA", env=env)
+            self.assertEqual((code, out), (0, VAL_A))
+            code, out, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator", env=env)
+            self.assertEqual((code, out), (0, VAL_A))
+        ops_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        afc_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / OTHER_PROJECT
+        self.assertTrue((afc_dir / ".infisical.json").exists())
+        self.assertTrue((ops_dir / ".infisical.json").exists())
+        self.assertNotEqual(str(afc_dir), str(ops_dir))
+        # Each directory holds only its own project file: a concurrent export
+        # for one project can never overwrite the other's resolved config.
+        self.assertEqual(
+            json.loads((afc_dir / ".infisical.json").read_text())["workspaceId"], OTHER_PROJECT
+        )
+        self.assertEqual(
+            json.loads((ops_dir / ".infisical.json").read_text())["workspaceId"], PROJECT
+        )
+
+    def test_cli_session_propagates_non_einval_dir_fsync_errors(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        real_fsync = core.os.fsync
+        import errno as _errno
+        import stat as _stat
+
+        def picky(fd):
+            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
+                raise OSError(_errno.EIO, "simulated durability failure")
+            return real_fsync(fd)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+            mock.patch.object(core.os, "fsync", side_effect=picky),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual(out, "")
+        self.assertNotEqual(code, 0)
+        self.assertIn("cli-session-workdir-unavailable", err)
 
     def test_interactive_export_refreshes_a_stale_project_file(self):
         world = self.use(World())
         env = dict(self.env)
         env.pop(core.ENV_TOKEN)
         env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
-        workdir = self.home / ".config" / "fleet-secrets" / "cli-session"
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
         workdir.mkdir(parents=True)
         config = workdir / ".infisical.json"
         config.write_text('{"workspaceId": "stale", "defaultEnvironment": "dev", "extra": 1}')
