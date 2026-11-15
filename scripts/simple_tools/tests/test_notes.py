@@ -557,9 +557,18 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertTrue(result["rag_deleted"])
 
     def test_fleet_rag_delete_runs_note_delete_after_outbox_lock_contention(self):
+        clock = [0.0]
+
+        def fake_sleep(seconds):
+            clock[0] += max(float(seconds or 0), 0.05)
+
+        def fake_monotonic():
+            return clock[0]
+
         with (
             mock.patch("fleet_rag.note_outbox.cancel", side_effect=BlockingIOError("locked")),
-            mock.patch.object(N.time, "sleep"),
+            mock.patch.object(N.time, "sleep", side_effect=fake_sleep),
+            mock.patch.object(N.time, "monotonic", side_effect=fake_monotonic),
             mock.patch.object(N.subprocess, "run", return_value=mock.Mock(returncode=0, stderr=b"")) as sub_run,
         ):
             result = N._fleet_rag_delete("x-coredata://stub/note/9", self.ENV)
