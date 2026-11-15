@@ -1153,30 +1153,15 @@ class SyncToken(unittest.TestCase):
         tool.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
         tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
 
-    def test_gh_token_is_honoured_first(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(S.resolve_github_token({"GH_TOKEN": "a", "GITHUB_ADMIN_PAT": "b"}, Path(tmp)), "GH_TOKEN")
-
-    def test_a_fetched_token_reaches_the_name_the_credential_helper_reads(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GH_TOKEN", None)
-            self.fake_tool(Path(tmp), "printf dummy-value")
-            self.assertEqual(S.resolve_github_token({}, Path(tmp)), "GH_TOKEN")
-            self.assertEqual(os.environ["GH_TOKEN"], "dummy-value")
-
-    def test_a_token_variable_the_helper_ignores_is_exported_under_the_name_it_reads(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GH_TOKEN", None)
-            self.assertEqual(S.resolve_github_token({"GITHUB_ADMIN_PAT": "b"}, Path(tmp)), "GH_TOKEN")
-            self.assertEqual(os.environ["GH_TOKEN"], "b")
-
-    def test_a_lookup_that_hangs_is_logged_and_the_run_continues(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(S.subprocess, "run", side_effect=subprocess.TimeoutExpired("x", 60)):
-            self.fake_tool(Path(tmp), "exit 0")
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(S.resolve_github_token({}, Path(tmp)), "")
-            self.assertIn("timed out", out.getvalue())
+    def test_retired_lookup_never_reads_an_app_or_reexports_an_owner_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            self.fake_tool(Path(tmp), "exit 99")
+            for supplied in ({}, {"GH_TOKEN": "a"}, {"GITHUB_TOKEN": "a"}, {"GITHUB_ADMIN_PAT": "b"}):
+                with self.subTest(names=list(supplied)), mock.patch.object(
+                    S.subprocess, "run", side_effect=AssertionError("retired credential application executed")
+                ):
+                    self.assertEqual(S.resolve_github_token(supplied, Path(tmp)), "")
+                    self.assertEqual(dict(os.environ), {})
 
 
 if __name__ == "__main__":
