@@ -106,7 +106,7 @@ test("finding: invalid build format", () => {
     auditBuildFormat([buildRow(VALID, "0.1.0", "2026-11-09T20:00:00Z")], "demo", "IOS").length,
     0,
   );
-  assert.match(invalidBuildDetail(COUNTER), /main-merge timestamp/);
+  assert.match(invalidBuildDetail(COUNTER), /build-run timestamp/);
 });
 
 test("finding: missing build number", () => {
