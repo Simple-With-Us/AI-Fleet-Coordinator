@@ -541,23 +541,31 @@ class ClassifyRearmMode(unittest.TestCase):
         self.assertIn("compare API failed", reason)
 
     def test_rearm_fetch_fails_closed(self):
-        code, output, reason = run_classify("rearm_fetch_fails", require_approval="false", rearm_pr_number="7")
+        code, output, reason = run_classify(
+            "rearm_fetch_fails", require_approval="false", rearm_pr_number="7"
+        )
         self.assertEqual(code, 0, output)
         self.assertIn("rearm PR fetch failed", reason)
 
     def test_rearm_rejects_a_closed_pr(self):
-        code, output, reason = run_classify("rearm_closed", require_approval="false", rearm_pr_number="7")
+        code, output, reason = run_classify(
+            "rearm_closed", require_approval="false", rearm_pr_number="7"
+        )
         self.assertEqual(code, 0, output)
         self.assertIn("rearm PR is not open", reason)
 
     def test_rearm_rejects_a_draft_pr(self):
-        code, output, reason = run_classify("rearm_draft", require_approval="false", rearm_pr_number="7")
+        code, output, reason = run_classify(
+            "rearm_draft", require_approval="false", rearm_pr_number="7"
+        )
         self.assertEqual(code, 0, output)
         self.assertIn("rearm PR is a draft", reason)
 
     def test_rearm_pr_url_output(self):
         outputs: dict = {}
-        run_classify_full("rearm_open", require_approval="false", rearm_pr_number="7", outputs=outputs)
+        run_classify_full(
+            "rearm_open", require_approval="false", rearm_pr_number="7", outputs=outputs
+        )
         self.assertEqual(outputs.get("pr_url"), "https://github.com/Simple-With-Us/Example/pull/7")
 
 
