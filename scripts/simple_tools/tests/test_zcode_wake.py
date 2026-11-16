@@ -41,6 +41,9 @@ class Base(unittest.TestCase):
         self.home = Path(tmp.name) / "home"
         self.home.mkdir(parents=True)
         self.env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin"}
+        import os as _os
+        _os.makedirs(WORKSPACE, exist_ok=True)
+        self.addCleanup(lambda: _os.path.isdir(WORKSPACE) and _os.rmdir(WORKSPACE))
         self.index = self.home / ".zcode" / "v2" / "tasks-index.sqlite"
         self.index.parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(self.index)
@@ -94,7 +97,7 @@ class Base(unittest.TestCase):
             message_id=639428919,
             channel="Work-In-Progress",
             topic="OPS-1048 ZCode letters and wakes",
-            zulip_link="https://simplewithus.zulipchat.com/narrow/topic/1",
+            zulip_link="https://zulip.example.test/narrow/topic/1",
             sender="Claude",
             letter="BB",
             picked="letter",
@@ -183,11 +186,42 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "workspace-mismatch")
 
-    def test_settings_missing_fails_and_holds(self):
+    def test_settings_missing_is_busy_and_retryable(self):
         delivery = self._deliver_local(config={"workspace": ""})
-        self.assertEqual(delivery.outcome, "failed")
-        self.assertEqual(delivery.code, "settings-missing")
+        self.assertEqual(delivery.outcome, "busy")
+        self.assertEqual(delivery.code, "missing-workspace")
         self.assertEqual(self.calls, [])
+
+    def test_deleted_workspace_directory_is_cwd_gone(self):
+        # The recorded workspace matches the configured one but the directory is gone:
+        # the refusal must be session-cwd-gone, never a spawn into the deleted path.
+        import os as _os
+        con = sqlite3.connect(self.index)
+        con.execute("UPDATE tasks SET workspace_path = ? WHERE task_id = ?", (WORKSPACE, SID))
+        con.commit()
+        con.close()
+        _os.rmdir(WORKSPACE)
+        delivery = self._deliver_local()
+        self.assertEqual(delivery.outcome, "refused")
+        self.assertEqual(delivery.code, "session-cwd-gone")
+        self.assertEqual(self.calls, [])
+
+    def test_target_from_rejects_extra_keys_bad_letter_and_host(self):
+        good = {"session_id": SID, "letter": "BB", "host": "mac", "generation": 3}
+        assert zcode_wake._target_from(dict(good)) is not None
+        for bad in (
+            {**good, "extra": "field"},
+            {**good, "letter": "bb"},
+            {**good, "letter": "BBB"},
+            {**good, "host": ""},
+            {**good, "generation": 0},
+        ):
+            try:
+                zcode_wake._target_from(bad)
+            except ValueError:
+                pass
+            else:
+                self.fail("expected ValueError for %r" % bad)
 
     def test_nonzero_exit_is_refused(self):
         delivery = self._deliver_local(exit_code=3)
@@ -229,6 +263,20 @@ class ExcludeTests(Base):
         self.assertIn(SID_SUB, excluded)
         self.assertNotIn(SID, excluded)
         self.assertNotIn(SID_MAC, excluded)
+
+    def test_exclude_drops_sessions_missing_from_the_index(self):
+        con = sqlite3.connect(self.index)
+        con.execute("DELETE FROM tasks WHERE task_id = ?", (SID_OTHER,))
+        con.commit()
+        con.close()
+        exclude = zcode_wake.exclude_non_interactive(self.env, "server")
+        targets = [
+            zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3),
+            zcode_wake.WR.Target(session_id=SID_OTHER, letter="BB", host="server", generation=3),
+        ]
+        excluded = exclude(targets)
+        self.assertIn(SID_OTHER, excluded)
+        self.assertNotIn(SID, excluded)
 
 
 class RouterPlatformTests(Base):

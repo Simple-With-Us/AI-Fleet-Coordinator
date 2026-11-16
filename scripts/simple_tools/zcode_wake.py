@@ -38,6 +38,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -45,6 +46,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -153,7 +155,9 @@ def _tasks_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, 
     if not db.is_file():
         return "missing", None
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
+        conn = sqlite3.connect(
+            "file:" + urllib.parse.quote(str(db)) + "?mode=ro", uri=True, timeout=2.0
+        )
     except (OSError, sqlite3.Error):
         return "error", None
     try:
@@ -178,7 +182,9 @@ def _subagent_ids(env: Mapping[str, str], sids: list[str]) -> tuple[str, set[str
     if not db.is_file():
         return "ok", set()
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
+        conn = sqlite3.connect(
+            "file:" + urllib.parse.quote(str(db)) + "?mode=ro", uri=True, timeout=2.0
+        )
     except (OSError, sqlite3.Error):
         return "error", set()
     try:
@@ -211,10 +217,29 @@ def exclude_non_interactive(
         status, subagents = _subagent_ids(env, local_ids)
         if status == "ok":
             excluded |= subagents
-        for sid in local_ids:
-            status, row = _tasks_row(env, sid)
-            if status == "ok" and not row.get("workspace_path"):
-                excluded.add(sid)
+        db = tasks_index_path(env)
+        placeholders = ",".join("?" * len(local_ids))
+        try:
+            conn = sqlite3.connect(
+                "file:" + urllib.parse.quote(str(db)) + "?mode=ro", uri=True, timeout=2.0
+            )
+        except sqlite3.Error:
+            return excluded
+        try:
+            rows = conn.execute(
+                "SELECT task_id, workspace_path FROM tasks WHERE task_id IN (%s)"
+                % placeholders,
+                local_ids,
+            ).fetchall()
+        except sqlite3.Error:
+            return excluded
+        finally:
+            conn.close()
+        seen = {str(r[0]) for r in rows}
+        excluded |= set(local_ids) - seen
+        for task_id, workspace_path in rows:
+            if not workspace_path:
+                excluded.add(str(task_id))
         return excluded
 
     return exclude
@@ -278,7 +303,7 @@ def deliver_local(
     if not workspace:
         # Hold and retry:  the deployment has not named a workspace, and delivering into an
         # unknown directory is the wrong-chat delivery this platform exists to refuse.
-        return WR.Delivery("failed", code="settings-missing")
+        return WR.Delivery("busy", "resume", code="missing-workspace")
 
     folder = state_dir(env) / "locks"
     WR.private_dir(folder)
@@ -333,6 +358,8 @@ def deliver_local(
                 return WR.Delivery("refused", "resume", code="session-cwd-gone")
             if os.path.realpath(recorded) != os.path.realpath(workspace):
                 return WR.Delivery("refused", "resume", code="workspace-mismatch")
+            if not os.path.isdir(recorded):
+                return WR.Delivery("refused", "resume", code="session-cwd-gone")
             sub_status, subagents = _subagent_ids(env, [session_id])
             if sub_status == "error":
                 return WR.Delivery("failed", "resume", code="store-cli-db")
@@ -340,6 +367,8 @@ def deliver_local(
                 return WR.Delivery("refused", "resume", code="session-subagent")
 
             child_env = _child_env(env)
+            if config.get("zcode_bin"):
+                child_env["ZCODE_BIN"] = str(config["zcode_bin"])
             binary = _find_zcode_binary(child_env)
             if not binary:
                 return WR.Delivery("failed", "resume", code="zcode-not-found")
@@ -431,16 +460,24 @@ def _short(value: object) -> str:
 def _target_from(value: object) -> WR.Target:
     if not isinstance(value, Mapping):
         raise ValueError("target is not an object")
+    if set(value) - TARGET_FIELDS:
+        raise ValueError("unexpected target fields")
     session_id = str(value.get("session_id") or "")
     if not SESSION_RE.fullmatch(session_id):
         raise ValueError("bad session id")
+    letter = str(value.get("letter") or "")
+    if not LETTER_RE.fullmatch(letter):
+        raise ValueError("bad letter")
+    host = str(value.get("host") or "")
+    if not host:
+        raise ValueError("bad host")
     generation = value.get("generation")
     if type(generation) is not int or generation < 1:
         raise ValueError("bad generation")
     return WR.Target(
         session_id=session_id,
-        letter=str(value.get("letter") or ""),
-        host=str(value.get("host") or ""),
+        letter=letter,
+        host=host,
         title=str(value.get("title") or ""),
         thread_link=str(value.get("thread_link") or ""),
         generation=generation,
