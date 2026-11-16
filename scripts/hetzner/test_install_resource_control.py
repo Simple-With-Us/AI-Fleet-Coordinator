@@ -1,4 +1,4 @@
-"""Offline installer checks; root ownership and the root filesystem are simulated."""
+"""Offline installer checks; the root filesystem and the installing account's home are simulated."""
 
 import importlib.util
 import json
@@ -14,6 +14,7 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
+SETTINGS = json.dumps({"applyEnabled": False})
 
 
 class InstallerTests(unittest.TestCase):
@@ -27,20 +28,26 @@ class InstallerTests(unittest.TestCase):
         body = text.split("<<'PY'\n", 1)[1].rsplit("\nPY\n", 1)[0]
         exec(compile(body, "install-resource-control.sh", "exec"), self.module.__dict__)
         self.module.ROOT = str(self.root)
-        self.module.ROOT_UID = os.getuid()
-        self.destination = self.root / "usr/local/lib/fleet-resource-control"
+        # The account running the tests is the installing account, and never counts as root,
+        # even where the tests themselves run as root.
+        self.module.ROOT_UID = -1
+        self.home = self.root / "home/owner"
+        self.home.mkdir(parents=True)
+        for folder in (self.root / "home", self.home):
+            folder.chmod(0o755)  # whatever the umask:  the installer refuses a group-writable one
+        self.module.home_components = lambda uid: ("home", "owner")
+        self.destination = self.home / ".local/lib/fleet-resource-control"
 
     def install(self, source=SCRIPTS):
         with (
-            mock.patch.object(self.module.os, "geteuid", return_value=0),
-            mock.patch.object(self.module.os, "fchown"),
+            mock.patch.object(self.module.os, "geteuid", return_value=os.getuid()),
             mock.patch.object(self.module.os, "fsync"),
             mock.patch.object(self.module.sys, "platform", "linux"),
         ):
             self.module.install(source)
 
     def test_fixed_payload_modes_isolated_imports_and_preserved_state(self):
-        credential = self.root / "home/owner/.config/fleet-tools/resource-policy-token"
+        credential = self.home / ".config/fleet-tools/resource-policy-token"
         credential.parent.mkdir(parents=True)
         credential.write_text("untouched-test-credential")
         credential.chmod(0o600)
@@ -51,6 +58,7 @@ class InstallerTests(unittest.TestCase):
         expected = {
             "fleet-ops-control.py",
             "fleet-ops-control.json",
+            "fleet-ops-eavesdropper-settings.json",
             "fleet_resource_control.py",
             "fleet_seat_inventory.py",
             "muster_approval.py",
@@ -124,8 +132,10 @@ class InstallerTests(unittest.TestCase):
             )
 
     def test_symlink_destination_directory_refused(self):
-        lib = self.root / "usr/local/lib"
+        lib = self.home / ".local/lib"
         lib.mkdir(parents=True)
+        for folder in (self.home / ".local", lib):
+            folder.chmod(0o755)
         outside = self.root / "outside"
         outside.mkdir()
         self.destination.symlink_to(outside, target_is_directory=True)
@@ -135,10 +145,48 @@ class InstallerTests(unittest.TestCase):
 
     def test_writable_destination_directory_refused(self):
         self.destination.mkdir(parents=True)
+        for folder in (self.home / ".local", self.home / ".local/lib"):
+            folder.chmod(0o755)
         self.destination.chmod(0o777)
         with self.assertRaises(RuntimeError):
             self.install()
         self.assertFalse(list(self.destination.iterdir()))
+
+    def test_a_writable_folder_above_the_installation_is_refused_before_any_write(self):
+        for folder in (self.root / "home", self.home):
+            with self.subTest(folder=folder.name):
+                folder.chmod(0o775)
+                with self.assertRaises(RuntimeError):
+                    self.install()
+                self.assertFalse((self.home / ".local").exists())
+                folder.chmod(0o755)
+        self.install()  # the same tree with protected folders installs
+
+    def test_a_missing_home_directory_is_never_created(self):
+        self.module.home_components = lambda uid: ("home", "nobody-here")
+        with self.assertRaises(OSError):
+            self.install()
+        self.assertFalse((self.root / "home/nobody-here").exists())
+
+    def test_an_existing_private_lib_folder_is_kept_private(self):
+        lib = self.home / ".local/lib"
+        lib.mkdir(parents=True)
+        (self.home / ".local").chmod(0o755)
+        lib.chmod(0o700)
+        self.install()
+        self.assertEqual(stat.S_IMODE(lib.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), 0o755)
+
+    def test_the_eavesdropper_settings_allowlist_is_installed_and_must_have_its_switch(self):
+        source = self.minimal_source()
+        self.install(source)
+        self.assertEqual(
+            json.loads((self.destination / "fleet-ops-eavesdropper-settings.json").read_text()),
+            {"applyEnabled": False},
+        )
+        (source / "fleet-ops-eavesdropper-settings.json").write_text(json.dumps({"settings": []}))
+        with self.assertRaises(RuntimeError):
+            self.install(source)
 
     def test_symlink_installed_file_refused_without_touching_target(self):
         self.destination.mkdir(parents=True)
@@ -163,6 +211,7 @@ class InstallerTests(unittest.TestCase):
         (source / "muster_agent").mkdir()
         (source / "muster_agent" / "muster_trust_files.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
+        (source / "fleet-ops-eavesdropper-settings.json").write_text(SETTINGS)
         (source / "fleet_secrets").symlink_to(SCRIPTS / "fleet_secrets", target_is_directory=True)
         with self.assertRaises(OSError):
             self.install(source)
@@ -181,6 +230,7 @@ class InstallerTests(unittest.TestCase):
         (source / "muster_agent").mkdir()
         (source / "muster_agent" / "muster_trust_files.py").write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
+        (source / "fleet-ops-eavesdropper-settings.json").write_text(SETTINGS)
         for package, names in (
             ("fleet_secrets", ("__init__.py", "core.py")),
             ("hetzner", ("fleet_coding_memory.py", "coding_resources.py")),
@@ -218,6 +268,7 @@ class InstallerTests(unittest.TestCase):
         ):
             (source / name).write_text("pass\n")
         (source / "fleet-ops-control.json").write_text(json.dumps({"schemaVersion": 1}))
+        (source / "fleet-ops-eavesdropper-settings.json").write_text(SETTINGS)
         if trust_text is not None:
             (source / "muster_agent").mkdir()
             (source / "muster_agent" / "muster_trust_files.py").write_text(trust_text)
@@ -256,7 +307,7 @@ class InstallerTests(unittest.TestCase):
         source = self.minimal_source("SAME = 1\n")
         self.install(source)  # no muster-agent copy exists: nothing to compare
         other = self.root / "usr/local/lib/muster-agent"
-        other.mkdir()
+        other.mkdir(parents=True)
         (other / "muster_trust_files.py").write_text("SAME = 1\n")
         self.install(source)  # the same bytes: fine
         (other / "muster_trust_files.py").write_text("OTHER = 1\n")
@@ -276,8 +327,6 @@ class InstallerTests(unittest.TestCase):
         (real / "muster_trust_files.py").write_text("SAME = 1\n")
         lib = self.root / "usr/local/lib"
         lib.mkdir(parents=True)
-        for folder in (self.root / "usr", self.root / "usr/local", lib):
-            folder.chmod(0o755)  # whatever the umask:  the installer refuses a group-writable one
         (lib / "muster-agent").symlink_to(real, target_is_directory=True)
         with self.assertRaises(OSError):
             self.install(source)
@@ -308,16 +357,24 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("read_source(agent, 'muster_trust_files.py')", text)
         self.assertEqual(text.count("read_source(source, 'muster_trust_files.py')"), 0)
 
-    def test_nonroot_or_nonlinux_refused_before_any_destination_write(self):
-        for uid, platform in ((1, "linux"), (0, "darwin")):
+    def test_root_or_nonlinux_refused_before_any_destination_write(self):
+        for uid, platform in ((0, "linux"), (os.getuid() or 1000, "darwin")):
             with (
                 self.subTest(uid=uid, platform=platform),
+                mock.patch.object(self.module, "ROOT_UID", 0),
                 mock.patch.object(self.module.os, "geteuid", return_value=uid),
                 mock.patch.object(self.module.sys, "platform", platform),
             ):
                 with self.assertRaises(RuntimeError):
                     self.module.install(SCRIPTS)
                 self.assertFalse(self.destination.exists())
+                self.assertFalse((self.home / ".local").exists())
+
+    def test_the_install_folder_is_below_the_account_databases_home_not_home_env(self):
+        text = (HERE / "install-resource-control.sh").read_text()
+        self.assertIn("pwd.getpwuid(uid).pw_dir", text)
+        self.assertNotIn("environ", text)
+        self.assertNotIn("usr', 'local', 'lib', 'fleet-resource-control", text)
 
 
 if __name__ == "__main__":

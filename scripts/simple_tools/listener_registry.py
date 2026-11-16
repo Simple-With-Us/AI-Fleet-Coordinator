@@ -62,7 +62,7 @@ SessionRegistry.reopen (through operator_reopen below, so a pair letter stays a 
 held -> SessionRegistry.letters_held, pending-outbox -> pending_outbox, mark-exported ->
 mark_exported, report-gone -> the named rows closed under one guarded transaction.  `reopen` and `held`
 have no CLI verb on this tree;  their answers follow the shapes the existing callers already
-use (reopen_closed in mm_session_letter.py, and a plain letters list for held).
+use (the letter client's own reopen, and a plain letters list for held).
 
 One writer (AFC-721).  The Eavesdropper is the only process that writes the registry, and
 every write it makes goes through this module:  the API ops above (the `register` op is the
@@ -137,6 +137,9 @@ SOURCE_HOST_REPORT = "host-report"
 MAX_GONE_IDS = 500
 #: The default share of a host's live rows (for one platform) a single report may close.
 DEFAULT_GONE_REPORT_MAX_SHARE = 0.5
+#: How lately a row must have been seen (its chat's hook touched it) for a gone report to leave it open.  A chat's
+#: hook touches its row at most every 30 minutes (the letter client's TOUCH_SECONDS), so this is above that.
+DEFAULT_GONE_REPORT_LIVE_MINUTES = 45
 #: The window over which that share is measured, so a split report cannot get around it.
 DEFAULT_GONE_REPORT_WINDOW_MINUTES = 60
 #: The most of a (platform, host)'s open rows one stale sweep pass may end.
@@ -670,7 +673,14 @@ class RegistryService:
 
         The count, the guard and the closes run in one write transaction, so two reports for the
         same host cannot both pass the guard on the same count, and a row reopened in between is
-        seen as it is.  Trust:  every host-side client holds the one OPERATOR key, so the host in
+        seen as it is.
+
+        A chat in use is not gone, whoever says so:  a named row that was seen within
+        `gone_report_live_minutes` (its chat's own hook touched it) is left open and answered in
+        `kept`, with `kept_count`, and takes no part in the share.  The reporting host is often
+        not the host the chat runs on, and cannot see that the chat is still being used.
+
+        Trust:  every host-side client holds the one OPERATOR key, so the host in
         the body is the caller's claim, as it is for register."""
         refused = self._operator_only(principal)
         if refused:
@@ -705,7 +715,7 @@ class RegistryService:
         try:
             with registry._write_txn() as conn:
                 live = conn.execute(
-                    "SELECT record_id, profile_scope, native_session_id FROM sessions"
+                    "SELECT record_id, profile_scope, native_session_id, last_seen_at FROM sessions"
                     " WHERE platform = ? AND verified_host = ? AND closed_at IS NULL",
                     (platform, host),
                 ).fetchall()
@@ -718,12 +728,29 @@ class RegistryService:
                         (SOURCE_HOST_REPORT, cutoff, platform, host),
                     ).fetchone()[0]
                 )
-                doomed = [
+                asked = [
                     row
                     for row in live
                     if row["native_session_id"] in named
                     and (not scope or row["profile_scope"] == scope)
                 ]
+                # A service may carry its own window (a test sets one);  0 turns the check off.
+                minutes = int(
+                    getattr(self, "gone_report_live_minutes", DEFAULT_GONE_REPORT_LIVE_MINUTES)
+                )
+                # The service's own clock (the one it checks a signature's age by), so a test that sets it and a host
+                # whose clock the service is given both get the window they mean.
+                seen_since = _instant(
+                    datetime.fromtimestamp(self.clock(), UTC) - timedelta(minutes=minutes)
+                )
+                in_use = [
+                    row
+                    for row in asked
+                    if minutes > 0 and str(row["last_seen_at"] or "") >= seen_since
+                ]
+                # Each id once and in order, whatever number of rows hold it:  a caller reads a list of ids.
+                kept = sorted({str(row["native_session_id"]) for row in in_use})
+                doomed = [row for row in asked if row not in in_use]
                 if doomed and len(live) > 1:
                     allowed_total = self.gone_report_max_share * (len(live) + recent)
                     if recent + len(doomed) > allowed_total:
@@ -769,7 +796,13 @@ class RegistryService:
                         )
         finally:
             registry.close_db()
-        return 200, {"closed": closed, "count": len(closed), "live": len(live)}
+        return 200, {
+            "closed": closed,
+            "count": len(closed),
+            "live": len(live),
+            "kept": kept,
+            "kept_count": len(kept),
+        }
 
 
 def _instant(moment: datetime) -> str:

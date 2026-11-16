@@ -45,6 +45,63 @@ export const GR_SECRETS = Object.freeze({
   accessSecret: "GR_ACCESS_CLIENT_SECRET",
 });
 
+/** Stable machine-readable reasons when gr_* refuses before git-relay is reached. */
+export const GR_UNAVAILABLE_REASON = Object.freeze({
+  RELAY_ENV_MISSING: "gr_relay_env_missing",
+  CONNECTION_NO_SEAT_RELAY_AUTH: "gr_connection_no_seat_relay_auth",
+  RELAY_SIGNER_UNAVAILABLE: "gr_relay_signer_unavailable",
+});
+
+/** Name every missing relay-front setting (never values). */
+export function grFrontMissing({ accessId, accessSecret }, env) {
+  const missing = [];
+  if (!grUpstreamUrl(env?.GR_UPSTREAM_URL)) missing.push("GR_UPSTREAM_URL");
+  if (!accessId) missing.push(GR_SECRETS.accessId);
+  if (!accessSecret) missing.push(GR_SECRETS.accessSecret);
+  return missing;
+}
+
+/** Why there is no GrRelayClient on this connection when wiring finished. */
+export function grUnavailableWhenNoClient(resolvedSecrets, env, { relayAuthAvailable }) {
+  const missing = grFrontMissing(resolvedSecrets, env);
+  if (missing.length) {
+    return { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing };
+  }
+  if (!relayAuthAvailable) {
+    return { reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] };
+  }
+  return { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing: ["GR_UPSTREAM_URL"] };
+}
+
+export function grNotConfiguredMessage({ reason, missing }) {
+  if (reason === GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH) {
+    // ToolError.asObject keeps 300 code points (contract.js MESSAGE_LIMIT).
+    // The cause, the seat-bearer shapes, and the "not the cause" line all have
+    // to land inside that cap; a longer sentence is cut off before the caller
+    // sees it.  The env var name stays out of this text so the refusal cannot
+    // be read as a request to set it.
+    return (
+      "GR-MCP is not available on this connection.  "
+      + "No sbt_* or gbb_* seat bearer is sent, and this connection has no OAuth assertion path for gr_*.  "
+      + "Use a seat-bearer MCP connection or GR-MCP over stdio (`git-relay mcp`).  "
+      + "The relay URL and Access pair are not the cause.  "
+      + "The other tools still work."
+    );
+  }
+  if (reason === GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE) {
+    return (
+      "GR-MCP is not configured on this server right now (the relay front or the hosted-OAuth assertion signer is unavailable).  "
+      + "Nothing was sent to git-relay;  the other tools still work."
+    );
+  }
+  const vars = missing.length
+    ? missing.join(", ")
+    : `GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")}`;
+  return (
+    `GR-MCP relay front is not configured on this server.  Missing: ${vars} (scripts/simple-tools-mcp/DEPLOY.md).  The other tools still work.`
+  );
+}
+
 // The fronted actions, in the order the admin panel and docs name them.
 // open_pr is the only one the relay still runs under the owner (PR-only)
 // token;  the rest run as the calling seat's own GitHub App.
@@ -146,6 +203,7 @@ export class GrRelayClient {
   // Workflow verbs get a bounded stream, longer deadline and conservative write
   // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
+    if (action === "wf_pr_create") return {status:403,body:{error:"forbidden"},localFailure:true};
     // Bound depth/nodes/cycles before serialization, then cap raw JSON bytes
     // before recursive Zod parsing. Keep the normalized payload check below.
     const limit = workflowInputLimit(action);
@@ -360,7 +418,7 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_workflow_dispatch",
     title: "Dispatch Workflow",
-    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.",
+    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.  Optional intent_id binds idempotency for a branch-shaped ref and does not read the branch.  Add expected_head_sha with the same intent_id to pin the branch head before send.",
     inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object", maxProperties: 32, additionalProperties: { anyOf: [{ type: "string", maxLength: 1024 }, { type: "number" }, { type: "boolean" }] } }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
   },
   {

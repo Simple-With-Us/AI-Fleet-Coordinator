@@ -1,0 +1,126 @@
+"""Byte-level header serialization and legacy routing compatibility for OPS-1086."""
+
+import json
+from pathlib import Path
+import re
+from types import SimpleNamespace
+import unittest
+from unittest import mock
+
+from simple_tools import cli, post_header, router, wake_router
+
+FIXTURES = json.loads(Path(__file__).with_name("header-spacing.json").read_text())
+if not isinstance(FIXTURES, list) or not FIXTURES or not all(
+    isinstance(case, dict)
+    and all(isinstance(case.get(key), str) for key in ("name", "input", "expected"))
+    and (case.get("seat") is None or isinstance(case["seat"], str))
+    and case.get("context", "message") in ("message", "github-pr", "github-pr-body", "github-pr-title")
+    and all(key not in case or (isinstance(case[key], list) and all(isinstance(v, str) for v in case[key]))
+            for key in ("repos", "peers"))
+    for case in FIXTURES
+):
+    raise ValueError("Invalid header-spacing.json fixture shape")
+
+
+class HeaderSpacingTests(unittest.TestCase):
+    def test_pr_body_prefix_has_exact_line_and_utf8_byte_bounds(self):
+        full = "[CODEX: EE.1.S 📁AFC] Body"
+        compact = "[CODEX:\u200a\u200a\u200aEE.1.S] Body"
+        for prefix, accepted in (
+            ("- Wait\n" * 31 + "\n", True),
+            ("- Wait\n" * 32 + "\n", False),
+            ("1. Wait\n" * 31 + "\n", True),
+            ("1. Wait\n" * 32 + "\n", False),
+            ("- " + "é" * 4094 + "\n\n", True),
+            ("- " + "é" * 4094 + "x\n\n", False),
+        ):
+            for command in ("", "@kody start-review\r\n"):
+                with self.subTest(
+                    lines=prefix.count("\n"), bytes=len(prefix.encode("utf-8")), command=command
+                ):
+                    self.assertEqual(
+                        post_header.normalize_header(command + prefix + full, context="github-pr-body"),
+                        command + prefix + (compact if accepted else full),
+                    )
+
+    def test_shared_golden_headers_survive_json_utf8_and_legacy_parsing(self):
+        for case in FIXTURES:
+            with self.subTest(case=case["name"]):
+                options = {"seat": case.get("seat"), "context": case.get("context", "message")}
+                result = post_header.normalize_header(case["input"], **options)
+                self.assertEqual(result, case["expected"])
+                self.assertEqual(post_header.normalize_header(result, **options), result)
+                wire = json.dumps({"content": result}, ensure_ascii=False).encode("utf-8")
+                self.assertEqual(json.loads(wire)["content"], case["expected"])
+                if "repos" in case:
+                    for header in (case["input"], result):
+                        # The legacy transport fragment is not part of compact-header syntax.
+                        if "·" in header:
+                            continue
+                        parsed = router.parse_leading_compact_intro(header)
+                        self.assertIsNotNone(parsed)
+                        self.assertEqual([r.strip() for r in parsed["repos"].split(",")], case["repos"])
+                        self.assertEqual(parsed["peers"], case["peers"])
+                    inner = result[result.index("[") + 1:result.index("]")]
+                    self.assertTrue(wake_router._is_post_header(inner))
+
+    def test_actual_native_post_has_exact_counts_and_no_runtime_suffix(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        body = cli._compose(agent, "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] Body.\u00a0 Next.",
+                            labels=["AG"], mentions=[], no_tag=False)
+        expected = FIXTURES[0]["expected"]
+        self.assertEqual(body, expected)
+        self.assertEqual(re.search(r":(\u200a+)EE", body).group(1), "\u200a" * 3)
+        self.assertEqual(re.search(r"S(\u200a+)📁", body).group(1), "\u200a" * 2)
+        self.assertEqual(re.search(r"📁(\u200a+)AFC", body).group(1), "\u200a")
+        self.assertEqual(re.search(r"AFC,(\u200a+)OPS", body).group(1), "\u200a")
+        self.assertEqual(re.search(r"CODEX EE,(\u200a+)AG", body).group(1), "\u200a" * 2)
+        self.assertNotIn("deadbeef", body)
+        self.assertIn(" → CODEX EE,", body)
+        self.assertTrue(body.endswith("Body.\u00a0 Next."))
+        legacy = cli._compose(agent, "[CODEX: EE.1.S 📁AFC, OPS -> CODEX EE] Body.\u00a0 Next.",
+                              labels=["AG"], mentions=[], no_tag=False)
+        self.assertEqual(legacy, expected)
+
+    def test_native_limit_applies_after_header_serialization(self):
+        text = "[CODEX: EE.1.S 📁AFC] body"
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX")
+        with mock.patch.object(cli, "MAX_CONTENT_LENGTH", len(text)):
+            with self.assertRaises(cli.UsageError):
+                cli._compose(agent, text, labels=[], mentions=[], no_tag=False)
+
+    def test_generated_native_recipients_use_the_shared_arrow_and_comma_contract(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        body = cli._compose(agent, "Body", labels=["AG", "CURSOR"], mentions=[], no_tag=False, quiet=False)
+        self.assertEqual(body, "[CODEX·deadbeef → AG,\u200a\u200aCURSOR] Body")
+
+    def test_both_composed_quiet_markers_keep_wake_sender_and_addressed_letter(self):
+        agent = SimpleNamespace(seat="CLAUDE", tag_prefix="[CLAUDE·aaaaaaaa")
+        for marker in (":eyes: ", "👀 "):
+            body = cli._compose(agent, marker + "[CLAUDE·aaaaaaaa 📁AFC → CODEX EE] Body",
+                                labels=[], mentions=[], no_tag=False, quiet=False)
+            wake = wake_router.wake_from_payload({"seat": "CODEX", "excerpt": body}, "Codex")
+            self.assertEqual(wake.sender_fragment, "aaaaaaaa")
+            self.assertEqual(wake.session_fragments, ())
+            self.assertEqual(wake.letter, "EE")
+
+    def test_quiet_native_posts_and_edits_keep_canonical_header_bytes(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        expected = router.NO_WAKE_MARKER + " " + FIXTURES[0]["expected"]
+        for prefix in ("", router.NO_WAKE_MARKER + " "):
+            with self.subTest(prefix=prefix):
+                body = cli._compose(agent, prefix + FIXTURES[0]["input"], labels=[],
+                                    mentions=[], no_tag=False, quiet=True)
+                self.assertEqual(body, expected)
+
+    def test_quiet_own_headers_and_ascii_transport_arrows_keep_recipients(self):
+        agent = SimpleNamespace(seat="CODEX", tag_prefix="[CODEX·deadbeef")
+        text = "[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] Body.\u00a0 Next."
+        for marker, quiet in (("", True), (":eyes: ", False), ("👀 ", True), ("👀 ", False)):
+            body = cli._compose(agent, marker + text, labels=["AG"], mentions=[], no_tag=False, quiet=quiet)
+            self.assertEqual(body, (marker or ":eyes: ") + FIXTURES[0]["expected"])
+            _, no_wake = router.strip_no_wake(body, "CODEX")
+            self.assertTrue(no_wake)
+            self.assertEqual(router.header_peers(body), ["CODEX EE", "AG"])
+        self.assertEqual(cli._compose(agent, "[CODEX·oldtag->AG] hi", labels=["CURSOR"], mentions=[], no_tag=False),
+                         "[CODEX·deadbeef → AG,\u200a\u200aCURSOR] hi")

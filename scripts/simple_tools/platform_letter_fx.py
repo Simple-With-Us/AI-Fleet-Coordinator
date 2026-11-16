@@ -24,7 +24,7 @@ fx sessions cannot be woken, and a letter does not change that — it makes a li
 
 The sync.  `python3 -m simple_tools.platform_letter_fx sync [--apply] [--location mac]` reads the index and
 registers every session the store holds that was active within the library's own idle window
-(`platform_letter.STALE_SECONDS`, 36 hours), under the seat FX and this adapter's source, with the title the
+(LIVE_SECONDS, 36 hours), under the seat FX and this adapter's source, with the title the
 store carries.  Without `--apply` it only reports what it would register.  A session the store no longer
 holds, or one idle past the window, is closed in the registry if this adapter holds a live registration for
 it, so a letter is freed when its session is gone rather than at the next sweep; a registration the Operator
@@ -61,9 +61,11 @@ from . import session_ids as SI
 PLATFORM = "fx"
 SEAT = "FX"
 SOURCE = "fx-letter-sync"
+#: A session counts as live when the store says it was active this recently (36 hours):  fx keeps no other sign of a
+#: session that is over, so this is the sync's own idle window.
+LIVE_SECONDS = 36 * 3600
 DISPLAY = "Fx"
 
-ENV_OFF = "FX_LETTER"
 SESSIONS_SUBPATH = os.path.join(".fx", "sessions")
 
 
@@ -174,7 +176,6 @@ SPEC = PL.PlatformSpec(
     current_title=PL.from_payload("title"),
     stored_title=PL.from_payload("title"),
     locations=("mac",),
-    env_off=ENV_OFF,
 )
 
 
@@ -271,7 +272,7 @@ def sync_main(
     sessions = store_sessions(env)
     # A session with no readable time is neither registered nor closed:  nothing says whether it is live.
     timed = [s for s in sessions if s["updated"] is not None]
-    live = [s for s in timed if moment - s["updated"] <= PL.STALE_SECONDS]
+    live = [s for s in timed if moment - s["updated"] <= LIVE_SECONDS]
     registered: list[dict[str, Any]] = []
     failed: list[str] = []
     closed: list[str] = []

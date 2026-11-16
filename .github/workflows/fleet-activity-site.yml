@@ -16,6 +16,8 @@ on:
       - "scripts/build-fleet-daily-digest.py"
       - "scripts/build-agent-calendar.py"
       - "scripts/ics_utils.py"
+      - "scripts/public_activity_repos.py"
+      - "agent-logos/**"
       - ".github/workflows/fleet-activity-site.yml"
       - ".github/workflows/agent-calendar.yml"
 
@@ -42,7 +44,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FLEET_OWNER: Simple-With-Us
-          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
           CALENDAR_LOOKBACK_DAYS: "21"
           CALENDAR_PER_REPO: "50"
           CALENDAR_OUT: calendar/agent-activity.ics
@@ -52,7 +53,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FLEET_OWNER: Simple-With-Us
-          FLEET_REPOS: Socratic-Trade,Congress.Trade,Usage-Monitor,congress-trading-shared,AI-Fleet-Coordinator,DealDex,Autorotate,ContactLogo,Personal-Site,BotFleet,HogHunter,Clutch,codecaps
           DIGEST_LOOKBACK_DAYS: "21"
           DIGEST_TZ: America/Chicago
           SITE_OUT: site

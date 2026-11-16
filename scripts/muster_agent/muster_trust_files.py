@@ -3,7 +3,8 @@
 `server-route-spec.md` version 5, sections 9 and 10.  The helper (`fleet-ops-control.py --from-muster`),
 `muster-pub` and `muster-exec` all read the owner key pin, the owner history and the reopen record
 through this module, so that the three of them apply the same checks.  It is installed byte-identical
-in `/usr/local/lib/fleet-resource-control/` and `/usr/local/lib/muster-agent/` from its one source file,
+beside the helper (`~/.local/lib/fleet-resource-control/` of jay on the server) and in
+`/usr/local/lib/muster-agent/` from its one source file,
 `scripts/muster_agent/muster_trust_files.py`, and each installer fails when the other copy differs.
 
 `read_trust_files` refuses (TrustFilesUnsafe) when `/etc/muster`, `owner.pub`, `owner-history.jsonl` or,

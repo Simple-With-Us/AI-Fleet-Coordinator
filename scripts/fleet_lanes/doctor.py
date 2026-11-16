@@ -1592,7 +1592,7 @@ _SEAT_TOOLS = {
     "claude": "claude-cli", "monet": "claude-cli", "renoir": "claude-cli", "codex": "codex",
     "cursor": "cursor", "grok": "grok", "grok-build": "grok", "fx": "fx", "antigravity": "antigravity",
     "minimax": "minimax", "deepseek": "deepseek", "kimi": "kimi", "muse-assist": "muse-assist",
-    "muse-code": "muse-code", "zcode": "zcode",
+    "muse-code": "muse-code", "zc": "zcode", "zcode": "zcode",
 }
 
 
