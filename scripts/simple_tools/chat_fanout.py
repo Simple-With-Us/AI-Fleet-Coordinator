@@ -218,7 +218,7 @@ class ChatPlaces:
         self.cache: dict[tuple[str, str], str] = {}
         self.deadline = time.monotonic() + budget
         #: The folders that could not be asked, and why.
-        self.failed: dict[str, str] = {}
+        self.failed: dict[tuple[str, str], str] = {}
         #: The chats that were dropped because their folder could not be asked.  An owner alert
         #: that quietly loses a chat looks the same as one that never reached it, so the chat is
         #: named here and carried into the receipt.
@@ -229,7 +229,8 @@ class ChatPlaces:
         answers '' (no repo, no branch), so a slow or network-mounted folder cannot delay the reminders."""
         if (cwd, what) not in self.cache:
             if time.monotonic() >= self.deadline:
-                self.failed.setdefault(cwd, "git-budget-spent")
+                self.failed.setdefault((cwd, what), "git-budget-spent")
+                self.cache[(cwd, what)] = ""
                 return ""
             args = (
                 ("config", "--get", "remote.origin.url")
@@ -239,7 +240,8 @@ class ChatPlaces:
             try:
                 self.cache[(cwd, what)] = self.git(cwd, *args)
             except GitQueryTimeout:
-                self.failed.setdefault(cwd, "git-timeout")
+                self.failed.setdefault((cwd, what), "git-timeout")
+                self.cache[(cwd, what)] = ""
                 return ""
         return self.cache[(cwd, what)]
 
@@ -265,7 +267,7 @@ class ChatPlaces:
         if not isinstance(cwd, str) or not cwd.startswith("/"):
             return None
         value = self._ask(cwd, "remote")
-        reason = self.failed.get(cwd, "")
+        reason = self.failed.get((cwd, "remote"), "")
         if reason:
             self._unplaced(row, cwd, reason)
         return repo_from_remote(value)
@@ -274,10 +276,15 @@ class ChatPlaces:
         cwd = row.get("cwd") if isinstance(row.get("cwd"), str) else ""
         branch = self._ask(cwd, "branch") if cwd.startswith("/") else ""
         text = " ".join((str(row.get("title") or ""), cwd, branch))
-        return any(
+        matched = any(
             re.search(rf"(?<![A-Za-z0-9]){re.escape(issue)}(?![0-9])", text, re.IGNORECASE)
             for issue in issues
         )
+        if not matched:
+            reason = self.failed.get((cwd, "branch"), "")
+            if reason:
+                self._unplaced(row, cwd, reason)
+        return matched
 
 
 def pick_recent(rows: Iterable[Mapping[str, Any]], now: float) -> list[Mapping[str, Any]]:
