@@ -23,7 +23,9 @@ UNIVERSAL = "universal-auth-client-secret-must-not-be-used"
 DIGEST_KEY = "k" * 32
 AUD = "aud-value-should-not-print"
 EXTRA = "extra-value/should.*not-print"
-PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
+# A fixture UUID, never the real project id: the repo is public.
+PROJECT = "00000000-0000-4000-8000-000000000000"
+PROJECT_ENV = "WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID"
 FOLDER = "/workers/simple-tools-mcp"
 
 
@@ -205,13 +207,25 @@ class DiffAndPolicy(unittest.TestCase):
 
 class CommittedContract(unittest.TestCase):
     def test_one_folder_map_and_the_allowlist_is_names_only(self):
-        folders = sync.load_folder_map()
+        raw_map = pathlib.Path("scripts/worker-secret-folders.json").read_text()
+        self.assertNotIn('"project_id"', raw_map.replace("project_id_env", ""))
+        self.assertNotRegex(
+            raw_map,
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        )
+        folders = sync.load_folder_map(env={PROJECT_ENV: PROJECT})
         self.assertEqual(set(folders), {"simple-tools-mcp"})
         row = folders["simple-tools-mcp"]
         self.assertEqual(row["project_id"], PROJECT)
         self.assertEqual(row["environment"], "prod")
         self.assertEqual(row["folder"], FOLDER)
         self.assertEqual(row["token_env"], "WORKER_SECRET_SYNC_INFISICAL_TOKEN")
+        with self.assertRaises(sync.SyncError) as caught:
+            sync.load_folder_map(env={})
+        self.assertEqual(str(caught.exception), "project-id-env-missing simple-tools-mcp")
+        with self.assertRaises(sync.SyncError) as caught:
+            sync.load_folder_map(env={PROJECT_ENV: "not-a-uuid"})
+        self.assertEqual(str(caught.exception), "project-id-env-missing simple-tools-mcp")
         names = sync.load_allowlist("simple-tools-mcp")
         self.assertIn("ACCESS_AUD", names)
         self.assertNotIn(sync.DIGEST_KEY_NAME, names)
@@ -324,6 +338,7 @@ def run_cli(argv, env, cloud, guard=None):
 class Cli(unittest.TestCase):
     def env(self, apply=None):
         values = {
+            PROJECT_ENV: PROJECT,
             "WORKER_SECRET_SYNC_INFISICAL_TOKEN": SERVICE,
             "CLOUDFLARE_API_TOKEN": CLOUDFLARE,
             "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "client-id-must-not-be-used",
@@ -597,7 +612,7 @@ class Cli(unittest.TestCase):
                 ["simple-tools-mcp"],
                 account=ACCOUNT,
                 guard=lambda _name: False,
-                env={"INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": UNIVERSAL},
+                env={"INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": UNIVERSAL, PROJECT_ENV: PROJECT},
                 now=NOW,
                 stdout=io.StringIO(),
                 stderr=stderr,
