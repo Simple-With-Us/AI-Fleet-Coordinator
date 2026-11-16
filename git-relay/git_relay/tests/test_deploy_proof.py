@@ -51,3 +51,28 @@ class ProofTests(unittest.TestCase):
         with self.assertRaisesRegex(Refused, "default branch is not writable"):
             handle.wf_file_patch(RuntimeProof.REPO, args)
         self.assertEqual(client.calls, [("GET", "/repos/" + RuntimeProof.REPO)])
+
+
+class GenerationDiscriminatorTests(unittest.TestCase):
+    def test_old_generation_refusal_requires_absent_sentinel(self):
+        p = RuntimeProof("synthetic")
+
+        def old_dispatch(action, args):
+            if action == "wf_repo_get":
+                return 200, {"repository": {"full_name": p.REPO, "default_branch": "main"}}
+            return 400, {"error": "unknown action 'wf_file_patch'"}
+
+        p.call = old_dispatch
+        # A genuine old-generation image (no sentinel in the hash view) is proven.
+        self.assertTrue(p({}, {}))
+
+        def new_dispatch(action, args):
+            if action == "wf_repo_get":
+                return 200, {"repository": {"full_name": p.REPO, "default_branch": "main"}}
+            return 400, {"error": "default branch is not writable"}
+
+        p.call = new_dispatch
+        # Scanner-only hashes WITHOUT the sentinel must not accept the
+        # new-generation refusal: that mismatch was the 2026-11-14 recover-leg
+        # deterministic refusal.
+        self.assertFalse(p({}, {}))

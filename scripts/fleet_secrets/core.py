@@ -7,11 +7,14 @@ CLI login session or credential-file fallback runs.  Values stay in memory.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 import time
 import urllib.error
@@ -330,6 +333,73 @@ def project_name_for_id(project_id: str, env: Mapping[str, str]) -> str:
     raise SecretsError("project-token-binding-missing: project id has no configured token binding")
 
 
+def cli_session_workdir(env: Mapping[str, str], project: str) -> Path:
+    """Owned workdir for the interactive CLI-session route.
+
+    The Infisical CLI resolves the project from a .infisical.json beside the
+    working directory even when --projectId is passed, so the export cannot
+    run from "/": an unowned directory could hold a stale or hostile project
+    file, and a root shell's "/" simply has none.  Keep one owned directory
+    (0700) holding only the two-field project file (0600); the file names the
+    project id and environment and carries no secret material.
+    """
+    # One owned directory PER PROJECT: two concurrent exports for different
+    # projects then race only on their own project file (same project means
+    # an identical payload, so the atomic replace stays benign).
+    safe_project = re.sub(r"[^A-Za-z0-9._-]+", "_", project) or "project"
+    base = home_dir(env) / ".config" / "fleet-secrets" / "cli-session"
+    workdir = base / safe_project
+    try:
+        if base.is_symlink() or workdir.is_symlink():
+            raise SecretsError(
+                "cli-session-workdir-symlink: refusing to follow a symlinked workdir"
+            )
+        # mode applies only to the mkdir leaf: create the intermediate base
+        # explicitly and chmod it too, or it keeps the umask default (0755)
+        # and local users can enumerate the per-project directory names.
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(base, 0o700)
+        workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(workdir, 0o700)
+        payload = (
+            json.dumps({"workspaceId": project, "defaultEnvironment": ENVIRONMENT}, indent=2) + "\n"
+        )
+        # Durable owner-only install: write a UNIQUE sibling temp file (a
+        # per-process name, so two concurrent exports never share it; mkstemp
+        # creates it 0600 with O_EXCL, so no planted link is followed), fsync
+        # it, atomically replace the project file, and fsync the directory.
+        # The temp file's creation mode makes the result 0600 regardless of
+        # any prior mode.
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=workdir, prefix=".infisical.json.", suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, workdir / ".infisical.json")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+        try:
+            dir_fd = os.open(workdir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            if exc.errno != errno.EINVAL:
+                raise SecretsError("cli-session-workdir-unavailable: " + str(exc)) from exc
+            # Some filesystems refuse to fsync a directory at all (EINVAL);
+            # failing there would break those systems outright.  The file
+            # itself is already durable; the name is best-effort only there.
+            pass
+    except OSError as exc:
+        raise SecretsError("cli-session-workdir-unavailable: " + str(exc)) from exc
+    return workdir
+
+
 def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> dict[str, str]:
     """Explicit interactive read-only admin route; automation must pass a scoped token."""
     if not sys.stdin.isatty():
@@ -338,6 +408,7 @@ def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> d
     if not cli:
         raise SecretsError("cli-missing")
     child = _base_env(env)
+    workdir = cli_session_workdir(env, project)
     argv = [
         cli,
         "export",
@@ -353,7 +424,7 @@ def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> d
             stdin=None,
             capture_output=True,
             timeout=EXPORT_TIMEOUT,
-            cwd="/",
+            cwd=str(workdir),
             env=child,
             check=False,
         )
