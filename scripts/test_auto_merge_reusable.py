@@ -531,6 +531,25 @@ def run_classify(mode: str, review_gate: str = "", **kwargs) -> tuple[int, str, 
     return code, output, reason
 
 
+class RearmWiringContract(unittest.TestCase):
+    """The rearm input, its default and the classify if-gate stay wired."""
+
+    def test_the_rearm_input_defaults_to_empty(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("rearm_pr_number:", text)
+        self.assertIn('default: ""', text)
+
+    def test_the_classify_gate_admits_rearm_and_keeps_the_event_path(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("inputs.rearm_pr_number != ''", text)
+        self.assertIn("github.event.pull_request.draft == false", text)
+
+    def test_classify_outputs_pr_url_for_arm_and_disarm(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("pr_url: ${{ steps.check.outputs.pr_url }}", text)
+        self.assertEqual(text.count("${{ needs.classify.outputs.pr_url }}"), 4)
+
+
 class ClassifyRearmMode(unittest.TestCase):
     """The opt-in rearm_pr_number path (AFC-812): fetch by number, validate,
     then run the identical gates.  Defaults keep the event path."""
