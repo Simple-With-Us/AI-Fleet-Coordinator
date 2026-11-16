@@ -37,3 +37,9 @@ New client regression checks that an ordinary file and a workflow file remain in
 - No default-branch write, new credential, alternate seat, review waiver or production relay activation is included.
 
 Source review, exact-head CI, immutable client release qualification and an authorized full-file workflow operation with readback are still needed before calling the route restored end to end. This document records the bounded repair, not completion of the wider Fleet Tools deficiency backlog.
+
+## Narrow immutable client preparation
+
+The installed `0fac2e8417218ff8791da9d699b66de0770bddca` client is older than current main. Installing the entire current implementation would import unrelated changes. `scripts/build-workflow-client-release.py` instead accepts only the exact five pinned files of that immutable baseline and produces a new offline directory. It changes only `_publish_path_check`, validates the exact output SHA256 `7ec709b38325aebe3e97f6f1ef85cfa3b4973527c7ea679f3deaa3155e169414`, and preserves wrapper, catalogs and scanner byte for byte. It has no activation, networking, credential read, outcome-store access or pointer swap.
+
+Actual builder run against the installed baseline produced that output and all four original companion hashes. Baseline seven-module client suite with the reviewed new admission tests passed 271 tests / 5 platform skips. Six synthetic builder regressions separately test finite output, baseline mismatch, source/member symlink refusal, no overwrite and output-digest mismatch. Synthetic tests do not replace the actual baseline qualification. A partially written destination must never be activated or reused. Review/CI, final provenance and an explicit verified activation/readback step remain required.
