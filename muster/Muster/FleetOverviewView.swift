@@ -209,7 +209,7 @@ struct FleetOverviewView: View {
                                           readAt: admin.lastReadAt, now: watch.now)
         case .serverStatus:
             return PlaceHealthWords.badge(menu.server.health)
-        case .overview, .macAgents, .driftHistory, .wakeAndListener, .seatDetail,
+        case .overview, .macAgents, .driftHistory, .seatDetail, .operator,
              .serverResourceLimits, .serverUpdates, .appsAndWork, .seats, .controls,
              .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return nil
@@ -233,8 +233,8 @@ struct FleetOverviewView: View {
             FleetServicesPanel()
         case .macAgents:
             OperationsView(part: .agents)
-        case .wakeAndListener:
-            WakeSettingsView()
+        case .operator:
+            OperatorPanelView(openControls: { destination = .controls })
         case .controls:
             ControlsView()
         case .seatDetail:

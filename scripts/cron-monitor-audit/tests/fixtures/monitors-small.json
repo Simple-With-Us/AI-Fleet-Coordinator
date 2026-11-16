@@ -1,0 +1,69 @@
+[
+  {
+    "slug": "ci-socratic-trade-vercel-production-catch-up",
+    "name": "ci-socratic-trade-vercel-production-catch-up",
+    "status": "disabled",
+    "project": {"slug": "fleet-infra"},
+    "isMuted": false,
+    "environments": [
+      {"name": "production", "status": "error", "lastCheckIn": "2026-10-29T13:39:39Z", "isMuted": false}
+    ]
+  },
+  {
+    "slug": "ci-socratic-trade-ci",
+    "name": "ci-socratic-trade-ci",
+    "status": "active",
+    "project": {"slug": "fleet-infra"},
+    "environments": [
+      {"name": "production", "status": "error", "lastCheckIn": "2026-11-11T07:00:00Z"}
+    ]
+  },
+  {
+    "slug": "ci-socratic-trade-security",
+    "name": "ci-socratic-trade-security",
+    "status": "active",
+    "project": {"slug": "fleet-infra"},
+    "environments": [
+      {"name": "production", "status": "ok", "lastCheckIn": "2026-11-10T10:41:00Z"}
+    ]
+  },
+  {
+    "slug": "ci-socratic-trade-gone-workflow",
+    "name": "ci-socratic-trade-gone-workflow",
+    "status": "active",
+    "project": {"slug": "fleet-infra"},
+    "environments": [
+      {"name": "production", "status": "missed_checkin", "lastCheckIn": "2026-09-01T00:00:00Z"}
+    ]
+  },
+  {
+    "slug": "operator-mac",
+    "status": "active",
+    "project": {"slug": "fleet-infra"},
+    "environments": [
+      {"name": "production", "status": "error", "lastCheckIn": "2026-11-11T05:24:18Z"}
+    ]
+  },
+  {
+    "slug": "operator-server",
+    "status": "active",
+    "project": {"slug": "fleet-infra"},
+    "environments": [
+      {"name": "production", "status": "ok", "lastCheckIn": "2026-11-12T01:54:22Z"}
+    ]
+  },
+  {
+    "slug": "botfleet-overnight-board-95f6ac6a",
+    "status": "active",
+    "project": {"slug": "botfleet"},
+    "environments": [
+      {"name": "production", "status": "error", "lastCheckIn": "2026-10-30T20:09:25Z"}
+    ]
+  },
+  {
+    "slug": "fleet-host-monitor",
+    "status": "disabled",
+    "project": {"slug": "fleet-infra"},
+    "environments": []
+  }
+]

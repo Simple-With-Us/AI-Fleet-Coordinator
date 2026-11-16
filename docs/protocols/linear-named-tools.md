@@ -9,6 +9,7 @@ AFC-318 adds 175 named commands to the hosted Simple Tools MCP, alongside the ex
 - Write commands require an explicit idempotency_key.  The same key must be reused for retries of the same intended change; uncertain outcomes are never automatically replayed.
 - Save commands create when id is omitted and update when id is supplied.  The input object follows the corresponding create/update type in linear_schema.
 - Optional selection chooses GraphQL response fields without allowing extra operations.  Use linear_schema to inspect available fields and input types.  Selection syntax is checked locally; Linear validates whether selected fields exist on the response type and returns schema errors for invalid fields.
+- A read returns the Linear payload in the fenced text.  An empty payload (`null` or `{}`), including a GraphQL response whose `data` is null, is a tool error (`invalid_argument` when Linear sent GraphQL errors, `upstream_error` when it sent no data) and never a successful `{}`.  Field errors beside a real payload are partial data: the payload is returned and the summary names the error codes and paths.  A result over `max_chars` is `response_too_large`.  A `selection` that is not a GraphQL field list is `invalid_argument` and is not sent.  One pair of wrapping braces around that field list is accepted.
 - Existing app identity checks, tool scopes, budgets, write switch and fleet ownership-label guards apply to every wrapper.
 
 ## Uploads And Availability

@@ -27,7 +27,7 @@ Three tools stand alone and need no identity:
 | `guide` | This guide, or one `##` section by name (case and punctuation ignored).  Needs no credential.  A wrong name lists the section names. |
 | `catalog` | This connection's own tool catalog in bounded pages:  names and one-line descriptions only (full schemas come from `tools/list`, which accepts the same cursor).  Call with no arguments for the first page;  pass the returned `nextCursor` as `cursor` for the next page.  Hosted only. |
 
-Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #sandbox.
+Call `identities` first when a client is new, then `whoami` with an `identity` to prove the bot.  Test posts go to #Sandbox.
 
 ## Which Connection a Client Gets
 
@@ -211,6 +211,8 @@ Hosted only, JET-CHAT (the full Jet login) only, and only while the WhatsApp bri
 
 ## GitHub Tools: git-relay and GR-MCP
 
+PR titles, descriptions and comments use the actual writing session in a compact header, for example `[CODEX:   GG.1.S]`, without the folder symbol or repository names.  A held PR description puts its readiness criteria bullets and a blank line before the compact header.  Kody requests retain the literal command on line 1, that header on line 2 and the full reviewed head SHA and context afterward.  Hosted explicit PR text routes normalize supplied headers; direct GR-MCP/HTTP callers and byte-for-byte opt-outs supply the compact form themselves.  Generic workflow issue-comment verbs preserve ordinary issue context; use the explicit PR comment verb for PR context.  Ordinary GitHub issue, Zulip and Linear headers retain repository names, and no formatter assigns or infers a session letter.
+
 GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 
 **The route rule (owner ruling 2026-11-08).  Every GitHub read or write goes through the relay — the `gr_*` / `gr_wf_*` verbs on the hosted front, the `wf_*` verbs through GR-MCP, or `simple-git` — under the seat's own identity.  `gh` is backup only, for an operation the relay has no verb for, and every `gh` fallback is logged the same day in the Fleet GitOPS deficiencies document (Linear, Part 2: the missing verb, what `gh` did, and why).
@@ -388,7 +390,7 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `unknown_tool` | A removed name.  Use `replacement` |
 | `invalid_argument` | The arguments broke the schema or a rule (the message names the field) |
 | `not_authorized` | Zulip or Linear refused the credential, a missing OAuth scope on hosted (reconnect and approve `zulip:read` or `zulip:write`), or a Linear write by the wrong app |
-| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
+| `not_configured` | This seat or family is not set up: on hosted, on the server (Linear, FleetLink, recall, a bot's credentials); on stdio, FleetLink's CLI or the seat's FleetLink token is missing here.  Hosted `gr_*` refusals that never reach git-relay also carry a stable `reason` (see below) |
 | `paused` | Hosted only: the owner paused this seat |
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying; never replay blindly |
@@ -399,6 +401,18 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
 | `relay_refused` | The hosted `gr_*` tools: git-relay refused the call (definite, nothing written).  The answer carries a `reason` when the cause is known; see "Why a `gr_*` Call Was Refused" below.  No `reason` means the relay's verdict was not one it recognises: read `message` |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above: a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
+
+### When `gr_*` Answers `not_configured` Before git-relay
+
+A hosted `gr_*` call that never reaches git-relay still uses `code: "not_configured"` and adds a stable `reason` so operators are not sent to fix the wrong layer.
+
+| `reason` | What it means and what to do |
+|---|---|
+| `gr_relay_env_missing` | The Worker relay front is missing `GR_UPSTREAM_URL` and/or the Cloudflare Access pair (`GR_ACCESS_CLIENT_ID`, `GR_ACCESS_CLIENT_SECRET`).  `missing` lists the unset names.  Fix in Fleet-OPS `/gr-front` and redeploy the Worker (DEPLOY.md) |
+| `gr_connection_no_seat_relay_auth` | The server relay front may be fine;  this MCP connection has no seat bearer (`sbt_*` / `gbb_*`) and no OAuth assertion path for gr_* (for example a web OAuth connector without a working grant path, or a paused or wake-only seat).  Use a seat-bearer MCP connection minted with ST-MCP/GR-MCP acceptance, or GR-MCP over stdio (`git-relay mcp`).  Setting relay env vars will not help |
+| `gr_relay_signer_unavailable` | OAuth assertion minting failed (signing key or isolated Infisical binding).  Nothing was sent to git-relay;  fix `/gr-assert-signing` and redeploy |
+
+The read-only git route at `/git/…` uses the same `gr_relay_env_missing` reason in its JSON body when the relay front is unset.
 
 ### Why a `gr_*` Call Was Refused
 

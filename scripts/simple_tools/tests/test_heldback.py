@@ -27,6 +27,7 @@ from simple_tools import heldback as HELD
 from simple_tools import live as L
 from simple_tools import wakes as W
 from simple_tools.daemon import clear_pause
+from simple_tools.tests.listener_harness import SYNTHETIC_STREAM_ID
 from simple_tools.tests.test_daemon import MENTION as CLAUDE_MENTION
 from simple_tools.tests.test_daemon import DaemonHarness
 from simple_tools.tests.test_server import CLOUD_SEATS, SEAT, CloudSeatHarness, ServerHarness
@@ -375,7 +376,7 @@ class WorkerRuleTests(unittest.TestCase):
             "dm": False,
             "channel": "work-in-progress",
             "topic": "budget",
-            "stream_id": 642232,
+            "stream_id": SYNTHETIC_STREAM_ID,
             "sender_full_name": "Codex",
             "zulip_link": "https://z/near/4100",
             "reason": "wakes_per_hour",
@@ -1092,7 +1093,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         pending = W.Pending(
             wake_id,
             SEAT,
-            {"channel": "work-in-progress", "topic": "batch", "stream_id": 642232},
+            {"channel": "work-in-progress", "topic": "batch", "stream_id": SYNTHETIC_STREAM_ID},
             owner=False,
             now=1.0,
             due=1.0,
@@ -1190,7 +1191,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         pending = W.Pending(
             "w-long",
             SEAT,
-            {"channel": "work-in-progress", "topic": long, "stream_id": 642232},
+            {"channel": "work-in-progress", "topic": long, "stream_id": SYNTHETIC_STREAM_ID},
             owner=False,
             now=1.0,
             due=1.0,
@@ -1235,7 +1236,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
             "type": "stream",
             "channel": "work-in-progress",
             "topic": long,
-            "stream_id": 642232,
+            "stream_id": SYNTHETIC_STREAM_ID,
             "sender_id": 11,
             "sender": long,
             "content": "\U0001f525" * 5000,
