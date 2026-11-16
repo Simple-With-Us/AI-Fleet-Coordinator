@@ -2755,7 +2755,9 @@ class LegacyStateAdoption(unittest.TestCase):
 
         def fake_source(**kwargs):
             captured.update(kwargs)
-            return real_source(runner=lambda *a, **k: None, **kwargs)
+            source = real_source(runner=lambda *a, **k: None, **kwargs)
+            source.verified_secret = unittest.mock.Mock(return_value="20000")
+            return source
 
         origin = pathlib.Path.cwd()
         with (
@@ -3068,7 +3070,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
 
             class _Source:
                 def verified_secret(self, name):
-                    return "v"
+                    return "20000" if name == server.OUTCOMES_CAPACITY_KEY else "v"
 
                 def secret(self, name):
                     return "k" * 32
@@ -3191,3 +3193,217 @@ class TestRateEnvironmentErrors(unittest.TestCase):
                     self.assertIn("git-relay config:", str(raised.exception))
                     self.assertIn("not-a-number", str(raised.exception))
                     self.assertNotIn("file seat policy", str(raised.exception))
+
+
+CORR_SEAT = json.dumps(
+    {
+        "swu-echo": {
+            "token": SEAT_TOKEN,
+            "actions": ["comment_pr"],
+            "repos": ["example/fixture-repo"],
+            "app_slug": "swu-echo",
+            "mint_permissions": {"pull_requests": "write", "issues": "write"},
+        }
+    }
+)
+CORR_ARGS = {"repo": "example/fixture-repo", "number": 1, "body": "hi"}
+
+
+class TestOutcomeCorrAuditStamp(unittest.TestCase):
+    """An audit row's outcome_corr must always join to an outcome row.
+
+    Regression for the dangling-corr finding:  the corr was minted before
+    begin(), so the caller-error (400) and capacity-refusal (503) arms - which
+    write no outcome row - still stamped it on the audit row.  Refusals now
+    stamp no corr;  accepted and replayed attempts stamp the corr of the real
+    row the attempt joined.
+    """
+
+    def setUp(self):
+        from git_relay.outcomes import OutcomeStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.audit_path = os.path.join(self.tmp.name, "a.jsonl")
+        self.store_path = os.path.join(self.tmp.name, "outcomes.json")
+        self.relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(self.audit_path),
+            app_minter=FakeMinter(),
+            outcomes=OutcomeStore(self.store_path),
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def audit_rows(self):
+        with open(self.audit_path) as stream:
+            return [json.loads(line) for line in stream]
+
+    def stored_outcome_row(self):
+        with open(self.store_path) as stream:
+            store = json.load(stream)
+        self.assertEqual(len(store), 1)
+        return next(iter(store.values()))
+
+    def test_accepted_write_stamps_the_outcome_row_corr(self):
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 200)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        outcome_row = self.stored_outcome_row()
+        self.assertEqual(outcome_row["state"], "ok")
+        self.assertEqual(rows[0]["outcome_corr"], outcome_row["corr"])
+
+    def test_replay_stamps_the_original_corr(self):
+        first = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        second = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual((first[0], second[0]), (200, 200))
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 2)
+        outcome_row = self.stored_outcome_row()
+        self.assertEqual(rows[0]["outcome_corr"], outcome_row["corr"])
+        self.assertEqual(rows[1]["outcome_corr"], outcome_row["corr"])
+
+    def test_capacity_refusal_stamps_no_outcome_corr(self):
+        from git_relay.outcomes import OutcomeStoreError
+
+        def full(key, **kwargs):
+            raise OutcomeStoreError("full")
+
+        self.relay.outcomes.begin = full
+        status, body = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 503)
+        self.assertTrue(body["retryable"])
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])
+
+    def test_caller_error_stamps_no_outcome_corr(self):
+        def malformed(key, **kwargs):
+            raise ValueError("corr must be a non-empty string when supplied")
+
+        self.relay.outcomes.begin = malformed
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 400)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])
+
+
+class TestOutcomeCorrUnexpectedFailure(unittest.TestCase):
+    """The generic failure path binds only a corr the stored row carries.
+
+    Regression for the Kody follow-up on the outcome_corr fix:  an
+    UNEXPECTED begin() failure (e.g. OSError from the durable write) used to
+    reach the generic handler with the minted attempt_corr still set, so the
+    audit row advertised a corr no stored row carried.  The handler now binds
+    corr_of(key) after the release:  nothing when begin() wrote no row, the
+    stored row's corr when one exists.
+    """
+
+    def setUp(self):
+        from git_relay.outcomes import OutcomeStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.audit_path = os.path.join(self.tmp.name, "a.jsonl")
+        self.store_path = os.path.join(self.tmp.name, "outcomes.json")
+        self.store = OutcomeStore(self.store_path)
+        self.relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(self.audit_path),
+            app_minter=FakeMinter(),
+            outcomes=self.store,
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def audit_rows(self):
+        with open(self.audit_path) as stream:
+            return [json.loads(line) for line in stream]
+
+    def test_begin_oserror_before_any_row_stamps_no_outcome_corr(self):
+        def broken(key, **kwargs):
+            raise OSError("disk full")
+
+        self.relay.outcomes.begin = broken
+        status, body = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {"error": "internal relay error"})
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["result"], "error")
+        self.assertNotIn("outcome_corr", rows[0])
+        # The fail-closed release still writes an unknown row, with no corr.
+        with open(self.store_path) as stream:
+            store = json.load(stream)
+        self.assertEqual(len(store), 1)
+        outcome_row = next(iter(store.values()))
+        self.assertEqual(outcome_row["state"], "unknown")
+        self.assertNotIn("corr", outcome_row)
+
+    def test_begin_failure_after_row_insert_binds_the_stored_corr(self):
+        original_save = self.store._save
+        calls = []
+
+        def fail_once():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("transient")
+            original_save()
+
+        self.store._save = fail_once
+        status, _ = self.relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        self.assertEqual(status, 500)
+        rows = self.audit_rows()
+        self.assertEqual(len(rows), 1)
+        with open(self.store_path) as stream:
+            store = json.load(stream)
+        self.assertEqual(len(store), 1)
+        outcome_row = next(iter(store.values()))
+        self.assertEqual(outcome_row["state"], "unknown")
+        stored = self.store.corr_of(next(iter(store)))
+        self.assertIsNotNone(stored)
+        self.assertEqual(rows[0]["outcome_corr"], stored)
+
+
+class TestOutcomeCorrReleaseFailure(unittest.TestCase):
+    """A failed release must not leave the minted corr on the audit row.
+
+    Regression for the reviewer cascade residual:  when begin() fails AND
+    the fail-closed release's own durable write also fails, the release
+    exception propagates - and the audit row recorded in finally must not
+    advertise the minted corr, which no stored row is known to carry.
+    """
+
+    def test_release_failure_after_begin_failure_stamps_no_outcome_corr(self):
+        from git_relay.outcomes import OutcomeStore
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        audit_path = os.path.join(tmp.name, "a.jsonl")
+        store = OutcomeStore(os.path.join(tmp.name, "outcomes.json"))
+        relay = Relay(
+            SeatPolicy(CORR_SEAT),
+            StubClient(),
+            AuditLog(audit_path),
+            app_minter=FakeMinter(),
+            outcomes=store,
+        )
+
+        def broken_begin(key, **kwargs):
+            raise OSError("begin save failed")
+
+        def broken_finish(key, state, result=None):
+            raise OSError("release save failed")
+
+        relay.outcomes.begin = broken_begin
+        relay.outcomes.finish = broken_finish
+        with self.assertRaises(OSError):
+            relay.handle(SEAT_TOKEN, "comment_pr", CORR_ARGS)
+        with open(audit_path) as stream:
+            rows = [json.loads(line) for line in stream]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("outcome_corr", rows[0])

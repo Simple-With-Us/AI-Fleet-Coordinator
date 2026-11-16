@@ -714,6 +714,40 @@ struct OperatorCell: Equatable {
     let help: String
 }
 
+/// How Seats And Chats groups its rows.
+enum OperatorSeatGrouping: String, CaseIterable, Identifiable {
+    case byPlatform
+    case bySeat
+    case flat
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .byPlatform: return "By platform"
+        case .bySeat: return "By seat"
+        case .flat: return "All rows"
+        }
+    }
+}
+
+/// Which chats Seats And Chats shows.
+enum OperatorSeatFilter: String, CaseIterable, Identifiable {
+    case all
+    case live
+    case problems
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .live: return "Live"
+        case .problems: return "Attention"
+        }
+    }
+}
+
 /// One row of Seats And Chats.
 struct OperatorSeatRow: Equatable, Identifiable {
     let id: String
@@ -724,6 +758,27 @@ struct OperatorSeatRow: Equatable, Identifiable {
     let wake: OperatorCell
     let router: OperatorCell
     let lastSeen: String
+    var platform: String = "Other"
+    var issues: [String] = []
+
+    var isLive: Bool {
+        state.text == "Live"
+    }
+
+    var hasProblem: Bool {
+        state.tone == .warning || wake.tone == .warning || router.tone == .warning || !issues.isEmpty
+    }
+}
+
+/// One collapsible group of chats in Seats And Chats.
+struct OperatorSeatGroup: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let liveCount: Int
+    let goneCount: Int
+    let problemCount: Int
+    let seatsSummary: String?
+    let rows: [OperatorSeatRow]
 }
 
 struct OperatorSeatsTable: Equatable {
@@ -731,6 +786,40 @@ struct OperatorSeatsTable: Equatable {
     /// Live and gone chats the table does not list, past its row limit.
     let moreCount: Int
     let note: String?
+    var totalMatchingCount: Int = 0
+    var groups: [OperatorSeatGroup] = []
+}
+
+/// How Recent Wakes groups its rows.
+enum OperatorWakeGrouping: String, CaseIterable, Identifiable {
+    case newestFirst
+    case bySeat
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .newestFirst: return "Newest first"
+        case .bySeat: return "By seat"
+        }
+    }
+}
+
+/// Which wakes Recent Wakes shows.
+enum OperatorWakeFilter: String, CaseIterable, Identifiable {
+    case all
+    case problems
+    case ownerOrDM
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .problems: return "Stopped"
+        case .ownerOrDM: return "Owner / DM"
+        }
+    }
 }
 
 /// One row of Recent Wakes.
@@ -740,6 +829,19 @@ struct OperatorWakeLine: Equatable, Identifiable {
     let seat: String
     let state: OperatorCell
     let reason: String
+    var isOwnerOrDM: Bool = false
+
+    var isProblem: Bool {
+        state.tone == .warning
+    }
+}
+
+/// One collapsible per-seat group of wakes.
+struct OperatorWakeSeatGroup: Equatable, Identifiable {
+    let id: String
+    let seat: String
+    let problemCount: Int
+    let rows: [OperatorWakeLine]
 }
 
 struct OperatorWakesTable: Equatable {
@@ -748,6 +850,10 @@ struct OperatorWakesTable: Equatable {
     /// Held back and waiting for the owner, shown only when either is not zero.
     let summary: String?
     let notes: [String]
+    var totalLoadedCount: Int = 0
+    var loadedMoreCount: Int = 0
+    var unloadedServerCount: Int = 0
+    var seatGroups: [OperatorWakeSeatGroup] = []
 }
 
 /// Everything the Operator panel says, computed from the readings and a clock, so each card,
@@ -972,6 +1078,25 @@ enum OperatorPanelPresentation {
         }
     }
 
+    static func platformLabel(_ raw: String?) -> String {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return "Other"
+        }
+        switch trimmed.lowercased() {
+        case "claude", "claude-code", "claude_code": return "Claude"
+        case "codex", "openai-codex": return "Codex"
+        case "cursor": return "Cursor"
+        case "antigravity", "agy": return "Antigravity"
+        case "gemini", "gemini-cli": return "Gemini"
+        case "grok", "grok-build", "gb": return "Grok"
+        case "minimax", "mm": return "MiniMax"
+        case "opencode": return "OpenCode"
+        case "botfleet", "bf": return "BotFleet"
+        case "chat": return "Chat"
+        default: return OperatorPanelText.humanized(trimmed)
+        }
+    }
+
     static func stateCell(_ status: String?) -> OperatorCell {
         switch status {
         case "active"?: return OperatorCell(text: "Live", tone: .good, help: "The registry holds this chat as live.")
@@ -1043,7 +1168,10 @@ enum OperatorPanelPresentation {
         _ document: OperatorSessionsDocument,
         status: ServerEavesdropperReading?,
         now: Date,
-        limit: Int = seatRowLimit
+        limit: Int = seatRowLimit,
+        filter: OperatorSeatFilter = .all,
+        search: String = "",
+        grouping: OperatorSeatGrouping = .byPlatform
     ) -> OperatorSeatsTable {
         func rank(_ session: OperatorSession) -> Int {
             switch session.status {
@@ -1063,7 +1191,51 @@ enum OperatorPanelPresentation {
             default: return a.offset < b.offset
             }
         }
-        let rows = ordered.prefix(limit).map { index, session in
+        var routerCache: [String: OperatorCell] = [:]
+        func cachedRouter(for seat: String) -> OperatorCell {
+            if let cached = routerCache[seat] { return cached }
+            let computed = routerCell(seat: seat, status: status, now: now)
+            routerCache[seat] = computed
+            return computed
+        }
+        func cleanedIssues(for session: OperatorSession) -> [String] {
+            session.issues
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .map { $0.contains(" ") ? $0 : OperatorPanelText.humanized($0) }
+        }
+
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchingSessions: [(offset: Int, element: OperatorSession)]
+        if filter == .all && needle.isEmpty {
+            matchingSessions = ordered
+        } else {
+            matchingSessions = ordered.filter { _, session in
+                let state = stateCell(session.status)
+                let wake = wakeCell(session.wake)
+                let router = cachedRouter(for: session.seat)
+                let issues = session.issues.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                let hasProblem = (state.tone == .warning) || (wake.tone == .warning) || (router.tone == .warning) || issues
+                switch filter {
+                case .all: break
+                case .live: guard state.text == "Live" else { return false }
+                case .problems: guard hasProblem else { return false }
+                }
+                guard !needle.isEmpty else { return true }
+                let fields = [
+                    session.seat,
+                    letterText(letter: session.letter, generation: session.generation),
+                    platformLabel(session.platform),
+                    hostLabel(code: session.hostCode, host: session.host),
+                    state.text,
+                    wake.text,
+                    router.text,
+                ] + cleanedIssues(for: session)
+                return fields.contains { $0.localizedCaseInsensitiveContains(needle) }
+            }
+        }
+        let visibleSessions = limit < Int.max ? Array(matchingSessions.prefix(max(0, limit))) : matchingSessions
+        let rows = visibleSessions.map { index, session in
             OperatorSeatRow(
                 id: "\(index)|\(session.seat)|\(session.letter ?? "-")|\(session.generation ?? 0)",
                 seat: session.seat,
@@ -1071,20 +1243,73 @@ enum OperatorPanelPresentation {
                 host: hostLabel(code: session.hostCode, host: session.host),
                 state: stateCell(session.status),
                 wake: wakeCell(session.wake),
-                router: routerCell(seat: session.seat, status: status, now: now),
-                lastSeen: OperatorPanelText.relative(session.lastSeen, now: now)
+                router: cachedRouter(for: session.seat),
+                lastSeen: OperatorPanelText.relative(session.lastSeen, now: now),
+                platform: platformLabel(session.platform),
+                issues: cleanedIssues(for: session)
             )
         }
+        let groups = buildSeatGroups(rows: rows, grouping: grouping)
+
         var notes: [String] = []
         if document.truncated == true {
             let in_all = document.activeCount.map { " of \($0) live" } ?? ""
             notes.append("The server lists only the newest \(document.sessions.count)\(in_all) chats, so older live chats are not here.")
         }
         return OperatorSeatsTable(
-            rows: Array(rows),
-            moreCount: max(0, ordered.count - rows.count),
-            note: notes.isEmpty ? nil : notes.joined(separator: gap)
+            rows: rows,
+            moreCount: max(0, matchingSessions.count - rows.count),
+            note: notes.isEmpty ? nil : notes.joined(separator: gap),
+            totalMatchingCount: matchingSessions.count,
+            groups: groups
         )
+    }
+
+    private static func buildSeatGroups(rows: [OperatorSeatRow], grouping: OperatorSeatGrouping) -> [OperatorSeatGroup] {
+        guard grouping != .flat, !rows.isEmpty else { return [] }
+        var buckets: [String: [OperatorSeatRow]] = [:]
+        for row in rows {
+            let key = grouping == .byPlatform ? row.platform : row.seat
+            buckets[key, default: []].append(row)
+        }
+        let groups = buckets.map { key, groupRows -> OperatorSeatGroup in
+            let liveCount = groupRows.filter(\.isLive).count
+            let goneCount = groupRows.filter { $0.state.text == "Gone" }.count
+            let problemCount = groupRows.filter(\.hasProblem).count
+            let detailTokens: [String] = groupRows.reduce(into: []) { acc, row in
+                let token = grouping == .byPlatform ? row.seat : row.platform
+                if !acc.contains(token) { acc.append(token) }
+            }
+            let summary: String?
+            if detailTokens.isEmpty {
+                summary = nil
+            } else if detailTokens.count <= 5 {
+                summary = detailTokens.joined(separator: ", ")
+            } else {
+                summary = detailTokens.prefix(5).joined(separator: ", ") + " +\(detailTokens.count - 5)"
+            }
+            return OperatorSeatGroup(
+                id: "\(grouping.rawValue):\(key)",
+                title: key,
+                liveCount: liveCount,
+                goneCount: goneCount,
+                problemCount: problemCount,
+                seatsSummary: summary,
+                rows: groupRows
+            )
+        }
+        return groups.sorted { lhs, rhs in
+            if (lhs.liveCount > 0) != (rhs.liveCount > 0) {
+                return lhs.liveCount > 0
+            }
+            if grouping == .byPlatform, (lhs.title == "Other") != (rhs.title == "Other") {
+                return lhs.title != "Other"
+            }
+            if lhs.liveCount != rhs.liveCount {
+                return lhs.liveCount > rhs.liveCount
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
     }
 
     // MARK: Recent wakes
@@ -1099,7 +1324,23 @@ enum OperatorPanelPresentation {
         return OperatorCell(text: OperatorPanelText.humanized(state), tone: tone, help: "The wake record's own word is \(state).")
     }
 
-    static func wakesTable(_ document: OperatorWakesDocument, now: Date, limit: Int = wakeRowLimit) -> OperatorWakesTable {
+    private static func wakeReasonText(_ wake: OperatorWake) -> String {
+        var parts: [String] = []
+        if let reason = wake.reason { parts.append(OperatorPanelText.humanized(reason)) }
+        if wake.owner == true { parts.append("Owner") }
+        if wake.dm == true { parts.append("DM") }
+        if wake.catchUp == true { parts.append("Catch-up") }
+        return parts.isEmpty ? OperatorPanelText.none : parts.joined(separator: ", ")
+    }
+
+    static func wakesTable(
+        _ document: OperatorWakesDocument,
+        now: Date,
+        limit: Int = wakeRowLimit,
+        filter: OperatorWakeFilter = .all,
+        search: String = "",
+        grouping: OperatorWakeGrouping = .bySeat
+    ) -> OperatorWakesTable {
         struct Item { let seat: String; let wake: OperatorWake; let order: Int }
         var items: [Item] = []
         for seat in document.seats {
@@ -1115,24 +1356,69 @@ enum OperatorPanelPresentation {
             default: return x.order < y.order
             }
         }
-        let rows = ordered.prefix(limit).map { item in
-            var parts: [String] = []
-            if let reason = item.wake.reason { parts.append(OperatorPanelText.humanized(reason)) }
-            if item.wake.owner == true { parts.append("Owner") }
-            if item.wake.dm == true { parts.append("DM") }
-            if item.wake.catchUp == true { parts.append("Catch-up") }
+        let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchingItems: [Item]
+        if filter == .all && needle.isEmpty {
+            matchingItems = ordered
+        } else {
+            matchingItems = ordered.filter { item in
+                let stateCell = wakeStateCell(item.wake.state)
+                let isOwnerOrDM = (item.wake.owner == true) || (item.wake.dm == true)
+                switch filter {
+                case .all: break
+                case .problems: guard stateCell.tone == .warning else { return false }
+                case .ownerOrDM: guard isOwnerOrDM else { return false }
+                }
+                guard !needle.isEmpty else { return true }
+                let reason = wakeReasonText(item.wake)
+                if [item.seat, stateCell.text, reason].contains(where: { $0.localizedCaseInsensitiveContains(needle) }) {
+                    return true
+                }
+                let time = item.wake.at.map { FleetTime.when($0, now: now) } ?? OperatorPanelText.none
+                return time.localizedCaseInsensitiveContains(needle)
+            }
+        }
+        let visibleItems = limit < Int.max ? Array(matchingItems.prefix(max(0, limit))) : matchingItems
+        let rows = visibleItems.map { item in
+            let isOwnerOrDM = (item.wake.owner == true) || (item.wake.dm == true)
             return OperatorWakeLine(
                 id: "\(item.order)|\(item.seat)|\(item.wake.wakeID ?? "-")",
                 time: item.wake.at.map { FleetTime.when($0, now: now) } ?? OperatorPanelText.none,
                 seat: item.seat,
                 state: wakeStateCell(item.wake.state),
-                reason: parts.isEmpty ? OperatorPanelText.none : parts.joined(separator: ", ")
+                reason: wakeReasonText(item.wake),
+                isOwnerOrDM: isOwnerOrDM
             )
         }
+
+        let seatGroups: [OperatorWakeSeatGroup]
+        if grouping == .newestFirst {
+            seatGroups = []
+        } else {
+            var seatOrder: [String] = []
+            var seatBuckets: [String: [OperatorWakeLine]] = [:]
+            for row in rows {
+                if seatBuckets[row.seat] == nil { seatOrder.append(row.seat) }
+                seatBuckets[row.seat, default: []].append(row)
+            }
+            seatGroups = seatOrder.compactMap { seat -> OperatorWakeSeatGroup? in
+                guard let groupRows = seatBuckets[seat] else { return nil }
+                return OperatorWakeSeatGroup(
+                    id: seat,
+                    seat: seat,
+                    problemCount: groupRows.filter(\.isProblem).count,
+                    rows: groupRows
+                )
+            }
+        }
+
         // The server counts every wake and lists at most a few per seat, so the count is the
         // truth and the list is the newest of it.
         let counted = document.totals?.recent ?? ordered.count
-        let more = max(0, max(counted, ordered.count) - rows.count)
+        let loadedMore = max(0, matchingItems.count - rows.count)
+        let unloaded = max(0, counted - ordered.count)
+        let isUnfiltered = (filter == .all) && needle.isEmpty
+        let more = isUnfiltered ? max(0, max(counted, ordered.count) - rows.count) : loadedMore
 
         var summaryParts: [String] = []
         if let held = document.totals?.heldBack, held > 0 {
@@ -1150,10 +1436,14 @@ enum OperatorPanelPresentation {
             notes.append("The server lists only some seats, so the counts here are a floor.")
         }
         return OperatorWakesTable(
-            rows: Array(rows),
+            rows: rows,
             moreCount: more,
             summary: summaryParts.isEmpty ? nil : summaryParts.joined(separator: ", ") + ".",
-            notes: notes
+            notes: notes,
+            totalLoadedCount: matchingItems.count,
+            loadedMoreCount: loadedMore,
+            unloadedServerCount: unloaded,
+            seatGroups: seatGroups
         )
     }
 
