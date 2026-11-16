@@ -467,7 +467,7 @@ def _via_exec(
         return WR.Delivery("refused", "exec", code="session-cwd-gone")
     try:
         info = os.stat(cwd)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return WR.Delivery("refused", "exec", code="session-cwd-gone")
     except OSError:
         return WR.Delivery("failed", "exec", code="store-unreadable")
@@ -668,7 +668,13 @@ def router_platform(
                 _glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*", "subagent", "*"
             )
         )
-        subagents = {os.path.basename(path) for path in nested}
+        top_level = _glob.glob(
+            os.path.join(_glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*")
+        )
+        # As in MR.is_subagent, an id with a top-level folder is a chat, never a sub-agent.
+        subagents = {os.path.basename(path) for path in nested} - {
+            os.path.basename(path) for path in top_level
+        }
         local = str(config.get("local_host") or "")
         return {t.session_id for t in targets if t.host == local and t.session_id in subagents}
 

@@ -261,6 +261,17 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["outcome"], "failed")
         self.assertEqual(answer["delivery"]["code"], "store-unreadable")
 
+    def test_a_cwd_through_a_file_is_refused_not_retried(self) -> None:
+        blocker = self.work / "blocker"
+        blocker.write_text("x\n", encoding="utf-8")
+        (self.session_dir / "session.jsonl").write_text(
+            json.dumps({"cwd": str(blocker / "child")}) + "\n", encoding="utf-8"
+        )
+        answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "refused")
+        self.assertEqual(answer["delivery"]["code"], "session-cwd-gone")
+        self.assertEqual(self.calls, [])
+
     def test_a_session_with_no_recorded_cwd_is_refused(self) -> None:
         (self.session_dir / "session.jsonl").write_text("{}\n", encoding="utf-8")
         answer = self._deliver()
@@ -371,6 +382,8 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         nested = self.session_dir / "subagent" / SID2
         nested.mkdir(parents=True)
         (nested / "session.jsonl").write_text("{}\n", encoding="utf-8")
+        # The same id nested elsewhere does not make the top-level chat a sub-agent.
+        (self.session_dir / "subagent" / SID).mkdir(parents=True)
         from simple_tools import wake_router as WR
 
         sub = WR.Target(session_id=SID2, letter="CC", host="mac", generation=1)
