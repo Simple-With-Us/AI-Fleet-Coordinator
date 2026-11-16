@@ -122,6 +122,25 @@ class Tests(unittest.TestCase):
             m.qualify_credentials()
         self.assertEqual(checked, ["alert-ingress"])
 
+    def test_qualification_prints_the_live_baseline(self):
+        with (
+            patch.dict(m.os.environ, {"CLOUDFLARE_API_TOKEN": "offline", "GH_TOKEN": "offline"}),
+            patch.object(m, "current_main"),
+            patch.object(m, "guard_tripped", return_value=False),
+            patch.object(m, "cloudflare", return_value={}),
+            patch.object(m, "preflight_config"),
+            patch.object(m, "deployed_tag", return_value="b" * 40),
+            patch.object(m, "probe"),
+            patch("builtins.print") as out,
+        ):
+            m.qualify_credentials()
+        printed = [c.args[0] for c in out.call_args_list if c.args]
+        self.assertIn("Baseline: alert-ingress " + "b" * 40, printed)
+        self.assertIn(
+            "Existing credential delivery and scoped live reads qualified; no deployment",
+            printed,
+        )
+
     def test_tripped_target_does_not_fail_qualification_for_the_other(self):
         # The qualify step runs first on every trigger, so a raise here would skip the
         # release step and stop the healthy Worker's release too.
@@ -453,6 +472,108 @@ class Tests(unittest.TestCase):
             opener.return_value.open.return_value = response
             m.reviewed("a" * 40)
 
+    def test_review_pages_beyond_one_hundred_are_followed(self):
+        import json
+        from unittest.mock import MagicMock
+
+        pr = {
+            "number": 1,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": "b" * 40},
+        }
+        page_one = [
+            {
+                "id": n,
+                "user": {"id": 10 + n, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "c" * 40,
+            }
+            for n in range(100)
+        ]
+        page_two = [
+            {
+                "id": 101,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "b" * 40,
+            }
+        ]
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "pageInfo": {"hasNextPage": False},
+                                "nodes": [{"isResolved": True}],
+                            }
+                        }
+                    }
+                }
+            }
+        ).encode()
+        with (
+            patch.object(m, "github", side_effect=[[pr], page_one, page_two]),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            patch.object(m.urllib.request, "build_opener") as opener,
+        ):
+            opener.return_value.open.return_value = response
+            m.reviewed("a" * 40)
+
+    def test_review_pages_beyond_the_cap_fail_closed(self):
+        pr = {
+            "number": 1,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": "b" * 40},
+        }
+        full_page = [
+            {
+                "id": n,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "b" * 40,
+            }
+            for n in range(100)
+        ]
+        with (
+            patch.object(m, "github", side_effect=[[pr]] + [list(full_page) for _ in range(10)]),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m.reviewed("a" * 40)
+
+    def test_pagination_walk_shares_one_absolute_deadline(self):
+        pr = {
+            "number": 1,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": "b" * 40},
+        }
+        full_page = [
+            {
+                "id": n,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": "b" * 40,
+            }
+            for n in range(100)
+        ]
+        # The reviews walk starts a fresh deadline; its second page request
+        # happens after that deadline, so the walk fails closed instead of
+        # getting a fresh per-request timeout.
+        clock = iter([0.0, 0.0, 0.0, 0.0, 61.0])
+        with (
+            patch.object(m, "github", side_effect=[[pr], list(full_page)]),
+            patch.object(m.time, "monotonic", side_effect=lambda: next(clock)),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m.reviewed("a" * 40)
+
     def test_kody_check_receipt_without_pr_review_passes(self):
         import json
         from unittest.mock import MagicMock
@@ -517,11 +638,14 @@ class Tests(unittest.TestCase):
 
     def test_workflow_is_main_ci_and_catchup_without_broad_gate(self):
         text = m.pathlib.Path(".github/workflows/alert-workers-deploy.yml").read_text()
-        self.assertIn("workflow_run:", text)
-        self.assertIn("workflows: [CI]", text)
+        # Fenced shape: dispatch-only until the watched qualify-only canary
+        # passes. The restore PR re-adds workflow_run/schedule and restores
+        # the original assertions below.
+        self.assertNotIn("workflow_run:", text)
+        self.assertNotIn("schedule:", text)
+        self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
         self.assertNotIn("simple-tools-mcp/wrangler", text)
-        self.assertIn("17,47 * * * *", text)
 
     def test_redirect_handler_refuses_forward(self):
         self.assertIsNone(

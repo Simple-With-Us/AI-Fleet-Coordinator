@@ -755,6 +755,8 @@ class SeatPolicy:
         """Return None when allowed, else a short denial reason (safe to return to the caller)."""
         if seat not in self._seats:
             return "unknown seat"
+        if action == "wf_pr_create":
+            return "PR creation requires owner-only open_pr"
         if action not in self._seats[seat]["actions"]:
             return f"action {action!r} not allowed for this seat"
         if not self._repo_allowed(seat, repo):

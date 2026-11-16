@@ -632,10 +632,10 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("| MM | `MiniMax` | `minimax/` |", text)
         self.assertNotRegex(text, r"(?m)^\| DSH \|")
         self.assertIn("DSH, DeepSeek Harness (2026-09-19)", text)
-        # A post header names MiniMax as MM.  The Nov 5 post-header rule
-        # replaced the bare `[MM]` example with `[MM: HH.1.M 📁AFC, OPS]`,
-        # so accept either header form but never the old MINIMAX tag.
-        self.assertRegex(text, r"`\[MM(?:\]|: )")
+        # A post header names MiniMax as MM.  The current lettered form uses
+        # three hair spaces after the colon; historical bare and ASCII forms
+        # remain valid identity evidence, but the retired MINIMAX tag does not.
+        self.assertRegex(text, r"`\[MM(?:\]|: |:\u200a{3}[A-Z]{2}\.\d+\.[MSC])")
         self.assertNotIn("[MINIMAX", text)
         self.assertNotIn("| **MiniMax (`MINIMAX`)** |", text)
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
