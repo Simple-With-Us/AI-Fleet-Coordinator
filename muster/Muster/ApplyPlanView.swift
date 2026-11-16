@@ -241,6 +241,12 @@ struct ApplyPlanView: View {
                 detail: result.map { ApplyCopy.normalize($0.reason) }
                     ?? "The cell could not be re-proved after the apply."
             )
+        case .partlyApplied(let partial):
+            return statusBlock(
+                symbol: "exclamationmark.triangle.fill", tint: .orange,
+                title: "Partly Applied",
+                detail: partial.detail + "\n" + "Nothing was retried."
+            )
         case .refused(let kind, let message):
             return statusBlock(
                 symbol: "hand.raised.fill", tint: .orange,

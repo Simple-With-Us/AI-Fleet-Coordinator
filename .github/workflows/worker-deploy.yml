@@ -70,6 +70,7 @@ jobs:
       - name: Check Worker secrets against Infisical
         env:
           WORKER_SECRET_SYNC_INFISICAL_TOKEN: ${{ secrets.WORKER_SECRET_SYNC_INFISICAL_TOKEN }}
+          WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID: ${{ vars.WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
           # Unset in the repository.  Exactly "true" plus --apply is the only apply path.
           WORKER_SECRET_SYNC_APPLY: ${{ vars.WORKER_SECRET_SYNC_APPLY }}
@@ -121,6 +122,7 @@ jobs:
       - name: Dry-run Worker secret diff
         env:
           WORKER_SECRET_SYNC_INFISICAL_TOKEN: ${{ secrets.WORKER_SECRET_SYNC_INFISICAL_TOKEN }}
+          WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID: ${{ vars.WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
           TARGET: ${{ matrix.worker }}
         run: python3 scripts/deploy-mapped-worker.py --secrets "$TARGET" --strict
