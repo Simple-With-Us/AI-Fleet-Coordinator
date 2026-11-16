@@ -2615,7 +2615,7 @@ def _push_tree_files(repo_dir: str, base_tree: str, tree: str, remote_blobs, bea
             reasons.append(f"{shown} is not a path the relay accepts (letters, digits and . _ / + @ ~ - only)")
             continue
         if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
-            reasons.append(f"{shown} is a workflow path;  the relay refuses workflow files")
+            reasons.append(f"{shown} is a workflow path;  git-object push refuses it (full-file publish uses separate workflow permission checks)")
             continue
         _, out = _local_git(repo_dir, ["cat-file", "-s"], operands=(blob,))
         size = int(out.decode("ascii", "replace").strip() or -1)
