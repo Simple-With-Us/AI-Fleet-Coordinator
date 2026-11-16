@@ -2528,5 +2528,11 @@ class GuardedBlockSyntaxTests(unittest.TestCase):
         )
 
 
+def load_tests(loader, standard_tests, _pattern):
+    """Run the isolated shared registry recipe fixtures in this existing CI suite."""
+    standard_tests.addTests(loader.loadTestsFromName("test_service_token_recipe"))
+    return standard_tests
+
+
 if __name__ == "__main__":
     unittest.main()
