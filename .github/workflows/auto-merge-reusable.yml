@@ -263,6 +263,7 @@ jobs:
           GATE_SCRIPT: ${{ inputs.gate_script }}
         run: |
           set -euo pipefail
+          : "${REARM_PR_NUMBER:=}"
           # PR identity for this run.  The event path reads github.event.pull_request;
           # rearm mode (REARM_PR_NUMBER set) fills the same variables from the API
           # after validating the same preconditions, so every gate below is shared.
