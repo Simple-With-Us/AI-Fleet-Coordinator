@@ -239,9 +239,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/simple_tools/mcp/eavesdropper-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        # Shared scoped client and direct command used by knobs, recall and other consumers.
+        # Required scoped verifier dependency for new knobs/recall bundles, without the generic CLI.
         "scripts/fleet_infisical.py",
-        "scripts/fleet_infisical_cli.py",
         *("scripts/fleet_secrets/" + name + ".py" for name in SCOPED_READER_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
