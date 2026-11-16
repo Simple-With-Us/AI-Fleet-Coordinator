@@ -361,6 +361,8 @@ class Tests(unittest.TestCase):
                         {"state": "COMMENTED", "user": "invalid"},
                         review,
                     ],
+                    [],
+                    {"check_runs": []},
                 ],
             ),
             patch.object(m, "kody_check_receipt", return_value=False),
@@ -373,6 +375,13 @@ class Tests(unittest.TestCase):
         import json
         from unittest.mock import MagicMock
 
+        # Clear the module-level caches as the sibling tests do: this test
+        # reuses PR number 1 and head "b"*40 from
+        # test_exact_review_and_resolved_threads_pass, which runs earlier
+        # under unittest's alphabetical ordering and would otherwise leave
+        # warm-cache values that bypass the real lookup path.
+        m._check_run_cache.clear()
+        m._review_request_cache.clear()
         pr = {
             "number": 1,
             "merged_at": "now",
@@ -412,6 +421,8 @@ class Tests(unittest.TestCase):
                         {"state": "COMMENTED", "user": "invalid"},
                         review,
                     ],
+                    [],
+                    {"check_runs": []},
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
@@ -464,12 +475,16 @@ class Tests(unittest.TestCase):
                         {"state": "COMMENTED", "user": "invalid"},
                         review,
                     ],
+                    [],
+                    {"check_runs": []},
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
             m.reviewed("a" * 40)
 
     def test_review_pages_beyond_one_hundred_are_followed(self):
@@ -516,11 +531,15 @@ class Tests(unittest.TestCase):
             }
         ).encode()
         with (
-            patch.object(m, "github", side_effect=[[pr], page_one, page_two]),
+            patch.object(
+                m, "github", side_effect=[[pr], page_one, page_two, [], {"check_runs": []}]
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
             m.reviewed("a" * 40)
 
     def test_review_pages_beyond_the_cap_fail_closed(self):
@@ -612,10 +631,12 @@ class Tests(unittest.TestCase):
                         "check_runs": [
                             {
                                 "name": m.KODY_CHECK_NAME,
-                                "app": {"slug": m.KODY_APP_SLUG},
+                                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
                                 "status": "completed",
                                 "conclusion": "success",
                                 "head_sha": head,
+                                "started_at": "2026-11-15T19:00:00Z",
+                                "completed_at": "2026-11-15T19:05:00Z",
                                 "output": {
                                     "title": m.KODY_CHECK_TITLE,
                                     "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
@@ -623,13 +644,869 @@ class Tests(unittest.TestCase):
                             }
                         ]
                     },
+                    [],
                 ],
             ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
             opener.return_value.open.return_value = response
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
             m.reviewed("a" * 40)
+
+    def test_pending_newer_kody_run_blocks_stale_success(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        completed = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": head,
+            "started_at": "2026-11-15T19:00:00Z",
+            "completed_at": "2026-11-15T19:05:00Z",
+            "output": {
+                "title": m.KODY_CHECK_TITLE,
+                "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+            },
+        }
+        pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "in_progress",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T19:30:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], [], {"check_runs": [completed, pending]}, []],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Thread evidence is clean, so only the pending-run block can raise.
+            m.reviewed("a" * 40)
+
+    def test_older_pending_kody_run_blocks_stale_success(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        completed = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": head,
+            "started_at": "2026-11-15T19:00:00Z",
+            "completed_at": "2026-11-15T19:05:00Z",
+            "output": {
+                "title": m.KODY_CHECK_TITLE,
+                "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+            },
+        }
+        older_pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "queued",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T18:00:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], [], {"check_runs": [completed, older_pending]}, []],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A pending run blocks however old it is; only that block raises here.
+            m.reviewed("a" * 40)
+
+    def test_pending_kody_run_blocks_review_object_qualification(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:30:00Z",
+        }
+        pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "in_progress",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T19:35:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], [review], [], {"check_runs": [pending]}],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A fresh review object cannot qualify while a Kody run is pending.
+            m.reviewed("a" * 40)
+
+    def test_fractional_request_orders_before_whole_second_review(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:00:01Z",
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [review],
+                    [{"body": "@kody start-review", "created_at": "2026-11-15T19:00:00.500Z"}],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # 19:00:01 is after 19:00:00.500: parsed ordering qualifies the review.
+            m.reviewed("a" * 40)
+
+    def test_whole_second_review_before_fractional_request_is_stale(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:00:00Z",
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [review],
+                    [{"body": "@kody start-review", "created_at": "2026-11-15T19:00:00.500Z"}],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Lexical comparison would call 19:00:00 fresh after 19:00:00.500Z;
+            # parsed ordering calls it stale and only that raises here.
+            m.reviewed("a" * 40)
+
+    def test_malformed_review_entries_fail_closed_without_poisoning(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        good = {
+            "id": 3,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:30:00Z",
+        }
+        malformed = [
+            "not-a-review",
+            {
+                "id": "x",
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": head,
+            },
+            {"id": 2, "user": {"login": "kody-ai[bot]"}, "state": "COMMENTED", "commit_id": head},
+            {"id": 1, "state": "COMMENTED", "commit_id": head},
+        ]
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[[pr], malformed + [good], [], {"check_runs": []}],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Malformed entries neither crash the gate nor qualify; the one
+            # well-formed review still does.
+            m.reviewed("a" * 40)
+
+    def test_malformed_check_run_payload_fails_closed_per_head(self):
+        bad_head = "b" * 40
+        good_head = "c" * 40
+        bad_pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": bad_head},
+        }
+        good_pr = {
+            "number": 1711,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": good_head},
+        }
+
+        def review(rid, head):
+            return {
+                "id": rid,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": head,
+                "submitted_at": "2026-11-15T19:30:00Z",
+            }
+
+        thread_queries = []
+
+        def graphql(url, token, data=None, timeout=30):
+            thread_queries.append(json.loads(data.decode())["variables"]["number"])
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                        }
+                    }
+                }
+            }
+
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [bad_pr, good_pr],
+                    [review(1, bad_head)],
+                    [],
+                    {"check_runs": ["not-a-run", None]},
+                    [review(2, good_head)],
+                    [],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(m, "request_json", side_effect=graphql),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A malformed check_runs payload fails its own head closed on BOTH
+            # routes (the fresh review object cannot qualify with pending-run
+            # evidence unavailable), raises nothing, and does not poison the
+            # next candidate PR, whose clean evidence still qualifies.
+            m.reviewed("a" * 40)
+        # Assert the observable outcome: only the good PR reaches the thread
+        # query. If the malformed payload let the bad head qualify, 1710
+        # would be queried instead and this fails.
+        self.assertEqual(thread_queries, [1711])
+
+    def test_review_request_pattern_tolerates_tabs_and_extra_spaces(self):
+        head = "a" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": head,
+            "head": {"sha": head},
+        }
+        review = {
+            "id": 1,
+            "user": {"id": 10, "login": "kody-ai[bot]"},
+            "state": "COMMENTED",
+            "commit_id": head,
+            "submitted_at": "2026-11-15T19:00:01Z",
+        }
+        for body in ("@kody\tstart-review", "@kody  start-review", "  @kody start-review "):
+            with (
+                patch.object(
+                    m,
+                    "github",
+                    side_effect=[
+                        [pr],
+                        [review],
+                        [{"body": body, "created_at": "2026-11-15T19:00:00.500Z"}],
+                        {"check_runs": []},
+                    ],
+                ),
+                patch.object(
+                    m,
+                    "request_json",
+                    return_value={
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "reviewThreads": {
+                                        "pageInfo": {"hasNextPage": False},
+                                        "nodes": [],
+                                    }
+                                }
+                            }
+                        }
+                    },
+                ),
+                patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            ):
+                m._check_run_cache.clear()
+                m._review_request_cache.clear()
+                # A tab- or multi-space invocation is still a request: the
+                # 19:00:01 review is fresh against the 19:00:00.500 request.
+                m.reviewed(head)
+                # Decisive guard: without request detection the cache stays
+                # None and reviewed() would pass identically via the
+                # requested-is-None branch, so assert the boundary populated.
+                self.assertIsNotNone(m._review_request_cache["1710"])
+        # A request AFTER the review invalidates it: recognition makes the
+        # review stale and reviewed() rejects the head, while broken
+        # recognition would leave the older review valid and not raise.
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [review],
+                    [{"body": "@kody\tstart-review", "created_at": "2026-11-15T19:00:02Z"}],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            with self.assertRaisesRegex(
+                RuntimeError, "Target commit lacks qualified merged Kody-reviewed PR"
+            ):
+                m.reviewed(head)
+
+    def test_non_json_check_run_body_fails_closed_without_poisoning(self):
+        bad_head = "b" * 40
+        good_head = "c" * 40
+        bad_pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": bad_head},
+        }
+        good_pr = {
+            "number": 1711,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": good_head},
+        }
+
+        def review(rid, head):
+            return {
+                "id": rid,
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": head,
+                "submitted_at": "2026-11-15T19:30:00Z",
+            }
+
+        thread_queries = []
+
+        def graphql(url, token, data=None, timeout=30):
+            thread_queries.append(json.loads(data.decode())["variables"]["number"])
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                        }
+                    }
+                }
+            }
+
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [bad_pr, good_pr],
+                    [review(1, bad_head)],
+                    [],
+                    m.json.JSONDecodeError("Expecting value", "", 0),
+                    [review(2, good_head)],
+                    [],
+                    {"check_runs": []},
+                ],
+            ),
+            patch.object(m, "request_json", side_effect=graphql),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A 200 body that is not JSON raises JSONDecodeError (a ValueError)
+            # inside request_json; it must fail only that head closed, not
+            # abort the gate before the good PR's clean evidence qualifies.
+            m.reviewed("a" * 40)
+        self.assertEqual(thread_queries, [1711])
+
+    def test_check_run_lookup_filters_by_name_and_paginates(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        filler = [
+            {
+                "name": m.KODY_CHECK_NAME,
+                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": head,
+                "started_at": "2026-11-15T18:00:00Z",
+                "completed_at": "2026-11-15T18:05:00Z",
+                "output": {"title": None, "summary": None},
+            }
+            for _ in range(100)
+        ]
+        pending = {
+            "name": m.KODY_CHECK_NAME,
+            "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+            "status": "in_progress",
+            "conclusion": None,
+            "head_sha": head,
+            "started_at": "2026-11-15T19:00:00Z",
+            "output": {"title": None, "summary": None},
+        }
+        seen_paths = []
+
+        def fake_github(path, timeout=None):
+            seen_paths.append(path)
+            if path.startswith("/commits/" + "a" * 40 + "/pulls"):
+                return [pr]
+            if path.startswith("/pulls/1710/reviews"):
+                return []
+            if "check-runs" in path and path.endswith("&page=1"):
+                return {"check_runs": filler}
+            if "check-runs" in path and path.endswith("&page=2"):
+                return {"check_runs": [pending]}
+            raise AssertionError("unexpected path " + path)
+
+        with (
+            patch.object(m, "github", side_effect=fake_github),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # The pending run sits on page 2: only a check_name-filtered,
+            # paginated lookup sees it and blocks qualification.
+            m.reviewed("a" * 40)
+        check_calls = [p for p in seen_paths if "check-runs" in p]
+        self.assertEqual(len(check_calls), 2)
+        self.assertIn("check_name=Kody%20Code%20Review", check_calls[0])
+        self.assertIn("page=2", check_calls[1])
+
+    def test_stale_kody_check_receipt_does_not_qualify(self):
+
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    {
+                        "check_runs": [
+                            {
+                                "name": m.KODY_CHECK_NAME,
+                                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                                "status": "completed",
+                                "conclusion": "success",
+                                "head_sha": head,
+                                "started_at": "2026-11-15T19:00:00Z",
+                                "completed_at": "2026-11-15T19:05:00Z",
+                                "output": {
+                                    "title": m.KODY_CHECK_TITLE,
+                                    "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                                },
+                            }
+                        ]
+                    },
+                    [
+                        {
+                            "body": "@kody start-review",
+                            "created_at": "2026-11-15T20:00:00Z",
+                        }
+                    ],
+                ],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # Thread evidence is mocked clean, so only the freshness guard can
+            # raise here; without it the stale receipt would pass silently.
+            m.reviewed("a" * 40)
+
+    def test_wrong_app_id_receipt_does_not_qualify(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    {
+                        "check_runs": [
+                            {
+                                "name": m.KODY_CHECK_NAME,
+                                "app": {"slug": m.KODY_APP_SLUG, "id": 999999},
+                                "status": "completed",
+                                "conclusion": "success",
+                                "head_sha": head,
+                                "started_at": "2026-11-15T19:00:00Z",
+                                "completed_at": "2026-11-15T19:05:00Z",
+                                "output": {
+                                    "title": m.KODY_CHECK_TITLE,
+                                    "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                                },
+                            }
+                        ]
+                    },
+                    [],
+                ],
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+            self.assertRaises(RuntimeError),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            m.reviewed("a" * 40)
+
+    def test_fresh_receipt_after_request_qualifies(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    {
+                        "check_runs": [
+                            {
+                                "name": m.KODY_CHECK_NAME,
+                                "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                                "status": "completed",
+                                "conclusion": "success",
+                                "head_sha": head,
+                                "started_at": "2026-11-15T20:05:00Z",
+                                "completed_at": "2026-11-15T20:06:00Z",
+                                "output": {
+                                    "title": m.KODY_CHECK_TITLE,
+                                    "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                                },
+                            }
+                        ]
+                    },
+                    [
+                        {
+                            "body": "please re-check\n@KODY START-REVIEW now",
+                            "created_at": "2026-11-15T20:00:00Z",
+                        }
+                    ],
+                ],
+            ),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            # A check started after the newest request qualifies; detection is
+            # per-line and case-insensitive, matching the auto-merge contract.
+            # reviewed() returns without raising on success.
+            m.reviewed("a" * 40)
+
+    def test_kody_notice_comment_follows_canonical_request_contract(self):
+        head = "b" * 40
+        pr = {
+            "number": 1710,
+            "merged_at": "now",
+            "merge_commit_sha": "a" * 40,
+            "head": {"sha": head},
+        }
+        receipt_runs = {
+            "check_runs": [
+                {
+                    "name": m.KODY_CHECK_NAME,
+                    "app": {"slug": m.KODY_APP_SLUG, "id": m.KODY_APP_ID},
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_sha": head,
+                    "started_at": "2026-11-15T19:00:00Z",
+                    "completed_at": "2026-11-15T19:05:00Z",
+                    "output": {
+                        "title": m.KODY_CHECK_TITLE,
+                        "summary": m.KODY_CHECK_SUMMARY_PREFIX + ".",
+                    },
+                }
+            ]
+        }
+        threads = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                    }
+                }
+            }
+        }
+        # Canonical parity: the auto-merge receipt contract counts every
+        # issue comment whose own line carries the invocation, with no
+        # author filter. A kody-ai[bot] comment with the invocation at line
+        # start is therefore a request: the 19:00 receipt predates the
+        # 20:00 request and must not qualify.
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    receipt_runs,
+                    [
+                        {
+                            "body": "@kody start-review\n\nManual mode requires this invocation",
+                            "created_at": "2026-11-15T20:00:00Z",
+                            "user": {"login": m.KODY_APP_SLUG + "[bot]"},
+                        }
+                    ],
+                ],
+            ),
+            patch.object(m, "request_json", return_value=threads),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            with self.assertRaisesRegex(
+                RuntimeError, "Target commit lacks qualified merged Kody-reviewed PR"
+            ):
+                m.reviewed("a" * 40)
+        # A bot notice that mentions the invocation only mid-line is not a
+        # request under the canonical start-of-line pattern, whoever posted
+        # it, so the receipt still qualifies.
+        with (
+            patch.object(
+                m,
+                "github",
+                side_effect=[
+                    [pr],
+                    [],
+                    receipt_runs,
+                    [
+                        {
+                            "body": "Manual mode requires @kody start-review in a comment",
+                            "created_at": "2026-11-15T20:00:00Z",
+                            "user": {"login": m.KODY_APP_SLUG + "[bot]"},
+                        }
+                    ],
+                ],
+            ),
+            patch.object(m, "request_json", return_value=threads),
+            patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
+        ):
+            m._check_run_cache.clear()
+            m._review_request_cache.clear()
+            m.reviewed("a" * 40)
+            self.assertIsNone(m._review_request_cache["1710"])
 
     def test_release_review_paths_exclude_receipt_only(self):
         self.assertNotIn("docs/releases/alert-credentials-qualified.json", m.RELEASE_REVIEW_PATHS)
