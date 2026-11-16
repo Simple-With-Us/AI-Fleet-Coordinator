@@ -127,10 +127,10 @@ def _central_wall_clock(utc: dt.datetime) -> dt.datetime:
 
 
 def format_time(timestamp: float) -> str:
-    """'Wed, Oct 7, 6:41pm': America/Chicago, 12-hour, lowercase am/pm, no zone abbreviation."""
+    """'Wed, Oct 7, 6:41 PM': America/Chicago, 12-hour, spaced AM/PM, no zone abbreviation."""
     local = _central_wall_clock(dt.datetime.fromtimestamp(timestamp, dt.UTC))
     hour = local.hour % 12 or 12
-    suffix = "pm" if local.hour >= 12 else "am"
+    suffix = " PM" if local.hour >= 12 else " AM"
     return "%s, %s %d, %d:%02d%s" % (
         _WEEKDAYS[local.weekday()],
         _MONTHS[local.month - 1],

@@ -440,7 +440,7 @@ Each tab is a `NavigationStack`;  every screen carries the Mac's place badge and
 | Settings | Theme, app lock, notifications, this device's fingerprint, trust list version, This Build.  |
 | Pairing | Scan, compare the owner's and the device's full fingerprints;  after a reopen, "Waiting for the server to accept the new list" until it does.  |
 
-All text follows `owner-copy` and `FLEET-UI-COPY.md`:  Title Case headings and buttons, sentence case body, U+00A0 plus a space between sentences, 12-hour times with no zone label, system theme by default, full text on tap, no secret in any label.
+All text follows `owner-copy` and `FLEET-UI-COPY.md`: Title Case headings and buttons, sentence case body, U+00A0 plus a space between sentences, 12-hour AM/PM times with no zone label, Light theme by default while preserving stored preferences, full text on tap, no secret in any label.
 
 ### Widgets, Live Activities, Shortcuts
 

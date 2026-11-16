@@ -2398,6 +2398,350 @@ class HookTests(Base):
         self.assertEqual(self.request("--bogus")[0], 2)
 
 
+class UnletteredRepairTests(Base):
+    """Chats that still show "??: " (an app-driven chat's hook never runs, so a letter lost between the assigner
+    and the note would stay lost):  the hosts' scheduled carriers replay the start of each, at most once a
+    window, and a chat's own start never pays for the pass."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.unlettered: list[str] = []
+        self.listed = 0
+        self.payloaded: list[str] = []
+
+        def unlettered_sessions(env):
+            self.listed += 1
+            return list(self.unlettered)
+
+        def chat_payload(sid):
+            self.payloaded.append(sid)
+            return {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid}
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=unlettered_sessions,
+            chat_payload=chat_payload,
+        )
+
+    def hook(
+        self,
+        payload: dict,
+        *,
+        env: dict | None = None,
+        spec: PL.PlatformSpec | None = None,
+        **flags,
+    ) -> dict | None:
+        out = io.StringIO()
+        env = env if env is not None else self.server_env()
+        code = PL.hook(
+            spec or self.spec, env, io.StringIO(json.dumps(payload)), out,
+            platform="linux", transport=Calls(self), **flags,
+        )
+        self.assertEqual(code, 0)
+        text = out.getvalue().strip()
+        return json.loads(text)["hookSpecificOutput"] if text else None
+
+    def start(self, sid: str, source: str = "startup", **extra) -> dict | None:
+        return self.hook(dict({"hook_event_name": "SessionStart", "session_id": sid, "source": source}, **extra))
+
+    def note(self, sid: str) -> dict:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def label(self, sid: str) -> str:
+        return self.note(sid)["label"]
+
+    def note_path(self, sid: str) -> str:
+        return os.path.join(self.state, "CODEX", "letters", sid + ".json")
+
+    def stamp(self, platform: str = "faux", where: str = "server") -> dict:
+        return PL._read_json(PL.repair_stamp_path(self.server_env(), "CODEX", platform, where))
+
+    def repair(self, *argv: str, now: float | None = None) -> str:
+        """The carrier path:  the verb a host's own schedule ticks."""
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": self.spec}):
+            code = PL.repair_main(
+                list(argv), self.server_env(), out, now=now, platform="linux", transport=Calls(self),
+            )
+        self.assertEqual(code, 0)
+        return out.getvalue()
+
+    def test_a_chat_the_assigner_still_knows_resumes_its_own_letter(self) -> None:
+        # The register landed but the hook died before saving:  the assigner holds the letter, the host does not.
+        held = self.register("s-0100", title="Fixture-Repo PR 1", platform="faux", seat="CODEX")
+        self.unlettered.append("s-0100")
+        self.repair("--platform", "faux", "--location", "server")
+        self.assertEqual(self.label("s-0100"), held["label"])
+        self.assertEqual(self.note("s-0100")["record_id"], held["record_id"])
+        self.assertEqual(self.lookup("s-0100", platform="faux")["label"], held["label"])
+
+    def test_a_chat_the_assigner_never_saw_registers(self) -> None:
+        self.unlettered.append("s-0101")
+        self.repair("--platform", "faux", "--location", "server")
+        self.assertRegex(self.label("s-0101"), PAIR)
+        self.assertIsNotNone(self.lookup("s-0101", platform="faux"))
+
+    def test_the_pass_runs_at_most_once_a_window(self) -> None:
+        self.unlettered.extend(["s-0102", "s-0103"])
+        self.repair("--platform", "faux", "--location", "server")
+        self.assertEqual(self.listed, 1)
+        self.repair("--platform", "faux", "--location", "server")
+        self.assertEqual(self.listed, 1)  # still inside the window:  no second pass
+
+    def test_one_pass_repairs_at_most_REPAIR_MAX_CHATS(self) -> None:
+        self.unlettered.extend("s-9%03d" % n for n in range(PL.REPAIR_MAX_CHATS + 3))
+        self.repair("--platform", "faux", "--location", "server")
+        asked = [sid for sid in self.unlettered if os.path.exists(self.note_path(sid))]
+        self.assertEqual(len(asked), PL.REPAIR_MAX_CHATS)
+
+    def test_a_chats_own_start_runs_no_repair_pass(self) -> None:
+        # The pass lives on the hosts' scheduled carriers only:  a SessionStart hook never pays for it, so a
+        # slow registry during a replay can never stretch a live chat's start past its budget.
+        self.unlettered.extend(["s-0120", "s-0121"])
+        out = self.start("s-0007")
+        self.assertIsNotNone(out)
+        self.assertEqual(self.listed, 0)  # the adapter was never even asked to list them
+        self.assertEqual(self.stamp(), {})  # no stamp:  no pass ran
+        self.assertNotIn("s-0120", json.dumps(out))
+        self.assertRegex(self.note("s-0007")["label"], PAIR)
+
+    def test_a_platform_with_no_adapter_surface_is_skipped(self) -> None:
+        done = PL.repair_unlettered(
+            make_spec(), self.server_env(), "CODEX", "server", now=time.time()
+        )
+        self.assertIn("skipped", done)
+
+    def test_a_finished_pass_leaves_its_outcome_in_the_stamp(self) -> None:
+        self.unlettered.extend(["s-0110", "s-0111"])
+        self.repair("--platform", "faux", "--location", "server")
+        self.assertEqual(
+            self.stamp()["outcome"],
+            {"found": 2, "asked": 2, "repaired": 2, "failed": 0, "failures": []},
+        )
+
+    def test_a_listing_failure_leaves_its_error_in_the_stamp(self) -> None:
+        def boom(env):
+            raise RuntimeError("store locked")
+
+        spec = make_spec(
+            platform="faux2",
+            source="faux2-hook",
+            display="Faux2",
+            unlettered_sessions=boom,
+            chat_payload=lambda sid: {"hook_event_name": "SessionStart", "session_id": sid},
+        )
+        done = PL.repair_unlettered(
+            spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+        )
+        self.assertIn("skipped", done)
+        stamp = self.stamp(platform="faux2")
+        self.assertIn("at", stamp)  # the window is still consumed:  the next try comes after it
+        self.assertEqual(stamp["outcome"], {"error": "the adapter could not list them"})
+
+    def test_a_chat_whose_replay_raises_is_counted_not_fatal(self) -> None:
+        def payload(sid):
+            if sid == "s-0113":
+                raise RuntimeError("payload boom")
+            return {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid}
+
+        spec = make_spec(
+            platform="faux3",
+            source="faux3-hook",
+            display="Faux3",
+            unlettered_sessions=lambda env: ["s-0112", "s-0113"],
+            chat_payload=payload,
+        )
+        done = PL.repair_unlettered(
+            spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+        )
+        self.assertEqual(done["asked"], ["s-0112"])
+        self.assertEqual(done["failures"], [{"sid": "s-0113", "error": "RuntimeError"}])
+        self.assertEqual(
+            self.stamp(platform="faux3")["outcome"],
+            {
+                "found": 2,
+                "asked": 1,
+                "repaired": 1,
+                "failed": 1,
+                "failures": [{"sid": "s-0113", "error": "RuntimeError"}],
+            },
+        )
+
+    def test_a_chat_the_hook_would_refuse_is_left_alone(self) -> None:
+        # SESSION_LETTER=0 turns the hook off:  the repair must not enroll what the hook would refuse.
+        self.unlettered.append("s-0114")
+        done = PL.repair_unlettered(
+            self.spec,
+            self.server_env(SESSION_LETTER="0"),
+            "CODEX",
+            "server",
+            now=time.time(),
+            transport=Calls(self),
+        )
+        self.assertEqual(done["asked"], [])
+        self.assertFalse(os.path.exists(self.note_path("s-0114")))
+
+    def test_a_closed_chat_is_not_replayed(self) -> None:
+        note_dir = os.path.dirname(self.note_path("s-0115"))
+        self.assertFalse(os.path.islink(note_dir))
+        os.makedirs(note_dir, mode=0o700, exist_ok=True)
+        with open(self.note_path("s-0115"), "w", encoding="utf-8") as fh:
+            json.dump({"state": "closed"}, fh)
+        self.unlettered.append("s-0115")
+        done = PL.repair_unlettered(
+            self.spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+        )
+        self.assertEqual(done["asked"], [])
+        with open(self.note_path("s-0115"), encoding="utf-8") as fh:
+            note = json.load(fh)
+        self.assertEqual(note["state"], "closed")
+        self.assertNotIn("label", note)
+
+    def test_the_pass_starts_no_new_replay_after_its_time_budget(self) -> None:
+        self.unlettered.extend(["s-0116", "s-0117"])
+        ticks = [0]
+
+        def fake_monotonic() -> float:
+            ticks[0] += 1
+            return 0.0 if ticks[0] <= 2 else PL.REPAIR_PASS_SECONDS + 1.0
+
+        with mock.patch("time.monotonic", fake_monotonic):
+            done = PL.repair_unlettered(
+                self.spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+            )
+        self.assertEqual(done["asked"], ["s-0116"])
+
+    def test_an_unsaved_outcome_leaves_a_distinguishable_marker(self) -> None:
+        self.unlettered.append("s-0118")
+        real_save = PL._save_json
+        failed = [False]
+
+        def flaky_save(path, data):
+            outcome = data.get("outcome") if isinstance(data, dict) else None
+            if isinstance(outcome, dict) and "found" in outcome and not failed[0]:
+                failed[0] = True
+                return False
+            return real_save(path, data)
+
+        with mock.patch.object(PL, "_save_json", flaky_save):
+            PL.repair_unlettered(
+                self.spec, self.server_env(), "CODEX", "server", now=time.time(), transport=Calls(self)
+            )
+        self.assertEqual(self.stamp()["outcome"], {"error": "the outcome could not be saved"})
+
+
+class RepairCliTests(Base):
+    """`platform-letter repair`:  the verb a host's own schedule ticks, so a chat whose hook never runs (an
+    app-driven chat) still gets its start replayed, throttled by the stamp beside the notes."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.unlettered: list[str] = []
+
+        def unlettered_sessions(env):
+            return list(self.unlettered)
+
+        def chat_payload(sid):
+            return {"hook_event_name": "SessionStart", "source": "resume", "session_id": sid}
+
+        self.spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            unlettered_sessions=unlettered_sessions,
+            chat_payload=chat_payload,
+        )
+
+    def repair(self, *argv: str, now: float | None = None) -> tuple[int, str]:
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": self.spec}):
+            code = PL.repair_main(
+                list(argv), self.server_env(), out, now=now, platform="linux", transport=Calls(self),
+            )
+        return code, out.getvalue()
+
+    def label(self, sid: str) -> str:
+        with open(os.path.join(self.state, "CODEX", "letters", sid + ".json")) as fh:
+            return json.load(fh)["label"]
+
+    def test_the_verb_replays_and_reports_each_chat(self) -> None:
+        self.unlettered.append("s-0200")
+        code, out = self.repair("--platform", "faux", "--location", "server", now=1000.0)
+        self.assertEqual(code, 0)
+        self.assertIn("s-0200", out)
+        self.assertIn("letter back", out)
+        self.assertRegex(self.label("s-0200"), PAIR)
+
+    def test_the_verb_names_each_failed_chat(self) -> None:
+        def payload(sid):
+            raise RuntimeError("payload boom")
+
+        spec = make_spec(
+            platform="faux9",
+            source="faux9-hook",
+            display="Faux9",
+            unlettered_sessions=lambda env: ["s-0203"],
+            chat_payload=payload,
+        )
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux9": spec}):
+            code = PL.repair_main(
+                ["--platform", "faux9", "--location", "server"],
+                self.server_env(),
+                out,
+                platform="linux",
+                transport=Calls(self),
+                now=1000.0,
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("s-0203 failed (RuntimeError)", out.getvalue())
+
+    def test_the_verb_reports_an_unrecordable_outcome_on_stderr(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(PL, "_save_json", lambda path, data: False):
+            with mock.patch("sys.stderr", err):
+                with mock.patch.dict(PL.SPECS, {"faux": self.spec}):
+                    code = PL.repair_main(
+                        ["--platform", "faux", "--location", "server"],
+                        self.server_env(),
+                        out,
+                        platform="linux",
+                        transport=Calls(self),
+                        now=1000.0,
+                    )
+        self.assertEqual(code, 0)
+        self.assertIn("skipped (the stamp could not be saved)", out.getvalue())
+        self.assertIn("the pass's outcome could not be recorded", err.getvalue())
+
+    def test_the_stamp_throttles_without_force(self) -> None:
+        self.unlettered.append("s-0201")
+        code, out = self.repair("--platform", "faux", "--location", "server", now=1000.0)
+        self.assertEqual(code, 0)
+        code, out = self.repair("--platform", "faux", "--location", "server", now=1001.0)
+        self.assertIn("not due", out)
+        code, out = self.repair("--platform", "faux", "--location", "server", "--force", now=1001.0)
+        self.assertIn("s-0201", out)
+
+    def test_a_platform_with_no_surface_is_a_bad_argument(self) -> None:
+        plain = make_spec(platform="faux", source="faux-hook", display="Faux")
+        out = io.StringIO()
+        with mock.patch.dict(PL.SPECS, {"faux": plain}):
+            code = PL.repair_main(
+                ["--platform", "faux", "--location", "server"], self.server_env(), out,
+                platform="linux", transport=Calls(self),
+            )
+        self.assertEqual(code, 2)
+
+    def test_with_no_platform_named_every_surface_is_ticked(self) -> None:
+        self.unlettered.append("s-0202")
+        code, out = self.repair("--location", "server", now=1000.0)
+        self.assertEqual(code, 0)
+        self.assertIn("s-0202", out)
+
+
 class GoneReportTests(Base):
     """Chats that are gone for good (a platform's app archived them) release their letters:  a chat's start reports
     them to the assigner in one `report-gone` call per host and platform, at most once a window, and nothing it does
