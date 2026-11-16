@@ -25,6 +25,9 @@ struct ServerStatusPanel: View {
     @EnvironmentObject private var monitor: DriftMonitor
     @EnvironmentObject private var router: ServiceActionRouter
     @ObservedObject private var controller = OpsController.shared
+    @State private var searchText = ""
+    @State private var problemsOnly = false
+    @State private var collapsedSections: Set<String> = []
 
     /// The allowlist in the Mac's checkout,  which decides the buttons.  It is the router's,
     /// which the menu reads too.
@@ -63,6 +66,7 @@ struct ServerStatusPanel: View {
                         if reading.hostMetrics != nil {
                             hostSection(reading)
                         }
+                        serverFilterToolbar
                         if reading.hasServicesHalf {
                             servicesSection(reading)
                         }
@@ -257,6 +261,53 @@ struct ServerStatusPanel: View {
 
     // MARK: The sections
 
+    private var serverFilterToolbar: some View {
+        let sectionIDs = ["units", "containers", "processes", "files"]
+        let allCollapsed = sectionIDs.allSatisfy { collapsedSections.contains($0) }
+        return HStack(spacing: 10) {
+            MusterSearchField(prompt: "Filter units, containers, processes, or files\u{2026}", text: $searchText)
+            Toggle("Problems Only", isOn: $problemsOnly)
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+            Button(allCollapsed ? "Expand Sections" : "Collapse Sections") {
+                if allCollapsed {
+                    collapsedSections.removeAll()
+                } else {
+                    collapsedSections = Set(sectionIDs)
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.link)
+        }
+    }
+
+    private func matchesSearch(_ fields: String?...) -> Bool {
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return true }
+        return fields.compactMap { $0 }.contains { $0.localizedCaseInsensitiveContains(needle) }
+    }
+
+    private func collapsibleSectionHeader(_ id: String, _ title: String, _ state: CellState?, _ detail: String) -> some View {
+        let isCollapsed = collapsedSections.contains(id)
+        return Button {
+            if isCollapsed {
+                collapsedSections.remove(id)
+            } else {
+                collapsedSections.insert(id)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 10)
+                sectionHeader(title, state, detail)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     /// The title of a section,  with the state of that half of the report.
     private func sectionHeader(_ title: String, _ state: CellState?, _ detail: String) -> some View {
         HStack(spacing: 10) {
@@ -394,15 +445,28 @@ struct ServerStatusPanel: View {
     }
 
     private func servicesSection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Fleet Units", reading.servicesState, unitsDetail(reading))
-            collectionNote(reading.collection?.services)
-            collectionNote(reading.collection?.failedUnits)
-            ForEach(reading.failedUnits ?? []) { unit in
-                failedUnitRow(unit)
-            }
-            ForEach(reading.services) { service in
-                serviceRow(service)
+        let failed = (reading.failedUnits ?? []).filter { matchesSearch($0.unit, $0.scope, $0.detailText()) }
+        let services = reading.services.filter { service in
+            (!problemsOnly || service.state != .passed)
+                && matchesSearch(service.unit, service.scope, service.description)
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            collapsibleSectionHeader("units", "Fleet Units", reading.servicesState, unitsDetail(reading))
+            if !collapsedSections.contains("units") {
+                collectionNote(reading.collection?.services)
+                collectionNote(reading.collection?.failedUnits)
+                if failed.isEmpty && services.isEmpty {
+                    Text("No units match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(failed) { unit in
+                        failedUnitRow(unit)
+                    }
+                    ForEach(services) { service in
+                        serviceRow(service)
+                    }
+                }
             }
         }
     }
@@ -526,16 +590,27 @@ struct ServerStatusPanel: View {
     }
 
     private func coolifySection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Containers", reading.coolifyState, containersDetail(reading))
-            collectionNote(reading.collection?.coolify)
-            if reading.coolify.isEmpty {
-                Text("The report names no containers.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(reading.coolifyProblemsFirst) { resource in
-                    coolifyRow(resource, reading: reading)
+        let containers = reading.coolifyProblemsFirst.filter { resource in
+            (!problemsOnly || resource.resourceStatus != .running
+                || (resource.restartCount ?? 0) > 0 || resource.oomKilled == true)
+                && matchesSearch(resource.name, resource.container)
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            collapsibleSectionHeader("containers", "Containers", reading.coolifyState, containersDetail(reading))
+            if !collapsedSections.contains("containers") {
+                collectionNote(reading.collection?.coolify)
+                if reading.coolify.isEmpty {
+                    Text("The report names no containers.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if containers.isEmpty {
+                    Text("No containers match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(containers) { resource in
+                        coolifyRow(resource, reading: reading)
+                    }
                 }
             }
         }
@@ -629,17 +704,31 @@ struct ServerStatusPanel: View {
     }
 
     private func processesSection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let processes = reading.processes.filter {
+            matchesSearch($0.displayName, $0.owner, $0.belongsTo, "\($0.pid)")
+        }
+        return VStack(alignment: .leading, spacing: 8) {
             // No badge:  a list of busy processes checks nothing,  so it cannot pass.
-            sectionHeader("Top Processes", nil, processesDetail(reading))
-            collectionNote(reading.collection?.processes)
-            if reading.processes.isEmpty {
-                Text("The report names no processes.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(reading.processes) { process in
-                    processRow(process)
+            collapsibleSectionHeader("processes", "Top Processes", nil, processesDetail(reading))
+            if !collapsedSections.contains("processes") {
+                collectionNote(reading.collection?.processes)
+                if problemsOnly {
+                    Text("Top busy processes are not health-checked.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if reading.processes.isEmpty {
+                    Text("The report names no processes.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if processes.isEmpty {
+                    Text("No processes match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(processes) { process in
+                        processRow(process)
+                    }
                 }
             }
         }
@@ -690,51 +779,67 @@ struct ServerStatusPanel: View {
     }
 
     private func configSection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader(
+        let drifted = reading.driftedFiles.filter { matchesSearch($0.fileName, $0.path) }
+        let noticed: [WatchedFile] = problemsOnly ? [] : reading.noticedFiles.filter { matchesSearch($0.fileName, $0.path) }
+        let removedCheckouts: [ServerRemovedCheckout] = problemsOnly ? [] : reading.removedCheckouts.filter { matchesSearch($0.text) }
+        return VStack(alignment: .leading, spacing: 8) {
+            collapsibleSectionHeader(
+                "files",
                 "Changed Since The Last Report",
                 reading.configState,
                 "\(reading.driftedFiles.count) of \(reading.files.count) \(reading.files.count == 1 ? "file" : "files") changed"
             )
-            // What "changed" is measured against,  so it never reads as drift from what the
-            // checkout should hold.
-            Text(ServerConfigCopy.comparisonNote)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if reading.filesTruncated {
-                sectionNote(partialListText(reading.filesSummary))
-            } else {
-                collectionNote(reading.collection?.files)
-            }
-            ForEach(reading.removedCheckouts) { checkout in
-                Text(checkout.text)
+            if !collapsedSections.contains("files") {
+                // What "changed" is measured against,  so it never reads as drift from what the
+                // checkout should hold.
+                Text(ServerConfigCopy.comparisonNote)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if reading.files.isEmpty {
-                Text("The report watches no files.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else if reading.driftedFiles.isEmpty {
-                Text(reading.noticedFiles.isEmpty
-                    ? "No watched file changed since the last report."
-                    : "Only files kept for information changed since the last report.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(reading.driftedFiles) { file in
-                    fileRow(file)
+                if reading.filesTruncated {
+                    sectionNote(partialListText(reading.filesSummary))
+                } else {
+                    collectionNote(reading.collection?.files)
                 }
-            }
-            if !reading.noticedFiles.isEmpty {
-                Text("Changed, for information only")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-                ForEach(reading.noticedFiles) { file in
-                    fileRow(file)
+                ForEach(removedCheckouts) { checkout in
+                    Text(checkout.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if reading.files.isEmpty {
+                    Text("The report watches no files.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if problemsOnly && reading.driftedFiles.isEmpty {
+                    Text(reading.noticedFiles.isEmpty
+                        ? "No watched file changed since the last report."
+                        : "No drifted watched files (informational changes hidden by Problems Only).")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if reading.driftedFiles.isEmpty {
+                    Text(reading.noticedFiles.isEmpty
+                        ? "No watched file changed since the last report."
+                        : "Only files kept for information changed since the last report.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if drifted.isEmpty && noticed.isEmpty {
+                    Text("No files match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(drifted) { file in
+                        fileRow(file)
+                    }
+                }
+                if !noticed.isEmpty {
+                    Text("Changed, for information only")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    ForEach(noticed) { file in
+                        fileRow(file)
+                    }
                 }
             }
         }

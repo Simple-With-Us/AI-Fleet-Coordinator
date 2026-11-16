@@ -1,4 +1,5 @@
 import { withServiceTitle } from "./tool-titles.js";
+import { isSingleThread } from "./session-ids.js";
 import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
@@ -42,6 +43,8 @@ import {
   sessionTag,
   tagPrefix,
   composeBody,
+  normalizeHeader,
+  stripOwnIntro,
   seatTagFor,
   SEAT_TAG_EXPECTATIONS,
   formatTime,
@@ -76,7 +79,14 @@ import {
   RECALL_MARKER_END,
 } from "./recall.js";
 import { PEER_ACTIONS_TOOLS, PEER_ACTIONS_WRITE_TOOLS, PEER_ACTIONS_METHODS } from "./peer_actions.js";
-import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES, GRAPHQL_ERROR_CODES } from "./gr-tools.js";
+import {
+  GR_SECRETS,
+  GR_TOOLS,
+  GR_TOOL_NAMES,
+  GRAPHQL_ERROR_CODES,
+  GR_UNAVAILABLE_REASON,
+  grNotConfiguredMessage,
+} from "./gr-tools.js";
 import { REFUSAL_REASONS, allowlistedGithubDiagnostics, classifyRelayRefusal, githubRefusalStatus, movedRepository, refusalReasonText, repositoryMovedText } from "./gr-refusal.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, parseWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
@@ -145,7 +155,7 @@ import {
   STATUS_WORDS,
 } from "./linear.js";
 import { GAP, fixOutbound } from "./textfmt.js";
-import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
+import { GITHUB_GAP_BYTE_CAP, GITHUB_GAP_FIELDS, SENTENCE_GAP_ARG, capNotice, compactGitHubArgs, gapGitHubArgs, githubToolName, noteGapSkipped, outboundGap, runWithGap, withGapOption } from "./outbound-gap.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
@@ -374,6 +384,19 @@ const LINEAR_WORKSPACE_CACHE = new Map();
  * flat inputs, <=32 keys, scalar values only, <=1024 chars per string, no
  * unknown fields.  The relay re-checks the same caps;  an over-limit call
  * refuses here instead of spending a parse, a stringify and an upstream call. */
+// Keep in step with git_relay.github_client.intent_branch_ref.  A tag whose
+// name passes the shape is not distinguishable without the contents read
+// that an intent-only call skips.
+const INTENT_BRANCH_REF = /^[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}$/;
+const COMMIT_SHA_REF = /^[0-9a-f]{40}$/;
+
+function intentBranchRef(ref) {
+  return typeof ref === "string"
+    && INTENT_BRANCH_REF.test(ref)
+    && !ref.includes("..")
+    && !COMMIT_SHA_REF.test(ref);
+}
+
 const GR_DISPATCH_ARGS = z
   .object({
     repo: z.string().min(3).max(200),
@@ -409,12 +432,14 @@ export class HostedTools {
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
    * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
+   * @param {string|null} [o.grUnavailableReason]  GR_UNAVAILABLE_REASON when gr is null (src/gr-tools.js)
+   * @param {string[]} [o.grMissingEnv]    missing relay-front setting names when gr is null
    * @param {function|null} [o.audit]      the Worker's isolate audit buffer sink (src/audit-batch.js):  (key, gate, row);  null writes each row to the gate at once
    * @param {object|null} [o.identityCache]  the Worker's isolate verified-identity cache (src/identity-cache.js), or null
    * @param {string|null} [o.identityKey]    this credential's cache key (the SHA-256 of the presented credential)
    * @param {object|null} [o.identityEntry]  the route's fresh cache entry for this credential, or null when the route verified live for this request (the first call always pays the full gate price)
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, diagnosticsGate = null, gr = null, workerEnv = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, diagnosticsGate = null, gr = null, grUnavailableReason = null, grMissingEnv = [], workerEnv = null, audit = null, identityCache = null, identityKey = null, identityEntry = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -433,6 +458,8 @@ export class HostedTools {
     // The recall secrets join the scrub list, so no error text can carry them.
     if (this.recall) this.known.push(...this.recall.secrets().filter(Boolean));
     this.gr = gr ?? null;
+    this.grUnavailableReason = this.gr ? null : (grUnavailableReason ?? GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING);
+    this.grMissingEnv = this.gr ? [] : (Array.isArray(grMissingEnv) ? grMissingEnv : []);
     // The GR front's Access pair and the caller's bearer join the scrub list too.
     if (this.gr) this.known.push(...this.gr.secrets().filter(Boolean));
     this.linear = linear ?? null;
@@ -1535,9 +1562,11 @@ export class HostedTools {
 
   requireGr() {
     if (this.gr) return this.gr;
+    const reason = this.grUnavailableReason ?? GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING;
     throw new ToolError(
       "not_configured",
-      `GR-MCP is not configured on this server.  The owner sets GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")} (scripts/simple-tools-mcp/DEPLOY.md).  The other tools still work.`,
+      grNotConfiguredMessage({ reason, missing: this.grMissingEnv }),
+      { extra: { reason, ...(this.grMissingEnv.length ? { missing: this.grMissingEnv } : {}) } },
     );
   }
 
@@ -1577,7 +1606,12 @@ export class HostedTools {
     // Only the transport's own root marker proves this failed before send.
     // Upstream status/body content can never supply that marker.
     if (localFailure === true && status === 503 && body?.error === "not_configured") {
-      throw new ToolError("not_configured", "GR-MCP is not configured on this server right now (the relay front or the hosted-OAuth signer is unavailable).  Nothing was sent to git-relay;  the other tools still work.");
+      const reason = GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE;
+      throw new ToolError(
+        "not_configured",
+        grNotConfiguredMessage({ reason, missing: [] }),
+        { extra: { reason } },
+      );
     }
     // Every other 5xx is outcome_unknown (kody discussion_r4372747157):  a
     // relay crash or edge error can follow an ACCEPTED mutation, so calling
@@ -1681,14 +1715,19 @@ export class HostedTools {
     return okResult(JSON.stringify(body), body);
   }
 
-  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
-  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP })); }
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", gapGitHubArgs("open_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", gapGitHubArgs("edit_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", gapGitHubArgs("reply_thread", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", gapGitHubArgs("comment_pr", args, { byteCap: GITHUB_GAP_BYTE_CAP, seat: seatTagForSeat(this.seat) })); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
   async tool_gr_workflow_dispatch(args) {
     const parsed = parseArgs(GR_DISPATCH_ARGS, args);
-    if ((parsed.intent_id === undefined) !== (parsed.expected_head_sha === undefined)) throw new ToolError("invalid_argument", "intent_id and expected_head_sha must be supplied together");
+    if (parsed.expected_head_sha !== undefined && parsed.intent_id === undefined) {
+      throw new ToolError("invalid_argument", "expected_head_sha requires intent_id");
+    }
+    if (parsed.intent_id !== undefined && !intentBranchRef(parsed.ref)) {
+      throw new ToolError("invalid_argument", "intent dispatch requires a canonical branch name");
+    }
     return this.grCall("workflow_dispatch", parsed);
   }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
@@ -2013,10 +2052,14 @@ export class HostedTools {
   }
 
   /** The caller's Linear body as posted:  no seat tag is prepended and a supplied session is not
-   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  `session` stays on
-   * the signature because callers and idempotency keys still pass it. */
+   * injected (AFC-692, Jay 2026-11-10).  Attribution is the Linear app identity.  A single-thread seat's
+   * own typed intro is dropped too (Jay 2026-11-12):  its app already names it, while a multi-threaded
+   * seat keeps its intro because it names the thread.  `session` stays on the signature because callers
+   * and idempotency keys still pass it. */
   linearBody(text, session) {
     void session;
+    if (isSingleThread(this.seat)) text = stripOwnIntro(seatTagForSeat(this.seat), text);
+    text = normalizeHeader(text, { seat: seatTagForSeat(this.seat) });
     // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
     // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
     // AFC-722:  the full house gap (one or more spaces), unless the call passed sentence_gap: false.
@@ -2293,7 +2336,8 @@ export class HostedTools {
   linearFileBody(args, slug, team) {
     const seat = seatTagForSeat(this.seat);
     const text = args.description?.trim() || "_No description given._";
-    const footer = [`---`, "", "**Filed from simple-tools**", "", `- Reported by ${seat}`, `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
+    // A single-thread seat's Linear app is the reporter, so it gets no Reported by line (Jay 2026-11-12).
+    const footer = [`---`, "", "**Filed from simple-tools**", "", ...(isSingleThread(this.seat) ? [] : [`- Reported by ${seat}`]), `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
     if (args.kind) footer.push(`- Kind: ${args.kind}`);
     if (args.severity) footer.push(`- Severity: ${args.severity}`);
     if (args.env) footer.push(`- Env: ${ENVS[args.env]}`);
@@ -2485,19 +2529,21 @@ for (const action of TYPED_V1_ACTIONS) {
 // (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
 for (const action of WF_V1_ACTIONS) {
   HostedTools.prototype[`tool_gr_${action}`] = async function (args) {
+    if (action === "wf_pr_create") throw new ToolError("forbidden", "PR creation requires gr_open_pr. No request was sent.");
     if (this.config?.grWorkflowEnabled !== true) {
       throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
     }
     // AFC-722:  the gap is written before the relay's own checks, so they see the bytes that will land.  A
     // gapped body that no longer fits a byte cap (U+00A0 is two UTF-8 bytes) is sent as written instead, and the
     // result says so.
-    const gapped = gapGitHubArgs(action, args);
+    const compacted = compactGitHubArgs(action, args, { seat: seatTagForSeat(this.seat) });
+    const gapped = gapGitHubArgs(action, compacted, { seat: seatTagForSeat(this.seat) });
     let parsedArgs = parseWfV1Args(action, gapped);
-    if (parsedArgs === null && gapped !== args) {
-      parsedArgs = parseWfV1Args(action, args);
+    if (parsedArgs === null && gapped !== compacted) {
+      parsedArgs = parseWfV1Args(action, compacted);
       if (parsedArgs !== null) {
         for (const field of GITHUB_GAP_FIELDS[action] ?? []) {
-          if (gapped[field] !== args[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
+          if (gapped[field] !== compacted[field]) noteGapSkipped(capNotice(`gr_${action}`, field));
         }
       }
     }

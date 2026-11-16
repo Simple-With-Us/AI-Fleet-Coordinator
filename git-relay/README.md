@@ -49,6 +49,12 @@ the owner's cutover decision.
 
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
 
+### PR Headers
+
+PR titles, descriptions and comments use compact fleet headers, for example `[CODEX:   GG.1.S]`, without `📁` or repository names.  A held PR description puts its concrete readiness criteria bullets and a blank line before the compact header.  Keep the actual writing session and any recipients; do not derive or reuse a session letter from GitHub metadata.  Kody trigger comments start with the literal `@kody start-review`, put the compact header on line 2 and include the full reviewed head SHA and context afterward.
+
+The hosted Fleet Tools front compacts supplied headers on explicit PR title, description, comment and review routes.  Direct HTTP and GR-MCP callers supply the compact form themselves; the independently packaged relay preserves it without importing another formatter.  Generic workflow issue-comment verbs retain ordinary issue context because their target may be an issue rather than a PR; use the explicit PR comment verb for PR context.  The existing `sentence_gap: false` option preserves supplied bytes, so those callers supply the required form themselves.  Ordinary GitHub issue, Zulip and Linear headers retain repository names.  Source publication does not establish a deployed formatter or delivered-message receipt.
+
 `open_pr` never reports a number for a pull request it has not seen.  After the create answers,
 the relay reads the pull request back by number with the same owner token and checks the number,
 the repository, the base branch and the head branch (and the owner, for an `owner:branch` or
@@ -168,7 +174,10 @@ returned to the caller as a retryable refusal.
 
 [deploy/seat-policy.json](deploy/seat-policy.json) is the production policy.  It holds no secret:
 every seat is `auth: shared` and signs in with its own admin-minted bearer.  It lists one entry
-for each of the 40 identities in this file (source, not live: the live seats file differs - it also carries BF-BUILDER, omitted here, and it does not yet carry swu-zc, whose admission is the proof-gated first-seat runbook in this document), each acting as the `swu-` App
+for each of the 42 identities in this file (source and live agree, verified against the relay host's
+live seats file on 2026-11-15:  the live file's legacy `swu-bf-builder` row was removed 2026-11-12, and
+swu-zc and swu-kimi were admitted 2026-11-15 through the proof-gated first-seat runbook in this document
+and are carried in this image), each acting as the `swu-` App
 whose GitHub description names that seat.  Five slugs are not `swu-<identity>`:  MA is
 `swu-rob`, GROK is `swu-grok-build`, MM is `swu-minimax`, JET-CHAT is `swu-jet` and AMP is `swu-amp-agent` (`swu-amp` is reserved for an account).  JET-CHAT is the full Jet login on its own policy entry; the original JET wake-only login has no Git entry (Q7).  Seats share the `fleet` profile
 (the same actions, repositories and permission ceiling);  Since the 2026-11-01 every-repo widening (owner instruction) the fleet profile names both reviewed namespaces, `Simple-With-Us/*` and `jaywedgeworth22/*` (the legacy namespace covers repositories still held by the personal account; a renamed or transferred repository is refused as `repository moved`, with `moved_to` only when the seat's own App can read the destination and the seat's repo allowlist covers it - the relay never follows a redirect);  Echo's profile survives but resolves to the same set.  The fleet profile carries a 187-action list (8 relay actions, including `git_read`, plus 179 workflow actions, including `wf_pr_close`, `wf_pr_reopen`, the metadata-read rule reads `wf_branch_rules` and `wf_rulesets`, and the seven verbs AFC-629 grants: `wf_pr_search`, `wf_repo_list`, `wf_review_thread_comments`, `wf_file_patch`, `wf_issue_state_set`, `wf_issue_milestone_set` and `wf_release_notes_preview`) and the live 10-key mint ceiling.  The two rule reads reach a seat only once the live seats file on the relay host carries them, so they are added there at relay install.  `swu-amp-agent` and `swu-wise` keep the host's exact live action ordering through their own pinned profiles (the same set, ceiling and repositories as fleet).  BF-BUILDER is dropped (owner 2026-10-29 5:50am CT:  BF-ENGINEER replaced it):  it has no entry, so the relay authenticates no BF-BUILDER bearer.  Every GB seat and every BF bot, including BF-TRADER and BF-ENGINEER, is on the fleet profile.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
@@ -203,7 +212,11 @@ A brand-new seat cannot produce `ExternalProof` until the row is loaded, because
 
 The proof key is owned by root, the relay host operator.  Mint it once, as root, with `python3 -I <copy>/seat_policy.py proof-key` and `GIT_RELAY_PROOF_KEY_FILE` set to a new file in a directory root owns and only root can write.  The file is mode 0600.  The command never prints the key and never overwrites an existing one.  The service user does not own it, and the seat does not own it either.
 
-After this change is merged, admitting `swu-zc` is a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above.  The reviewed policy file carries no `swu-zc` row:  a wholesale `install` renders the whole file with no per-seat ExternalProof, so an unproven row must never ride the image.  Render the row from the reviewed fleet profile with the real renderer instead:
+Admitting `swu-zc` ran on 2026-11-15 as a root command on the relay host, from a root-owned copy of the merged files, with the same blob-id check as the install above (the executed run and its relay audit open_pr correlation are recorded in the relay host's root-only audit log;  the seat's first PR is HogHunter #368 under the owner account).  Admitting `swu-kimi` ran the same day through the same root command, the same rendered fleet profile and the same proof key (its ExternalProof is bound to the same root-only audit log:  the fail-closed negative probe `wf_file_patch` was refused `default branch is not writable`;  the pre-change backup on the host is `seats.json.backup-kimi-add-20261115T1535Z` and the live probe record is `/root/kimi-admission-live-proof.txt`:  `wf_repo_get` 200, the negative probe 400, a `swu-zc` regression read 200).  `swu-kimi` has no first PR yet:  its ExternalProof evidence is the audit-logged fail-closed write refusal, and a first PR will follow the seat's first real change.  Until that run the reviewed policy file carried no `swu-zc` row:  a wholesale `install` renders the whole file with no per-seat ExternalProof, so an unproven row must never ride the image.  The row was rendered from the reviewed fleet profile with the real renderer.  The commands
+below are the record of that executed run, not a repeatable recipe:  the reviewed policy file now carries
+the admitted row, so re-running them fails closed (`render` refuses the duplicate `swu-zc` row, and
+`prepare` refuses a seat that is already present).  For a new seat, follow this section's procedure with
+that seat's own row instead:
 
 ```
 # Proof key, once. <root-only-dir> is a directory root owns and only root can write.
@@ -276,14 +289,14 @@ gap this attestation exists to close:
 | `scripts/test_operator_provenance.py` | `d3c23c8fd8b3ea6b73897c6ab456355a488e3f0a` | `a72e105b054617eecebdd2011dfca341e08dbc9377e378dccc8733aa7fea2c1b` |
 | `scripts/simple-tools-mcp/DEPLOY-PHASE0.md` | `cb10a4f133a5e90a1b3bdc77b1df818ad9dac0e9` | `5f85629a6a6979a763063ad3b79fd56b5d77ab93d2cd0e6da4c200485debca3f` |
 | `scripts/simple-tools-mcp/test/gr-assert.test.mjs` | `80f27a413e461e9adfc8924c881e29d4d9e2d21c` | `ecfa713b33754e1331a8fee0e07c67271fc186908a52830839f1b530a246dad8` |
-| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `96347025cd70ce52bafb94f9f14261b9ce9afbd0` | `23856d7de9e04ce7fb133b685516cdc06d6f26b93e69d528de8cc57991b7ddfb` |
+| `scripts/simple-tools-mcp/test/gr-front.test.mjs` | `3a7c6b485d91a7f2dfee5922b3d026450d087fb1` | `2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394` |
 | `scripts/simple-tools-mcp/test/gr-workflow-v1.test.mjs` | `804d547cb96bba4cade20a058e76ec32c1fa7022` | `8a0cf816252c39f32202429861483d0d128d4a30a7ff92e6cbbbad988ee7dad2` |
 | `scripts/simple-tools-mcp/test/integration.workerd.mjs` | `f122a279489d871d7fc3f71c97acd5e2ec9dcfaf` | `2b76ceeed6f6fdf66f6e04523d05cc9652e00377e82bcb55268ceaf143e10f8c` |
 | `scripts/simple_tools/tests/test_infisical_api_route.py` | `0c8b4ed4acf205c619f970824a7eba4d7e3a96b3` | `3ee7aac6e82c0f22bbadc29ba915cc05054c7d5e3c0962f9c84f9db5b8f94d88` |
 | `scripts/simple_tools/tests/test_mcp_extras.py` | `eaf0c913742de23ef19e5c655a01dc3e5ef071c7` | `d31c6f0a7f84f17dd0d480714a5d0be9f05fad97d3a3ef5d519da68b304bc95a` |
 | `scripts/fleet_lanes/tests/test_install_mcp.py` | `6b2392ff3238806f7ad251b347e424b8bb99b57d` | `a0b944f012a3fa8c27dfe52cab1c53ef8893ec4f945e6b62eb6c297f42e8853b` |
 
-The `gr-front.test.mjs` row was refreshed for the `create_repo` tool list (AFC-632).  The change adds `gr_create_repo` to the pinned name list.  The previous blob `b46549565f659d145f30d6ff1ede3af6515de64d` is no longer the attested bytes.
+The `gr-front.test.mjs` row was refreshed after merging main (with AFC-734, PR #1826) into AFC-727.  The bytes combine the `gr_create_repo` pinned name list (AFC-632), the AFC-734 not_configured reasons, and the intent-only `gr_workflow_dispatch` assertions from this branch.  Source blob `3a7c6b485d91a7f2dfee5922b3d026450d087fb1` supersedes the earlier attestations.
 
 The table records the current 13-entry source registry, not an installed-state claim.
 The Infisical API-route row is separately refreshed from immutable main
@@ -326,6 +339,10 @@ controls are unchanged: dedicated shapes and loaded values still refuse, and
 superseded bytes fail closed (git_relay/tests/test_reviewed_fixtures.py). The
 attested bytes are a FUTURE target until PR #1707 merges; this source change deploys
 only through the relay operator's normal review and authorizes no write by itself.
+
+On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the exact bytes on PR #1826 after merging main (source blob `8b5c00c94f3bd0635335226e607bc0a94a3a8660`, SHA-256 `dc79d7b078aa35816ffc5ce35ee3c9c2dbaff5d4fdf47499f46f8480f6d478db`, 30639 UTF-8 bytes).  The prior digests attested AFC-632's `gr_create_repo` name list and the pre-merge AFC-734 copy separately.  The complete file was re-reviewed, not only the added lines.  Those lines are the not_configured reason tests and the pinned `gr_create_repo` tool name.  They name seat-bearer shapes and never a credential literal, and none of the added lines match a dedicated secret pattern.  The whole file still matches bearer_credential because of the synthetic bearer header fixtures the prior attestation already covered.  Changing one byte of this file fails closed.  This source change deploys only through the relay operator's normal review and authorizes no write by itself.
+On November 12, 2026 the `scripts/simple-tools-mcp/test/gr-front.test.mjs` row was refreshed to the AFC-727 bytes (source blob `6c5cae45145f20b36cf1641c59397c432cfb3784`, SHA-256 `34c5596e04e2352a729d0c377bfe15a5c8dc2a7a3fcef4bcadc1dd689833a46a`, 27,053 UTF-8 bytes).  The prior digest attested the pre-change bytes.  The whole file was re-checked.  The only delta is the dispatch-intent test now accepting `intent_id` without `expected_head_sha`, plus the paired call that follows it.  No credential literal was added or removed.  Dedicated shapes and loaded values still refuse, and any other byte still fails closed.
+After merging main (with PR #1826) into AFC-727, the row was refreshed again to the combined bytes (source blob `3a7c6b485d91a7f2dfee5922b3d026450d087fb1`, SHA-256 `2e239b1be679263cd6418d7e4d897d98d6c4b0ecfe48812dd0c0b939e950e394`, 30787 UTF-8 bytes).
 
 `mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
 (a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the
@@ -385,10 +402,24 @@ unknown and never as ok, so no later call replays its number.  A replay of a
 successful call returns the stored result without touching GitHub twice.  A crash mid-write loads
 as unknown - the store fails closed, never replays.  The registry is bounded:  ok rows are
 evicted after a 24 h replay window, refused rows are evicted oldest-first under capacity, and
-a store full of held pending/unknown rows refuses new writes with 503 until an operator
-reconciles them (fail closed - never evict a held side effect).  Writes go through a
+a store full of held unknown rows archives the oldest unknowns to an append-only
+`<outcomes file>.archive.jsonl` sidecar (with a `<outcomes file>.archive-index.json` duplicate-denial
+index) to make room - an archived unknown still refuses a replay exactly as a live one, and an
+operator releases it by reconciling the key to a definitive `ok` or `refused` (a non-definitive
+reconciliation keeps the denial).  Only a store full of rows that can neither evict nor
+archive - held pending rows and successful rows still inside their 24 h replay window -
+refuses new writes with 503 until an operator reconciles them or the window expires (fail
+closed - never evict a held side effect).  Writes go through a
 full-write loop, so a short write fails loudly instead of renaming a truncated registry.  `mint_token` is exempt:  it returns a raw
 credential (never cached in the store) and a re-mint is safe under the minter's own lock.
+
+## Outcome Capacity Policy
+
+With App minting enabled, the relay requires the nonsecret Infisical key `GIT_RELAY_OUTCOMES_MAX_ENTRIES` from Fleet-OPS `prod` in its existing App-source folder, normally `/github-apps` or the already configured `GIT_RELAY_SECRETS_PATH`.  It reads the value once through that Source's folder-proven `verified_secret` method and reuses the exact Source object for App-token minting.  Only a canonical decimal integer from 5,000 through 50,000 is accepted; the intended production value is `20000`.  This key is not an environment override and has no fallback value or source.
+
+Provision it in the service's actual configured folder and verify a cold read through its own existing binding before activating this source.  Missing, unreadable or invalid policy fails startup before any legacy-state adoption or outcome-store loading.  Keep the existing outcome file; never clear it or trim recent successful, pending or unknown rows to make room.  A capacity increase retains the complete 24-hour successful replay window and permanent pending/unknown holds.  A lower capacity never removes those protected rows; fresh writes remain refused until permitted expiry or reconciliation makes room.
+
+Explicit `GIT_RELAY_APP_MINT=0` preserves the existing legacy startup behavior: no App Source or new authentication is required, and the outcome store keeps its 5,000-row library default.  Direct `OutcomeStore` callers also remain auth-free with that default.  The new production policy applies at qualified startup, and source tests do not establish provisioning, deployment or runtime acceptance.
 
 ## Configuration and running
 
