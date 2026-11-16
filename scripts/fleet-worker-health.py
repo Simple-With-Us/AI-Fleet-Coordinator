@@ -225,7 +225,12 @@ def main(argv=None):
     parser.add_argument("--write", default=DEFAULT_PATH)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    key = read_key()
+    try:
+        key = read_key()
+    except RuntimeError:
+        # A missing binding or value fails closed, so the no_key document is still written
+        # instead of the collector aborting with a traceback (the contract the plist pins).
+        key = ""
     if not key:
         status, answer = 0, None
         doc = document(status, answer)
