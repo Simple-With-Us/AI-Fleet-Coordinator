@@ -360,6 +360,27 @@ class RenameTests(Base):
         seen = self.calls()[0]["env"]
         self.assertEqual(seen, {"GROK_HOME": self.grok, "GROK_LEADER_SOCKET": self.sock})
 
+    def test_the_rename_child_keeps_platform_auth_but_no_operator_credentials(self) -> None:
+        env = self.renv(AGENT_LAUNCHER="platform-launcher", XAI_API_KEY="fake.app-auth",
+                        SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN="fake.bootstrap",
+                        FLEET_KNOBS_INFISICAL_TOKEN="fake.old", FLEET_KNOBS_WRITE_TOKEN="fake.writer")
+        original = dict(env)
+        children = []
+
+        def popen(argv, **kw):
+            children.append(kw["env"])
+            return subprocess.Popen(argv, **kw)
+
+        self.assertTrue(G.rename_session(gid(1), "AB: Fix Login", env, popen=popen))
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0]["GROK_LEADER_SOCKET"], self.sock)
+        self.assertEqual(children[0]["AGENT_LAUNCHER"], "platform-launcher")
+        self.assertEqual(children[0]["XAI_API_KEY"], "fake.app-auth")
+        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN", "FLEET_KNOBS_INFISICAL_TOKEN",
+                     "FLEET_KNOBS_WRITE_TOKEN", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+            self.assertNotIn(name, children[0])
+        self.assertEqual(env, original)
+
     def test_notifications_and_requests_of_the_leader_are_read_and_dropped(self) -> None:
         self.assertTrue(G.rename_session(gid(1), "AB: Fix Login", self.renv(FAKE_GROK_MODE="noise")))
 

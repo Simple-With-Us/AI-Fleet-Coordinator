@@ -548,11 +548,13 @@ test("dispatch intent source pair is meaningful and schema bounded", async () =>
     fetch: async () => { upstream++; return new Response(JSON.stringify({accepted:true,replayed:false}),{status:200}); },
   }));
   const base={repo:"a/b",workflow:"ci.yml",ref:"main"};
-  for (const extra of [{intent_id:"qualification-one"},{expected_head_sha:"a".repeat(40)},{intent_id:"short",expected_head_sha:"a".repeat(40)}]) {
+  for (const extra of [{expected_head_sha:"a".repeat(40)},{intent_id:"short"},{intent_id:"short",expected_head_sha:"a".repeat(40)}]) {
     const result=await tools.call("gr_workflow_dispatch",{...base,...extra});
     assert.equal(result.isError,true);
   }
   assert.equal(upstream,0);
-  const result=await tools.call("gr_workflow_dispatch",{...base,intent_id:"qualification-one",expected_head_sha:"a".repeat(40)});
-  assert.ok(!result.isError);assert.equal(upstream,1);
+  const intentOnly=await tools.call("gr_workflow_dispatch",{...base,intent_id:"qualification-one"});
+  assert.ok(!intentOnly.isError);assert.equal(upstream,1);
+  const result=await tools.call("gr_workflow_dispatch",{...base,intent_id:"qualification-two",expected_head_sha:"a".repeat(40)});
+  assert.ok(!result.isError);assert.equal(upstream,2);
 });

@@ -5,6 +5,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Jay's Daily Log</title>
+  <link rel="icon" type="image/png" href="agent-logos/app-afc.png" />
+  <link rel="icon" type="image/webp" href="agent-logos/app-afc-dark.webp" media="(prefers-color-scheme: dark)" />
   <style>
     :root {
       --bg: #f4f6f9;
@@ -27,6 +29,8 @@
       --hh: #92400e;
       --clutch: #0e7490;
       --cc: #0f766e;
+      --fl: #155e75;
+      --swu: #4b5563;
     }
     * { box-sizing: border-box; }
     body {
@@ -78,10 +82,12 @@
       gap: 0.2rem;
       flex-shrink: 0;
       min-width: 1.5rem;
+      max-width: 100%;
     }
     .item-body {
       flex: 1 1 14rem;
       min-width: min(100%, 12rem);
+      overflow-wrap: anywhere;
     }
     .repo {
       display: inline-flex;
@@ -108,6 +114,8 @@
     .repo-hh { background: var(--hh); }
     .repo-clutch { background: var(--clutch); }
     .repo-cc { background: var(--cc); }
+    .repo-fl { background: var(--fl); }
+    .repo-swu { background: var(--swu); }
     .repo.repo-with-icon {
       gap: 0;
       padding: 0.1rem;
@@ -131,6 +139,8 @@
     }
     .agents {
       display: inline-flex;
+      flex-wrap: wrap;
+      max-width: 100%;
       align-items: center;
       justify-content: center;
       gap: 0.2rem;
@@ -193,6 +203,7 @@
     }
     .legend-item .legend-label { color: var(--muted); }
     .legend .agent { width: 1.15rem; height: 1.15rem; }
+    .agent.agent-text { width: auto; min-width: 1.15rem; padding: 0 0.3rem; font-size: 0.65rem; color: var(--text); }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #0f172a;
@@ -214,42 +225,18 @@
 </head>
 <body>
   <h1>Jay's Daily Log</h1>
-  <p class="lede">Created: Oct 28, 2026 at 4:00am</p>
+  <p class="lede">Created: Oct 28, 2026 at 1:00pm</p>
   <div class="legend" aria-label="Legend">
     <div class="legend-section" aria-label="Repositories">
       <span class="legend-heading">Repos</span>
       <div class="legend-items">
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic.Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic.Trade" width="14" height="14" /></span><span class="legend-label">Socratic.Trade</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ct" title="Congress.Trade"><img class="repo-app-icon" src="agent-logos/app-ct.png" alt="Congress.Trade" width="14" height="14" /></span><span class="legend-label">Congress.Trade</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-um" title="Usage Monitor"><img class="repo-app-icon" src="agent-logos/app-um.png" alt="Usage Monitor" width="14" height="14" /></span><span class="legend-label">Usage Monitor</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-dd" title="DealDex.net"><img class="repo-app-icon" src="agent-logos/app-dd.png" alt="DealDex.net" width="14" height="14" /></span><span class="legend-label">DealDex.net</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ar" title="Autorotate.Codes"><img class="repo-app-icon" src="agent-logos/app-ar.png" alt="Autorotate.Codes" width="14" height="14" /></span><span class="legend-label">Autorotate.Codes</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cl" title="ContactLogo"><img class="repo-app-icon" src="agent-logos/app-cl.png" alt="ContactLogo" width="14" height="14" /></span><span class="legend-label">ContactLogo</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ps" title="Personal Site"><img class="repo-app-icon" src="agent-logos/app-ps.png" alt="Personal Site" width="14" height="14" /></span><span class="legend-label">Personal Site</span></span>
-        <span class="legend-item"><span class="repo repo-shared">CTS</span><span class="legend-label">congress-trading-shared</span></span>
-        <span class="legend-item"><span class="repo repo-fleet">AFC</span><span class="legend-label">AI Fleet Coordinator</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet.app"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet.app" width="14" height="14" /></span><span class="legend-label">BotFleet.app</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-hh" title="Hog Hunter"><img class="repo-app-icon" src="agent-logos/app-hh.png" alt="Hog Hunter" width="14" height="14" /></span><span class="legend-label">Hog Hunter</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="14" height="14" /></span><span class="legend-label">Clutch</span></span>
-        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cc" title="CodeCaps"><img class="repo-app-icon" src="agent-logos/app-cc.png" alt="CodeCaps" width="14" height="14" /></span><span class="legend-label">CodeCaps</span></span>
+        <span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic.Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic.Trade" width="14" height="14" /></span><span class="legend-label">Socratic.Trade</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ct" title="Congress.Trade"><img class="repo-app-icon" src="agent-logos/app-ct.png" alt="Congress.Trade" width="14" height="14" /></span><span class="legend-label">Congress.Trade</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-um" title="Usage Monitor"><img class="repo-app-icon" src="agent-logos/app-um.png" alt="Usage Monitor" width="14" height="14" /></span><span class="legend-label">Usage Monitor</span></span><span class="legend-item"><span class="repo repo-shared">CTS</span><span class="legend-label">congress-trading-shared</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-dd" title="DealDex.net"><img class="repo-app-icon" src="agent-logos/app-dd.png" alt="DealDex.net" width="14" height="14" /></span><span class="legend-label">DealDex.net</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ps" title="Personal Site"><img class="repo-app-icon" src="agent-logos/app-ps.png" alt="Personal Site" width="14" height="14" /></span><span class="legend-label">Personal Site</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-ar" title="Autorotate.Codes"><img class="repo-app-icon" src="agent-logos/app-ar.png" alt="Autorotate.Codes" width="14" height="14" /></span><span class="legend-label">Autorotate.Codes</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cl" title="ContactLogo"><img class="repo-app-icon" src="agent-logos/app-cl.png" alt="ContactLogo" width="14" height="14" /></span><span class="legend-label">ContactLogo</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-fleet" title="Muster / AI Fleet Coordinator"><img class="repo-app-icon" src="agent-logos/app-afc.png" alt="Muster / AI Fleet Coordinator" width="14" height="14" /></span><span class="legend-label">Muster / AI Fleet Coordinator</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet.app"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet.app" width="14" height="14" /></span><span class="legend-label">BotFleet.app</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-hh" title="Hog Hunter"><img class="repo-app-icon" src="agent-logos/app-hh.png" alt="Hog Hunter" width="14" height="14" /></span><span class="legend-label">Hog Hunter</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="14" height="14" /></span><span class="legend-label">Clutch</span></span><span class="legend-item"><span class="repo repo-with-icon repo-icon-only repo-cc" title="CodeCaps"><img class="repo-app-icon" src="agent-logos/app-cc.png" alt="CodeCaps" width="14" height="14" /></span><span class="legend-label">CodeCaps</span></span><span class="legend-item"><span class="repo repo-fl">FL</span><span class="legend-label">FleetLink</span></span><span class="legend-item"><span class="repo repo-swu">SWU</span><span class="legend-label">Simple With Us</span></span>
       </div>
     </div>
     <div class="legend-section" aria-label="Agents">
       <span class="legend-heading">Agents</span>
       <div class="legend-items">
-        <span class="legend-item"><span class="agent" title="Grok"><img src="agent-logos/grok.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok</span></span>
-        <span class="legend-item"><span class="agent" title="Grok Bot"><img src="agent-logos/grok-bot.svg" alt="" width="12" height="12" /></span><span class="legend-label">Grok Bot</span></span>
-        <span class="legend-item"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="" width="12" height="12" /></span><span class="legend-label">Codex</span></span>
-        <span class="legend-item"><span class="agent" title="Claude"><img src="agent-logos/claude.svg" alt="" width="12" height="12" /></span><span class="legend-label">Claude</span></span>
-        <span class="legend-item"><span class="agent" title="Cursor"><img src="agent-logos/cursor.png" alt="" width="12" height="12" /></span><span class="legend-label">Cursor</span></span>
-        <span class="legend-item"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="" width="12" height="12" /></span><span class="legend-label">Antigravity</span></span>
-        <span class="legend-item"><span class="agent" title="Gemini"><img src="agent-logos/gemini.svg" alt="" width="12" height="12" /></span><span class="legend-label">Gemini</span></span>
-        <span class="legend-item"><span class="agent" title="Kimi"><img src="agent-logos/kimi.svg" alt="" width="12" height="12" /></span><span class="legend-label">Kimi</span></span>
-        <span class="legend-item"><span class="agent" title="DeepSeek"><img src="agent-logos/deepseek.svg" alt="" width="12" height="12" /></span><span class="legend-label">DeepSeek</span></span>
-        <span class="legend-item"><span class="agent" title="MiniMax"><img src="agent-logos/minimax.png" alt="" width="12" height="12" /></span><span class="legend-label">MiniMax</span></span>
-        <span class="legend-item"><span class="agent" title="Muse Code"><img src="agent-logos/muse.svg" alt="" width="12" height="12" /></span><span class="legend-label">Muse Code</span></span>
-        <span class="legend-item"><span class="agent" title="Muse Assist"><img src="agent-logos/muse-assist.png" alt="" width="12" height="12" /></span><span class="legend-label">Muse Assist</span></span>
-        <span class="legend-item"><span class="agent" title="Sentry"><img src="agent-logos/sentry.svg" alt="" width="12" height="12" /></span><span class="legend-label">Sentry</span></span>
+        <span class="legend-item"><span class="agents" aria-label="Agents: Grok"><span class="agent" title="Grok"><img src="agent-logos/grok.svg" alt="Grok" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Grok</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Grok Bot"><span class="agent" title="Grok Bot"><img src="agent-logos/grok-bot.svg" alt="Grok Bot" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Grok Bot</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Codex"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="Codex" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Codex</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Claude"><span class="agent" title="Claude"><img src="agent-logos/claude.svg" alt="Claude" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Claude</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Cursor"><span class="agent" title="Cursor"><img src="agent-logos/cursor.png" alt="Cursor" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Cursor</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Antigravity"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="Antigravity" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Antigravity</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Gemini"><span class="agent" title="Gemini"><img src="agent-logos/gemini.svg" alt="Gemini" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Gemini</span></span><span class="legend-item"><span class="agents" aria-label="Agents: MiniMax"><span class="agent" title="MiniMax"><img src="agent-logos/minimax.png" alt="MiniMax" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">MiniMax</span></span><span class="legend-item"><span class="agents" aria-label="Agents: DeepSeek"><span class="agent" title="DeepSeek"><img src="agent-logos/deepseek.svg" alt="DeepSeek" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">DeepSeek</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Kimi"><span class="agent" title="Kimi"><img src="agent-logos/kimi.svg" alt="Kimi" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Kimi</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Muse Assist"><span class="agent" title="Muse Assist"><img src="agent-logos/muse-assist.svg" alt="Muse Assist" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Muse Assist</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Muse Code"><span class="agent" title="Muse Code"><img src="agent-logos/muse.svg" alt="Muse Code" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Muse Code</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Sentry"><span class="agent" title="Sentry"><img src="agent-logos/sentry.svg" alt="Sentry" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Sentry</span></span><span class="legend-item"><span class="agents" aria-label="Agents: OpenCode"><span class="agent agent-text" title="OpenCode">OpenCode</span></span></span><span class="legend-item"><span class="agents" aria-label="Agents: Instinct"><span class="agent agent-text" title="Instinct">Instinct</span></span></span><span class="legend-item"><span class="agents" aria-label="Agents: Z Code"><span class="agent agent-text" title="Z Code">Z Code</span></span></span><span class="legend-item"><span class="agents" aria-label="Agents: Fx"><span class="agent agent-text" title="Fx">Fx</span></span></span><span class="legend-item"><span class="agents" aria-label="Agents: Clutch"><span class="agent" title="Clutch"><img src="agent-logos/app-clutch.png" alt="Clutch" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">Clutch</span></span><span class="legend-item"><span class="agents" aria-label="Agents: Amp"><span class="agent agent-text" title="Amp">Amp</span></span></span><span class="legend-item"><span class="agents" aria-label="Agents: ChatGPT"><span class="agent agent-text" title="ChatGPT">ChatGPT</span></span></span><span class="legend-item"><span class="agents" aria-label="Agents: BotFleet"><span class="agent" title="BotFleet"><img src="agent-logos/app-bf.png" alt="BotFleet" width="14" height="14" loading="lazy" decoding="async" /></span></span><span class="legend-label">BotFleet</span></span>
       </div>
     </div>
   </div>
@@ -258,12 +245,12 @@
     <a href="https://example.com/calendar/daily-digest.ics">ICS - daily</a>
     <a href="https://example.com/calendar/agent-activity.ics">ICS - per commit</a>
   </nav>
-  <section class="day" id="2026-10-28"><h2>October 28, 2026</h2><p class="meta">2 PRs merged · 1 issues opened · 0 issues closed</p><h3>Merged PRs</h3><ul class="prs"><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet" width="16" height="16" loading="lazy" decoding="async" /></span><span class="agents" aria-label="Agents: Codex"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="Codex" width="14" height="14" loading="lazy" decoding="async" /></span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/BotFleet/pull/700">#700</a>: Fix composer paste</span></li><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="16" height="16" loading="lazy" decoding="async" /></span><span class="agents" aria-label="Agents: Antigravity"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="Antigravity" width="14" height="14" loading="lazy" decoding="async" /></span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/Clutch/pull/31">#31</a>: Shellular path fix</span></li></ul><h3>Issues opened</h3><ul class="opened"><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic-Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic-Trade" width="16" height="16" loading="lazy" decoding="async" /></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/Socratic-Trade/issues/3900">#3900</a>: Tighten public links</span></li></ul></section>
-<details class="day" id="2026-10-27"><summary><h2>October 27, 2026</h2><p class="meta">0 PRs merged · 0 issues opened · 1 issues closed</p></summary><h3>Issues closed</h3><ul class="closed"><li><span class="item-lead"><span class="repo repo-fleet" title="AI-Fleet-Coordinator">AFC</span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/issues/600">#600</a>: Refresh digest pipeline</span></li></ul></details>
+  <section class="day" id="2026-10-28"><h2>October 28, 2026</h2><p class="meta">4 PRs merged · 1 issues opened · 0 issues closed</p><h3>Merged PRs</h3><ul class="prs"><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-bf" title="BotFleet"><img class="repo-app-icon" src="agent-logos/app-bf.png" alt="BotFleet" width="16" height="16" loading="lazy" decoding="async" /></span><span class="agents" aria-label="Agents: Codex"><span class="agent" title="Codex"><img src="agent-logos/codex.svg" alt="Codex" width="14" height="14" loading="lazy" decoding="async" /></span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/BotFleet/pull/700">#700</a>: Fix composer paste</span></li><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-clutch" title="Clutch"><img class="repo-app-icon" src="agent-logos/app-clutch.png" alt="Clutch" width="16" height="16" loading="lazy" decoding="async" /></span><span class="agents" aria-label="Agents: Antigravity"><span class="agent" title="Antigravity"><img src="agent-logos/ag.svg" alt="Antigravity" width="14" height="14" loading="lazy" decoding="async" /></span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/Clutch/pull/31">#31</a>: Shellular path fix</span></li><li><span class="item-lead"><span class="repo repo-fl" title="FleetLink">FL</span><span class="agents" aria-label="Agents: OpenCode, Z Code"><span class="agent agent-text" title="OpenCode">OpenCode</span><span class="agent agent-text" title="Z Code">Z Code</span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/FleetLink/pull/42">#42</a>: Refresh public sharing</span></li><li><span class="item-lead"><span class="repo repo-swu" title="Simple-With-Us">SWU</span><span class="agents" aria-label="Agents: Instinct, Fx"><span class="agent agent-text" title="Instinct">Instinct</span><span class="agent agent-text" title="Fx">Fx</span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/Simple-With-Us/pull/43">#43</a>: Update product catalog</span></li></ul><h3>Issues opened</h3><ul class="opened"><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-fleet" title="AI-Fleet-Coordinator"><img class="repo-app-icon" src="agent-logos/app-afc.png" alt="AI-Fleet-Coordinator" width="16" height="16" loading="lazy" decoding="async" /></span><span class="agents" aria-label="Agents: Instinct, ChatGPT"><span class="agent agent-text" title="Instinct">Instinct</span><span class="agent agent-text" title="ChatGPT">ChatGPT</span></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/issues/600">#600</a>: Refresh digest pipeline</span></li></ul></section>
+<details class="day" id="2026-10-27"><summary><h2>October 27, 2026</h2><p class="meta">0 PRs merged · 0 issues opened · 1 issues closed</p></summary><h3>Issues closed</h3><ul class="closed"><li><span class="item-lead"><span class="repo repo-with-icon repo-icon-only repo-st" title="Socratic-Trade"><img class="repo-app-icon" src="agent-logos/app-st.svg" alt="Socratic-Trade" width="16" height="16" loading="lazy" decoding="async" /></span></span><span class="item-body"><a href="https://github.com/Simple-With-Us/Socratic-Trade/issues/3900">#3900</a>: Tighten public links</span></li></ul></details>
   <footer>
     Built by <code>scripts/build-fleet-daily-digest.py</code> in
     <code>AI-Fleet-Coordinator</code>. Agent seat names (Grok/Codex/Claude/…) are
-    shown as logos only. Owner/Jay is not badged (not a coding seat). Subscribe
+    shown with platform marks or text badges. Owner/Jay is not badged (not a coding seat). Subscribe
     to the daily ICS in Apple Calendar (Add Subscription Calendar) or Google
     Calendar (From URL).
 
