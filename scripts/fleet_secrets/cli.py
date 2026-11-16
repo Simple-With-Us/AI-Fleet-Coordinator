@@ -173,13 +173,13 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
 def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
     opts = _parse(rest, False, 0)
-    secrets = core.fetch_all(
-        core.check_path(str(opts["path"])), env, project, allow_session=sys.stdin.isatty()
-    )
-    # No value is used here, so none is rejected:  one key whose value is an
-    # unexpanded reference must not hide every key name at the path (AFC-592).
-    # `doctor` still reports the unresolved count, and `get`/`run` fail closed.
-    out.write("".join(n + "\n" for n in sorted(secrets)))
+    # Names only:  no value is ever requested or held, so one key whose value is an
+    # unexpanded reference cannot hide the names, and a hidden secret cannot abort the
+    # listing (AFC-592).  `doctor` still reports the unresolved count, and `get`/`run`
+    # keep fetching values and fail closed.
+    project_id = core.infisical_project_id(env, core.home_dir(env), project)
+    names = core.list_project_names(project_id, core.check_path(str(opts["path"])), env)
+    out.write("".join(n + "\n" for n in sorted(names)))
     out.flush()
     return 0
 
