@@ -42,6 +42,7 @@ BASE_CONFIG = {
 # accepts it exactly as it accepts the live bot.
 OPERATOR_EMAIL = "operator-bot@zulip.test"
 OPERATOR_USER_ID = 90
+SYNTHETIC_STREAM_ID = 900642
 
 FAKE_CLAUDE = r"""#!{python}
 import json, os, sys, time

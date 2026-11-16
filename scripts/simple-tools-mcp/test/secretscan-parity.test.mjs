@@ -18,7 +18,10 @@ const PROGRAM = [
   "import json",
   "from simple_tools.secretscan import scan",
   "from simple_tools.tests import test_secretscan_fleet as t",
+  "from simple_tools.tests.test_reviewed_public_integrities import synthetic_lock",
   "samples = [[kind, text, scan(text)] for kind, text in t.samples()]",
+  "body = synthetic_lock()",
+  "samples.append(['a Zulip-shaped API key', body, scan(body)])",
   "clean = [[text, scan(text)] for text in t.clean_texts()]",
   "print(json.dumps({'samples': samples, 'clean': clean}))",
 ].join("\n");

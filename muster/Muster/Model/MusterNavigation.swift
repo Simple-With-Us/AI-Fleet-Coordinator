@@ -17,10 +17,10 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     case macAgents
     case complianceGrid
     case driftHistory
-    case wakeAndListener
     case seatDetail
     // The server
     case serverStatus
+    case `operator`
     case serverResourceLimits
     case serverUpdates
     // Across the fleet
@@ -43,9 +43,9 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .macAgents: return "Background Agents"
         case .complianceGrid: return "Compliance Grid"
         case .driftHistory: return "Drift History"
-        case .wakeAndListener: return "Wake & Listener"
         case .seatDetail: return "Seat Setup"
         case .serverStatus: return "Server Status"
+        case .operator: return "Operator"
         case .serverResourceLimits: return "Resource Limits"
         case .serverUpdates: return "Server Updates"
         case .appsAndWork: return "Apps & Work"
@@ -65,9 +65,9 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .macAgents: return "gearshape.2"
         case .complianceGrid: return "square.grid.3x3"
         case .driftHistory: return "exclamationmark.triangle"
-        case .wakeAndListener: return "bell.badge"
         case .seatDetail: return "checklist"
         case .serverStatus: return "cpu"
+        case .operator: return "antenna.radiowaves.left.and.right"
         case .serverResourceLimits: return "dial.low"
         case .serverUpdates: return "arrow.down.circle"
         case .appsAndWork: return "list.bullet.rectangle"
@@ -91,9 +91,9 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         switch self {
         case .overview:
             return nil
-        case .services, .macAgents, .complianceGrid, .driftHistory, .wakeAndListener, .seatDetail:
+        case .services, .macAgents, .complianceGrid, .driftHistory, .seatDetail:
             return .machine(.mac)
-        case .serverStatus, .serverResourceLimits, .serverUpdates:
+        case .serverStatus, .operator, .serverResourceLimits, .serverUpdates:
             return .machine(.server)
         case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return .acrossFleet
@@ -113,12 +113,16 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         allCases.filter { $0.place == place }
     }
 
-    /// The saved spellings of panels that were split, and where each one went.
+    /// The saved spellings of panels that were split or replaced, and where each one went.
     ///
     /// Operations held the Mac's agents, the server's updates and the action log on one
     /// page under the Server heading.  Its saved spelling opens Server Updates, the part
-    /// that was the server's.
-    static let retiredSpellings: [String: MusterDestination] = ["operations": .serverUpdates]
+    /// that was the server's.  Wake & Listener read the Mac's retired listener;  the Operator
+    /// panel replaced it, so its saved spelling opens the Operator.
+    static let retiredSpellings: [String: MusterDestination] = [
+        "operations": .serverUpdates,
+        "wakeAndListener": .operator,
+    ]
 
     /// The destination a saved spelling names, or the overview when it names nothing.
     static func restored(from saved: String?) -> MusterDestination {
@@ -151,9 +155,9 @@ extension MusterDestination {
         case .macAgents: return ["agents", "hog hunter", "launchd", "background", "jobs"]
         case .complianceGrid: return ["grid", "rules", "pass", "red", "cells", "check", "verdict"]
         case .driftHistory: return ["drift", "history", "red", "alerts", "changes"]
-        case .wakeAndListener: return ["wake", "listener", "zulip", "eavesdropper", "operator", "mentions"]
         case .seatDetail: return ["seat", "setup", "engine", "files", "platform"]
         case .serverStatus: return ["server", "hetzner", "report", "units", "systemd", "health"]
+        case .operator: return ["operator", "eavesdropper", "wake", "wakes", "router", "letters", "chats", "registry", "zulip", "listener", "mentions"]
         case .serverResourceLimits: return ["server", "memory", "cpu", "limits", "policy", "resources"]
         case .serverUpdates: return ["server", "update", "allowlist", "upgrade", "apt"]
         case .appsAndWork: return ["apps", "work", "lanes", "pull requests", "prs", "claims", "linear"]
@@ -176,9 +180,9 @@ extension MusterDestination {
         case .macAgents: return 3
         case .complianceGrid: return 4
         case .driftHistory: return 5
-        case .wakeAndListener: return 6
-        case .seatDetail: return 7
-        case .serverStatus: return 8
+        case .seatDetail: return 6
+        case .serverStatus: return 7
+        case .operator: return 8
         case .serverResourceLimits: return 9
         case .serverUpdates, .appsAndWork, .seats, .controls, .hosts, .appProcesses,
              .virtualMachines, .actionHistory:
@@ -249,12 +253,12 @@ extension MusterDestination {
                 ?? "Seat setup has not been checked on the Mac yet."
         case .driftHistory:
             return "Kept on the Mac, from the Mac's own checks."
-        case .wakeAndListener:
-            return "The wake settings file on the Mac, beside what the listener reports."
         case .seatDetail:
             return "One seat's setup on the Mac, for any platform:  the engine's answers and the files behind them."
         case .serverStatus:
             return Self.serverSourceLine(inputs.serverStatus)
+        case .operator:
+            return "Read from the Operator on the server:  its eavesdropper, its letter registry and its wake record."
         case .serverResourceLimits:
             return "Read from the server when this panel opens."
         case .serverUpdates:

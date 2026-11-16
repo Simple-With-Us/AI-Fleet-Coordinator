@@ -270,8 +270,8 @@ one entry is kept per id (its newest `seen_at`), and the list is cut to 8.  An 
 the session's last activity (every touch, title and update stamps it): the router ranks sessions by
 it first and falls back to `assigned_at`.
 
-**Who writes it.**  The session-letter hooks (`claude_letter` for Claude Code, `platform_letter` for
-the other platforms whose hook data names a transcript or a folder).  Claude Code reports at the end
+**Who writes it.**  The session-letter hooks (`platform_letter`, for every platform whose hook data
+names a transcript or a folder).  Claude Code reports at the end
 of each turn (its Stop hook, AFC-702), so a chat's last turn is recorded without a next prompt, and
 every platform reads the same lines again at the start of the next turn as the fallback;  the scan
 point is shared, so a turn is read once. 
