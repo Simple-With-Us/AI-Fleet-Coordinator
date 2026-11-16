@@ -7,15 +7,16 @@
 // only it holds, and streams the answer back, so the relay's allowlist, quota and audit decide every request, and the
 // GitHub token stays in the relay.  Only these two git paths exist:  pushing has no route here or in the relay.
 
-import { grUpstreamUrl, resolveGrSecrets } from "./gr-tools.js";
+import { GR_SECRETS, GR_UNAVAILABLE_REASON, grUpstreamUrl, resolveGrSecrets } from "./gr-tools.js";
 
 const PATH = /^\/git\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,104}\/(info\/refs|git-upload-pack)$/;
 const REQUEST_HEADERS = ["Authorization", "Content-Type", "Content-Encoding", "Content-Length", "Git-Protocol", "Accept"];
 const RESPONSE_HEADERS = ["Content-Type", "Content-Encoding", "Cache-Control"];
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 
-function refuse(status, error) {
-  return new Response(JSON.stringify({ error }), {
+function refuse(status, body) {
+  const payload = typeof body === "string" ? { error: body } : body;
+  return new Response(JSON.stringify(payload), {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
@@ -48,9 +49,11 @@ export async function serveGit(request, env, { fetchImpl = globalThis.fetch?.bin
   const { accessId, accessSecret } = await secrets(env);
   const missing = [];
   if (!base) missing.push("GR_UPSTREAM_URL");
-  if (!accessId) missing.push("accessId");
-  if (!accessSecret) missing.push("accessSecret");
-  if (missing.length) return refuse(503, `not_configured: missing ${missing.join(", ")}`);
+  if (!accessId) missing.push(GR_SECRETS.accessId);
+  if (!accessSecret) missing.push(GR_SECRETS.accessSecret);
+  if (missing.length) {
+    return refuse(503, { error: "not_configured", reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing });
+  }
   const headers = new Headers({
     "CF-Access-Client-Id": accessId,
     "CF-Access-Client-Secret": accessSecret,

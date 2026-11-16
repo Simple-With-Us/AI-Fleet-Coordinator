@@ -556,7 +556,7 @@ The service is Meta's own WhatsApp Agent Platform, which carries the lowest ban 
 5. A Zulip mention still wakes Jet as before.
 6. Restarting the bridge mid-conversation loses nothing and duplicates nothing.
 7. Turning POLL off stops polling, and turning it back on resumes from the saved offset.
-8. Searching Zulip, including #alerts and DMs, for the test strings finds nothing.
+8. Searching Zulip, including #Alerts and DMs, for the test strings finds nothing.
 9. Health shows running, then disabled.
 
 Uncertain sends are tested against the fake server only, never live.  Nothing is called always-on or complete until a real WhatsApp message wakes Jet's existing conversation and Jay receives Jet's reply.

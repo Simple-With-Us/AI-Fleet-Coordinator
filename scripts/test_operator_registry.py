@@ -20,6 +20,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from simple_tools import operator_registry as R
 
+
+def setUpModule():
+    patcher = mock.patch("simple_tools.registry_api._knob_value", return_value="")
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 # A synthetic credential for the positive scan cases:  32 mixed-case characters with no
 # provider prefix, so the scanner still trips on it while the file carries no real token's
 # shape.  A prefixed value would be caught by a secret scanner on the repository itself.
@@ -2301,10 +2308,6 @@ class SessionIssuesTest(unittest.TestCase):
         self.assertIn("must be a list", json.loads(out.getvalue())["error"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReopenCommandTest(unittest.TestCase):
     """The reopen verb of the registry's own CLI.
 
@@ -2919,15 +2922,12 @@ class SeatGuardTest(unittest.TestCase):
         import importlib
         import pkgutil
 
-        import mm_session_letter
         import simple_tools
-        from simple_tools import claude_letter, claude_wake, wake_service
+        from simple_tools import claude_wake, wake_service
         from simple_tools import identity as I
 
         pairs = {
-            ("claude_letter", claude_letter.PLATFORM, claude_letter.SEAT_DEFAULT),
             ("claude_wake", claude_wake.PLATFORM, claude_wake.SEAT),
-            ("mm_session_letter", mm_session_letter.PLATFORM, mm_session_letter.SEAT),
         }
         for seat, builder in wake_service.BUILDERS.items():
             pairs.add(("wake_service.BUILDERS", builder.platform, seat))
@@ -2983,3 +2983,7 @@ class SeatGuardTest(unittest.TestCase):
             "register", *identity, "--seat", "CLAUDE", "--session-id", "native-2"
         )
         self.assertEqual((code, answer["outcome"]), (0, "registered"))
+
+
+if __name__ == "__main__":
+    unittest.main()

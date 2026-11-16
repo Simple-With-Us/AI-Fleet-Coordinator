@@ -1,6 +1,6 @@
 ---
 name: owner-copy
-description: Fleet human-facing prose — two spaces between sentences (a real U+00A0 plus a space on every surface, except the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane, which take the &nbsp; entity plus a space), system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation.  Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read.  Also when changing theme defaults or taking screenshots.
+description: Fleet human-facing prose — two spaces between sentences (a real U+00A0 plus a space on every surface, except the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane, which take the &nbsp; entity plus a space), Light theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour AM/PM, no timezone abbreviation.  Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read.  Also when changing theme defaults or taking screenshots.
 ---
 
 # Owner-facing copy (MONET)
@@ -33,19 +33,16 @@ HTML/JSX/SwiftUI source: Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX tex
 
 Does not apply: identifiers, log lines, API enums, commit **subjects** that are fragments with no terminator.
 
-## Theme default = system
+## Theme Default = Light
 
-First visit / no stored preference = **system**, following the OS appearance.  Owner ruling
-2026-09-19, which supersedes the 2026-08-10 light ruling and was reconfirmed 2026-10-20.
-Do not pin a light or dark default on first paint, and do not treat a dark Mac as a reason to
-default to light: that is the dev-Mac optical illusion the ruling exists to remove.
+First visit / no stored preference = **light**, under the current owner rule.  This supersedes the older System default; the development machine's appearance does not choose the product's first paint.
 
 - **Stored preferences are never rewritten.**  A returning user who chose Light or Dark stays
-  on it; only a first paint with no record defaults to system.
-- **Light, Dark and System all remain available** wherever a picker ships.  System is the
+  on it; only a first paint with no record defaults to Light.
+- **Light, Dark and System all remain available** wherever a picker ships.  Light is the
   default, not the only choice.
 - **Screenshots, App Store Connect, marketing, design previews: light**, unless the owner asks
-  for dark.  The product default is system; the capture default is still light, because those
+  for dark.  The product default is Light; the capture default is also light, because those
   assets need a deterministic palette regardless of who is developing.
 - Applies to every fleet app (web, iOS, Android, BotFleet chrome, CodeCaps).  Each seat lands
   the default flip in its own app; this file is the canonical signal, not the per-app change.
@@ -82,20 +79,20 @@ baseline; a real tooltip component is better where the app already has one.
 - Premium trial length must match the live ASC intro offer (**2 weeks** as of 2026-08-14), never a leftover 1-month.
 - **No internal agent names** in TestFlight / App Store / public release notes.
 
-## Timestamps (owner-facing agent writing)
+## Timestamps (Owner-Facing Agent Writing)
 
-**The fleet format (owner 2026-10-19), one form everywhere a person reads:**
+**The current fleet format, one form for owner-facing agent writing:**
 
 | What | Write | Never |
 |---|---|---|
-| A time | `3:42pm` | `15:42`, `3:42 PM`, `3:42pm CDT`, `20:42Z` |
+| A time | `3:42 PM` | `15:42`, `3:42pm`, `3:42 PM CDT`, `20:42Z` |
 | A date | `Mon, Oct 19` | `2026-10-19`, `10/19`, `19 Oct`, `October 19th` |
-| Both | `Mon, Oct 19, 3:42pm` | `2026-10-19T20:42:00Z`, `Oct 19 at 15:42` |
-| Another year | `Fri, Mar 7, 2025` and `Fri, Mar 7, 2025, 9:05am` | `2025-03-07` |
+| Both | `Mon, Oct 19, 3:42 PM` | `2026-10-19T20:42:00Z`, `Oct 19 at 15:42` |
+| Another year | `Fri, Mar 7, 2025` and `Fri, Mar 7, 2025, 9:05 AM` | `2025-03-07` |
 
 The year appears only when it is not the current year.  An ISO date is for machines: file names, branch names, code, logs inside a code block, and source-file comments.  The Apple Notes script rewrites any ISO date it finds in a note's prose into this form, so a note always reads the same whichever agent wrote it.
 
-Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  The zone is assumed and never named either:  `Central` is as wrong as `CST`, and `America/Chicago` does not belong beside a time (owner 2026-10-29, reaffirmed 2026-11-03).  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  Give only the Central time (`America/Chicago`), with no zone label and no UTC stamp beside it (owner 2026-10-18): convert every other zone first, including times read from logs, APIs, CI and dashboards, so a log line at `11:42Z` is `6:42am` on a summer day and `5:42am` in winter, and the market opens at `8:30am`.  Quote a raw stamp only when the owner asks for one, or inside a code block that is machine output.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Zulip, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  The rule covers the times a human reads in agent prose:  product UI renders in the viewer's own timezone, a market bell stays as the market writes it (`9:30 AM ET`), and a machine-readable field keeps its own format, so a build number or a commit stamp is build provenance and not an owner-facing sentence.  Quote a field you repeat verbatim as it is;  convert only when you write the time in prose.  Binding for every agent, bot, and platform.
+Use the owner's `America/Chicago` clock, 12-hour with a normal space before uppercase AM or PM.  Write `3:15 AM`, with no zone label or adjacent UTC stamp.  Convert times read from logs, APIs, CI and dashboards before writing owner-facing prose.  A raw machine timestamp stays unchanged inside machine output; quote it only when the owner asks or when the exact machine field is needed in a code block.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`; never append a zone name or abbreviation to the result.  Keep build numbers and commit provenance in their required machine format.  This rule covers chat, Notes, Zulip, boards, PRs and other agent prose on every platform.
 
 Product UI times are the **viewer's** timezone except market-day accounting (Chicago) and session bells (`9:30 AM ET`).
 
