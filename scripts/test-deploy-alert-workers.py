@@ -531,7 +531,9 @@ class Tests(unittest.TestCase):
             }
         ).encode()
         with (
-            patch.object(m, "github", side_effect=[[pr], page_one, page_two, [], {"check_runs": []}]),
+            patch.object(
+                m, "github", side_effect=[[pr], page_one, page_two, [], {"check_runs": []}]
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             patch.object(m.urllib.request, "build_opener") as opener,
         ):
@@ -689,10 +691,19 @@ class Tests(unittest.TestCase):
                 "github",
                 side_effect=[[pr], [], {"check_runs": [completed, pending]}, []],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             self.assertRaises(RuntimeError),
         ):
@@ -737,10 +748,19 @@ class Tests(unittest.TestCase):
                 "github",
                 side_effect=[[pr], [], {"check_runs": [completed, older_pending]}, []],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             self.assertRaises(RuntimeError),
         ):
@@ -779,10 +799,19 @@ class Tests(unittest.TestCase):
                 "github",
                 side_effect=[[pr], [review], [], {"check_runs": [pending]}],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             self.assertRaises(RuntimeError),
         ):
@@ -817,10 +846,19 @@ class Tests(unittest.TestCase):
                     {"check_runs": []},
                 ],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
@@ -854,10 +892,19 @@ class Tests(unittest.TestCase):
                     {"check_runs": []},
                 ],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             self.assertRaises(RuntimeError),
         ):
@@ -884,7 +931,12 @@ class Tests(unittest.TestCase):
         }
         malformed = [
             "not-a-review",
-            {"id": "x", "user": {"id": 10, "login": "kody-ai[bot]"}, "state": "COMMENTED", "commit_id": head},
+            {
+                "id": "x",
+                "user": {"id": 10, "login": "kody-ai[bot]"},
+                "state": "COMMENTED",
+                "commit_id": head,
+            },
             {"id": 2, "user": {"login": "kody-ai[bot]"}, "state": "COMMENTED", "commit_id": head},
             {"id": 1, "state": "COMMENTED", "commit_id": head},
         ]
@@ -894,10 +946,19 @@ class Tests(unittest.TestCase):
                 "github",
                 side_effect=[[pr], malformed + [good], [], {"check_runs": []}],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
@@ -936,8 +997,13 @@ class Tests(unittest.TestCase):
         def graphql(url, token, data=None, timeout=30):
             thread_queries.append(json.loads(data.decode())["variables"]["number"])
             return {
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                        }
+                    }
+                }
             }
 
         with (
@@ -996,10 +1062,22 @@ class Tests(unittest.TestCase):
                         {"check_runs": []},
                     ],
                 ),
-                patch.object(m, "request_json", return_value={
-                    "data": {"repository": {"pullRequest": {"reviewThreads": {
-                        "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-                }),
+                patch.object(
+                    m,
+                    "request_json",
+                    return_value={
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "reviewThreads": {
+                                        "pageInfo": {"hasNextPage": False},
+                                        "nodes": [],
+                                    }
+                                }
+                            }
+                        }
+                    },
+                ),
                 patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             ):
                 m._check_run_cache.clear()
@@ -1025,10 +1103,19 @@ class Tests(unittest.TestCase):
                     {"check_runs": []},
                 ],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
@@ -1068,8 +1155,13 @@ class Tests(unittest.TestCase):
         def graphql(url, token, data=None, timeout=30):
             thread_queries.append(json.loads(data.decode())["variables"]["number"])
             return {
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                        }
+                    }
+                }
             }
 
         with (
@@ -1197,10 +1289,19 @@ class Tests(unittest.TestCase):
                     ],
                 ],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
             self.assertRaises(RuntimeError),
         ):
@@ -1292,10 +1393,19 @@ class Tests(unittest.TestCase):
                     ],
                 ],
             ),
-            patch.object(m, "request_json", return_value={
-                "data": {"repository": {"pullRequest": {"reviewThreads": {
-                    "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
-            }),
+            patch.object(
+                m,
+                "request_json",
+                return_value={
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                            }
+                        }
+                    }
+                },
+            ),
             patch.dict(m.os.environ, {"GITHUB_REPOSITORY": "test/repo", "GH_TOKEN": "offline"}),
         ):
             m._check_run_cache.clear()
@@ -1331,8 +1441,13 @@ class Tests(unittest.TestCase):
             ]
         }
         threads = {
-            "data": {"repository": {"pullRequest": {"reviewThreads": {
-                "pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []}
+                    }
+                }
+            }
         }
         # Canonical parity: the auto-merge receipt contract counts every
         # issue comment whose own line carries the invocation, with no
@@ -1400,14 +1515,11 @@ class Tests(unittest.TestCase):
 
     def test_workflow_is_main_ci_and_catchup_without_broad_gate(self):
         text = m.pathlib.Path(".github/workflows/alert-workers-deploy.yml").read_text()
-        # Fenced shape: dispatch-only until the watched qualify-only canary
-        # passes. The restore PR re-adds workflow_run/schedule and restores
-        # the original assertions below.
-        self.assertNotIn("workflow_run:", text)
-        self.assertNotIn("schedule:", text)
-        self.assertIn("workflow_dispatch:", text)
+        self.assertIn("workflow_run:", text)
+        self.assertIn("workflows: [CI]", text)
         self.assertNotIn("WORKER_DEPLOY_ENABLED", text)
         self.assertNotIn("simple-tools-mcp/wrangler", text)
+        self.assertIn("17,47 * * * *", text)
 
     def test_redirect_handler_refuses_forward(self):
         self.assertIsNone(

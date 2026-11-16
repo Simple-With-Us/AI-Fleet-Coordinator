@@ -143,13 +143,13 @@ Before starting substantial work, reserve your lane on two durable surfaces:
 
 ## 4. Secret Safety & The Secrets-File Grep Trap
 
-**Fleet keys:**  a consumer that reads one folder of Infisical uses its own scoped service token (the `service-tokens` pack); the shared `fleet-secrets` reader (Infisical Fleet-OPS) is for the shared Fleet-OPS reader alone, and it authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  The flat file `~/.secrets/global-api-keys` is retired and nothing may read it.
+**Fleet keys:**  a consumer that reads one folder of Infisical uses its own scoped service token (the `service-tokens` pack); the shared `fleet-secrets` reader (Infisical Fleet-OPS) is for the shared Fleet-OPS reader alone, and it authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`).  The flat file `~/.secrets/global-api-keys` is retired and nothing may read it.
 **Sole Runtime Truth:** **Infisical** is the source of truth for all deployed app runtime secrets.
 
 ### Strict Grep Trap Ban (2026-08-14):
 NEVER print, `cat`, `grep`, `rg`, or `view_file` lines matching `KEY=value` from any file under `~/.secrets/` or any `.env`.  Doing so dumps raw secrets into transcript logs.
 
-- **Inspection (Names only):**  the shared reader, and it authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
+- **Inspection (Names only):**  the shared reader, and it authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`).  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
   ```bash
   fleet-secrets names
   ```
