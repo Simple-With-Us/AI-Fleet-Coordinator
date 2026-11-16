@@ -70,6 +70,7 @@ from typing import Any, TextIO
 
 from . import claude_wake as CW
 from . import muse_session_rename as MR
+from . import platform_letter_muse as PLM
 from . import wake_router as WR
 
 SEAT = "MC"
@@ -110,10 +111,37 @@ def state_dir(env: Mapping[str, str]) -> Path:
     return Path(base) / "muse-wake"
 
 
-def data_root(env: Mapping[str, str]) -> str:
-    """This host's Muse data root, from this host's own environment only."""
+def _chat_record(env: Mapping[str, str], session_id: str) -> Mapping[str, Any]:
+    """The session-letter spool record for one chat, or {} when it has none.  It is the only
+    persisted record of the HOME and XDG_DATA_HOME that chat itself ran under."""
+    if not SESSION_RE.fullmatch(session_id or ""):
+        return {}
+    try:
+        return MR.read_record(PLM.spool_path(env, session_id))
+    except (OSError, ValueError):
+        return {}
+
+
+def _chat_env(env: Mapping[str, str], session_id: str) -> dict[str, str]:
+    """The delivery environment with the chat's recorded HOME and XDG_DATA_HOME restored.
+    A forced-command delivery has no login profile, so without this a chat that ran under a
+    non-default data home would be looked for in the wrong store and refused for good."""
+    out = dict(env)
+    rec = _chat_record(env, session_id)
+    if rec.get("home"):
+        out["HOME"] = str(rec["home"])
+    if rec.get("xdg_data_home"):
+        out["XDG_DATA_HOME"] = str(rec["xdg_data_home"])
+    return out
+
+
+def data_root(env: Mapping[str, str], session_id: str = "") -> str:
+    """This host's Muse data root:  the chat's recorded root when it has one, else the
+    delivery environment's."""
+    chat = _chat_env(env, session_id) if session_id else dict(env)
     return MR.data_root(
-        str(env.get("HOME") or os.path.expanduser("~")), str(env.get("XDG_DATA_HOME") or "")
+        str(chat.get("HOME") or os.path.expanduser("~")),
+        str(chat.get("XDG_DATA_HOME") or ""),
     )
 
 
@@ -252,8 +280,11 @@ def _holder(session_dir: str | None) -> bool | None:
     that cannot answer is a doubt (None, so `busy`), never a no.  A missing or empty lock file
     is Muse's own way of saying the chat was let go, and that is a fact (False).  A pid that
     exists but is not ours counts as held:  it may be the chat, and a headless run against it
-    would be a second writer.  Muse itself also refuses a held session (`already in use`,
-    probed on 1.4.15), but that is the last line, not this check."""
+    would be a second writer.  The lock file is Muse's and carries no process start time to
+    compare against, so a live pid is checked for being Muse at all:  a pid since reused by
+    another program is a stale lock (False), while one reused by another Muse process stays
+    held, which is the safe answer.  Muse itself also refuses a held session (`already in
+    use`, probed on 1.4.15), but that is the last line, not this check."""
     if session_dir is None:
         return False
     path = os.path.join(session_dir, ".session.lock")
@@ -280,7 +311,15 @@ def _holder(session_dir: str | None) -> bool | None:
         return True  # it exists and is not ours to signal; that is held enough
     except (OverflowError, OSError):
         return None
-    return True
+    try:
+        proc = MR.read_proc(pid)
+    except Exception:  # noqa: BLE001 - an unreadable process is a doubt, never a no
+        return None
+    if proc is None:
+        return None  # raced with its exit, or unreadable: busy is the safe answer
+    return bool(
+        MR.MUSE_NAME.match(proc.name) or MR.MUSE_NAME.match(os.path.basename(proc.exe))
+    )
 
 
 class StoreUnreadable(Exception):
@@ -488,7 +527,8 @@ def deliver_local(
     second file description would refuse itself."""
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
         return WR.Delivery("refused", code="bad-session-id")
-    root = data_root(env)
+    chat_env = _chat_env(env, session_id)
+    root = data_root(chat_env)
     try:
         session_dir = _find_session_dir(root, session_id)
         if session_dir is None and MR.is_subagent(root, session_id):
@@ -503,7 +543,7 @@ def deliver_local(
     if held:
         return WR.Delivery("busy", code="chat-live")
     if _locked:
-        return _via_exec(env, config, session_dir, session_id, wake, runner, sleep)
+        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep)
     try:
         folder = state_dir(env) / "locks"
         WR.private_dir(folder)
@@ -521,7 +561,7 @@ def deliver_local(
             return WR.Delivery("busy", code="holder-unknown")
         if held:
             return WR.Delivery("busy", code="chat-live")
-        return _via_exec(env, config, session_dir, session_id, wake, runner, sleep)
+        return _via_exec(chat_env, config, session_dir, session_id, wake, runner, sleep)
 
 
 def deliver_request(

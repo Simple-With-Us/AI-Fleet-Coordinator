@@ -1,6 +1,6 @@
-"""Muse delivery for the wake router (AFC-713):  the registry recheck, the server-to-Mac
-ssh route, one headless run in an unheld chat's own session, `busy` for a held chat, and
-the failed/refused discipline AA set for every platform plugin.
+"""Muse delivery for the wake router (AFC-713):  the registry recheck, the
+server-to-Mac remote route, one headless run in an unheld chat's own session, `busy`
+for a held chat, and the failed/refused discipline AA set for every platform plugin.
 
 Everything here is offline and pointed at a temporary HOME:  a fake `muse` binary that only
 records its argv, a session store the test writes itself, and a registry the test answers.
@@ -30,7 +30,7 @@ def _request(**wake_over: object) -> dict:
         "message_id": 639000001,
         "channel": "Work-In-Progress",
         "topic": "AFC-694 Operator cross-platform coordination",
-        "zulip_link": "https://simplewithus.zulipchat.com/#narrow/1",
+        "zulip_link": "https://example.com/#narrow/1",
         "sender": "Claude",
         "dm": False,
         "letter": "CC",
@@ -89,6 +89,12 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         patcher = mock.patch.object(MW, "_config", return_value=config)
         patcher.start()
         self.addCleanup(patcher.stop)
+        holder = MW.MR.Proc(
+            pid=os.getpid(), ppid=1, argv=("muse",), exe="/usr/local/bin/muse"
+        )
+        proc_patch = mock.patch.object(MW.MR, "read_proc", return_value=holder)
+        proc_patch.start()
+        self.addCleanup(proc_patch.stop)
         self.addCleanup(self.tmp.cleanup)
 
     def _runner(self, proc: _Proc | Exception = _Proc(), *, append_wake: bool = True):
@@ -167,6 +173,56 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["outcome"], "busy")
         self.assertEqual(answer["delivery"]["code"], "chat-live")
         self.assertEqual(self.calls, [])
+
+    def test_a_pid_reused_by_another_program_is_a_stale_lock(self) -> None:
+        (self.session_dir / ".session.lock").write_text(
+            "pid=%d\n" % os.getpid(), encoding="utf-8"
+        )
+        other = MW.MR.Proc(
+            pid=os.getpid(), ppid=1, argv=("python3",), exe="/usr/bin/python3"
+        )
+        with mock.patch.object(MW.MR, "read_proc", return_value=other):
+            answer = self._deliver()
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+
+    def test_a_chat_under_its_recorded_xdg_root_is_found(self) -> None:
+        custom = self.home / "xdg-custom"
+        session = custom / "muse" / "sessions" / "2026" / "11" / "11" / SID2
+        session.mkdir(parents=True)
+        (session / "session.jsonl").write_text(
+            json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8"
+        )
+        (session / ".session.lock").write_text("", encoding="utf-8")
+        path = Path(MW.PLM.spool_path(self.env, SID2))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "session_id": SID2,
+                    "home": str(self.home),
+                    "xdg_data_home": str(custom),
+                }
+            ),
+            encoding="utf-8",
+        )
+        original_runner = self._runner()
+
+        def run(argv, **kwargs):
+            self.session_dir = session
+            return original_runner(argv, **kwargs)
+
+        request = _request()
+        request["target"] = {
+            "session_id": SID2,
+            "letter": "CC",
+            "host": "mac",
+            "generation": 1,
+        }
+        answer = self._deliver(
+            request, runner=run, resolve_row=_row(native_session_id=SID2)
+        )
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(self.calls[0]["env"]["XDG_DATA_HOME"], str(custom))
 
     def test_unheld_chat_gets_one_headless_run_in_its_own_session(self) -> None:
         answer = self._deliver()
