@@ -16,4 +16,4 @@ Official [CLI0.160.0 source](https://raw.githubusercontent.com/openai/codex/rust
 
 `fleet-cli-release --install` generates the opt-in CODEX wrapper for new installs.  Routine code-only fleet sync continues to preserve wrappers and configuration.  An existing wrapper needs a separately reviewed, hash-guarded upgrade after the matching merged runtime arrives; retain its prior bytes and mode, and do not restart a daemon or an active MCP process.  Existing running MCP code changes only on its normal reconnect.
 
-For rollback, restore the old CODEX wrapper **before** selecting old runtime code: an old parser cannot accept `--codex-thread-meta`.  Preserve every other wrapper/configuration entry.  Listener ownership, wake routing, OAuth and hosted JET are unaffected.
+For rollback, restore the old CODEX wrapper **before** selecting old runtime code: an old parser cannot accept `--codex-thread-meta`.  Preserve every other wrapper/configuration entry.  Eavesdropper ownership, wake routing, OAuth and hosted JET are unaffected.

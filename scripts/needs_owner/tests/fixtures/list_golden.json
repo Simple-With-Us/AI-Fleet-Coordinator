@@ -2,7 +2,7 @@
   {
     "id": "373fed9f-4b07-5779-af71-09dc2751a038",
     "identifier": "AFC-303",
-    "url": "https://linear.app/simple-with-us/issue/AFC-303",
+    "url": "https://linear.app/test-fleet/issue/AFC-303",
     "seat": null,
     "seat_verified": false,
     "for_seat": null,
@@ -32,7 +32,7 @@
   {
     "id": "ebe41125-3f2d-40cd-a65f-3b922c62bc13",
     "identifier": "AFC-300",
-    "url": "https://linear.app/simple-with-us/issue/AFC-300",
+    "url": "https://linear.app/test-fleet/issue/AFC-300",
     "seat": "CLAUDE",
     "seat_verified": true,
     "for_seat": null,
@@ -67,7 +67,7 @@
   {
     "id": "0ee0022b-0346-4c3f-ac2b-19888d8f8eb1",
     "identifier": "AFC-301",
-    "url": "https://linear.app/simple-with-us/issue/AFC-301",
+    "url": "https://linear.app/test-fleet/issue/AFC-301",
     "seat": "BF-PLUMBER",
     "seat_verified": true,
     "for_seat": null,
@@ -100,7 +100,7 @@
   {
     "id": "649a68c3-a594-4b57-b5c2-edc85d4aad0d",
     "identifier": "AFC-302",
-    "url": "https://linear.app/simple-with-us/issue/AFC-302",
+    "url": "https://linear.app/test-fleet/issue/AFC-302",
     "seat": "CODEX",
     "seat_verified": true,
     "for_seat": null,

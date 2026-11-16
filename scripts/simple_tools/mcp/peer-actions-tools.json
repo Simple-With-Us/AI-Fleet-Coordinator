@@ -1,0 +1,66 @@
+{
+  "//": "AFC-745:  peer_actions_log, shared by simple-peer-actions, stdio ST-MCP and the hosted Worker.",
+  "tools": [
+    {
+      "name": "peer_actions_log",
+      "title": "Peer Actions Log",
+      "description": "Append one row to the Peer-Actions Registry Google Sheet (tab Peer-Actions Registry, columns When | Acting Seat | Requesting Seat | Request (Source) | Action Taken | Result).  When is Central time.  The fleet Google service account is read from Infisical Fleet-OPS /google-sheets-sa (GOOGLE_SHEETS_SA) through a scoped service token — the JSON is never printed.  Use after acting on a peer request.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["requesting_seat", "request", "action_taken", "result"],
+        "properties": {
+          "acting_seat": {
+            "type": "string",
+            "pattern": "^[A-Z0-9][A-Z0-9_-]{0,31}$",
+            "description": "Seat that took the action.  Defaults to the verified identity when omitted."
+          },
+          "requesting_seat": {
+            "type": "string",
+            "pattern": "^[A-Z0-9][A-Z0-9_-]{0,31}$",
+            "description": "Seat that made the peer request."
+          },
+          "request": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "What was asked (source and summary)."
+          },
+          "action_taken": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "What this seat did."
+          },
+          "result": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "Outcome (done, declined, partial, error, and why)."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "Validate and return the row without appending."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["dry_run", "tab", "row"],
+        "properties": {
+          "dry_run": { "type": "boolean" },
+          "spreadsheet_id": { "type": "string" },
+          "tab": { "type": "string" },
+          "row": { "type": "array", "items": { "type": "string" }, "minItems": 6, "maxItems": 6 },
+          "updated_range": { "type": "string" },
+          "updated_rows": { "type": "integer" }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true
+      }
+    }
+  ]
+}

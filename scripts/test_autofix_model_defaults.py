@@ -43,6 +43,7 @@ TRUSTED_POLICY = ".github/pr-autofix-trusted.yml"
 PR_AUTOFIX_WORKFLOW = ".github/workflows/pr-autofix-reusable.yml"
 CLAUDE_AUTOFIX_WORKFLOW = ".github/workflows/claude-code-autofix-reusable.yml"
 CODEX_AUTOFIX_WORKFLOW = ".github/workflows/codex-autofix-reusable.yml"
+KODY_AUTOFIX_WORKFLOW = ".github/workflows/kody-autofix-reusable.yml"
 CLAUDE_CALLER = ".github/workflows/claude-code-autofix.yml"
 KODY_CALLER = ".github/workflows/kody-fleet-autofix.yml"
 CALLER_WORKFLOWS = (CLAUDE_CALLER, KODY_CALLER)
@@ -56,8 +57,17 @@ VALUE_CARRYING_FILES = (
     PR_AUTOFIX_WORKFLOW,
     CLAUDE_AUTOFIX_WORKFLOW,
     CODEX_AUTOFIX_WORKFLOW,
+    KODY_AUTOFIX_WORKFLOW,
     CLAUDE_CALLER,
     KODY_CALLER,
+)
+
+# The reusable workflows that carry a `model` input default.
+REUSABLE_WORKFLOWS = (
+    PR_AUTOFIX_WORKFLOW,
+    CLAUDE_AUTOFIX_WORKFLOW,
+    CODEX_AUTOFIX_WORKFLOW,
+    KODY_AUTOFIX_WORKFLOW,
 )
 
 
@@ -126,7 +136,7 @@ class AutofixModelDefaults(unittest.TestCase):
                 self.assertEqual(found, LIVE_MODEL)
 
     def test_every_reusable_workflow_default_names_the_live_id(self) -> None:
-        for rel in (PR_AUTOFIX_WORKFLOW, CLAUDE_AUTOFIX_WORKFLOW, CODEX_AUTOFIX_WORKFLOW):
+        for rel in REUSABLE_WORKFLOWS:
             with self.subTest(file=rel):
                 self.assertEqual(workflow_input_default(read(rel), "model"), LIVE_MODEL)
 
@@ -161,7 +171,7 @@ class AutofixModelDefaults(unittest.TestCase):
         silent divergence: the policy wins on the default branch, so the
         workflow default becomes dead config that nobody notices is wrong."""
         values = {trusted_policy_model(read(TRUSTED_POLICY))}
-        for rel in (PR_AUTOFIX_WORKFLOW, CLAUDE_AUTOFIX_WORKFLOW, CODEX_AUTOFIX_WORKFLOW):
+        for rel in REUSABLE_WORKFLOWS:
             values.add(workflow_input_default(read(rel), "model"))
         self.assertEqual(values, {LIVE_MODEL})
 

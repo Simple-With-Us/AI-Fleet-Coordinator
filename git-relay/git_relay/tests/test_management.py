@@ -1,0 +1,168 @@
+import unittest
+
+try:
+    from .test_workflow_verbs import REPO, Client, Policy
+except ImportError:
+    from test_workflow_verbs import REPO, Client, Policy
+
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
+
+
+class Management(unittest.TestCase):
+    def test_valid_shapes_and_fixed_paths(self):
+        cases = [
+            (
+                "wf_labels_set",
+                {"number": 3, "labels": ["bug"]},
+                "PUT",
+                "issues/3/labels",
+                [{"id": 1, "name": "bug"}],
+                {"labels": ["bug"]},
+            ),
+            (
+                "wf_reviewers_request",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                "POST",
+                "pulls/3/requested_reviewers",
+                {"id": 1, "number": 3, "requested_reviewers": [{"login": "swu-wise"}]},
+                {"reviewers": ["swu-wise"]},
+            ),
+            (
+                "wf_reviewers_remove",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                "DELETE",
+                "pulls/3/requested_reviewers",
+                {"id": 1, "number": 3, "requested_reviewers": []},
+                {"reviewers": ["swu-wise"]},
+            ),
+            (
+                "wf_release_create",
+                {
+                    "tag": "v1",
+                    "name": "Release",
+                    "body": "Notes",
+                    "draft": True,
+                    "prerelease": False,
+                },
+                "POST",
+                "releases",
+                {"id": 1, "tag_name": "v1"},
+                {
+                    "tag_name": "v1",
+                    "name": "Release",
+                    "body": "Notes",
+                    "draft": True,
+                    "prerelease": False,
+                },
+            ),
+            (
+                "wf_release_update",
+                {
+                    "release_id": 2,
+                    "name": "Release",
+                    "body": "Notes",
+                    "draft": False,
+                    "prerelease": True,
+                },
+                "PATCH",
+                "releases/2",
+                {"id": 2},
+                {"name": "Release", "body": "Notes", "draft": False, "prerelease": True},
+            ),
+        ]
+        for action, args, method, path, reply, payload in cases:
+            client = Client(reply)
+            h = WorkflowVerbs(client, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            h.run(action, {"repo": REPO, **args})
+            self.assertEqual(
+                client.calls, [(method, "/repos/" + REPO + "/" + path, payload, "private")]
+            )
+            client = Client()
+            h = WorkflowVerbs(client, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
+            with self.assertRaises(Refused):
+                h.run(action, {"repo": REPO, **args, "url": "https://evil.invalid"})
+            self.assertFalse(client.calls)
+
+    def test_malformed_inputs_refuse_before_network(self):
+        for args in [
+            {"number": 1, "labels": []},
+            {"number": 1, "labels": ["\nattack"]},
+            {"number": True, "labels": ["bug"]},
+        ]:
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape("wf_labels_set", {"repo": REPO, **args}, REPO)
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape(
+                "wf_release_create",
+                {
+                    "repo": REPO,
+                    "tag": "v1",
+                    "name": "n",
+                    "body": "b",
+                    "draft": "yes",
+                    "prerelease": False,
+                },
+                REPO,
+            )
+
+    def test_wrong_write_receipts_are_unknown(self):
+        from git_relay.github_client import RelayGitHubError
+
+        for action, args, reply in [
+            ("wf_labels_set", {"number": 1, "labels": ["bug"]}, []),
+            ("wf_labels_set", {"number": 1, "labels": ["bug"]}, [{"id": 1, "name": "other"}]),
+            (
+                "wf_release_create",
+                {
+                    "tag": "v1",
+                    "name": "Release",
+                    "body": "Notes",
+                    "draft": True,
+                    "prerelease": False,
+                },
+                {"id": 1, "tag_name": "v2"},
+            ),
+        ]:
+            c = Client(reply)
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+            with self.assertRaises(RelayGitHubError) as error:
+                h.run(action, {"repo": REPO, **args})
+            self.assertEqual(error.exception.status, 502)
+            self.assertEqual(len(c.calls), 1)
+
+    def test_reviewer_pr_identity_and_membership_and_release_identity(self):
+        from git_relay.github_client import RelayGitHubError
+
+        for action, args, receipt in [
+            (
+                "wf_reviewers_request",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                {"id": 1, "number": 4, "requested_reviewers": [{"login": "swu-wise"}]},
+            ),
+            (
+                "wf_reviewers_request",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                {"id": 1, "number": 3, "requested_reviewers": []},
+            ),
+            (
+                "wf_reviewers_remove",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                {"id": 1, "number": 3, "requested_reviewers": [{"login": "swu-wise"}]},
+            ),
+            (
+                "wf_release_update",
+                {
+                    "release_id": 2,
+                    "name": "Name",
+                    "body": "Body",
+                    "draft": True,
+                    "prerelease": False,
+                },
+                {"id": 3},
+            ),
+        ]:
+            c = Client(receipt)
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+            with self.assertRaises(RelayGitHubError) as error:
+                h.run(action, {"repo": REPO, **args})
+            self.assertEqual(error.exception.status, 502)

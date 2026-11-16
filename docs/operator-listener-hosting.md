@@ -9,13 +9,13 @@ macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
 
 ## What moves
 
-- The Operator's eavesdropper, the Zulip listener daemon (`agent_sync` package, not yet renamed: live inbox, wake ledger, held-back
+- The Operator's eavesdropper, the Zulip listener daemon (`simple_tools` package: live inbox, wake ledger, held-back
   queue, leases) and its signed read API (`listener_api.py`, port 8788).
 - Nothing about the bridge changes; seats keep using the Worker MCP as today.
 
 ## What appears
 
-- `agent_sync/wake_alerter.py` (this PR):  the thin wake client, two modes.
+- `simple_tools/wake_alerter.py` (this PR):  the thin wake client, two modes.
   Default (the Mac):  one macOS banner per new wake id, bodies never reach a
   banner.  Hook mode (`OPERATOR_ALERTER_HOOK` set):  run one configured
   command per new wake instead - this is the headless-wake path for
@@ -48,11 +48,13 @@ scope):
   sends its session info to the Operator.  (Jay's phrase was "session
   letters";  exact meaning is being confirmed with him - treat as
   per-session identifiers for now.)
-- Open item Jay asked for:  an Apple Notes relay that works remotely.
-  Apple Notes stays Mac-bound, so a thin relay on the Mac (same pattern as
-  this alerter:  a small launchd unit behind the signed read API, or a
-  worker-side route) would expose Notes to the server-side plane without
-  moving it.  No design or build until Jay confirms the scope.
+- Apple Notes that work remotely:  built (AFC-486, Oct 22, Jay chose
+  "Replace via Operator").  Apple Notes stays Mac-bound;  the server-side
+  plane reaches it through the Operator's notes queue (`/notes/v1/` on the
+  listener API), and a thin seatless runner on the Mac
+  (`com.jay.operator-notes-runner`, same pattern as this alerter) claims
+  each request and runs the script.  No Zulip channel is involved:
+  `docs/protocols/operator-notes.md`.
 
 ## Headless wake:  launching Muse Code from a wake event
 
@@ -61,7 +63,7 @@ wake event should be able to start real work without a human screen.  The
 wake alerter's hook mode provides it:
 
 - A supervisor on the server runs
-  `python3 -m agent_sync.wake_alerter --loop 60` with
+  `python3 -m simple_tools.wake_alerter --loop 60` with
   `OPERATOR_ALERTER_HOOK=/opt/fleet/muse-wake.sh {seat} {wake_id} {channel} {topic}`.
   The hook receives wake METADATA only ({seat}/{channel}/{topic}/{wake_id}/
   {state} argv placeholders plus OPERATOR_WAKE_* env vars) - never message
@@ -91,7 +93,7 @@ wake alerter's hook mode provides it:
 
 - New Coolify app from this repo (main branch, webhook deploy like the other
   Fleet Infra apps):  base directory `scripts/`, start
-  `python3 -m agent_sync.listener_cli daemon run` (the daemon's normal entry),
+  `python3 -m simple_tools.listener_cli daemon run` (the daemon's normal entry),
   Python 3.11+ image.
 - Bind the read API to the TAILSCALE interface only (no Traefik, no public
   port, no DNS):  `listener.example.ts.net:8788`.
@@ -113,7 +115,7 @@ wake alerter's hook mode provides it:
    cursors (or accept a bounded catch-up replay - held-back/dedup keeps it
    quiet).
 4. Stop the Mac listener unit (bootout), start of the 5-10 min window.
-5. Watch `#alerts` and the wake ledger for 30 min:  mentions/DMs landing,
+5. Watch `#Alerts` and the wake ledger for 30 min:  mentions/DMs landing,
    banners firing, no duplicate wakes.
 6. Only after a clean soak:  remove the old Mac listener unit file and any
    now-unused Mac-side Zulip keys (each deletion is a separate, explicit

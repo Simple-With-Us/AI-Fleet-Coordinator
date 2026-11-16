@@ -164,6 +164,10 @@ def render_report(report: StatusReport) -> str:
             report.summary.overall_verdict.value,
         )
     )
+    for item in report.not_implemented:
+        lines.append(
+            "not implemented:  %s  (owner %s)  %s" % (item.rule_id, item.owner_seat, item.reason)
+        )
     for note in report.notes:
         lines.append("note:  %s" % note)
     return "\n".join(lines) + "\n"

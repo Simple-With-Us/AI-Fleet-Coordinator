@@ -68,6 +68,7 @@ RULES_FILES: dict[str, str] = {
     "clutch": ".clutch/dsh/AGENTS.md",
     "kimi": ".kimi-code/AGENTS.md",
     "opencode": ".config/opencode/AGENTS.md",
+    "zcode": ".zcode/AGENTS.md",
 }
 
 # The platforms whose rules file belongs to the owner, so applying to it needs the
@@ -86,6 +87,7 @@ TOOLS_FILES: dict[str, str] = {
     "clutch": ".clutch/dsh/cordis.patch.yml",
     "kimi": ".kimi-code/config.toml",
     "minimax": ".minimax/plugins/fleet-guard/hooks/hooks.json",
+    "zcode": ".zcode/cli/config.json",
 }
 
 # The MCP config target each platform uses.  Mirrors ``fleet_lanes.install_mcp.TARGET_KEYS``
@@ -98,6 +100,7 @@ MCP_TARGETS: dict[str, str] = {
     "minimax": "minimax",
     "fx": "fx",
     "clutch": "clutch",
+    "zcode": "zcode",
 }
 
 # The file each MCP target writes.  Mirrors ``fleet_lanes.install_mcp.JSON_TARGETS``.
@@ -108,6 +111,7 @@ MCP_FILES: dict[str, str] = {
     "minimax": ".minimax/mcp.json",
     "fx": ".fx/mcp.json",
     "clutch": ".clutch/dsh/cordis.patch.yml",
+    "zcode": ".zcode/cli/config.json",
 }
 
 # Every platform id this package knows about.  A platform the manifest names that is not
@@ -183,11 +187,11 @@ def _mcp_installer(platform: str, expected_names: tuple[str, ...] = ()) -> Insta
         return None
     path = MCP_FILES.get(target)
     argv = ["python3", "-m", "fleet_lanes.install_mcp", "apply", target]
-    if "agent-sync" in expected_names and target != "opencode":
-        # install_mcp registers fleet-recall only unless --with-agent-sync is given, so
-        # without it a rule that expects agent-sync can never reach PASS.  The
+    if "simple-chat" in expected_names and target != "opencode":
+        # install_mcp registers fleet-recall only unless --with-simple-chat is given, so
+        # without it a rule that expects simple-chat can never reach PASS.  The
         # installer's own note forbids the flag for opencode,  which registers its own.
-        argv.append("--with-agent-sync")
+        argv.append("--with-simple-chat")
     return Installer(
         key="install_mcp",
         argv=tuple(argv),
@@ -357,30 +361,29 @@ def _change_text(rule: Rule, result: CheckResult, installer: Installer | None) -
     """One sentence saying what would change for this rule."""
     kind = rule.kind.value
     platform = result.platform
+    subject = (
+        "the fleet-wide compliance rule for %s" % platform
+        if rule.kind is ConfigKind.COMPLIANCE
+        else "the %s config for %s" % (kind, platform)
+    )
     if result.state is CheckState.MISSING:
         if installer is not None:
-            return "the %s config for %s is missing;  %s would write %s" % (
-                kind,
-                platform,
+            return "%s is missing;  %s would write %s" % (
+                subject,
                 installer.key,
                 ", ".join(installer.files) or "its file",
             )
-        return "the %s config for %s is missing;  no installer can create it" % (kind, platform)
+        return "%s is missing;  no installer can create it" % subject
     if result.state is CheckState.DRIFT:
         if installer is not None:
-            return "the %s config for %s does not match the manifest;  %s would rewrite %s" % (
-                kind,
-                platform,
+            return "%s does not match the manifest;  %s would rewrite %s" % (
+                subject,
                 installer.key,
                 ", ".join(installer.files) or "its file",
             )
-        return "the %s config for %s does not match the manifest;  no installer can repair it" % (
-            kind,
-            platform,
-        )
-    return "the %s config for %s could not be verified (%s:  %s);  no change is identified" % (
-        kind,
-        platform,
+        return "%s does not match the manifest;  no installer can repair it" % subject
+    return "%s could not be verified (%s:  %s);  no change is identified" % (
+        subject,
         result.state.value,
         result.reason,
     )
@@ -430,6 +433,8 @@ def build_plan(
     for seat_manifest in manifest.seats:
         for rule in seat_manifest.rules:
             rules[rule.id] = rule
+    for rule in manifest.compliance_rules:
+        rules[rule.id] = rule
     entries: list[PlanEntry] = []
     notes: list[str] = []
     for result in observed_results:

@@ -1107,6 +1107,29 @@ class DiscoveryTests(GitCase):
             self.assertIn(key, co)
         self.assertIn("by_layout_status", rep["summary"])
 
+    def test_zc_tool_inference_uses_current_registry_for_new_and_legacy_lanes(self) -> None:
+        registry_path = pathlib.Path(__file__).resolve().parents[3] / "fleet-apps.json"
+        self.registry = L.load_registry(registry_path, include_extras=False, env={})
+        roots = L.make_roots(self.home, self.env, registry=self.registry, case_insensitive=False)
+        lanes = []
+        for token in ("zc", "zcode"):
+            branch = f"{token}/tool-inference"
+            path = self.home / "apps" / "lanes" / "DealDex" / f"{token}-tool-inference"
+            self.add_worktree(self.parent, path, branch)
+            lanes.append(path)
+            lane_seat = L.explain_lane_name(path, self.registry, roots).seat
+            branch_seat = L.seat_from_branch(branch, self.registry)
+            with self.subTest(token=token):
+                self.assertEqual((lane_seat, branch_seat), ("zc", "zc"))
+                self.assertEqual(doctor.infer_tool(str(path), roots, branch, lane_seat, branch_seat),
+                                 ("zcode", "lane seat token:zc"))
+                self.assertEqual(doctor.infer_tool(str(self.home / "elsewhere"), roots, branch, None, branch_seat),
+                                 ("zcode", "branch prefix:zc"))
+        report = self.report()
+        for path in lanes:
+            with self.subTest(path=path.name):
+                self.assertEqual(self.one(report, path)["creating_tool"], "zcode")
+
     def test_creating_tool_inference(self) -> None:
         roots = L.make_roots(self.home, self.env, registry=self.registry, case_insensitive=False)
         home = self.home
@@ -2285,6 +2308,13 @@ class CleanerPredicateTests(unittest.TestCase):
         self.assertEqual(self.pick([self.ready(lane_age_days=14.0, idle_days=14.0)], fresh_days=14),
                          ["/h/apps/dealdex-claude-s"])
 
+    def test_explicit_cleaner_retention_accepts_three_days_but_not_two_point_nine_nine(self) -> None:
+        three = self.ready(lane_age_days=3.0, idle_days=3.0)
+        short = self.ready(lane_age_days=2.99, idle_days=3.0)
+        self.assertEqual(self.pick([three], cleaner_retention_days=3), ["/h/apps/dealdex-claude-s"])
+        self.assertEqual(self.pick([short], cleaner_retention_days=3), [])
+        self.assertEqual(self.pick([three]), [])
+
     def test_a_checkout_that_contains_another_checkout_is_left_out(self) -> None:
         outer = self.ready(realpath="/h/apps/lanes/dealdex/claude-outer")
         inner = self.ready(realpath="/h/apps/lanes/dealdex/claude-outer/.claude/worktrees/in-1a2b3c")
@@ -3439,10 +3469,24 @@ class CliTests(GitCase):
         _, text = self.run_main("--json", "--fresh-days", "0")  # fixed clock: age 0, and 0 is not below 0
         self.assertEqual(self.by_path(json.loads(text))[os.path.realpath(lane)]["safety"], "SAFE-TO-REMOVE")
 
+    def test_cleaner_retention_override_is_reported_and_allows_a_merged_three_day_lane(self) -> None:
+        parent = self.integration()
+        lane, gh = self.merged_lane(parent)
+        _, text = self.run_main("--json", "--cleaner-retention-days", "3", clock=self.aged(3), gh_prs=gh)
+        rep = json.loads(text)
+        self.assertEqual(rep["cleaner_min_days"], 3)
+        self.assertIn(os.path.realpath(lane), rep["cleaner_candidates"])
+
     def test_a_bad_fresh_days_is_a_usage_error(self) -> None:
         for value in ("-1", "nan", "inf", "abc", "99999"):
             with self.subTest(value), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
                 doctor.main(["--fresh-days", value])
+            self.assertEqual(cm.exception.code, 64)
+
+    def test_bad_cleaner_retention_days_is_a_usage_error(self) -> None:
+        for value in ("0", "91", "-1", "2.5", "nan", "abc"):
+            with self.subTest(value), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                doctor.main(["--cleaner-retention-days", value])
             self.assertEqual(cm.exception.code, 64)
 
     def test_help_documents_the_new_options_and_the_safety_classes(self) -> None:
@@ -3451,7 +3495,7 @@ class CliTests(GitCase):
             doctor.main(["--help"])
         self.assertEqual(cm.exception.code, 0)
         text = " ".join(out.getvalue().split())
-        for needle in ("--fresh-days", "--cleaner-list", "TOOL-CACHE", "fresh", "merged", "one per line"):
+        for needle in ("--fresh-days", "--cleaner-retention-days", "--cleaner-list", "TOOL-CACHE", "fresh", "merged", "one per line"):
             self.assertIn(needle, text)
         for needle in ("--fresh-days", "--cleaner-list", "TOOL-CACHE", "cleaner_candidates", "fresh lane"):
             self.assertIn(needle, doctor.__doc__)

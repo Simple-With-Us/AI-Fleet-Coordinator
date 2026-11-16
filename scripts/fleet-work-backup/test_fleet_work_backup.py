@@ -232,7 +232,7 @@ class Fixture:
         (dangling / ".git").write_text("gitdir: /nonexistent/gone/.git/worktrees/x\n")
         # loose files (b)
         a = h / "apps"
-        write(a / "AGENT-SYNC.md", "protocol\n")
+        write(a / "FLEET-PROTOCOL.md", "protocol\n")
         write(a / "notes" / "x.txt", "note\n")
         write(a / "node_modules" / "pkg" / "index.js", "x\n")
         write(a / "run.log", "log\n")
@@ -515,7 +515,7 @@ class StageCase(unittest.TestCase):
     def test_loose_files_staged_and_junk_skipped(self):
         files = self.rels("files/")
         for want in (
-            "files/apps/AGENT-SYNC.md",
+            "files/apps/FLEET-PROTOCOL.md",
             "files/apps/notes/x.txt",
             "files/apps/ok-helper.sh",
             "files/apps/scratch-env/.env.example",
@@ -760,9 +760,11 @@ class RunBase(unittest.TestCase):
         )  # `run [--only X] -- CMD`:  CMD with the fake creds as env
         fs_stub.write_text(
             "#!/bin/bash\n"
-            '[ "$1" = run ] || exit 2\n'
-            'shift; [ "$1" = -- ] && shift\n'
             f'set -a; . "{self.creds_file}"; set +a\n'
+            'if [ "$1" = get ]; then [ -n "${!2:-}" ] || exit 3; printf %s "${!2}"; exit 0; fi\n'
+            '[ "$1" = run ] || exit 2\n'
+            'shift; [ "$1" = --only ] && shift 2\n'
+            '[ "$1" = -- ] && shift\n'
             'exec "$@"\n'
         )
         fs_stub.chmod(0o755)
@@ -2323,10 +2325,10 @@ class RunBehaviourCase(RunBase):
         fwb.cmd_run(self.cfg, self.args)
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 0)
 
-    def stub_agent_sync(self, rc: int = 0, dm_rc: int | None = None) -> Path:
-        """A stand-in for agent-sync.  ``rc`` is the exit code of ``post``, ``dm_rc`` (default ``rc``) that of ``dm``.
+    def stub_simple_tools(self, rc: int = 0, dm_rc: int | None = None) -> Path:
+        """A stand-in for the chat CLI.  ``rc`` is the exit code of ``post``, ``dm_rc`` (default ``rc``) that of ``dm``.
         argv goes to as-argv.log, stdin to as-text.log (all calls) and to as-<subcommand>-text.log."""
-        stub = self.tmp / "agent-sync"
+        stub = self.tmp / "simple-tools"
         stub.write_text(
             "#!/bin/bash\n"
             'echo "$@" >> "$STUB_DIR/as-argv.log"\n'
@@ -2343,8 +2345,8 @@ class RunBehaviourCase(RunBase):
         p = self.stubdir / (f"as-{sub}-text.log" if sub else "as-text.log")
         return [t.strip() for t in p.read_text().split("---") if t.strip()] if p.exists() else []
 
-    def agent_sync_calls(self) -> list[str]:
-        """One line per agent-sync call, its arguments joined with spaces, in call order."""
+    def simple_tools_calls(self) -> list[str]:
+        """One line per chat CLI call, its arguments joined with spaces, in call order."""
         p = self.stubdir / "as-argv.log"
         return p.read_text().splitlines() if p.exists() else []
 
@@ -2367,7 +2369,7 @@ class RunBehaviourCase(RunBase):
         self.assertEqual(fwb.read_state(self.cfg)["consecutive_not_ok"], 2)
 
     def test_runs_that_stay_not_ok_post_one_alert_then_once_a_day_and_say_when_it_is_over(self):
-        self.cfg.agent_sync_bin = str(self.stub_agent_sync())
+        self.cfg.simple_tools_bin = str(self.stub_simple_tools())
         self.cfg.alert_to = ("Jay",)
         t = [1_800_000_000.0]
         self.cfg.now_fn = lambda: t[0]
@@ -2406,9 +2408,9 @@ class RunBehaviourCase(RunBase):
             self.assertNotIn(secret, "".join(texts))
         self.assertNotIn("last_alert", fwb.read_state(self.cfg))
 
-    def test_the_alert_uses_the_job_homes_agent_sync_only(self):
+    def test_the_alert_uses_the_job_homes_simple_tools_only(self):
         self.assertEqual(
-            fwb.agent_sync_path(self.cfg), str(self.home / ".local" / "bin" / "agent-sync")
+            fwb.simple_chat_path(self.cfg), str(self.home / ".local" / "bin" / "simple-chat")
         )
         self.assertFalse(
             fwb.post_alert(self.cfg, "x")
@@ -2428,7 +2430,7 @@ class RunBehaviourCase(RunBase):
         dm_rc: int | None = None,
         note: str = "NOTE: please fix it.",
     ) -> None:
-        self.cfg.agent_sync_bin = str(self.stub_agent_sync(rc, dm_rc))
+        self.cfg.simple_tools_bin = str(self.stub_simple_tools(rc, dm_rc))
         self.cfg.alert_to = ("BF-PLUMBER", "GB-PLUMBER")
         self.cfg.alert_dm_owner = dm
         self.cfg.alert_note = note
@@ -2440,7 +2442,7 @@ class RunBehaviourCase(RunBase):
         failed: list = []
         self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
         self.assertEqual(failed, [])
-        calls = self.agent_sync_calls()
+        calls = self.simple_tools_calls()
         self.assertEqual(
             calls,
             [
@@ -2460,8 +2462,8 @@ class RunBehaviourCase(RunBase):
     def test_without_the_owner_dm_setting_only_the_topic_post_is_sent(self):
         self.alert_cfg(dm=False)
         self.assertTrue(fwb.post_alert(self.cfg, "Base text."))
-        self.assertEqual(len(self.agent_sync_calls()), 1)
-        self.assertTrue(self.agent_sync_calls()[0].startswith("post "))
+        self.assertEqual(len(self.simple_tools_calls()), 1)
+        self.assertTrue(self.simple_tools_calls()[0].startswith("post "))
         self.assertEqual(self.alerts("dm"), [])
         self.assertEqual(self.alerts("post"), ["Base text.\u00a0 NOTE: please fix it."])
 
@@ -2476,14 +2478,14 @@ class RunBehaviourCase(RunBase):
         failed: list = []
         self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
         self.assertEqual(failed, ["dm"])
-        self.assertEqual(len(self.agent_sync_calls()), 2)
+        self.assertEqual(len(self.simple_tools_calls()), 2)
         (self.stubdir / "as-argv.log").unlink()
         self.alert_cfg(rc=1, dm_rc=0)  # the post fails, the DM is still sent and lands
         failed = []
         self.assertTrue(fwb.post_alert(self.cfg, "Base text.", failed=failed))
         self.assertEqual(failed, ["post"])
-        self.assertEqual(len(self.agent_sync_calls()), 2)
-        self.assertTrue(self.agent_sync_calls()[1].startswith("dm "))
+        self.assertEqual(len(self.simple_tools_calls()), 2)
+        self.assertTrue(self.simple_tools_calls()[1].startswith("dm "))
 
     def test_both_failing_is_false_and_the_run_notes_alert_not_posted_without_setting_last_alert(
         self,
@@ -2500,8 +2502,8 @@ class RunBehaviourCase(RunBase):
         self.assertIn("not delivered:  post, dm", note)
         self.assertNotIn("alert-partly-posted", note)
 
-    def test_no_agent_sync_binary_fails_both_and_never_raises(self):
-        self.cfg.agent_sync_bin = str(self.tmp / "missing-agent-sync")
+    def test_no_simple_tools_binary_fails_both_and_never_raises(self):
+        self.cfg.simple_tools_bin = str(self.tmp / "missing-simple-tools")
         self.cfg.alert_dm_owner = True
         failed: list = []
         self.assertFalse(fwb.post_alert(self.cfg, "x", failed=failed))
@@ -2560,7 +2562,7 @@ class RunBehaviourCase(RunBase):
             "NOTE", self.alerts("post")[1]
         )  # "please fix it" on a recovery would be wrong
         self.assertEqual(self.alerts("post")[1], self.alerts("dm")[1])
-        calls = self.agent_sync_calls()
+        calls = self.simple_tools_calls()
         self.assertEqual(
             calls[2], f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} -"
         )  # no --to:  no wake
@@ -2570,7 +2572,7 @@ class RunBehaviourCase(RunBase):
         self.alert_cfg(dm=False)
         self.assertTrue(fwb.post_alert(self.cfg, "All clear.", wake=False))
         self.assertEqual(
-            self.agent_sync_calls(),
+            self.simple_tools_calls(),
             [f"post --as CLAUDE --session fwbackup --topic {fwb.ALERT_TOPIC} -"],
         )
         self.assertEqual(self.alerts("post"), ["All clear."])
@@ -3379,7 +3381,10 @@ class MiscCase(unittest.TestCase):
 
     def test_read_credentials_asks_fleet_secrets_once_and_tolerates_absence(self):
         names = {n: "" for n in fwb.CRED_NAMES.values()}
-        head = '#!/bin/bash\n[ "$1" = run ] || exit 2\nshift; [ "$1" = -- ] && shift\n'
+        head = (
+            '#!/bin/bash\n[ "$1" = run ] || exit 2\n'
+            'shift; [ "$1" = --only ] && shift 2\n[ "$1" = -- ] && shift\n'
+        )
         with tempfile.TemporaryDirectory() as d:
             stub = Path(d) / "fleet-secrets"
             stub.write_text(head + 'A=x exec "$@"\n')
@@ -3395,6 +3400,14 @@ class MiscCase(unittest.TestCase):
                     fwb.read_credentials(cfg),
                     {"B2_FLEET_WORK_KEY_ID": "kid", "RESTIC_FLEET_WORK_PASSWORD": "pw"},
                 )
+            stub.write_text(
+                "#!/bin/bash\n"
+                'if [ "$1" = get ]; then [ "$2" = B2_FLEET_WORK_KEY_ID ] && printf kid && exit 0; exit 3; fi\n'
+                "exit 3\n"
+            )
+            # --only exits 3 on an absent name:  per-name get
+            with mock.patch.dict(os.environ, names):
+                self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
             stub.write_text("#!/bin/bash\nexit 4\n")  # an Infisical or auth failure
             with mock.patch.dict(os.environ, names):
                 self.assertEqual(fwb.read_credentials(cfg), {})
@@ -3407,6 +3420,60 @@ class MiscCase(unittest.TestCase):
                 self.assertEqual(
                     fwb.read_credentials(cfg), {}
                 )  # the environment has all four:  no fetch
+
+    def test_read_credentials_asks_only_for_its_own_names(self):
+        """Least privilege:  `run --only` carries just the job's names, and the B2 master key names only
+        when FLEET_WORK_BACKUP_ALLOW_MASTER=1.  The stub refuses a `run` without `--only`."""
+        names = {n: "" for n in fwb.CRED_NAMES.values()}
+        job = ",".join(fwb.CRED_NAMES.values())
+        both = ",".join(list(fwb.CRED_NAMES.values()) + list(fwb.MASTER_NAMES.values()))
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "argv.log"
+            stub = Path(d) / "fleet-secrets"
+            stub.write_text(
+                "#!/bin/bash\n"
+                f'echo "$*" | cut -d" " -f1-3 >> "{log}"\n'
+                '[ "$1" = run ] && [ "$2" = --only ] && [ "$4" = -- ] || exit 2\n'
+                "shift 4\n"
+                'B2_FLEET_WORK_KEY_ID=kid BACKBLAZE_MASTER_KEY_ID=mk exec "$@"\n'
+            )
+            stub.chmod(0o755)
+            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
+            with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": ""}):
+                self.assertEqual(fwb.read_credentials(cfg), {"B2_FLEET_WORK_KEY_ID": "kid"})
+            self.assertEqual(log.read_text().strip(), f"run --only {job}")
+            log.unlink()
+            with mock.patch.dict(os.environ, {**names, "FLEET_WORK_BACKUP_ALLOW_MASTER": "1"}):
+                self.assertEqual(
+                    fwb.read_credentials(cfg),
+                    {"B2_FLEET_WORK_KEY_ID": "kid", "BACKBLAZE_MASTER_KEY_ID": "mk"},
+                )
+            self.assertEqual(log.read_text().strip(), f"run --only {both}")
+
+    def test_the_per_name_get_never_inherits_standard_input(self):
+        """`get` may fall back to a person's own CLI login when its stdin is a terminal, so the fallback
+        gives it none.  The stub echoes one byte of its stdin;  the process's stdin holds a byte."""
+        names = {n: "" for n in fwb.CRED_NAMES.values()}
+        with tempfile.TemporaryDirectory() as d:
+            stub = Path(d) / "fleet-secrets"
+            stub.write_text(
+                "#!/bin/bash\n"
+                '[ "$1" = get ] && [ "$2" = B2_FLEET_WORK_KEY_ID ] && { head -c1; exit 0; }\n'
+                "exit 3\n"
+            )
+            stub.chmod(0o755)
+            cfg = fwb.Config(home=Path(d), fleet_secrets_bin=str(stub))
+            read_end, write_end = os.pipe()
+            os.write(write_end, b"x")
+            saved = os.dup(0)
+            try:
+                os.dup2(read_end, 0)
+                with mock.patch.dict(os.environ, names):
+                    self.assertEqual(fwb.read_credentials(cfg), {})
+            finally:
+                os.dup2(saved, 0)
+                for fd in (saved, read_end, write_end):
+                    os.close(fd)
 
     def test_plist_and_installer_agree_with_the_module(self):
         plist = (HERE.parent / "launchd" / "com.jay.fleet-work-backup.plist").read_text()

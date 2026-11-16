@@ -105,7 +105,8 @@ The workflow refuses to push when:
 
 - Claude Code exits unsuccessfully or diagnostics report a non-`success` result.
 - The scoped `verify_command` fails.
-- The PR `headRefOid` changed after the run started (another writer landed commits).
+
+When the PR `headRefOid` changed after the run started, or the model step was cancelled or skipped, another writer or a newer autofix run already superseded this one.  The workflow logs a notice, skips the push, and ends **success** so queued no-op and superseded runs do not show as failures.
 
 Sanitized diagnostics (no raw transcripts) are uploaded as a short-lived artifact on every attempted fix, matching the fleet Claude Code autofix reusable.
 
@@ -137,4 +138,4 @@ The fleet runs three autofix bots (this PR Autofix, the Claude Code Autofix reus
 
 GitHub keeps one running and one pending run per group, and a newer pending run replaces the older one.
 
-Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (AGENT-SYNC.md, [Landing Work](../AGENT-SYNC.md#landing-work-commit-pr-review-merge-deploy)).  Asking Codex to *review* a PR stays allowed;  review findings are fixed by these fleet autofix bots or by the seat that owns the PR.
+Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (FLEET-PROTOCOL.md, [Landing Work](../FLEET-PROTOCOL.md#landing-work-commit-pr-review-merge-deploy)).  Asking Codex to *review* a PR stays allowed;  review findings are fixed by these fleet autofix bots or by the seat that owns the PR.

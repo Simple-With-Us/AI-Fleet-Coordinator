@@ -9,6 +9,14 @@
         <string>/bin/bash</string>
         <string>/Users/jay/apps/mac-auto-cleanup.sh</string>
     </array>
+    <!-- The remote Hetzner maintenance trigger at the end of that script needs the
+         operator's ssh target, which arrives in the environment as
+         HOUSEKEEPER_SSH_ALIAS.  The target is private deployment inventory, so it is
+         deliberately not written into this plist: the script reads it from the
+         operator's own inventory file outside this repository.  When neither the file
+         nor the environment names a target, the trigger fails closed with a nonzero
+         exit that says which variable is missing, and the local cleanup that ran
+         before it still counts as done. -->
     <!-- Run every 4 hours (14400 seconds) -->
     <key>StartInterval</key>
     <integer>14400</integer>

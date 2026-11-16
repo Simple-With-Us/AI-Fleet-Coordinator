@@ -28,7 +28,7 @@ The facts document (schema 1):
 | Key | What |
 | --- | --- |
 | `facts_id` | `ol-YYYYMMDD-HHMM-<host>`, in Central time |
-| `built_at`, `built_at_local` | UTC for machines;  Central, 12-hour, no zone name (`Sun, Oct 11, 7:00am`) |
+| `built_at`, `built_at_local` | UTC for machines; Central, 12-hour, spaced uppercase AM/PM and no zone name (`Sun, Oct 11, 7:00 AM`) |
 | `sources` | `{name: {status: ok / absent / failed, reason}}` for github, linear, lanes, autopush, needs_owner, asks, report, zulip, and mac_facts when one was asked for |
 | `missing` | what the digest must show as `Missing:  <source> (<reason>)` (see below) |
 | `decisions` | Linear `needs-owner` items, oldest first, each with its link, `low_stakes` options, `tap_to_answer` and OWNER topic link;  `low_stakes` (a count) and `over_five` (seats with more than 5 open) come from C6 and are `null` without it;  C6 is asked for every row (`needs-owner list --all`, because its default lists only the open ones), and its `state` decides:  `replied` (the owner answered, the filer has not closed it) is counted in `answered_awaiting_close` and not listed, `closed` is neither, and a Linear item C6 does not know (labelled by hand) is listed, because being absent from a list never proves an answer |
@@ -131,7 +131,7 @@ seat, no simple-chat, an F3 helper missing);  4 lint failed;  5 could not check 
 DM is out but the heartbeat is not.  `--dry-run` runs steps 1 to 4 and sends nothing.
 
 Every simple-chat command line is built by a function in `send.py` (and `zulip_topics.py`), and `test_parser_parity`
-runs each through `agent_sync.cli.build_parser()`.  The fake simple-chat the tests use does the same for every call.
+runs each through `simple_tools.cli.build_parser()`.  The fake simple-chat the tests use does the same for every call.
 
 ## Not built yet
 
@@ -157,7 +157,7 @@ scripts/open_loops/install.sh [--c2-id ID]            # a plan, changes nothing
 scripts/open_loops/install.sh --apply [--c2-id ID]    # ~/apps/open-loops + ~/.local/bin/open-loops
 ```
 
-The stable copy holds the entry script, `open_loops`, `fleet_facts` (without its tests and CI checker) and `agent_sync/`
+The stable copy holds the entry script, `open_loops`, `fleet_facts` (without its tests and CI checker) and `simple_tools/`
 with only `__init__.py`, `textsafe.py`, `secretscan.py` and `textfmt.py`:  a tool run with `python3 -I` cannot import what
 it did not copy.  The entry script's first line is rewritten to `#!<absolute python3 3.11+> -I`, so a routine's short
 `PATH` cannot pick an older Python.  The installer loads no LaunchAgent and touches nothing under `~/.secrets`.  The live

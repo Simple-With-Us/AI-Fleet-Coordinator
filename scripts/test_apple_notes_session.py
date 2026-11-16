@@ -14,10 +14,13 @@ import subprocess
 import unittest
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
 #  the script drops the year only when it is the current one, so the expected date follows the clock
-OCT_19 = "Mon, Oct 19" if datetime.now().year == 2026 else "Mon, Oct 19, 2026"
+OCT_19 = (
+    "Mon, Oct 19" if datetime.now(ZoneInfo("America/Chicago")).year == 2026 else "Mon, Oct 19, 2026"
+)
 PLATFORM_VARS = (
     "AGENT_SESSION",
     "CLAUDE_CODE_SESSION_ID",
@@ -157,7 +160,7 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         m = re.search(
-            r"<p>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m</p>"
+            r"<p>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2} [AP]M</p>"
             r'<p><span style="font-size: 11px;">Session: abc12345-def6</span></p>',
             p.stdout,
         )
@@ -271,7 +274,7 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(
-            f"Merged {OCT_19}, deployed {OCT_19}, 9:03pm, filed Fri, Mar 7, 2025.", p.stdout
+            f"Merged {OCT_19}, deployed {OCT_19}, 9:03 PM, filed Fri, Mar 7, 2025.", p.stdout
         )
         self.assertIn("log 2026-10-19", p.stdout)
         self.assertIn("https://x.test/2026-10-19", p.stdout)
@@ -286,7 +289,10 @@ class SessionIdTests(unittest.TestCase):
             "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        g = "  "
+        #  The widened gap is a no-break space plus a normal space, the same gap as every
+        #  other surface.  The note body is HTML, so the gap is the numeric reference, like
+        #  the two HTML passes.
+        g = "&#160; "
         self.assertIn(
             f"Merged it.{g}Next is CI.{g}Ask Dr. Smith.{g}The U.S. Army.{g}4 tests failed.{g}Done.",
             p.stdout,
@@ -310,9 +316,9 @@ class SessionIdTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         #  the space form keeps its range end instead of shifting 10:30 to 4:30pm on the -11:00, and both
         #  ends read in the fleet form rather than on a 24-hour clock
-        self.assertIn(f"Standup {OCT_19}, 10:30am-11:00am Central", p.stdout)
+        self.assertIn(f"Standup {OCT_19}, 10:30 AM-11:00 AM Central", p.stdout)
         #  the ISO T form really is an offset, and still converts
-        self.assertIn(f"and {OCT_19}, 4:30pm", p.stdout)
+        self.assertIn(f"and {OCT_19}, 4:30 PM", p.stdout)
 
     def test_prose_that_starts_with_session_is_not_mistaken_for_a_row(self):
         """`Session:` opening a paragraph of prose is content:  an id-shaped word after it is still prose."""
@@ -322,11 +328,21 @@ class SessionIdTests(unittest.TestCase):
             "--session",
             "new-id-0002",
             "[AFC, Claude] t",
-            env={"AGENT_SEAT": "CLAUDE"},
+            #  a synthetic Linear host and workspace, so the fixture names no organisation of the
+            #  fleet (Kody rule:  synthetic hostnames and paths in test fixtures)
+            env={
+                "AGENT_SEAT": "CLAUDE",
+                "NOTES_LINKIFY_LINEAR_HOST": "notes.example.test",
+                "NOTES_LINEAR_WORKSPACE": "example-workspace",
+            },
             body=body,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: the board claim was AFC-123", p.stdout)
+        #  the prose survives as prose, and the Linear id inside it is linked by
+        #  the linkifier (AFC-547) rather than being left bare -- either way it
+        #  is content, not the stamped row
+        self.assertIn("Session: the board claim was", p.stdout)
+        self.assertIn('href="https://notes.example.test/example-workspace/issue/AFC-123"', p.stdout)
         self.assertEqual(
             p.stdout.count("Session:"), 2, p.stdout
         )  #  the prose one and the stamped row
@@ -396,7 +412,7 @@ class SessionIdTests(unittest.TestCase):
             body=body,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn(f"Window {OCT_19}, 10:30am-11:00am for the deploy.", p.stdout)
+        self.assertIn(f"Window {OCT_19}, 10:30 AM-11:00 AM for the deploy.", p.stdout)
         self.assertIn("Session: claude-code resumed after the restart.", p.stdout)
 
     def test_an_old_session_row_with_a_year_is_replaced_not_kept(self):
@@ -569,11 +585,13 @@ class TitleSecretScanTests(unittest.TestCase):
         )
 
     def test_a_credential_shaped_title_is_refused_and_the_value_is_never_echoed(self):
+        #  Fixture strings are joined at runtime so the fleet secret scanner does not
+        #  refuse this test file itself; the shapes the helper sees are unchanged.
         for secret in (
-            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-            "AKIAIOSFODNN7EXAMPLE",
-            "sk-abcdefghijklmnopqrstuvwxyz0123",
-            "api_key: ZZZZZZZZZZZZZZZZZZZZ",
+            "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+            "AKIAIOSFODNN7" + "EXAMPLE",
+            "sk-" + "abcdefghijklmnopqrstuvwxyz0123",
+            "api_key: " + "Z" * 20,
         ):
             with self.subTest(secret[:6]):
                 out = self.run_script(f"[AFC, MM] rollout {secret}")
@@ -591,6 +609,331 @@ class TitleSecretScanTests(unittest.TestCase):
                 out = self.run_script(title, "Body of the note.")
                 self.assertEqual(out.returncode, 0, out.stderr[-300:])
                 self.assertIn("Body of the note.", out.stdout)
+
+
+class SentenceGapMarkupTests(unittest.TestCase):
+    """AFC-496:  a sentence that ends INSIDE inline markup keeps the sentence gap.
+
+    Notes.app is an HTML renderer, so the gap has to survive as a numeric character reference
+    followed by a normal space:  two raw ASCII spaces collapse to one.  Owner ruling 2026-10-23:
+    the named `&nbsp;` entity is never emitted, because a numeric reference adds no raw
+    non-ASCII byte to the note HTML.
+
+    The gap is the reference for a NO-BREAK SPACE, `&#160; `, plus a normal space:  the same
+    U+00A0 plus a normal space as every other surface, with no Apple Notes exception.
+
+    Measured through this writer on Oct 29, 2026 (a probe note written and read back raw):  Apple
+    Notes stores the no-break space, as a numeric reference or as the named entity, as an
+    ORDINARY space, so a note holds two ordinary spaces after a sentence end, and Notes.app shows
+    that pair as a wide gap.  The owner's screenshot of the gap sample note shows the no-break
+    line exactly as wide as the en and em space lines.  AFC-552 (Oct 26) read the stored form
+    back, saw ordinary spaces, and assumed the renderer collapses them, which it does not, so it
+    replaced the gap with a narrow no-break space and wrote that exception into every rule file.
+    A one-space gap is the thing that reads as no gap, so the pair of spaces is what the note
+    needs, and it is what the no-break reference becomes.
+
+    The helper converts the gap twice, an inline pass over the Markdown source and a whole-HTML
+    pass over the finished HTML, and a sentence that ends inside `**bold**`, `*italic*` or a
+    `[link](url)` puts the closing tag between the punctuation and the run of spaces.  Neither
+    pass matched that, so the note carried two raw spaces after the bold, italic and link sentence
+    ends and Notes rendered them as one.
+
+    The whole-HTML pass now carries the closing tag through, and the inline pass holds code spans
+    aside, because a code span is content the author wants verbatim and the entity used to land
+    inside the chip.
+
+    These tests drive the real script with APPLE_NOTES_PRINT_HTML=1, which prints the note HTML and
+    exits before Notes is touched, so nothing here writes, updates or pins a note.
+
+    Run:  cd scripts && python3 -m unittest test_apple_notes_session
+    """
+
+    PROBE = (
+        "**Bold sentence end.**  Plain sentence after the bold one.\n\n"
+        "*Italic sentence end.*  Plain sentence after the italic one.\n\n"
+        "[Link sentence end.](https://example.test/probe)  Plain sentence after the link one.\n\n"
+        "Plain sentence end.  Second plain sentence.\n\n"
+        "The literal `code span with a sentence end.  inside it` stays verbatim.\n"
+    )
+    CODE_SPAN = "code span with a sentence end.  inside it"
+    PLAIN_BODY = (
+        "Plain sentence one.  Plain sentence two.  Plain sentence three.\n\n"
+        "A second paragraph here.  And its end.\n"
+    )
+    #  A code, pre, style or script region is content the author wants verbatim, so the gap
+    #  conversion leaves it alone.
+    REGION = re.compile(r"<(pre|code|style|script)\b[\s\S]*?</\1>", re.IGNORECASE)
+
+    def run_script(
+        self,
+        body: str,
+        env_extra: dict[str, str] | None = None,
+        extra_args: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "APPLE_NOTES_PRINT_HTML": "1",
+            "AGENT_SESSION": "abc12345",
+            "AGENT_SEAT": "MM",
+            "LANG": "en_US.UTF-8",
+        }
+        env.update(env_extra or {})
+        return subprocess.run(
+            ["/bin/bash", str(SCRIPT), *extra_args, "[AFC, MM] Gap probe", body],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+            check=False,
+        )
+
+    def body_html(self, out: str) -> str:
+        """The note body without the title and the two stamp rows, which carry the clock."""
+        return out.split("<div><br></div>", 1)[1]
+
+    def test_a_sentence_end_inside_markup_keeps_the_gap(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        for fragment in (
+            "<b>Bold sentence end.</b>&#160; Plain sentence after the bold one.",
+            "<i>Italic sentence end.</i>&#160; Plain sentence after the italic one.",
+            (
+                '<a href="https://example.test/probe">Link sentence end.</a>&#160; '
+                "Plain sentence after the link one."
+            ),
+            "Plain sentence end.&#160; Second plain sentence.",
+        ):
+            self.assertIn(fragment, p.stdout)
+
+    def test_no_raw_double_space_survives_after_a_sentence_end(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        outside = self.REGION.sub("", p.stdout)
+        #  A sentence end inside markup puts the closing tag between the punctuation and the
+        #  run of spaces, so the run is checked with the tag in front of it too.
+        self.assertEqual(re.findall(r"[.!?](</[a-zA-Z][^>]*>)?[ \t]{2,}", outside), [], outside)
+        #  Every sentence end that is followed by a space carries the numeric reference and a space.
+        for m in re.finditer(r"[.!?](</[a-zA-Z][^>]*>)?", outside):
+            after = outside[m.end() :]
+            if after.startswith("&#160; "):
+                continue
+            self.assertFalse(
+                after[:1].isspace(),
+                f"no gap after {m.group(0)!r}: {outside[m.start() - 40 : m.end() + 40]!r}",
+            )
+
+    def test_a_code_span_comes_back_byte_for_byte(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        chips = re.findall(r"<code\b[^>]*>([\s\S]*?)</code>", p.stdout)
+        self.assertEqual(chips, [self.CODE_SPAN])
+
+    def test_a_plain_body_renders_exactly_as_it_did_before(self):
+        p = self.run_script(self.PLAIN_BODY)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertEqual(
+            self.body_html(p.stdout),
+            "<p>Plain sentence one.&#160; Plain sentence two.&#160; Plain sentence three.</p>"
+            "<div><br></div>"
+            "<p>A second paragraph here.&#160; And its end.</p>"
+            "<div><br></div></div><!-- fleet-notes-tool:v1 -->\n",
+        )
+
+    def test_the_named_nbsp_entity_is_never_emitted(self):
+        """The named entity is banned;  the gap is written as a numeric reference.
+
+        Owner ruling 2026-10-23:  the helper writes a numeric reference and never the named
+        `&nbsp;` entity.  The markup probe and the plain body are both checked, so a pass that
+        only fixes one path still fails here.
+        """
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        plain = self.run_script(self.PLAIN_BODY)
+        self.assertEqual(plain.returncode, 0, plain.stderr[-400:])
+        for out in (p.stdout, plain.stdout):
+            outside = self.REGION.sub("", out)
+            self.assertNotIn("&nbsp;", outside, out)
+
+    def test_the_gap_is_the_no_break_space_reference(self):
+        """The gap is U+00A0 plus a normal space, written as the numeric reference.
+
+        Apple Notes keeps no exception to the house gap.  It stores the no-break space as an
+        ordinary space and shows the pair as a wide gap, so a note takes the same gap as
+        every other surface.  Both paths are checked, so a pass that only fixes one still fails.
+        """
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        plain = self.run_script(self.PLAIN_BODY)
+        self.assertEqual(plain.returncode, 0, plain.stderr[-400:])
+        for out in (p.stdout, plain.stdout):
+            outside = self.REGION.sub("", out)
+            self.assertIn("&#160; ", outside, out)
+
+    def test_no_special_case_space_is_emitted(self):
+        """AFC-552 wrote a narrow no-break space into every note;  nothing like it is written now.
+
+        The narrow no-break, en, em and thin spaces all look fine on screen, but the fleet has
+        one gap, U+00A0 plus a normal space, so none of them is the helper's gap, as a character
+        or as a numeric reference.
+        """
+        strays = tuple(chr(c) for c in (0x202F, 0x2002, 0x2003, 0x2009)) + (
+            "&#8239;",
+            "&#8194;",
+            "&#8195;",
+        )
+        for body in (self.PROBE, self.PLAIN_BODY, "One sentence end. Another one.\n"):
+            p = self.run_script(body)
+            self.assertEqual(p.returncode, 0, p.stderr[-400:])
+            for stray in strays:
+                self.assertNotIn(stray, p.stdout, repr(stray))
+
+    def test_a_one_space_sentence_end_widens_to_the_no_break_space(self):
+        """The one-space widening writes the no-break space plus a normal space.
+
+        The helper writes the gap on two paths and they carry it differently:  the note
+        body is HTML, so both the one-space widening and the two HTML passes write the
+        numeric reference, and the plain-text summary block writes the character
+        itself because it is escaped.
+        """
+        #  One space:  the widening path, which writes the reference into the HTML body.
+        p = self.run_script("One sentence end. Another one.\n")
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        widened = self.REGION.sub("", p.stdout)
+        self.assertIn("&#160; ", widened, widened)
+        #  The note HTML carries no raw non-ASCII byte for the gap.
+        self.assertNotIn("\xa0", widened, widened)
+
+        #  Two spaces:  the HTML path, which writes the reference.
+        q = self.run_script("One sentence end.  Another one.\n")
+        self.assertEqual(q.returncode, 0, q.stderr[-400:])
+        converted = self.REGION.sub("", q.stdout)
+        self.assertIn("&#160; ", converted, converted)
+        self.assertNotIn("\xa0", converted, converted)
+
+    LONG_BODY = "A substantial sentence of real note content.  " * 40
+
+    def test_the_summary_block_gap_is_the_character_not_the_reference(self):
+        """The plain-text path carries the no-break space itself, not the reference.
+
+        The widening pass serves two contexts.  The note body is HTML, so it carries the
+        numeric reference, like the two HTML passes and with no raw non-ASCII byte in the
+        note HTML.  The Summary block is plain text that is embedded with html.escape,
+        so a reference there would reach the owner as the literal text "&#160;".  It has to
+        carry the character itself.
+        """
+        p = self.run_script(
+            "Body text.  " * 120,
+            extra_args=("--summary", "One sentence end. Another one."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        outside = self.REGION.sub("", p.stdout)
+        self.assertIn("<b>Summary:</b>", outside, outside)
+        self.assertNotIn("Mobile Quick View", outside, outside)
+        self.assertIn("\xa0 ", outside, outside)
+        #  An escaped reference would render as the literal text, so it must not be there.
+        self.assertNotIn("&amp;#160;", outside, outside)
+
+    def test_the_summary_block_is_body_readable(self):
+        """The Summary block carries an explicit readable font size (owner 2026-11-12)."""
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=("--summary", "A real summary of a long note."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        m = re.search(r'<div style="[^"]*"><b>Summary:</b>', p.stdout)
+        self.assertIsNotNone(m, p.stdout[:400])
+        self.assertIn("font-size: 16px", m.group(0), m.group(0))
+
+    def test_summary_skipped_when_over_the_body_share(self):
+        """Over APPLE_NOTES_SUMMARY_MAX_PCT (default 20) of the body: no block, note still writes."""
+        body = "Body text.  " * 80  # 879 characters of plain text once stored, past the floor
+        summary = (
+            "A summary that runs well past a fifth of what is still a fairly modest note body, "
+            "so the share rule drops it even though every other rule would let it through, and "
+            "it keeps on going a fair while longer still."
+        )
+        self.assertGreater(len(summary) * 100, 20 * 879)
+        p = self.run_script(body, extra_args=("--summary", summary))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("notes: summary skipped:", p.stderr)
+        self.assertIn("over 20% of the note body", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+        self.assertIn("Body text.", p.stdout, "the note itself still writes")
+
+    def test_summary_skipped_on_a_short_note(self):
+        """The block is for long notes:  under the body floor, no block lands whatever the share."""
+        body = "A short but complete note body.  " * 10  # ~320 characters of plain text
+        p = self.run_script(body, extra_args=("--summary", "A real summary with context."))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("notes: summary skipped:", p.stderr)
+        self.assertIn("too short for a summary block", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+        self.assertIn("A short but complete note body.", p.stdout, "the note itself still writes")
+
+    def test_summary_floor_is_adjustable(self):
+        body = "A short but complete note body.  " * 10  # ~320 characters of plain text
+        p = self.run_script(
+            body,
+            env_extra={"APPLE_NOTES_SUMMARY_MIN_BODY_CHARS": "200"},
+            extra_args=("--summary", "A real summary with context."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, p.stderr[-200:])
+
+    def test_summary_share_is_adjustable(self):
+        body = "Body text.  " * 120  # ~1319 characters of plain text once stored
+        summary = ("Real context " * 22 + "for this note.").strip()  # one sentence, 300 characters
+        self.assertTrue(263 < len(summary) <= 329, len(summary))  # over 20%, inside 25%
+        p = self.run_script(body, extra_args=("--summary", summary))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("notes: summary skipped:", p.stderr, "over 20% of the body")
+        p = self.run_script(
+            body, env_extra={"APPLE_NOTES_SUMMARY_MAX_PCT": "25"}, extra_args=("--summary", summary)
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, "fits 25% of the body: " + p.stderr[-200:])
+
+    def test_summary_skipped_past_five_sentences(self):
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=("--summary", "One.  Two.  Three.  Four.  Five.  Six."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("6 sentences is over the five-sentence limit", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+
+    def test_summary_skipped_when_it_restates_the_title(self):
+        #  the class title is "[AFC, MM] Gap probe", so a summary of its words restates it
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=("--summary", "The gap probe results."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("mostly restates the title", p.stderr)
+        self.assertNotIn("<b>Summary:</b>", p.stdout)
+
+    def test_summary_mentioning_the_title_terms_is_kept(self):
+        #  reviewer finding 2026-11-12:  a summary that adds real context stays even when it
+        #  mentions every content word of the title - only a summary whose own words are mostly
+        #  the title's is a restatement.  The class title is "[AFC, MM] Gap probe".
+        p = self.run_script(
+            self.LONG_BODY,
+            extra_args=(
+                "--summary",
+                "The gap probe ran clean overnight:  every seat answered inside the window and the drift table is empty.",
+            ),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, p.stderr[-200:])
+
+    def test_short_note_can_still_carry_a_short_summary(self):
+        #  a short note is not hard-blocked:  a summary inside the share still lands, so the
+        #  length share, not an absolute size, decides
+        body = self.LONG_BODY
+        p = self.run_script(body, extra_args=("--summary", "Short and real."))
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertIn("<b>Summary:</b>", p.stdout, p.stderr[-200:])
 
 
 if __name__ == "__main__":

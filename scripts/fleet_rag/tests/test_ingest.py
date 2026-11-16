@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from fleet_rag import health, ingest, sources
+from fleet_rag import health, ingest, mirror, qdrant_snapshot, search_cache, sources
 from fleet_rag.core import content_hash, point_id
 from fleet_rag.scrub import GitleaksError
 
@@ -29,6 +29,8 @@ class FakeQdrant:
         self.payload_sets: list[tuple[list[str], dict]] = []
         self.scrolls: list[dict | None] = []
         self.collection = "fleet-agents"
+        self.snapshot_names: list[str] = []
+        self.snapshot_calls = 0
 
     def _cpath(self, suffix=""):  # noqa: ANN001
         return f"/collections/{self.collection}{suffix}"
@@ -78,6 +80,18 @@ class FakeQdrant:
         for i in ids:
             self.points[i]["payload"].update(payload)
         return "completed"
+
+    def create_snapshot(self, *, wait=True):  # noqa: ANN001
+        self.snapshot_calls += 1
+        name = f"ingest-snap-{self.snapshot_calls}"
+        self.snapshot_names.append(name)
+        return {"name": name}
+
+    def list_snapshots(self):  # noqa: ANN001
+        return [{"name": n} for n in self.snapshot_names]
+
+    def delete_snapshot(self, name):  # noqa: ANN001
+        self.snapshot_names = [n for n in self.snapshot_names if n != name]
 
 
 def make_doc(doc_id: str, text: str, **kw) -> sources.Doc:
@@ -137,6 +151,26 @@ class IngestTests(unittest.TestCase):
         return ingest.run("doc", cfg={"x": "y"}, qd=self.qd, state_path=self.state, last_run_path=self.last,
                           log_path=self.logf, log=lambda *a: None, **kw)
 
+    def test_completed_run_writes_the_search_cache_epoch(self) -> None:
+        report = self._run()
+        epoch = self.last.with_name(search_cache.EPOCH_NAME)
+        self.assertTrue(epoch.is_file())
+        body = json.loads(epoch.read_text())
+        self.assertEqual(body["run_id"], report["run_id"])
+        self.assertTrue(body["ok"])
+
+    def test_dry_run_does_not_write_the_search_cache_epoch(self) -> None:
+        self._run(dry_run=True)
+        self.assertFalse(self.last.with_name(search_cache.EPOCH_NAME).exists())
+
+    def test_partial_run_writes_the_epoch_without_replacing_last_run(self) -> None:
+        self.last.write_text('{"ok": false, "started_at": 1}')
+        before = self.last.read_bytes()
+        report = self._run(limit=1)
+        self.assertEqual(self.last.read_bytes(), before)
+        epoch = json.loads(self.last.with_name(search_cache.EPOCH_NAME).read_text())
+        self.assertEqual(epoch["run_id"], report["run_id"])
+
     def test_full_nonpruning_ingest_cannot_attest_nightly_health(self) -> None:
         with mock.patch.object(ingest, "_heartbeat") as heartbeat:
             self._run(prune=False)
@@ -156,6 +190,294 @@ class IngestTests(unittest.TestCase):
         heartbeat.assert_not_called()
         self.assertTrue(self.logf.exists())
         self.assertTrue(self.state.exists())
+
+    def test_linear_delta_never_prunes_live_rows_even_with_full_flag(self) -> None:
+        # Persist a complete earlier document, then yield no delta documents.
+        with mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([
+            make_doc("linear/unchanged", LONG_A, source="linear")
+        ])}):
+            ingest.run("linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                       last_run_path=self.last, log_path=self.logf, log=lambda *a: None)
+        before = json.loads(self.state.read_text())
+        points = set(self.qd.points)
+        for full in ("", "1"):
+            with (mock.patch.object(sources, "NIGHTLY_SOURCES", ("linear",)),
+                  mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
+                  mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([])})):
+                report = ingest.run("linear", prune=True, cfg={"x": "y"}, qd=self.qd,
+                                    state_path=self.state, last_run_path=self.last,
+                                    log_path=self.logf, log=lambda *a: None)
+            self.assertTrue(report["ok"])
+            self.assertEqual(json.loads(self.state.read_text()), before)
+            self.assertEqual(set(self.qd.points), points)
+            self.assertTrue(any("pruning skipped" in w for w in report["warnings"]))
+
+    def test_linear_receipt_separates_full_read_from_commit_and_dry_run(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+        for dry in (True, False):
+            with (mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+                  mock.patch.object(sources, "_linear_light_scan", return_value={
+                      "uuid-1": "2026-10-21T01:00:00Z"}),
+                  mock.patch.object(sources, "_linear_fetch_full", return_value=[_linear_node()]),
+                  mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+                report = ingest.run("linear", dry_run=dry, cfg={"x": "y"}, qd=self.qd,
+                    state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                    log=lambda *a: None)
+            receipt = report["linear_read_receipt"]
+            self.assertTrue(report["ok"])
+            self.assertTrue(receipt["source_complete"])
+            self.assertFalse(receipt["deletion_authorized"])
+            self.assertEqual(not dry, receipt["issues"]["uuid-1"]["state_hash_verified"])
+
+    def test_full_linear_skips_fail_after_complete_pending_docs_commit(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+        skipped = _linear_node(uid="uuid-skipped")
+        skipped["_linear_truncated"] = True
+        with (mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+              mock.patch.object(sources, "_linear_light_scan", return_value={
+                  "uuid-1": "2026-10-21", "uuid-skipped": "2026-10-21"}),
+              mock.patch.object(sources, "_linear_fetch_full", return_value=[_linear_node(), skipped]),
+              mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": "1"})):
+            report = ingest.run("linear", cfg={"x": "y"}, qd=self.qd,
+                state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                log=lambda *a: None)
+        self.assertFalse(report["ok"])
+        state = json.loads(self.state.read_text())
+        self.assertIn("linear/uuid-1", state)
+        self.assertNotIn("linear/uuid-skipped", state)
+        self.assertNotIn(sources.LINEAR_CURSOR_KEY, state)
+        receipt = report["linear_read_receipt"]
+        self.assertFalse(receipt["source_complete"])
+        self.assertTrue(receipt["issues"]["uuid-1"]["state_hash_verified"])
+        self.assertEqual("skipped", receipt["issues"]["uuid-skipped"]["status"])
+
+    def _linear_query(self, node):
+        def fake_query(query, timeout_s=0):
+            if "orderBy: updatedAt" in query:
+                if "updatedAt: { gte:" in query and node["updatedAt"] < query.split('gte: "', 1)[1][:24]:
+                    return {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False}}}
+                return {
+                    "issues": {
+                        "nodes": [{
+                            "id": node["id"],
+                            "identifier": node["identifier"],
+                            "updatedAt": node["updatedAt"],
+                        }],
+                        "pageInfo": {"hasNextPage": False},
+                    }
+                }
+            return {"issues": {"nodes": [node], "pageInfo": {"hasNextPage": False}}}
+
+        return fake_query
+
+    def test_cursor_advances_after_success_and_stays_on_failure(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        now = sources.parse_ts_ms("2026-11-12T06:00:00.000Z")
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            report = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertTrue(report["ok"])
+        state = json.loads(self.state.read_text())
+        sync = state[sources.LINEAR_CURSOR_KEY]
+        self.assertEqual(sync["updated_at_cursor"], sources._linear_iso(now))
+        self.assertEqual(sync["last_full_sweep_at_ms"], now)
+        self.assertEqual(sync["kind"], "linear-sync")
+        self.assertIn("linear/uuid-1", state)
+        self.assertFalse(report["linear_read_receipt"]["deletion_authorized"])
+        before = self.state.read_text()
+        points = set(self.qd.points)
+
+        def boom(query, timeout_s=0):
+            raise sources.LinearSourceError("linear: transport down")
+
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now + 60_000),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=boom),
+        ):
+            failed = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertFalse(failed["ok"])
+        self.assertEqual(before, self.state.read_text())
+        self.assertEqual(set(self.qd.points), points)
+
+    def test_since_does_not_advance_the_cursor_past_a_skipped_issue(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        now = sources.parse_ts_ms("2026-10-22T12:00:00.000Z")
+        cursor = "2026-10-20T00:00:00.000Z"
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        self.state.write_text(json.dumps({
+            sources.LINEAR_CURSOR_KEY: {
+                "kind": "linear-sync",
+                "updated_at_cursor": cursor,
+                "last_full_sweep_at_ms": sources.parse_ts_ms("2026-10-21T00:00:00.000Z"),
+            }
+        }))
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            skipped = ingest.run(
+                "linear", since="2026-10-22T00:00:00.000Z", cfg={"x": "y"}, qd=self.qd,
+                state_path=self.state, last_run_path=self.last, log_path=self.logf,
+                log=lambda *a: None,
+            )
+        self.assertTrue(skipped["ok"])
+        self.assertEqual(skipped["per_source"]["linear"]["docs_seen"], 1)
+        self.assertEqual(skipped["per_source"]["linear"]["docs_changed"], 0)
+        self.assertFalse(skipped["linear_read_receipt"]["cursor_advance"])
+        held = json.loads(self.state.read_text())
+        self.assertEqual(held[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"], cursor)
+        self.assertNotIn("linear/uuid-1", held)
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now + 60_000),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            caught = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertTrue(caught["ok"])
+        self.assertEqual(caught["per_source"]["linear"]["docs_changed"], 1)
+        advanced = json.loads(self.state.read_text())
+        self.assertIn("linear/uuid-1", advanced)
+        self.assertEqual(
+            advanced[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"],
+            sources._linear_iso(now + 60_000),
+        )
+
+    def test_unchanged_linear_issue_is_not_reembedded(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            first = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertGreater(first["per_source"]["linear"]["docs_changed"], 0)
+        self.assertTrue(self.embed_calls)
+        state = json.loads(self.state.read_text())
+        state["linear/uuid-1"]["updated_at"] = 1
+        state["linear/uuid-1"]["refreshed_at"] = 1
+        del state[sources.LINEAR_CURSOR_KEY]
+        self.state.write_text(json.dumps(state))
+        self.embed_calls.clear()
+        upserts = len(self.qd.upserts)
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            second = ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertEqual(second["per_source"]["linear"]["docs_seen"], 1)
+        self.assertEqual(second["per_source"]["linear"]["docs_changed"], 0)
+        self.assertEqual(self.embed_calls, [])
+        self.assertEqual(len(self.qd.upserts), upserts)
+        again = json.loads(self.state.read_text())
+        self.assertIn(sources.LINEAR_CURSOR_KEY, again)
+        self.assertEqual(again["linear/uuid-1"]["doc_hash"], state["linear/uuid-1"]["doc_hash"])
+
+    def test_incremental_empty_window_advances_cursor_without_pruning(self) -> None:
+        from fleet_rag.tests.test_sources import _linear_node
+
+        node = _linear_node()
+        now = sources.parse_ts_ms("2026-11-12T06:00:00.000Z")
+        env = {"FLEET_RAG_LINEAR_STATE": str(self.state)}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=now),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            ingest.run(
+                "linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        points = set(self.qd.points)
+        later = now + 60 * 60 * 1000
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(sources, "now_ms", return_value=later),
+            mock.patch.object(sources, "NIGHTLY_SOURCES", ("linear",)),
+            mock.patch.dict(ingest.GENERATORS, {"linear": sources.iter_linear}),
+            mock.patch.object(sources, "_linear_query", side_effect=self._linear_query(node)),
+        ):
+            report = ingest.run(
+                "linear", prune=True, cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+            )
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["per_source"]["linear"]["docs_seen"], 0)
+        self.assertTrue(report["linear_read_receipt"]["cursor_advance"])
+        self.assertEqual(report["linear_read_receipt"]["read_mode"], "incremental")
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state[sources.LINEAR_CURSOR_KEY]["updated_at_cursor"], sources._linear_iso(later))
+        self.assertEqual(state[sources.LINEAR_CURSOR_KEY]["last_full_sweep_at_ms"], now)
+        self.assertIn("linear/uuid-1", state)
+        self.assertEqual(set(self.qd.points), points)
+        self.assertTrue(any("pruning skipped" in w for w in report["warnings"]))
+
+    def test_full_flag_is_scoped_to_the_run(self) -> None:
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen["env"] = os.environ.get("FLEET_RAG_LINEAR_FULL")
+            return {"ok": True}
+
+        with mock.patch.object(ingest, "run", side_effect=fake_run):
+            self.assertEqual(ingest.main(["--source", "linear", "--full", "--no-heartbeat"]), 0)
+        self.assertEqual(seen["env"], "1")
+        self.assertIsNone(os.environ.get("FLEET_RAG_LINEAR_FULL"))
+
+    def test_cursor_record_is_not_a_prune_candidate(self) -> None:
+        state = {
+            "linear/uuid-1": {"source": "linear", "chunk_ids": ["p"]},
+            sources.LINEAR_CURSOR_KEY: {
+                "kind": "linear-sync",
+                "updated_at_cursor": "2026-11-12T00:00:00.000Z",
+            },
+        }
+        self.assertEqual(ingest._prune_candidates("linear", set(), state), ["linear/uuid-1"])
+
+    def test_explicit_linear_prune_refused_before_any_write(self) -> None:
+        for full in ("", "1"):
+            with (mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_FULL": full}),
+                  mock.patch.dict(ingest.GENERATORS, {"linear": lambda limit=None: iter([])})):
+                with self.assertRaisesRegex(ingest.FleetRagError, "complete deletion inventory"):
+                    ingest.run("linear", prune=True, cfg={"x": "y"}, qd=self.qd,
+                               state_path=self.state, last_run_path=self.last,
+                               log_path=self.logf, log=lambda *a: None)
+            self.assertFalse(self.state.exists())
+            self.assertFalse(self.logf.exists())
+            self.assertFalse(self.qd.points)
 
     def test_first_run_then_idempotent(self) -> None:
         rep = self._run()
@@ -200,6 +522,42 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(self.embed_calls, [])
         self.assertEqual(len(self.qd.upserts), n_upserts)
         self.assertEqual(len(self.sentinels), 2)
+
+    def test_hash_skip_advances_provider_timestamp(self) -> None:
+        self._run()
+        st = json.loads(self.state.read_text())
+        self.assertEqual(st["doc/a"]["updated_at"], 1700000000000)
+        first_refresh = st["doc/a"]["refreshed_at"]
+        self.assertIsInstance(first_refresh, int)
+        # Provider bumps updatedAt while the text stays identical: nothing re-ingests,
+        # but the state row tracks the newer provider timestamp and the hash-verified
+        # refresh time, so state-selecting sources stop refetching the doc.
+        self.docs["doc"] = [
+            make_doc("doc/a", LONG_A, updated_at_ms=1700000000000 + 60000),
+            make_doc("doc/b", LONG_B, updated_at_ms=1700000000000 + 60000),
+        ]
+        self.embed_calls.clear()
+        n_upserts = len(self.qd.upserts)
+        rep = self._run()
+        self.assertEqual(rep["per_source"]["doc"]["docs_changed"], 0)
+        self.assertEqual(self.embed_calls, [])
+        self.assertEqual(len(self.qd.upserts), n_upserts)
+        st = json.loads(self.state.read_text())
+        self.assertEqual(st["doc/a"]["updated_at"], 1700000000000 + 60000)
+        self.assertEqual(st["doc/b"]["updated_at"], 1700000000000 + 60000)
+        self.assertGreaterEqual(st["doc/a"]["refreshed_at"], first_refresh)
+
+    def test_dry_run_advances_no_state(self) -> None:
+        """A dry run may hash-verify in memory, but nothing persists:  an uncommitted
+        run can never suppress a later refetch through state."""
+        self._run()
+        before = self.state.read_text()
+        self.docs["doc"] = [
+            make_doc("doc/a", LONG_A, updated_at_ms=1700000000000 + 60000),
+            make_doc("doc/b", LONG_B, updated_at_ms=1700000000000 + 60000),
+        ]
+        self._run(dry_run=True)
+        self.assertEqual(before, self.state.read_text())
 
     def test_existing_points_not_reembedded_without_state(self) -> None:
         self._run()
@@ -292,11 +650,33 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(rep["per_source"]["doc"]["chunks_repointed"], 1)
         self.assertEqual(len(self.qd.payload_sets), 1)
 
+    def test_nightly_prune_keeps_apple_note_state_rows(self) -> None:
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+        self._run()
+        st = json.loads(self.state.read_text())
+        st["note/ABC/ICNote/p1"] = {
+            "doc_hash": "h",
+            "chunk_ids": ["pt-note"],
+            "updated_at": 0,
+            "source": "apple-note",
+        }
+        self.qd.points["pt-note"] = {
+            "id": "pt-note",
+            "payload": {"doc_id": "note/ABC/ICNote/p1", "text": "Pinned fleet note body text."},
+        }
+        self.state.write_text(json.dumps(st))
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+        rep = self._run(prune=True)
+        self.assertTrue(rep["ok"])
+        st_after = json.loads(self.state.read_text())
+        self.assertIn("note/ABC/ICNote/p1", st_after)
+        self.assertIn("pt-note", self.qd.points)
+
     def test_prune_removes_vanished_docs(self) -> None:
         self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/b", LONG_B),
                             make_doc("doc/c", "Shared tail text here.", title="S"),
                             make_doc("doc/d", "Shared tail text here.", title="S")]
-        self._run()
+        self._run(prune=False)
         st = json.loads(self.state.read_text())
         # doc/c and doc/d share one point; state credits it to both
         shared = st["doc/c"]["chunk_ids"]
@@ -312,10 +692,13 @@ class IngestTests(unittest.TestCase):
         rep = self._run(prune=True, dry_run=True)
         self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 2)
         self.assertEqual(self.qd.deleted, [])                     # dry-run: nothing deleted
+        self.assertEqual(self.qd.snapshot_calls, 0)
         self.assertIn("doc/b", json.loads(self.state.read_text()))
 
         rep = self._run(prune=True)
         self.assertTrue(rep["ok"])
+        self.assertEqual(self.qd.snapshot_calls, 1)
+        self.assertIn("qdrant_prune_snapshot", rep)
         s = rep["per_source"]["doc"]
         self.assertEqual(s["docs_pruned"], 2)
         self.assertEqual(s["chunks_deleted"], len(b_ids))
@@ -325,6 +708,21 @@ class IngestTests(unittest.TestCase):
         st = json.loads(self.state.read_text())
         self.assertEqual(set(st), {"doc/a", "doc/d", "board/zzz"})
         self.assertTrue(all(len(c) <= ingest.DELETE_BATCH for c in self.qd.delete_calls))
+
+    def test_prune_aborts_when_pre_prune_snapshot_fails(self) -> None:
+        self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/b", LONG_B)]
+        self._run(prune=False)
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+
+        def boom(qd, **_kwargs):
+            raise qdrant_snapshot.PruneSnapshotError("api down")
+
+        with mock.patch.object(qdrant_snapshot, "take_prune_snapshot", side_effect=boom):
+            rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("snapshot failed" in item for item in rep["errors"]))
+        self.assertIn("doc/b", json.loads(self.state.read_text()))
 
     def test_prune_skipped_on_source_error_and_refused_with_limit(self) -> None:
         self._run()
@@ -346,6 +744,327 @@ class IngestTests(unittest.TestCase):
         rep = self._run(prune=True, since=1600000000000)
         self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
         self.assertIn("doc/b", json.loads(self.state.read_text()))
+
+    def test_prune_deferred_and_skipped_when_any_later_source_fails(self) -> None:
+        # AFC-677:  a failure in ANY source of the run blocks every prune, including a
+        # source that ran (and finished cleanly) before the failure.
+        self._run()
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+
+        def gen(limit=None):  # noqa: ANN001
+            yield from self.docs["doc"]
+
+        def broken(limit=None):  # noqa: ANN001
+            raise RuntimeError("simple-board api query exited 4")
+            yield  # pragma: no cover
+
+        with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "linear")), \
+                mock.patch.object(ingest, "GENERATORS", {"doc": gen, "linear": broken}):
+            rep = ingest.run("doc,linear", cfg={"x": "y"}, qd=self.qd, state_path=self.state,
+                             last_run_path=self.last, log_path=self.logf, log=lambda *a: None,
+                             prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertIn("doc/b", json.loads(self.state.read_text()))
+        self.assertTrue(any("prune skipped for every source" in w for w in rep["warnings"]))
+
+    def test_prune_refused_when_more_docs_would_go_than_were_yielded(self) -> None:
+        self.docs["doc"] = [make_doc(f"doc/x{i}", f"Body number {i} text here.", title=f"X{i}")
+                            for i in range(3)]
+        self._run()
+        self.docs["doc"] = [make_doc("doc/x0", "Body number 0 text here.", title="X0")]
+        rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("yielded only 1" in e for e in rep["errors"]))
+        self.assertTrue(any(t.get("reason") == "prune-refused" for t in rep["guard_trips"]))
+        self.assertEqual(set(json.loads(self.state.read_text())), {"doc/x0", "doc/x1", "doc/x2"})
+
+    def test_prune_refused_when_a_whole_repo_vanishes_unless_forced(self) -> None:
+        keep = [make_doc(f"doc/Keep/k{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(8)]
+        lost = [make_doc(f"doc/Socratic-Trade/s{i}.md", f"Lost body {i} text.", title=f"S{i}")
+                for i in range(5)]
+        self.docs["doc"] = keep + lost
+        self._run()
+        self.docs["doc"] = keep
+        rep = self._run(prune=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("doc/Socratic-Trade" in e and "missing" in e for e in rep["errors"]))
+        with mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 5)
+        self.assertTrue(any("overridden" in w for w in rep["warnings"]))
+
+    def _hold(self, held: set[str]):
+        docs = list(self.docs["doc"])
+
+        def gen(limit=None):  # noqa: ANN001
+            sources.DOC_HELD_IDS.update(held)
+            yield from docs[:limit] if limit else docs
+
+        return mock.patch.object(ingest, "GENERATORS", {"doc": gen})
+
+    def _stamp_diet(self) -> None:
+        ingest._write_diet_stamp(
+            self.state,
+            {"docs_before": 1, "docs_after": 1, "chunks_before": 1, "chunks_after": 1},
+        )
+
+    def test_duplicate_chunk_bodies_embed_once_and_keep_paths(self) -> None:
+        body = "Shared paragraph about the fleet diet.\n"
+        self.docs["doc"] = [
+            make_doc("doc/one", body, title="One", path="docs/one.md"),
+            make_doc("doc/two", body, title="Two", path="docs/two.md"),
+        ]
+        rep = self._run(prune=False)
+        self.assertTrue(rep["ok"])
+        s = rep["per_source"]["doc"]
+        self.assertEqual(len(self.qd.points), 1)
+        self.assertEqual(s["chunks_new"], 1)
+        self.assertEqual(s["chunks_deduped"], 1)
+        self.assertEqual(sum(len(c) for c in self.embed_calls), 1)
+        payload = next(iter(self.qd.points.values()))["payload"]
+        self.assertEqual(payload["path"], "docs/one.md")
+        self.assertEqual(payload["also_paths"], ["docs/two.md"])
+        self.assertEqual(payload["also_path_count"], 1)
+        st = json.loads(self.state.read_text())
+        canonical = st["doc/one"]["chunk_ids"]
+        self.assertEqual(canonical, st["doc/two"]["chunk_ids"])
+        self.assertEqual(canonical, [next(iter(self.qd.points))])
+
+        rows, _scrubbed = ingest.doc_rows(self.docs["doc"][1], "run")
+        own_id = rows[0]["id"]
+        self.assertNotEqual(own_id, canonical[0])
+        st["doc/two"]["chunk_ids"] = [own_id]
+        self.state.write_text(json.dumps(st))
+        self.qd.points[own_id] = {"id": own_id, "payload": dict(rows[0]["payload"])}
+        self.qd.deleted.clear()
+        self.embed_calls.clear()
+        recorded: dict = {}
+        real_delete = self.qd.delete_ids
+
+        def spy_delete(ids, wait=True):  # noqa: ANN001
+            recorded["state"] = json.loads(self.state.read_text())
+            recorded["ids"] = list(ids)
+            return real_delete(ids, wait=wait)
+
+        self.qd.delete_ids = spy_delete
+        rep2 = self._run(prune=False)
+        self.assertIn(own_id, recorded["ids"])
+        self.assertEqual(recorded["state"]["doc/two"]["chunk_ids"], canonical)
+        self.assertNotIn(own_id, recorded["state"]["doc/two"]["chunk_ids"])
+        self.assertEqual(rep2["per_source"]["doc"]["docs_changed"], 0)
+        self.assertEqual(self.embed_calls, [])
+        self.assertIn(own_id, self.qd.deleted)
+        st = json.loads(self.state.read_text())
+        self.assertEqual(st["doc/one"]["chunk_ids"], st["doc/two"]["chunk_ids"])
+        self.assertNotIn(own_id, st["doc/two"]["chunk_ids"])
+        self.assertGreaterEqual(rep2["per_source"]["doc"]["chunks_deduped"], 1)
+
+    def test_unchanged_chunker_drift_does_not_delete(self) -> None:
+        self._run(prune=False)
+        st = json.loads(self.state.read_text())
+        st["doc/a"]["chunk_ids"] = ["not-the-real-id"]
+        self.state.write_text(json.dumps(st))
+        self.qd.deleted.clear()
+        rep = self._run(prune=False)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["chunks_deleted"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertEqual(
+            json.loads(self.state.read_text())["doc/a"]["chunk_ids"], ["not-the-real-id"]
+        )
+
+    def test_diet_hold_blocks_prune_without_an_explicit_release(self) -> None:
+        extra = make_doc("doc/generated/old.md", "Generated body text here.", title="Old")
+        self.docs["doc"] = [
+            make_doc("doc/keep/a.md", "Keep body alpha text.", title="A"),
+            make_doc("doc/keep/b.md", "Keep body beta text.", title="B"),
+            extra,
+        ]
+        self._run(prune=False)
+        self.docs["doc"] = self.docs["doc"][:2]
+        with self._hold({extra.doc_id}):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertIn(extra.doc_id, json.loads(self.state.read_text()))
+        self.assertTrue(any("held from prune" in w for w in rep["warnings"]))
+
+    def test_diet_prune_needs_a_matching_dry_run_stamp(self) -> None:
+        extra = make_doc("doc/generated/old.md", "Generated body text here.", title="Old")
+        keep = [make_doc(f"doc/keep/{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(4)]
+        self.docs["doc"] = keep + [extra]
+        self._run(prune=False)
+        self.docs["doc"] = keep
+        with self._hold({extra.doc_id}):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertIn(extra.doc_id, json.loads(self.state.read_text()))
+        self.assertTrue(any(t.get("reason") == "diet-prune-needs-dry-run" for t in rep["guard_trips"]))
+        with self._hold({extra.doc_id}), mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}):
+            forced = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(forced["ok"])
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(
+            any(t.get("reason") == "diet-prune-needs-dry-run" for t in forced["guard_trips"])
+        )
+
+        self._stamp_diet()
+        stamp = self.state.parent / ingest.DIET_REPORT_NAME
+        data = json.loads(stamp.read_text())
+        data["rules_hash"] = "not-the-rules"
+        stamp.write_text(json.dumps(data))
+        os.chmod(stamp, 0o600)
+        with self._hold({extra.doc_id}):
+            mismatch = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(mismatch["ok"])
+        self.assertEqual(self.qd.deleted, [])
+
+        self._stamp_diet()
+        with self._hold({extra.doc_id}):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 1)
+        self.assertNotIn(extra.doc_id, json.loads(self.state.read_text()))
+
+    def test_diet_percentage_cap_blocks_and_force_lifts_only_with_a_stamp(self) -> None:
+        extras = [
+            make_doc("doc/generated/a.md", "Generated alpha text here.", title="Ga"),
+            make_doc("doc/generated/b.md", "Generated beta text here.", title="Gb"),
+        ]
+        keep = [make_doc(f"doc/keep/{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(4)]
+        self.docs["doc"] = keep + extras
+        self._run(prune=False)
+        self.docs["doc"] = keep
+        held = {d.doc_id for d in extras}
+        self._stamp_diet()
+        with self._hold(held):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("20%" in e for e in rep["errors"]))
+        self.assertEqual(set(json.loads(self.state.read_text())) >= held, True)
+        with self._hold(held), mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}):
+            forced = self._run(prune=True, prune_excluded=True)
+        self.assertTrue(forced["ok"], forced["errors"])
+        self.assertEqual(forced["per_source"]["doc"]["docs_pruned"], 2)
+        self.assertTrue(held.isdisjoint(json.loads(self.state.read_text())))
+        self.assertTrue(any("overridden" in w for w in forced["warnings"]))
+
+    def test_seen_guard_still_blocks_a_diet_release(self) -> None:
+        extras = [
+            make_doc("doc/generated/a.md", "Generated alpha text here.", title="Ga"),
+            make_doc("doc/generated/b.md", "Generated beta text here.", title="Gb"),
+        ]
+        keep = make_doc("doc/keep/a.md", "Keep body alpha text.", title="A")
+        self.docs["doc"] = [keep, *extras]
+        self._run(prune=False)
+        self.docs["doc"] = [keep]
+        self._stamp_diet()
+        with self._hold({d.doc_id for d in extras}):
+            rep = self._run(prune=True, prune_excluded=True)
+        self.assertFalse(rep["ok"])
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 0)
+        self.assertEqual(self.qd.deleted, [])
+        self.assertTrue(any("yielded only 1" in e for e in rep["errors"]))
+        self.assertTrue(any(t.get("reason") == "prune-refused" for t in rep["guard_trips"]))
+
+    def test_diet_allowlist_releases_only_the_named_ids(self) -> None:
+        generated = make_doc("doc/generated/old.md", "Generated body text here.", title="Old")
+        vendored = make_doc("doc/vendored/lib.md", "Vendored body text here.", title="Ven")
+        keep = [make_doc(f"doc/keep/{i}.md", f"Keep body {i} text.", title=f"K{i}") for i in range(5)]
+        self.docs["doc"] = keep + [generated, vendored]
+        self._run(prune=False)
+        self.docs["doc"] = keep
+        self._stamp_diet()
+        env = {ingest.PRUNE_EXCLUDED_ALLOW_ENV: "doc/generated/*"}
+        with self._hold({generated.doc_id, vendored.doc_id}), mock.patch.dict(os.environ, env):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        st = json.loads(self.state.read_text())
+        self.assertNotIn(generated.doc_id, st)
+        self.assertIn(vendored.doc_id, st)
+        self.assertEqual(rep["per_source"]["doc"]["docs_pruned"], 1)
+
+    def test_prune_cap_applies_only_when_diet_ids_are_among_the_gone_set(self) -> None:
+        state = {
+            f"doc/k{i}": {"source": "doc", "chunk_ids": [f"p{i}"], "doc_hash": "h"}
+            for i in range(10)
+        }
+        yielded = {f"doc/k{i}" for i in range(8)}
+        self.assertIsNone(
+            ingest.prune_refusal("doc", yielded, state, diet_ids={"doc/k8", "doc/k9"})
+        )
+        over = {f"doc/k{i}" for i in range(7)}
+        msg = ingest.prune_refusal("doc", over, state, diet_ids={"doc/k7"})
+        self.assertIsNotNone(msg)
+        self.assertIn("20%", msg)
+        small = {
+            f"doc/s{i}": {"source": "doc", "chunk_ids": [], "doc_hash": "h"} for i in range(4)
+        }
+        self.assertIsNone(
+            ingest.prune_refusal("doc", {"doc/s0", "doc/s1"}, small, diet_ids=set())
+        )
+        self.assertIsNone(ingest.prune_refusal("doc", {"doc/s0", "doc/s1"}, small))
+
+    def test_dry_run_reports_doc_and_chunk_counts(self) -> None:
+        root = pathlib.Path(self.tmp.name) / "walk"
+        repo = root / "repo"
+        docs = repo / "docs"
+        docs.mkdir(parents=True)
+        body = "Same paragraph for the diet census.\n"
+        (repo / "README.md").write_text("# Hello\n\n" + body)
+        (docs / "a.md").write_text("# A\n\n" + body)
+        (docs / "generated").mkdir()
+        (docs / "generated" / "api.md").write_text("# API\n\n" + ("generated " * 30))
+        (docs / "app.min.md").write_text("# Min\n\nnope\n")
+
+        def gen(limit=None):  # noqa: ANN001
+            yield from sources.iter_docs(
+                repo,
+                root / "no-ops",
+                extra=[],
+                limit=limit,
+                code_dir=None,
+                apps_dir=None,
+                grok_home=None,
+            )
+
+        with mock.patch.object(ingest, "GENERATORS", {"doc": gen}):
+            rep = self._run(dry_run=True, prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        diet = rep["doc_diet"]
+        self.assertEqual(diet["docs_before"], 4)
+        self.assertEqual(diet["docs_after"], 2)
+        self.assertEqual(diet["docs_excluded"], 2)
+        self.assertGreater(diet["chunks_before"], diet["chunks_after"])
+        self.assertGreaterEqual(diet["chunks_deduped"], 1)
+        self.assertEqual(diet["excluded_held"], 2)
+        self.assertEqual(diet["excluded_released"], 0)
+        stamp = self.state.parent / ingest.DIET_REPORT_NAME
+        self.assertTrue(stamp.is_file())
+        self.assertEqual(stamp.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(stamp.read_text())["rules_hash"], ingest.diet_rules_hash())
+        self.assertEqual(self.qd.points, {})
+        self.assertFalse(self.state.exists())
+
+    def test_prune_excluded_flag_reaches_run(self) -> None:
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                ingest.main(["--source", "doc", "--prune", "--prune-excluded", "--no-heartbeat"]),
+                0,
+            )
+        self.assertTrue(run.call_args.kwargs["prune_excluded"])
 
     def test_duplicate_doc_id_is_an_error(self) -> None:
         self.docs["doc"] = [make_doc("doc/a", LONG_A), make_doc("doc/a", LONG_B)]
@@ -443,6 +1162,131 @@ class IngestTests(unittest.TestCase):
             os.close(fd)
         self.assertTrue(self._run()["ok"])       # released: runs again
         self.assertIsInstance(ingest.IngestLocked("x"), ingest.FleetRagError)
+
+    def test_a_dead_pid_in_the_lock_file_is_removed_on_start(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            f"99999999 2020-01-01T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        logs: list[str] = []
+
+        def capture(*parts: object) -> None:
+            logs.append(" ".join(str(p) for p in parts))
+
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
+        self.assertTrue(any("removing stale lock" in line for line in logs))
+        self.assertTrue(lock.exists())
+        meta = ingest._read_ingest_lock_meta(lock)
+        self.assertEqual(meta.get("pid"), os.getpid())
+
+    def test_a_live_holder_writes_lock_held_to_the_nightly_summary(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        summary = self.state.parent / "nightly-last.json"
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.write_text(
+            f"{os.getpid()} 2026-11-12T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {ingest.NIGHTLY_SUMMARY_ENV: str(summary)},
+                clear=False,
+            ):
+                with self.assertRaises(ingest.IngestLocked) as ctx:
+                    ingest.run(
+                        ",".join(sources.NIGHTLY_SOURCES),
+                        cfg={"x": "y"},
+                        qd=self.qd,
+                        state_path=self.state,
+                        last_run_path=self.last,
+                        log_path=self.logf,
+                        log=lambda *a: None,
+                        prune=True,
+                        lock_timeout_s=0.0,
+                    )
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        exc = ctx.exception
+        self.assertEqual(exc.reason, "lock_held")
+        self.assertEqual(exc.pid, os.getpid())
+        body = json.loads(summary.read_text(encoding="utf-8"))
+        self.assertEqual(body["reason"], "lock_held")
+        self.assertEqual(body["ingest_lock_pid"], os.getpid())
+        self.assertIn("lock_held", body["errors"])
+
+    def test_a_partial_refresh_does_not_write_the_nightly_summary_on_lock_held(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        summary = self.state.parent / "nightly-last.json"
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.write_text(
+            f"{os.getpid()} 2026-11-12T00:00:00+00:00 {ingest._ingest_lock_hostname()}\n",
+            encoding="utf-8",
+        )
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {ingest.NIGHTLY_SUMMARY_ENV: str(summary)},
+                clear=False,
+            ), mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "zulip")):
+                with self.assertRaises(ingest.IngestLocked):
+                    self._run(lock_timeout_s=0.0)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertFalse(summary.exists())
+
+    def test_a_lock_without_pid_or_host_is_stale_only_past_the_age(self) -> None:
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("not-json\n", encoding="utf-8")
+        old = time.time() - ingest.DEFAULT_INGEST_LOCK_STALE_S - 60
+        os.utime(lock, (old, old))
+        logs: list[str] = []
+
+        def capture(*parts: object) -> None:
+            logs.append(" ".join(str(p) for p in parts))
+
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
+        self.assertTrue(any("missing pid or host" in line for line in logs))
+
+        lock.write_text("not-json\n", encoding="utf-8")
+        fresh = time.time() - 60
+        os.utime(lock, (fresh, fresh))
+        rep = ingest.run(
+            "doc",
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=capture,
+        )
+        self.assertTrue(rep["ok"])
 
     def test_the_nightly_pass_waits_for_the_lock_instead_of_failing(self) -> None:
         # The sheet sync's partial refresh holds this same lock for as long as it runs, and it
@@ -745,6 +1589,242 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(res2["written"], 0)
         self.assertEqual(res2["already_present"], 2)
         self.assertEqual(self.qd.payload_sets, [])     # raw rows never re-point existing chunks
+
+    def _gens(self, **by_source):
+        def make(name):
+            rows = by_source.get(name, [])
+
+            def gen(limit=None):  # noqa: ANN001
+                yield from rows[:limit] if limit else rows
+
+            return gen
+
+        return {
+            name: make(name)
+            for name in ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
+        }
+
+    def _multi(self, selection, **kw):
+        return ingest.run(
+            selection,
+            cfg={"x": "y"},
+            qd=self.qd,
+            state_path=self.state,
+            last_run_path=self.last,
+            log_path=self.logf,
+            log=lambda *a: None,
+            **kw,
+        )
+
+    def test_a_partial_linear_prune_stays_refused_and_the_server_set_is_allowed(self) -> None:
+        with self.assertRaises(ingest.FleetRagError):
+            self._multi("linear,doc", prune=True)
+        with mock.patch.object(ingest, "GENERATORS", self._gens()):
+            rep = self._multi("linear,doc,skill,memory", prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        self.assertTrue(any("linear: pruning skipped" in w for w in rep["warnings"]))
+        self.assertTrue(
+            ingest._attests_health(["linear", "doc", "skill", "memory"], True, None, None)
+        )
+
+    def test_apple_note_is_never_pruned_even_when_force_is_set(self) -> None:
+        one = make_doc("apple-note/one", LONG_A, source="apple-note")
+        two = make_doc("apple-note/two", LONG_B, source="apple-note")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(**{"apple-note": [one, two]})):
+            first = self._multi("apple-note", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(**{"apple-note": [one]})),
+            mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}),
+        ):
+            second = self._multi("apple-note", prune=True)
+        self.assertTrue(second["ok"], second["errors"])
+        self.assertIn("apple-note/two", json.loads(self.state.read_text()))
+        self.assertTrue(any("write-time upserts" in w for w in second["warnings"]))
+        self.assertFalse(any(t["source"] == "apple-note" for t in second["guard_trips"]))
+
+    def test_stale_or_missing_mirror_skips_skill_and_memory_prune(self) -> None:
+        doc_a = make_doc("doc/a", LONG_A)
+        doc_b = make_doc("doc/b", LONG_B)
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        memory = make_doc("memory/codex/a.md", LONG_A, source="memory")
+        with mock.patch.object(
+            ingest,
+            "GENERATORS",
+            self._gens(doc=[doc_a, doc_b], skill=[skill_a, skill_b], memory=[memory]),
+        ):
+            first = self._multi("linear,doc,skill,memory", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        mirror_dir = pathlib.Path(self.tmp.name) / "mirror"
+        mirror_dir.mkdir()
+        (mirror_dir / ".complete").write_text(
+            json.dumps({"complete": True, "at": int(time.time()) - 40 * 3600, "files": {}}) + "\n"
+        )
+        env = {mirror.MIRROR_ENV: str(mirror_dir), ingest.PRUNE_FORCE_ENV: "1"}
+        with (
+            mock.patch.object(
+                ingest,
+                "GENERATORS",
+                self._gens(doc=[doc_a], skill=[skill_a], memory=[]),
+            ),
+            mock.patch.dict(os.environ, env),
+        ):
+            second = self._multi("linear,doc,skill,memory", prune=True)
+        self.assertTrue(second["ok"], second["errors"])
+        state = json.loads(self.state.read_text())
+        self.assertNotIn("doc/b", state)
+        self.assertIn("skill/claude/beta", state)
+        self.assertIn("memory/codex/a.md", state)
+        self.assertEqual(second["per_source"]["skill"]["docs_seen"], 0)
+        self.assertEqual(second["per_source"]["memory"]["docs_seen"], 0)
+        self.assertEqual(second["per_source"]["doc"]["docs_seen"], 1)
+        self.assertGreaterEqual(second["mirror_stale"]["age_s"], 40 * 3600 - 5)
+        self.assertEqual(second["mirror_stale"]["reason"], "stale")
+        self.assertTrue(str(second["mirror_stale"]["marker"]).endswith("/.complete"))
+        reasons = {(t["source"], t["reason"]) for t in second["guard_trips"]}
+        self.assertEqual(reasons, {("skill", "stale"), ("memory", "stale")})
+
+    def test_a_fresh_mirror_and_an_unset_mirror_still_prune_skill(self) -> None:
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            first = self._multi("skill", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])):
+            unset = self._multi("skill", prune=True)
+        self.assertTrue(unset["ok"], unset["errors"])
+        self.assertNotIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(unset["guard_trips"], [])
+
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            self._multi("skill", prune=True)
+        mirror_dir = pathlib.Path(self.tmp.name) / "fresh"
+        mirror_dir.mkdir()
+        (mirror_dir / ".complete").write_text(
+            json.dumps({"complete": True, "at": int(time.time()), "files": {}}) + "\n"
+        )
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])),
+            mock.patch.dict(os.environ, {mirror.MIRROR_ENV: str(mirror_dir)}),
+        ):
+            fresh = self._multi("skill", prune=True)
+        self.assertTrue(fresh["ok"], fresh["errors"])
+        self.assertNotIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(fresh["guard_trips"], [])
+        self.assertIsNone(fresh["mirror_stale"])
+        self.assertGreater(fresh["per_source"]["skill"]["docs_seen"], 0)
+
+    def test_stale_mirror_skips_apple_note_ingest_and_never_prunes_it(self) -> None:
+        note_a = make_doc("note/one", LONG_A, source="apple-note")
+        note_b = make_doc("note/two", LONG_B, source="apple-note")
+        doc_a = make_doc("doc/a", LONG_A)
+        doc_b = make_doc("doc/b", LONG_B)
+        called: list[str] = []
+
+        def note_gen(limit=None):  # noqa: ANN001
+            called.append("apple-note")
+            raise AssertionError("apple-note ingest ran")
+
+        with mock.patch.object(
+            ingest,
+            "GENERATORS",
+            self._gens(**{"apple-note": [note_a, note_b], "doc": [doc_a, doc_b]}),
+        ):
+            first = self._multi("doc,apple-note", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        mirror_dir = pathlib.Path(self.tmp.name) / "notes-mirror"
+        mirror_dir.mkdir()
+        env = {mirror.MIRROR_ENV: str(mirror_dir), ingest.PRUNE_FORCE_ENV: "1"}
+        gens = self._gens(doc=[doc_a])
+        gens["apple-note"] = note_gen
+        with mock.patch.object(ingest, "GENERATORS", gens), mock.patch.dict(os.environ, env):
+            second = self._multi("doc,apple-note", prune=True)
+        self.assertTrue(second["ok"], second["errors"])
+        self.assertEqual(called, [])
+        state = json.loads(self.state.read_text())
+        self.assertIn("note/two", state)
+        self.assertNotIn("doc/b", state)
+        self.assertEqual(second["per_source"]["apple-note"]["docs_seen"], 0)
+        self.assertEqual(second["per_source"]["doc"]["docs_seen"], 1)
+        self.assertEqual(second["mirror_stale"]["reason"], "missing-stamp")
+        self.assertIsNone(second["mirror_stale"]["age_s"])
+        reasons = {(t["source"], t["reason"]) for t in second["guard_trips"]}
+        self.assertIn(("apple-note", "missing-stamp"), reasons)
+        self.assertEqual(second["per_source"]["apple-note"]["docs_pruned"], 0)
+
+    def test_mirror_max_age_env_is_the_ingest_skip_limit(self) -> None:
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            self._multi("skill", prune=True)
+        mirror_dir = pathlib.Path(self.tmp.name) / "age-mirror"
+        mirror_dir.mkdir()
+        (mirror_dir / ".complete").write_text(
+            json.dumps({"complete": True, "at": int(time.time()) - 2 * 3600, "files": {}}) + "\n"
+        )
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])),
+            mock.patch.dict(os.environ, {mirror.MIRROR_ENV: str(mirror_dir)}),
+        ):
+            fresh = self._multi("skill", prune=True)
+        self.assertIsNone(fresh["mirror_stale"])
+        self.assertNotIn("skill/claude/beta", json.loads(self.state.read_text()))
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            self._multi("skill", prune=True)
+        short = {mirror.MIRROR_ENV: str(mirror_dir), "FLEET_RAG_MIRROR_MAX_AGE_S": "3600"}
+        with (
+            mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a])),
+            mock.patch.dict(os.environ, short),
+        ):
+            skipped = self._multi("skill", prune=True)
+        self.assertTrue(skipped["ok"], skipped["errors"])
+        self.assertEqual(skipped["per_source"]["skill"]["docs_seen"], 0)
+        self.assertIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(skipped["mirror_stale"]["max_age_s"], 3600)
+        self.assertGreater(skipped["mirror_stale"]["age_s"], 3600)
+
+    def test_unset_env_skips_skill_when_the_default_marker_is_missing(self) -> None:
+        skill_a = make_doc("skill/claude/alpha", LONG_A, source="skill")
+        skill_b = make_doc("skill/claude/beta", LONG_B, source="skill")
+        with mock.patch.object(ingest, "GENERATORS", self._gens(skill=[skill_a, skill_b])):
+            first = self._multi("skill", prune=True)
+        self.assertTrue(first["ok"], first["errors"])
+        live = pathlib.Path(self.tmp.name) / "default-current"
+        live.mkdir()
+        called: list[str] = []
+
+        def skill_gen(limit=None):  # noqa: ANN001
+            called.append("skill")
+            raise AssertionError("skill ingest ran against a missing default marker")
+
+        gens = self._gens()
+        gens["skill"] = skill_gen
+        with (
+            mock.patch.object(mirror, "DEFAULT_LIVE", live),
+            mock.patch.object(ingest, "GENERATORS", gens),
+            mock.patch.dict(os.environ, {ingest.PRUNE_FORCE_ENV: "1"}),
+        ):
+            os.environ.pop(mirror.MIRROR_ENV, None)
+            skipped = self._multi("skill", prune=True)
+            gate = ingest._prune_gate("skill")
+        self.assertTrue(skipped["ok"], skipped["errors"])
+        self.assertEqual(called, [])
+        self.assertEqual(skipped["per_source"]["skill"]["docs_seen"], 0)
+        self.assertEqual(skipped["per_source"]["skill"]["docs_pruned"], 0)
+        self.assertIn("skill/claude/beta", json.loads(self.state.read_text()))
+        self.assertEqual(skipped["mirror_stale"]["reason"], "missing-stamp")
+        self.assertIsNone(skipped["mirror_stale"]["age_s"])
+        self.assertEqual(gate[1], "missing-stamp")
+
+    def test_server_job_skips_doc_prune_when_the_code_root_is_unset(self) -> None:
+        self._run()
+        self.docs["doc"] = [make_doc("doc/a", LONG_A)]
+        with mock.patch.dict(os.environ, {"FLEET_RAG_REQUIRE_CODE_ROOT": "1", "FLEET_CODE_ROOT": ""}):
+            rep = self._run(prune=True)
+        self.assertTrue(rep["ok"], rep["errors"])
+        self.assertIn("doc/b", json.loads(self.state.read_text()))
+        self.assertTrue(any(t["reason"] == "code-root-unset" for t in rep["guard_trips"]))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import unittest
 
+from needs_owner import links
 from needs_owner import text as T
 
 from .world import REALM_LINK, World
@@ -43,16 +44,18 @@ class FileTests(unittest.TestCase):
         self.assertIn("Recommendation: option 1", description)
         self.assertIn("Filed by: CLAUDE", description)
         self.assertNotIn("default", description.lower())
-        # the notice:  the filer's bot, the fixed session label, the owner mention, the body on stdin
+        # the notice:  the filer's bot, the fixed session label, the channel the notifier resolved
+        # from its own environment, the owner mention, the body on stdin
         (post,) = self.w.calls("simple-chat")
-        self.assertEqual(post["argv"], ["post", "--as", "CLAUDE", "--session", "needsown", "--json", "--topic", got["topic"],
+        self.assertEqual(post["argv"], ["post", "--as", "CLAUDE", "--session", "needsown", "--json",
+                                        "--channel", links.CHANNEL, "--topic", got["topic"],
                                         "--to-owner", "--", "-"])
         body = post["stdin"]
         self.assertIn("1️⃣ Option 1:", body)
         self.assertIn("(Tap to answer)", body)
         self.assertIn("Option 2:", body)
         self.assertIn("Recommendation:  option 1.", body)
-        self.assertIn("https://linear.app/simple-with-us/issue/AFC-300", body)
+        self.assertIn("https://linear.app/test-fleet/issue/AFC-300", body)
         self.assertIn("Answer here or as a comment on the Linear issue.", body)
         self.assertIn("`%s`" % got["uid"], body)
         # the record
@@ -306,12 +309,13 @@ class FileTests(unittest.TestCase):
 
     # ---- identity ----------------------------------------------------------------------------
     def test_a_launched_seat_reaches_every_child(self) -> None:
-        env = self.w.env(AGENT_SEAT=None, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER")
+        env = self.w.env(AGENT_SEAT="BF-PLUMBER", AGENT_LAUNCHER="botfleet")
         r = self.w.run("file", "--by", "BF-PLUMBER", "--app", "AFC", "--question", Q, "--option", "Yes", "--option", "No", "--json", env=env)
         self.assertEqual(r.code, 0, r.err)
         for call in self.w.calls():
             self.assertEqual(call["seat"], "BF-PLUMBER", call["argv"])
-            self.assertEqual(call["launch_seat"], "BF-PLUMBER")
+            self.assertIsNone(call["env_seat"], "no child gets an identity variable")
+            self.assertIsNone(call["launch_seat"])
             self.assertEqual(call["launcher"], "botfleet")
         filed = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"][0]
         self.assertEqual(filed["argv"][filed["argv"].index("--by") + 1], "BF-PLUMBER")
@@ -375,24 +379,24 @@ class FileTests(unittest.TestCase):
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
 
     # ---- failures ----------------------------------------------------------------------------
-    def test_board_writes_off_passes_the_exit_code_through(self) -> None:
+    def test_a_write_with_no_bearer_passes_the_exit_code_through(self) -> None:
         r = self.w.file(Q, "Yes", "No", env=self.w.env(FAKE_BOARD_WRITES_OFF="1"))
-        self.assertEqual(r.code, 7, r.err)
+        self.assertEqual(r.code, 6, r.err)
         self.assertEqual(self.w.calls("simple-chat"), [])
 
     def test_no_board_is_an_error(self) -> None:
         self.w.remove_tool("simple-board")
         r = self.w.file(Q, "Yes", "No")
-        self.assertEqual(r.code, 1)
+        self.assertEqual(r.code, 2, "with no board there is no bearer to prove a seat:  it refuses")
         self.assertIn("board", r.err)
 
     def test_mirror_link_shapes(self) -> None:
         bad = {
-            "other realm": "https://evil.example/#narrow/channel/12-agent-sync/topic/OWNER.20x/near/5",
-            "no message": "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/OWNER.20x",
+            "other realm": "https://evil.example/#narrow/channel/12-work-in-progress/topic/OWNER.20x/near/5",
+            "no message": "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/OWNER.20x",
             "not an OWNER topic": REALM_LINK % ("CONSULT.20x", 5),
             "other channel": "https://simplewithus.zulipchat.com/#narrow/channel/9-general/topic/OWNER.20x/near/5",
-            "http": "http://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/OWNER.20x/near/5",
+            "http": "http://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/OWNER.20x/near/5",
         }
         for name, link in bad.items():
             r = self.w.file(Q, "Yes", "No", extra=("--mirror-of", link))

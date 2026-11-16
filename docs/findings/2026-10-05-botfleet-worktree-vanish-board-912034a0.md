@@ -41,7 +41,7 @@ Paths are **live Mac** unless noted **tracked** (`AI-Fleet-Coordinator/scripts/�
 | **`com.jay.mac-cleanup`** | launchd **4 h** → `~/apps/mac-auto-cleanup.sh` (**tracked:** `scripts/mac-auto-cleanup.sh`) | **Explicitly no** (comment §4) | **Yes** — Python block §3b: suffixed `~/apps/*` git worktrees, clean, **4h idle**, no `.janitor-keep` | Script stdout / mac-cleanup launchd logs | Does not call `git worktree remove`.  Can delete **`node_modules`** only — can look like a “dead lane” if misread as full vanish. |
 | **`com.jay.mac-resource-watch`** | launchd **5 min** → `~/apps/mac-resource-watch.py` (**tracked:** `scripts/mac-resource-watch.py`) | No (delegates) | Via **`mac-auto-cleanup.sh --pressure`** on disk hits (cooldown 3600s / 900s critical) | `~/Library/Logs/…` + watch stderr | Also POSTs BotFleet Housekeeper webhook; may wake bot to run same scripts. |
 | **BotFleet Housekeeper** (bot `d43849b8…`) | Routines **09:00 / 15:00 / 21:00** + resource webhook | No direct — prompt runs janitor / mac-auto-cleanup | Same as above | BotFleet chat + webhook capture | Playbook: `docs/HOUSEKEEPER.md` — worktrees only **≥7d + merged + no `.janitor-keep`**. |
-| **`code-main-keeper`** | pm2 always-on ~**60s** → `~/apps/code-main-keeper-daemon.sh` | **No** — only **`~/Code/*`** integration trees (ff-only to `origin/main`) | No | `~/apps/logs/code-main-keeper.log` | **Cannot** delete `~/apps` worktrees; wrong path by design (`docs/MAC-LOCAL-PROCESSES.md`, `AGENT-SYNC.md`). |
+| **`code-main-keeper`** | pm2 always-on ~**60s** → `~/apps/code-main-keeper-daemon.sh` | **No** — only **`~/Code/*`** integration trees (ff-only to `origin/main`) | No | `~/apps/logs/code-main-keeper.log` | **Cannot** delete `~/apps` worktrees; wrong path by design (`docs/MAC-LOCAL-PROCESSES.md`, `FLEET-PROTOCOL.md`). |
 | **`com.jay.merge-shepherd`** | launchd **30 min** | No | No | merge-shepherd log | `gh pr update-branch` only. |
 | **CleanMyMac CLI** | From janitor (low free) + **every** mac-auto-cleanup run: `clean dev/ai/trash --force` | No git API | Can delete **dev caches** under many roots (21 cache classes) | janitor / cleanup logs; CLI review output | **`junk`** module banned on janitor path (2026-09-13 log unlink bug).  mac-auto-cleanup still calls scoped dev/ai/trash.  Theoretically could touch project-adjacent trees if misclassified — **reaper-watch** target. |
 | **Hog Hunter reclaim** | Janitor **lowfree** → `~/Code/HogHunter/scripts/hoghunter-clean` | No | Cache/log/APFS band | Hog Hunter / janitor log | Documented cache-only; not worktree-specific. |
@@ -115,7 +115,7 @@ From fleet recall runbook `046b4a02` / Claude memory:
 - `docs/MAC-LOCAL-PROCESSES.md` — launchd/pm2 inventory, **`com.jay.reaper-watch`**, janitor graded pressure gate
 - `docs/HOUSEKEEPER.md` — BotFleet Housekeeper prompt (7d + merged + `.janitor-keep`)
 - `scripts/pm2-ecosystem.config.cjs` — `code-main-keeper` daemon
-- `AGENT-SYNC.md` — stray worktree policy under `~/Code/*` only
+- `FLEET-PROTOCOL.md` — stray worktree policy under `~/Code/*` only
 - Contract tests: `scripts/test-disk-janitor-match.sh`, `scripts/test-mac-auto-cleanup.sh`, `scripts/test-disk-janitor-keeplist.sh`
 
 ## Change log

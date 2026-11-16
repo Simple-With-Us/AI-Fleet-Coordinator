@@ -1,6 +1,6 @@
 # Datadog vs Sentry (do not double-pay)
 
-> Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
+> Moved from `FLEET-PROTOCOL.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in FLEET-PROTOCOL.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
 | Signal | Sentry | Datadog |
 |---|---|---|
@@ -22,7 +22,7 @@ app-runtime errors stay in the app projects listed above. Conventions:
 - **DSN access**: Mac sessions read `~/apps/fleet-sentry-monitor/.env`
   (`SENTRY_FLEET_DSN` — never print it). CI contexts use the repo secret `SENTRY_FLEET_DSN`.
   Cloud sessions without Mac FS: use the Sentry MCP connector if your session has it, or the
-  repo secret via a workflow; if neither, report the condition in #agent-sync and a Mac-side
+  repo secret via a workflow; if neither, report the condition in #Work-In-Progress and a Mac-side
   agent forwards it.
 - **Do NOT duplicate the singletons**: ONE host monitor per machine (pm2 `fleet-sentry-monitor`
   on the Mac: pm2 crash-loops/down, disk/WAL, gh rate budgets, Claude.app stats, self-watching

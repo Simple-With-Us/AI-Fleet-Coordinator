@@ -24,7 +24,7 @@ CODE_DIR=""
 WORKTREE_PREFIX=""
 VISIBILITY="private"
 DESCRIPTION=""
-OWNER="${FLEET_OWNER:-jaywedgeworth22}"
+OWNER="${FLEET_OWNER:-Simple-With-Us}"
 CODE_ROOT="${CODE_ROOT:-$HOME/Code}"
 APPS_ROOT="${APPS_ROOT:-$HOME/apps}"
 DRY_RUN=0
@@ -85,18 +85,48 @@ run() {
 echo "== fleet onboard: $OWNER/$REPO  acronym=$ACRONYM  code=$CODE_PATH"
 
 # --- GitHub repo ---
-if ! gh repo view "$OWNER/$REPO" >/dev/null 2>&1; then
+# The relay verb is idempotent: an existing repo comes back already_exists.
+# gh is the fallback only when the relay bearer is unset. A configured relay
+# that fails stops here and does not fall through to gh.
+if [[ "$VISIBILITY" != "private" && "$VISIBILITY" != "public" ]]; then
+  echo "visibility must be private or public" >&2
+  exit 1
+fi
+if [[ -n "${SIMPLE_TOOLS_BEARER:-}" ]]; then
   if [ "$CREATE_REPO" -eq 1 ]; then
-    echo "creating GitHub repo $OWNER/$REPO ($VISIBILITY) with default Apache-2.0 license"
-    run gh repo create "$OWNER/$REPO" "--$VISIBILITY" \
-      --license "apache-2.0" \
-      ${DESCRIPTION:+--description "$DESCRIPTION"}
+    echo "creating GitHub repo $OWNER/$REPO ($VISIBILITY) through git-relay"
+    payload="$(python3 - "$OWNER" "$REPO" "$VISIBILITY" "$DESCRIPTION" <<'PY'
+import json, sys
+owner, name, visibility, description = sys.argv[1:5]
+body = {
+    "repo": f"{owner}/{name}",
+    "visibility": visibility,
+    "license_template": "apache-2.0",
+}
+if description:
+    body["description"] = description
+print(json.dumps(body, separators=(",", ":")))
+PY
+)"
+    run "$here/scripts/simple-git" call gr_create_repo --args-json "$payload"
   else
-    echo "GitHub repo $OWNER/$REPO not found. Pass --create-repo or create it first." >&2
-    exit 1
+    echo "SIMPLE_TOOLS_BEARER is set; not calling gh. Pass --create-repo to create through the relay."
   fi
 else
-  echo "GitHub repo $OWNER/$REPO exists"
+  echo "onboard-new-app: SIMPLE_TOOLS_BEARER is unset, so GitHub repo checks fall back to gh" >&2
+  if ! gh repo view "$OWNER/$REPO" >/dev/null 2>&1; then
+    if [ "$CREATE_REPO" -eq 1 ]; then
+      echo "creating GitHub repo $OWNER/$REPO ($VISIBILITY) with default Apache-2.0 license"
+      run gh repo create "$OWNER/$REPO" "--$VISIBILITY" \
+        --license "apache-2.0" \
+        ${DESCRIPTION:+--description "$DESCRIPTION"}
+    else
+      echo "GitHub repo $OWNER/$REPO not found. Pass --create-repo or create it first." >&2
+      exit 1
+    fi
+  else
+    echo "GitHub repo $OWNER/$REPO exists"
+  fi
 fi
 
 # Default-branch ruleset (user accounts have no org-wide future-repo rules).
@@ -164,12 +194,12 @@ echo "     Afterwards: AGENT_SEAT=<TAG> ~/apps/lane new $REPO <slug>  (lands in 
 echo "     In that lane add AGENTS.md and CI (copy from DealDex or Usage-Monitor; see"
 echo "     docs/ONBOARDING-NEW-APP.md Phase 3).  There is no docs/EFFORT-LOG.md and no effort-issues-sync."
 echo "     After CI job \`verify\` exists: python3 $here/scripts/apply-github-ruleset.py --repo $OWNER/$REPO --kind product --checks verify"
-echo "  2. Patch registries listed in docs/ONBOARDING-NEW-APP.md Phase 4.  AGENT-SYNC.md is not patched by hand:"
+echo "  2. Patch registries listed in docs/ONBOARDING-NEW-APP.md Phase 4.  FLEET-PROTOCOL.md is not patched by hand:"
 echo "     it is being generated from Fleet-OPS handbook/, so its app rows are a pull request there"
-echo "     (handbook/appendix/reference-tables.md), and neither copy of AGENT-SYNC.md is edited directly."
+echo "     (handbook/appendix/reference-tables.md), and neither copy of FLEET-PROTOCOL.md is edited directly."
 echo "  3. python3 $here/scripts/check-fleet-registry.py"
 echo "  4. PR the app + this coordinator repo.  Claim the Linear issue (board claim) and close out in Zulip:  topic \"$ACRONYM-<n> <subject>\""
-echo "     in #agent-sync, posted with 'agent-sync post' (docs/protocols/zulip-fleet-guide.md)."
+echo "     in #Work-In-Progress, posted with 'simple-chat post' (docs/protocols/zulip-fleet-guide.md)."
 echo "     If the app's PR numbers should link in Zulip, ask Jay about a linkifier for it: the guide's"
 echo "     Current Linkifiers table lists the acronyms that have one, and an unlisted \`$ACRONYM#n\` falls through"
 echo "     to the generic repo pattern.  Never change a linkifier without Jay's OK."

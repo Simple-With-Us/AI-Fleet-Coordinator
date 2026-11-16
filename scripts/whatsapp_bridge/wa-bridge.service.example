@@ -1,0 +1,29 @@
+# Review template only; do not install or activate without parent approval.
+# Replace the release SHA and non-secret AFC project id during approved install.
+[Unit]
+Description=Private WhatsApp wake bridge for Jet
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=wa-bridge
+Group=wa-bridge
+WorkingDirectory=/opt/afc-wa-bridge/REVIEWED_SHA
+LoadCredential=infisical-jet:/etc/afc-wa-bridge/infisical-jet-token
+Environment=WA_INFISICAL_PROJECT_ID=APPROVED_AFC_PROJECT_ID
+ExecStart=/usr/bin/python3 -I /opt/afc-wa-bridge/REVIEWED_SHA/scripts/whatsapp_bridge/launch.py poll
+Restart=on-failure
+RestartSec=60
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+LimitCORE=0
+ReadWritePaths=/var/lib/afc-wa-bridge
+
+[Install]
+WantedBy=multi-user.target

@@ -22,10 +22,14 @@ each request, so a test can tell one seat's token from another's.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
+import inspect
 import io
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -123,7 +127,9 @@ class MockLinear:
         self.violations: list[str] = []
         self.mints = 0
         self.mint_down = False
+        self.request_id = ""  # a request id the token endpoint's answer carries, if any
         self.scopes: list[str] = []
+        self.omit_scope = False
         self.tokens: set[str] = set()
         self.ratelimit400 = 0
         self.limit_ops: dict = {}  # operation name -> requests to rate-limit (400 RATELIMITED)
@@ -132,14 +138,14 @@ class MockLinear:
         self.revoke_all_tokens = False
         self.viewer = {
             "id": "app-user-1",
-            "name": "Fleet",
-            "displayName": "Fleet",
-            "email": "fleet@oauthapp.linear.app",
+            "name": "Claude",
+            "displayName": "Claude",
+            "email": "claude@oauthapp.linear.app",
             "app": True,
         }
-        # Seat apps a test adds:  client id -> {"secret", "viewer"}.  The Fleet app is CLIENT_ID with
+        # Seat apps a test adds:  client id -> {"secret", "viewer"}.  The default pair is CLIENT_ID with
         # the module's CLIENT_SECRET (read at request time, so a rotation test can change it) and
-        # self.viewer.
+        # self.viewer, standing in for the default seat's (CLAUDE's) own app.
         self.clients: dict = {}
         self.token_client: dict = {}  # token -> the client id it was minted for
         self.mints_by: dict = {}  # client id -> mints
@@ -177,6 +183,27 @@ class MockLinear:
             "app:agent-bar",
         ):
             self._label(name, None)
+        # Workspace users, mirroring the fleet's Linear bot seats.  Names differ
+        # in case from the claim labels on purpose:  a seat resolves to its user
+        # by name, and the deactivated one must never be assigned to anything.
+        self.users: dict = {}
+        for n in ("Codex", "Claude", "Cursor", "GB-Plumber", "GB-Deployer"):
+            self.users[n] = {"id": f"user-{n.lower()}", "name": n, "displayName": n, "active": True}
+        self.users["GB-Retired"] = {
+            "id": "user-gb-retired",
+            "name": "GB-Retired",
+            "displayName": "GB-Retired",
+            "active": False,
+        }
+        # When True the BoardUsers listing is refused, so ownership must degrade
+        # instead of aborting the verb.
+        self.fail_users = False
+        # When True, updates without an assignee are refused, so a test can
+        # fail the claim retry after its assignee was refused.
+        self.fail_ownerless_updates = False
+        # When True, assignee clears (assigneeId None) are refused, so a test
+        # can fail a steal's ownership write while the retry drops the field.
+        self.fail_assignee_clear = False
         self.issues: dict = {}
         self.comments: dict = {}
         self.relations: list = []
@@ -522,6 +549,19 @@ class MockLinear:
                 for lb in self.labels.values()
             ]
             return {"issueLabels": self.page(nodes, v.get("first"), v.get("after"))}, None
+        if op == "BoardUsers":
+            if self.fail_users:
+                return None, [{"message": "users listing refused"}]
+            nodes = [
+                {
+                    "id": u.get("id"),
+                    "name": u.get("name"),
+                    "displayName": u.get("displayName"),
+                    "active": u.get("active"),
+                }
+                for u in self.users.values()
+            ]
+            return {"users": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardIssue":
             iss = self.find(v["id"])
             if not iss:
@@ -599,6 +639,24 @@ class MockLinear:
             self.updates.append((iss["identifier"], json.loads(json.dumps(inp))))
             if "labelIds" in inp:
                 self.violations.append("issueUpdate with labelIds (replaces every label)")
+            if "assigneeId" in inp:
+                uid = inp["assigneeId"]
+                if uid is None:
+                    if self.fail_assignee_clear:
+                        return {"issueUpdate": None}, [{"message": "assignee clear refused"}]
+                else:
+                    # Linear only accepts an existing, active user here, and a
+                    # refused update applies nothing: validate before writing.
+                    m = next((u for u in self.users.values() if u["id"] == uid), None)
+                    if not m or not m["active"]:
+                        return {"issueUpdate": None}, [
+                            {"message": f"assignee {uid} not found or deactivated"}
+                        ]
+            if self.fail_ownerless_updates and "assigneeId" not in inp:
+                return {"issueUpdate": None}, [{"message": "update refused"}]
+            for lid in inp.get("addedLabelIds") or []:
+                if lid not in self.labels:
+                    return {"issueUpdate": None}, [{"message": f"label {lid} not found"}]
             if "stateId" in inp:
                 st = next(
                     s
@@ -615,10 +673,10 @@ class MockLinear:
                 if lid in iss["labels"]:
                     iss["labels"].remove(lid)
             for lid in inp.get("addedLabelIds") or []:
-                if lid not in self.labels:
-                    return {"issueUpdate": None}, [{"message": f"label {lid} not found"}]
                 if lid not in iss["labels"]:
                     iss["labels"].append(lid)
+            if "assigneeId" in inp:
+                iss["assignee"] = inp["assigneeId"]
             groups = [self.labels[x]["parent"] for x in iss["labels"] if self.labels[x]["parent"]]
             if len(groups) != len(set(groups)):
                 self.violations.append("two labels from one exclusive group")
@@ -629,12 +687,17 @@ class MockLinear:
                 return {"commentCreate": None}, [{"message": "Comment already exists"}]
             iss = self.find(inp["issueId"])
             cid = inp.get("id") or str(uuid.uuid4())
+            viewer = self.viewer_for(self.current_token)
             self.comments[cid] = {
                 "id": cid,
                 "issue": iss["id"],
                 "body": inp["body"],
                 "createdAt": f"2026-10-10T{20 + len(self.comments) // 3600:02d}:{len(self.comments) // 60 % 60:02d}:{len(self.comments) % 60:02d}.000Z",
-                "user": {"name": "Fleet"},
+                "user": {
+                    "id": viewer.get("id"),
+                    "name": viewer.get("name"),
+                    "app": viewer.get("app"),
+                },
             }
             return {"commentCreate": {"success": True, "comment": {"id": cid}}}, None
         if op == "BoardRelate":
@@ -710,7 +773,9 @@ def make_handler(mock: MockLinear):
                     )
                     if want is None or form.get("client_secret") != want:
                         return self._send(
-                            401, {"error": "invalid_client", "error_description": "bad client"}
+                            401,
+                            {"error": "invalid_client", "error_description": "bad client"},
+                            {"x-request-id": mock.request_id} if mock.request_id else None,
                         )
                     mock.mints += 1
                     mock.mints_by[cid] = mock.mints_by.get(cid, 0) + 1
@@ -723,7 +788,7 @@ def make_handler(mock: MockLinear):
                             "access_token": tok,
                             "token_type": "Bearer",
                             "expires_in": 2592000,
-                            "scope": form.get("scope"),
+                            **({} if mock.omit_scope else {"scope": form.get("scope")}),
                         },
                     )
                 if self.path != "/graphql":
@@ -797,43 +862,174 @@ def make_handler(mock: MockLinear):
     return H
 
 
-FAKE_FLEET_SECRETS = r"""#!@PY@
-import os, sys
-V = "@VAULT@"
-a = sys.argv[1:]
-with open("@CALLS@", "a") as log:
-    log.write(" ".join(a[:2]) + "\n")
-if len(a) < 2:
-    sys.exit(2)
-verb = a[0]
-if verb == "get":
-    if a[2:] != ["--path", "/linear"]:
-        sys.exit(3)
-    f = os.path.join(V, a[1])
-    if not os.path.isfile(f):
-        sys.exit(3)
-    sys.stdout.write(open(f).read())
-elif verb == "set":
-    if a[2:] != ["--path", "/linear"]:
-        sys.exit(2)            # a value in an argument, or any other shape, is refused
-    if os.environ.get("FS_FAIL_SET") == "1":
-        sys.exit(1)
-    value = sys.stdin.read()
-    if not value:
-        sys.exit(2)
-    tmp = os.path.join(V, "." + a[1] + ".tmp%d" % os.getpid())
-    with open(tmp, "w") as fh:
-        fh.write(value)
-    os.replace(tmp, os.path.join(V, a[1]))
-    print("updated", a[1], "at /linear")
-elif verb == "run":
-    # The board reads one named key at a time with `get`.  `run` would dump the store's environment, so it is
-    # refused here and recorded, and a test fails if the CLI ever calls it (AFC-361 review).
-    open(os.path.join(V, ".run-called"), "w").write("run")
-    sys.exit(9)
-else:
-    sys.exit(2)
-"""
+class MockInfisical:
+    """Just enough of Infisical for the board's direct scoped reads and writes.
+
+    Two projects:  proj-afc (AI Fleet Coordinator prod /linear:  the seat client
+    pairs and the shared cache tokens) and proj-tools (Fleet-OPS prod /tools:
+    GR_BEARER_VERIFY_KEY).  Each scoped service token is an exact grant - one
+    workspace, one prod folder, read or read+write - and the mock enforces it.
+    Nothing reaches the network."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.secrets: dict = {}  # proj-afc, prod /linear
+        self.tools_secrets: dict = {}  # proj-tools, prod /tools
+        self.requests: list = []
+        self.authorizations: list = []
+        self.down = False
+        self.down_linear = False  # 503s for the proj-afc grant only (the /tools grant stays up)
+        self.fail_writes = False
+        self.metadata_override = None
+        self.read_token = "st." + secrets.token_urlsafe(32)
+        self.write_token = "st." + secrets.token_urlsafe(32)
+        self.tools_token = "st." + secrets.token_urlsafe(32)
+        self.grants = {
+            self.read_token: ("proj-afc", "/linear", ["read"]),
+            self.write_token: ("proj-afc", "/linear", ["read", "write"]),
+            self.tools_token: ("proj-tools", "/tools", ["read"]),
+        }
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def _bucket(self, workspace, path):
+        if (workspace, path) == ("proj-afc", "/linear"):
+            return self.secrets
+        if (workspace, path) == ("proj-tools", "/tools"):
+            return self.tools_secrets
+        return None
+
+    def _handler(self):
+        mock = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, obj):
+                raw = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def _handle(self, method):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                data = json.loads(body) if body else {}
+                split = urllib.parse.urlsplit(self.path)
+                path = split.path
+                query = dict(urllib.parse.parse_qsl(split.query))
+                with mock.lock:
+                    mock.requests.append((method, path))
+                    presented = self.headers.get("Authorization") or ""
+                    mock.authorizations.append((method, path, presented))
+                    if mock.down:
+                        return self._send(503, {"message": "down"})
+                    token = presented.removeprefix("Bearer ")
+                    grant = mock.grants.get(token)
+                    if grant is None:
+                        return self._send(401, {})
+                    workspace, secret_path, permissions = grant
+                    if mock.down_linear and workspace == "proj-afc":
+                        return self._send(503, {"message": "down"})
+                    if path == "/api/v2/service-token":
+                        if mock.metadata_override is not None and token in (
+                            mock.read_token,
+                            mock.write_token,
+                        ):
+                            metadata = dict(mock.metadata_override)
+                            if token == mock.write_token:
+                                metadata["permissions"] = list(permissions)
+                            return self._send(200, metadata)
+                        return self._send(
+                            200,
+                            {
+                                "projectId": workspace,
+                                "workspace": workspace,
+                                "permissions": list(permissions),
+                                "scopes": [{"environment": "prod", "secretPath": secret_path}],
+                                "expiresAt": None,
+                            },
+                        )
+                    if path == "/api/v3/secrets/raw" and method == "GET":
+                        bucket = mock._bucket(query.get("workspaceId"), query.get("secretPath"))
+                        if bucket is None or query.get("workspaceId") != workspace:
+                            return self._send(400, {"message": "wrong place"})
+                        return self._send(
+                            200,
+                            {
+                                "secrets": [
+                                    {"secretKey": k, "secretValue": v} for k, v in bucket.items()
+                                ]
+                            },
+                        )
+                    if path.startswith("/api/v3/secrets/raw/"):
+                        name = urllib.parse.unquote(path.rsplit("/", 1)[1])
+                        place = data if data else query
+                        bucket = mock._bucket(place.get("workspaceId"), place.get("secretPath"))
+                        if bucket is None or place.get("workspaceId") != workspace:
+                            return self._send(400, {"message": "wrong place"})
+                        if method == "GET":
+                            if name not in bucket:
+                                return self._send(404, {"message": "not found"})
+                            return self._send(
+                                200,
+                                {
+                                    "secret": {
+                                        "secretKey": name,
+                                        "secretValue": bucket[name],
+                                    }
+                                },
+                            )
+                        if "write" not in permissions:
+                            return self._send(403, {"message": "read only"})
+                        if mock.fail_writes:
+                            return self._send(500, {"message": "write failed"})
+                        if method == "PATCH" and name not in bucket:
+                            return self._send(404, {"message": "not found"})
+                        bucket[name] = data["secretValue"]
+                        return self._send(200, {"secret": {"secretKey": name}})
+                    return self._send(404, {})
+
+            def do_GET(self):
+                self._handle("GET")
+
+            def do_POST(self):
+                self._handle("POST")
+
+            def do_PATCH(self):
+                self._handle("PATCH")
+
+        return H
+
+
+class VaultKey:
+    """A path-like handle on one MockInfisical /linear secret, so a test reads,
+    writes, unlinks and checks it like the old vault files."""
+
+    def __init__(self, vault, name):
+        self.vault, self.name = vault, name
+
+    def read_text(self):
+        return self.vault.secrets[self.name]
+
+    def write_text(self, value):
+        self.vault.secrets[self.name] = value
+
+    def unlink(self, missing_ok=False):
+        if self.name in self.vault.secrets:
+            del self.vault.secrets[self.name]
+        elif not missing_ok:
+            raise FileNotFoundError(self.name)
+
+    def exists(self):
+        return self.name in self.vault.secrets
 
 
 class BoardTest(unittest.TestCase):
@@ -844,28 +1040,30 @@ class BoardTest(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         port = self.server.server_address[1]
         (self.tmp / "home").mkdir()
-        # Credentials come from Infisical Fleet-OPS /linear (AFC-359), through a fake `fleet-secrets` that serves
-        # one file per key from this directory.  Nothing under the test's HOME or the real secrets folder is read.
-        self.ops_vault = self.tmp / "fleet-ops-linear"
-        self.ops_vault.mkdir()
-        self.creds = (
-            self.ops_vault / "FLEET_LINEAR_CLIENT_ID"
-        )  # unlink() it for "no Fleet credentials"
+        # The bearer files, the verify key and the Linear credentials all sit behind the
+        # scoped-token contracts now:  a mock Infisical serves the AI Fleet Coordinator
+        # prod /linear folder (the seat client pairs and the shared cache tokens) and the
+        # Fleet-OPS prod /tools folder (the bearer verify key), and each seat's bearer is
+        # a private file.  Nothing under the test's HOME or a real secret store is read.
+        self.vault = MockInfisical()
+        self.addCleanup(self.vault.close)
+        # The default seat's own pair, in the fake AI Fleet Coordinator /linear folder:
+        # creds.unlink() models "no credentials".
+        self.creds = VaultKey(self.vault, "LINEAR_CLAUDE_CLIENT_ID")
         self.creds.write_text(CLIENT_ID)
-        (self.ops_vault / "FLEET_LINEAR_CLIENT_SECRET").write_text(CLIENT_SECRET)
-        # A fake fleet-secrets:  get / set / run over one file per key in ops_vault.  `set` takes its value on
-        # standard input only (anything else is exit 2), FS_FAIL_SET=1 makes it fail, and every call's verb is
-        # appended to fs_calls (verbs and key names only, never a value).
-        self.fs_calls = self.tmp / "fs-calls.log"
-        self.fleet_secrets_stub = self.tmp / "fleet-secrets"
-        self.fleet_secrets_stub.write_text(
-            FAKE_FLEET_SECRETS.replace("@VAULT@", str(self.ops_vault))
-            .replace("@CALLS@", str(self.fs_calls))
-            .replace("@PY@", PY)
+        VaultKey(self.vault, "LINEAR_CLAUDE_CLIENT_SECRET").write_text(CLIENT_SECRET)
+        # The stored token blobs are secrets of the same folder:  LINEAR_<SEAT>_CACHE_TOKEN.
+        self.token_cache = VaultKey(self.vault, "LINEAR_CLAUDE_CACHE_TOKEN")
+        # The harness plays the trusted launcher and the ST-MCP verify route:  a mock
+        # gr-bearer-verify/1 server, its key in the fake /tools folder, and one
+        # admin-minted bearer per seat in a private file, bound to each run by board().
+        self.verify_store = {"key": BEARER_VERIFY_KEY, "mode": "ok", "queries": []}
+        self.vserver = ThreadingHTTPServer(("127.0.0.1", 0), make_verify_handler(self.verify_store))
+        threading.Thread(target=self.vserver.serve_forever, daemon=True).start()
+        self.verify_url = (
+            f"http://127.0.0.1:{self.vserver.server_address[1]}/internal/gr-bearer-verify"
         )
-        self.fleet_secrets_stub.chmod(0o700)
-        # The stored token blobs are keys of the same fake vault:  CACHE_FLEET, CACHE_<SEAT>.
-        self.token_cache = self.ops_vault / "CACHE_FLEET"
+        self.vault.tools_secrets["GR_BEARER_VERIFY_KEY"] = BEARER_VERIFY_KEY
         ids = self.tmp / "board-ids.txt"
         ids.write_text(
             "# test ids\n" + "\n".join([B_A, B_B, B_C, f"{B_D}\t{D_LINEAR}", B_F, B_G, B_H]) + "\n"
@@ -876,33 +1074,71 @@ class BoardTest(unittest.TestCase):
             "LANG": "en_US.UTF-8",
             "AGENT_SEAT": "CLAUDE",
             "CLAUDE_CODE_SESSION_ID": BASE_SESSION,
-            "LINEAR_BOARD_FLEET_SECRETS": str(self.fleet_secrets_stub),
             "LINEAR_BOARD_API_URL": f"http://127.0.0.1:{port}/graphql",
+            "LINEAR_BOARD_INFISICAL_API": self.vault.url,
+            "LINEAR_BOARD_INFISICAL_PROJECT_ID": "proj-afc",
+            "LINEAR_BOARD_INFISICAL_READ_TOKEN": self.vault.read_token,
+            "LINEAR_BOARD_INFISICAL_WRITE_TOKEN": self.vault.write_token,
+            "SIMPLE_BOARD_TOOLS_TOKEN": self.vault.tools_token,
+            "SIMPLE_BOARD_TOOLS_PROJECT_ID": "proj-tools",
             "LINEAR_BOARD_TOKEN_URL": f"http://127.0.0.1:{port}/oauth/token",
             "LINEAR_BOARD_CACHE_DIR": str(self.tmp / "cache"),
             "LINEAR_BOARD_IDS": str(ids),
             "LINEAR_BOARD_BACKOFF_BASE": "0.01",
             "LINEAR_BOARD_DUP_WAIT": "0",
-            "LINEAR_BOARD_WRITES": "1",
         }
 
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
+        self.vserver.shutdown()
+        self.vserver.server_close()
         self.assertEqual(self.mock.violations, [], "mock recorded contract violations")
 
-    def ops_put(self, name, value):
-        """Put one key in the fake Fleet-OPS /linear folder."""
-        (self.ops_vault / name).write_text(value)
+    def bearer_file_for(self, seat):
+        """One deterministic admin-minted bearer per seat, in a private file (0600)."""
+        part = seat.lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,19}", part):
+            self.fail(f"test harness cannot mint a bearer for seat {seat!r}")
+        token = f"sbt_{part}_" + (part * 43)[:43]
+        return self.private(f"bearer-{part}", token + "\n")
 
-    def fs_verbs(self):
-        """The fake fleet-secrets calls so far, as 'verb NAME' lines (never a value)."""
-        return self.fs_calls.read_text().splitlines() if self.fs_calls.exists() else []
+    def seated_env(self, seat="CLAUDE"):
+        """self.env plus the launcher binding, for tests that spawn the CLI directly."""
+        return dict(
+            self.env,
+            SIMPLE_BOARD_BEARER_FILE=self.bearer_file_for(seat),
+            SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url,
+        )
+
+    def afc_put(self, name, value):
+        """Put one key in the fake AI Fleet Coordinator prod /linear folder."""
+        self.vault.secrets[name] = value
+
+    extra_seat_apps = None
+
+    def seat_app(self, seat, name, cid=None, secret=None, register=True, file=True):
+        """Register a seat app with the mock and, unless file=False, put its pair in the fake AI Fleet Coordinator /linear."""
+        if self.extra_seat_apps is None:
+            self.extra_seat_apps = {}
+        self.extra_seat_apps[seat] = name
+        cid = cid or f"{seat.lower()}-app-client-id"
+        secret = secret or f"{seat.lower()}-app-client-secret-value"
+        if register:
+            self.mock.add_client(cid, secret, name)
+        if file:
+            k = seat.replace("-", "_")
+            self.afc_put(f"LINEAR_{k}_CLIENT_ID", cid)
+            self.afc_put(f"LINEAR_{k}_CLIENT_SECRET", secret)
+        return cid, secret
+
+    def cache(self, seat):
+        return VaultKey(self.vault, "LINEAR_" + seat.replace("-", "_") + "_CACHE_TOKEN")
 
     def ops_drop_seat(self, seat):
         k = seat.replace("-", "_")
         for suffix in ("ID", "SECRET"):
-            (self.ops_vault / f"{k}_LINEAR_CLIENT_{suffix}").unlink(missing_ok=True)
+            self.vault.secrets.pop(f"LINEAR_{k}_CLIENT_{suffix}", None)
 
     def private(self, name, content, mode=0o600):
         """A file in the test's temp directory with exactly `mode` (bytes or text content)."""
@@ -913,6 +1149,8 @@ class BoardTest(unittest.TestCase):
 
     def board(self, *args, extra=None, drop=(), code=0, stdin=None):
         e = dict(self.env, **(extra or {}))
+        if self.extra_seat_apps:
+            e["SIMPLE_BOARD_TEST_SEAT_APPS"] = json.dumps(self.extra_seat_apps)
         # The seat brings its own platform's session variable (AFC-361).  A test that wants no session passes
         # drop=(...) for it, or names the seat's variable itself in `extra`.
         seat = re.sub(r"[^A-Za-z0-9]+", "-", e.get("AGENT_SEAT", "")).strip("-").upper()
@@ -923,9 +1161,23 @@ class BoardTest(unittest.TestCase):
         e.setdefault(own, BASE_SESSION)
         for k in drop:
             e.pop(k, None)
+        # The harness plays the trusted launcher:  a run whose environment names a seat is
+        # bound to that seat's bearer locator (the CLI itself never reads AGENT_SEAT).  An
+        # explicit locator in `extra` - including an emptied one - is left alone.
+        fab = _cli().norm_seat(e.get("AGENT_SEAT")) if e.get("AGENT_SEAT") else ""
+        if fab and e.get("SIMPLE_BOARD_BEARER_FILE") is None:
+            e["SIMPLE_BOARD_BEARER_FILE"] = self.bearer_file_for(fab)
+        # SIMPLE_BOARD_BEARER_VERIFY_URL is consumed by CLI_BOOTSTRAP (test code) only.
+        if e.get("SIMPLE_BOARD_BEARER_FILE") and e.get("SIMPLE_BOARD_BEARER_VERIFY_URL") is None:
+            e["SIMPLE_BOARD_BEARER_VERIFY_URL"] = self.verify_url
         kw = {} if stdin is None else {"input": stdin}
         p = subprocess.run(
-            [PY, str(CLI), *args], env=e, capture_output=True, text=True, timeout=60, **kw
+            [PY, "-c", CLI_BOOTSTRAP, str(CLI), *args],
+            env=e,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            **kw,
         )
         for tok in self.mock.tokens:
             self.assertNotIn(tok, p.stdout + p.stderr, "a token reached the output")
@@ -993,6 +1245,670 @@ GROK_NOT_ALIASES = (
 )
 
 
+# The test-only in-process launcher:  imports the CLI as a module, injects the fake verify
+# transport for the mock ST-MCP route, and runs main().  The CLI itself has NO environment
+# override for the verify endpoint or transport;  SIMPLE_BOARD_BEARER_VERIFY_URL is read by
+# THIS bootstrap (test code), never by the CLI, mirroring how production launchers bind the
+# locator while the endpoint stays fixed.
+CLI_BOOTSTRAP = r"""
+import importlib.machinery, importlib.util, json, os, sys, urllib.error, urllib.request
+cli_path = sys.argv[1]
+sys.argv = [cli_path] + sys.argv[2:]
+loader = importlib.machinery.SourceFileLoader("board_cli_under_test", cli_path)
+spec = importlib.util.spec_from_loader("board_cli_under_test", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+# Test-only seam:  the harness registers synthetic fixture seats (SENTRY, GB-RETIRED, DUP) that
+# have no live registry entry.  The board itself reads no environment for its app table.
+for _seat, _app in json.loads(os.environ.get("SIMPLE_BOARD_TEST_SEAT_APPS") or "{}").items():
+    mod.SEAT_APP_NAMES.setdefault(_seat, _app)  # add-only:  never mask a real table entry
+mock_url = os.environ.get("SIMPLE_BOARD_BEARER_VERIFY_URL", "")
+if mock_url:
+    def fake_transport(url, headers, body, timeout):
+        req = urllib.request.Request(mock_url, data=body, headers=headers, method="POST")
+        with urllib.request.build_opener().open(req, timeout=timeout) as resp:
+            return resp.read(mod.BEARER_MAX_RESPONSE + 1)
+    mod.BEARER_TRANSPORT = fake_transport
+sys.exit(mod.main())
+"""
+
+# The relabel script loads its own copy of the board module, so it needs the same seam the CLI
+# bootstrap gives the CLI:  the fake bearer transport, pointed at the mock verify route.
+RELABEL_BOOTSTRAP = r"""
+import importlib.machinery, importlib.util, os, sys, urllib.request
+relabel_path = sys.argv[1]
+sys.argv = [relabel_path] + sys.argv[2:]
+loader = importlib.machinery.SourceFileLoader("relabel_under_test", relabel_path)
+spec = importlib.util.spec_from_loader("relabel_under_test", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+mock_url = os.environ.get("SIMPLE_BOARD_BEARER_VERIFY_URL", "")
+if mock_url:
+    def fake_transport(url, headers, body, timeout):
+        req = urllib.request.Request(mock_url, data=body, headers=headers, method="POST")
+        with urllib.request.build_opener().open(req, timeout=timeout) as resp:
+            return resp.read(mod.load_board().BEARER_MAX_RESPONSE + 1)
+    mod.load_board().BEARER_TRANSPORT = fake_transport
+sys.exit(mod.main())
+"""
+
+# Test-process network sandbox (sitecustomize on PYTHONPATH):  DNS and every non-loopback
+# connection are refused inside the child, so a test can never probe the real Worker.
+NETWORK_SANDBOX = r"""
+import socket
+_LOOPBACK = ("127.0.0.1", "::1", "localhost")
+def _blocked(host):
+    return not (isinstance(host, str) and host in _LOOPBACK)
+def _dns_guard(name, real):
+    def guarded(host, *a, **k):
+        if _blocked(host):
+            raise socket.gaierror(-2, "test sandbox: DNS blocked")
+        return real(host, *a, **k)
+    guarded._sandbox_guard = True
+    return guarded
+for _name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr", "getnameinfo"):
+    socket.__dict__[_name]  # must exist
+    globals()["_real_" + _name] = socket.__dict__[_name]
+    setattr(socket, _name, _dns_guard(_name, globals()["_real_" + _name]))
+_real_connect = socket.socket.connect
+def _connect(self, address):
+    host = address[0] if isinstance(address, tuple) else address
+    if _blocked(host):
+        raise OSError(111, "test sandbox: outbound connection blocked")
+    return _real_connect(self, address)
+_connect._sandbox_guard = True
+socket.socket.connect = _connect
+_real_connect_ex = socket.socket.connect_ex
+def _connect_ex(self, address):
+    host = address[0] if isinstance(address, tuple) else address
+    if _blocked(host):
+        return 111  # ECONNREFUSED, without ever attempting the connection
+    return _real_connect_ex(self, address)
+_connect_ex._sandbox_guard = True
+socket.socket.connect_ex = _connect_ex
+"""
+
+# Sentinel-first sandbox self-check, run as a child with NETWORK_SANDBOX on PYTHONPATH:
+# guards are verified present BEFORE any denial is exercised, and every denial is
+# answered by the guard itself (no real external connect or DNS is ever attempted).
+SANDBOX_PROBE = r"""
+import socket, sys
+missing = []
+for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr", "getnameinfo"):
+    if not getattr(getattr(socket, name), "_sandbox_guard", False):
+        missing.append(name)
+for meth in ("connect", "connect_ex"):
+    if not getattr(getattr(socket.socket, meth), "_sandbox_guard", False):
+        missing.append("socket." + meth)
+if missing:
+    print("guards missing: " + ", ".join(missing))
+    sys.exit(1)
+ext = ("203.0.113.1", 443)  # TEST-NET-3, documentation-only;  never really attempted
+for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex"):
+    try:
+        getattr(socket, name)("sandbox-probe.invalid")
+        print(name + " did not refuse")
+        sys.exit(1)
+    except socket.gaierror:
+        pass
+for call in (lambda: socket.gethostbyaddr("203.0.113.1"), lambda: socket.getnameinfo(ext, 0)):
+    try:
+        call()
+        print("reverse/nameinfo did not refuse")
+        sys.exit(1)
+    except socket.gaierror:
+        pass
+try:
+    socket.socket().connect(ext)
+    print("connect did not refuse")
+    sys.exit(1)
+except OSError:
+    pass
+if socket.socket().connect_ex(ext) == 0:
+    print("connect_ex did not refuse")
+    sys.exit(1)
+srv = socket.socket()
+srv.bind(("127.0.0.1", 0))
+srv.listen(1)
+port = srv.getsockname()[1]
+c = socket.socket()
+c.settimeout(5)
+c.connect(("127.0.0.1", port))
+conn, _ = srv.accept()
+c.close(); conn.close(); srv.close()
+if socket.gethostbyname("localhost") != "127.0.0.1":
+    print("loopback DNS broke")
+    sys.exit(1)
+print("SANDBOX OK")
+"""
+
+BEARER_ECHO = "sbt_echo_" + "A" * 43
+BEARER_FIXER = "gbb_fixer_" + "B" * 43
+BEARER_VERIFY_KEY = "verify-key-" + "k" * 40
+
+
+def make_verify_handler(store):
+    """A mock of the ST-MCP gr-bearer-verify/1 route: HMAC-checked, fixed reason codes."""
+
+    class VerifyHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _answer(self, status, obj):
+            data = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n)
+            sig = self.headers.get("X-Simple-Tools-Signature") or ""
+            good = hmac.new(store["key"].encode(), body, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(sig, good):
+                self._answer(401, {"ok": False, "reason": "bad_signature"})
+                return
+            try:
+                q = json.loads(body)
+            except ValueError:
+                self._answer(400, {"ok": False, "reason": "bad_json"})
+                return
+            store["queries"].append(q)
+            mode = store["mode"]
+            future = int((time.time() + 3600) * 1000)
+            if mode == "ok":
+                self._answer(200, {"ok": True, "identity": q.get("identity"), "expires_at": future})
+            elif mode == "wrong-identity":
+                self._answer(200, {"ok": True, "identity": "CODEX", "expires_at": future})
+            elif mode == "past-expiry":
+                self._answer(200, {"ok": True, "identity": q.get("identity"), "expires_at": 1000})
+            elif mode == "nan-expiry":
+                self._answer(
+                    200,
+                    ('{"ok":true,"identity":"%s","expires_at":NaN}' % q.get("identity")).encode(),
+                )
+            elif mode == "inf-expiry":
+                self._answer(
+                    200,
+                    (
+                        '{"ok":true,"identity":"%s","expires_at":Infinity}' % q.get("identity")
+                    ).encode(),
+                )
+            elif mode == "bool-expiry":
+                self._answer(
+                    200,
+                    ('{"ok":true,"identity":"%s","expires_at":true}' % q.get("identity")).encode(),
+                )
+            elif mode == "not-json":
+                self._answer(200, b"not json")
+            else:  # expired / mismatch / paused
+                self._answer(200, {"ok": False, "reason": mode})
+
+    return VerifyHandler
+
+
+class BearerSeatTests(BoardTest):
+    """Bearer identity:  the bearer proves the seat;  the environment never picks one."""
+
+    def setUp(self):
+        super().setUp()
+        self.echo_bearer_file = self.private("bearer-echo", BEARER_ECHO + "\n")
+        self.fixer_bearer_file = self.private("bearer-fixer", BEARER_FIXER + "\n")
+        self.bearer_env = {"SIMPLE_BOARD_BEARER_FILE": self.echo_bearer_file}
+        # The shared Fleet app is retired, so the ECHO seat needs its own pair, like every seat.
+        self.mock.add_client(
+            "echo-app-client-id", "echo-app-client-secret-value", "Echo (Instinct)"
+        )
+        self.afc_put("LINEAR_ECHO_CLIENT_ID", "echo-app-client-id")
+        self.afc_put("LINEAR_ECHO_CLIENT_SECRET", "echo-app-client-secret-value")
+
+    def assert_clean_failure(self, p, code=6):
+        self.assertEqual(p.returncode, code, f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
+        self.assertNotIn(BEARER_ECHO, p.stdout + p.stderr)
+        self.assertNotIn(BEARER_FIXER, p.stdout + p.stderr)
+        self.assertNotIn(hashlib.sha256(BEARER_ECHO.encode()).hexdigest(), p.stdout + p.stderr)
+        self.assertNotIn(BEARER_VERIFY_KEY, p.stdout + p.stderr)
+
+    def test_bearer_seat_signs_a_write(self):
+        p = self.board(
+            "comment", "OPS-10", "--by", "ECHO", "--text", "Bearer run.", extra=self.bearer_env
+        )
+        self.assertIn("as ECHO", p.stdout)
+        body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
+        self.assertTrue(body.startswith("Bearer run."), body)
+        self.assertNotIn("[ECHO", body)
+        q = self.verify_store["queries"][-1]
+        self.assertEqual(q["contract"], "gr-bearer-verify/1")
+        self.assertEqual(q["identity"], "ECHO")
+        self.assertEqual(q["hash"], hashlib.sha256(BEARER_ECHO.encode()).hexdigest())
+        self.assertNotIn(BEARER_ECHO, json.dumps(q))
+
+    def test_bearer_beats_the_agent_seat_environment(self):
+        # Base env still says AGENT_SEAT=CLAUDE; the verified bearer wins and CLAUDE is ignored.
+        p = self.board(
+            "comment", "OPS-10", "--by", "ECHO", "--text", "Whose seat?", extra=self.bearer_env
+        )
+        self.assertIn("as ECHO", p.stdout)
+        self.assertNotIn("as CLAUDE", p.stdout)
+
+    def test_gbb_bearer_maps_to_its_gb_role(self):
+        # GB-FIXER is a verifier identity with no Linear app of its own, so the run uses the
+        # environment's pair;  the bearer still proves the seat before anything reads it.
+        extra = dict(
+            self.bearer_env,
+            SIMPLE_BOARD_BEARER_FILE=self.fixer_bearer_file,
+            LINEAR_CLIENT_ID=CLIENT_ID,
+            LINEAR_CLIENT_SECRET=CLIENT_SECRET,
+        )
+        self.board("stats", extra=extra)
+        self.assertEqual(self.verify_store["queries"][-1]["identity"], "GB-FIXER")
+
+    def test_bad_signature_is_refused(self):
+        self.vault.tools_secrets["GR_BEARER_VERIFY_KEY"] = "wrong-" + "k" * 40
+        p = self.board("stats", extra=self.bearer_env, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("bad_signature", p.stderr)
+
+    def test_mismatch_is_refused(self):
+        self.verify_store["mode"] = "mismatch"
+        p = self.board("stats", extra=self.bearer_env, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("mismatch", p.stderr)
+
+    def test_expired_is_refused(self):
+        self.verify_store["mode"] = "expired"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_paused_is_refused(self):
+        self.verify_store["mode"] = "paused"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_an_answer_for_another_identity_is_refused(self):
+        self.verify_store["mode"] = "wrong-identity"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_past_expiry_is_refused(self):
+        self.verify_store["mode"] = "past-expiry"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_non_finite_or_boolean_expiry_is_refused(self):
+        for mode in ("nan-expiry", "inf-expiry", "bool-expiry"):
+            self.verify_store["mode"] = mode
+            self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_non_canonical_verified_seat_is_refused_not_remapped(self):
+        # A verifier answering an alias spelling (INSTINCT is the retired spelling of WISE) is refused:
+        # the CLI never re-maps a verified identity.
+        alias = "sbt_instinct_" + "C" * 43
+        alias_file = self.private("bearer-instinct", alias + "\n")
+        p = self.board(
+            "stats",
+            extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_FILE=alias_file),
+            code=None,
+        )
+        self.assert_clean_failure(p)
+        self.assertIn("non-canonical", p.stderr)
+
+    def test_a_non_json_answer_is_refused(self):
+        self.verify_store["mode"] = "not-json"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_an_unreachable_verifier_is_refused(self):
+        extra = dict(
+            self.bearer_env,
+            SIMPLE_BOARD_BEARER_VERIFY_URL="http://127.0.0.1:9/internal/gr-bearer-verify",
+        )
+        p = self.board("stats", extra=extra, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("unreachable", p.stderr)
+
+    def test_an_untrusted_verify_url_env_cannot_pick_an_identity(self):
+        # Run the CLI binary DIRECTLY (no test bootstrap) under a test-process network
+        # sandbox (sitecustomize:  DNS and non-loopback connects are blocked, so this test
+        # never produces a real external call).  The caller's SIMPLE_BOARD_BEARER_VERIFY_URL
+        # loopback mock stays fully reachable but is never queried;  the CLI's fixed
+        # production endpoint attempt fails closed.
+        sandbox = self.tmp / "net-sandbox"
+        sandbox.mkdir()
+        (sandbox / "sitecustomize.py").write_text(NETWORK_SANDBOX)
+        e = dict(
+            self.env,
+            **self.bearer_env,
+            SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url,
+            PYTHONPATH=str(sandbox),
+        )
+        p = subprocess.run(
+            [PY, str(CLI), "stats"], env=e, capture_output=True, text=True, timeout=60
+        )
+        self.assert_clean_failure(p)
+        # "unreachable" proves the sandbox engaged:  a real Worker answer would be a
+        # fixed-reason refusal (bad_signature), not a transport failure.
+        self.assertIn("unreachable", p.stderr)
+        self.assertEqual(self.verify_store["queries"], [], "the caller's mock was never queried")
+
+    def test_a_malformed_bearer_value_is_refused(self):
+        Path(self.echo_bearer_file).write_text("not-a-bearer")
+        p = self.board("stats", extra=self.bearer_env, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("not an admin-minted bearer", p.stderr)
+
+    def test_a_missing_bearer_value_is_refused(self):
+        Path(self.echo_bearer_file).unlink()
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_missing_verify_key_is_refused(self):
+        del self.vault.tools_secrets["GR_BEARER_VERIFY_KEY"]
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_unusable_bearer_files_are_refused(self):
+        # A private file is the whole contract:  a missing path, a directory and a
+        # group/other-readable file each fail closed.
+        loose = self.private("bearer-loose", BEARER_ECHO + "\n", mode=0o644)
+        for bad in (
+            str(self.tmp / "no-such-bearer-file"),
+            str(self.tmp),
+            loose,
+        ):
+            p = self.board(
+                "stats", extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_FILE=bad), code=None
+            )
+            self.assert_clean_failure(p)
+
+    def test_without_a_bearer_file_the_environment_cannot_pick_an_identity(self):
+        # AGENT_SEAT stays set but is inert:  with no bearer file the write refuses (exit 6),
+        # reads run without an identity, and the verifier is never asked.
+        p = self.board(
+            "comment",
+            "OPS-10",
+            "--by",
+            "CLAUDE",
+            "--text",
+            "x",
+            extra={"SIMPLE_BOARD_BEARER_FILE": ""},
+            code=6,
+        )
+        self.assertIn("no verified seat", p.stderr)
+        self.assertEqual(self.mock.ops, [])
+        # A read needs no verified seat, but it still needs an app identity:  with no bearer
+        # and no pair anywhere the run fails closed, and the verifier is never asked.
+        p = self.board("whoami", extra={"SIMPLE_BOARD_BEARER_FILE": ""}, code=4)
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertEqual(self.verify_store["queries"], [])
+
+    def test_every_seated_run_verifies_its_bearer(self):
+        # The harness binds the launcher locator for AGENT_SEAT=CLAUDE:  the run verifies.
+        self.board("stats")
+        self.assertEqual(self.verify_store["queries"][-1]["identity"], "CLAUDE")
+
+
+class BearerTransportSeamTests(unittest.TestCase):
+    """The verify transport seam is import-only:  the CLI binary reads no endpoint or
+    transport from the environment, and the fixed endpoint is the trusted https origin."""
+
+    def test_the_endpoint_is_the_fixed_trusted_origin(self):
+        cli = _cli()
+        self.assertIsNone(cli.BEARER_TRANSPORT)
+        self.assertEqual(
+            cli.BEARER_VERIFY_URL, "https://agents.simplewithus.com/internal/gr-bearer-verify"
+        )
+        self.assertNotIn(
+            "SIMPLE_BOARD_BEARER_VERIFY_URL", inspect.getsource(cli.bearer_verified_seat)
+        )
+
+    def test_the_sandbox_blocks_every_network_entry_path(self):
+        sandbox = Path(tempfile.mkdtemp(prefix="net-sandbox-"))
+        (sandbox / "sitecustomize.py").write_text(NETWORK_SANDBOX)
+        p = subprocess.run(
+            [PY, "-c", SANDBOX_PROBE],
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": str(sandbox)},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(p.returncode, 0, f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
+        self.assertIn("SANDBOX OK", p.stdout)
+
+    def test_every_verifier_identity_is_already_a_canonical_seat_tag(self):
+        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB bot
+        # (gb-identities.json), and sbt_/gbb_ bearers are minted for those only.  The CLI refuses a
+        # non-canonical answer instead of re-mapping it, so this guards drift:  if the verifier set ever
+        # gains an alias spelling, this fails and the contract is revisited rather than silently remapped.
+        root = Path(__file__).resolve().parents[1]
+        cfg = (root / "simple-tools-mcp" / "src" / "config.js").read_text()
+        m = re.search(r"KNOWN_SEATS = Object\.freeze\(\[([^\]]+)\]\)", cfg)
+        self.assertIsNotNone(m)
+        seats = re.findall(r'"([A-Z][A-Z0-9-]*)"', m.group(1))
+        gb = json.loads((root / "simple_tools" / "mcp" / "gb-identities.json").read_text())[
+            "enabled"
+        ]
+        # This pins only what the hosted verifier answers TODAY.  It is not the fleet roster:  other active
+        # tags (AG, CLUTCH, FX, GROK, MC, MM, OPENCODE, BotFleet roles) have no verifier identity yet and
+        # need verifier/admin work, not an alias map here.
+        self.assertGreaterEqual(len(seats), 9)
+        cli = _cli()
+        for ident in [*seats, *gb]:
+            self.assertEqual(cli.norm_seat(ident), ident, ident)
+
+    def test_in_process_transport_injection(self):
+        cli = _cli()
+        tmp = Path(tempfile.mkdtemp(prefix="board-seam-"))
+        vault = MockInfisical()
+        self.addCleanup(vault.close)
+        vault.tools_secrets["GR_BEARER_VERIFY_KEY"] = BEARER_VERIFY_KEY
+        bearer_file = tmp / "bearer-echo"
+        bearer_file.write_text(BEARER_ECHO + "\n")
+        bearer_file.chmod(0o600)
+        calls = []
+
+        def fake(url, headers, body, timeout):
+            calls.append((url, body))
+            return json.dumps(
+                {"ok": True, "identity": "ECHO", "expires_at": int((time.time() + 3600) * 1000)}
+            ).encode()
+
+        cli.BEARER_TRANSPORT = fake
+        try:
+            with unittest.mock.patch.dict(
+                os.environ,
+                {
+                    "SIMPLE_BOARD_BEARER_FILE": str(bearer_file),
+                    "SIMPLE_BOARD_TOOLS_TOKEN": vault.tools_token,
+                    "SIMPLE_BOARD_TOOLS_PROJECT_ID": "proj-tools",
+                    "LINEAR_BOARD_INFISICAL_API": vault.url,
+                },
+            ):
+                self.assertEqual(cli.bearer_verified_seat(), "ECHO")
+        finally:
+            cli.BEARER_TRANSPORT = None
+        url, body = calls[0]
+        self.assertEqual(url, "https://agents.simplewithus.com/internal/gr-bearer-verify")
+        q = json.loads(body)
+        self.assertEqual(q["identity"], "ECHO")
+        self.assertEqual(q["hash"], hashlib.sha256(BEARER_ECHO.encode()).hexdigest())
+        self.assertNotIn(BEARER_ECHO, body.decode())
+
+
+class OwnIntroTagTests(unittest.TestCase):
+    """AFC-692:  the board never prepends a seat tag, even when the body has no intro.  A multi-threaded
+    seat's own intro passes through;  a single-thread seat's own intro is dropped (Jay 2026-11-12)."""
+
+    def test_tagged_passes_a_multi_threaded_body_through(self):
+        cli = load_cli()
+        for seat in ("CLAUDE", "CURSOR", "CODEX"):
+            for text, want in (
+                (f"[{seat} 📁AFC] PR opened", f"[{seat}\u200a\u200a📁\u200aAFC] PR opened"),
+                (
+                    f"👀 [{seat} 📁AFC, OPS] quiet",
+                    f"👀 [{seat}\u200a\u200a📁\u200aAFC,\u200aOPS] quiet",
+                ),
+                (f"[{seat}] PR opened", f"[{seat}] PR opened"),
+                (
+                    f"[{seat}: HH.1.C 📁AFC] status",
+                    f"[{seat}:\u200a\u200a\u200aHH.1.C\u200a\u200a📁\u200aAFC] status",
+                ),
+                ("PR opened", "PR opened"),
+                ("[GB-DIRECTOR 📁AFC] spoof", "[GB-DIRECTOR 📁AFC] spoof"),
+                (f"[{seat}X] x", f"[{seat}X] x"),
+            ):
+                with self.subTest(seat=seat, text=text):
+                    self.assertFalse(cli.single_thread(seat))
+                    self.assertEqual(cli.tagged(seat, None, text), want)
+                    self.assertEqual(cli.tagged(seat, ["abcd-1234-ffff"], text), want)
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith(want))
+                    self.assertNotIn(f"[{seat}]", cli.comment_body(seat, None, "PR opened"))
+                    self.assertNotIn("Reported by:", cli.comment_body(seat, None, text))
+
+    def test_single_thread_seats_drop_their_own_intro(self):
+        cli = load_cli()
+        for seat in (
+            "GB-PLUMBER",
+            "GB-DESIGNER",
+            "MA",
+            "JET",
+            "ECHO",
+            "WISE",
+            "BF-FIXER",
+            "GROK-BOT",
+        ):
+            with self.subTest(seat=seat):
+                self.assertTrue(cli.single_thread(seat))
+                for text in (
+                    f"[{seat} 📁AFC] PR opened",
+                    f"[{seat}] PR opened",
+                    f"[{seat}] [{seat} 📁CC]\n\nPR opened",
+                    f"[{seat}📁AFC]\nPR opened",
+                    "PR opened",
+                ):
+                    self.assertEqual(cli.tagged(seat, None, text), "PR opened", text)
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith("PR opened"))
+                for marker in ("👀", ":eyes:"):
+                    text = f"{marker} [{seat}] [{seat} 📁AFC, OPS] PR opened"
+                    self.assertEqual(cli.tagged(seat, None, text), f"{marker} PR opened")
+                    self.assertTrue(
+                        cli.comment_body(seat, None, text).startswith(f"{marker} PR opened")
+                    )
+                    self.assertEqual(
+                        cli.tagged(seat, None, f"{marker} [{seat} 📁AFC]"),
+                        f"{marker} [{seat}\u200a\u200a📁\u200aAFC]",
+                    )
+                # Foreign or malformed brackets are content;  an intro-only body is left whole.
+                self.assertEqual(
+                    cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof"
+                )
+                self.assertEqual(cli.tagged(seat, None, f"[{seat}X] x"), f"[{seat}X] x")
+                self.assertEqual(
+                    cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat}\u200a\u200a📁\u200aAFC]"
+                )
+
+    def test_reporter_falls_back_to_the_creating_seat_app(self):
+        """A single-thread seat's filed issue has no Reported by line, so show reads the creating app."""
+        cli = load_cli()
+        self.assertEqual(cli.creator_seat({"id": "u", "name": "Claude", "app": True}), "CLAUDE")
+        self.assertIsNone(
+            cli.creator_seat({"id": "u", "name": "Claude", "app": False}), "a human named Claude"
+        )
+        self.assertIsNone(cli.creator_seat({"id": "u", "name": "Jay Wedgeworth", "app": False}))
+        self.assertIsNone(cli.creator_seat(None))
+        self.assertIsNone(
+            cli.split_description(
+                "Steps\n\n---\n\n**Filed with the board CLI**\n\n- Kind: agent-report"
+            )["reported_by"]
+        )
+
+    def test_parse_comment_maps_the_linear_app_name_and_keeps_a_legacy_tag(self):
+        """AFC-692:  an untagged comment is signed by the Linear app;  an old [SEAT] tag still reads."""
+        cli = load_cli()
+        self.assertEqual(cli.seat_for_linear_author("Claude"), "CLAUDE")
+        self.assertEqual(cli.seat_for_linear_author("Grok (Web/iOS)"), "GROK-WEB")
+        self.assertIsNone(cli.seat_for_linear_author("Jay Wedgeworth"))
+        self.assertIsNone(cli.seat_for_linear_author("Jet"), "JET and JET-CHAT share the name")
+        parsed = cli.parse_comment(
+            {
+                "id": "c1",
+                "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-claude", "name": "Claude", "app": True},
+            }
+        )
+        self.assertEqual(parsed["author"], "Claude")
+        self.assertEqual(parsed["author_seat"], "CLAUDE")
+        self.assertEqual(
+            parsed["text"], "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x"
+        )
+        self.assertEqual((parsed["author_id"], parsed["author_app"]), ("app-user-claude", True))
+        tagged = cli.parse_comment(
+            {
+                "id": "c2",
+                "body": "[CODEX·abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-codex", "name": "Codex", "app": True},
+            }
+        )
+        self.assertEqual(tagged["author"], "CODEX")
+        self.assertEqual(tagged["author_seat"], "CODEX")
+        self.assertEqual(tagged["text"], "owner replied:  msg 5")
+
+    def test_parse_comment_trusts_author_seat_only_from_a_known_app(self):
+        """A human named Claude, or a human who types a [CLAUDE] prefix, is not a seat."""
+        cli = load_cli()
+        human_named = cli.parse_comment(
+            {
+                "id": "h1",
+                "body": "looks good",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-named-claude", "name": "Claude", "app": False},
+            }
+        )
+        self.assertEqual(human_named["author"], "Claude")
+        self.assertIsNone(human_named["author_seat"])
+        self.assertEqual(human_named["author_app"], False)
+        human_tag = cli.parse_comment(
+            {
+                "id": "h2",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-jay", "name": "Jay Wedgeworth", "app": False},
+            }
+        )
+        self.assertEqual(human_tag["author"], "CLAUDE")
+        self.assertIsNone(human_tag["author_seat"])
+        self.assertEqual(human_tag["author_app"], False)
+        self.assertEqual(human_tag["text"], "owner replied:  msg 5")
+        seat_app = cli.parse_comment(
+            {
+                "id": "a1",
+                "body": "owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-claude", "name": "Claude", "app": True},
+            }
+        )
+        self.assertEqual(seat_app["author"], "Claude")
+        self.assertEqual(seat_app["author_seat"], "CLAUDE")
+        self.assertEqual(seat_app["author_app"], True)
+        legacy = cli.parse_comment(
+            {
+                "id": "a2",
+                "body": "[CLAUDE\u00b7abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet-app", "name": "Fleet", "app": True},
+            }
+        )
+        self.assertEqual(legacy["author"], "CLAUDE")
+        self.assertEqual(legacy["author_seat"], "CLAUDE")
+        self.assertEqual(legacy["author_app"], True)
+        unknown_app = cli.parse_comment(
+            {
+                "id": "a3",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "other-app", "name": "Random Bot", "app": True},
+            }
+        )
+        self.assertIsNone(unknown_app["author_seat"])
+
+
 class SeatAliasTests(unittest.TestCase):
     """Any spelling of GROK followed by BUILD is the seat GROK (owner 2026-10-10);  nothing else is aliased."""
 
@@ -1051,14 +1967,17 @@ class SafetyTests(BoardTest):
             ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", "/nonexistent"],
             ["label", "add", B_A[:8], "needs-owner"],
         ):
-            p = self.board(*args, drop=("AGENT_SEAT",), code=2)
-            self.assertIn("AGENT_SEAT is not set", p.stderr)
+            p = self.board(*args, drop=("AGENT_SEAT",), code=6)
+            self.assertIn("no verified seat", p.stderr)
         self.assertEqual(self.mock.ops, [])
         self.assertEqual(self.mock.mints, 0)
 
     def test_reads_work_without_agent_seat(self):
-        """AGENT_SEAT is unset in plain shells, `zsh -lic` and the listener's `env -i`; the skills' reads
-        (`board stats`, `board list --status open,in_progress --severity P0,P1 --limit 25`) must still run."""
+        """No bearer locator is bound in plain shells, `zsh -lic` and the listener's `env -i`;
+        the skills' reads (`board stats`, `board list --status open,in_progress --severity P0,P1
+        --limit 25`) must still run, without a verified seat.  The shared Fleet app is retired,
+        so a seatless run uses the environment's own pair (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)."""
+        env_pair = {"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET}
         p = self.board(
             "list",
             "--status",
@@ -1068,18 +1987,19 @@ class SafetyTests(BoardTest):
             "--limit",
             "25",
             drop=("AGENT_SEAT",),
+            extra=env_pair,
         )
         self.assertIn("2 shown of", p.stdout)
-        self.board("show", "OPS-10", drop=("AGENT_SEAT",))
-        self.assertIn("total 9", self.board("stats", drop=("AGENT_SEAT",)).stdout)
-        p = self.board("whoami", drop=("AGENT_SEAT",))
-        self.assertIn("AGENT_SEAT is not set", p.stdout)
-        self.assertIn("viewer:      Fleet (app user)", p.stdout)
+        self.board("show", "OPS-10", drop=("AGENT_SEAT",), extra=env_pair)
+        self.assertIn("total 9", self.board("stats", drop=("AGENT_SEAT",), extra=env_pair).stdout)
+        p = self.board("whoami", drop=("AGENT_SEAT",), extra=env_pair)
+        self.assertIn("no bearer", p.stdout)
+        self.assertIn("viewer:      Claude (app user)", p.stdout)
 
     def test_missing_credentials(self):
         self.creds.unlink()
         p = self.board("list", extra={"LINEAR_API" + "_KEY": "lin_api_should_be_ignored"}, code=4)
-        self.assertIn("no Fleet credentials", p.stderr)
+        self.assertIn("no Linear app credentials", p.stderr)
         self.assertEqual((self.mock.mints, self.mock.ops), (0, []))
 
     def test_cloud_seat_credentials_from_environment(self):
@@ -1089,7 +2009,7 @@ class SafetyTests(BoardTest):
         )
         self.assertIn("credentials: environment", p.stdout)
 
-    def test_writes_disabled_by_default(self):
+    def test_writes_need_a_bearer_verified_seat(self):
         for args in (
             ["file", "--title", "x"],
             ["claim", B_A[:8], "--by", "CLAUDE"],
@@ -1100,15 +2020,16 @@ class SafetyTests(BoardTest):
             ["label", "add", B_A[:8], "needs-owner"],
             ["label", "remove", B_A[:8], "needs-owner"],
         ):
-            p = self.board(*args, drop=("LINEAR_BOARD_WRITES",), code=7)
-            self.assertIn("writes to Linear are off", p.stderr)
+            p = self.board(*args, drop=("AGENT_SEAT",), code=6)
+            self.assertIn("bearer-verified seat", p.stderr)
         self.assertEqual((self.mock.mints, self.mock.ops), (0, []))
-        self.board("list", drop=("LINEAR_BOARD_WRITES",))  # reads still work
-        self.board("whoami", drop=("LINEAR_BOARD_WRITES",))
+        env_pair = {"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET}
+        self.board("list", drop=("AGENT_SEAT",), extra=env_pair)  # reads still work
+        self.board("whoami", drop=("AGENT_SEAT",), extra=env_pair)
 
     def test_by_must_match_seat(self):
         p = self.board("comment", B_A[:8], "--by", "CODEX", "--text", "hi", code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
         self.board(
             "comment", B_A[:8], "--by", "@claude", "--text", "hi"
         )  # normalized match is fine
@@ -1116,6 +2037,9 @@ class SafetyTests(BoardTest):
 
     def test_grok_build_seat_is_grok(self):
         """AGENT_SEAT and --by in any GROK-BUILD spelling sign as GROK, and another seat is still refused."""
+        self.mock.add_client("grok-app-client-id", "grok-app-client-secret-value", "Grok")
+        self.afc_put("LINEAR_GROK_CLIENT_ID", "grok-app-client-id")
+        self.afc_put("LINEAR_GROK_CLIENT_SECRET", "grok-app-client-secret-value")
         for seat_env in ("GROK-BUILD", "Grok (Build)"):
             for by in ("Grok-Build", "GROK", "grok_build"):
                 p = self.board(
@@ -1138,7 +2062,7 @@ class SafetyTests(BoardTest):
             extra={"AGENT_SEAT": "GROK-BUILD"},
             code=2,
         )
-        self.assertIn("does not match AGENT_SEAT=GROK", p.stderr)
+        self.assertIn("does not match the verified seat GROK", p.stderr)
         p = self.board(
             "comment",
             B_A[:8],
@@ -1149,7 +2073,7 @@ class SafetyTests(BoardTest):
             extra={"AGENT_SEAT": "GROK-BUILD"},
             code=2,
         )
-        self.assertIn("does not match AGENT_SEAT=GROK", p.stderr)
+        self.assertIn("does not match the verified seat GROK", p.stderr)
         p = self.board(
             "comment",
             B_A[:8],
@@ -1158,8 +2082,10 @@ class SafetyTests(BoardTest):
             "--text",
             "hi",
             extra={"AGENT_SEAT": "GROKBUILDER"},
+            code=4,
         )
-        self.assertIn("as GROKBUILDER", p.stdout)  # a near miss stays itself
+        # a near miss stays itself, and a seat with no app of its own fails closed
+        self.assertIn("no Linear app credentials", p.stderr)
         p = self.board(
             "comment",
             B_A[:8],
@@ -1170,7 +2096,7 @@ class SafetyTests(BoardTest):
             extra={"AGENT_SEAT": "GROKBUILDER"},
             code=2,
         )
-        self.assertIn("does not match AGENT_SEAT=GROKBUILDER", p.stderr)
+        self.assertIn("does not match the verified seat GROKBUILDER", p.stderr)
         self.assertEqual(self.mock.violations, [])
 
     def test_url_override_must_be_loopback(self):
@@ -1183,16 +2109,33 @@ class SafetyTests(BoardTest):
     def test_backend_fallback_execs_old_cli(self):
         old = self.tmp / "old-board"
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
-        p = self.board(
-            "claim",
-            "abc",
-            "--by",
-            "X",
-            drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
-            extra={"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)},
-        )
-        self.assertEqual(p.stdout.strip(), "OLD BOARD ['claim', 'abc', '--by', 'X']")
+        extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
+        p = self.board("list", "--app", "AFC", drop=("AGENT_SEAT",), extra=extra)
+        self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
+        # a write never rides the rollback backend:  it would skip the bearer-verified seat
+        for verb in ("claim", "file", "status", "comment"):
+            p = self.board(verb, "abc", "--by", "X", extra=extra, code=6)
+            self.assertIn("bearer-verified seat", p.stderr, verb)
+            self.assertNotIn("OLD BOARD", p.stdout, verb)
+        self.assertEqual(self.mock.ops, [])
+
+    def test_mac_collab_backend_refuses_the_write_verbs(self):
+        # Writes must die with EXIT_AUTH before the archived CLI runs: the rollback
+        # backend cannot prove a bearer-verified seat (same contract as
+        # test_backend_fallback_execs_old_cli).
+        old = self.tmp / "old-board"
+        old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
+        extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
+        for args in (
+            ["file", "--title", "x", "--desc", "d"],
+            ["claim", "abc", "--by", "X"],
+            ["status", "OPS-10", "completed"],
+            ["comment", "OPS-10", "--by", "X", "--text", "hi"],
+        ):
+            p = self.board(*args, extra=extra, drop=("AGENT_SEAT",), code=6)
+            self.assertIn("bearer-verified seat", p.stderr, args)
+            self.assertNotIn("OLD BOARD", p.stdout, args)
 
     def test_source_never_reads_admin_or_personal_keys(self):
         for path in (CLI, RELABEL):
@@ -1204,14 +2147,15 @@ class SafetyTests(BoardTest):
 class AuthTests(BoardTest):
     def test_whoami_mints_once_and_caches(self):
         p = self.board("whoami")
-        self.assertIn("viewer:      Fleet (app user)", p.stdout)
+        self.assertIn("viewer:      Claude (app user)", p.stdout)
         self.assertIn("seat:        CLAUDE", p.stdout)
         self.assertIn("writes:      enabled", p.stdout)
         self.board("whoami")
         self.assertEqual(self.mock.mints, 1)
         self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
         self.assertIn(
-            "token store: Infisical Fleet-OPS prod /linear CACHE_FLEET (no token on disk)", p.stdout
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN (no token on disk)",
+            p.stdout,
         )
 
     def test_whoami_refuses_a_human_viewer(self):
@@ -1271,7 +2215,7 @@ class AuthTests(BoardTest):
         old = CLIENT_SECRET
         try:
             CLIENT_SECRET = "rotated-secret-value"
-            self.ops_put("FLEET_LINEAR_CLIENT_SECRET", CLIENT_SECRET)
+            self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", CLIENT_SECRET)
             self.board("whoami")
             self.assertEqual(self.mock.mints, 2)
         finally:
@@ -1440,9 +2384,11 @@ class WriteTests(BoardTest):
         self.assertEqual((iss["state"], iss["priority"], iss["team"]), ("Todo", 2, "CT"))
         self.assertEqual(self.label_names(iss), ["Env/Cloud", "Kind/agent-report", "Severity/P1"])
         self.assertTrue(
-            iss["description"].startswith("\\[CLAUDE·5e55105a\\] Filed with the board CLI."),
+            iss["description"].lstrip().startswith("Details."),
             iss["description"],
         )
+        self.assertNotIn("[CLAUDE", iss["description"])
+        self.assertIn("**Filed with the board CLI**", iss["description"])
         self.assertIn("## Recommended fix\n\nRetry.", iss["description"])
         self.assertEqual(
             [a["url"] for a in self.mock.attachments], ["https://github.com/o/r/issues/1"]
@@ -1588,7 +2534,8 @@ class WriteTests(BoardTest):
         self.assertIn("seat:CLAUDE", self.label_names(iss))
         self.assertIn("Env/Mac", self.label_names(iss))
         body = self.comments_of(iss)[-1]
-        self.assertTrue(body.startswith("[CLAUDE·b854d9ad] CLAIMED"), body)
+        self.assertTrue(body.startswith("CLAIMED"), body)
+        self.assertNotIn("[CLAUDE", body)
         self.assertIn("Where: Mac, ~/apps/lanes/X @ claude/x", body)
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["location"], "Mac, ~/apps/lanes/X @ claude/x")
@@ -1596,6 +2543,7 @@ class WriteTests(BoardTest):
         self.assertEqual([r["identifier"] for r in rows], ["OPS-10"])
 
     def test_claim_legacy_instinct_label_is_wise_own_claim(self):
+        self.seat_app("WISE", "Wise (Instinct)")
         # An In Progress issue carrying the legacy claimed:INSTINCT label:  WISE
         # claims it as its own without --steal, and the legacy label is replaced.
         iss = self.mock.issues[hy(B_B)]
@@ -1642,6 +2590,7 @@ class WriteTests(BoardTest):
         self.board("claim", "OPS-11", "--by", "CLAUDE")  # re-claiming your own claim is fine
 
     def test_claim_creates_missing_seat_label(self):
+        self.seat_app("GROK-WEB", "Grok Web")
         self.board("claim", "ST-1", "--by", "GROK-WEB", extra={"AGENT_SEAT": "GROK-WEB"})
         names = self.label_names(self.mock.issues[hy(B_C)])
         self.assertIn("seat:GROK-WEB", names)
@@ -1654,7 +2603,7 @@ class WriteTests(BoardTest):
         self.assertEqual(iss["state"], "Done")
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"[CLAUDE·5e55105a] Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
+            f"Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
         )
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["resolution"], "Landed in #2894.")
@@ -1670,7 +2619,7 @@ class WriteTests(BoardTest):
             self.assertEqual(self.mock.issues[hy(B_C)]["state"], state)
         self.assertEqual(
             self.comments_of(self.mock.issues[hy(B_C)])[-1],
-            f"[CLAUDE·5e55105a] Status: parked\n\nSessions: {BASE_SESSION}",
+            f"Status: parked\n\nSessions: {BASE_SESSION}",
         )
         self.board("status", B_C[:8], "bogus", code=2)
         self.board("status", B_C[:8], "completed", "--of", "OPS-10", code=2)
@@ -1720,10 +2669,10 @@ class WriteTests(BoardTest):
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
         self.assertEqual(
             body,
-            "[CLAUDE·sess1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
+            "Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
         )
         p = self.board("show", "OPS-10")
-        self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
+        self.assertIn("Claude (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
 
 
 def footer(line: str) -> str:
@@ -1738,6 +2687,10 @@ def footer(line: str) -> str:
 class ClaimModelTests(BoardTest):
     """seat:<TAG> labels are attribution (the import put them on reporters too); a claim is a claimed:<TAG>
     label, or for an imported In Progress issue without one, the provenance footer's "addressed by"."""
+
+    def setUp(self):
+        super().setUp()
+        self.seat_app("CODEX", "Codex")
 
     def legacy(
         self, title, line, state="In Progress", labels=("seat:CLAUDE", "seat:CODEX"), team="AFC"
@@ -1921,24 +2874,25 @@ class SessionIdTests(BoardTest):
                 comments, [list(i.get("comments", [])) for i in self.mock.issues.values()], write[0]
             )
             self.assertEqual(
-                self.mock.calls[n:], [], f"{write[0]} reached Linear before it refused"
+                [c for c in self.mock.calls[n:] if c[0] != "BoardWhoami"],
+                [],
+                f"{write[0]} reached Linear with a mutation before it refused",
             )
 
     def test_exempt_seats_write_without_a_session(self):
-        for seat in (
-            "GROK-BOT",
-            "GB-FIXER",
-            "GB-DIRECTOR",
-            "MA",
-            "ROB",
-            "JET",
-            "WISE",
-            "INSTINCT",
-            "ECHO",
-        ):
+        # Seats with their own Linear app write as it;  the retirement of the shared Fleet app
+        # means a seat with no app of its own fails closed instead (owner, 2026-11-05).
+        for seat in ("MA", "JET", "WISE", "ECHO"):
+            self.seat_app(seat, load_cli().SEAT_APP_NAMES[seat])
             p = self.bare(seat, "comment", "OPS-10", "--by", seat, "--text", f"exempt {seat}")
             self.assertNotIn("sessions:", p.stdout, seat)
             self.assertIn("commented on", p.stdout, seat)
+        # ROB and INSTINCT are seat aliases (MA and WISE), so they inherit those seats' apps.
+        for seat in ("GROK-BOT", "GB-FIXER", "GB-DIRECTOR"):
+            p = self.bare(
+                seat, "comment", "OPS-10", "--by", seat, "--text", f"exempt {seat}", code=4
+            )
+            self.assertIn("no Linear app credentials", p.stderr, seat)
 
     def test_exemption_is_not_a_flag(self):
         for flag in (("--exempt",), ("--no-session",), ("--session", "")):
@@ -1948,9 +2902,10 @@ class SessionIdTests(BoardTest):
             self.assertNotIn("commented on", p.stdout)
         # --by does not make a non-exempt seat exempt either:  it must equal AGENT_SEAT.
         p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "WISE", "--text", "x", code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
 
     def test_an_exempt_seat_that_has_an_id_still_records_it(self):
+        self.seat_app("WISE", "Wise (Instinct)")
         p = self.bare(
             "WISE",
             "comment",
@@ -1973,6 +2928,8 @@ class SessionIdTests(BoardTest):
             "MM": "__MAVIS_RUNTIME_SESSION_ID",
         }
         for seat, var in cases.items():
+            if seat != "CLAUDE":
+                self.seat_app(seat, load_cli().SEAT_APP_NAMES[seat])
             sid = f"{seat.lower()}-sess-0001"
             p = self.bare(
                 seat, "comment", "OPS-10", "--by", seat, "--text", f"auto {seat}", extra={var: sid}
@@ -2006,6 +2963,8 @@ class SessionIdTests(BoardTest):
         self.assertIn("no session id", p.stderr)
 
     def test_a_seat_with_no_variable_of_its_own_tries_every_platform_variable(self):
+        self.seat_app("BF-FIXER", "BF-Fixer")
+        self.seat_app("FX", "Fx")
         p = self.bare(
             "BF-FIXER",
             "comment",
@@ -2288,11 +3247,28 @@ class RelabelTests(BoardTest):
         self.labels_before = {i["id"]: list(i["labels"]) for i in self.mock.issues.values()}
 
     def relabel(self, *args, extra=None, drop=(), code=0):
+        # The environment's pair is the read identity for a dry run and the operator's deliberate
+        # choice on a host;  a test that wants it gone names it in `drop`.
         e = dict(self.env, **(extra or {}))
+        e.setdefault("LINEAR_CLIENT_ID", CLIENT_ID)
+        e.setdefault("LINEAR_CLIENT_SECRET", CLIENT_SECRET)
         for k in drop:
             e.pop(k, None)
+        # The harness plays the trusted launcher:  a write needs a bearer-verified seat,  so a run is bound
+        # to a minted bearer and its verify route.  A test that wants no seat drops the bearer file.
+        if "SIMPLE_BOARD_BEARER_FILE" not in drop and "SIMPLE_BOARD_BEARER_FILE" not in e:
+            e["SIMPLE_BOARD_BEARER_FILE"] = self.bearer_file_for("CLAUDE")
+        if (
+            "SIMPLE_BOARD_BEARER_VERIFY_URL" not in drop
+            and "SIMPLE_BOARD_BEARER_VERIFY_URL" not in e
+        ):
+            e["SIMPLE_BOARD_BEARER_VERIFY_URL"] = self.verify_url
         p = subprocess.run(
-            [PY, str(RELABEL), *args], env=e, capture_output=True, text=True, timeout=60
+            [PY, "-c", RELABEL_BOOTSTRAP, str(RELABEL), *args],
+            env=e,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         self.assertEqual(
             p.returncode, code, f"exit {p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}"
@@ -2302,7 +3278,7 @@ class RelabelTests(BoardTest):
         return p
 
     def test_dry_run_writes_nothing(self):
-        p = self.relabel(drop=("LINEAR_BOARD_WRITES",))
+        p = self.relabel()
         self.assertIn("2 issue(s) to mark, 1 already marked, 1 with no claimant", p.stdout)
         self.assertIn(f"{self.a['identifier']}", p.stdout)
         self.assertIn("claimed:CODEX", p.stdout)
@@ -2312,9 +3288,9 @@ class RelabelTests(BoardTest):
         )
         self.assertNotIn("BoardUpdate", self.mock.ops)
 
-    def test_apply_needs_writes_on(self):
-        p = self.relabel("--apply", drop=("LINEAR_BOARD_WRITES",), code=7)
-        self.assertIn("writes to Linear are off", p.stderr)
+    def test_apply_needs_a_bearer_verified_seat(self):
+        p = self.relabel("--apply", drop=("SIMPLE_BOARD_BEARER_FILE",), code=6)
+        self.assertIn("bearer-verified seat", p.stderr)
         self.assertEqual(self.mock.ops, [])
 
     def test_apply_is_additive_idempotent_and_resumable(self):
@@ -2341,11 +3317,50 @@ class RelabelTests(BoardTest):
             sorted(r["identifier"] for r in rows), sorted(["OPS-11", self.a["identifier"]])
         )
 
-    def test_uses_the_fleet_credentials_only(self):
+    def test_no_credentials_anywhere_fails_closed(self):
         self.creds.unlink()
-        p = self.relabel(code=4)
-        self.assertIn("no Fleet credentials", p.stderr)
+        p = self.relabel(code=4, drop=("LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"))
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertIn("retired by the owner on 2026-11-05", p.stderr)
         self.assertEqual((self.mock.mints, self.mock.ops), (0, []))
+
+    def test_a_dry_run_never_verifies_the_bearer(self):
+        # A dry run writes nothing, so it must not verify the bearer:  the verify route is a network
+        # round trip that can refuse, and a plan that dies before it prints is not a plan.
+        p = self.relabel()
+        self.assertIn("2 issue(s) to mark", p.stdout)
+        self.assertEqual(self.verify_store["queries"], [], "the dry run verified the bearer")
+
+    def test_apply_accepts_the_cloud_pair_that_holds_the_seat_app(self):
+        # A cloud host's own pair may hold the seat's app:  that is the operator's deliberate choice
+        # for that host and the README promises the script works with it, so the write must not be
+        # refused as a swap.  The seat stays the gate, never the identity.
+        self.mock.add_client("cloud-pair-id", "cloud-pair-secret", "Claude")
+        p = self.relabel(
+            "--apply",
+            extra={
+                "LINEAR_CLIENT_ID": "cloud-pair-id",
+                "LINEAR_CLIENT_SECRET": "cloud-pair-secret",
+            },
+        )
+        self.assertIn("2 issue(s) to mark", p.stdout)
+        self.assertNotIn("belong to the", p.stderr)
+        self.assertEqual(self.mock.ops.count("BoardUpdate"), 2)
+
+    def test_apply_refuses_the_cloud_pair_that_holds_another_seat_app(self):
+        # The other half of the same check:  a pair holding another seat's app is a swap, and the
+        # script still refuses it before it writes anything.
+        self.mock.add_client("cloud-pair-id", "cloud-pair-secret", "Codex")
+        p = self.relabel(
+            "--apply",
+            extra={
+                "LINEAR_CLIENT_ID": "cloud-pair-id",
+                "LINEAR_CLIENT_SECRET": "cloud-pair-secret",
+            },
+            code=4,
+        )
+        self.assertIn("the 'Codex' app", p.stderr)
+        self.assertEqual([o for o in self.mock.ops if o in WRITE_OPS], [])
 
 
 WRITE_OPS = {
@@ -2362,34 +3377,87 @@ class SeatAppTests(BoardTest):
     """One Linear app per seat (owner 2026-10-10):  credentials by seat, a token cache and a lock per app,
     the Fleet fallback, the cloud runtime's variables, and the swapped-credentials check."""
 
-    def seat_app(self, seat, name, cid=None, secret=None, register=True, file=True):
-        """Register a seat app with the mock and, unless file=False, put its pair in the fake Fleet-OPS /linear."""
-        cid = cid or f"{seat.lower()}-app-client-id"
-        secret = secret or f"{seat.lower()}-app-client-secret-value"
-        if register:
-            self.mock.add_client(cid, secret, name)
-        if file:
-            k = seat.replace("-", "_")
-            self.ops_put(f"{k}_LINEAR_CLIENT_ID", cid)
-            self.ops_put(f"{k}_LINEAR_CLIENT_SECRET", secret)
-        return cid, secret
-
-    def cache(self, seat):
-        return self.ops_vault / ("CACHE_" + seat.replace("-", "_"))
-
     def as_seat(self, seat, *args, extra=None, **kw):
         return self.board(*args, extra=dict(extra or {}, AGENT_SEAT=seat), **kw)
 
     def callers_since(self, n):
         return {c for _, c in self.mock.calls[n:]}
 
-    def test_secrets_are_read_one_named_key_at_a_time_never_by_dumping_the_store(self):
+    def test_the_linear_keys_are_read_by_name_with_the_scoped_read_token(self):
         self.seat_app("CLAUDE", "Claude")
         p = self.as_seat("CLAUDE", "whoami")
         self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
-        self.assertFalse(
-            (self.ops_vault / ".run-called").exists(), "board called `fleet-secrets run`"
+        gets = [
+            a
+            for a in self.vault.authorizations
+            if a[0] == "GET" and a[1].startswith("/api/v3/secrets/raw/LINEAR_CLAUDE_")
+        ]
+        self.assertEqual(
+            {a[1] for a in gets},
+            {
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CLIENT_ID",
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CLIENT_SECRET",
+                "/api/v3/secrets/raw/LINEAR_CLAUDE_CACHE_TOKEN",
+            },
+            "the seat's pair and cache blob, one named read each",
         )
+        self.assertTrue(all(a[2] == "Bearer " + self.vault.read_token for a in gets))
+        self.assertFalse(
+            any(a[:2] == ("GET", "/api/v3/secrets/raw") for a in self.vault.authorizations),
+            "never a whole-folder listing",
+        )
+
+    def test_ma_mints_with_its_own_installed_scope_and_other_seats_keep_the_global_one(self):
+        ma_scope = "comments:create,issues:create,read,write"
+        ma, _ = self.seat_app("MA", "Muse Assist (MA)")
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.as_seat("MA", "whoami")
+        self.as_seat("MA", "whoami")
+        self.assertEqual(self.mock.scopes, [ma_scope], "one mint, with MA's own scope")
+        self.assertNotIn("assignable", ma_scope)
+        self.assertNotIn("mentionable", ma_scope)
+        self.assertEqual(json.loads(self.cache("MA").read_text())["scope"], ma_scope)
+        self.as_seat("CLAUDE", "whoami")
+        self.assertEqual(
+            self.mock.scopes, [ma_scope, EXPECTED_SCOPE], "CLAUDE still mints with the global scope"
+        )
+        self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["scope"], EXPECTED_SCOPE)
+        self.assertEqual(self.mock.mints_by, {ma: 1, claude: 1})
+
+    def test_ma_cache_scope_falls_back_to_ma_scope_when_linear_omits_it(self):
+        self.seat_app("MA", "Muse Assist (MA)")
+        self.seat_app("CLAUDE", "Claude")
+        self.mock.omit_scope = True
+        self.as_seat("MA", "whoami")
+        self.as_seat("CLAUDE", "whoami")
+        self.assertEqual(
+            json.loads(self.cache("MA").read_text())["scope"],
+            "comments:create,issues:create,read,write",
+        )
+        self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["scope"], EXPECTED_SCOPE)
+
+    def test_ma_with_no_pair_of_its_own_fails_closed(self):
+        """Owner 2026-11-05:  the shared Fleet app is retired, so a seat with no pair of its own
+        fails closed instead of signing as a shared app, and no token is minted."""
+        p = self.as_seat("MA", "whoami", code=4)
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertIn("LINEAR_MA_CLIENT_ID", p.stderr)
+        self.assertIn("retired by the owner on 2026-11-05", p.stderr)
+        self.assertEqual(self.mock.mints, 0)
+        self.assertEqual(self.mock.scopes, [])
+        self.assertFalse(self.cache("MA").exists())
+
+    def test_a_generic_env_pair_is_refused_before_any_mint_for_ma_but_not_for_other_seats(self):
+        pair = {"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET}
+        self.as_seat("MA", "whoami", extra=pair, code=None)
+        self.assertEqual(self.mock.mints, 0)
+        self.assertEqual(self.mock.scopes, [])
+        self.as_seat("CLAUDE", "whoami", extra=pair)
+        self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
+
+    def test_the_shared_fleet_app_mints_with_the_global_scope(self):
+        self.board("whoami")
+        self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
 
     def test_two_seats_use_their_own_app_token_and_cache(self):
         claude, _ = self.seat_app("CLAUDE", "Claude")
@@ -2398,10 +3466,13 @@ class SeatAppTests(BoardTest):
         self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
         self.assertIn("viewer:      Claude (app user)", p.stdout)
         self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)",
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CLAUDE", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN",
+            p.stdout,
+        )
         self.assertNotIn("notice:", p.stdout)
         self.assertNotIn(claude, p.stdout + p.stderr)  # the path is printed, never a value
         p = self.as_seat("CODEX", "whoami")
@@ -2419,7 +3490,7 @@ class SeatAppTests(BoardTest):
             self.assertEqual(self.callers_since(n), {cid}, seat)
         self.assertEqual(self.mock.mints_by, {claude: 1, codex: 1})
         self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE, EXPECTED_SCOPE])
-        self.assertFalse(self.token_cache.exists(), "a seat app wrote the Fleet cache")
+        self.assertTrue(self.token_cache.exists(), "the default seat's cache is the CLAUDE cache")
         a, b = (json.loads(self.cache(s).read_text()) for s in ("CLAUDE", "CODEX"))
         self.assertNotEqual(a["access_token"], b["access_token"])
         self.assertNotEqual(a["cred_fp"], b["cred_fp"])
@@ -2432,7 +3503,7 @@ class SeatAppTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertIn("claimed:CLAUDE", self.label_names(iss))
         self.assertIn("seat:CLAUDE", self.label_names(iss))
-        self.assertTrue(self.comments_of(iss)[-1].startswith("[CLAUDE·b854d9ad] CLAIMED"))
+        self.assertTrue(self.comments_of(iss)[-1].startswith("CLAIMED"))
         self.assertEqual(self.callers_since(n), {claude})
         self.assertEqual(self.mock.ops.count("BoardWhoami"), 1)  # identity confirmed once per token
         self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "second write")
@@ -2440,56 +3511,41 @@ class SeatAppTests(BoardTest):
         self.assertEqual(self.mock.mints_by, {claude: 1})
         self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["viewer"]["name"], "Claude")
 
-    def test_seat_with_no_app_falls_back_to_fleet(self):
+    def test_seat_with_no_app_fails_closed(self):
+        """Owner 2026-11-05:  the shared Fleet app is retired, so a seat with no app of its own
+        fails closed - reads and writes alike - instead of signing as the shared app."""
         self.seat_app("CLAUDE", "Claude")
-        p = self.as_seat("CODEX", "whoami")
-        self.assertIn("identity:    Fleet (the shared app; fallback for CODEX)", p.stdout)
-        self.assertIn("viewer:      Fleet (app user)", p.stdout)
-        self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (FLEET_LINEAR_CLIENT_ID, FLEET_LINEAR_CLIENT_SECRET)",
-            p.stdout,
-        )
-        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_FLEET", p.stdout)
-        notices = [ln for ln in p.stdout.splitlines() if ln.startswith("notice:")]
-        self.assertEqual(len(notices), 1, p.stdout)
-        self.assertIn(
-            "CODEX has no Linear app yet (no CODEX_LINEAR_CLIENT_ID in Fleet-OPS /linear)",
-            notices[0],
-        )
-        n = len(self.mock.calls)
-        p = self.as_seat(
-            "CODEX", "comment", B_A[:8], "--by", "CODEX", "--text", "a Fleet fallback write"
-        )
-        self.assertIn("as CODEX", p.stdout)
-        self.assertEqual(self.callers_since(n), {CLIENT_ID})
-        self.assertNotIn(
-            "BoardWhoami", [o for o, _ in self.mock.calls[n:]]
-        )  # the Fleet path is unchanged
-        # reads without AGENT_SEAT use Fleet, even with a seat pair present
-        n = len(self.mock.calls)
-        p = self.board("whoami", drop=("AGENT_SEAT",))
-        self.assertIn("identity:    Fleet (the shared app)\n", p.stdout)
-        self.assertNotIn("notice:", p.stdout)
-        self.board("list", drop=("AGENT_SEAT",))
-        self.assertEqual(self.callers_since(n), {CLIENT_ID})
+        p = self.as_seat("CODEX", "whoami", code=4)
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertIn("the CODEX seat's own pair was found nowhere either", p.stderr)
+        self.assertIn("LINEAR_CODEX_CLIENT_ID", p.stderr)
+        self.assertIn("retired by the owner on 2026-11-05", p.stderr)
+        self.assertEqual(self.mock.mints, 0)
+        p = self.as_seat("CODEX", "comment", B_A[:8], "--by", "CODEX", "--text", "x", code=4)
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertEqual(self.mock.mints, 0)
+        # reads with no seat at all need the environment's pair now:  there is no shared app
+        p = self.board("whoami", drop=("AGENT_SEAT",), code=4)
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertNotIn("found nowhere either", p.stderr)  # no seat:  no seat variables named
         # a seat outside the app table never reads a key of its name.  GB-HOUSEKEEPER is the live
         # example:  it is in SEAT_ROSTER, and it has no SEAT_APP_NAMES entry, so resolve_identity
-        # must fall back to Fleet without ever reading GB_HOUSEKEEPER_LINEAR_CLIENT_ID.
+        # fails closed without ever reading GB_HOUSEKEEPER keys.
         cli = load_cli()
         self.assertIn("GB-HOUSEKEEPER", cli.SEAT_ROSTER)
         self.assertNotIn("GB-HOUSEKEEPER", cli.SEAT_APP_NAMES)
-        self.ops_put("GB_HOUSEKEEPER_LINEAR_CLIENT_ID", "gb-housekeeper-id")
-        self.ops_put("GB_HOUSEKEEPER_LINEAR_CLIENT_SECRET", "gb-housekeeper-secret")
-        p = self.as_seat("GB-HOUSEKEEPER", "whoami")
-        self.assertIn(
-            "notice:      GB-HOUSEKEEPER has no Linear app yet (none in the seat table)", p.stdout
+        self.afc_put("LINEAR_GB_HOUSEKEEPER_CLIENT_ID", "gb-housekeeper-id")
+        self.afc_put("LINEAR_GB_HOUSEKEEPER_CLIENT_SECRET", "gb-housekeeper-secret")
+        reads_before = len([r for r in self.vault.requests if r == ("GET", "/api/v3/secrets/raw")])
+        p = self.as_seat("GB-HOUSEKEEPER", "whoami", code=4)
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertNotIn("GB_HOUSEKEEPER", p.stderr)
+        self.assertEqual(
+            len([r for r in self.vault.requests if r == ("GET", "/api/v3/secrets/raw")]),
+            reads_before,
+            "a seat with no app entry never reads the /linear folder",
         )
-        self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (FLEET_LINEAR_CLIENT_ID, FLEET_LINEAR_CLIENT_SECRET)",
-            p.stdout,
-        )
-        self.assertNotIn("GB_HOUSEKEEPER_LINEAR", p.stdout)
-        self.assertEqual(self.mock.mints_by, {CLIENT_ID: 1})
+        self.assertEqual(self.mock.mints, 0)
 
     def test_botfleet_producer_uses_its_own_app_not_fleet(self):
         name = load_cli().SEAT_APP_NAMES["BF-PRODUCER"]
@@ -2497,7 +3553,7 @@ class SeatAppTests(BoardTest):
         p = self.as_seat("BF-PRODUCER", "whoami")
         self.assertIn(f"identity:    {name} (the BF-PRODUCER seat's own Linear app)", p.stdout)
         self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (BF_PRODUCER_LINEAR_CLIENT_ID, BF_PRODUCER_LINEAR_CLIENT_SECRET)",
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_BF_PRODUCER_CLIENT_ID, LINEAR_BF_PRODUCER_CLIENT_SECRET)",
             p.stdout,
         )
         self.assertNotIn("notice:", p.stdout)
@@ -2509,10 +3565,13 @@ class SeatAppTests(BoardTest):
         p = self.as_seat("GROK-WEB", "whoami")
         self.assertIn("identity:    Grok Web (the GROK-WEB seat's own Linear app)", p.stdout)
         self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (GROK_WEB_LINEAR_CLIENT_ID, GROK_WEB_LINEAR_CLIENT_SECRET)",
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_GROK_WEB_CLIENT_ID, LINEAR_GROK_WEB_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_GROK_WEB_CACHE_TOKEN",
+            p.stdout,
+        )
         # the environment form spells the hyphen as an underscore
         self.ops_drop_seat("GROK-WEB")
         self.cache("GROK-WEB").unlink()
@@ -2526,13 +3585,16 @@ class SeatAppTests(BoardTest):
             p.stdout,
         )
         self.assertIn("viewer:      Grok Web (app user)", p.stdout)
-        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_GROK_WEB_CACHE_TOKEN",
+            p.stdout,
+        )
         # every GROK-BUILD spelling is GROK, and reads GROK_LINEAR_CLIENT_ID
         self.seat_app("GROK", "Grok")
         p = self.as_seat("Grok-Build", "whoami")
         self.assertIn("identity:    Grok (the GROK seat's own Linear app)", p.stdout)
         self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (GROK_LINEAR_CLIENT_ID, GROK_LINEAR_CLIENT_SECRET)",
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_GROK_CLIENT_ID, LINEAR_GROK_CLIENT_SECRET)",
             p.stdout,
         )
 
@@ -2545,7 +3607,10 @@ class SeatAppTests(BoardTest):
             "credentials: environment (LINEAR_CODEX_CLIENT_ID, LINEAR_CODEX_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CODEX", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CODEX_CACHE_TOKEN",
+            p.stdout,
+        )
         self.as_seat(
             "CODEX",
             "comment",
@@ -2556,31 +3621,95 @@ class SeatAppTests(BoardTest):
             "from the environment",
             extra=envs,
         )
-        # another seat's variables are not this seat's
+        # another seat's variables are not this seat's:  CLAUDE still resolves its own stored pair
         p = self.as_seat("CLAUDE", "whoami", extra=envs)
-        self.assertIn("viewer:      Fleet (app user)", p.stdout)
-        # the Fleet-OPS pair comes before the seat's variables
+        self.assertIn("viewer:      Claude (app user)", p.stdout)
+        # the seat's own variables come before its stored pair (AFC-473):  an exported
+        # LINEAR_<SEAT>_CLIENT_ID is never silently ignored
         self.seat_app("CODEX", "Codex", cid=codex, secret=sec, register=False)
         p = self.as_seat("CODEX", "whoami", extra=envs)
         self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (CODEX_LINEAR_CLIENT_ID, CODEX_LINEAR_CLIENT_SECRET)",
+            "credentials: environment (LINEAR_CODEX_CLIENT_ID, LINEAR_CODEX_CLIENT_SECRET)",
             p.stdout,
         )
         self.assertEqual(self.mock.mints_by, {codex: 1, CLIENT_ID: 1})
 
-    def test_cloud_pair_wins_and_may_hold_fleet_or_the_seat_app(self):
+    def test_the_environment_seat_pair_wins_over_the_stored_one(self):
+        """AFC-473:  the process environment is consulted first, so an exported pair beats the stored one."""
+        self.seat_app("CLAUDE", "Claude")
+        envs = {
+            "LINEAR_CLAUDE_CLIENT_ID": "env-claude-id",
+            "LINEAR_CLAUDE_CLIENT_SECRET": "env-claude-secret",
+        }
+        self.mock.add_client("env-claude-id", "env-claude-secret", "Claude")
+        p = self.as_seat("CLAUDE", "whoami", extra=envs)
+        self.assertIn(
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
+        )
+        self.assertNotIn(
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
+            p.stdout,
+        )
+        # the stored pair lost:  the environment's pair minted the token
+        self.assertEqual(self.mock.mints_by, {"env-claude-id": 1})
+
+    def test_the_ai_fleet_folder_is_read_directly_with_the_scoped_read_token(self):
+        """The AI Fleet Coordinator folder is read directly with the run's own scoped
+        read token - the retired wrapper is gone, and no other loader exists."""
+        cid, sec = self.seat_app("CLAUDE", "Claude", file=False)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", sec)
+        p = self.as_seat("CLAUDE", "whoami")
+        self.assertIn(
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID, "
+            "LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
+        )
+        gets = [
+            a
+            for a in self.vault.authorizations
+            if a[0] == "GET" and a[1].startswith("/api/v3/secrets/raw/LINEAR_CLAUDE_")
+        ]
+        self.assertEqual(len(gets), 3, "pair and cache blob, one named read each")
+        self.assertTrue(all(a[2] == "Bearer " + self.vault.read_token for a in gets))
+        # the write token and the /tools token never read a /linear key
+        auths = {
+            a[2]
+            for a in self.vault.authorizations
+            if a[0] == "GET" and a[1].startswith("/api/v3/secrets/raw/LINEAR_")
+        }
+        self.assertNotIn("Bearer " + self.vault.write_token, auths)
+        self.assertNotIn("Bearer " + self.vault.tools_token, auths)
+
+    def test_a_seat_with_its_own_app_ignores_leftover_fleet_variables(self):
+        """Owner 2026-11-05:  LINEAR_FLEET_CLIENT_ID and _SECRET are no longer read anywhere,
+        so leftover exports cannot pull a seat's writes onto a shared app."""
+        cid, sec = self.seat_app("CLAUDE", "Claude", file=False)
+        envs = {
+            "LINEAR_CLAUDE_CLIENT_ID": cid,
+            "LINEAR_CLAUDE_CLIENT_SECRET": sec,
+            "LINEAR_FLEET_CLIENT_ID": "env-fleet-id",
+            "LINEAR_FLEET_CLIENT_SECRET": "env-fleet-secret",
+        }
+        p = self.as_seat("CLAUDE", "whoami", extra=envs)
+        self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
+        self.assertIn(
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
+        )
+        self.assertEqual(self.mock.mints_by, {cid: 1})
+
+    def test_cloud_pair_wins_and_may_hold_the_seat_app(self):
         claude, csec = self.seat_app("CLAUDE", "Claude")
         fleet_pair = {"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET}
-        p = self.as_seat("CLAUDE", "whoami", extra=fleet_pair)  # it wins over the Fleet-OPS pair
+        p = self.as_seat("CLAUDE", "whoami", extra=fleet_pair)  # it wins over the stored pair
         self.assertIn("credentials: environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)", p.stdout)
         self.assertIn(
-            "identity:    Fleet (the shared app, from the environment; fallback for CLAUDE)",
+            "identity:    Claude (the CLAUDE seat's own Linear app, from the environment)",
             p.stdout,
         )
-        self.assertIn(
-            "notice:      the environment's LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are the shared Fleet app's",
-            p.stdout,
-        )
+        self.assertNotIn("notice:", p.stdout)
         self.as_seat(
             "CLAUDE",
             "comment",
@@ -2588,7 +3717,7 @@ class SeatAppTests(BoardTest):
             "--by",
             "CLAUDE",
             "--text",
-            "cloud Fleet pair",
+            "cloud pair",
             extra=fleet_pair,
         )
         p = self.as_seat(
@@ -2623,7 +3752,7 @@ class SeatAppTests(BoardTest):
             extra=wrong,
             code=4,
         )
-        self.assertIn("the 'Codex' app, not 'Claude' or 'Fleet'", p.stderr)
+        self.assertIn("the 'Codex' app, not 'Claude'", p.stderr)
         self.assertEqual([o for o in self.mock.ops if o in WRITE_OPS], before)
         self.as_seat("CLAUDE", "list", extra=wrong)
         self.as_seat("CLAUDE", "whoami", extra=wrong, code=6)
@@ -2648,6 +3777,10 @@ class SeatAppTests(BoardTest):
             self.assertIn("belong to the 'Codex' app, not 'Claude'", p.stderr)
             self.assertIn("look swapped", p.stderr)
             self.assertIn("Reads still work", p.stderr)
+            # Every exit-4 line names the variable the operator has to fix, so a caller
+            # downstream never has to fall back to a nameless "no credentials".
+            self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+            self.assertIn("LINEAR_CLIENT_SECRET", p.stderr)
         self.assertEqual([o for o in self.mock.ops if o in WRITE_OPS], [])
         self.assertEqual(self.mock.ops[n_ops:], ["BoardWhoami"])  # asked once, kept with the token
         p = self.as_seat("CLAUDE", "whoami", code=6)
@@ -2682,15 +3815,17 @@ class SeatAppTests(BoardTest):
         )
         # Legacy and display aliases resolve to WISE, and sign as WISE with Wise's app.
         self.as_seat("WISE", "comment", B_A[:8], "--by", "WISE", "--text", "WISE is INSTINCT")
-        self.assertIn("seat:        WISE (AGENT_SEAT)", self.as_seat("WISE", "whoami").stdout)
+        self.assertIn("seat:        WISE (bearer-verified)", self.as_seat("WISE", "whoami").stdout)
         for alias in ("Wise-Instinct", "Echo-Instinct", "Instinct"):
             self.as_seat(
                 alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to WISE"
             )
-            self.assertIn("seat:        WISE (AGENT_SEAT)", self.as_seat(alias, "whoami").stdout)
+            self.assertIn(
+                "seat:        WISE (bearer-verified)", self.as_seat(alias, "whoami").stdout
+            )
         for alias in ("Muse-Assist", "Rob", "Rob-Muse"):
             self.as_seat(alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to MA")
-            self.assertIn("seat:        MA (AGENT_SEAT)", self.as_seat(alias, "whoami").stdout)
+            self.assertIn("seat:        MA (bearer-verified)", self.as_seat(alias, "whoami").stdout)
         # OpenCode and OC are interchangeable, and case never matters
         self.seat_app("OPENCODE", "OpenCode")
         self.as_seat(
@@ -2709,17 +3844,23 @@ class SeatAppTests(BoardTest):
             ).stderr,
         )
 
+    # The one deliberate share:  two Jet logins, one Linear app (owner,
+    # Oct 23 2026 - scripts/simple-tools-mcp/src/linear.js).  JET is wake-only
+    # with no tool surface, so no credential can swap unseen.
+    SHARED_APP_NAME_SEATS = (frozenset({"JET", "JET-CHAT"}),)
+
     def test_accepted_app_names_belong_to_one_seat(self):
         # a name two seats share would let their credentials be swapped without the check noticing
         cli = load_cli()
         owner = {}
         for seat in cli.SEAT_APP_NAMES:
             for name in {n.casefold() for n in (*cli.seat_app_names(seat), seat)}:
-                self.assertNotIn(
-                    name.casefold(),
-                    owner,
-                    f"{name!r} is accepted for both {owner.get(name.casefold())} and {seat}",
-                )
+                previous = owner.get(name.casefold())
+                if previous is not None:
+                    self.assertTrue(
+                        any({previous, seat} <= shared for shared in self.SHARED_APP_NAME_SEATS),
+                        f"{name!r} is accepted for both {previous} and {seat}",
+                    )
                 owner[name.casefold()] = seat
         self.assertEqual(set(cli.SEAT_APP_ALIASES) - set(cli.SEAT_APP_NAMES), set())
 
@@ -2749,7 +3890,7 @@ class SeatAppTests(BoardTest):
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints_by, {claude: 2, codex: 2})
         self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["access_token"], claude_tok)
-        self.assertFalse(self.token_cache.exists())
+        self.assertTrue(self.token_cache.exists(), "the default seat's cache is the CLAUDE cache")
 
     def test_concurrent_runs_with_an_expired_blob_both_succeed(self):
         """No lock any more:  two runs that both see an expired blob each mint and write;  last writer wins and
@@ -2762,8 +3903,8 @@ class SeatAppTests(BoardTest):
         self.cache("CLAUDE").write_text(json.dumps(blob))
         procs = [
             subprocess.Popen(
-                [PY, str(CLI), "list"],
-                env=dict(self.env, AGENT_SEAT="CLAUDE"),
+                [PY, "-c", CLI_BOOTSTRAP, str(CLI), "list"],
+                env=self.seated_env("CLAUDE"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -2779,17 +3920,16 @@ class SeatAppTests(BoardTest):
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints, n, "the stored blob was used")
 
-    def test_incomplete_seat_pair_uses_fleet_and_no_credentials_names_both(self):
-        self.ops_put("CLAUDE_LINEAR_CLIENT_ID", "only-the-id")
-        p = self.as_seat("CLAUDE", "whoami")
-        self.assertIn("identity:    Fleet (the shared app; fallback for CLAUDE)", p.stdout)
-        # with no Fleet pair either, the message names both
-        self.ops_drop_seat("CLAUDE")
-        self.creds.unlink()
-        p = self.as_seat("CLAUDE", "list", code=4)
-        self.assertIn("no Fleet credentials", p.stderr)
-        self.assertIn("CLAUDE has no app credentials of its own", p.stderr)
-        self.assertIn("Infisical Fleet-OPS /linear", p.stderr)
+    def test_incomplete_seat_pair_fails_closed_and_names_both(self):
+        # only the id is stored:  an incomplete pair is no pair, and there is no shared fallback
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", "only-the-id")
+        self.vault.secrets.pop("LINEAR_CLAUDE_CLIENT_SECRET", None)
+        p = self.as_seat("CLAUDE", "whoami", code=4)
+        self.assertIn("no Linear app credentials", p.stderr)
+        self.assertIn("the CLAUDE seat's own pair was found nowhere either", p.stderr)
+        self.assertIn("LINEAR_CLAUDE_CLIENT_ID", p.stderr)
+        self.assertIn("Infisical AI Fleet Coordinator /linear", p.stderr)
+        self.assertEqual(self.mock.mints, 0)
 
     def test_nothing_is_read_from_the_secrets_folder(self):
         """AFC-359:  a decoy secrets folder under HOME is never opened, and no token cache lands there."""
@@ -2802,9 +3942,13 @@ class SeatAppTests(BoardTest):
         self.seat_app("CLAUDE", "Claude")
         p = self.as_seat("CLAUDE", "whoami", drop=())
         self.assertIn(
-            "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
+            p.stdout,
         )
-        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CLAUDE", p.stdout)
+        self.assertIn(
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN",
+            p.stdout,
+        )
         after = sorted(str(q.relative_to(home)) for q in (home / ("." + "secrets")).rglob("*"))
         self.assertEqual(after, before)
         self.assertEqual(
@@ -2816,20 +3960,40 @@ class SeatAppTests(BoardTest):
             [],
         )  # no token file, no cache, nothing
 
-    def test_relabel_stays_on_the_fleet_app(self):
-        self.seat_app("CLAUDE", "Claude")
+    def test_relabel_dry_run_uses_the_env_pair_and_apply_the_seats_own_app(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        env_pair = {"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET}
         n = len(self.mock.calls)
         p = subprocess.run(
-            [PY, str(RELABEL)], env=dict(self.env), capture_output=True, text=True, timeout=60
+            [PY, "-c", RELABEL_BOOTSTRAP, str(RELABEL)],
+            env=dict(self.seated_env("CLAUDE"), **env_pair),
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(self.callers_since(n), {CLIENT_ID})
+        self.assertEqual(
+            self.callers_since(n), {CLIENT_ID}, "a dry run reads with the environment's pair"
+        )
+        n = len(self.mock.calls)
+        p = subprocess.run(
+            [PY, "-c", RELABEL_BOOTSTRAP, str(RELABEL), "--apply"],
+            env=self.seated_env("CLAUDE"),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(
+            claude, self.callers_since(n), "an apply writes as the verified seat's own app"
+        )
 
     def test_no_token_or_secret_reaches_output(self):
         claude, sec = self.seat_app("CLAUDE", "Claude")
         self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
         p = self.as_seat("CLAUDE", "whoami", code=6)
-        self.assertIn("minting the Claude seat app token failed: HTTP 401", p.stderr)
+        self.assertIn("minting the Claude seat app token failed", p.stderr)
+        self.assertIn("http=401", p.stderr)
         for needle in (sec, claude, "rotated-in-linear-not-in-the-file"):
             self.assertNotIn(needle, p.stdout + p.stderr)
         self.mock.clients[claude]["secret"] = sec
@@ -2983,8 +4147,8 @@ class FileInputTests(BoardTest):
 
     def test_standard_input_that_is_not_utf8_is_refused(self):
         p = subprocess.run(
-            [PY, str(CLI), "file", "--title", "x", "--desc-file", "-"],
-            env=self.env,
+            [PY, "-c", CLI_BOOTSTRAP, str(CLI), "file", "--title", "x", "--desc-file", "-"],
+            env=self.seated_env("CLAUDE"),
             input=b"caf\xe9",
             capture_output=True,
             timeout=60,
@@ -3013,7 +4177,7 @@ class FileInputTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"[CLAUDE·5e55105a] Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
+            f"Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
         )
         n = len(self.mock.comments)
         p = self.board(
@@ -3033,14 +4197,15 @@ class FileInputTests(BoardTest):
             stdin="From standard input.\n",
         )
         self.assertEqual(
-            self.comments_of(iss)[-1], "[CLAUDE·sess1] From standard input.\n\nSessions: sess-1"
+            self.comments_of(iss)[-1],
+            "From standard input.\n\nSessions: sess-1",
         )
         ops = len(self.mock.ops)
         p = self.board("comment", "OPS-10", "--text-file", f, code=2)
         self.assertIn("--by", p.stderr)
         self.assertEqual(len(self.mock.ops), ops)
         p = self.board("comment", "OPS-10", "--by", "CODEX", "--text-file", f, code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
 
     def test_an_empty_comment_file_is_refused(self):
         p = self.board(
@@ -3060,15 +4225,14 @@ class FileInputTests(BoardTest):
         self.untouched()
 
     def test_a_gated_write_never_reads_its_file(self):
-        """Writes off exits 7 and no seat exits 2, with the file untouched (a missing one would otherwise
-        be an exit 2 of its own)."""
+        """A write with no bearer-verified seat exits 6 and no seat exits 2, with the file untouched (a
+        missing one would otherwise be an exit 2 of its own)."""
         for args in (
             ["file", "--title", "x", "--desc-file", "/nonexistent", "--fix-file", "-"],
             ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", "-"],
             ["label", "add", B_A[:8], "needs-owner"],
         ):
-            self.board(*args, drop=("LINEAR_BOARD_WRITES",), code=7, stdin="")
-            self.board(*args, drop=("AGENT_SEAT",), code=2, stdin="")
+            self.board(*args, drop=("AGENT_SEAT",), code=6, stdin="")
         self.untouched()
 
 
@@ -3189,7 +4353,7 @@ class FlatLabelTests(BoardTest):
     def test_fleet_report_is_a_label_never_a_kind(self):
         p = self.board("file", "--title", "x", "--kind", "fleet-report", code=2)
         self.assertIn("--label fleet-report", p.stderr)
-        self.assertEqual(self.mock.ops, [])
+        self.assertEqual([o for o in self.mock.ops if o != "BoardWhoami"], [])
         p = self.file("A fleet report", "fleet-report")
         iss = self.issue_by_ident(self.ident(p))
         self.assertEqual(self.label_names(iss), ["Kind/agent-report", "fleet-report"])
@@ -3230,7 +4394,7 @@ class FlatLabelTests(BoardTest):
 
     def test_label_by_must_match_the_seat(self):
         p = self.board("label", "add", "OPS-10", "needs-owner", "--by", "CODEX", code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
         self.assertEqual(self.mock.ops, [])
 
     def test_a_team_scoped_label_of_the_same_name_is_not_used(self):
@@ -3284,7 +4448,14 @@ class FlatLabelTests(BoardTest):
         self.assertIn("2 shown of 2 matching", p.stdout)
         p = self.board("list", "--label", "ask-capture", "--limit", "1")
         self.assertIn("1 shown of 2 matching", p.stdout)
-        self.board("list", "--label", "needs-owner", drop=("AGENT_SEAT",))  # a read needs no seat
+        # a read needs no seat;  with the shared app retired it uses the environment's pair
+        self.board(
+            "list",
+            "--label",
+            "needs-owner",
+            drop=("AGENT_SEAT",),
+            extra={"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET},
+        )
         d = json.loads(self.board("show", self.ident(q1), "--json").stdout)
         self.assertEqual(sorted(d["labels"]), ["Kind/agent-report", "needs-owner"])
 
@@ -3360,23 +4531,13 @@ class FlatLabelTests(BoardTest):
             ["list", "--label", "needs-owner"],
             ["label", "add", "OPS-10", "needs-owner"],
         ):
-            p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
+            p = self.board(*args, extra=extra, drop=("AGENT_SEAT",), code=2)
             self.assertIn("Linear only", p.stderr, args)
             self.assertNotIn("OLD BOARD", p.stdout, args)
-        p = self.board(
-            "file",
-            "--title",
-            "x",
-            "--desc",
-            "d",
-            "--fix",
-            "f",
-            extra=extra,
-            drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
-        )
-        self.assertEqual(
-            p.stdout.strip(), "OLD BOARD ['file', '--title', 'x', '--desc', 'd', '--fix', 'f']"
-        )
+        # A write verb with no Linear-only flag still does not reach the archived CLI:
+        # the frozen findings.db is read-only, so the backend refuses it first.
+        p = self.board("list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT",))
+        self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
 
 
@@ -3390,6 +4551,17 @@ def load_cli():
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
+
+
+_CLI_MOD = None
+
+
+def _cli():
+    """load_cli(), cached:  the board() launcher shim normalizes seats with it."""
+    global _CLI_MOD
+    if _CLI_MOD is None:
+        _CLI_MOD = load_cli()
+    return _CLI_MOD
 
 
 class CommentAuthorTests(BoardTest):
@@ -3423,13 +4595,18 @@ class CommentAuthorTests(BoardTest):
         rows = {c["created_at"]: c for c in self.comments("OPS-10")}
         human = rows["2026-10-11T12:00:00Z"]
         self.assertEqual(
-            (human["author"], human["author_id"], human["author_app"]),
-            ("Jay Wedgeworth", self.OWNER, False),
+            (human["author"], human["author_id"], human["author_app"], human.get("author_seat")),
+            ("Jay Wedgeworth", self.OWNER, False, None),
         )
         tagged = rows["2026-10-11T12:01:00Z"]
         self.assertEqual(
-            (tagged["author"], tagged["author_id"], tagged["author_app"]),
-            ("CLAUDE", self.APP, True),
+            (
+                tagged["author"],
+                tagged["author_id"],
+                tagged["author_app"],
+                tagged.get("author_seat"),
+            ),
+            ("CLAUDE", self.APP, True, "CLAUDE"),
         )
 
     def test_a_tag_line_changes_the_shown_author_and_never_the_account(self):
@@ -3445,6 +4622,7 @@ class CommentAuthorTests(BoardTest):
         (row,) = [c for c in self.comments("OPS-10") if c["created_at"] == "2026-10-11T12:00:00Z"]
         self.assertEqual(row["author"], "CLAUDE")
         self.assertEqual(row["author_id"], self.APP)
+        self.assertIsNone(row.get("author_seat"))
 
     def test_a_comment_whose_account_is_unknown_says_null_not_a_guess(self):
         iss = self.issue_by_ident("OPS-10")
@@ -3462,7 +4640,8 @@ class ClutchRoutingCompatibilityTests(unittest.TestCase):
 
 
 class TokenBlobTests(BoardTest):
-    """The minted token lives in Infisical Fleet-OPS /linear (CACHE_<SEAT>), never on disk (AFC-359)."""
+    """The minted token lives in Infisical AI Fleet Coordinator /linear (LINEAR_<SEAT>_CACHE_TOKEN),
+    never on disk (AFC-359)."""
 
     seat_app = SeatAppTests.seat_app
     cache = SeatAppTests.cache
@@ -3473,24 +4652,46 @@ class TokenBlobTests(BoardTest):
         return self.cache_path()
 
     def cache_path(self):
-        return self.ops_vault / "CACHE_CLAUDE"
+        return VaultKey(self.vault, "LINEAR_CLAUDE_CACHE_TOKEN")
 
-    def sets(self):
-        return [v for v in self.fs_verbs() if v.startswith("set ")]
+    def writes(self):
+        """Cache-blob writes to the fake /linear folder so far ((method, path) pairs)."""
+        return [
+            (m, path)
+            for m, path in self.vault.requests
+            if m in ("PATCH", "POST") and path.endswith("LINEAR_CLAUDE_CACHE_TOKEN")
+        ]
 
-    def test_a_fresh_blob_means_zero_mints_zero_writes_and_three_per_key_reads(self):
+    def folder_reads(self):
+        # named-key reads of the /linear folder; a whole-folder listing would be the bare path
+        assert not any(r == ("GET", "/api/v3/secrets/raw") for r in self.vault.requests), (
+            "a run never lists the whole /linear folder"
+        )
+        return [
+            r
+            for r in self.vault.requests
+            if r[0] == "GET" and r[1].startswith("/api/v3/secrets/raw/LINEAR_")
+        ]
+
+    def test_a_fresh_blob_means_zero_mints_zero_writes_and_one_folder_read_per_run(self):
         blob = self.seat()
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints, 1)
         self.assertTrue(blob.exists())
-        before = len(self.fs_verbs())
+        reads_before = len(self.folder_reads())
+        writes_before = len(self.writes())
+        self.assertEqual(writes_before, 2, "the first run wrote the blob (update, then create)")
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints, 1)
-        self.assertEqual(self.sets(), ["set CACHE_CLAUDE"], "only the first run wrote")
-        # AFC-361:  no bundle dump, one `fleet-secrets get` per key (client id, client secret, blob)
         self.assertEqual(
-            self.fs_verbs()[before:],
-            ["get CLAUDE_LINEAR_CLIENT_ID", "get CLAUDE_LINEAR_CLIENT_SECRET", "get CACHE_CLAUDE"],
+            len(self.writes()),
+            writes_before,
+            "the second run minted nothing and wrote nothing",
+        )
+        self.assertEqual(
+            len(self.folder_reads()),
+            reads_before + 3,
+            "the second run re-reads only its own named keys (pair and cache blob), never the folder",
         )
 
     def test_an_expired_blob_means_one_mint_and_one_write_with_the_value_on_stdin(self):
@@ -3500,11 +4701,11 @@ class TokenBlobTests(BoardTest):
         data["expires_at"] = 1.0
         data["minted_at"] -= 3 * 86400
         blob.write_text(json.dumps(data))
-        n_sets = len(self.sets())
+        n_writes = len(self.writes())
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints, 2)
-        self.assertEqual(len(self.sets()), n_sets + 1)
-        # the fake refuses any `set` that carries the value in an argument, so reaching here proves stdin
+        self.assertEqual(len(self.writes()), n_writes + 1)
+        # the mock takes the value only in the request body, so reaching here proves the body path
         stored = json.loads(blob.read_text())
         self.assertIn(stored["access_token"], self.mock.tokens)
         self.assertEqual(
@@ -3514,15 +4715,16 @@ class TokenBlobTests(BoardTest):
 
     def test_a_failed_write_still_works_and_leaves_nothing_on_disk(self):
         blob = self.seat()
-        p = self.as_seat("CLAUDE", "list", extra={"FS_FAIL_SET": "1"})
+        self.vault.fail_writes = True
+        p = self.as_seat("CLAUDE", "list")
         self.assertIn("could not save the new Claude seat app token in Infisical", p.stderr)
-        self.assertIn("CACHE_CLAUDE", p.stderr)
+        self.assertIn("LINEAR_CLAUDE_CACHE_TOKEN", p.stderr)
         self.assertIn("using it for this run only", p.stderr)
         self.assertFalse(blob.exists())
         self.assertEqual(sorted(str(q) for q in (self.tmp / "home").rglob("*")), [])
         tokens = list(self.mock.tokens)
         for q in self.tmp.rglob("*"):
-            if q.is_file() and q != self.fs_calls:
+            if q.is_file():
                 data = q.read_text(errors="ignore")
                 for t in tokens:
                     self.assertNotIn(t, data, f"a token was written to {q}")
@@ -3531,9 +4733,9 @@ class TokenBlobTests(BoardTest):
         blob = self.seat()
         self.as_seat("CLAUDE", "whoami")
         self.assertEqual(json.loads(blob.read_text())["viewer"]["name"], "Claude")
-        before = len(self.sets())
+        before = len(self.writes())
         self.as_seat("CLAUDE", "whoami")
-        self.assertEqual(len(self.sets()), before, "an unchanged viewer is not written again")
+        self.assertEqual(len(self.writes()), before, "an unchanged viewer is not written again")
 
     def test_no_file_appears_under_home(self):
         self.seat()
@@ -3548,7 +4750,682 @@ class TokenBlobTests(BoardTest):
         self.assertIn("token store: none on this host", p.stdout)
         self.board("list", extra=pair)
         self.assertEqual(self.mock.mints, 2)
-        self.assertEqual(self.sets(), [])
+        self.assertEqual(self.writes(), [])
+
+
+class CredentialPreviewTests(unittest.TestCase):
+    """A credential preview:  enough to tell two credentials apart, never enough to use one.
+
+    The board owns the credential, so the board is the layer that hands back a preview of it
+    to a caller that has to name the credential without printing it."""
+
+    def test_a_long_credential_shows_its_first_eight_and_last_four(self):
+        cli = load_cli()
+        secret = "abcdefgh" + "x" * 20 + "wxyz"
+        self.assertEqual(cli.credential_preview(secret), "abcdefgh…wxyz")
+
+    def test_a_short_credential_shows_one_character_only(self):
+        # Twelve of thirteen characters is the whole credential.  A value under twenty-four
+        # characters is not a preview at all, so it shows its single leading character.
+        cli = load_cli()
+        self.assertEqual(cli.credential_preview("lin_api_123456"), "l…")
+        self.assertEqual(cli.credential_preview("a" * 23), "a…")
+        self.assertEqual(cli.credential_preview("a" * 24), "a" * 8 + "…" + "a" * 4)
+
+    def test_an_empty_credential_has_no_preview(self):
+        self.assertEqual(load_cli().credential_preview(""), "")
+        self.assertEqual(load_cli().credential_preview(None), "")
+
+
+class CredentialFailureTests(BoardTest):
+    """A credential the board could not use:  what it says about it, and what it never says.
+
+    The board owns the credential, so the board is the layer that can hand back a safe preview
+    of it, and every exit-4 line names the variable the operator has to fix.  A caller
+    downstream reads those fields and never the sentence around them, because the sentence is
+    third-party text that can carry anything."""
+
+    seat_app = SeatAppTests.seat_app
+    as_seat = SeatAppTests.as_seat
+
+    def test_a_rejected_credential_names_its_masked_preview(self):
+        self.board("whoami")
+        tokens = set(self.mock.tokens)
+        self.mock.tokens.clear()
+        p = self.board("list", code=6)
+        self.assertIn("credential=", p.stderr)
+        preview = p.stderr.rsplit("credential=", 1)[1].split()[0]
+        self.assertIn("…", preview, "a masked preview, not the credential")
+        for token in tokens:
+            self.assertNotIn(token, preview, "the token itself is never the preview")
+
+    def test_a_swapped_seat_credential_names_the_variable_to_fix(self):
+        # Every exit-4 line names the variable, so a caller downstream never has to fall back
+        # to a nameless "no credentials".
+        codex, sec = self.seat_app("CODEX", "Codex", file=False)
+        self.seat_app("CLAUDE", "Claude", cid=codex, secret=sec, register=False)
+        p = self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4)
+        self.assertIn("refusing to write as CLAUDE", p.stderr)
+        self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+        self.assertIn("LINEAR_CLIENT_SECRET", p.stderr)
+
+    def test_a_missing_credential_names_the_variable_to_fix(self):
+        self.creds.unlink()
+        p = self.board("list", code=4)
+        self.assertIn("LINEAR_CLAUDE_CLIENT_ID", p.stderr)
+        self.assertIn("LINEAR_CLAUDE_CLIENT_SECRET", p.stderr)
+
+    # ---- the structured fields a caller downstream reads ---------------------------------------
+    def test_a_missing_credential_hands_back_the_variable_as_a_field(self):
+        # The board owns the credential, so it is the board that says which variable an
+        # operator has to set, and it says it as a field:  a caller never has to parse
+        # the sentence around it.
+        self.creds.unlink()
+        p = self.board("list", code=4)
+        self.assertIn("credential_field=", p.stderr)
+        field = p.stderr.rsplit("credential_field=", 1)[1].split()[0]
+        self.assertIn("LINEAR_CLAUDE_CLIENT_ID", field)
+        self.assertIn("LINEAR_CLAUDE_CLIENT_SECRET", field)
+        self.assertIn("LINEAR_CLIENT_ID", field)
+        self.assertIn("LINEAR_CLIENT_SECRET", field)
+
+    def test_a_swapped_credential_hands_back_the_variable_as_a_field(self):
+        codex, sec = self.seat_app("CODEX", "Codex", file=False)
+        self.seat_app("CLAUDE", "Claude", cid=codex, secret=sec, register=False)
+        p = self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4)
+        self.assertIn("credential_field=LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET", p.stderr)
+
+    def test_a_rejected_credential_hands_back_the_variable_as_a_field(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn(
+            "credential_field=LINEAR_CLAUDE_CLIENT_ID,LINEAR_CLAUDE_CLIENT_SECRET", p.stderr
+        )
+
+    def test_a_failed_mint_says_what_failed_and_nothing_of_the_providers_own_text(self):
+        # The token endpoint's error body is Linear's text and can carry anything, so
+        # the sentence says what failed and the machine-readable parts come back as
+        # fields of their own.
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn("minting the Claude seat app token failed", p.stderr)
+        self.assertIn("error_type=HTTPError", p.stderr)
+        self.assertIn("http=401", p.stderr)
+        self.assertNotIn(
+            "invalid_client", p.stderr, "the provider's own text is not in the message"
+        )
+        self.assertNotIn("bad client", p.stderr)
+
+    def test_a_request_id_is_quoted_back_when_the_response_carries_one(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.request_id = "req-abc12345"
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn("request_id=req-abc12345", p.stderr)
+
+    def test_no_request_id_is_invented_when_the_response_carries_none(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertNotIn("request_id=", p.stderr)
+
+
+class ErrorFieldTests(unittest.TestCase):
+    """The allow-listed fields of a failure:  what a caller downstream may read."""
+
+    def test_the_fields_of_an_error_are_the_allow_listed_ones(self):
+        cli = load_cli()
+        err = cli.GqlError(
+            [
+                {
+                    "message": "Authentication required",
+                    "extensions": {"code": "AUTHENTICATION_ERROR"},
+                }
+            ],
+            None,
+            401,
+            {"x-request-id": "req-abc12345"},
+        )
+        fields = cli.error_fields(
+            err, "lin_api_…wxyz", "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"
+        )
+        self.assertEqual(fields["error_type"], "GqlError")
+        self.assertEqual(fields["http"], "401")
+        self.assertEqual(fields["request_id"], "req-abc12345")
+        self.assertEqual(fields["credential"], "lin_api_…wxyz")
+        self.assertEqual(fields["credential_field"], "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET")
+
+    def test_a_failure_with_no_status_and_no_request_id_carries_neither(self):
+        cli = load_cli()
+        fields = cli.error_fields(cli.GqlError([{"message": "boom"}]))
+        self.assertEqual(fields, {"error_type": "GqlError"})
+
+    def test_the_variable_names_come_from_the_places_the_credentials_came_from(self):
+        cli = load_cli()
+        self.assertEqual(
+            cli.credential_vars(
+                "Infisical Example-Project staging /example-path (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)"
+            ),
+            "CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET",
+        )
+        self.assertEqual(
+            cli.credential_vars("environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"),
+            "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET",
+        )
+        self.assertEqual(cli.credential_vars(""), "")
+
+
+class OwnershipTests(BoardTest):
+    """Smart ownership:  with LINEAR_BOARD_OWNER=1 a claim also mirrors onto the seat's own
+    Linear user, so the board's assignee column agrees with the claim label, and releasing or
+    closing clears it again.  The label stays the record of who holds an issue, and a seat with
+    no Linear user of its own still claims:  it simply owns nothing."""
+
+    OWNED = {"LINEAR_BOARD_OWNER": "1"}
+
+    def setUp(self):
+        super().setUp()
+        # SENTRY, GB-RETIRED and DUP are synthetic fixture seats (no live registry entry):  the
+        # ownership-mirror semantics need a seat whose app exists but whose Linear user does not
+        # (or is deactivated or ambiguous).  Registration is harness-only.
+        self.seat_app("CODEX", "Codex")
+        self.seat_app("SENTRY", "Sentry")
+        self.seat_app("GB-RETIRED", "GB-Retired")
+        self.seat_app("DUP", "Dup")
+
+    def todo_issue(self, title="Ownership probe"):
+        return self.mock.add_issue(
+            str(uuid.uuid4()), "AFC", "Todo", title, 3, ["Kind/agent-report"]
+        )
+
+    def test_by_default_a_claim_stays_a_label_and_writes_no_assignee(self):
+        """The frozen contract:  the seat rides in the label and the tag line, not a Linear field."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+
+    def test_claim_mirrors_ownership_onto_the_seats_linear_user(self):
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED
+        )  # AGENT_SEAT=CLAUDE
+        inp = self.mock.updates[-1][1]
+        self.assertEqual(inp.get("assigneeId"), "user-claude")  # seat CLAUDE -> user Claude
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))  # the label is still the record
+
+    def test_a_seat_with_no_linear_user_still_claims_and_assigns_nobody(self):
+        iss = self.todo_issue()
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+
+    def test_a_deactivated_seat_is_never_assigned(self):
+        """A seat Linear has deactivated owns nothing:  the label is kept, the assignee is not."""
+        iss = self.todo_issue()
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "GB-RETIRED",
+            extra=dict(self.OWNED, AGENT_SEAT="GB-RETIRED"),
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:GB-RETIRED", self.label_names(iss))
+
+    def test_a_steal_moves_the_owner_with_the_claim(self):
+        iss = self.mock.add_issue(
+            str(uuid.uuid4()),
+            "AFC",
+            "In Progress",
+            "Held",
+            3,
+            ["Kind/agent-report", "seat:CODEX", "claimed:CODEX"],
+        )
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "CLAUDE",
+            "--steal",
+            "--reason",
+            "CODEX is capped out",
+            extra=self.OWNED,
+        )
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_closing_clears_the_owner(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_releasing_the_claim_clears_the_owner(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.board("status", iss["identifier"], "open", extra=self.OWNED)
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_duplicate_clears_the_owner(self):
+        """The duplicate relation path skips the CLOSING_STATUSES branch, so it
+        clears the assignee in its own cleanup update instead."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
+        self.assertIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_steal_by_a_userless_seat_clears_the_stale_owner(self):
+        """A steal moves the claim even when the taker has no Linear user;  the
+        old owner's assignee goes with it instead of lingering stale."""
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "CODEX", extra=dict(self.OWNED, AGENT_SEAT="CODEX")
+        )
+        self.assertEqual(iss.get("assignee"), "user-codex")
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            "--steal",
+            "--reason",
+            "CODEX is gone",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+
+    def test_release_without_a_claim_keeps_a_human_assignee(self):
+        """open/backlog clear the assignee only when a claim marker was actually
+        released;  an unclaimed issue keeps whoever owns it."""
+        iss = self.todo_issue()
+        iss["assignee"] = "user-claude"
+        self.board("status", iss["identifier"], "open", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_closing_by_default_writes_no_assignee_at_all(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.board("status", iss["identifier"], "completed")
+        self.assertEqual(sorted(self.mock.updates[-1][1]), ["stateId"])
+
+    def test_the_users_listing_is_gated_on_the_flag(self):
+        """With the flag off no board command touches the users listing, so a
+        refused listing cannot abort anything."""
+        self.mock.fail_users = True
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.board("status", iss["identifier"], "completed")
+
+    def test_a_refused_users_listing_degrades_to_a_label_only_claim(self):
+        self.mock.fail_users = True
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.assertIn("ownership stays off", p.stderr)
+        # The warning carries only allow-listed fields, never the response body.
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("users listing refused", p.stderr)
+
+    def test_case_variants_of_one_seat_assign_nobody(self):
+        """Two names differing only in case match the seat ambiguously, so the
+        claim lands on the label rather than risking the wrong user."""
+        self.mock.users["claude"] = {
+            "id": "user-claude-lower",
+            "name": "claude",
+            "displayName": "claude",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+
+    def test_an_exact_name_wins_over_case_variants(self):
+        self.mock.users["CLAUDE"] = {
+            "id": "user-claude-upper",
+            "name": "CLAUDE",
+            "displayName": "CLAUDE",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude-upper")
+
+    def test_two_users_sharing_one_name_assign_nobody(self):
+        """Two active users under one name (either could be paginated first)
+        own nothing, so the claim cannot assign the wrong one by order."""
+        self.mock.users["dup-a"] = {
+            "id": "user-dup-a",
+            "name": "Dup",
+            "displayName": "Dup",
+            "active": True,
+        }
+        self.mock.users["dup-b"] = {
+            "id": "user-dup-b",
+            "name": "Dup",
+            "displayName": "Dup",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "DUP", extra=dict(self.OWNED, AGENT_SEAT="DUP")
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:DUP", self.label_names(iss))
+
+    def test_malformed_user_records_degrade_to_a_label_only_claim(self):
+        """One malformed record (empty id, blank name, non-boolean active)
+        degrades ownership to nothing instead of aborting the verb or serving
+        a partial identity set:  the claim lands on the label, like the
+        refused-listing path."""
+        self.mock.users["bad-id"] = {
+            "id": "",
+            "name": "BadId",
+            "displayName": "BadId",
+            "active": True,
+        }
+        self.mock.users["bad-name"] = {
+            "id": "user-bad-name",
+            "name": "   ",
+            "displayName": "bad",
+            "active": True,
+        }
+        self.mock.users["bad-active"] = {
+            "id": "user-bad-active",
+            "name": "BadActive",
+            "displayName": "BadActive",
+            "active": "yes",
+        }
+        self.mock.users["none-id"] = {
+            "id": None,
+            "name": "NoneId",
+            "displayName": "NoneId",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.assertIn("unexpected shape", p.stderr)
+        self.assertIn("ownership stays off", p.stderr)
+        self.assertIn("Linear user response has an invalid", p.stderr)
+
+    def test_parse_linear_users_rejects_malformed_records(self):
+        """The boundary validator raises a precise ValueError on the first
+        malformed record;  deactivated users skip silently and shared names
+        collapse to nobody."""
+        mod = load_cli()
+        with self.assertRaisesRegex(ValueError, "must contain user objects"):
+            mod.parse_linear_users([None])
+        with self.assertRaisesRegex(ValueError, "invalid id"):
+            mod.parse_linear_users([{"id": "  ", "name": "X", "active": True}])
+        with self.assertRaisesRegex(ValueError, "invalid name"):
+            mod.parse_linear_users([{"id": "u", "name": "", "active": True}])
+        with self.assertRaisesRegex(ValueError, "invalid active flag"):
+            mod.parse_linear_users([{"id": "u", "name": "X", "active": "yes"}])
+        users = mod.parse_linear_users(
+            [
+                {"id": "user-a", "name": "A", "active": True},
+                {"id": "user-old", "name": "Old", "active": False},
+            ]
+        )
+        self.assertEqual(users, {"A": "user-a"})
+        users = mod.parse_linear_users(
+            [
+                {"id": "u1", "name": "Dup", "active": True},
+                {"id": "u2", "name": "Dup", "active": True},
+            ]
+        )
+        self.assertIsNone(users["Dup"])
+
+    def test_gql_summary_logs_only_allow_listed_fields(self):
+        """An external error is logged as error name, status, code, and
+        request id:  never the response body."""
+        mod = load_cli()
+        err = mod.GqlError(
+            [{"message": "secret body", "extensions": {"code": "BAD"}}],
+            status=400,
+            request_id="req-1",
+        )
+        summary = mod.gql_summary(err)
+        self.assertIn("error=GqlError", summary)
+        self.assertIn("status=400", summary)
+        self.assertIn("code=BAD", summary)
+        self.assertIn("request_id=req-1", summary)
+        self.assertNotIn("secret body", summary)
+
+    def test_a_cached_answer_is_used_without_a_refresh(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        # Linear gains a case variant after the snapshot:  a refresh would see
+        # two matches and assign nobody, so a mirrored owner proves the cache
+        # answered without one.
+        self.mock.users["claude"] = {
+            "id": "user-claude-lower",
+            "name": "claude",
+            "displayName": "claude",
+            "active": True,
+        }
+        iss2 = self.todo_issue(title="Second probe")
+        self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+
+    def test_a_refused_assignee_still_lands_the_claim(self):
+        """A user deactivated after the snapshot is refused by Linear;  the
+        claim retries without the owner instead of losing state and labels.
+        The refused update applies nothing, so the retry carries the state
+        and the labels itself."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.mock.users["Claude"]["active"] = False
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertEqual(first[1].get("assigneeId"), "user-claude")
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("stateId", second[1])
+        self.assertIn("addedLabelIds", second[1])
+        self.assertEqual(iss2["state"], "In Progress")
+        self.assertIn("claimed:CLAUDE", self.label_names(iss2))
+        self.assertTrue(any("CLAIMED" in c for c in self.comments_of(iss2)))
+        self.assertIsNone(iss2.get("assignee"))
+        self.assertIn("refused the assignee", p.stderr)
+        self.assertIn("retrying the claim without", p.stderr)
+        self.assertNotIn("landed without an owner", p.stderr)
+        # The warning carries only allow-listed fields, never the response body.
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("not found or deactivated", p.stderr)
+        self.assertIn("(Linear refused the assignee; the label holds the claim)", p.stdout)
+
+    def test_a_failed_retry_reports_no_landing(self):
+        """When the retry after a refused assignee also fails, the log must
+        not claim the landing it never made, and the issue stays untouched."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.mock.users["Claude"]["active"] = False
+        self.mock.fail_ownerless_updates = True
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED, code=1)
+        self.assertIn("refused the assignee", p.stderr)
+        self.assertIn("retrying the claim without", p.stderr)
+        self.assertNotIn("landed", p.stderr)
+        self.assertEqual(iss2["state"], "Todo")
+        self.assertNotIn("claimed:CLAUDE", self.label_names(iss2))
+        self.assertEqual(self.comments_of(iss2), [])
+
+    def test_a_refused_assignee_clear_still_lands_the_steal(self):
+        """A steal by a seat with no Linear user clears the stale owner;  when
+        Linear refuses the clear, the steal retries without the owner field
+        instead of losing the claim.  The stale assignee lingers visibly:  the
+        claim matters more than the mirror."""
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "CODEX", extra=dict(self.OWNED, AGENT_SEAT="CODEX")
+        )
+        self.assertEqual(iss.get("assignee"), "user-codex")
+        self.mock.fail_assignee_clear = True
+        p = self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            "--steal",
+            "--reason",
+            "CODEX is gone",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertEqual(iss["state"], "In Progress")
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+        self.assertTrue(any("CLAIMED" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-codex")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the claim without it", p.stderr)
+
+    def test_a_userless_seat_does_not_repay_teams_and_labels(self):
+        """A user miss re-reads only the users listing, so a seat with no
+        Linear user never repays teams and labels on a warm cache."""
+        self.mock._label("claimed:SENTRY", None)
+        self.mock._label("seat:SENTRY", None)
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        teams = self.mock.ops.count("BoardTeams")
+        labels = self.mock.ops.count("BoardLabels")
+        iss2 = self.todo_issue(title="Second probe")
+        self.board(
+            "claim",
+            iss2["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertEqual(self.mock.ops.count("BoardTeams"), teams)
+        self.assertEqual(self.mock.ops.count("BoardLabels"), labels)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:SENTRY", self.label_names(iss2))
+
+    def test_closing_an_unclaimed_issue_keeps_a_human_assignee(self):
+        """Close clears the assignee only on a claimed issue, like release;
+        closing what no seat claimed keeps whoever owns it."""
+        iss = self.todo_issue()
+        iss["assignee"] = "user-claude"
+        self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_duplicate_of_an_unclaimed_issue_keeps_a_human_assignee(self):
+        """The duplicate cleanup path carries the same claimed-only guard as
+        every other close:  open-loop labels go, the human assignee stays."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        iss["assignee"] = "user-claude"
+        self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("removedLabelIds", self.mock.updates[-1][1])
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_the_claimed_line_names_the_ownership_outcome(self):
+        """With the flag on, the printed claimed line says whether the owner
+        mirrored;  without the flag the line carries no ownership note."""
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertIn("(assignee CLAUDE)", p.stdout)
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board(
+            "claim",
+            iss2["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertIn("(no Linear user for the seat)", p.stdout)
+        iss3 = self.todo_issue(title="Third probe")
+        p = self.board("claim", iss3["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("(assignee", p.stdout)
+        self.assertNotIn("(no Linear user", p.stdout)
+
+    def test_a_refused_assignee_clear_still_lands_the_status_change(self):
+        """Closing folds the clear into the mandatory state update;  when Linear
+        refuses it, the status retries without the owner instead of losing the
+        state change, the label removal, or the comment."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        self.mock.fail_assignee_clear = True
+        p = self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertEqual(p.returncode, 0)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("stateId", second[1])
+        self.assertIn("removedLabelIds", second[1])
+        self.assertEqual(iss["state"], "Done")
+        self.assertNotIn("needs-owner", self.label_names(iss))
+        self.assertTrue(any("Status: completed" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the status change without it", p.stderr)
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("assignee clear refused", p.stderr)
+
+    def test_a_refused_assignee_clear_still_lands_the_duplicate_cleanup(self):
+        """The duplicate cleanup runs after the relation landed;  a refused clear
+        there must not fail the verb and skip the comment.  Labels still go, the
+        comment still posts, and only a label-removal failure aborts."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        self.mock.fail_assignee_clear = True
+        p = self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
+        self.assertEqual(p.returncode, 0)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("removedLabelIds", second[1])
+        self.assertEqual(iss["state"], "Duplicate")
+        self.assertNotIn("needs-owner", self.label_names(iss))
+        self.assertTrue(any("Duplicate of" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the duplicate cleanup without it", p.stderr)
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("assignee clear refused", p.stderr)
 
 
 if __name__ == "__main__":

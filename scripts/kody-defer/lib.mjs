@@ -1,16 +1,16 @@
 // Pure helpers for the Kody /defer flow.  No I/O.
 
 export const REFUSAL_MESSAGE =
-  "Critical findings can't be deferred.  Fix this in the PR.";
+  "Critical findings can't be deferred.\u00A0 Fix this in the PR.";
 
 export const MANUAL_RESOLVE_MESSAGE =
-  'Deferred to #N.  This thread needs a manual resolve (the workflow token could not resolve it).';
+  'Deferred to #N.\u00A0 This thread needs a manual resolve (the workflow token could not resolve it).';
 
 /** Hidden marker on workflow `Deferred to #N` replies so idempotency ignores spoof comments. */
 export const DEFERRED_REPLY_MARKER = '<!-- kody-defer-reply -->';
 
 export function deferredReplyBody(issueNumber) {
-  return `Deferred to #${issueNumber}.  ${DEFERRED_REPLY_MARKER}`;
+  return `Deferred to #${issueNumber}.\u00A0 ${DEFERRED_REPLY_MARKER}`;
 }
 
 export const LABELS = {
@@ -43,21 +43,21 @@ export const LABELS = {
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 
-/** Capitalized refusal for a blocked severity.  Two spaces after the period. */
+/** Capitalized refusal for a blocked severity.  A real U+00A0 plus a space after the period. */
 export function refusalMessage(severity = 'critical') {
   const raw = String(severity || 'critical').toLowerCase();
   const name = raw.charAt(0).toUpperCase() + raw.slice(1);
-  return `${name} findings can't be deferred.  Fix this in the PR.`;
+  return `${name} findings can't be deferred.\u00A0 Fix this in the PR.`;
 }
 
 /**
  * Second reply when resolveReviewThread fails.
- * Two spaces after the period.
+ * A real U+00A0 plus a space after the period.
  */
 export function manualResolveReply(issueNumber, error) {
   const short = String(error || 'unknown error').replace(/\s+/g, ' ').slice(0, 180);
   const number = issueNumber ? `#${issueNumber}` : '#N';
-  return `Deferred to ${number}.  This thread needs a manual resolve.  The workflow token could not resolve it (${short}).`;
+  return `Deferred to ${number}.\u00A0 This thread needs a manual resolve.\u00A0 The workflow token could not resolve it (${short}).`;
 }
 
 function fenceToggle(line) {
@@ -137,6 +137,12 @@ export function parseSeverity(body) {
 /**
  * Strip badge images, `<details>` blocks (and their contents), other HTML tags,
  * and HTML comments.  Collapse runs of 3+ blank lines down to two.  Trim.
+ *
+ * The `&nbsp;` entity outside a code fence is decoded to the character it stands for, a real U+00A0:
+ * a GitHub body takes the gap as a real U+00A0 plus a normal space and never as
+ * the entity (owner ruling 2026-10-23), so leaving the entity would show it as
+ * literal text in the body.  The other entities are decoded, because they are
+ * content and not gaps.
  */
 export function cleanFindingText(body) {
   let s = String(body ?? '');
@@ -146,7 +152,22 @@ export function cleanFindingText(body) {
   s = s.replace(new RegExp(`</?(?:${TAGS})\\b[^>]*>`, 'gi'), '');
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
   s = s.replace(/&#8203;|&#x200[Bb];|&ZeroWidthSpace;/gi, '');
-  s = s.replace(/&nbsp;/gi, ' ');
+  // The gap entity becomes the character it stands for.  The lookbehind keeps an
+  // escaped entity as literal text, so the &amp; decode below cannot turn prose
+  // that merely mentions the entity into a gap.
+  // Only prose takes the decode:  inside a fence the entity is literal source text,
+  // so a quoted code sample still matches the file it came from.
+  let inFence = false;
+  s = s
+    .split('\n')
+    .map((line) => {
+      if (fenceToggle(line.trim().replace(/\r$/, ''))) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : line.replace(/(?<!&amp;)&nbsp;/gi, '\u00a0');
+    })
+    .join('\n');
   s = s.replace(/&amp;/gi, '&');
   s = s.replace(/&lt;/gi, '<');
   s = s.replace(/&gt;/gi, '>');
@@ -180,9 +201,18 @@ function stripLightMarkdown(s) {
 /**
  * First non-empty prose line (or its first sentence), with light markdown
  * stripped.  Longer text is cut at a word boundary and closed with an ellipsis.
+ *
+ * The gap is flattened to a plain space here, whether it arrives as the entity
+ * or as the real U+00A0 cleanFindingText now produces:  issue titles are plain
+ * text (GitHub does not decode entities in them), so the entity would leak into
+ * the title, and a U+00A0 would defeat the sentence split below, which needs
+ * real whitespace after the punctuation.
  */
 export function summarizeFinding(text, max = 80) {
-  const lines = String(text ?? '').split('\n');
+  const lines = String(text ?? '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\u00a0/g, ' ')
+    .split('\n');
   let inFence = false;
   let prose = '';
   for (const raw of lines) {

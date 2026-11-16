@@ -80,6 +80,25 @@ enum FleetToolsRowOutcome {
     case absent
 }
 
+/// The other host's newer copy of a tool,  when the two hosts disagree.
+///
+/// The doctor writes it on the older host's row only (`{"host": "server", "version": "2.62.0"}`).
+struct FleetToolsSkew: Decodable, Equatable {
+    let host: String?
+    let version: String?
+
+    enum CodingKeys: String, CodingKey {
+        case host, version
+    }
+
+    /// Field by field,  like a row:  one field of an unexpected type costs that field.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        host = try? container.decodeIfPresent(String.self, forKey: .host)
+        version = try? container.decodeIfPresent(String.self, forKey: .version)
+    }
+}
+
 /// One row of a host's half of the report.
 struct FleetToolsRow: Decodable, Identifiable, Equatable {
     let check: String
@@ -92,6 +111,20 @@ struct FleetToolsRow: Decodable, Identifiable, Equatable {
     let installed: String?
     let expectedRev: String?
     let behindCommits: Int?
+    /// The installed version a registry row read from `<tool> --version`.
+    let version: String?
+    /// The latest version the doctor read for a registry row.
+    let latest: String?
+    /// Where that latest version came from (brew,  npm or a GitHub release).
+    let latestSource: String?
+    /// What the row was judged against:  `latest`,  `skew` or `presence`.
+    let basis: String?
+    /// Whether the tool is required on this host.
+    let required: Bool?
+    /// Where the command resolved on this host.
+    let path: String?
+    /// The other host's newer version,  when this host's copy is older.
+    let skew: FleetToolsSkew?
 
     /// The categories a reader leaves out of its verdict.
     ///
@@ -104,6 +137,8 @@ struct FleetToolsRow: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case check, status, state, category, tool, detail, reason
         case installed, expectedRev, behindCommits
+        case version, latest, latestSource, basis, path, skew
+        case requiredFlag = "required"
     }
 
     /// A row decodes field by field,  so one field of a type this app did not expect
@@ -120,9 +155,46 @@ struct FleetToolsRow: Decodable, Identifiable, Equatable {
         installed = try? container.decodeIfPresent(String.self, forKey: .installed)
         expectedRev = try? container.decodeIfPresent(String.self, forKey: .expectedRev)
         behindCommits = try? container.decodeIfPresent(Int.self, forKey: .behindCommits)
+        version = try? container.decodeIfPresent(String.self, forKey: .version)
+        latest = try? container.decodeIfPresent(String.self, forKey: .latest)
+        latestSource = try? container.decodeIfPresent(String.self, forKey: .latestSource)
+        basis = try? container.decodeIfPresent(String.self, forKey: .basis)
+        self.required = try? container.decodeIfPresent(Bool.self, forKey: .requiredFlag)
+        path = try? container.decodeIfPresent(String.self, forKey: .path)
+        skew = try? container.decodeIfPresent(FleetToolsSkew.self, forKey: .skew)
     }
 
     var id: String { check }
+
+    /// The version installed on this host,  when the doctor read one.
+    var installedVersion: String? { FleetToolsRow.nonEmpty(version) }
+
+    /// The latest version the doctor compared with,  when it read one.
+    var latestVersion: String? { FleetToolsRow.nonEmpty(latest) }
+
+    /// The other host's newer version,  when this host's copy is older.
+    var otherHostVersion: String? { FleetToolsRow.nonEmpty(skew?.version) }
+
+    /// Which host has that newer version (`mac` or `server`).
+    var otherHostName: String? { FleetToolsRow.nonEmpty(skew?.host) }
+
+    /// What the row was judged against,  in plain words,  or nil when the doctor did
+    /// not say (a row that is not a registry tool,  or one it could not read).
+    var basisText: String? {
+        guard let word = FleetToolsRow.nonEmpty(self.basis) else { return nil }
+        switch word {
+        case "latest": return "compared with the latest release"
+        case "skew": return "compared with the other machine"
+        case "presence": return "installed, no latest to compare"
+        default: return nil
+        }
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 
     /// The row's state,  as the doctor's vocabulary.
     var rowState: FleetToolsRowState { FleetToolsRowState(reportValue: state) }
@@ -243,6 +315,23 @@ struct FleetToolsReport: Decodable {
 
 // MARK: - The verdicts
 
+/// Categories an operator can filter a host's doctor rows by in `FleetHostsView`.
+///
+/// The host's verdict (`FleetToolsHostVerdict.state`) always excludes `harness`, `human-tree`,
+/// and `presence` per the protocol rule; this filter lets the operator inspect every category
+/// on demand without changing the verdict math.
+enum FleetHostCategoryFilter: String, CaseIterable, Identifiable {
+    case notable = "Problems Only"
+    case all = "All Checks"
+    case codingApps = "Coding App CLIs"
+    case fleetTools = "Fleet Tools"
+    case devTools = "Dev Tools"
+    case servicesAndHarnesses = "Services & Harnesses"
+    case checkoutsAndPresence = "Checkouts & Presence"
+
+    var id: String { rawValue }
+}
+
 /// What Muster can say about one host,  from the report.
 ///
 /// The state is the app's own vocabulary (`CellState`),  so a host reads like every
@@ -266,6 +355,8 @@ struct FleetToolsHostVerdict: Identifiable, Equatable {
     let absent: Int
     /// The rows worth looking at,  worst first.
     let notableRows: [FleetToolsRow]
+    /// Every row observed on a reachable host (including passing and excluded-category rows),  worst first.
+    var allRows: [FleetToolsRow] = []
     /// Why the host could not be read,  when it could not be.
     let reason: String?
     /// When this host's own half of the report was written.
@@ -278,6 +369,35 @@ struct FleetToolsHostVerdict: Identifiable, Equatable {
     let doctorCommit: String?
 
     var id: String { host }
+
+    /// Rows matching the chosen category filter,  with an optional search query.
+    func rows(matching filter: FleetHostCategoryFilter, search: String = "") -> [FleetToolsRow] {
+        let base: [FleetToolsRow]
+        switch filter {
+        case .notable:
+            base = notableRows
+        case .all:
+            base = allRows
+        case .codingApps:
+            base = allRows.filter { $0.category == "platform-cli" }
+        case .fleetTools:
+            base = allRows.filter { $0.category == "fleet-tool" }
+        case .devTools:
+            base = allRows.filter { $0.category == "dev-tool" }
+        case .servicesAndHarnesses:
+            base = allRows.filter { $0.category == "service" || $0.category == "harness" }
+        case .checkoutsAndPresence:
+            base = allRows.filter { $0.category == "human-tree" || $0.category == "presence" }
+        }
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return base }
+        return base.filter {
+            $0.check.lowercased().contains(query)
+                || ($0.tool?.lowercased().contains(query) ?? false)
+                || ($0.category?.lowercased().contains(query) ?? false)
+                || $0.summary.lowercased().contains(query)
+        }
+    }
 
     /// The tip,  short.
     var tip: String? {
@@ -310,6 +430,9 @@ struct FleetToolsReading {
     var isCurrent: Bool = false
     /// Why the report could not be read at all,  when it could not be.
     var problem: String?
+    /// True when this app refused the report because of its version or its tool,  rather
+    /// than because the file was missing,  old or broken.
+    var refusal: ReportRefusal?
     /// The hosts,  in the report's own order.
     var hosts: [FleetToolsHostVerdict] = []
     /// The verdict for the whole report.
@@ -360,10 +483,13 @@ enum FleetToolsReportReader {
 
         guard report.schemaVersion == FleetToolsContract.supportedSchemaVersion else {
             reading.problem = "The report is version \(report.schemaVersion);  this app reads version \(FleetToolsContract.supportedSchemaVersion)."
+            reading.refusal = ReportRefusal(reportVersion: report.schemaVersion,
+                                            supported: FleetToolsContract.supportedSchemaVersion)
             return reading
         }
         guard report.tool == FleetToolsContract.expectedTool else {
             reading.problem = "The report came from \"\(report.tool)\";  this app reads \"\(FleetToolsContract.expectedTool)\"."
+            reading.refusal = .appOutOfDate
             return reading
         }
         guard let generated = report.generatedAt.flatMap(FleetTime.parse) else {
@@ -400,9 +526,10 @@ enum FleetToolsReportReader {
     /// check it would have made,  and counting them would report observations that
     /// were never made.
     ///
-    /// The host's own age is information and not a verdict:  the server's doctor runs
-    /// on an hourly timer,  so its half is routinely older than the Mac's report and
-    /// that is the server working as it should.
+    /// The host's own age is information and not a verdict.  The Mac's doctor asks the
+    /// server's doctor for its half live,  over the read-only ssh route,  on every Mac run,
+    /// so the two halves are normally minutes apart;  a server half much older than the
+    /// report is the server's own time and not a fault in itself.
     private static func verdict(
         for host: FleetToolsHostDocument,
         reportIsCurrent: Bool,
@@ -444,6 +571,7 @@ enum FleetToolsReportReader {
         }
 
         let hostGenerated = host.generatedAt.flatMap(FleetTime.parse)
+        let sortedAll = host.reachable ? host.checks.sorted(by: notableFirst) : []
         return FleetToolsHostVerdict(
             host: host.host,
             reachable: host.reachable,
@@ -454,6 +582,7 @@ enum FleetToolsReportReader {
             current: current,
             absent: absent,
             notableRows: notable,
+            allRows: sortedAll,
             reason: host.reachable ? nil : (host.error ?? "the doctor could not reach this host"),
             generatedAt: hostGenerated,
             age: hostGenerated == nil ? nil : FleetTime.ageText(since: hostGenerated, now: now),

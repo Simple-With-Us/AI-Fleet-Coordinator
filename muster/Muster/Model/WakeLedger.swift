@@ -1,6 +1,6 @@
 import Foundation
 
-/// The seat's wake ledger:  `~/.agent-sync/<SEAT>/wakes.jsonl`.
+/// The seat's wake ledger:  `~/.simple-tools/<SEAT>/wakes.jsonl`.
 ///
 /// One row per state change of one wake.  The panel counts the wakes the runtime counts,
 /// so the number it shows is the number the budget is measured against.
@@ -9,12 +9,20 @@ enum WakeLedger {
     struct Wake: Equatable {
         /// The last state the wake reached.
         var state: String
+        /// Every unique state the wake reached across its ledger rows.
+        var states: [String] = []
+        /// The earliest timestamp when each state was reached.
+        var stateTimes: [String: Date] = [:]
         /// Whether the owner asked for it.
         var owner: Bool
         /// The channel and topic it belongs to.
         var topicKey: String?
         /// When it was accepted,  or when it was started when it never was.
         var at: Date?
+        /// When its latest ledger row was recorded.
+        var lastAt: Date? = nil
+        /// Why it was held back,  dropped,  skipped,  or failed.
+        var reason: String? = nil
     }
 
     /// One row of the ledger.
@@ -26,6 +34,8 @@ enum WakeLedger {
         var topic_key: String?
         var topic: String?
         var channel: String?
+        var why: String?
+        var reason: String?
     }
 
     /// One wake,  as the panel shows it.
@@ -38,8 +48,10 @@ enum WakeLedger {
         let topic: String?
         /// Whether the owner asked for it.
         let owner: Bool
-        /// When it was accepted.
+        /// When it was accepted or last updated.
         let at: Date?
+        /// The reason recorded for a deferred,  skipped,  dropped,  or failed wake.
+        var reason: String? = nil
     }
 
     /// The states a budget counts.
@@ -50,7 +62,7 @@ enum WakeLedger {
     /// The panel needs two things from the same rows:  the merged wakes behind the counters,
     /// and the last few wakes behind the list.  Reading the file and decoding it twice cost
     /// a second full parse of a file that grows for the life of the seat,  and it was paid on
-    /// every refresh and again after every apply,  pause,  resume and pin.
+    /// every refresh and again after every apply,  pause and resume.
     struct Parsed {
         /// Every wake in the ledger,  merged from its rows.
         var wakes: [Wake] = []
@@ -63,58 +75,100 @@ enum WakeLedger {
         /// silent either:  the reader says how many rows it could not read,  so a ledger that
         /// has gone bad is visible instead of quietly under-counting the budget.
         var malformed: Int = 0
+        /// How many of those rows could fall inside the last 24 hours, the window the counters
+        /// cover:  a row followed by a row from that window, or the last row of the file.  An old
+        /// torn row the eavesdropper has long skipped says nothing about today's counts.  It is
+        /// only counted when the parse was given the time to judge by.
+        var malformedRecent: Int = 0
+        /// The time of the oldest row that could be read.
+        var oldest: Date?
     }
 
     /// Reads the ledger in one pass.
-    static func parse(_ text: String, limit: Int = 8) -> Parsed {
+    ///
+    /// Only a line feed ends a row:  the eavesdropper writes rows with `ensure_ascii=False`, so a
+    /// topic may hold U+2028, U+2029 or U+0085, and splitting on every Unicode newline cut such a
+    /// row in two, lost its state change and reported a sound ledger as damaged.
+    static func parse(_ text: String, limit: Int = 8, now: Date? = nil) -> Parsed {
         var states: [String: String] = [:]
+        var statesReached: [String: [String]] = [:]
         var owners: [String: Bool] = [:]
         var topicKeys: [String: String?] = [:]
         var topics: [String: String?] = [:]
+        var reasons: [String: String] = [:]
         var times: [String: [String: Double]] = [:]
         var lastAt: [String: Double] = [:]
         var order: [String] = []
         var malformed = 0
+        // Torn rows not yet placed in time:  the next readable row says whether they could be
+        // inside the window, and the end of the file says they could.
+        var unplaced = 0
+        var malformedRecent = 0
+        var oldest: Double?
+        let windowStart = now.map { $0.timeIntervalSince1970 - 86_400 }
         let decoder = JSONDecoder()
 
-        for line in text.split(whereSeparator: \.isNewline) {
+        for line in SeatActivityReader.records(text) {
             guard let data = line.data(using: .utf8),
                   let row = try? decoder.decode(Row.self, from: data),
                   let identifier = row.wake_id, !identifier.isEmpty,
                   let ts = row.ts, ts.isFinite else {
                 malformed += 1
+                unplaced += 1
                 continue
             }
+            if let windowStart, ts >= windowStart { malformedRecent += unplaced }
+            unplaced = 0
+            oldest = min(oldest ?? ts, ts)
             if times[identifier] == nil {
                 times[identifier] = [:]
                 order.append(identifier)
             }
             if let state = row.state {
                 states[identifier] = state
+                if !(statesReached[identifier]?.contains(state) ?? false) {
+                    statesReached[identifier, default: []].append(state)
+                }
                 if times[identifier]?[state] == nil { times[identifier]?[state] = ts }
             }
             if let owner = row.owner { owners[identifier] = owner }
             if row.topic_key != nil { topicKeys[identifier] = row.topic_key }
             if row.topic != nil { topics[identifier] = row.topic }
+            if let r = row.why ?? row.reason, !r.isEmpty { reasons[identifier] = r }
             lastAt[identifier] = ts
         }
 
         var parsed = Parsed()
         parsed.malformed = malformed
+        if windowStart != nil { malformedRecent += unplaced }
+        parsed.malformedRecent = malformedRecent
+        parsed.oldest = oldest.map { Date(timeIntervalSince1970: $0) }
         for identifier in order {
             let accepted = times[identifier]?["accepted"] ?? times[identifier]?["started"]
+            let latest = lastAt[identifier].map { Date(timeIntervalSince1970: $0) }
+            var stMap: [String: Date] = [:]
+            if let idTimes = times[identifier] {
+                for (k, v) in idTimes {
+                    stMap[k] = Date(timeIntervalSince1970: v)
+                }
+            }
             parsed.wakes.append(Wake(
                 state: states[identifier] ?? "",
+                states: statesReached[identifier] ?? [],
+                stateTimes: stMap,
                 owner: owners[identifier] ?? false,
                 topicKey: topicKeys[identifier] ?? nil,
-                at: accepted.map { Date(timeIntervalSince1970: $0) }
+                at: accepted.map { Date(timeIntervalSince1970: $0) },
+                lastAt: latest,
+                reason: reasons[identifier]
             ))
             parsed.outcomes.append(Outcome(
                 id: identifier,
                 state: states[identifier] ?? "",
                 topic: topics[identifier] ?? nil,
                 owner: owners[identifier] ?? false,
-                at: lastAt[identifier].map { Date(timeIntervalSince1970: $0) }
+                at: latest,
+                reason: reasons[identifier]
             ))
         }
         parsed.outcomes.sort { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
@@ -171,7 +225,46 @@ enum WakeLedger {
         usage.ownerThisDay = owner.count
         usage.worstTopicThisHour = busiest(ordinary.filter { within($0, hour) })
         usage.worstOwnerTopicThisHour = busiest(owner.filter { within($0, hour) })
+
+        for wake in wakes {
+            // Only states the wake reached inside the 24h window count:
+            // `stateTimes` holds the first timestamp of each reached state.
+            for (state, firstSeen) in wake.stateTimes where now.timeIntervalSince(firstSeen) < day {
+                switch state {
+                case "held_back": usage.heldBackThisDay += 1
+                case "dropped": usage.droppedThisDay += 1
+                case "skipped": usage.skippedThisDay += 1
+                case "failed": usage.failedThisDay += 1
+                case "expired": usage.expiredThisDay += 1
+                default: break
+                }
+            }
+        }
         return usage
+    }
+
+    /// A ledger state, in words.  A state this app does not know keeps its own word, with its
+    /// underscores read as spaces, rather than being dropped.
+    static func words(forState state: String) -> String {
+        switch state {
+        case "accepted": return "accepted"
+        case "started": return "started"
+        case "done": return "answered"
+        case "failed": return "failed"
+        case "held_back": return "held back"
+        case "dropped": return "dropped"
+        case "skipped": return "skipped"
+        case "expired": return "expired"
+        case "queued": return "queued"
+        case "": return "no state recorded"
+        default: return state.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    /// A ledger reason, in words.  Reasons are the eavesdropper's own codes, such as `host_busy`
+    /// or `operator_unavailable`, so they are read with spaces and never invented.
+    static func words(forReason reason: String) -> String {
+        reason.replacingOccurrences(of: "_", with: " ")
     }
 
     /// The busiest topic's count.

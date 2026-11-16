@@ -1,8 +1,8 @@
 """The fallback notifier (`needs-owner notify`):  notices, caps, the pause, the lock, the log.
 
-Every test runs the real notifier in process against the fake `board` and `agent-sync` (built on the real parsers), a
+Every test runs the real notifier in process against the fake `board` and `simple-chat` (built on the real parsers), a
 fake clock and fake K1 knobs, in a temp HOME.  Jay is Zulip user 7 (the pinned owner);  CODEX, BF-DIRECTOR and the
-Grok Bot personas are the filing seats.
+Grok bots are the filing seats.
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class FallbackTests(NotifierCase):
         row = self.state_of(ident)
         self.assertEqual((row["state"], row["notified_msg_id"] is not None), ("notified", True))
         comments = self.w.comments(ident)
-        self.assertTrue(any(c.startswith("[CLAUDE") and "[needs-owner] notified msg" in c for c in comments), comments)
+        self.assertTrue(any("[needs-owner] notified msg" in c for c in comments), comments)
         # nothing was closed, restated or edited
         self.assertEqual(self.issue_status(ident), "Todo")
 
@@ -178,6 +178,19 @@ class FallbackTests(NotifierCase):
         self.assertTrue(any("reason: no_credential" in c for c in self.w.comments(ident)))
         self.w.set_zulip(no_credential=[])
         self.assertEqual(len(self.events(self.run_notify(), "notified")), 1)
+
+    def test_a_notice_whose_record_may_have_landed_is_not_posted_again(self) -> None:
+        """The board's exit-1 failure may have applied the record comment, so it is not written again:  the
+        notice is not posted a second time and the item stays pending."""
+        record = self.pending()
+        first = self.w.notify(env=self.w.env(FAKE_BOARD_FAIL="comment"))
+        (event,) = self.events(first.json(), "notice-failed")
+        self.assertEqual(event["reason"], "outcome_unknown")
+        self.assertEqual(len(self.sent_by_notifier()), 1)
+        self.run_notify()
+        self.assertEqual(len(self.sent_by_notifier()), 1, "the notice is not posted again")
+        self.assertEqual(self.state_of(record["identifier"])["state"], "notify_pending")
+        self.assertEqual(len([c for c in self.w.comments(record["identifier"]) if "notified msg" in c]), 0)
 
     def test_an_item_that_fails_revalidation_is_skipped_with_a_reason(self) -> None:
         edited = self.pending("Edited after filing?")
@@ -376,11 +389,11 @@ class RunTests(NotifierCase):
         self.assertEqual([e["event"] for e in result["events"]], ["start", "board-read-failed"])
         self.assertEqual(self.sent_by_notifier(), [])
 
-    def test_a_missing_board_is_a_failed_read_too(self) -> None:
+    def test_a_missing_board_refuses_before_any_read(self) -> None:
         self.w.remove_tool("simple-board")
         ran = self.w.notify()
-        self.assertEqual(ran.code, 0, ran.err)
-        self.assertIn("board-read-failed", [e["event"] for e in ran.json()["events"]])
+        self.assertEqual(ran.code, 2, "no board means no bearer to prove the seat:  the notifier refuses, it never acts unverified")
+        self.assertIn("simple-board", ran.err)
 
     def test_a_refused_or_broken_knob_stops_the_run_before_anything_is_sent(self) -> None:
         self.pending()

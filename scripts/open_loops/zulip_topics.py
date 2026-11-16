@@ -4,7 +4,7 @@
 
 Read through the installed simple-chat (the running seat's own bot, read-only):
 
-    simple-chat topics --json --limit 1000                      the topic names of #agent-sync, newest first
+    simple-chat topics --json --limit 1000                      the topic names of #work-in-progress, newest first
     simple-chat read --topic NAME --json --limit 30 --include-self    one topic's newest messages
 
 An issue's topic is any topic whose name is the identifier or starts with `<identifier> `.  Only messages that

@@ -1,4 +1,5 @@
 """knobs.get against a fake ``infisical``:  fetch, last-known-good, secrets, narrowing."""
+
 from __future__ import annotations
 
 import json
@@ -20,13 +21,13 @@ GOOD = {
     "ASK_CAPTURE_CAPS": "per_session=3,per_seat_day=20",
     "CONSULT_ENABLED": "true",
     "CLAIM_EXPIRY_MODE": "ping-only",
-    "QDRANT_API_KEY": UNRELATED,                 # in the project, not a registered knob
+    "QDRANT_API_KEY": UNRELATED,  # in the project, not a registered knob
     "FLEET_FACTS_SIGNING_KEY": SIGNING,
 }
 
 
 class FetchTests(KnobTestCase):
-    def test_fetch_ok_returns_typed_values_with_one_cli_call(self):
+    def test_fetch_ok_returns_typed_values_through_one_scoped_read(self):
         self.fake.set(secrets=GOOD)
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE", "off", "enum"), "snapshot")
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_REPOS"), (REPO_A, REPO_B))
@@ -35,12 +36,21 @@ class FetchTests(KnobTestCase):
         self.assertIs(knobs.get("CONSULT_ENABLED", False, "bool"), True)
         calls = self.fake.calls()
         self.assertEqual(len(calls), 1, "one fetch per process")
-        argv = calls[0]
-        self.assertEqual(argv[0], "export")
-        self.assertIn("--env=prod", argv)
-        self.assertIn(f"--projectId={source.PROJECT_ID}", argv)
-        self.assertIn("--format=json", argv)
-        self.assertFalse([a for a in argv if "dev" in a or "staging" in a])
+        self.assertEqual(calls[0]["project"], source.PROJECT_ID)
+        self.assertEqual(calls[0]["path"], "/")
+        self.assertTrue(
+            {
+                "FLEET_AUTOPUSH_MODE",
+                "FLEET_AUTOPUSH_REPOS",
+                "FLEET_AUTOPUSH_IDLE_HOURS",
+                "ASK_CAPTURE_CAPS",
+                "CONSULT_ENABLED",
+                "CLAIM_EXPIRY_MODE",
+                "FLEET_FACTS_SIGNING_KEY",
+            }
+            <= set(calls[0]["names"])
+        )
+        self.assertNotIn("QDRANT_API_KEY", calls[0]["names"])
         rep = knobs.report()
         self.assertEqual(rep["fetch"], "ok")
         self.assertFalse(rep["stale"])
@@ -56,8 +66,10 @@ class FetchTests(KnobTestCase):
     def test_unset_knob_gets_the_registry_default_and_is_not_stale(self):
         self.fake.set(secrets={})
         knob = knobs.resolve("CLAIM_EXPIRY_MODE")
-        self.assertEqual((knob.value, knob.source, knob.stale, knob.reason),
-                         ("dry-run", "default", False, "unset"))
+        self.assertEqual(
+            (knob.value, knob.source, knob.stale, knob.reason),
+            ("dry-run", "default", False, "unset"),
+        )
 
     def test_invalid_live_value_gets_the_default(self):
         self.fake.set(secrets={"CLAIM_EXPIRY_MODE": "full-send", "FLEET_AUTOPUSH_IDLE_HOURS": "-4"})
@@ -130,7 +142,7 @@ class UnreachableTests(KnobTestCase):
         rep = knobs.report()
         self.assertTrue(rep["stale"])
         self.assertEqual(rep["fetch"], "failed")
-        self.assertEqual(rep["fetch_reason"], "exit-1")
+        self.assertEqual(rep["fetch_reason"], "scoped-read-failed")
         self.assertIsInstance(rep["lkg_age_seconds"], int)
         self.assertEqual(rep["knobs"]["FLEET_AUTOPUSH_MODE"]["source"], "lkg")
         text = "\n".join(logs.output) + json.dumps(rep) + repr(knob)
@@ -145,7 +157,7 @@ class UnreachableTests(KnobTestCase):
         self.assertTrue(knobs.report()["stale"])
 
     def test_failure_reasons_are_tokens(self):
-        for mode, token in (("garbage", "bad-output"), ("fail", "exit-1")):
+        for mode, token in (("garbage", "bad-output"), ("fail", "scoped-read-failed")):
             self.new_process()
             self.fake.set(mode=mode)
             knobs.get("FLEET_AUTOPUSH_MODE")
@@ -157,13 +169,15 @@ class UnreachableTests(KnobTestCase):
         self.addCleanup(setattr, source, "TIMEOUT_SECONDS", original)
         knobs.get("FLEET_AUTOPUSH_MODE")
         self.assertEqual(knobs.report()["fetch_reason"], "timeout")
-        self.new_process()
-        os.environ["PATH"] = str(self.root)               # no infisical anywhere (fallback dirs are patched out)
-        knobs.get("FLEET_AUTOPUSH_MODE")
-        self.assertEqual(knobs.report()["fetch_reason"], "cli-missing")
+        with mock.patch.object(source, "HELPER_LOADER", return_value=None):
+            self.new_process()
+            knobs.get("FLEET_AUTOPUSH_MODE")
+        self.assertEqual(knobs.report()["fetch_reason"], "scoped-reader-unavailable")
 
     def test_an_unexpected_fetch_error_is_a_failed_fetch_not_a_crash(self):
-        with mock.patch.object(source, "fetch", side_effect=RuntimeError("secret-in-message")):
+        with mock.patch.object(
+            source, "fetch_named", side_effect=RuntimeError("secret-in-message")
+        ):
             knob = knobs.resolve("CLAIM_EXPIRY_MODE")
         self.assertEqual((knob.value, knob.stale), ("dry-run", True))
         self.assertEqual(knobs.report()["fetch_reason"], "error-RuntimeError")
@@ -203,13 +217,17 @@ class UnreachableTests(KnobTestCase):
         def not_json():
             self.lkg_file.write_text("{not json")
 
-        for name, damage in (("loose_file", loose_file), ("loose_dir", loose_dir),
-                             ("symlink", symlink), ("other_project", other_project),
-                             ("not_json", not_json)):
+        for name, damage in (
+            ("loose_file", loose_file),
+            ("loose_dir", loose_dir),
+            ("symlink", symlink),
+            ("other_project", other_project),
+            ("not_json", not_json),
+        ):
             with self.subTest(case=name):
                 self.new_process()
                 self.fake.set(secrets=GOOD)
-                knobs.get("FLEET_AUTOPUSH_MODE")           # rewrite a clean copy
+                knobs.get("FLEET_AUTOPUSH_MODE")  # rewrite a clean copy
                 self.new_process()
                 self.fake.set(mode="fail")
                 damage()
@@ -247,15 +265,16 @@ class EmptyExportTests(KnobTestCase):
         self.assertEqual((knob.value, knob.source, knob.stale), (True, "lkg", True))
         self.assertIn("unreachable:empty", knob.reason)
         rep = knobs.report()
-        self.assertEqual((rep["fetch"], rep["fetch_reason"], rep["stale"]),
-                         ("failed", "empty", True))
+        self.assertEqual(
+            (rep["fetch"], rep["fetch_reason"], rep["stale"]), ("failed", "empty", True)
+        )
         self.assertEqual(knobs.get("CLAIM_EXPIRY_MODE"), "ping-only")
         self.assertEqual(self.lkg_file.read_bytes(), before, "the copy is kept byte for byte")
         self.assertNotIn("true", "\n".join(logs.output), "logs carry names, never values")
 
     def test_an_empty_export_does_not_erase_the_copy_or_lift_a_pause(self):
         before = self._warm_paused_copy()
-        self.fake.set(secrets={})                     # exit 0, valid JSON, nothing in it
+        self.fake.set(secrets={})  # exit 0, valid JSON, nothing in it
         self._assert_pause_survives(before)
 
     def test_an_export_of_only_unregistered_keys_is_empty_too(self):
@@ -281,27 +300,28 @@ class EmptyExportTests(KnobTestCase):
 
     def test_a_deliberate_single_delete_still_applies(self):
         self._warm_paused_copy()
-        self.fake.set(secrets={"CLAIM_EXPIRY_MODE": "ping-only"})   # the pause was unset
+        self.fake.set(secrets={"CLAIM_EXPIRY_MODE": "ping-only"})  # the pause was unset
         knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
         self.assertEqual((knob.value, knob.source, knob.stale), (False, "default", False))
-        self.assertEqual(json.loads(self.lkg_file.read_text())["knobs"],
-                         {"CLAIM_EXPIRY_MODE": "ping-only"})
+        self.assertEqual(
+            json.loads(self.lkg_file.read_text())["knobs"], {"CLAIM_EXPIRY_MODE": "ping-only"}
+        )
 
     def test_a_fresh_project_with_no_knobs_yet_is_not_an_outage(self):
         self.fake.set(secrets={})
         knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
-        self.assertEqual((knob.value, knob.source, knob.stale, knob.reason),
-                         (False, "default", False, "unset"))
+        self.assertEqual(
+            (knob.value, knob.source, knob.stale, knob.reason), (False, "default", False, "unset")
+        )
         rep = knobs.report()
         self.assertEqual((rep["fetch"], rep["stale"]), ("ok", False))
         self.assertEqual(json.loads(self.lkg_file.read_text())["knobs"], {})
-        self.new_process()                            # the copy now exists and has no knobs
+        self.new_process()  # the copy now exists and has no knobs
         knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
         self.assertEqual((knob.stale, knobs.report()["fetch"]), (False, "ok"))
 
     def test_an_expired_copy_does_not_make_an_empty_export_an_outage(self):
-        lkg.write({"NEEDS_OWNER_NOTIFY_PAUSED": "true"},
-                  now=time.time() - lkg.MAX_AGE_SECONDS - 60)
+        lkg.write({"NEEDS_OWNER_NOTIFY_PAUSED": "true"}, now=time.time() - lkg.MAX_AGE_SECONDS - 60)
         self.fake.set(secrets={})
         knob = knobs.resolve("NEEDS_OWNER_NOTIFY_PAUSED")
         self.assertEqual((knob.value, knob.stale, knobs.report()["fetch"]), (False, False, "ok"))
@@ -315,9 +335,17 @@ class LkgFileTests(KnobTestCase):
         self.assertEqual(stat.S_IMODE(self.lkg_file.stat().st_mode), 0o600)
         doc = json.loads(self.lkg_file.read_text())
         self.assertEqual(doc["environment"], "prod")
-        self.assertEqual(set(doc["knobs"]), {
-            "FLEET_AUTOPUSH_MODE", "FLEET_AUTOPUSH_REPOS", "FLEET_AUTOPUSH_IDLE_HOURS",
-            "ASK_CAPTURE_CAPS", "CONSULT_ENABLED", "CLAIM_EXPIRY_MODE"})
+        self.assertEqual(
+            set(doc["knobs"]),
+            {
+                "FLEET_AUTOPUSH_MODE",
+                "FLEET_AUTOPUSH_REPOS",
+                "FLEET_AUTOPUSH_IDLE_HOURS",
+                "ASK_CAPTURE_CAPS",
+                "CONSULT_ENABLED",
+                "CLAIM_EXPIRY_MODE",
+            },
+        )
         self.assertEqual(os.listdir(self.state_dir), ["lkg.json"], "no temp file left behind")
 
     def test_a_secret_is_never_written_to_disk(self):
@@ -346,15 +374,16 @@ class LkgFileTests(KnobTestCase):
         self.new_process()
         self.fake.set(secrets={"FLEET_AUTOPUSH_MODE": "report"})
         knobs.get("FLEET_AUTOPUSH_MODE")
-        self.assertEqual(json.loads(self.lkg_file.read_text())["knobs"],
-                         {"FLEET_AUTOPUSH_MODE": "report"})
+        self.assertEqual(
+            json.loads(self.lkg_file.read_text())["knobs"], {"FLEET_AUTOPUSH_MODE": "report"}
+        )
 
     def test_a_bad_value_is_dropped_from_the_copy_so_offline_matches_live(self):
         self.fake.set(secrets=GOOD)
         knobs.get("FLEET_AUTOPUSH_MODE")
         self.new_process()
         self.fake.set(secrets=dict(GOOD, FLEET_AUTOPUSH_MODE="nonsense"))
-        self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "off")           # live: invalid -> default
+        self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "off")  # live: invalid -> default
         copy = json.loads(self.lkg_file.read_text())["knobs"]
         self.assertNotIn("FLEET_AUTOPUSH_MODE", copy, "the old good value must not outlive a typo")
         self.assertIn("FLEET_AUTOPUSH_REPOS", copy, "the other knobs are untouched")
@@ -365,13 +394,16 @@ class LkgFileTests(KnobTestCase):
         self.new_process()
         self.fake.set(secrets=dict(GOOD, CLAIM_EXPIRY_MODE="ac t"))
         live = knobs.resolve("CLAIM_EXPIRY_MODE")
-        self.assertEqual((live.value, live.source, live.stale, live.reason),
-                         ("dry-run", "default", False, "invalid"))
+        self.assertEqual(
+            (live.value, live.source, live.stale, live.reason),
+            ("dry-run", "default", False, "invalid"),
+        )
         self.new_process()
         self.fake.set(mode="fail")
         offline = knobs.resolve("CLAIM_EXPIRY_MODE")
-        self.assertEqual((offline.value, offline.source, offline.stale),
-                         ("dry-run", "default", True))
+        self.assertEqual(
+            (offline.value, offline.source, offline.stale), ("dry-run", "default", True)
+        )
         self.assertEqual(offline.value, live.value, "an outage must not change the answer")
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot", "other knobs still hold")
 
@@ -400,9 +432,11 @@ class SecretTests(KnobTestCase):
         self.assertEqual(knobs.report()["knobs"]["FLEET_FACTS_SIGNING_KEY"]["source"], "infisical")
 
     def test_a_secret_fails_closed(self):
-        cases = (("unset", {"mode": "ok", "secrets": {}}),
-                 ("unreachable", {"mode": "fail"}),
-                 ("malformed", {"mode": "ok", "secrets": {"FLEET_FACTS_SIGNING_KEY": "short"}}))
+        cases = (
+            ("unset", {"mode": "ok", "secrets": {}}),
+            ("unreachable", {"mode": "fail"}),
+            ("malformed", {"mode": "ok", "secrets": {"FLEET_FACTS_SIGNING_KEY": "short"}}),
+        )
         for reason, cfg in cases:
             with self.subTest(reason=reason):
                 self.new_process()
@@ -424,8 +458,14 @@ class SecretTests(KnobTestCase):
 
 class NarrowTests(KnobTestCase):
     def test_a_local_value_may_narrow_each_kind(self):
-        self.fake.set(secrets=dict(GOOD, ASK_CAPTURE_ENABLED="true", ASK_CAPTURE_SHADOW="false",
-                                   NEEDS_OWNER_NOTIFY_PAUSED="false"))
+        self.fake.set(
+            secrets=dict(
+                GOOD,
+                ASK_CAPTURE_ENABLED="true",
+                ASK_CAPTURE_SHADOW="false",
+                NEEDS_OWNER_NOTIFY_PAUSED="false",
+            )
+        )
         k = knobs.resolve("FLEET_AUTOPUSH_MODE", local="report")
         self.assertEqual((k.value, k.narrowed, k.local_ignored), ("report", True, False))
         k = knobs.resolve("ASK_CAPTURE_ENABLED", local="false")
@@ -439,38 +479,59 @@ class NarrowTests(KnobTestCase):
         k = knobs.resolve("FLEET_AUTOPUSH_REPOS", local=[REPO_B, "Simple-With-Us/other"])
         self.assertEqual((k.value, k.narrowed, k.local_ignored), ((REPO_B,), True, True))
         k = knobs.resolve("ASK_CAPTURE_CAPS", local={"per_session": 1, "per_seat_day": 99})
-        self.assertEqual((k.value, k.narrowed, k.local_ignored),
-                         ({"per_session": 1, "per_seat_day": 20}, True, True))
+        self.assertEqual(
+            (k.value, k.narrowed, k.local_ignored),
+            ({"per_session": 1, "per_seat_day": 20}, True, True),
+        )
         self.assertTrue(knobs.report()["knobs"]["FLEET_AUTOPUSH_REPOS"]["local_ignored"])
 
     def test_a_local_value_that_would_widen_is_ignored(self):
-        self.fake.set(secrets=dict(GOOD, ASK_CAPTURE_ENABLED="false", ASK_CAPTURE_SHADOW="true",
-                                   NEEDS_OWNER_NOTIFY_PAUSED="true",
-                                   FLEET_AUTOPUSH_MODE="report"))
+        self.fake.set(
+            secrets=dict(
+                GOOD,
+                ASK_CAPTURE_ENABLED="false",
+                ASK_CAPTURE_SHADOW="true",
+                NEEDS_OWNER_NOTIFY_PAUSED="true",
+                FLEET_AUTOPUSH_MODE="report",
+            )
+        )
         for name, local, expect in (
-                ("FLEET_AUTOPUSH_MODE", "full", "report"),
-                ("ASK_CAPTURE_ENABLED", True, False),
-                ("ASK_CAPTURE_SHADOW", False, True),
-                ("NEEDS_OWNER_NOTIFY_PAUSED", False, True),
-                ("FLEET_AUTOPUSH_IDLE_HOURS", 1, 6),
-                ("FLEET_AUTOPUSH_REPOS", [REPO_A, REPO_B, "Simple-With-Us/more"], (REPO_A, REPO_B)),
-                ("ASK_CAPTURE_CAPS", {"per_session": 50}, {"per_session": 3, "per_seat_day": 20})):
+            ("FLEET_AUTOPUSH_MODE", "full", "report"),
+            ("ASK_CAPTURE_ENABLED", True, False),
+            ("ASK_CAPTURE_SHADOW", False, True),
+            ("NEEDS_OWNER_NOTIFY_PAUSED", False, True),
+            ("FLEET_AUTOPUSH_IDLE_HOURS", 1, 6),
+            ("FLEET_AUTOPUSH_REPOS", [REPO_A, REPO_B, "Simple-With-Us/more"], (REPO_A, REPO_B)),
+            ("ASK_CAPTURE_CAPS", {"per_session": 50}, {"per_session": 3, "per_seat_day": 20}),
+        ):
             with self.subTest(name=name):
                 k = knobs.resolve(name, local=local)
                 self.assertEqual((k.value, k.narrowed, k.local_ignored), (expect, False, True))
 
     def test_the_owner_id_and_launch_time_take_no_local_override(self):
         uid = "11111111-2222-3333-4444-555555555555"
-        self.fake.set(secrets={"OWNER_LINEAR_USER_ID": uid,
-                               "CLAIM_EXPIRY_LAUNCH_AT": "2026-10-12T05:00:00Z"})
-        self.assertEqual(knobs.get("OWNER_LINEAR_USER_ID", local="99999999-2222-3333-4444-555555555555"), uid)
-        self.assertEqual(knobs.get("CLAIM_EXPIRY_LAUNCH_AT", local="2000-01-01T00:00:00Z"),
-                         "2026-10-12T05:00:00Z")
+        self.fake.set(
+            secrets={"OWNER_LINEAR_USER_ID": uid, "CLAIM_EXPIRY_LAUNCH_AT": "2026-10-12T05:00:00Z"}
+        )
+        self.assertEqual(
+            knobs.get("OWNER_LINEAR_USER_ID", local="99999999-2222-3333-4444-555555555555"), uid
+        )
+        self.assertEqual(
+            knobs.get("CLAIM_EXPIRY_LAUNCH_AT", local="2000-01-01T00:00:00Z"),
+            "2026-10-12T05:00:00Z",
+        )
         self.assertTrue(knobs.resolve("OWNER_LINEAR_USER_ID", local="x").local_ignored)
 
     def test_a_stop_file_forces_the_narrowest_value(self):
-        self.fake.set(secrets=dict(GOOD, ASK_CAPTURE_ENABLED="true", CLAIM_EXPIRY_MODE="act",
-                                   LANE_SWEEP_MODE="retire", NEEDS_OWNER_NOTIFY_PAUSED="false"))
+        self.fake.set(
+            secrets=dict(
+                GOOD,
+                ASK_CAPTURE_ENABLED="true",
+                CLAIM_EXPIRY_MODE="act",
+                LANE_SWEEP_MODE="retire",
+                NEEDS_OWNER_NOTIFY_PAUSED="false",
+            )
+        )
         self.assertEqual(knobs.get("CLAIM_EXPIRY_MODE", stop=True), "dry-run")
         self.assertEqual(knobs.get("LANE_SWEEP_MODE", stop=True), "report")
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE", stop=True), "off")
@@ -489,6 +550,8 @@ class NarrowTests(KnobTestCase):
     def test_narrowing_also_applies_to_defaults_and_the_stale_copy(self):
         self.fake.set(mode="fail")
         k = knobs.resolve("CLAIM_EXPIRY_CAPS", local={"releases_per_run": 5})
-        self.assertEqual(k.value, {"releases_per_run": 5, "releases_per_day": 40, "pings_per_run": 40})
+        self.assertEqual(
+            k.value, {"releases_per_run": 5, "releases_per_day": 40, "pings_per_run": 40}
+        )
         self.assertTrue(k.stale)
         self.assertEqual(knobs.get("CLAIM_EXPIRY_MODE", local="act"), "dry-run")

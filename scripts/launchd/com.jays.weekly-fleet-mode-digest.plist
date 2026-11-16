@@ -3,7 +3,7 @@
 <!--
   launchd job for scripts/weekly-fleet-mode-digest.mjs (ai-fleet-coordinator).
 
-  Posts a weekly #agent-sync summary of frontier-vs-non-frontier Claude-family
+  Posts a weekly #Work-In-Progress summary of frontier-vs-non-frontier Claude-family
   model usage (Usage Monitor `/api/agent-model-mix`) and sub-agent tier mix
   (Sentry `agent-sessions` project) to the fleet.
 

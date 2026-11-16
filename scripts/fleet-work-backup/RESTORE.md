@@ -25,7 +25,7 @@ Never restore over live folders.  Restore to a scratch target and copy out what 
     export STAGE=$HOME/restore-fwb$HOME/Library/Caches/fleet-work-backup/stage
     ls $STAGE            # MANIFEST.json  README-RESTORE.txt  files/  git/
 
-A smaller pull:  `... restore latest --tag fleet-work --target ... --include '*/stage/files/apps/AGENT-SYNC.md'`,
+A smaller pull:  `... restore latest --tag fleet-work --target ... --include '*/stage/files/apps/FLEET-PROTOCOL.md'`,
 or an older snapshot id from `snapshots` in place of `latest`.  `$FWB restic -- ls latest --tag
 fleet-work` lists what a snapshot holds.  `latest` can be a partial snapshot;  when the work you want
 is older, name the snapshot id.
@@ -34,7 +34,7 @@ is older, name the snapshot id.
 
 `files/` mirrors paths relative to the home directory.
 
-    cp -p $STAGE/files/apps/AGENT-SYNC.md $HOME/apps/
+    cp -p $STAGE/files/apps/FLEET-PROTOCOL.md $HOME/apps/
 
 `mac-collab` was retired on 2026-10-19 (AFC-363).  Only a snapshot made before that day holds
 `files/apps/mac-collab` (the old board database, `findings.db`, a consistent SQLite online backup);

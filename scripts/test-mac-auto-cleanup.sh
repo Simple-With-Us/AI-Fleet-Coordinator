@@ -36,10 +36,6 @@ if [ -n "$(code_lines 'grep -Fw')" ]; then
   fail "empty-string word match on detached HEAD matches every merged branch"
 fi
 
-if ! grep -q 'agent-sync-push' "$SCRIPT"; then
-  fail "mac-auto-cleanup.sh must preserve agent-sync-push runtime"
-fi
-
 if ! grep -q 'is_git_worktree' "$SCRIPT" || ! grep -q 'wt_has_blocking_dirt' "$SCRIPT" || ! grep -q 'wt_is_active' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must enforce worktree, dirt, and idle checks before reaping dependencies"
 fi
@@ -54,6 +50,69 @@ fi
 
 if ! grep -q 'name Journals' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must prune every PipelineStorage Journals dir, not only Urgent"
+fi
+
+# AFC-504: the remote maintenance trigger must reach the host through the
+# operator's own inventory, not through a target written into a published script.
+#
+# The ssh target is private deployment inventory: it arrives in the environment as
+# HOUSEKEEPER_SSH_ALIAS, and the operator's own ssh config is what resolves it.
+# A literal target in this script would ship the host name to every reader of a
+# public repository, and a placeholder would reach the wrong host instead of the
+# one the caller meant.
+#
+# The hop is skipped rather than refused when the variable is unset, because the
+# hop is redundant: the host self-maintains through its own
+# /etc/cron.daily/coolify-auto-maintenance, and the local cleanup that runs
+# before it is the part that matters.
+#
+# A line is an ssh command when it still says ssh after its quoted runs are
+# taken out, so a message that merely names ssh is not read as a command.  The
+# target of a real command has to be the inventory variable itself, so a target
+# hoisted into another variable is caught as well.
+ssh_command_lines() {
+  grep -nE 'ssh' "$SCRIPT" \
+    | grep -vE '^[^:]+:[[:space:]]*#' \
+    | while IFS= read -r line; do
+        shape=$(printf '%s' "$line" | sed -e 's/"[^"]*"/QQ/g' -e "s/'[^']*'/QQ/g")
+        case "$shape" in
+          *ssh\ *) printf '%s\n' "$line" ;;
+        esac
+      done
+}
+
+if [ -n "$(ssh_command_lines | grep -v '"[$]HOUSEKEEPER_SSH_ALIAS')" ]; then
+  fail "mac-auto-cleanup.sh must not ssh a literal host target (private deployment inventory)"
+fi
+
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must reach the remote host through HOUSEKEEPER_SSH_ALIAS"
+fi
+
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS:-' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must read the remote target without tripping on an unset HOUSEKEEPER_SSH_ALIAS"
+fi
+
+# The hop fails closed.  A target that does not resolve is a configuration
+# fault, so the script says which variable is missing and ends the run with a
+# nonzero exit, instead of reporting a success the operator would read as
+# "the remote maintenance ran".  A silent skip is the failure this rules out.
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must name HOUSEKEEPER_SSH_ALIAS when no target resolves"
+fi
+
+if ! grep -q 'Remote Hetzner maintenance trigger failed' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must report a failed connectivity check instead of skipping it"
+fi
+
+# The exit code that means "the local cleanup ran, only the remote hop failed"
+# is the one the watcher reads as cleaned, so it is named in one place and both
+# scripts agree on it.
+if ! grep -q 'HOUSEKEEPER_HOP_EXIT=75' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must exit 75 when the local cleanup ran and only the remote hop failed"
+fi
+if ! grep -q 'CLEANUP_EXIT_CLEANED = (0, 75)' "$ROOT/mac-resource-watch.py"; then
+  fail "mac-resource-watch.py must read the cleanup exit code 75 as cleaned"
 fi
 
 # The housekeeper lock must be taken over atomically.
@@ -318,6 +377,157 @@ OUT="$(run_lock_block "$H1" 2>&1 || true)"
 if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
   fail "the housekeeper lock must be taken when it is free"
 fi
+
+# Standalone owner publication and matching release.  Only the extracted lock
+# block runs; scratch HOME never reaches a real cleanup or deployed lock.
+python3 - "$LOCK_TEST_ROOT" "$LOCK_BLOCK" <<'PYOWNERTEST'
+import json, os, pathlib, socket, stat, subprocess, sys, time
+root, block = pathlib.Path(sys.argv[1]), sys.argv[2]
+
+def run(name, suffix="", inherited=False, source=None, extra_env=None):
+    home = root / name
+    home.mkdir(exist_ok=True)
+    env = dict(os.environ, HOME=str(home), HOUSEKEEPER_LOCK_OWNER="1" if inherited else "")
+    env.update(extra_env or {})
+    result = subprocess.run(["/bin/bash", "-c", (source or block) + "\n" + suffix],
+                            env=env, text=True, capture_output=True, timeout=30)
+    return home, result
+
+home, result = run("owner-shape", r'''
+python3 - "$HOUSEKEEPER_LOCK" "$$" "$HOME/observed" <<'PYCHECK'
+import json, os, pathlib, socket, stat, subprocess, sys, time
+lock, pid, observed = pathlib.Path(sys.argv[1]), int(sys.argv[2]), pathlib.Path(sys.argv[3])
+owner = pathlib.Path(str(lock) + ".owner")
+record = json.loads(owner.read_text())
+assert set(record) == {"pid", "host", "acquired_at", "lock", "start"}, record
+assert type(record["pid"]) is int and record["pid"] == pid
+assert record["host"] == socket.gethostname() and record["lock"] == str(lock)
+assert type(record["acquired_at"]) is float
+assert abs(record["acquired_at"] - lock.stat().st_mtime) <= 2
+assert record["acquired_at"] <= time.time() + 60
+assert owner.stat().st_mtime_ns > lock.stat().st_mtime_ns
+assert stat.S_IMODE(owner.stat().st_mode) == 0o600
+start = subprocess.check_output(["/bin/ps", "-o", "lstart=", "-p", str(pid)], text=True,
+    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}).strip()
+assert record["start"] == start and 0 < len(start) <= 128
+observed.write_text("valid")
+PYCHECK
+''')
+assert result.returncode == 0 and (home / "observed").exists(), result.stderr
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
+
+# Re-exec with all parent's exported ownership values preserves parent state.
+home = root / "owner-inherited"
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+lock.mkdir(parents=True)
+owner = pathlib.Path(str(lock) + ".owner")
+owner.write_text(json.dumps({"pid": os.getpid(), "host": socket.gethostname(),
+    "acquired_at": time.time(), "lock": str(lock), "start": "parent identity"}))
+before = (lock.stat().st_ino, owner.read_bytes(), owner.stat().st_mtime_ns)
+_, result = run("owner-inherited", 'echo nested > "$HOME/ran"', inherited=True,
+    extra_env={"HOUSEKEEPER_LOCK_INODE": str(before[0]), "HOUSEKEEPER_OWNER_RECORD": owner.read_text()})
+assert result.returncode == 0 and (home / "ran").exists(), result.stderr
+assert before == (lock.stat().st_ino, owner.read_bytes(), owner.stat().st_mtime_ns)
+
+# A slow ps completes before mkdir, keeping all record timestamps inside the
+# shared two-second bounds without widening what the four readers accept.
+home = root / "owner-slow-start"
+hook = home / "hooks"
+hook.mkdir(parents=True)
+(hook / "sitecustomize.py").write_text('''import os, pathlib, subprocess, time
+real_run = subprocess.run
+def slow_start(args, *a, **kw):
+    if args[:3] == ["/bin/ps", "-o", "lstart="] and "TZ" not in kw.get("env", {}):
+        assert not (pathlib.Path(os.environ["HOME"]) / ".claude-disk-janitor/.housekeeper.lock").exists()
+        time.sleep(3)
+        (pathlib.Path(os.environ["HOME"]) / "slow-read").touch()
+    return real_run(args, *a, **kw)
+subprocess.run = slow_start
+''')
+_, result = run("owner-slow-start", 'echo cleanup > "$HOME/ran"', extra_env={"PYTHONPATH": str(hook)})
+assert result.returncode == 0 and (home / "slow-read").exists() and (home / "ran").exists(), result.stderr
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
+
+# A changed start token, even with the same PID, cannot authorize release.
+home, result = run("owner-foreign-release", r'''
+python3 - "$HOUSEKEEPER_LOCK.owner" <<'PYFOREIGN'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+record = json.loads(path.read_text())
+record["start"] = "foreign identity"
+path.write_text(json.dumps(record))
+PYFOREIGN
+''')
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert result.returncode == 0 and lock.is_dir()
+assert json.loads(pathlib.Path(str(lock) + ".owner").read_text())["start"] == "foreign identity"
+home, result = run("owner-unknown-release", 'printf broken > "$HOUSEKEEPER_LOCK.owner"')
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert result.returncode == 0 and lock.is_dir()
+assert pathlib.Path(str(lock) + ".owner").read_text() == "broken"
+
+# Inject an atomic replace failure without reaching real cleanup commands.
+home = root / "owner-publish-failure"
+parent = home / ".claude-disk-janitor"
+parent.mkdir(parents=True)
+owner = parent / ".housekeeper.lock.owner"
+owner.write_text("unknown prior record")
+hook = home / "hooks"
+hook.mkdir()
+(hook / "sitecustomize.py").write_text('''import os
+real_replace = os.replace
+def fail_replace(src, dst, *args, **kwargs):
+    if str(dst).endswith(".housekeeper.lock.owner"):
+        raise OSError("injected publication failure")
+    return real_replace(src, dst, *args, **kwargs)
+os.replace = fail_replace
+''')
+_, result = run("owner-publish-failure", 'echo cleanup > "$HOME/ran"', extra_env={"PYTHONPATH": str(hook)})
+assert result.returncode != 0 and "failed to publish housekeeper owner" in result.stderr
+assert not (home / "ran").exists() and owner.read_text() == "unknown prior record"
+assert (parent / ".housekeeper.lock").is_dir()
+assert not list(parent.glob(".housekeeper-owner-*"))
+
+# Simulate foreign publication between mkdir and our guarded writer.
+stub = r'''
+housekeeper_try_mkdir() {
+python3 - "$1" <<'PYRACE'
+import os, pathlib, sys
+lock = pathlib.Path(sys.argv[1])
+lock.mkdir()
+owner = pathlib.Path(str(lock) + ".owner")
+owner.write_text("foreign race")
+stamp = lock.stat().st_mtime_ns + 1_000_000
+os.utime(owner, ns=(stamp, stamp))
+PYRACE
+}
+'''
+race_block = block.replace("export -f housekeeper_with_guard", stub + "\nexport -f housekeeper_with_guard", 1)
+home, result = run("owner-publication-race", 'echo cleanup > "$HOME/ran"', source=race_block)
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert result.returncode != 0 and not (home / "ran").exists()
+assert lock.is_dir() and pathlib.Path(str(lock) + ".owner").read_text() == "foreign race"
+
+# TERM of only the shell keeps ownership until its foreground child finishes.
+home = root / "owner-term-child"
+home.mkdir()
+env = dict(os.environ, HOME=str(home), HOUSEKEEPER_LOCK_OWNER="")
+suffix = '\npython3 -c \'import pathlib, time; pathlib.Path("' + str(home / "ready") + '").touch(); time.sleep(1); pathlib.Path("' + str(home / "finished") + '").touch()\''
+proc = subprocess.Popen(["/bin/bash", "-c", block + suffix], env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+deadline = time.monotonic() + 15
+while not (home / "ready").exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert (home / "ready").exists()
+proc.terminate()
+lock = home / ".claude-disk-janitor/.housekeeper.lock"
+assert lock.is_dir() and json.loads(pathlib.Path(str(lock) + ".owner").read_text())["pid"] == proc.pid
+out, err = proc.communicate(timeout=15)
+assert proc.returncode == 143 and (home / "finished").exists(), (proc.returncode, err)
+assert not lock.exists() and not pathlib.Path(str(lock) + ".owner").exists()
+PYOWNERTEST
 
 # 2. A fresh lock held by a peer: refused, and the peer's lock is untouched.
 H2="$LOCK_TEST_ROOT/case2"
@@ -874,21 +1084,41 @@ os.utime(owner, (now + float(owner_offset), now + float(owner_offset)))' \
 
 make_owner_lock() {
   # $1 = HOME, $2 = pid to record, $3 = host to record, $4 = owner mtime
-  # offset in seconds from the lock's, defaulting to newer than the lock.
+  # offset in seconds from the lock's, defaulting to newer than the lock,
+  # $5 = the process start token to record, defaulting to the one that pid
+  # actually has.
   #
   # The record carries the schema this protocol publishes EXACTLY, because
   # both implementations check the shape strictly and a partial record would
   # be refused as malformed rather than consulted.
   make_lock "$1"
-  python3 -c 'import json, os, sys
+  python3 -c 'import json, os, subprocess, sys
 home, pid, host = sys.argv[1:4]
+start = sys.argv[4] if len(sys.argv) > 4 else ""
+if not start:
+    # The start time of the process the record names, read the way the
+    # implementations read it.  A pid that has already exited has no start
+    # time any more, and the record keeps a synthetic one:  a dead holder is
+    # recognised by its pid, not by its start time.
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", pid],
+            capture_output=True, text=True, timeout=10, check=False, env=env,
+        )
+        start = result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        start = ""
+if not start:
+    start = "Mon Jan  1 00:00:00 2024"
 with open(os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock.owner"), "w") as fh:
     json.dump({
         "pid": int(pid),
         "host": host,
         "acquired_at": 1700000000.0,
         "lock": os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock"),
-    }, fh)' "$1" "$2" "$3"
+        "start": start,
+    }, fh)' "$1" "$2" "$3" "${5:-}"
   stamp_owner_lock "$1" "${4:-5}"
 }
 
@@ -938,7 +1168,7 @@ make_lock "$H23B"
 check_owner_gone "$H23B" no
 OUT="$(run_lock_block "$H23B" 2>&1 || true)"
 if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
-  fail "with no owner file the age rule must decide, because this script's own holder writes none"
+  fail "with no owner file the age rule must decide"
 fi
 
 H23C="$LOCK_TEST_ROOT/case23-bad"
@@ -957,6 +1187,396 @@ H23E="$LOCK_TEST_ROOT/case23-other-host"
 mkdir -p "$H23E"
 make_owner_lock "$H23E" "$DEAD_PID" "some-other-host"
 check_owner_gone "$H23E" no
+
+# A LIVE pid whose start time does not match the record:  the kernel has
+# handed that number to somebody else since the record was written, so the
+# holder is gone even though the pid is alive.  Without the start time this
+# case looks exactly like a live holder, and the lock waits out the whole
+# stale window for a holder that is not there.
+H23F="$LOCK_TEST_ROOT/case23-reused-pid"
+mkdir -p "$H23F"
+make_owner_lock "$H23F" "$$" "$(hostname)" 5 "Mon Jan  1 00:00:00 2024"
+check_owner_gone "$H23F" yes
+OUT="$(run_lock_block "$H23F" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "a reused pid must not keep a dead holder's lock until the stale window expires"
+fi
+
+# 24. The two implementations of the owner record AGREE.
+#
+# The owner file is shared state and TWO implementations read it:  the Python
+# watcher (scripts/mac-resource-watch.py) and the embedded reader above.  They
+# reached opposite conclusions about the same file -- the shell took a lock
+# over that the watcher called malformed -- so this runs one table of records
+# through both and fails when they disagree.
+#
+# The table is the whole shape of the protocol:  a good record, a record with
+# a missing key, a record with an unknown key, records with values of the
+# wrong type, a record for another host, a record older than the lock beside
+# it, a record naming a dead pid, a record naming a live pid, and a record
+# naming a live pid whose start time does not match -- the reused pid.  It
+# also carries the two ways the readers used to disagree on a record that is
+# well formed in every field but one:  a start token longer than the bound
+# the watcher enforces, and a pid that belongs to another user, so signalling
+# it fails with EPERM.
+OWNER_GONE_FILE="$LOCK_TEST_ROOT/owner-gone.sh"
+printf '%s\n' "$OWNER_GONE_BLOCK" > "$OWNER_GONE_FILE"
+python3 - "$LOCK_TEST_ROOT/agreement" "$OWNER_GONE_FILE" "$ROOT/mac-resource-watch.py" <<'PY' || fail "the two owner readers disagreed"
+import importlib.util, json, os, pathlib, shutil, socket, subprocess, sys, time
+
+root = pathlib.Path(sys.argv[1])
+block = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+spec = importlib.util.spec_from_file_location("watch", sys.argv[3])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+shell_command = block + '\nhousekeeper_owner_is_gone "$HOME/.claude-disk-janitor/.housekeeper.lock"'
+env = {"HOME": "", "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+
+def start_token(pid):
+    """The start time of a pid, read the way the protocol reads it.
+
+    The table reads it ITSELF rather than asking the implementation, so the
+    records it builds pin the format the protocol publishes:  a change to
+    the implementation's own reading would show up here as a mismatch
+    instead of quietly changing both sides at once.
+    """
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=10, check=False, env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+# A pid that belongs to another user cannot be signalled, so os.kill raises
+# EPERM for it.  The readers have to agree on what that means:  the process
+# exists, so the check carries on to the start time, exactly as the watcher
+# does.  The stub reaches the embedded reader through sitecustomize, which
+# Python imports at startup, so the reader under test knows nothing about
+# it.  The watcher runs in THIS process, so the same stub is installed here.
+STUB_DIR = root / "eperm-stub"
+STUB_DIR.mkdir(parents=True, exist_ok=True)
+(STUB_DIR / "sitecustomize.py").write_text(
+    'import os\n'
+    'target = os.environ.get("MM_FAKE_EPERM_PID")\n'
+    'if target:\n'
+    '    real = os.kill\n'
+    '    def kill(pid, sig):\n'
+    '        if int(pid) == int(target):\n'
+    '            raise PermissionError(13, "Permission denied")\n'
+    '        return real(pid, sig)\n'
+    '    os.kill = kill\n',
+    encoding="utf-8",
+)
+_real_kill = os.kill
+_eperm_pid = None
+
+
+def _kill(pid, sig):
+    if _eperm_pid is not None and int(pid) == _eperm_pid:
+        raise PermissionError(13, "Permission denied")
+    return _real_kill(pid, sig)
+
+
+os.kill = _kill
+
+host = socket.gethostname()
+live_pid = os.getpid()
+dead = subprocess.Popen([sys.executable, "-c", "pass"])
+dead.wait()
+assert start_token(live_pid), "the live pid must have a readable start token"
+
+
+def record(rec_pid, lock_path, **overrides):
+    base = {
+        "pid": rec_pid,
+        "host": host,
+        "acquired_at": 1700000000.0,
+        "lock": lock_path,
+        "start": start_token(rec_pid) or "Mon Jan  1 00:00:00 2024",
+    }
+    base.update(overrides)
+    return base
+
+
+def shell_verdict(home, eperm_pid=None):
+    run_env = {**env, "HOME": str(home)}
+    if eperm_pid is not None:
+        run_env["PYTHONPATH"] = str(STUB_DIR)
+        run_env["MM_FAKE_EPERM_PID"] = str(eperm_pid)
+    result = subprocess.run(
+        ["bash", "-c", shell_command],
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def watcher_verdict(home):
+    lock = pathlib.Path(home) / ".claude-disk-janitor" / ".housekeeper.lock"
+    mod.STATE_DIR = lock.parent
+    mod.HOUSEKEEPER_LOCK = lock
+    try:
+        mtime = lock.stat().st_mtime
+    except OSError:
+        return False
+    return mod._housekeeper_owner_is_gone(mtime)
+
+
+def write_case(home, payload, owner_newer=True):
+    state = home / ".claude-disk-janitor"
+    state.mkdir(parents=True, exist_ok=True)
+    lock = state / ".housekeeper.lock"
+    lock.mkdir(exist_ok=True)
+    now = time.time()
+    os.utime(lock, (now - 5, now - 5))
+    owner = state / ".housekeeper.lock.owner"
+    owner.write_text(
+        payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8"
+    )
+    offset = 5 if owner_newer else -10
+    os.utime(owner, (now + offset, now + offset))
+
+
+# The last element of a case is the pid the EPERM stub applies to, or None
+# for a case that signs normally.
+CASES = [
+    ("a dead pid", True, lambda lock: record(dead.pid, lock), True, None),
+    ("a live pid", False, lambda lock: record(live_pid, lock), True, None),
+    ("a reused pid", True,
+     lambda lock: record(live_pid, lock, start="Mon Jan  1 00:00:00 2024"), True, None),
+    ("a missing key", False,
+     lambda lock: {k: v for k, v in record(dead.pid, lock).items() if k != "start"}, True, None),
+    ("an unknown key", False,
+     lambda lock: dict(record(dead.pid, lock), unexpected="x"), True, None),
+    ("a pid that is a string", False,
+     lambda lock: record(dead.pid, lock, pid="1"), True, None),
+    ("a pid that is a bool", False,
+     lambda lock: record(dead.pid, lock, pid=True), True, None),
+    ("an empty start", False,
+     lambda lock: record(dead.pid, lock, start=""), True, None),
+    ("an overlong start", False,
+     lambda lock: record(dead.pid, lock, start="x" * 200), True, None),
+    ("another host", False,
+     lambda lock: record(dead.pid, lock, host="some-other-host"), True, None),
+    ("an owner older than the lock", False,
+     lambda lock: record(dead.pid, lock), False, None),
+    ("a file that is not json", False, lambda lock: "{ this is not json", True, None),
+    # A live pid that belongs to another user cannot be signalled, so the
+    # check has to treat EPERM as "the process exists" and go on to the
+    # start time.  The start time here does not match, so the holder is gone
+    # and both readers have to say so.
+    ("a pid that is not ours to signal", True,
+     lambda lock: record(live_pid, lock, start="Mon Jan  1 00:00:00 2024"), True,
+     live_pid),
+]
+
+problems = []
+for name, expected, build, owner_newer, eperm_pid in CASES:
+    home = root / name.replace(" ", "-")
+    shutil.rmtree(home, ignore_errors=True)
+    home.mkdir(parents=True)
+    lock = home / ".claude-disk-janitor" / ".housekeeper.lock"
+    write_case(home, build(str(lock)), owner_newer)
+    _eperm_pid = eperm_pid
+    shell = shell_verdict(home, eperm_pid)
+    watcher = watcher_verdict(home)
+    _eperm_pid = None
+    if shell != watcher:
+        problems.append("%s: the shell said %s and the watcher said %s" % (name, shell, watcher))
+    elif shell != expected:
+        problems.append("%s: both said %s where %s was expected" % (name, shell, expected))
+if problems:
+    raise SystemExit("; ".join(problems))
+print("both owner readers agree on every case")
+PY
+
+# AFC-504: the remote hop fails closed.  Every way it can go wrong -- a missing
+# target, a failed connectivity check, a failed maintenance command -- ends the
+# run with a nonzero exit that names the missing variable or the failed check,
+# and with exit code 75, which is the code that means the local cleanup ran and
+# only the remote hop failed.  A hop that skips in silence is the failure this
+# rules out.
+#
+# The block is run on its own with a stubbed ssh, so the check is about what the
+# script decides and never reaches a real host.
+HOP_ROOT="$LOCK_TEST_ROOT/hop"
+mkdir -p "$HOP_ROOT"
+HOP_BLOCK="$HOP_ROOT/block.sh"
+sed -n '/^# 5\. Remote Hetzner Coolify maintenance trigger/,/^# end remote Hetzner maintenance trigger/p' \
+  "$SCRIPT" > "$HOP_BLOCK"
+if [ ! -s "$HOP_BLOCK" ]; then
+  fail "the remote hop block is missing from the script"
+fi
+
+# The stub counts its calls and exits with the code the case asked for, so a
+# probe that succeeds and a maintenance command that fails are two different
+# hosts rather than one.  It also writes a diagnostic to stderr, because the
+# failure message has to carry ssh's own reason and not only its exit code.
+cat > "$HOP_ROOT/ssh-stub" <<'STUB'
+#!/bin/bash
+n=$(cat "$HOP_CASE/count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$HOP_CASE/count"
+echo "$@" >> "$HOP_CASE/calls"
+codes=($HOP_CODES)
+index=$((n - 1))
+if [ "$index" -ge "${#codes[@]}" ]; then index=$(( ${#codes[@]} - 1 )); fi
+echo "ssh-stub diagnostic for call $n" >&2
+exit "${codes[$index]}"
+STUB
+chmod +x "$HOP_ROOT/ssh-stub"
+
+hop_run() {
+  # $1 the case name, $2 the exit codes (one per call, the last one repeating),
+  # $3 the alias value ("unset" leaves it out), $4 the inventory flag
+  HOP_CASE="$HOP_ROOT/$1"
+  rm -rf "$HOP_CASE"
+  mkdir -p "$HOP_CASE/bin"
+  cp "$HOP_ROOT/ssh-stub" "$HOP_CASE/bin/ssh"
+  if [ "$3" = "unset" ]; then
+    env -u HOUSEKEEPER_SSH_ALIAS PATH="$HOP_CASE/bin:$PATH" \
+      HOUSEKEEPER_INVENTORY="$4" HOP_CASE="$HOP_CASE" HOP_CODES="$2" \
+      bash "$HOP_BLOCK" > "$HOP_CASE/out" 2> "$HOP_CASE/err"
+  else
+    env PATH="$HOP_CASE/bin:$PATH" HOUSEKEEPER_SSH_ALIAS="$3" \
+      HOUSEKEEPER_INVENTORY="$4" HOP_CASE="$HOP_CASE" HOP_CODES="$2" \
+      bash "$HOP_BLOCK" > "$HOP_CASE/out" 2> "$HOP_CASE/err"
+  fi
+}
+
+# A reachable host: the hop runs and the maintenance command is the one asked
+# for.
+HOP_STATUS=0
+hop_run reachable 0 target 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "0" ]; then
+  fail "a reachable host must let the remote hop succeed, it exited $HOP_STATUS"
+fi
+if ! grep -q 'Triggering remote Hetzner Coolify maintenance' "$HOP_ROOT/reachable/out"; then
+  fail "a reachable host must say that it is triggering the remote maintenance"
+fi
+if ! grep -q 'coolify-auto-maintenance' "$HOP_ROOT/reachable/calls"; then
+  fail "a reachable host must run the remote maintenance command"
+fi
+
+# An unreachable host: a real fault, so it says so and fails the run with the
+# code that means the local cleanup ran.
+HOP_STATUS=0
+hop_run unreachable 255 target 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "a failed connectivity check must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'Remote Hetzner maintenance trigger failed' "$HOP_ROOT/unreachable/err"; then
+  fail "a failed connectivity check must say so on stderr"
+fi
+if ! grep -q 'connectivity check' "$HOP_ROOT/unreachable/err"; then
+  fail "a failed connectivity check must say which check failed"
+fi
+if ! grep -q 'ssh-stub diagnostic' "$HOP_ROOT/unreachable/err"; then
+  fail "the failure message must carry ssh's own reason, not only its exit code"
+fi
+
+# A reachable host whose maintenance command fails: also a real fault, and the
+# status of the command is not thrown away.
+HOP_STATUS=0
+hop_run maintenance-fails "0 255" target 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "a failed maintenance command must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'the maintenance command exited' "$HOP_ROOT/maintenance-fails/err"; then
+  fail "a failed maintenance command must say so on stderr"
+fi
+if ! grep -q 'ssh-stub diagnostic' "$HOP_ROOT/maintenance-fails/err"; then
+  fail "the failure message must carry ssh's own reason, not only its exit code"
+fi
+
+# An inventory file that names no target: a misconfiguration, so it says so and
+# fails the run.
+HOP_STATUS=0
+hop_run misconfigured 0 unset 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "an inventory file with no target must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$HOP_ROOT/misconfigured/err"; then
+  fail "an inventory file with no target must name HOUSEKEEPER_SSH_ALIAS"
+fi
+
+# Neither an inventory file nor the variable: the target does not resolve, so
+# the hop fails closed and says which variable is missing.  It never reaches for
+# a host it cannot name, and it never reports success.
+HOP_STATUS=0
+hop_run no-target 0 unset 0 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "a hop with no target must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$HOP_ROOT/no-target/err"; then
+  fail "a hop with no target must name HOUSEKEEPER_SSH_ALIAS"
+fi
+if [ -s "$HOP_ROOT/no-target/calls" ]; then
+  fail "a hop with no target must not reach for a host"
+fi
+
+# AFC-504: the script reads the operator's own inventory file, so a private
+# target never has to be written into a tracked file and launchd still finds it.
+# The block is run on its own with a temporary home, so the check is about what
+# the script reads and never reaches a real host.
+INV_BLOCK="$HOP_ROOT/inventory.sh"
+sed -n '/^# begin operator inventory (AFC-504)/,/^# end operator inventory (AFC-504)/p' \
+  "$SCRIPT" > "$INV_BLOCK"
+if [ ! -s "$INV_BLOCK" ]; then
+  fail "the operator inventory block is missing from the script"
+fi
+
+INV_HOME="$HOP_ROOT/home"
+mkdir -p "$INV_HOME/.config/fleet"
+printf 'HOUSEKEEPER_SSH_ALIAS=target\n' > "$INV_HOME/.config/fleet/housekeeper.env"
+
+inv_read() {
+  # $1 the home directory, $2 the file the readback goes to
+  env -u HOUSEKEEPER_SSH_ALIAS -u HOUSEKEEPER_INVENTORY HOME="$1" bash -c \
+    '. "$1"; printf "%s\n%s\n" "$HOUSEKEEPER_INVENTORY" "$HOUSEKEEPER_SSH_ALIAS"' \
+    _ "$INV_BLOCK" > "$2" 2>&1
+}
+
+inv_read "$INV_HOME" "$HOP_ROOT/readback"
+if [ "$(sed -n 1p "$HOP_ROOT/readback")" != "1" ]; then
+  fail "an operator inventory file must set HOUSEKEEPER_INVENTORY to 1"
+fi
+if [ "$(sed -n 2p "$HOP_ROOT/readback")" != "target" ]; then
+  fail "an operator inventory file must supply HOUSEKEEPER_SSH_ALIAS to the script"
+fi
+
+INV_EMPTY="$HOP_ROOT/empty-home"
+mkdir -p "$INV_EMPTY"
+inv_read "$INV_EMPTY" "$HOP_ROOT/readback-empty"
+if [ "$(sed -n 1p "$HOP_ROOT/readback-empty")" != "0" ]; then
+  fail "with no operator inventory file the script must not claim to have one"
+fi
+
+# A half-written inventory file must not abort the run.  An unbound variable
+# inside the operator's file is fatal in bash while `set -u` is on, so the block
+# suspends it for the source and restores it right after.
+INV_BAD="$HOP_ROOT/bad-home"
+mkdir -p "$INV_BAD/.config/fleet"
+printf 'HOUSEKEEPER_SSH_ALIAS="$BOX"\n' > "$INV_BAD/.config/fleet/housekeeper.env"
+BAD_STATUS=0
+env -u HOUSEKEEPER_SSH_ALIAS -u HOUSEKEEPER_INVENTORY HOME="$INV_BAD" bash -c '
+set -u
+. "$1"
+printf "readback:%s\n" "${HOUSEKEEPER_INVENTORY:-unset}"
+printf "%s" "$DEFINITELY_NOT_SET"
+' _ "$INV_BLOCK" > "$HOP_ROOT/readback-bad" 2>&1 || BAD_STATUS=$?
+if ! grep -q 'readback:1' "$HOP_ROOT/readback-bad"; then
+  fail "an unbound variable in the operator inventory file must not abort the run"
+fi
+if [ "$BAD_STATUS" = "0" ]; then
+  fail "the operator inventory block must restore set -u after it sources the file"
+fi
 
 bash -n "$SCRIPT" || fail "bash -n failed"
 

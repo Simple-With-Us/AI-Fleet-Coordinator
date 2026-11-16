@@ -54,6 +54,31 @@ final class FleetConfigContractTests: XCTestCase {
         XCTAssertFalse(result.failing)
     }
 
+    /// GRID-19:  the engine names the surfaces it does not check and the rules it cannot
+    /// run,  and the app reads both;  an engine that sends neither is read as before.
+    func test_the_uncovered_and_not_implemented_lists_decode() throws {
+        let json = Fixtures.envelope.replacingOccurrences(
+            of: "\"results\": [",
+            with: """
+            "uncovered": [{"seat": "MM", "surface": "~/.minimax/config.json", "reason": "The channel config fits no kind."}],
+             "notImplemented": [{"ruleId": "compliance-backup-heartbeat", "ownerSeat": "CLAUDE", "reason": "No command reads it yet."}],
+             "results": [
+            """
+        )
+        let envelope = try EnvelopeDecoder.decode(Data(json.utf8))
+        XCTAssertEqual(
+            envelope.uncoveredSurfaces,
+            [UncoveredSurface(seat: "MM", surface: "~/.minimax/config.json", reason: "The channel config fits no kind.")]
+        )
+        XCTAssertEqual(
+            envelope.notImplementedRules,
+            [NotImplementedRule(ruleId: "compliance-backup-heartbeat", ownerSeat: "CLAUDE", reason: "No command reads it yet.")]
+        )
+        let plain = try EnvelopeDecoder.decode(Data(Fixtures.envelope.utf8))
+        XCTAssertTrue(plain.uncoveredSurfaces.isEmpty)
+        XCTAssertTrue(plain.notImplementedRules.isEmpty)
+    }
+
     /// The proof a rule did not reach is never dressed as one it did.
     func test_a_rule_without_a_reached_proof_says_so() throws {
         let json = Fixtures.envelope.replacingOccurrences(
@@ -239,5 +264,57 @@ final class ManifestTargetTests: XCTestCase {
                 "the reason names the version it reads: \(reason)"
             )
         }
+    }
+
+    /// A manifest that declares the fleet-wide compliance family is read,  and the
+    /// rules it declares are known to the model.
+    ///
+    /// The key is additive:  a manifest without it is read exactly as before,  and the
+    /// app does not have to know about the family to read the seats it already reads.
+    func test_the_fleet_wide_compliance_family_is_read_when_it_is_declared() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-manifest-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try """
+        {
+          "schemaVersion": 2,
+          "seats": {},
+          "complianceRules": [
+            {
+              "id": "compliance-secrets-hygiene",
+              "kind": "compliance",
+              "scope": ["mac"],
+              "ownerSeat": "CLAUDE",
+              "implemented": true,
+              "check": {"type": "secrets_hygiene", "target": "~/.secrets", "detail": ""}
+            },
+            {
+              "id": "compliance-backup-heartbeat",
+              "kind": "compliance",
+              "scope": ["mac"],
+              "ownerSeat": "CLAUDE",
+              "implemented": false,
+              "implementationReason": "No command reads the backup heartbeat yet.",
+              "check": {"type": "command", "target": "fleet-backup-heartbeat", "detail": ""}
+            }
+          ]
+        }
+        """.write(to: url, atomically: true, encoding: .utf8)
+        let manifest = try SeatManifest.read(at: url)
+        XCTAssertEqual(manifest.allComplianceRules.count, 2)
+        XCTAssertEqual(manifest.allComplianceRules.first?.ownerSeat, "CLAUDE")
+        XCTAssertEqual(manifest.allComplianceRules.first?.scope, ["mac"])
+        XCTAssertEqual(manifest.complianceRulesNotImplemented.count, 1)
+        XCTAssertEqual(manifest.complianceRulesNotImplemented.first?.id, "compliance-backup-heartbeat")
+    }
+
+    /// A manifest from before the compliance family is read exactly as before.
+    func test_a_manifest_without_the_compliance_family_is_read() throws {
+        let manifest = try JSONDecoder().decode(
+            SeatManifest.self,
+            from: Data(Fixtures.manifest.utf8)
+        )
+        XCTAssertTrue(manifest.allComplianceRules.isEmpty)
+        XCTAssertTrue(manifest.complianceRulesNotImplemented.isEmpty)
     }
 }

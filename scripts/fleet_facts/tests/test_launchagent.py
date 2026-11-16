@@ -136,12 +136,17 @@ class ZshenvRowTests(unittest.TestCase):
     def setUp(self) -> None:
         text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
         (self.row,) = [line for line in text.splitlines() if line.startswith("| `~/.zshenv` (the `GH_TOKEN` refresh)")]
+        # The row is prose, so the gap between its sentences is a real U+00A0 plus a
+        # space in a converted document and two ASCII spaces in an unconverted one.
+        # A check that names a phrase with a gap in it compares on the words, so it
+        # does not break when the document is re-rendered in the other form.
+        self.flat = re.sub(r"\s+", " ", self.row)
 
     def test_the_order_names_the_fleet_default_and_this_shell_as_the_exception(self) -> None:
-        self.assertIn("A nonempty inherited `GH_TOKEN` wins", self.row)
-        self.assertIn("That is the fleet default", self.row)
-        self.assertIn("this shell is the one documented exception", self.row)
-        self.assertIn("approved by Jay on Oct 21, 2026", self.row)
+        self.assertIn("A nonempty inherited `GH_TOKEN` wins", self.flat)
+        self.assertIn("That is the fleet default", self.flat)
+        self.assertIn("this shell is the one documented exception", self.flat)
+        self.assertIn("approved by Jay on Oct 21, 2026", self.flat)
 
     def test_the_sync_row_lists_the_sources_the_script_accepts(self) -> None:
         text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
@@ -155,31 +160,31 @@ class ZshenvRowTests(unittest.TestCase):
             self.assertNotIn(rejected, row, "the row lists a source the script rejects")
 
     def test_the_store_side_is_qualified_and_the_fallbacks_are_named(self) -> None:
-        self.assertIn("a nonempty fleet-store value wins whenever the store answers with one", self.row)
-        self.assertIn("An empty store result or an unreachable store leaves the inherited token alone", self.row)
-        self.assertIn("fails closed with `GH_TOKEN is unavailable`", self.row)
+        self.assertIn("a nonempty fleet-store value wins whenever the store answers with one", self.flat)
+        self.assertIn("An empty store result or an unreachable store leaves the inherited token alone", self.flat)
+        self.assertIn("fails closed with `GH_TOKEN is unavailable`", self.flat)
 
     def test_the_cache_says_what_it_holds_and_who_reads_it(self) -> None:
-        self.assertIn("umask 077", self.row)
-        self.assertIn("It holds one value,  the store's,  copied verbatim", self.row)
-        self.assertIn("this shell is its only reader", self.row)
+        self.assertIn("umask 077", self.flat)
+        self.assertIn("It holds one value, the store's, copied verbatim", self.flat)
+        self.assertIn("this shell is its only reader", self.flat)
 
     def test_the_identity_is_the_credential_that_was_measured(self) -> None:
-        self.assertIn("fine-grained personal access token", self.row)
-        self.assertIn("the `github_pat_` shape", self.row)
-        self.assertNotIn("`gith_`", self.row)
-        self.assertIn("it writes nothing", self.row)
-        self.assertIn("git's helper hands that one to git only when this file has not exported a variable", self.row)
+        self.assertIn("fine-grained personal access token", self.flat)
+        self.assertIn("the `github_pat_` shape", self.flat)
+        self.assertNotIn("`gith_`", self.flat)
+        self.assertIn("it writes nothing", self.flat)
+        self.assertIn("git's helper hands that one to git only when this file has not exported a variable", self.flat)
 
     def test_the_durable_piece_names_a_mechanism_the_repository_tracks(self) -> None:
-        self.assertIn("docs/protocols/cli-login-sync.md", self.row)
-        self.assertIn("scripts/fleet_secrets/sync_cli_login.py", self.row)
-        self.assertIn("`git-relay` is the consumer of those per-seat logins", self.row)
-        self.assertNotIn("Agents do not handle tokens at all", self.row)
+        self.assertIn("docs/protocols/cli-login-sync.md", self.flat)
+        self.assertIn("scripts/fleet_secrets/sync_cli_login.py", self.flat)
+        self.assertIn("`git-relay` is the consumer of those per-seat logins", self.flat)
+        self.assertNotIn("Agents do not handle tokens at all", self.flat)
 
     def test_the_durable_piece_says_where_a_seat_own_login_comes_from(self) -> None:
-        self.assertIn("A seat's own login is written from `--from file`", self.row)
-        self.assertIn("it is not a per-seat source", self.row)
+        self.assertIn("A seat's own login is written from `--from file`", self.flat)
+        self.assertIn("it is not a per-seat source", self.flat)
 
 
 if __name__ == "__main__":  # pragma: no cover
