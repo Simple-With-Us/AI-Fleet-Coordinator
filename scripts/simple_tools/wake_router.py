@@ -786,17 +786,11 @@ def read_local_config(
     *,
     required: bool = False,
     seat_lists: Sequence[str] = (),
-    allow_unknown: bool = False,
 ) -> dict[str, Any]:
     """Only what a JSON file sets.  A file named explicitly must exist.  A file that is there must
     parse, name only known keys and match each default's type:  an unreadable or mistyped config is
     a refusal that names the path, never a quiet run on defaults.  A key in `seat_lists` is known
-    too, and its value must be a list of seat tags.
-
-    `allow_unknown` is for the file that is shared by every seat:  a key that this host cannot
-    attribute belongs to a seat whose module is not installed here, and skipping it is that
-    reader's business.  A file that names only this seat's settings is read without it, so a
-    mistyped key is still a refusal there."""
+    too, and its value must be a list of seat tags."""
     config: dict[str, Any] = {}
     try:
         text = path.read_text(encoding="utf-8")
@@ -823,8 +817,6 @@ def read_local_config(
             config[key] = value
             continue
         if key not in defaults:
-            if allow_unknown:
-                continue
             raise SystemExit("wake-router: %s: unknown setting %s" % (path, key))
         if not _same_shape(value, defaults[key]):
             raise SystemExit("wake-router: %s: %s has the wrong type" % (path, key))

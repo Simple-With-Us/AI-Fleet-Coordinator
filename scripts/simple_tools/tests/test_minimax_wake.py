@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from simple_tools import minimax_wake
 from simple_tools import wake_router as WR
+from simple_tools import wake_settings as WS
 
 SID = "mvs_1a2b3c4d11112222333344445555abcd"
 SID_OTHER = "mvs_9999ffff11112222333344445555abcd"
@@ -628,9 +629,9 @@ class TimeoutTests(Base):
 
     def test_a_timeout_is_a_refusal_that_says_nobody_knows(self):
         # The child was running the wake when the deadline passed, so the turn may have
-        # started.  The house outcome for that is a refusal whose code is outside NEVER_RAN:
+        # started.  The house outcome for that is a refusal whose code is outside NEVER_RAN:
         # the receipt records "nobody knows" (delivered: null) and there is no retry, because
-        # a retry could run the turn twice.  The sibling platforms return the same shape for a
+        # a retry could run the turn twice.  The sibling platforms return the same shape for a
         # resume timeout.
         delivery = self._deliver_local(timeout=True)
         self.assertEqual(delivery.outcome, "refused")
@@ -894,47 +895,63 @@ class SettingsTests(Base):
         self.assertEqual(answer["generation"], 2)
         self.assertEqual(len(self.calls), 1)
 
-    def test_the_shared_file_names_the_workspace(self):
-        # The documented channel is the shared file, and the Mac-side delivery reads it.
-        shared = minimax_wake.state_dir(self.env).parent / "config.json"
-        minimax_wake._private_dir(shared.parent)
-        shared.write_text(
+    def test_the_per_seat_file_names_the_workspace(self):
+        # The per-seat file is this seat's own file, and it is read the way every other
+        # platform reads its own.
+        seat_file = minimax_wake.state_dir(self.env) / "config.json"
+        minimax_wake._private_dir(seat_file.parent)
+        seat_file.write_text(
             json.dumps({"workspace": str(self.workspace), "local_host": "mac"}), encoding="utf-8"
         )
         config = minimax_wake._delivery_config(self.env)
         self.assertEqual(config["workspace"], str(self.workspace))
         self.assertEqual(config["local_host"], "mac")
 
-    def test_the_shared_file_may_name_a_setting_of_another_seat(self):
-        # The shared file is one file for every seat, so it carries every seat's settings.  A
-        # key this host cannot attribute belongs to a seat whose module is not installed here:
-        # it is skipped, and the delivery is not held by a setting that is not this seat's.
+    def test_the_host_wide_file_is_not_read_by_this_seat(self):
+        # The host-wide file is the service's:  the server reads it against every seat's
+        # settings and narrows it per seat.  This seat reads its own file, so a fact another
+        # platform owns can never reach this delivery.
         shared = minimax_wake.state_dir(self.env).parent / "config.json"
         minimax_wake._private_dir(shared.parent)
-        shared.write_text(
-            json.dumps({"workspace": str(self.workspace), "zcode_bin": "/opt/zcode"}),
-            encoding="utf-8",
-        )
+        shared.write_text(json.dumps({"workspace": "/somewhere/else"}), encoding="utf-8")
+        seat_file = minimax_wake.state_dir(self.env) / "config.json"
+        minimax_wake._private_dir(seat_file.parent)
+        seat_file.write_text(json.dumps({"workspace": str(self.workspace)}), encoding="utf-8")
         config = minimax_wake._delivery_config(self.env)
         self.assertEqual(config["workspace"], str(self.workspace))
 
-    def test_a_per_seat_file_cannot_lift_the_shared_cap(self):
-        # The shared file is the operator's brake for every seat:  a per-seat file cannot
-        # widen a cap the shared file set.
-        shared = minimax_wake.state_dir(self.env).parent / "config.json"
+    def test_another_seat_setting_in_this_seat_file_is_refused(self):
+        # This seat's file holds this seat's settings:  a key that belongs to another
+        # platform is a mistake, and it is refused by name rather than ignored.
         seat_file = minimax_wake.state_dir(self.env) / "config.json"
-        minimax_wake._private_dir(shared.parent)
         minimax_wake._private_dir(seat_file.parent)
-        shared.write_text(
-            json.dumps({"workspace": str(self.workspace), "resume_timeout_seconds": 600}),
-            encoding="utf-8",
-        )
+        seat_file.write_text(json.dumps({"zcode_bin": "/opt/zcode"}), encoding="utf-8")
+        with self.assertRaises(SystemExit) as caught:
+            minimax_wake._delivery_config(self.env)
+        self.assertIn("unknown setting", str(caught.exception))
+
+    def test_a_mistyped_setting_is_refused_by_name(self):
+        # A mistyped key is refused, not dropped:  a deployment that names `workspce` must
+        # not run on the defaults and fail later as `missing-workspace`.
+        seat_file = minimax_wake.state_dir(self.env) / "config.json"
+        minimax_wake._private_dir(seat_file.parent)
+        seat_file.write_text(json.dumps({"workspce": "/opt/work"}), encoding="utf-8")
+        with self.assertRaises(SystemExit) as caught:
+            minimax_wake._delivery_config(self.env)
+        self.assertIn("unknown setting", str(caught.exception))
+
+    def test_a_per_seat_file_cannot_lift_the_base_cap(self):
+        # A local file only narrows:  it cannot widen a cap the settings already hold, so a
+        # deployment cannot lift the timeout on its own.
+        seat_file = minimax_wake.state_dir(self.env) / "config.json"
+        minimax_wake._private_dir(seat_file.parent)
         seat_file.write_text(
-            json.dumps({"workspace": str(self.workspace), "resume_timeout_seconds": 900}),
+            json.dumps({"workspace": str(self.workspace), "resume_timeout_seconds": 1800}),
             encoding="utf-8",
         )
+        base = WS.from_knobs("MM", minimax_wake.DEFAULTS)
         config = minimax_wake._delivery_config(self.env)
-        self.assertEqual(config["resume_timeout_seconds"], 600)
+        self.assertEqual(config["resume_timeout_seconds"], base["resume_timeout_seconds"])
 
     def test_a_settings_failure_names_the_source(self):
         with patch.object(minimax_wake, "_delivery_config", side_effect=RuntimeError("boom")):

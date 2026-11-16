@@ -8,7 +8,7 @@ The router itself is the one shared service for every platform (`wake_service`,
 
 The two routes, and the rule between them.  A MiniMax chat is woken through the MiniMax Code
 CLI:  `mcode exec --session <session_id> --cwd <workspace> --model <provider/model> --input -`
-runs one prompt, on the child's stdin, in an existing session without starting the TUI.  The
+runs one prompt, on the child's stdin, in an existing session without starting the TUI.  The
 workspace, the binary and the model come from the local settings file, where the deployment
 names them (this file carries no private path literal), and the workspace is also the binding,
 because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
@@ -21,11 +21,11 @@ archived chat refuses (`session-archived`);  a session whose status says a turn 
 `busy` and retried after `busy_retry_seconds`.  Once `mcode` has started, any exit code other
 than 0 is final (`refused`), because the turn may have already run;  exit 0 is only `sent`,
 because the runtime's own log shows a failed turn exiting 0.  A timeout is neither of those:
-the child was running the wake when the deadline passed, so the turn may have started.  It is a
+the child was running the wake when the deadline passed, so the turn may have started.  It is a
 refusal whose code is outside `NEVER_RAN`, which the receipt records as nobody knows, and it is
 not retried, because a retry could run the turn twice.
 
-The one seam.  Every child in the fleet is run through a runner, and this module runs its
+The one seam.  Every child in the fleet is run through a runner, and this module runs its
 `mcode` child through one too:  the default runner stops the child and reaps it before it
 raises, and a caller that hands over its own runner replaces the whole run, so a stub never
 runs beside the real binary.
@@ -54,14 +54,13 @@ Mac side, `simple-chat wake-deliver` looks up `"minimax"` in `wake_service.BUILD
 dispatches to `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before
 calling local delivery, ensuring the letter was not released or reassigned.
 
-Python 3.11+, standard library only.
+Python 3.9+, standard library only.
 """
 
 from __future__ import annotations
 
 import errno
 import fcntl
-import importlib
 import json
 import os
 import re
@@ -101,7 +100,7 @@ MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
 #: The bound on a link in a request, the same one the router keeps.
 MAX_LINK = 500
 #: The bounds on a request that arrives from another host:  how big it may be, how deep it may
-#: nest and how many values it may hold.  A request is untrusted input, so it is walked with
+#: nest and how many values it may hold.  A request is untrusted input, so it is walked with
 #: ceilings before anything is read out of it.
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_REQUEST_DEPTH = 6
@@ -116,7 +115,7 @@ CHAT_KINDS = ("conversation", "task")
 #: The store's status values that mean a turn is running in that chat right now.
 BUSY_STATUSES = ("started",)
 #: The top-level sections a delivery request carries:  the platform it names, the chat it
-#: addresses and the wake itself.  This is the request the router builds and sends over ssh
+#: addresses and the wake itself.  This is the request the router builds and sends over ssh
 #: (`claude_wake.deliver_remote` sends exactly these three), so a request with any other section,
 #: or with one of them missing, is refused before anything reads it.
 REQUEST_FIELDS = frozenset({"platform", "target", "wake"})
@@ -127,7 +126,7 @@ MCODE_PERMISSION = "off"
 #: (`adapters.MCODE_MAX_STEPS`):  at 8 the wake contract does not fit, and 16 is the cap the
 #: fleet measured.
 MCODE_MAX_STEPS = 16
-#: How many session ids one store query binds.  SQLite's variable limit is 999 on the builds
+#: How many session ids one store query binds.  SQLite's variable limit is 999 on the builds
 #: before 3.32 and 32766 after, and a candidate list longer than the limit would fail the whole
 #: query and leave the non-interactive filter off.
 STORE_CHUNK = 200
@@ -146,8 +145,6 @@ DEFAULTS: Mapping[str, Any] = {
     "mcode_model": MCODE_DEFAULT_MODEL,
 }
 
-#: Every seat's settings, once:  the shared file is checked against the union of them.
-_SHARED_DEFAULTS: dict[str, Any] | None = None
 
 NEVER_RAN: frozenset[str] = frozenset(
     {
@@ -203,7 +200,7 @@ def _private_dir(folder: Path) -> None:
 
     Every level of the chain is checked, not only the missing ones:  a level that is already
     there and is a symlink would redirect everything under it somewhere else, so it is refused
-    as well.  The walk stops at the first level that exists, because the levels above it are
+    as well.  The walk stops at the first level that exists, because the levels above it are
     the host's own and are none of this folder's business."""
     missing: list[Path] = []
     probe = folder
@@ -299,7 +296,7 @@ def _session_rows(
                 conn.execute(
                     "SELECT session_id, session_kind, parent_session_id, archived, status, "
                     "workspace_dir FROM local_runtime_sessions WHERE session_id IN (%s)"
-                    % ",".join("?" * len(chunk)),
+                    % ",".join("?"  * len(chunk)),
                     chunk,
                 ).fetchall()
             )
@@ -321,7 +318,7 @@ def _session_rows(
 
 def _session_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, Any] | None]:
     """(`ok`|`missing`|`store-missing`|`error`, row) for one session from the MiniMax Code
-    store, read only.  A store that is not there is not a session that is not there."""
+    store, read only.  A store that is not there is not a session that is not there."""
     status, rows = _session_rows(env, [session_id])
     if status != "ok":
         return status, None
@@ -438,7 +435,7 @@ def _run_child(
     """Run one child the way `subprocess.run` runs it, with one difference:  the child is asked
     to stop before it is killed, and it is reaped before the exception goes on.
 
-    `subprocess.run` kills a child that runs past its deadline, and it kills it outright.  Here
+    `subprocess.run` kills a child that runs past its deadline, and it kills it outright.  Here
     the child gets the chance to stop first, and whatever happens, it is gone before this
     returns or raises:  no wake keeps running behind the router's back.
     """
@@ -516,7 +513,7 @@ def deliver_local(
         return WR.Delivery("refused", "wake", code="bad-workspace-path")
     if not workspace:
         # The deployment has not named a workspace, and delivering into an unknown directory is
-        # the wrong-chat delivery this platform exists to refuse.  A missing deployment setting
+        # the wrong-chat delivery this platform exists to refuse.  A missing deployment setting
         # is a bounded failure, exactly like a missing binary (`claude-not-found`,
         # `agy-not-found` in the sibling modules):  the delivery is retried up to `max_attempts`
         # and then ends in a dead receipt, and the code names the setting that is missing.
@@ -590,7 +587,7 @@ def deliver_local(
 
             # Every flag is its own element and every value is the element after it, the way the
             # house fallback runtime passes them (`adapters.mcode_argv`), which is the form the
-            # `mcode exec` help shows.  A value that could be read as an option of its own is
+            # `mcode exec` help shows.  A value that could be read as an option of its own is
             # refused before it reaches the command line:  the session id and the model have
             # their own shapes, and the workspace was checked above.
             argv = [
@@ -807,7 +804,7 @@ def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
 
 
 def _correlation(request: Mapping[str, Any]) -> dict[str, Any]:
-    """The ids an answer repeats back.  One that is not validly shaped comes back blank, so a
+    """The ids an answer repeats back.  One that is not validly shaped comes back blank, so a
     bad request is never mistaken for an answer to a good one, and the Mac's own check of the
     answer keeps this module's refusal instead of turning it into a platform mismatch."""
     body = request if isinstance(request, Mapping) else {}
@@ -828,54 +825,21 @@ def _answer(request: Mapping[str, Any], delivery: WR.Delivery) -> dict[str, Any]
     return {**_correlation(request), "delivery": asdict(delivery)}
 
 
-def _shared_defaults() -> dict[str, Any]:
-    """Every seat's settings, which is what the shared file is checked against.
-
-    The shared file is one file for every seat, so it carries every seat's names;  the service
-    checks it against the union of them, and so does this reader."""
-    global _SHARED_DEFAULTS
-    if _SHARED_DEFAULTS is None:
-        from . import wake_service as SVC
-
-        union: dict[str, Any] = {}
-        for builder in SVC.BUILDERS.values():
-            try:
-                module = importlib.import_module(builder.module)
-            except ImportError:
-                continue
-            union.update(getattr(module, "DEFAULTS", WR.ROUTER_DEFAULTS))
-        _SHARED_DEFAULTS = union
-    return _SHARED_DEFAULTS
-
-
 def _delivery_config(env: Mapping[str, str]) -> dict[str, Any]:
     """This host's settings for one delivery.
 
-    The shared file (`<state root>/config.json`) names the platform's own facts for every seat,
-    and the per-seat file (`<state root>/minimax/config.json`) may name them for this seat.  The
-    per-seat file wins where both name one, and a file that cannot be read refuses the delivery
-    rather than quietly narrowing it.  The one thing a per-seat file cannot do is lift a cap the
-    shared file set:  the shared file is the operator's brake for every seat, so the narrower of
-    the two wins for every narrowable setting."""
-    from . import wake_service as SVC
+    The per-seat file (`<state root>/minimax/config.json`) holds this seat's own facts, and it is
+    read the way every other platform reads its own (`claude_wake`, `antigravity_wake`):  the
+    settings it names are this seat's, a key that is not one of them is refused by name, and a
+    file that cannot be read refuses the delivery rather than quietly narrowing it.
+
+    The host-wide file (`<state root>/config.json`) is the service's:  the server reads it against
+    every seat's settings and narrows it per seat.  It is not read here, so a fact another
+    platform owns - its own workspace, its own binary, its own model - can never reach this
+    seat's delivery."""
     from . import wake_settings as WS
 
-    seat_path = state_dir(env) / "config.json"
-    shared_path = SVC.state_root(env) / "config.json"
-    base = WS.from_knobs(SEAT, DEFAULTS)
-    # The shared file is one file for every seat, so it carries every seat's settings:  a key
-    # this host cannot attribute belongs to a seat whose module is not installed here, and it is
-    # skipped rather than refused.  The per-seat file holds this seat's settings only, so an
-    # unknown key there is a mistyped one and is refused.
-    shared = WS.read_local(shared_path, _shared_defaults(), allow_unknown=True)
-    seat = WS.read_local(seat_path, DEFAULTS)
-    local = {**shared, **seat}
-    # The shared file is the operator's brake for every seat, so a per-seat file cannot lift a
-    # cap the shared file set:  the narrower of the two wins for every narrowable setting.
-    for key in WS.NARROWABLE:
-        if key in shared and key in seat:
-            local[key] = min(shared[key], seat[key])
-    return WS.narrowed(base, local, SEAT)[0]
+    return WS.read_once(SEAT, DEFAULTS, state_dir(env) / "config.json")
 
 
 def _bounded_request(request: object) -> Mapping[str, Any]:
@@ -883,7 +847,7 @@ def _bounded_request(request: object) -> Mapping[str, Any]:
     node count.
 
     A request arrives from another host over ssh, so it is untrusted input, and a huge or
-    deeply nested one must not cost the router more than a small one.  Its sections are checked
+    deeply nested one must not cost the router more than a small one.  Its sections are checked
     too:  a request carries exactly the platform, the target and the wake, so one with a section
     this module does not know, or with one of the three missing, is refused before anything
     reads it."""
@@ -935,7 +899,7 @@ def deliver_request(
         config = _delivery_config(env)
     except (Exception, SystemExit):
         # The settings could not be read:  fail closed, and name the source that could not be
-        # read, so the operator knows which dependency is missing.  The name is spelled with a
+        # read, so the operator knows which dependency is missing.  The name is spelled with a
         # hyphen, because the Mac's own `_short` keeps only `[A-Za-z0-9:_-]` and a dot in the
         # code would reach the router as "unreadable", which is no name at all.
         return _answer(request, WR.Delivery("failed", code="settings-unavailable-config-json"))

@@ -34,8 +34,8 @@ read at a refresh keeps the last narrowing that worked in force (none, if there 
 is logged, and the fetch still runs and is applied through that narrowing:  a broken file never
 widens anything and never freezes the settings.  `local_host` and `claude_bin`, and a
 platform's own `workspace`, `mcode_bin` and `mcode_model`, are not settings but facts about one
-host, which one Infisical value cannot hold, so they are still read from the file, by the seats
-that have them.
+host or one platform, which one Infisical value cannot hold, so they are still read from the file,
+by the seats that have them.
 
 What is not per-seat.  The knob registry is flat, with one name per value, so a seat is not a
 dimension of it.  The seats are a list of their own:  delivery runs for a seat only when
@@ -264,20 +264,11 @@ def narrowed(
 
 
 def read_local(
-    path: Path,
-    defaults: Mapping[str, Any],
-    *,
-    required: bool = False,
-    allow_unknown: bool = False,
+    path: Path, defaults: Mapping[str, Any], *, required: bool = False
 ) -> dict[str, Any]:
     """The local file, checked against `defaults` and the seat list (wake_router.read_local_config,
-    with its refusals).
-
-    `allow_unknown` is for the file every seat shares:  a key this host cannot attribute is
-    another seat's setting, and skipping it is this reader's business."""
-    return WR.read_local_config(
-        path, defaults, required=required, seat_lists=(LOCAL_SEATS,), allow_unknown=allow_unknown
-    )
+    with its refusals)."""
+    return WR.read_local_config(path, defaults, required=required, seat_lists=(LOCAL_SEATS,))
 
 
 def read_once(seat: str, defaults: Mapping[str, Any], local_path: Path) -> dict[str, Any]:
