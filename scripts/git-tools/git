@@ -2136,6 +2136,10 @@ def cmd_publish(tools: dict, a, bearer: str, seat: str, deadline: float) -> int:
         die("name at least one --file", EXIT_USAGE)
     _repo_url(a.repo)
     batches = _publish_batches(files)
+    # A workflow permission refusal must reject the whole operation, not arrive
+    # after earlier ordinary-file batches committed. Keep workflow publishes atomic.
+    if len(batches) > 1 and any(path.startswith(".github/workflows/") for path, _ in files):
+        die("workflow publish must fit one atomic batch; no write was sent", EXIT_USAGE)
     # Every commit is checked before the first is sent, so a bad path or a flagged file in a later batch cannot leave a
     # partial publish on the branch.  One batch's base64 payload exists at a time, so a large publish does not
     # hold the whole encoded set in memory.

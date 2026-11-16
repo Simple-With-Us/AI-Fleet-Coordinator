@@ -1,4 +1,5 @@
 """Build one finite client release, offline. Never install or alter the source release."""
+
 import argparse
 import hashlib
 import json
@@ -13,16 +14,16 @@ FILES = {
     "scripts/git-tools/export_catalog.py": "727f0e66aee78660c01cb9d36e5861a547fd2d962664e54f1397e9d4d57ceed9",
     "scripts/simple_tools/secretscan.py": "f29d222d0d6af9726b93c268134cf4fe4c84af10a60da9460250aef9892c253c",
 }
-RESULT_SHA = "7ec709b38325aebe3e97f6f1ef85cfa3b4973527c7ea679f3deaa3155e169414"
-BEFORE = '''    if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
+RESULT_SHA = "fb1b0b85d5d8f8ae1551c74a6813ff6bd7fbc8d9d2dd40b12a6939a5748266e6"
+BEFORE = """    if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
         die(f"{path!r} is a workflow path;  publish cannot write it", EXIT_USAGE)
-'''
-AFTER = '''    # Actual workflow files use the same hosted batch route as other files.  The relay
+"""
+AFTER = """    # Actual workflow files use the same hosted batch route as other files.  The relay
     # checks this seat's workflows:write ceiling and mints that permission only when
     # needed.  Never mistake the directory entries themselves for writable files.
     if path in (".github", ".github/workflows"):
         die(f"{path!r} is a workflow directory, not a writable file", EXIT_USAGE)
-'''
+"""
 
 
 def digest(data):
@@ -49,7 +50,12 @@ def build(source, destination):
     text = payload[implementation].decode("utf-8")
     if text.count(BEFORE) != 1:
         raise ValueError("baseline admission block mismatch")
-    payload[implementation] = text.replace(BEFORE, AFTER).encode("utf-8")
+    text = text.replace(BEFORE, AFTER)
+    anchor = "    batches = _publish_batches(files)\n"
+    atomic = '    batches = _publish_batches(files)\n    # A workflow permission refusal must reject the whole operation, not arrive\n    # after earlier ordinary-file batches committed. Keep workflow publishes atomic.\n    if len(batches) > 1 and any(path.startswith(".github/workflows/") for path, _ in files):\n        die("workflow publish must fit one atomic batch; no write was sent", EXIT_USAGE)\n'
+    if text.count(anchor) != 1:
+        raise ValueError("baseline batch planning block mismatch")
+    payload[implementation] = text.replace(anchor, atomic).encode("utf-8")
     if digest(payload[implementation]) != RESULT_SHA:
         raise ValueError("candidate implementation digest mismatch")
     # All validation happens before creating output. An interrupted build may leave
@@ -67,11 +73,13 @@ def build(source, destination):
         path.chmod(0o755 if name in ("scripts/simple-git", implementation) else 0o644)
     manifest = {
         "base_commit": BASE_COMMIT,
-        "production_delta": "_publish_path_check only",
+        "production_delta": "_publish_path_check plus atomic workflow guard in cmd_publish",
         "activation_performed": False,
         "files": {name: digest(data) for name, data in payload.items()},
     }
-    (destination / "workflow-release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (destination / "workflow-release-manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n"
+    )
     return manifest
 
 

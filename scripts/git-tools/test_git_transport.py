@@ -409,6 +409,20 @@ class Publish(unittest.TestCase):
             base64.b64decode(put["files"][1]["content_b64"]), Path(workflow).read_bytes()
         )
 
+    def test_later_workflow_batch_refused_before_any_write(self):
+        specs = [f"{self.file(f'ordinary{i}', 10)}=ordinary{i}" for i in range(20)]
+        specs.append(f"{self.file('later-workflow', 10)}=.github/workflows/ci.yml")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.publish(specs, base="main")
+        self.assertEqual(self.sent, [])
+
+    def test_oversize_workflow_publish_refused_before_any_write(self):
+        specs = [f"{self.file(f'large{i}', 1024 * 1024)}=large{i}" for i in range(4)]
+        specs.append(f"{self.file('workflow-large', 10)}=.github/workflows/ci.yml")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.publish(specs)
+        self.assertEqual(self.sent, [])
+
     def test_workflow_directories_still_refused_before_any_commit(self):
         for path in (".github", ".github/workflows"):
             with self.subTest(path=path):
