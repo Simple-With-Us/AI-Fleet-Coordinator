@@ -30,7 +30,7 @@ A consumer that reads one folder of Infisical on its own (an app on its own proj
 
 The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
 
-The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it authenticates only with the caller's own scoped service token bound as `INFISICAL_TOKEN` (or `INFISICAL_AI_FLEET_COORDINATOR_TOKEN` for that project).  A missing token fails closed and names that variable.  It does not log in with a machine identity.  It is never the path for a consumer that reads one folder; that consumer uses its own scoped service token.
+The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it authenticates only with the caller's own scoped service token bound as `INFISICAL_TOKEN` (or `INFISICAL_AI_FLEET_COORDINATOR_TOKEN` for that project).  A noninteractive read with no token fails closed and names that variable; an explicit interactive `get` or `names` from an operator's terminal may fall back to the operator's own read-only Infisical CLI login session, never for automation.  `fleet-secrets set` writes only its built-in allowlist and requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`; the CLI login session is refused for writes.  It does not log in with a machine identity.  It is never the path for a consumer that reads one folder; that consumer uses its own scoped service token.
 
 On the Mac:
 

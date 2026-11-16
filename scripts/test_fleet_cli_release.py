@@ -90,6 +90,16 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             release.decode_bundle(json.dumps(self.bundle).encode())
 
+    def test_shared_header_formatter_is_static_and_required_only_for_new_bundles(self):
+        path = "scripts/simple_tools/post_header.py"
+        self.assertIn(path, release.EXACT)
+        self.assertIn(path, release.TOOL_REQUIRED)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+        self.bundle["files"].pop(path)
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(self.bundle).encode())
+
     def test_bearer_gate_required_only_for_new_bundles(self):
         path = "scripts/simple_tools/mcp/bearer_gate.py"
         self.assertTrue(release.allowed_path(path))
