@@ -646,6 +646,35 @@ class WriteIntentTests(unittest.TestCase):
         self.intent = self.new_intent()
         self.assertEqual(self.put().result, "updated")
 
+    def test_clear_unsettled_refuses_acknowledged_and_surfaces_identity_mismatch(self):
+        # Acknowledged writes must be reconciled, not tombstoned as cancelled.
+        self.read_status = 503
+        self.assert_outcome("accepted_unverified", self.put)
+        with self.assertRaisesRegex(core.SecretsError, "clear-acknowledged-requires-reconcile"):
+            core.clear_unsettled_write(NAME, PATH, self.env, intent=self.intent)
+
+        # Mismatched writer purpose surfaces the stored recovery identity.
+        other_purpose = core.WriteIntent(
+            self.intent.state_dir,
+            "other-purpose",
+            self.intent.request_id,
+            self.intent.created_at_ms,
+        )
+        with self.assertRaisesRegex(
+            core.SecretsError,
+            f"write-identity-mismatch \\(purpose\\): request_id={self.intent.request_id} "
+            f"created_at_ms={self.intent.created_at_ms} purpose={self.intent.purpose}",
+        ):
+            core.clear_unsettled_write(NAME, PATH, self.env, intent=other_purpose)
+
+    def test_clear_unsettled_cli_without_request_id_names_clear_unsettled(self):
+        from fleet_secrets import cli as fs_cli
+
+        with self.assertRaisesRegex(
+            fs_cli.UsageError, "clear-unsettled requires the original request identity"
+        ):
+            fs_cli._write_options(["--path", PATH, "--clear-unsettled", NAME])
+
 
 class ReadOnlyInstallTests(unittest.TestCase):
     def test_actual_linux_entrypoint_help_works_with_spec_loaded_fi_and_no_auth(self):

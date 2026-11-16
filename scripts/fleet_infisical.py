@@ -1968,6 +1968,31 @@ def reconcile_secret(
         raise WriteError("state_unavailable", intent) from None
 
 
+def _check_recovery_identity(raw: str, intent: WriteIntent) -> None:
+    """Surface stored recovery identity when reconcile/clear receives a mismatched purpose or timestamp."""
+    try:
+        stored = _decode_json(raw.encode("utf-8"))
+    except Exception:
+        return
+    if not isinstance(stored, dict):
+        return
+    mismatches = []
+    if stored.get("created_at_ms") != intent.created_at_ms:
+        mismatches.append("created_at_ms")
+    if stored.get("purpose") != intent.purpose:
+        mismatches.append("purpose")
+    if mismatches:
+        raise SecretsError(
+            "write-identity-mismatch (%s): request_id=%s created_at_ms=%s purpose=%s"
+            % (
+                ",".join(mismatches),
+                stored.get("request_id", ""),
+                stored.get("created_at_ms", ""),
+                stored.get("purpose", ""),
+            )
+        )
+
+
 def clear_unsettled_write(
     name: str,
     path: str,
@@ -1992,6 +2017,7 @@ def clear_unsettled_write(
             if old is None:
                 _write_blocker(ledger, namespace, intent, provider, project, path)
                 raise WriteError("not_found", intent)
+            _check_recovery_identity(old[1], intent)
             record = _write_cached(old[1], intent, provider, project, path, name, old[0])
             if old[0] == "ok" and record["phase"] == "verified":
                 return WriteReceipt(
@@ -2007,6 +2033,8 @@ def clear_unsettled_write(
                         outcome="cleared",
                     )
                 raise _write_refusal(intent, record)
+            if record["phase"] == "acknowledged":
+                raise SecretsError("clear-acknowledged-requires-reconcile")
             record.update(
                 phase="cancelled",
                 ack_status=0,

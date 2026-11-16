@@ -240,8 +240,10 @@ def _write_options(args: Sequence[str]) -> dict[str, object]:
         options["request-created-at"] = int(raw)
     if options["reconcile"] and options["clear_unsettled"]:
         raise UsageError("reconcile and clear-unsettled cannot be combined")
-    if (options["reconcile"] or options["clear_unsettled"]) and "request-id" not in options:
+    if options["reconcile"] and "request-id" not in options:
         raise UsageError("reconcile requires the original request identity")
+    if options["clear_unsettled"] and "request-id" not in options:
+        raise UsageError("clear-unsettled requires the original request identity")
     return options
 
 
