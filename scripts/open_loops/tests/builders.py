@@ -22,7 +22,7 @@ SCRIPTS = Path(__file__).resolve().parents[2]
 ENTRY = SCRIPTS / "open-loops"
 FF_BIN = SCRIPTS / "fleet_facts" / "tests" / "fixtures" / "bin"
 OL_BIN = Path(__file__).resolve().parent / "fixtures" / "bin"
-NOW = datetime(2026, 10, 11, 12, 0, 0, tzinfo=timezone.utc)       # Sun, Oct 11, 7:00am Central (daylight time)
+NOW = datetime(2026, 10, 11, 12, 0, 0, tzinfo=timezone.utc)       # Sun, Oct 11, 7:00 AM Central (daylight time)
 FAKE_KEY = "fake-key"
 
 __all__ = ["SCRIPTS", "ENTRY", "NOW", "FAKE_KEY", "World", "Sandbox", "iso", "ago", "install_shim", "read_log",

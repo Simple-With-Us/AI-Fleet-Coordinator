@@ -328,18 +328,18 @@ test("at most three hooks run at once", async () => {
 
 test("settings: off switches and launcher sessions apply in a private server, where the environment is the caller's", () => {
   assert.equal(readSettings({}, { SESSION_LETTER: "0" }, false), null);
-  assert.equal(readSettings({}, { OPENCODE_LETTER: "0" }, false), null);
+  assert.notEqual(readSettings({}, { OPENCODE_LETTER: "0" }, false), null); // one switch, SESSION_LETTER
   assert.equal(readSettings({}, { AGENT_LAUNCHER: "botfleet" }, false), null);
   assert.equal(readSettings({}, { AGENT_LAUNCH_SEAT: "BF" }, false), null);
   const mac = readSettings(undefined, { PLATFORM_LETTER_BIN: "/x/platform-letter" }, false);
   assert.equal(mac.command, "/x/platform-letter");
   assert.deepEqual(mac.args, ["hook", "--platform", "opencode"]);
   const server = readSettings({ location: "Server", remote: "mac", command: "/y/pl", log: "/tmp/l" }, {}, false);
-  assert.deepEqual(server.args, ["hook", "--platform", "opencode", "--location", "server", "--remote", "mac"]);
+  assert.deepEqual(server.args, ["hook", "--platform", "opencode", "--location", "server"]); // an old `remote` is dropped
   assert.equal(server.command, "/y/pl");
   assert.equal(server.log, "/tmp/l");
-  const odd = readSettings({ location: "cloud", remote: "-oProxyCommand=x" }, {}, false);
-  assert.deepEqual(odd.args, ["hook", "--platform", "opencode"]); // neither is passed on
+  const odd = readSettings({ location: "cloud" }, {}, false);
+  assert.deepEqual(odd.args, ["hook", "--platform", "opencode"]); // not a fleet location:  not passed on
   assert.equal(odd.settleMs, 1500);
   assert.equal(readSettings({ settle: 0 }, {}, false).settleMs, 0);
   assert.equal(readSettings({ settle: 99999 }, {}, false).settleMs, 1500); // out of range: the default
@@ -351,7 +351,6 @@ test("the shared service does not take its environment for the caller's, and the
     AGENT_LAUNCHER: "botfleet",
     AGENT_LAUNCH_SEAT: "BF-TEST",
     SESSION_LETTER: "0",
-    OPENCODE_LETTER: "0",
     SESSION_LETTER_LOCATION: "mac",
   };
   const shared = readSettings({}, env, true);
@@ -492,25 +491,22 @@ test("a fork is started as a fork with the title it was copied with, and is not 
   assert.equal(h.calls[2].event, "prompt");
 });
 
-test("a hook that ran and left the chat without a letter is asked again after ten minutes, not twenty-five", async () => {
-  // The hook exits 0 with a line of context and no label when the Operator's host does not answer.
+test("a hook that ran and left the chat without a letter is asked on every prompt, the library throttling itself", async () => {
+  // The hook exits 0 with a line of context, no label and a "??" title when the assigner gives no letter;  the library
+  // keeps its own retry stamp, so the plugin keeps no clock of its own for that chat (PR #1838 review).
   const h = harness({ sessions: { s1: {} }, answers: { start: { context: "No Operator letter yet" }, prompt: { context: "No Operator letter yet" } } });
   const say = (seq) =>
     h.emit("session.inbox.enqueued", { sessionID: "s1", item: { type: "user", payload: { text: "hi there" } } }, seq);
   say(1);
   await idle(h.letters);
   assert.deepEqual(ids(h.calls), ["prompt:s1"]);
-  h.advance(3 * 60 * 1000); // minute 3
+  h.advance(3 * 60 * 1000);
   say();
   await idle(h.letters);
-  h.advance(5 * 60 * 1000); // minute 8
+  h.advance(60 * 1000);
   say();
   await idle(h.letters);
-  assert.equal(h.calls.length, 1); // too soon
-  h.advance(3 * 60 * 1000); // minute 11
-  say();
-  await idle(h.letters);
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 3);
 });
 
 test("a chat that has a letter and no name yet is not held to the half hour, so its next prompt names it", async () => {
@@ -631,7 +627,7 @@ test("the copies of the plugin OpenCode loads for each directory share one engin
     { type: "session.created", data: { sessionID: "ses_a", parentID: "" }, durable: { seq: 0 } },
     { type: "session.created", data: { sessionID: "ses_a", parentID: "" }, durable: { seq: 0 } },
   ];
-  const options = { command: file, location: "server", remote: "mac", settle: 0, shared: false };
+  const options = { command: file, location: "server", settle: 0, shared: false };
   const one = fakeContext(events, { options });
   const two = fakeContext(events, { options });
   const disposeOne = plugin.setup(one.ctx);
@@ -750,7 +746,7 @@ test("the plugin starts a chat through the real spawn and writes the title the h
   const log = join(dir, "log");
   const { ctx, updates } = fakeContext(
     [{ type: "session.created", data: { sessionID: "ses_live", parentID: "" } }],
-    { options: { command: file, log, location: "server", remote: "mac", settle: 0, shared: false } },
+    { options: { command: file, log, location: "server", settle: 0, shared: false } },
   );
   const dispose = plugin.setup(ctx);
   assert.equal(plugin.id, "platform-letter-opencode");
@@ -766,13 +762,13 @@ test("the plugin starts a chat through the real spawn and writes the title the h
 
 test("the plugin does nothing when it is switched off or lacks what it needs", () => {
   const { ctx } = fakeContext([], { options: {} });
-  const saved = process.env.OPENCODE_LETTER;
-  process.env.OPENCODE_LETTER = "0";
+  const saved = process.env.SESSION_LETTER;
+  process.env.SESSION_LETTER = "0";
   try {
     assert.equal(plugin.setup(ctx), undefined);
   } finally {
-    if (saved === undefined) delete process.env.OPENCODE_LETTER;
-    else process.env.OPENCODE_LETTER = saved;
+    if (saved === undefined) delete process.env.SESSION_LETTER;
+    else process.env.SESSION_LETTER = saved;
   }
   assert.equal(plugin.setup({ options: {}, session: {} }), undefined);
   assert.equal(plugin.setup(undefined), undefined);
