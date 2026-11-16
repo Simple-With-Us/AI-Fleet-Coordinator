@@ -312,7 +312,7 @@ class RegistryTest(unittest.TestCase):
         self.assertIn("letter_pick", str(caught.exception))
 
     def test_the_register_command_answers_json_when_every_letter_is_live(self):
-        # What a platform that asks for its own letter (BotFleet, say) reads:  a code it can act on, not a traceback.
+        # AFC-723: CLI session writes refuse against a local --db when the registry API is unset.
         base = [
             "register",
             "--db",
@@ -333,14 +333,39 @@ class RegistryTest(unittest.TestCase):
             "oldest",
         ]
         out = io.StringIO()
-        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA",)}), contextlib.redirect_stdout(out):
-            first = R.main(base + ["--session-id", "thread-0001"])
-            second = R.main(base + ["--session-id", "thread-0002"])
-        lines = [json.loads(line) for line in out.getvalue().splitlines()]
-        self.assertEqual((first, second), (0, 2))
-        self.assertEqual(lines[0]["label"], "AA")
-        self.assertEqual(lines[1]["code"], "labels_exhausted")
-        self.assertIn("1 letters are active", lines[1]["error"])
+        with contextlib.redirect_stdout(out):
+            code = R.main(base + ["--session-id", "thread-0001"])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out.getvalue())["code"], "not_configured")
+        # Direct register_session still enforces LabelsExhausted.
+        with mock.patch.dict(R.LETTER_SPACES, {"double": ("AA",)}):
+            first = R.register_session(
+                self.db,
+                platform="botfleet",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="thread-0001",
+                seat="BF-BUILDER",
+                source="test",
+                letter_space="double",
+                letter_pick="oldest",
+                issuer=R.ISSUER_OPERATOR,
+            )
+            self.assertEqual(first["label"], "AA")
+            with self.assertRaises(R.LabelExhausted) as ctx:
+                R.register_session(
+                    self.db,
+                    platform="botfleet",
+                    verified_host="mac",
+                    profile_scope="default",
+                    native_session_id="thread-0002",
+                    seat="BF-BUILDER",
+                    source="test",
+                    letter_space="double",
+                    letter_pick="oldest",
+                    issuer=R.ISSUER_OPERATOR,
+                )
+            self.assertIn("1 letters are active", str(ctx.exception))
 
     def test_reopen_gives_a_chat_its_own_pair_back_as_the_same_generation(self):
         pair = self._pair("n-1", "oldest")
@@ -1245,7 +1270,7 @@ class RegistryTest(unittest.TestCase):
                 issuer="MM",
             )
 
-    def test_the_relabel_command_answers_json(self):
+    def test_the_relabel_command_refuses_local_db_and_relabel_session_works(self):
         self._legacy_single(self._register("mm-1", platform="minimax"))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -1268,106 +1293,139 @@ class RegistryTest(unittest.TestCase):
                     "test",
                 ]
             )
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue())["label"], "AA")
-
-    def test_the_register_command_defaults_by_platform(self):
-        base = [
-            "register",
-            "--db",
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out.getvalue())["code"], "not_configured")
+        relabeled = R.relabel_session(
             self.db,
-            "--location",
-            "mac",
-            "--scope",
-            "default",
-            "--seat",
-            "CLAUDE",
-            "--source",
-            "test",
-        ]
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            R.main(base + ["--platform", "claude", "--session-id", "thread-0001"])
-            R.main(base + ["--platform", "codex", "--seat", "CODEX", "--session-id", "thread-0002"])
-            R.main(
-                base
-                + [
-                    "--platform",
-                    "claude",
-                    "--session-id",
-                    "thread-0003",
-                    "--letter-space",
-                    "single",
-                ]
-            )
-        labels = [json.loads(line)["label"] for line in out.getvalue().splitlines()]
+            platform="minimax",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="mm-1",
+            seat="MM",
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        self.assertEqual(relabeled["label"], "AA")
+
+    def test_the_register_defaults_by_platform(self):
+        r1 = R.register_session(
+            self.db,
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0001",
+            seat="CLAUDE",
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        r2 = R.register_session(
+            self.db,
+            platform="codex",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0002",
+            seat="CODEX",
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        r3 = R.register_session(
+            self.db,
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0003",
+            seat="CLAUDE",
+            source="test",
+            letter_space="single",
+            issuer=R.ISSUER_OPERATOR,
+        )
         # every platform, and a named single space, takes a doubled pair:  the order is the allocator's
-        self.assertEqual(labels, ["AA", "AA", "BB"])
+        self.assertEqual([r1["label"], r2["label"], r3["label"]], ["AA", "AA", "BB"])
 
-    def test_the_register_command_takes_a_parent_letter(self):
-        base = [
-            "register",
-            "--db",
+    def test_the_register_takes_a_parent_letter(self):
+        r1 = R.register_session(
             self.db,
-            "--platform",
-            "codex",
-            "--location",
-            "mac",
-            "--scope",
-            "default",
-            "--seat",
-            "CODEX",
-            "--source",
-            "test",
-            "--letter-space",
-            "double",
-            "--letter-pick",
-            "primary",
-        ]
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            R.main(base + ["--session-id", "thread-0001"])
-            R.main(base + ["--session-id", "thread-0002", "--parent-letter", "AA"])
-            R.main(base + ["--session-id", "thread-0003", "--parent-letter", "ZZ"])
-        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+            platform="codex",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0001",
+            seat="CODEX",
+            source="test",
+            letter_space="double",
+            letter_pick="primary",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        r2 = R.register_session(
+            self.db,
+            platform="codex",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0002",
+            seat="CODEX",
+            source="test",
+            letter_space="double",
+            letter_pick="primary",
+            parent_letter="AA",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        r3 = R.register_session(
+            self.db,
+            platform="codex",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0003",
+            seat="CODEX",
+            source="test",
+            letter_space="double",
+            letter_pick="primary",
+            parent_letter="ZZ",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        rows = [r1, r2, r3]
         self.assertEqual([r["label"] for r in rows], ["AA", "AB", "BB"])
         self.assertEqual([r["placed_after"] for r in rows], ["", "AA", ""])
 
-    def test_the_register_command_takes_the_parent_and_the_primary_pick(self):
-        base = [
-            "register",
-            "--db",
+    def test_the_register_takes_the_parent_and_the_primary_pick(self):
+        r1 = R.register_session(
             self.db,
-            "--platform",
-            "claude",
-            "--location",
-            "mac",
-            "--scope",
-            "default",
-            "--seat",
-            "CLAUDE",
-            "--source",
-            "test",
-            "--letter-space",
-            "double",
-            "--letter-pick",
-            "primary",
-        ]
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            codes = [
-                R.main(base + ["--session-id", "thread-0001"]),
-                R.main(
-                    base + ["--session-id", "thread-0002", "--parent-session-id", "thread-0001"]
-                ),
-                R.main(
-                    base
-                    + ["--session-id", "thread-0003", "--parent-session-id", "not a session id!"]
-                ),
-            ]
-        labels = [json.loads(line)["label"] for line in out.getvalue().splitlines()]
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0001",
+            seat="CLAUDE",
+            source="test",
+            letter_space="double",
+            letter_pick="primary",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        r2 = R.register_session(
+            self.db,
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0002",
+            seat="CLAUDE",
+            source="test",
+            letter_space="double",
+            letter_pick="primary",
+            parent_session_id="thread-0001",
+            issuer=R.ISSUER_OPERATOR,
+        )
+        r3 = R.register_session(
+            self.db,
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="thread-0003",
+            seat="CLAUDE",
+            source="test",
+            letter_space="double",
+            letter_pick="primary",
+            parent_session_id="not a session id!",
+            issuer=R.ISSUER_OPERATOR,
+        )
         self.assertEqual(
-            (codes, labels), ([0, 0, 0], ["AA", "AB", "BB"])
+            [r1["label"], r2["label"], r3["label"]], ["AA", "AB", "BB"]
         )  # a bad parent is no parent
 
     # ---- update_session: the title follows the thread, keyed on the session id ----
@@ -2277,7 +2335,7 @@ class SessionIssuesTest(unittest.TestCase):
             },
         )
 
-    def test_the_cli_update_takes_issues_as_json(self):
+    def test_the_cli_update_refuses_local_db_without_api(self):
         argv = [
             "update",
             "--db",
@@ -2296,16 +2354,8 @@ class SessionIssuesTest(unittest.TestCase):
             code = R.main(
                 argv + ["--issues", '[{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}]'], env={}
             )
-        self.assertEqual(code, 0)
-        self.assertEqual(
-            json.loads(out.getvalue())["issues"],
-            [{"id": "CT-7", "seen_at": "2026-11-10T15:00:00Z"}],
-        )
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = R.main(argv + ["--issues", "CT-7"], env={})
         self.assertEqual(code, 2)
-        self.assertIn("must be a list", json.loads(out.getvalue())["error"])
+        self.assertEqual(json.loads(out.getvalue())["code"], "not_configured")
 
 
 class ReopenCommandTest(unittest.TestCase):
@@ -2329,36 +2379,26 @@ class ReopenCommandTest(unittest.TestCase):
         self.reg.close(made["record_id"])
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = R.main(
-                [
-                    "reopen",
-                    "--db",
-                    self.db,
-                    "--record-id",
-                    made["record_id"],
-                    "--actor",
-                    "MM",
-                    "--source",
-                    "test",
-                    "--letter-pick",
-                    "oldest",
-                ]
-            )
+            code = R.main(["reopen", "--db", self.db, "--record-id", made["record_id"]])
         answer = json.loads(out.getvalue().splitlines()[-1])
-        self.assertEqual(code, 0)
-        self.assertEqual(answer["outcome"], "reopened")
-        self.assertEqual(answer["label"], made["label"])
+        self.assertEqual((code, answer["code"]), (2, "not_configured"))
+        label, generation, placed_after = self.reg.reopen(
+            made["record_id"],
+            actor="MM",
+            source="test",
+            pick="oldest",
+        )
+        self.assertEqual(label, made["label"])
+        self.assertEqual(generation, made["generation"])
         self.assertIsNone(self.reg._get(made["record_id"])["closed_at"])
 
-    def test_the_reopen_command_answers_a_refusal_as_json(self):
-        # A record that is not there is a readable answer, never a traceback.
+    def test_the_reopen_command_refuses_local_db_without_api(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = R.main(["reopen", "--db", self.db, "--record-id", "no-such-record"])
         answer = json.loads(out.getvalue().splitlines()[-1])
         self.assertEqual(code, 2)
-        self.assertEqual(answer["code"], "reopen_failed")
-        self.assertEqual(answer["outcome"], "reopen_refused")
+        self.assertEqual(answer["code"], "not_configured")
 
     def test_the_reopen_command_never_brings_a_registry_into_being(self):
         # A host that keeps no registry must not grow one:  a second registry hands
@@ -2372,21 +2412,6 @@ class ReopenCommandTest(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(answer, {"error": "no Operator registry on this host"})
         self.assertFalse(os.path.exists(missing))
-
-    def test_the_reopen_command_answers_a_database_fault_as_json(self):
-        # A database that faults is a refusal the caller can read, never a traceback:
-        # the far host would answer with something unparseable and the hop would
-        # report an unknown outcome instead of the refusal it owes.
-        broken = os.path.join(self.tmp.name, "broken.sqlite3")
-        with open(broken, "wb") as handle:
-            handle.write(b"this is not a database")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = R.main(["reopen", "--db", broken, "--record-id", "no-such-record"])
-        answer = json.loads(out.getvalue().splitlines()[-1])
-        self.assertEqual(code, 2)
-        self.assertEqual(answer["code"], "reopen_failed")
-        self.assertEqual(answer["outcome"], "reopen_refused")
 
 
 class SeatGuardTest(unittest.TestCase):
@@ -2970,19 +2995,48 @@ class SeatGuardTest(unittest.TestCase):
         ]
         identity += ["--session-id", "native-1", "--source", "test"]
         code, answer = self.cli("register", *identity, "--seat", "ZC")
-        self.assertEqual(code, 2)
+        self.assertEqual((code, answer["code"]), (2, "not_configured"))
+        with self.assertRaises(R.SeatPlatformMismatch) as ctx:
+            R.register_session(
+                self.db,
+                platform="claude",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="native-1",
+                seat="ZC",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+            )
         self.assertEqual(
-            (answer["code"], answer["platform"], answer["seat"], answer["expected"]),
-            ("seat_platform_mismatch", "claude", "ZC", ["CLAUDE"]),
+            (ctx.exception.platform, ctx.exception.seat, ctx.exception.expected),
+            ("claude", "ZC", ("CLAUDE",)),
         )
         self.assertEqual(self.counts(), (0, 0, 0, 0))
         self.legacy("claude", "ZC")
         code, answer = self.cli("relabel", *identity, "--seat", "ZC")
-        self.assertEqual((code, answer["code"]), (2, "seat_platform_mismatch"))
-        code, answer = self.cli(
-            "register", *identity, "--seat", "CLAUDE", "--session-id", "native-2"
+        self.assertEqual((code, answer["code"]), (2, "not_configured"))
+        with self.assertRaises(R.SeatPlatformMismatch):
+            R.relabel_session(
+                self.db,
+                platform="claude",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="native-1",
+                seat="ZC",
+                source="test",
+                issuer=R.ISSUER_OPERATOR,
+            )
+        made = R.register_session(
+            self.db,
+            platform="claude",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="native-2",
+            seat="CLAUDE",
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
         )
-        self.assertEqual((code, answer["outcome"]), (0, "registered"))
+        self.assertEqual(made["outcome"], "registered")
 
 
 if __name__ == "__main__":
