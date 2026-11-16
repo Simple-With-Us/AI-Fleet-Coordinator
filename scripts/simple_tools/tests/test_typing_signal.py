@@ -191,59 +191,44 @@ class TypingSignalTests(unittest.TestCase):
 
 
 class DaemonTypingTests(DaemonHarness):
-    """The daemon:  a seat with the switch on types through its wake, one with it off says
-    nothing, and the indicator stays up for the whole of the answer."""
+    """The daemon never raises the indicator any more (owner ruling, Nov 10 2026:  "The operator
+    should never be answering on behalf of a platform").  "Operator is typing" promised a reply and
+    none is coming.  The seat's switch is still read, and a seat that has it on gets a log line."""
+
+    TYPING_SEAT = (
+        '[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nmodel = "sonnet"\n'
+        "typing_indicator = true\n"
+    )
 
     def typing_posts(self) -> list[dict[str, str]]:
         return list(self.fake.typing)
 
-    def wait_for_typing(self, count: int = 1, timeout: float = 4.0) -> list[dict[str, str]]:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and len(self.fake.typing) < count:
-            time.sleep(0.02)
-        return list(self.fake.typing)
-
-    def test_a_seat_with_the_indicator_on_types_while_it_thinks(self) -> None:
-        self.write_config(
-            seats=(
-                '[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nmodel = "sonnet"\n'
-                "typing_indicator = true\n"
-            )
-        )
-        daemon = self.started()
+    def run_one_wake(self, daemon) -> None:
         self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.clock.advance(19)
         daemon.tick()
         self.wake_cycle(daemon, 2)
-        posts = self.wait_for_typing(2)
-        ops = [post["op"] for post in posts]
-        self.assertEqual(ops, ["start", "stop"], ops)
-        first = posts[0]
-        self.assertEqual(first["type"], "stream")
-        self.assertEqual(first["topic"], "t")
-        self.assertEqual(first["stream_id"], str(self.fake.streams["simple-tools"]))
+
+    def test_a_seat_with_the_indicator_on_does_not_type_and_says_why(self) -> None:
+        self.write_config(seats=self.TYPING_SEAT)
+        daemon = self.started()
+        self.run_one_wake(daemon)
+        time.sleep(0.2)  # an indicator, had one been raised, posts from its own worker thread
+        self.assertEqual(self.typing_posts(), [])
+        self.assertEqual(self.fake.requests_to("POST", "typing"), [])
+        self.assertEqual([e["code"] for e in self.log_events("typing-skipped")], ["operator_never_answers"])
         self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
 
     def test_a_seat_with_the_indicator_off_says_nothing(self) -> None:
         daemon = self.started()
-        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.clock.advance(19)
-        daemon.tick()
-        self.wake_cycle(daemon, 2)
+        self.run_one_wake(daemon)
         self.assertEqual(self.typing_posts(), [])
+        self.assertEqual(self.log_events("typing-skipped"), [])
         self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
 
-    def test_the_indicator_stays_up_while_the_fallback_answers(self) -> None:
-        # The fallback is part of making the answer:  the seat is still thinking while it runs,
-        # so the indicator must not go down before it.
-        self.write_config(
-            seats=(
-                '[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\nmodel = "sonnet"\n'
-                "typing_indicator = true\n"
-            )
-        )
+    def test_no_indicator_is_raised_while_the_fallback_answers_either(self) -> None:
+        self.write_config(seats=self.TYPING_SEAT)
         daemon = self.started()
         seen: dict[str, object] = {}
         original_signal = daemon._typing_signal
@@ -251,13 +236,10 @@ class DaemonTypingTests(DaemonHarness):
         original_run = daemon.claude_runner.run
 
         def capture_signal(runner, pending):
-            signal = original_signal(runner, pending)
-            seen["signal"] = signal
-            return signal
+            seen["signal"] = original_signal(runner, pending)
+            return seen["signal"]
 
         def watch_fallback(*args, **kwargs):
-            signal = seen.get("signal")
-            seen["live_at_fallback"] = bool(signal is not None and signal.live)
             seen["ran"] = True
             return original_fallback(*args, **kwargs)
 
@@ -271,16 +253,10 @@ class DaemonTypingTests(DaemonHarness):
         daemon._typing_signal = capture_signal
         daemon.run_fallback = watch_fallback
         daemon.claude_runner.run = failing_run
-        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.clock.advance(19)
-        daemon.tick()
-        self.wake_cycle(daemon, 2)
+        self.run_one_wake(daemon)
         self.assertTrue(seen.get("ran"), "the fallback was tried")
-        self.assertTrue(
-            seen.get("live_at_fallback"),
-            "the indicator was down while the fallback was answering",
-        )
+        self.assertIsNone(seen.get("signal"), "no indicator object was ever made")
+        self.assertEqual(self.typing_posts(), [])
 
 
 if __name__ == "__main__":

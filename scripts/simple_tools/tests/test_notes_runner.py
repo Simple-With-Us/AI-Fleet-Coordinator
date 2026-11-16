@@ -141,6 +141,28 @@ class OnceTests(RunnerHarness):
         self.assertEqual((state["handled"], state["last_ok_at"]), (1, "2025-10-22T22:00:00Z"))
         self.assertEqual(stat.S_IMODE(os.stat(self.state_path).st_mode), 0o600)
 
+    def test_a_pin_that_ran_is_reported_once_and_the_result_has_no_pin_skipped(self):
+        """AFC-455:  a pin the Shortcut completed is one report, and the field is absent."""
+        self.claim(req("create"))
+        self.assertTrue(self.runner.once())
+        (report,) = self.client.reports
+        self.assertEqual(report["result"], {"status": "done", "note_id": "x-coredata://n1"})
+        self.assertNotIn("pin_skipped", report["result"])
+        self.assertNotIn("pin_skipped", report["inflight_then"]["result"])
+        self.assertEqual(self.client.state()["inflight"], {})
+
+    def test_a_skipped_pin_is_in_the_spool_before_the_report_and_reported_once(self):
+        """AFC-455:  the reason is durable before the acknowledgement, and that acknowledgement is one report."""
+        reason = "Pin Coding Note Shortcut failed; note saved unpinned"
+        self.answer = {"status": "done", "note_id": "x-coredata://n1", "pin_skipped": reason}
+        self.claim(req("update"))
+        self.assertTrue(self.runner.once())
+        (report,) = self.client.reports
+        self.assertEqual(report["inflight_then"]["result"]["pin_skipped"], reason)
+        self.assertIn(reason, report["state_text_then"])
+        self.assertEqual(report["result"]["pin_skipped"], reason)
+        self.assertEqual(self.client.state()["inflight"], {})
+
     def test_a_create_carries_the_requester_and_a_pin_does_not(self):
         self.claim(req("create"), claim="c1")
         self.claim(req("pin", rid="requestid-0002"), claim="c2")
@@ -266,6 +288,32 @@ class RecoverTests(RunnerHarness):
         self.assertEqual(got["read-request-01"], ("c4", {"note": {"title": MASTER, "body": "b"}}, None))
         self.assertEqual([r["request"]["action"] for r in self.runs], ["read"], "only the read ran again")
         self.assertEqual(self.client.state()["inflight"], {})
+
+    def test_a_crash_after_the_result_is_saved_replays_pin_skipped_once(self):
+        """AFC-455:  the spool still holds the result (crash between the report and clearing the entry).
+
+        The next pass reports that same result once.  A later pass finds nothing left to report.
+        """
+        reason = "Pin Coding Note Shortcut failed; note saved unpinned"
+        result = {"status": "done", "note_id": "n1", "pin_skipped": reason}
+        self.seed(
+            **{
+                "CODEX/skip-request-01": {
+                    "seat": "CODEX",
+                    "request_id": "skip-request-01",
+                    "claim": "c1",
+                    "action": "create",
+                    "result": result,
+                }
+            }
+        )
+        self.runner.recover()
+        (report,) = self.client.reports
+        self.assertEqual(report["result"], result)
+        self.assertEqual(self.runs, [], "a saved write is not run again")
+        self.assertEqual(self.client.state()["inflight"], {})
+        self.runner.recover()
+        self.assertEqual(len(self.client.reports), 1)
 
     def test_a_read_that_fails_to_run_again_is_reported_by_its_type_and_let_go(self):
         self.seed(

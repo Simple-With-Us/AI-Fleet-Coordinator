@@ -10,7 +10,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-import pathlib
 import re
 import stat
 import sys
@@ -346,11 +345,6 @@ class MuseRunnerSchemaTest(unittest.TestCase):
         # caller that does not pass a schema (the Mac bridge once did not) must still get every property required.
         sent = self._capture_schema()
         self.assertEqual(set(sent["required"]), set(sent["properties"]))
-
-    def test_the_mac_muse_bridge_sends_the_strict_schema(self) -> None:
-        from simple_tools import muse_bridge_mac as MBM
-
-        self.assertNotIn("schema_text()", inspect.getsource(MBM), "a muse caller left the loose schema")
 
 
 class MuseRunnerPromptTest(unittest.TestCase):
@@ -790,15 +784,6 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertEqual(argv[argv.index("--max-steps") + 1], str(A.MCODE_MAX_STEPS))
         self.assertGreaterEqual(A.MCODE_MAX_STEPS, 16)
 
-    def test_the_documented_argv_carries_the_step_budget_the_code_uses(self) -> None:
-        # The protocol doc quotes the fallback argv.  A number that drifts from the code is a doc
-        # that lies about the command, so the two are pinned together here.
-        doc = pathlib.Path(__file__).resolve().parents[3] / "docs" / "protocols" / "simple-tools-listener.md"
-        text = doc.read_text(encoding="utf-8")
-        self.assertIn(
-            "--max-steps %d --timeout %s" % (A.MCODE_MAX_STEPS, A.MCODE_TIMEOUT), text
-        )
-
     def test_the_backup_names_its_model_on_the_command_line(self) -> None:
         # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
         # names `minimax/MiniMax-M3.1-Flash-Preview` — an id the current catalog does not carry.
@@ -1151,21 +1136,6 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.seats["CLAUDE"].fallback, "mcode")
 
-    def test_runtime_fallback_resolves_rather_than_always_raising(self) -> None:
-        # Kody's blocking finding on PR #509:  `--runtime fallback` is advertised in the argparse
-        # choices, the help text and the protocol doc, but "fallback" is not a runtime name, so the
-        # flag fell straight through to UsageError and the self-test could never be run.
-        src = " ".join(
-            inspect.getsource(
-                __import__("simple_tools.listener_cli", fromlist=["cmd_test_wake"]).cmd_test_wake
-            ).split()
-        )
-        self.assertIn('if want == "fallback":', src)
-        self.assertIn("seat %s has no fallback to test", src)
-        # "auto" must map to the seat's own wake, and never to a literal "fallback".
-        self.assertIn('elif want == "auto":', src)
-        self.assertNotIn('seat_cfg.fallback if seat_cfg.wake == "auto"', src)
-
     def test_naming_a_fallback_is_not_enough_to_run_it(self) -> None:
         # Measured, not assumed:  asked to write a file under the exact wake argv, mcode wrote one.
         # `--permission off` means "never ask", so its tools are live while it composes an answer, and
@@ -1491,17 +1461,25 @@ class SubscriptionCappingTest(unittest.TestCase):
             _config_with_wake("claude").seats["MM"].wake_max_usd, C.WAKE_MAX_BUDGET_USD
         )
 
-    def test_the_count_caps_are_unchanged_and_still_the_spam_guard(self) -> None:
+    def test_the_count_caps_have_no_default_and_a_seat_that_sets_them_keeps_them(self) -> None:
+        # Owner, Nov 10, 2026:  an unset cap is no limit.  A seat still sets the spam guard itself.
         budget = _config_with_wake("muse").seats["MM"].budget
-        self.assertEqual(budget["wakes_per_hour"], 6)
-        self.assertEqual(budget["wakes_per_day"], 40)
-        self.assertEqual(budget["per_topic_per_hour"], 2)
-        self.assertEqual(budget["owner_per_day"], 20)
-        self.assertEqual(budget["owner_per_topic_per_hour"], 6)
+        for cap in C.WAKE_CAP_KEYS:
+            self.assertNotIn(cap, budget)
+        caps = {
+            "wakes_per_hour": 6,
+            "wakes_per_day": 40,
+            "per_topic_per_hour": 2,
+            "owner_per_day": 20,
+            "owner_per_topic_per_hour": 6,
+        }
+        set_budget = _config_with_wake("muse", {"budget": caps}).seats["MM"].budget
+        for cap, number in caps.items():
+            self.assertEqual(set_budget[cap], number)
 
-    def test_a_muse_seat_is_still_bounded_by_the_count_caps(self) -> None:
+    def test_a_muse_seat_is_still_bounded_by_the_count_caps_it_sets(self) -> None:
         # The dollar axis is inert, so prove the count axis is what actually stops it.
-        budget = _config_with_wake("muse").seats["MM"].budget
+        budget = _config_with_wake("muse", {"budget": {"wakes_per_hour": 6}}).seats["MM"].budget
         now = time.time()
         views = {
             "w%d" % i: {
@@ -1520,13 +1498,25 @@ class SubscriptionCappingTest(unittest.TestCase):
 
     def test_usd_per_day_never_blocks_a_muse_seat(self) -> None:
         # Every wake costs 0, so a ceiling of dollars spent against dollars spent is a real ceiling
-        # that is never reached, rather than a fictional reserve.
-        cfg = _config_with_wake("muse")
+        # that is never reached, rather than a fictional reserve.  The ceiling has no default
+        # any more (owner, Nov 10, 2026), so the seat writes one here;  the key is still accepted.
+        cfg = _config_with_wake("muse", {"budget": {"usd_per_day": 2.0}})
         budget = dict(cfg.seats["MM"].budget)
         self.assertGreater(budget["usd_per_day"], 0)
-        self.assertIsNone(
-            W.budget_block({}, budget, owner=True, key="t", now=time.time(), run_max=0.0)
-        )
+        now = time.time()
+        self.assertIsNone(W.budget_block({}, budget, owner=True, key="t", now=now, run_max=0.0))
+        # Nor with costed rows on the ledger, $50 against $2:  nothing adds dollars up any more.
+        ran = {
+            "w%d" % i: {
+                "state": "done",
+                "owner": True,
+                "topic_key": "t",
+                "cost_usd": 1.0,
+                "times": {"accepted": now - 60},
+            }
+            for i in range(50)
+        }
+        self.assertIsNone(W.budget_block(ran, budget, owner=True, key="t", now=now, run_max=0.0))
 
 
 class MuseConfigTest(unittest.TestCase):

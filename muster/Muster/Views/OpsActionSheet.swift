@@ -209,6 +209,9 @@ struct OpsActionSheet: View {
                 if let change = outcome.knobChange {
                     knobChangeBlock(change, finished: false)
                 }
+                if let settings = outcome.listenerSettings {
+                    listenerSettingsBlock(settings)
+                }
                 commandsDisclosure(outcome, title: "Exact Commands")
                 // A helper that says where it ran is checked:  a mismatch never reaches
                 // this phase.  A helper that does not say shows nothing.
@@ -271,6 +274,9 @@ struct OpsActionSheet: View {
                 }
                 if let change = outcome.knobChange {
                     knobChangeBlock(change, finished: outcome.kind == .done)
+                }
+                if let settings = outcome.listenerSettings {
+                    listenerSettingsBlock(settings)
                 }
                 if let logText = outcome.logText {
                     logBlock(logText, heading: outcome.journalHeading, countLine: outcome.journalCountLine)
@@ -389,6 +395,56 @@ struct OpsActionSheet: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// What a server settings plan or apply changes:  each setting's old and new value, the lines
+    /// of the live config it changes, and the Eavesdropper's own check of the result.
+    private func listenerSettingsBlock(_ settings: ServerSettingsAnswer) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(settings.changes, id: \.key) { change in
+                Text(change.line)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !change.removes.isEmpty {
+                    Text("Removes \(change.removes.joined(separator: ", ")).")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            if let ok = settings.checkOK {
+                Text(ok ? "The Eavesdropper's own check takes the result." : "The Eavesdropper's own check would refuse the result.")
+                    .font(.caption)
+                    .foregroundStyle(ok ? Color.secondary : Color.orange)
+            }
+            ForEach(Array(settings.checkProblems.enumerated()), id: \.offset) { _, problem in
+                Text(problem)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let reload = settings.reloadCode {
+                Text("Reload:  \(reload.replacingOccurrences(of: "_", with: " ")).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let backup = settings.backup {
+                Text("Backup of the old file:  \(backup)")
+                    .font(.caption)
+                    .foregroundStyle(settings.replaced == true ? Color.orange : Color.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !settings.diff.isEmpty {
+                DisclosureGroup("The Lines That Change") {
+                    Text(settings.diff.joined(separator: "\n"))
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.caption)
             }
         }
     }

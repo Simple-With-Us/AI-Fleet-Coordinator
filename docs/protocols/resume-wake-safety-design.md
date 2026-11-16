@@ -1,6 +1,6 @@
 # Resume-Wake Safety Design (Draft for Owner Review)
 
-CLAUDE seat, Sun, Oct 18, 2026;  revised Mon, Oct 19 with the owner's decisions (section 12).  **Design only.**  Nothing here is built or switched on, and no config changed;  it stays a draft until Jay OKs the build.  It extends the Operator ([simple-tools-listener.md](simple-tools-listener.md)), the wake routing flow ([zulip-wake-routing.md](zulip-wake-routing.md)) and the Muse inbox bridge ([muse-inbox-bridge.md](muse-inbox-bridge.md), AFC-326, PR #578).
+CLAUDE seat, Sun, Oct 18, 2026;  revised Mon, Oct 19 with the owner's decisions (section 12).  **Design only.**  Nothing here is built or switched on, and no config changed;  it stays a draft until Jay OKs the build.  It extends the Operator ([simple-tools-listener.md](simple-tools-listener.md)), the wake routing flow ([zulip-wake-routing.md](zulip-wake-routing.md)) and the Muse inbox bridge (AFC-326, PR #578).  That bridge was deleted on Nov 10, 2026, on the owner's instruction, so the parts of this design that extend its decision step have no base to build on.
 
 Owner request (Oct 18):  "when a seat has no live session, resume its last session for that topic headlessly with tools in its lane, under per-platform Infisical knob budgets.  Show me the safety design before turning it on."  Owner addenda, same day:  every seat may and should be resumed when "identified as the best recipient by headless muse or minimax code backup", with the router on "muse spark 1.3 contributor … or minimax m3.1 flash preview as backup".
 
@@ -36,11 +36,11 @@ The gate is deterministic and runs on the classification the router already comp
 | Sender class | How it is known | Channel @-mention | DM | Anything else |
 |---|---|---|---|---|
 | **Owner** | `sender_id == owner_user_id`, a human client, and `verify-owner-msg <id> --topic T` (or `--dm-with`) exits 0, run by the daemon just before spawn.  Given P3, this counts as Jay (section 5) | Resume-eligible | Resume-eligible | `fleet` wildcard in #Work-In-Progress › `fleet`:  inbox and today's wake, never a resume (one post would resume every seat) |
-| **Fleet seat bot** (Mac and cloud seats, GB personas, BF roles, JET) | An active bot the owner owns whose email maps to a fleet tag (`router.fleet_bot_ids`) | Resume-eligible when `RESUME_WAKE_SENDERS` is `owner+peers` (the decided setting at `on`), router risk `low` only | Same | Inbox only |
+| **Fleet seat bot** (Mac and cloud seats, GB bots, BF roles, JET) | An active bot the owner owns whose email maps to a fleet tag (`router.fleet_bot_ids`) | Resume-eligible when `RESUME_WAKE_SENDERS` is `owner+peers` (the decided setting at `on`), router risk `low` only | Same | Inbox only |
 | **Integration bot** (Sentry, PagerDuty, Linear, GitHub, any webhook or embedded bot) | Bot type, or not owner-owned | Never | Never | Never |
 | **Unknown sender, or API post from Jay's account** | Not in the user cache as an owner-owned bot, or the owner id from a non-human client | Never (flagged `owner_api` as today) | Never | Never |
 
-**Never resume-eligible, whoever sent it:**  a wildcard or silent mention;  a mention inside code, a quote or a spoiler;  a `wake_tag` (`[X·wake]`), a `·note`, `·ask` or `·resume` post;  a peer post in an `OWNER ` topic;  a presence topic (`roll call`, `fleet`, `#builds › gates`, `#alerts`);  a message older than `stale_after` (120 minutes);  a muted topic;  a message the router quarantined;  a trigger set that includes any post made by a resumed run (section 8, no recursion).  A `·route` post counts as its sender's class, so a route on the owner's behalf behaves like a peer mention.
+**Never resume-eligible, whoever sent it:**  a wildcard or silent mention;  a mention inside code, a quote or a spoiler;  a `wake_tag` (`[X·wake]`), a `·note`, `·ask` or `·resume` post;  a peer post in an `OWNER ` topic;  a presence topic (`roll call`, `fleet`, `#Builds › gates`, `#Alerts`);  a message older than `stale_after` (120 minutes);  a muted topic;  a message the router quarantined;  a trigger set that includes any post made by a resumed run (section 8, no recursion).  A `·route` post counts as its sender's class, so a route on the owner's behalf behaves like a peer mention.
 
 **Topic to session mapping comes first.**  An eligible message with no selectable session (section 4) is captured to the inbox, and the listener asks the owner whether to start a new session in the lane (section 4.1).  Resume-wake never opens a new session without that answer.
 
@@ -255,7 +255,7 @@ With matches on several other seats it lists each, numbered, as the several-cand
 | OPENCODE | opencode | `opencode run --session <id>` | `--model`, `--format json`, `--auto`, agent config files | `--session` also creates a session if the id is missing:  the daemon must check the id exists first.  No tool flags on `run` | Held;  no listener holds OPENCODE today |
 | CLUTCH | Clutch (`dsh`) | Partial:  `--resume` appears for the `tui` profile only | Profile settings files | No headless resume confirmed | Not eligible |
 | AG | Antigravity | None found | — | Desktop only | Not eligible |
-| Cloud seats (MA, JET, GROK-WEB, WISE, ECHO), GB personas, BF roles | Hosted | Not a local resume:  their routines and BotFleet queues are their wake | — | Out of scope;  the router may still pick them, and the pick goes to their existing routine or inbox | Existing paths |
+| Cloud seats (MA, JET, GROK-WEB, WISE, ECHO), GB bots, BF roles | Hosted | Not a local resume:  their routines and BotFleet queues are their wake | — | Out of scope;  the router may still pick them, and the pick goes to their existing routine or inbox | Existing paths |
 
 **Desktop-app sessions** (Claude desktop Code tab, Codex desktop).  A CLI resume can read the same session store while the app is closed:  Claude desktop sessions live in the same `~/.claude/projects` store, and Codex's in `~/.codex/sessions`.  While the app has the session open, two writers would append to one transcript, and the app's in-memory copy would not show the headless turns.  So:  never resume a session that holds a live lease or that the platform lists as running (`claude agents --json`, `codex agents`);  and for a session whose entrypoint was the desktop app, **fork rather than resume in place** (`--fork-session` on Claude, `codex exec fork` on Codex) (decided, Jay, Oct 19).  The fork copies the conversation only:  it makes no copy of the lane, branch or files, and works in the same lane on the same branch.  A fork keeps the full context and does the work;  its posts name the original session so the owner can find it.
 
@@ -366,7 +366,7 @@ and at the end `[CLAUDE·resume] re=<trigger id> done:  <turns> turns, <minutes>
 
 ## 11. Rollout
 
-Decided (Jay, Oct 19):  on now, not staged.  Three steps:  **off**, then **one short canary** in #sandbox (a few hours at most), then **on for every eligible seat**, low-risk peer triggers included.
+Decided (Jay, Oct 19):  on now, not staged.  Three steps:  **off**, then **one short canary** in #Sandbox (a few hours at most), then **on for every eligible seat**, low-risk peer triggers included.
 
 | Step | Knobs | What must be true |
 |---|---|---|
@@ -376,7 +376,7 @@ Decided (Jay, Oct 19):  on now, not staged.  Three steps:  **off**, then **one s
 
 Jay flips the knobs himself in the Infisical UI, or says "go" in an `OWNER resume-wake` topic (checked with `verify-owner-msg`) and the CLAUDE seat sets them.  A relayed approval from a peer never counts.  Any check that fails in the canary leaves the mode at `canary` or `off` and goes to Jay.  Seats still held in section 6 (MM, FX, OPENCODE) join only when their gaps close and their own pin passes.
 
-**The canary, exactly.**  Setup:  a CLAUDE session in the lane `~/apps/lanes/AI-Fleet-Coordinator/claude-resume-canary` (branch `claude/resume-canary`) attaches to #sandbox › `resume-wake canary`, posts once there, and exits, so its session record binds the topic and no lease is live.  Then JET (through the hosted bridge) or a GB persona posts in #sandbox › `resume-wake canary`:
+**The canary, exactly.**  Setup:  a CLAUDE session in the lane `~/apps/lanes/AI-Fleet-Coordinator/claude-resume-canary` (branch `claude/resume-canary`) attaches to #Sandbox › `resume-wake canary`, posts once there, and exits, so its session record binds the topic and no lease is live.  Then JET (through the hosted bridge) or a GB bot posts in #Sandbox › `resume-wake canary`:
 
 ```text
 @**Claude** canary <nonce>:  append the line "canary <nonce>" to CANARY.md in your lane, commit it, push the branch, and reply here with the short sha.
@@ -401,7 +401,7 @@ Then these variants:  1 to 5 in the same topic, and 6 to 10 each in a topic of i
 9. **Carried grant, bare route:**  in a fifth canary topic, again one only a canary CODEX session is bound to, Jay asks CLAUDE to force-push that branch back one commit:  the ask names CODEX's lane, branch and `force-push`;  Jay replies with a bare "route", the run gets no grant, and the force-push is refused.
 10. **Carried grant, reconfirmed:**  the same request in a sixth such topic, answered "route force-push":  it runs on the CODEX canary lane's branch only, and `main` and CLAUDE's lane are untouched (checked by their remote tips and the integrity manifest).  Cases 9 and 10 need separate topics because the first valid answer settles an ask, so one ask cannot test both replies.
 
-**The canary configuration, exactly.**  The knob defaults stay as section 7 sets them:  `RESUME_WAKE_SENDERS` is `owner` and `RESUME_WAKE_CANARY_TOPICS` is empty.  The canary triggers come from a peer (JET or a GB persona), so the owner flips these four knobs in Infisical for the window and puts them back afterwards:
+**The canary configuration, exactly.**  The knob defaults stay as section 7 sets them:  `RESUME_WAKE_SENDERS` is `owner` and `RESUME_WAKE_CANARY_TOPICS` is empty.  The canary triggers come from a peer (JET or a GB bot), so the owner flips these four knobs in Infisical for the window and puts them back afterwards:
 
 | Knob | Canary value | Why |
 |---|---|---|
@@ -410,7 +410,7 @@ Then these variants:  1 to 5 in the same topic, and 6 to 10 each in a topic of i
 | `RESUME_WAKE_SENDERS` | `owner+peers` | the trigger and variants 1, 2 and 4 are peer posts, which the default `owner` would never let through |
 | `RESUME_WAKE_CANARY_TOPICS` | the six topics below | peers are confined to these topics, so a peer post anywhere else still cannot resume |
 
-**Seat, topic and setup per variant** (all in #sandbox;  the addressed seat is CLAUDE throughout, and the canary issue `AFC-<canary id>` is filed before the run and claimed by CLAUDE):
+**Seat, topic and setup per variant** (all in #Sandbox;  the addressed seat is CLAUDE throughout, and the canary issue `AFC-<canary id>` is filed before the run and claimed by CLAUDE):
 
 | Variants | Topic | Setup |
 |---|---|---|
@@ -427,6 +427,6 @@ The lanes and sessions are created before the run by the canary harness, and `re
 2. **Desktop sessions.**  Forked, not resumed in place.  The fork copies the conversation only, never the lane, branch or files (section 6).
 3. **GitHub identity.**  One GitHub App per platform, keys in Infisical, created once, never expiring, tokens minted per run by `fleet-secrets`.  Until they exist, the Mac's current login (`RESUME_GITHUB_IDENTITY = mac-login`).  Not a gate (section 6).
 4. **Session selection.**  Sources in order:  live leases, chat bindings (Grok and Cursor only), the Linear claim's session ids, `Session:` lines in Apple Notes, then lane → catalog.  With several candidates the listener asks Jay to pick one, say "new" or say "no";  with none it asks whether to start one and with which settings;  for an owner message, when another platform's seat has a session on the topic, it asks whether he meant that one (section 4.1).
-5. **Rollout.**  Off, a short #sandbox canary, then on for every eligible seat, low-risk peer triggers included (section 11).
+5. **Rollout.**  Off, a short #Sandbox canary, then on for every eligible seat, low-risk peer triggers included (section 11).
 6. **Budgets.**  Approved as proposed, in the project `fleet_knobs` reads (section 7).
 7. **Knobs in Muster.**  Every resume-wake knob is also flippable in Muster through the Infisical API with an owner-only identity;  Infisical stays the single source (section 7.1).

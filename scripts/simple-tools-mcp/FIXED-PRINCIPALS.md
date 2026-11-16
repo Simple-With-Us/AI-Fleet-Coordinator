@@ -2,8 +2,8 @@
 
 A verified MCP credential or OAuth grant assigns one acting seat. Its `identity`
 argument asserts that seat; it does not select another seat. Legacy CURSOR and
-GROK-WEB OAuth grants no longer route to each other or to Grok Bot personas.
-Each persona needs its own assigned credential. Every hosted tool family passes
+GROK-WEB OAuth grants no longer route to each other or to Grok bots.
+Each bot needs its own assigned credential. Every hosted tool family passes
 through the server's fixed allow-set check before backend dispatch. Existing
 admin provisioning endpoints are separate and unchanged by this repair.
 

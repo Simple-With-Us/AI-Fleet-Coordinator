@@ -1,6 +1,7 @@
 // Official MCP adapters retain the same seat, scopes, budgets and write receipts.
 import { ToolError, okResult, schemaProblem, scanSecret, sha256Hex, stableJson, newNonce } from "./contract.js";
 import { linearClean, linearEnvelope } from "./linear.js";
+import { outboundGap } from "./outbound-gap.js";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callOfficialLinear, OfficialLinearMcpError } from "./linear-mcp-client.js";
 
@@ -42,7 +43,7 @@ function validateInput(schema, value) {
   }
 }
 
-function safeText(tools, text, limit = 64000) {
+function safeText(tools, text, limit = 1000000) {
   const scrubbed = tools.scrub(text);
   return scanSecret(scrubbed, tools.known) ? "[redacted secret]" : linearClean(scrubbed, limit)[0];
 }
@@ -63,7 +64,7 @@ function normalizeResult(tools, result) {
   for (const block of result.content) {
     if (block?.type === "text" && typeof block.text === "string") {
       textSize += block.text.length;
-      if (textSize > 64000) throw new ToolError("response_too_large", "Linear MCP text exceeds 64,000 characters.  Narrow the request or use pagination.");
+      if (textSize > 1000000) throw new ToolError("response_too_large", "Linear MCP text exceeds 1,000,000 characters.  Narrow the request or use pagination.");
       texts.push(safeText(tools, block.text));
     } else if (block?.type === "image") {
       const data = block.data;
@@ -139,6 +140,8 @@ export async function callLinearMcp(tools, name, args, audit) {
   for (const field of ["body", "description"]) {
     if (typeof nativeArgs[field] === "string" && nativeArgs[field]) nativeArgs[field] = tools.linearBody(nativeArgs[field], session);
   }
+  // AFC-722 review:  a document's content gets the sentence gap but no seat tag line.
+  if (typeof nativeArgs.content === "string" && nativeArgs.content) nativeArgs.content = outboundGap(nativeArgs.content);
   const digest = await sha256Hex(stableJson({ upstream: spec.upstreamName, arguments: nativeArgs }));
   // Use the shared Linear namespace so a key cannot silently describe two writes.
   const key = await sha256Hex(`linear-api:${tools.seat}:${idempotency_key}`);

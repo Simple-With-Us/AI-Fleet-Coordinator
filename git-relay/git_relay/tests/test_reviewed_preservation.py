@@ -249,7 +249,7 @@ class PreservationWorkflowTests(unittest.TestCase):
                 ("Authorization: Bearer " + "a" * 24 + "\n").encode()
             )
             if index == 1:
-                replies[1] = {"object": {"sha": "f" * 40}}
+                replies[1] = {"ref": "refs/heads/feature/x", "object": {"sha": "f" * 40}}
             else:
                 replies[3]["path"] = "different/path"
             c = Client(*replies)

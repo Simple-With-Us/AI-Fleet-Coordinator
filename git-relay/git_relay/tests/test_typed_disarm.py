@@ -187,7 +187,7 @@ class Tests(unittest.TestCase):
 
     def test_repo_denied(self):
         with self.assertRaises(Refused):
-            self.svc([]).state({**ARGS, "repo": "jaywedgeworth22/Fleet-OPS"})
+            self.svc([]).state({**ARGS, "repo": "Simple-With-Us/Fleet-OPS"})
 
     def test_no_app_impersonation(self):
         with self.assertRaises(Refused):

@@ -565,6 +565,26 @@ class RestTests(_ServiceCase):
         self.assertIn({"key": "source", "match": {"value": "meta"}}, flt["must_not"])
         self.assertIn({"key": "app", "match": {"value": "fleet"}}, flt["must"])
 
+    def test_repeated_search_skips_qdrant_and_counts_the_hit(self):
+        body = {"query": "leaking credentials handoff", "limit": 2, "app": "fleet"}
+        status, _, first = self.request("POST", "/recall/search", body)
+        self.assertEqual(status, 200)
+        calls = len(FakeQdrant.calls) + len(FakeQdrant.group_calls)
+        status, _, second = self.request("POST", "/recall/search", body)
+        self.assertEqual(status, 200)
+        self.assertEqual(second["hits"], first["hits"])
+        self.assertEqual(len(FakeQdrant.calls) + len(FakeQdrant.group_calls), calls)
+        status, _, stats = self.request("GET", "/recall/stats")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(stats["search_cache"]["hits"], 1)
+        self.assertGreaterEqual(stats["search_cache"]["misses"], 1)
+        status, _, _full = self.request("POST", "/recall/search", {**body, "full": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(FakeQdrant.calls) + len(FakeQdrant.group_calls), calls + 1)
+        status, _, err = self.request("POST", "/recall/search", {**body, "compact": "yes"})
+        self.assertEqual(status, 400)
+        self.assertIn("compact", err["error"])
+
     def test_search_per_doc_rerank_prefer_lessons_wired(self):
         # rerank=False, prefer_lessons=False must reach recall_search unchanged (mode stays
         # plain "hybrid", never "+rerank"), proving these are not silently dropped server-side.
@@ -780,6 +800,9 @@ class McpTests(_ServiceCase):
             self.assertEqual(t["inputSchema"]["type"], "object")
             self.assertTrue(t["description"])
         self.assertEqual(tools[0]["inputSchema"]["required"], ["query"])
+        search_props = tools[0]["inputSchema"]["properties"]
+        self.assertIs(search_props["compact"]["default"], True)
+        self.assertIs(search_props["full"]["default"], False)
         self.assertEqual(tools[2]["inputSchema"]["required"], ["text", "category", "seat"])
         self.assertEqual(tools[3]["inputSchema"]["required"], ["doc_id", "text", "reason", "seat"])
         self.assertEqual(tools[4]["inputSchema"]["required"], ["doc_id", "reason", "seat"])
@@ -922,6 +945,7 @@ class BootstrapTests(unittest.TestCase):
         _tgz(cls.www / "src.tgz", {
             "AI-Fleet-Coordinator-main/scripts/fleet_rag/__init__.py": b"__version__ = 'test'\n",
             "AI-Fleet-Coordinator-main/scripts/fleet-recall-service/server.py": b"# stub\n",
+            "AI-Fleet-Coordinator-main/scripts/fleet_infisical.py": (SERVICE_DIR.parent / "fleet_infisical.py").read_bytes(),
             **{"AI-Fleet-Coordinator-main/scripts/fleet_secrets/" + name:
                (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
                for name in ("__init__.py", "core.py")},
@@ -972,7 +996,7 @@ class BootstrapTests(unittest.TestCase):
     def test_installs_gitleaks_from_release_tarball(self):
         proc, work = self.run_bootstrap(self.base + "/gitleaks_8.30.1_linux_arm64.tar.gz")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("bootstrap: extracted 4 files", proc.stdout)
+        self.assertIn("bootstrap: extracted 5 files", proc.stdout)
         self.assertEqual(sorted(p.name for p in (work / "app/fleet_secrets").iterdir()), ["__init__.py", "core.py"])
         self.assertTrue((work / "app" / "fleet-recall-service" / "server.py").is_file())
         self.assertTrue((work / "app" / "fleet_rag" / "__init__.py").is_file())
@@ -1007,6 +1031,7 @@ class BootstrapTests(unittest.TestCase):
             prefix + "fleet_rag/__init__.py": b"",
             prefix + "fleet_rag/infisical_settings.py": (SERVICE_DIR.parent / "fleet_rag/infisical_settings.py").read_bytes(),
             prefix + "fleet-recall-service/server.py": b"# bootstrap fixture\n",
+            prefix + "fleet_infisical.py": (SERVICE_DIR.parent / "fleet_infisical.py").read_bytes(),
             **{prefix + "fleet_secrets/" + name: (SERVICE_DIR.parent / "fleet_secrets" / name).read_bytes()
                for name in ("__init__.py", "core.py")},
             prefix + "fleet_secrets/cli.py": b"raise AssertionError('must not ship')\n",
@@ -1057,6 +1082,7 @@ class BootstrapTests(unittest.TestCase):
         docker = (SERVICE_DIR / "Dockerfile").read_text()
         copies = [line for line in docker.splitlines() if line.startswith("COPY ") and "fleet_secrets" in line]
         self.assertEqual(copies, ["COPY fleet_secrets/__init__.py fleet_secrets/core.py /app/fleet_secrets/"])
+        self.assertIn("COPY fleet_infisical.py /app/", docker)
 
     def test_download_failure_continues_only_with_explicit_opt_out(self):
         proc, work = self.run_bootstrap(self.base + "/missing.tgz", RECALL_GITLEAKS_REQUIRED="0")

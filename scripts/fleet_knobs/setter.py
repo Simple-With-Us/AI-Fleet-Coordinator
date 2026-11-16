@@ -41,8 +41,17 @@ from typing import Any
 from . import knobs, lkg, source, values
 from .registry import BY_NAME, Spec
 
-# The knobs live at the root of the AI Fleet Coordinator project (source.argv_for reads "/").
+# Most knobs live at the root of the AI Fleet Coordinator project;  a knob whose registry entry
+# names another folder (the wake router's /wake-router) is written and deleted there instead.
 KNOB_PATH = "/"
+
+
+def folder_of(name: str) -> str:
+    """The Infisical folder that holds `name`, the root for a name the registry does not have."""
+    spec = BY_NAME.get(name)
+    return spec.folder if spec is not None else KNOB_PATH
+
+
 ENV_WRITE_TOKEN = "FLEET_KNOBS_WRITE_TOKEN"
 WRITE_TIMEOUT = 30
 MAX_TOKEN = 2048
@@ -132,7 +141,7 @@ def write_argv(cli: str, name: str, text: str) -> list[str]:
         "set",
         f"{name}={text}",
         f"--env={source.ENVIRONMENT}",
-        f"--path={KNOB_PATH}",
+        f"--path={folder_of(name)}",
         f"--projectId={source.PROJECT_ID}",
         "--type=shared",
         "--silent",
@@ -152,13 +161,17 @@ def read_token(environ: dict[str, str], platform: str, runner: Runner) -> str:
     return token
 
 
-def verify_writer(token: str, environ: dict[str, str]) -> None:
-    """Require metadata to prove this project's prod root write grant before CLI use."""
-    from fleet_secrets import core as secrets
+def verify_writer(token: str, environ: dict[str, str], folder: str = KNOB_PATH) -> None:
+    """Require metadata to prove this project's prod write grant on `folder` before CLI use."""
+    import fleet_infisical as secrets
 
     try:
-        secrets.verify_service_token(token, source.PROJECT_ID, KNOB_PATH, environ, writer=True)
-    except secrets.SecretsError:
+        secrets.verify_service_token(token, source.PROJECT_ID, folder, environ, writer=True)
+    except secrets.SecretsError as exc:
+        if exc.reason == "token-expired-or-invalid":
+            raise Refused(
+                "write token needs a finite future expiry; replace it with the same project, prod folder, and permissions"
+            ) from None
         raise Refused(
             "write token does not prove the configured project, prod folder, and permissions"
         ) from None
@@ -284,13 +297,13 @@ def refresh_lkg(
         value, where = None, "error"
     if where == "infisical" and value == typed:
         return "refreshed"
-    doc, note = lkg.read()
+    doc, note = lkg.read(folder=spec.folder)
     if doc is None:
         return f"not-refreshed:{note}"
     copy = dict(doc["knobs"])
     copy[name] = text
     try:
-        lkg.write(copy, now=float(doc["saved_epoch"]))
+        lkg.write(copy, now=float(doc["saved_epoch"]), folder=spec.folder)
     except (OSError, ValueError) as exc:
         return f"not-refreshed:{type(exc).__name__}"
     return "patched"
@@ -426,7 +439,7 @@ def set_knob(
             token = read_token(environ, platform, runner)
             if not token:
                 raise Refused("no write token")
-            verify_writer(token, environ)
+            verify_writer(token, environ, spec.folder)
             env = child_env(environ, token)
             try:
                 status, _ = runner(argv, timeout=WRITE_TIMEOUT, env=env)
@@ -474,7 +487,7 @@ def delete_argv(cli: str, name: str) -> list[str]:
         "delete",
         name,
         f"--env={source.ENVIRONMENT}",
-        f"--path={KNOB_PATH}",
+        f"--path={folder_of(name)}",
         f"--projectId={source.PROJECT_ID}",
         "--type=shared",
         "--silent",
@@ -496,7 +509,8 @@ def refresh_lkg_unset(name: str, reader) -> str:
         _value, where, _stale, _reason = read_old(reader, name)
     except Exception:  # noqa: BLE001
         where = "error"
-    doc, note = lkg.read()
+    folder = folder_of(name)
+    doc, note = lkg.read(folder=folder)
     if doc is None:
         return "refreshed" if where == "infisical" else f"not-refreshed:{note}"
     if name not in doc["knobs"]:
@@ -504,7 +518,7 @@ def refresh_lkg_unset(name: str, reader) -> str:
     copy = dict(doc["knobs"])
     copy.pop(name, None)
     try:
-        lkg.write(copy, now=float(doc["saved_epoch"]))
+        lkg.write(copy, now=float(doc["saved_epoch"]), folder=folder)
     except (OSError, ValueError) as exc:
         return f"not-refreshed:{type(exc).__name__}"
     return "patched"
@@ -592,7 +606,7 @@ def unset_knob(
             token = read_token(environ, platform, runner)
             if not token:
                 raise Refused("no write token")
-            verify_writer(token, environ)
+            verify_writer(token, environ, spec.folder)
             env = child_env(environ, token)
             try:
                 status, _ = runner(argv, timeout=WRITE_TIMEOUT, env=env)

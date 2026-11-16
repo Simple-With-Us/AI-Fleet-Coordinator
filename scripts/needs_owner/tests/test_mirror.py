@@ -1,4 +1,4 @@
-"""The Grok Bot mirror:  an OWNER topic a persona opened with a fenced `needs-owner-request` block becomes a Linear item."""
+"""The Grok Bot mirror:  an OWNER topic a bot opened with a fenced `needs-owner-request` block becomes a Linear item."""
 from __future__ import annotations
 
 import json
@@ -23,7 +23,7 @@ def request_text(**changes) -> str:
 
 
 class MirrorCase(NotifierCase):
-    def persona(self, topic: str = TOPIC, content: str | None = None, seat: str = "GB-PLUMBER", **kw) -> int:
+    def bot(self, topic: str = TOPIC, content: str | None = None, seat: str = "GB-PLUMBER", **kw) -> int:
         return self.w.add_message(topic, content if content is not None else request_text(), seat=seat, **kw)
 
     def files(self) -> list[dict]:
@@ -38,13 +38,13 @@ class MirrorCase(NotifierCase):
 
 class MirrorTests(MirrorCase):
     def test_a_persona_request_is_filed_by_claude_for_the_persona_and_linked_back_once(self) -> None:
-        message = self.persona()
+        message = self.bot()
         result = self.run_notify()
         (mirrored,) = self.events(result, "mirrored")
         self.assertEqual((mirrored["msg"], mirrored["seat"], mirrored["linkback"]), (message, "GB-PLUMBER", "ok"))
         (item,) = self.mirrored_items()
         self.assertEqual((item["identifier"], item["seat"], item["for_seat"], item["state"]), (mirrored["id"], "CLAUDE", "GB-PLUMBER", "notified"))
-        self.assertEqual((item["notified_msg_id"], item["topic"]), (message, TOPIC), "the persona's own message is the notice")
+        self.assertEqual((item["notified_msg_id"], item["topic"]), (message, TOPIC), "the bot's own message is the notice")
         self.assertEqual((item["options"], item["low_stakes"], item["severity"]), (["Approve", "Decline"], [1], "P2"))
         self.assertTrue(item["context"].startswith("for GB-PLUMBER"))
         # filed by CLAUDE, with AGENT_SEAT=CLAUDE, through needs-owner file --mirror-of (so: no topic of its own)
@@ -62,7 +62,7 @@ class MirrorTests(MirrorCase):
         self.assertEqual(self.issue_status(item["identifier"]), "Todo")
 
     def test_a_request_is_mirrored_once_whatever_happens_to_the_state(self) -> None:
-        self.persona()
+        self.bot()
         self.run_notify()
         self.assertEqual(len(self.files()), 1)
         again = self.run_notify()
@@ -75,13 +75,13 @@ class MirrorTests(MirrorCase):
         self.assertEqual(self.events(third, "mirrored"), [])
 
     def test_the_request_is_read_again_only_when_the_topic_changes(self) -> None:
-        self.persona(content="No request here, just chatter.")
+        self.bot(content="No request here, just chatter.")
         self.run_notify()
         reads = lambda: len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "read" and "--since" in c["argv"]])  # noqa: E731
         first = reads()
         self.run_notify()
         self.assertEqual(reads(), first, "unchanged topic, no read")
-        late = self.persona(content=request_text())  # the block arrives in a later message of the same persona
+        late = self.bot(content=request_text())  # the block arrives in a later message of the same bot
         result = self.run_notify()
         self.assertEqual([e["msg"] for e in self.events(result, "mirrored")], [late])
 
@@ -93,12 +93,12 @@ class MirrorTests(MirrorCase):
         self.assertEqual(self.files()[1:], [])
 
     def test_only_a_real_persona_can_ask(self) -> None:
-        self.persona(topic="OWNER from codex", seat="CODEX", content=request_text(seat="CODEX"))
+        self.bot(topic="OWNER from codex", seat="CODEX", content=request_text(seat="CODEX"))
         self.w.add_message("OWNER from a person", request_text())
-        self.persona(topic="OWNER spoofed email", email="plumber-grok-bot@evil.example", content=request_text())
-        self.persona(topic="OWNER the terminal bot", seat="GROK-BOT", content=request_text(seat="GROK-BOT"))
-        self.persona(topic="OWNER cursor opened it", seat="CURSOR", content="hello")
-        self.persona(topic="OWNER cursor opened it", content=request_text())  # a persona's block in a topic someone else opened
+        self.bot(topic="OWNER spoofed email", email="plumber-grok-bot@evil.example", content=request_text())
+        self.bot(topic="OWNER the terminal bot", seat="GROK-BOT", content=request_text(seat="GROK-BOT"))
+        self.bot(topic="OWNER cursor opened it", seat="CURSOR", content="hello")
+        self.bot(topic="OWNER cursor opened it", content=request_text())  # a bot's block in a topic someone else opened
         result = self.run_notify()
         self.assertEqual(self.events(result, "mirrored"), [])
         self.assertEqual(self.events(result, "request-rejected"), [])
@@ -106,7 +106,7 @@ class MirrorTests(MirrorCase):
         self.assertEqual(self.reply_calls(), [])
 
     def test_a_request_for_another_seat_is_rejected_with_one_reply(self) -> None:
-        message = self.persona(content=request_text(seat="GB-DIRECTOR"))
+        message = self.bot(content=request_text(seat="GB-DIRECTOR"))
         result = self.run_notify()
         (rejected,) = self.events(result, "request-rejected")
         self.assertEqual((rejected["msg"], rejected["reason"]), (message, "seat_is_not_the_sender"))
@@ -118,10 +118,10 @@ class MirrorTests(MirrorCase):
         self.assertEqual(len(self.reply_calls()), 1, "told once")
 
     def test_a_corrected_request_after_a_wrong_one_is_the_one_that_counts(self) -> None:
-        bad = self.persona(content=request_text(seat="GB-DIRECTOR"))
+        bad = self.bot(content=request_text(seat="GB-DIRECTOR"))
         first = self.run_notify()
         self.assertEqual([e["msg"] for e in self.events(first, "request-rejected")], [bad])
-        fixed = self.persona(content=request_text())
+        fixed = self.bot(content=request_text())
         second = self.run_notify()
         self.assertEqual([e["msg"] for e in self.events(second, "mirrored")], [fixed])
         self.assertEqual(len(self.reply_calls()), 2, "one rejection, one link back")
@@ -158,13 +158,13 @@ class MirrorTests(MirrorCase):
                          ("GB-PLUMBER", "Rotate the key?", ["Approve", "Decline"], [2], 1, "Quota low", False))
 
     def test_a_request_with_a_secret_or_a_run_of_digits_is_not_filed(self) -> None:
-        self.persona(content=request_text(question="Use account 123456789 for it?"))
+        self.bot(content=request_text(question="Use account 123456789 for it?"))
         result = self.run_notify()
         self.assertEqual(self.events(result, "request-rejected")[0]["reason"], "secret_or_personal_data")
         self.assertEqual(self.files(), [])
 
     def test_urgent_context_and_recommendation_carry_over(self) -> None:
-        self.persona(content=request_text(urgent=True, low_stakes=None, recommend=2, context="The deploy key expires today"))
+        self.bot(content=request_text(urgent=True, low_stakes=None, recommend=2, context="The deploy key expires today"))
         self.run_notify()
         (item,) = self.mirrored_items()
         self.assertEqual((item["severity"], item["urgent"], item["recommend"], item["low_stakes"]), ("P1", True, 2, []))
@@ -172,7 +172,7 @@ class MirrorTests(MirrorCase):
 
     def test_no_more_than_three_a_run_and_the_rest_on_the_next(self) -> None:
         for n in range(5):
-            self.persona(topic="OWNER GB-PLUMBER request %d" % n, content=request_text(question="Request number %d?" % n))
+            self.bot(topic="OWNER GB-PLUMBER request %d" % n, content=request_text(question="Request number %d?" % n))
         first = self.run_notify()
         self.assertEqual(len(self.events(first, "mirrored")), 3)
         second = self.run_notify()
@@ -180,7 +180,7 @@ class MirrorTests(MirrorCase):
         self.assertEqual(len(self.mirrored_items()), 5)
 
     def test_a_full_cap_holds_the_request_for_later(self) -> None:
-        self.persona()
+        self.bot()
         self.w.knobs.values["NEEDS_OWNER_CAPS"] = {"urgent_per_hour": 3, "per_hour": 0, "per_day": 30}
         result = self.run_notify()
         self.assertTrue(self.events(result, "deferred"))
@@ -189,7 +189,7 @@ class MirrorTests(MirrorCase):
         self.assertEqual(len(self.events(self.run_notify(), "mirrored")), 1)
 
     def test_a_closed_item_for_the_same_message_is_not_filed_again_or_looped_on(self) -> None:
-        message = self.persona()
+        message = self.bot()
         self.run_notify()
         (item,) = self.mirrored_items()
         self.w.close(item["identifier"])
@@ -201,7 +201,7 @@ class MirrorTests(MirrorCase):
         self.assertEqual(len(self.files()), calls, "refused once and remembered")
 
     def test_a_tap_and_a_typed_reply_on_a_mirrored_item_wake_the_persona(self) -> None:
-        message = self.persona()
+        message = self.bot()
         self.run_notify()
         (item,) = self.mirrored_items()
         self.w.react(message, OWNER_ID, KEYCAP[1])
@@ -211,7 +211,7 @@ class MirrorTests(MirrorCase):
         (note,) = [c for c in self.sent_by_notifier() if "--to" in c["argv"]]
         self.assertEqual(note["argv"][note["argv"].index("--to") + 1], "GB-PLUMBER")
         self.assertEqual(note["argv"][note["argv"].index("--topic") + 1], TOPIC)
-        self.assertFalse((self.w.notifier_dir / "pending-CLAUDE.json").exists(), "CLAUDE filed it, but the persona is who acts")
+        self.assertFalse((self.w.notifier_dir / "pending-CLAUDE.json").exists(), "CLAUDE filed it, but the bot is who acts")
         self.assertEqual(self.state_of(item["identifier"])["state"], "replied")
 
 

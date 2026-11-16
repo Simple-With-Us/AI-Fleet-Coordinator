@@ -5,9 +5,10 @@
 // pattern a caller is actually listed, under simple-git's own tool-name rule, is a member, so the next tool fails here,
 // in the pull request that adds it, instead of on the server.
 //
-// Listed means what tools/list gives a seat with the production flags:  the workflow verbs on and the typed gr_v1_pr_*
-// tools off (GR_TYPED_TOOLS).  The typed tools carry one pattern simple-git has not reviewed (the repo pattern with
-// unbounded repeats), so turning that flag on needs its digest added to the set first.
+// Listed means what tools/list gives a seat, and the check runs on both lists a seat can get:  the production one (the
+// workflow verbs on, the typed gr_v1_pr_* tools off) and the one with GR_TYPED_TOOLS on.  The typed tools' repo pattern
+// has unbounded repeats, so its digest was reviewed and added to the set (with the reasons beside it in git-tools/git)
+// before that flag could be turned on without breaking every simple-git call.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -82,15 +83,28 @@ function shapeProblems(schema, where, depth = 0, out = []) {
   return out;
 }
 
-test("every pattern a listed gr_ tool carries is in simple-git's reviewed set", () => {
+// Both tool lists a seat can be given:  the production one, and the one with the typed gr_v1_pr_* tools switched on.
+const TOOL_LISTS = {
+  "the production flags": PRODUCTION,
+  "GR_TYPED_TOOLS on": { ...PRODUCTION, grTypedEnabled: true },
+};
+
+for (const [label, config] of Object.entries(TOOL_LISTS)) test(`every pattern a listed gr_ tool carries is in simple-git's reviewed set (${label})`, () => {
   const known = reviewedDigests();
-  const tools = toolListFor("CLAUDE", PRODUCTION).list.filter((tool) => GIT_TOOL_NAME.test(tool.name));
+  const tools = toolListFor("CLAUDE", config).list.filter((tool) => GIT_TOOL_NAME.test(tool.name));
   const advertised = tools.flatMap((tool) => patternsOf(tool.inputSchema, tool.name));
   // Not vacuous: the set was found, and there are many git tools carrying patterns.
   assert.ok(known.size >= 19, `read only ${known.size} reviewed digests from git-tools/git`);
   assert.ok(tools.length > 100, `only ${tools.length} gr_ tools matched simple-git's name rule`);
   assert.ok(advertised.length > 100, `only ${advertised.length} patterns found in their schemas`);
   assert.ok(tools.some((tool) => tool.name === "gr_wf_review_thread_comments"), "the tool that broke simple-git is not listed");
+  // The flag decides whether the typed tools are listed at all, so each list really is the one it says it is.
+  const typed = tools.filter((tool) => tool.name.startsWith("gr_v1_pr_")).map((tool) => tool.name).sort();
+  assert.deepEqual(
+    typed,
+    config.grTypedEnabled ? ["gr_v1_pr_automerge_disable", "gr_v1_pr_hold_state", "gr_v1_pr_state"] : [],
+    `the typed tools are not listed as ${label} says`,
+  );
   // The rest of what simple-git needs of a schema (_schema_ok), since one refused schema also refuses the whole list.
   const problems = tools.flatMap((tool) => [
     ...(tool.inputSchema?.type != null && tool.inputSchema.type !== "object" ? [`${tool.name}: the root type is not object`] : []),

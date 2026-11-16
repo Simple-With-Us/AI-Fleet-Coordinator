@@ -4,7 +4,7 @@ import copy
 import unittest
 
 from git_relay.seat_add_policy import digest, prepare
-from git_relay.tests.test_seat_policy_file import SEATS
+from git_relay.tests.test_seat_policy_file import SEATS, SEATS_WITH_ZC
 
 ZC = "swu-zc"
 
@@ -25,13 +25,19 @@ def synthetic_policy():
 
 
 class SeatAddPolicyTests(unittest.TestCase):
-    def test_actual_policy_reproduces_the_reviewed_zc_row_byte_for_byte(self):
-        base = {name: row for name, row in SEATS.items() if name != ZC}
-        self.assertEqual(len(base), len(SEATS) - 1, "the fixture already names the seat")
+    def test_first_seat_admission_reproduces_the_reviewed_zc_row_byte_for_byte(self):
+        # The first-seat admission landed 2026-11-15, so the reviewed image carries the
+        # ZC row.  prepare() must still reproduce exactly that admitted row when run
+        # against an image that lacks it.
+        base = {slug: cfg for slug, cfg in SEATS.items() if slug != ZC}
+        self.assertNotIn(ZC, base, "the pre-admission image excludes the seat")
         original = copy.deepcopy(base)
-        result = prepare(base, ZC, copy.deepcopy(SEATS[ZC]), digest(base))
+        result = prepare(base, ZC, copy.deepcopy(SEATS_WITH_ZC[ZC]), digest(base))
         self.assertEqual(base, original, "the input is never mutated")
-        self.assertEqual(result, SEATS)
+        self.assertEqual(result, {**base, ZC: SEATS_WITH_ZC[ZC]})
+        self.assertEqual(
+            result[ZC], SEATS_WITH_ZC[ZC], "the admitted row is byte-for-byte the image row"
+        )
         # Digest and the deployed line both canonicalize with sorted keys, so the
         # only order contract is that original seats keep their relative order.
         self.assertEqual(list(result), list(base) + [ZC], "the new seat appends; nothing moves")

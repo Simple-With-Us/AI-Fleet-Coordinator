@@ -155,6 +155,45 @@ class BlockTests(unittest.TestCase):
         self.assertEqual(a.scope, "CLAUDE")
         self.assertEqual(sample(uid=T.make_uid("AFC-5", "Revive PR 761 or close it?", ["Revive it", "Close it"]), parent="AFC-5").scope, "AFC-5")
 
+    def test_the_reason_class_is_an_optional_line(self) -> None:
+        plain = B.render_block(sample())
+        self.assertNotIn("Why owner", plain, "no class, no line:  the block is the old block byte for byte")
+        marked = sample(why_owner="credential", version=2, again_of="AFC-12", mirror_of=None)
+        text = B.render_block(marked)
+        self.assertIn("\nContext: PR 761 is stale\nWhy owner: credential\nVersion: 2\n", text)
+        self.assertEqual(B.parse_block(text), marked)
+        self.assertEqual(B.parse_block(text).why_owner, "credential")
+        self.assertEqual(B.parse_block(B.render_description(marked)), marked)
+        self.assertEqual(B.parse_block(rewrite("[CLAUDE·abc] Filed.\n\n" + B.render_description(marked))).why_owner, "credential")
+        self.assertIsNone(B.parse_block(plain).why_owner)
+
+    def test_a_reason_class_is_read_by_its_shape_so_a_retired_class_still_reads(self) -> None:
+        good = B.render_block(sample())
+        for word in ("money", "some-later-class", "a" * 24):
+            got = B.parse_block(good.replace("Context:", "Why owner: %s\nContext:" % word))
+            self.assertEqual(got.why_owner, word)
+        for bad in ("", "Credential", "two words", "1money", "-money", "a" * 25, "money!"):
+            with self.assertRaises(B.BlockError, msg=repr(bad)):
+                B.parse_block(good.replace("Context:", "Why owner: %s\nContext:" % bad))
+        with self.assertRaises(B.BlockError):
+            B.parse_block(good.replace("Context:", "Why owner: money\nWhy owner: legal\nContext:"))
+
+    def test_the_reason_class_is_not_part_of_the_request(self) -> None:
+        a = sample()
+        self.assertTrue(a.same_request(sample(why_owner="money")))
+        self.assertTrue(sample(why_owner="money").same_request(sample(why_owner="legal")))
+        self.assertTrue(sample(why_owner="money").hash_matches_uid(), "and it is not in the uid hash")
+
+    def test_the_json_carries_the_class_only_when_there_is_one(self) -> None:
+        def row(block):
+            item = I.Item(identifier="AFC-1", id="x", url="u", title="OWNER DECISION:  q", status="Todo", severity="P2", app="AFC",
+                          created_at=None, labels=["needs-owner"], kind="agent-report", reported_by="CLAUDE", block=block)
+            return I.to_json(item, I.now())
+
+        self.assertNotIn("why_owner", row(sample()))
+        self.assertEqual(row(sample(why_owner="policy"))["why_owner"], "policy")
+        self.assertNotIn("why_owner", row(None), "an unadopted item has no class")
+
     def test_for_seat(self) -> None:
         self.assertEqual(sample(context="for GB-PLUMBER").for_seat, "GB-PLUMBER")
         self.assertIsNone(sample(context="background for GB-PLUMBER").for_seat)
@@ -242,10 +281,10 @@ class ItemTests(unittest.TestCase):
     def test_state_order(self) -> None:
         item = I.build_item(self.show())
         self.assertEqual((item.state, item.seat, item.seat_verified), ("notify_pending", "CLAUDE", True))
-        notified = I.build_item(self.show(comments=[{"author": "CLAUDE", "text": "[needs-owner] notified msg 5\ntopic: OWNER AFC-1 Q"}]))
+        notified = I.build_item(self.show(comments=[{"author": "CLAUDE", "author_seat": "CLAUDE", "text": "[needs-owner] notified msg 5\ntopic: OWNER AFC-1 Q"}]))
         self.assertEqual((notified.state, notified.topic), ("notified", "OWNER AFC-1 Q"))
-        replied = I.build_item(self.show(comments=[{"author": "CLAUDE", "text": "[needs-owner] notified msg 5"},
-                                                   {"author": "CLAUDE", "text": "owner replied:  msg 9"}]))
+        replied = I.build_item(self.show(comments=[{"author": "CLAUDE", "author_seat": "CLAUDE", "text": "[needs-owner] notified msg 5"},
+                                                   {"author": "CLAUDE", "author_seat": "CLAUDE", "text": "owner replied:  msg 9"}]))
         self.assertEqual(replied.state, "replied")
         for status in I.CLOSED_STATUSES:
             self.assertEqual(I.build_item(self.show(status=status)).state, "closed")
@@ -257,10 +296,29 @@ class ItemTests(unittest.TestCase):
 
     def test_a_block_comment_of_another_author_is_not_verified(self) -> None:
         text = records.block_comment_text(B.render_block(sample()))
-        mine = I.build_item(self.show(description="by hand", comments=[{"author": "CLAUDE", "text": text}]))
-        theirs = I.build_item(self.show(description="by hand", comments=[{"author": "CODEX", "text": text}]))
+        mine = I.build_item(self.show(description="by hand", comments=[{"author": "CLAUDE", "author_seat": "CLAUDE", "text": text}]))
+        theirs = I.build_item(self.show(description="by hand", comments=[{"author": "CODEX", "author_seat": "CODEX", "text": text}]))
         self.assertTrue(mine.seat_verified)
         self.assertFalse(theirs.seat_verified)
+
+    def test_records_without_author_seat_are_ignored(self):
+        """A display name or a typed [CLAUDE] prefix is not a verified seat (AFC-692)."""
+        notice = "[needs-owner] notified msg 5\ntopic: OWNER AFC-1 Q"
+        reply = "owner replied:  msg 9"
+        named = I.build_item(self.show(comments=[{"author": "Claude", "author_app": False, "text": notice}]))
+        tagged = I.build_item(self.show(comments=[{"author": "CLAUDE", "author_app": False, "text": reply}]))
+        self.assertEqual(named.state, "notify_pending")
+        self.assertIsNone(named.notified)
+        self.assertEqual(tagged.state, "notify_pending")
+        self.assertIsNone(tagged.replied)
+        trusted = I.build_item(self.show(comments=[
+            {"author": "Claude", "author_seat": "CLAUDE", "author_app": True, "text": notice},
+            {"author": "CLAUDE", "author_seat": "CLAUDE", "author_app": True, "text": reply},
+        ]))
+        self.assertEqual(trusted.state, "replied")
+        self.assertEqual(I.comment_seat({"author": "CLAUDE", "author_seat": None}), None)
+        self.assertEqual(I.comment_seat({"author": "CLAUDE"}), None)
+        self.assertEqual(I.comment_seat({"author_seat": "CLAUDE"}), "CLAUDE")
 
     def test_age(self) -> None:
         import datetime as dt

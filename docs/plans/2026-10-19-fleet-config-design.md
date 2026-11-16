@@ -467,7 +467,7 @@ Each implementer lands tests with their module, under `scripts/fleet_config/test
 
 1. `test_schema_version_is_pinned` asserts `contract.SCHEMA_VERSION` is exactly 1 and that a built envelope carries it.
 2. `test_envelope_never_carries_a_secret` builds a report over a credential rule and asserts the serialized envelope holds the mode, size and mtime, and no file contents (the fixture writes a known sentinel string as contents and asserts its absence).
-3. `test_fail_closed_mapping` asserts stale, error, timeout and unparseable results are failing and that an all-`UNKNOWN` run and an empty run both verdict `UNKNOWN`, never `PASS`.
+3. `test_fail_closed_mapping` asserts stale, error, timeout and unparseable results are failing and that an empty run verdicts `UNKNOWN`, never `PASS`.  An all-`UNKNOWN` run verdicts `FAIL` whenever any result carries a failing reason code (`stale`, `error`, `timeout`, `unparseable`, `proof-failed`) and `UNKNOWN` only when every `UNKNOWN` result carries a non-failing reason code (AFC-441 reconciliation with `contract.overall_verdict`).
 4. `test_marked_block_hash_parity` asserts `checks_instructions` and `fleet_lanes.marked_block` give the same digest for the same fixture file (this test may import `fleet_lanes`;  the package under test may not).
 
 The names are the pin, not a suggestion:  a test that asserts the same thing under another name does not satisfy it, because the pinned name is what a reader greps for and what a future change has to find.  Test 4 in particular is the only thing that keeps the two marked-block implementations agreeing, and nothing else in the suite does it, so it is the one most easily lost.
@@ -498,5 +498,38 @@ Read this before starting a lane.  These are the places where the contract meets
 2. **Expected hashes must come from the installer source, not from installed files.**  If the seed manifest snapshots whatever hash is on this Mac today, drift detection is circular and proves nothing.  The `instructions` seed hashes must be computed from what `fleet_lanes.install_rules` composes (its rules sources), and the seeding task needs a small hash helper from `checks_instructions.py` to do it.  Until that helper lands, the manifest cannot be seeded honestly.
 3. **`fleet-seats.json` does not exist yet, and this kernel does not create it.**  `load_manifest()` correctly refuses without it.  Seeding it (every live seat, six kinds each, per section 7) is a separate task that needs the seat-to-platform mapping from risk 1 and the hashes from risk 2.  The Muster app phase must not hardcode a seat list while it waits.
 4. **Hook deny signals differ per platform and are not yet catalogued in one place.**  L1 needs, per platform, the hook invocation shape and the exact deny signal (exit code and output).  `proof.py`'s implementer must extract these from each platform's installed hook config and pin them as fixtures.  Any platform whose deny signal cannot be determined gets `UNSUPPORTED` for L1 (its hooks rules then cap at `UNPROVEN` if they require L1, so such a rule should require `L0` until the adapter lands).
-5. **Reserved collectors produce `UNSUPPORTED`, and there is no `api` collector design yet.**  A later phase that wants cloud seats (risk:  they are `notApplicable` today) must design the `api` collector and replace those covers with rules.  Nothing in Phase 2 should pre-build that transport.
+5. **Cloud-seat observation is designed in Section 16 (`AFC-441`) and awaits the `AFC-398` observer endpoint.**  `collectors.py` and `aggregator.py` route `Collector.API` through `api_collector.py`, which enforces the trust boundary when an approved observer runtime is configured and returns `UNSUPPORTED` honestly while no authorized remote observer exists.  Hosted seats (`GROK-BOT`, `GROK-WEB`, `ECHO`, `WISE`) keep honest `notApplicable` covers in `fleet-seats.json` until a scoped, independent observer host and subject are registered; never ship fabricated endpoints or fake all-green seed rules.
 6. **AFC-375's `deploy/mac/manifest.toml` is not in this repo yet.**  The section 2 boundary is written against its planned shape.  When AFC-375 lands, one reviewer must check both manifests for a doubly described row, because neither loader can see the other's file today.
+
+## 16. API Collector Design, Trust Boundary And First Cloud-Seat Rules (`AFC-441`)
+
+### 16.1 Contract Preservation (Read-Only Observation, No Remote Control)
+
+The `api` collector (`scripts/fleet_config/api_collector.py`) sits beside `collectors.py`, uses stdlib only (Python 3.9 safe), and returns the same flat `CheckResult` vocabulary (`CheckState`, `ReasonCode`, six `SEAT_CONFIG_KINDS`).  `status` and `plan` remain strictly read-only:  cloud observation must never create credentials, alter grants, install hooks, start agents, spend model turns, or push config.  Every initial cloud rule carries `autofixAllowed=false`.
+
+### 16.2 Trust Boundary, Identity Binding And Self-Report Prohibition
+
+* **Reviewed policy only.**  Expected hashes, allowed tool/server names, expiry caps (`ttlSeconds`), applicability, and proof requirements come strictly from the reviewed manifest, never from a remote payload.
+* **Identity tuple.**  Every observation binds strictly to `(ruleId, seat, platform, hostId)` with optional `subjectSession`.  Duplicate identity rows within a single response fail closed as `UNKNOWN / unparseable`.
+* **Observer classification.**  Payloads must declare `observerClass` in `{owner_observer, provider_api, self_report}`.  A `self_report` payload can **never** yield `CheckState.PASS` or achieve `L1`/`L2` (or satisfy `L0` compliance); `api_collector.py` rejects `self_report` and unknown observer classes fail-closed as `UNKNOWN / error`.
+
+### 16.3 Read-Only Transport Guardrails (Coordinate With `AFC-398`)
+
+* **Pinned allowlisted targets (`ApiObserverTarget`).**  `validate_observer_url` requires `https://` (or explicit opt-in loopback only for hermetic local tests), rejects embedded credentials or fragments, checks hostname against an explicit allowlist, resolves DNS before socket connect, and unconditionally rejects link-local/metadata (`169.254.0.0/16`, `fe80::/10`), multicast, unspecified, and unlisted private addresses.  Arbitrary URLs, shell commands, or file paths inside payloads are ignored.
+* **No HTTP redirects.**  `_NoRedirectHandler` refuses every 3xx redirect before following it.
+* **Bounded reads, timeouts, and retries.**  Reads cap at `MAX_API_RESPONSE_BYTES` (256 KiB via `cap + 1` read) and `MAX_API_ROWS` (256), using `parse_bounded_json` plus refusal of `NaN`/`Infinity`.  Transient `429`/`5xx` and transient network `OSError` retry at most once (`DEFAULT_MAX_RETRIES = 1`); `401`, `403`, `404`, and `3xx` never retry.
+* **Secret hygiene.**  Credential rules inspect `stat`/key-name metadata only.  `scrub_secrets` redacts bearer tokens, key prefixes, `token=`/`secret=` pairs, PEM blocks, and configured canary strings before persistence or `CheckResult` construction; upstream HTTP error bodies are never copied into diagnostics.
+
+### 16.4 Section 4 Failure Mapping And Evidence Sidecar
+
+* Unconfigured observer runtime (`AFC-398` absent):  `UNSUPPORTED / unsupported` (honest unobservable state).
+* Auth failure (`401`/`403`), `404` or omitted row, DNS/network refusal, nonce mismatch/replay, future `observedAt`, or `self_report`:  `UNKNOWN / error` (failing; **`404` and omitted rows never count as `MISSING`**).
+* Per-request timeout or budget exhaustion:  `UNKNOWN / timeout`.
+* Oversized, non-JSON, `NaN`/infinite JSON, unknown `schemaVersion`, malformed row/timestamp, or duplicate identity rows:  `UNKNOWN / unparseable`.
+* Expired observation (`min(expiresAt, observedAt + ttlSeconds) <= now`):  `UNKNOWN / stale` retaining the original `checkedAt = observedAt` (never rejuvenated on re-read).
+* L0 matches while required `L1`/`L2` proof was not performed (`api` rules never fall back to local Mac `proof.py`):  `UNPROVEN / proof-not-run`.
+* Provenance fields live in `EvidenceSidecar` (`schemaVersion=1`, keyed by `(observationId, ruleId, seat, platform, hostId)`), preserving `contract.SCHEMA_VERSION == 1` until `AFC-416` coordinates consumer compatibility.
+
+### 16.5 First Cloud-Seat Rules
+
+`build_first_cloud_seat_rules(...)` constructs schema-valid rules across all six `SEAT_CONFIG_KINDS` (`instructions`, `hooks`, `mcp`, `skills` subset check, `subagents` subset check, `permissions` exact/stat check) with `collector=Collector.API` and `autofix_allowed=false` once a cloud host and subject are registered under `AFC-398`.  In `fleet-seats.json`, `compliance-cloud-seat-api-observer` (`scope=["cloud"]`, `collector="api"`, `implemented=false`) tracks that `AFC-398` readiness gap honestly without fabricating endpoints.

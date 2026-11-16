@@ -58,11 +58,18 @@ def _deliver_at(value: str) -> int:
 
 
 def add_parsers(
-    sub: Any, common: argparse.ArgumentParser, channel_default: str = Z.DEFAULT_CHANNEL
+    sub: Any,
+    common: argparse.ArgumentParser,
+    channel_default: str = Z.DEFAULT_CHANNEL,
+    *,
+    skip_verbs: frozenset[str] | None = None,
 ) -> None:
     cli = _cli()
+    reserved = skip_verbs or frozenset()
 
     def add(name: str, summary: str, parent: Any = sub) -> argparse.ArgumentParser:
+        if name in reserved:
+            return cli._NullParser()
         return parent.add_parser(name, parents=[common], help=summary, description=summary)
 
     def msg_id(p: argparse.ArgumentParser, help_text: str = "message id") -> None:
@@ -528,8 +535,15 @@ def cmd_edit(agent: Any, args: argparse.Namespace) -> int:
     mentions, labels = cli._resolve_targets(agent, getattr(args, "to", []) or [], to_owner)
     #  --no-tag still wins for the bracket, exactly as `_compose` gives post.  The mentions
     #  above stay, so a seat or the owner named by the edit is still woken.
+    #  AFC-666:  preserve a compact intro as post does, so an already-tagged
+    #  replacement keeps its single intro instead of gaining a second seat tag.
     body = cli._compose(
-        agent, text, labels=labels, mentions=mentions, no_tag=bool(getattr(args, "no_tag", False))
+        agent,
+        text,
+        labels=labels,
+        mentions=mentions,
+        no_tag=bool(getattr(args, "no_tag", False)),
+        preserve_compact=True,
     )
     result = OPS.edit_message(agent, args.id, body, checked=original)
     return _result(agent, result, "edited id %d" % args.id)

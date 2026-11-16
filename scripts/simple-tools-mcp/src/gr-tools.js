@@ -21,7 +21,7 @@ import { callTypedV1 } from "./gr-typed-v1.js";
 import { ASSERTION_FAMILY_RE } from "./gr-assert.js";
 import { WF_V1_READ_ACTIONS, WF_V1_ACTIONS, workflowInputLimit, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response, utf8Bytes } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
-import { classifyRelayRefusal } from "./gr-refusal.js";
+import { allowlistedGithubDiagnostics, classifyRelayRefusal, movedRepository } from "./gr-refusal.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
  * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
@@ -45,7 +45,64 @@ export const GR_SECRETS = Object.freeze({
   accessSecret: "GR_ACCESS_CLIENT_SECRET",
 });
 
-// The seven fronted actions, in the order the admin panel and docs name them.
+/** Stable machine-readable reasons when gr_* refuses before git-relay is reached. */
+export const GR_UNAVAILABLE_REASON = Object.freeze({
+  RELAY_ENV_MISSING: "gr_relay_env_missing",
+  CONNECTION_NO_SEAT_RELAY_AUTH: "gr_connection_no_seat_relay_auth",
+  RELAY_SIGNER_UNAVAILABLE: "gr_relay_signer_unavailable",
+});
+
+/** Name every missing relay-front setting (never values). */
+export function grFrontMissing({ accessId, accessSecret }, env) {
+  const missing = [];
+  if (!grUpstreamUrl(env?.GR_UPSTREAM_URL)) missing.push("GR_UPSTREAM_URL");
+  if (!accessId) missing.push(GR_SECRETS.accessId);
+  if (!accessSecret) missing.push(GR_SECRETS.accessSecret);
+  return missing;
+}
+
+/** Why there is no GrRelayClient on this connection when wiring finished. */
+export function grUnavailableWhenNoClient(resolvedSecrets, env, { relayAuthAvailable }) {
+  const missing = grFrontMissing(resolvedSecrets, env);
+  if (missing.length) {
+    return { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing };
+  }
+  if (!relayAuthAvailable) {
+    return { reason: GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH, missing: [] };
+  }
+  return { reason: GR_UNAVAILABLE_REASON.RELAY_ENV_MISSING, missing: ["GR_UPSTREAM_URL"] };
+}
+
+export function grNotConfiguredMessage({ reason, missing }) {
+  if (reason === GR_UNAVAILABLE_REASON.CONNECTION_NO_SEAT_RELAY_AUTH) {
+    // ToolError.asObject keeps 300 code points (contract.js MESSAGE_LIMIT).
+    // The cause, the seat-bearer shapes, and the "not the cause" line all have
+    // to land inside that cap; a longer sentence is cut off before the caller
+    // sees it.  The env var name stays out of this text so the refusal cannot
+    // be read as a request to set it.
+    return (
+      "GR-MCP is not available on this connection.  "
+      + "No sbt_* or gbb_* seat bearer is sent, and this connection has no OAuth assertion path for gr_*.  "
+      + "Use a seat-bearer MCP connection or GR-MCP over stdio (`git-relay mcp`).  "
+      + "The relay URL and Access pair are not the cause.  "
+      + "The other tools still work."
+    );
+  }
+  if (reason === GR_UNAVAILABLE_REASON.RELAY_SIGNER_UNAVAILABLE) {
+    return (
+      "GR-MCP is not configured on this server right now (the relay front or the hosted-OAuth assertion signer is unavailable).  "
+      + "Nothing was sent to git-relay;  the other tools still work."
+    );
+  }
+  const vars = missing.length
+    ? missing.join(", ")
+    : `GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")}`;
+  return (
+    `GR-MCP relay front is not configured on this server.  Missing: ${vars} (scripts/simple-tools-mcp/DEPLOY.md).  The other tools still work.`
+  );
+}
+
+// The fronted actions, in the order the admin panel and docs name them.
 // open_pr is the only one the relay still runs under the owner (PR-only)
 // token;  the rest run as the calling seat's own GitHub App.
 export const GR_ACTIONS = Object.freeze([
@@ -56,6 +113,7 @@ export const GR_ACTIONS = Object.freeze([
   "merge_pr",
   "workflow_dispatch",
   "resolve_thread",
+  "create_repo",
 ]);
 
 /** The upstream origin when it is a bare https origin (a trailing slash
@@ -145,6 +203,7 @@ export class GrRelayClient {
   // Workflow verbs get a bounded stream, longer deadline and conservative write
   // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
+    if (action === "wf_pr_create") return {status:403,body:{error:"forbidden"},localFailure:true};
     // Bound depth/nodes/cycles before serialization, then cap raw JSON bytes
     // before recursive Zod parsing. Keep the normalized payload check below.
     const limit = workflowInputLimit(action);
@@ -199,6 +258,9 @@ export class GrRelayClient {
       const outcomeUnknown=()=>({status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false,...(githubCode?{github_code:githubCode}:{})}});
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
       if(response.status===409 && ['pending','unknown'].includes(parsed.outcome)) return outcomeUnknown();
+      if (parsed.error === "verifier_unavailable") {
+        return {status: response.status, body: {error: "workflow_request_refused", reason: "verifier_unavailable", retryable: true}};
+      }
       if(response.status>=500 && parsed.retryable!==true) {
         if (response.status === 502 && parsed.outcome === "unknown" && githubCode) return outcomeUnknown();
         return unavailable();
@@ -224,7 +286,11 @@ export class GrRelayClient {
       // github_status only (src/gr-refusal.js):  a closed reason or nothing,
       // never the relay's prose.  An unmatched refusal keeps the flat answer.
       const classified=credentialMarker?{reason:"credential_scan"}:classifyRelayRefusal(parsed.error, body.github_status);
-      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
+      // A moved repository carries only its validated details (a strict
+      // owner/name and a numeric id), never the relay's prose.
+      const moved=classified?.reason==="repository_moved"?movedRepository(body):{};
+      const diagnostics=write?allowlistedGithubDiagnostics(body.github_diagnostics):null;
+      return {status:response.status,body:{error:"workflow_request_refused", ...(classified ? classified : {}), ...moved, ...(diagnostics ? {github_diagnostics:diagnostics} : {}), ...(parsed.retryable===true ? {retryable:true} : {})}};
     } catch {return unavailable();}
   }
 
@@ -341,7 +407,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_comment_pr",
     title: "Comment on Pull Request",
     description: "Add a conversation comment to a pull request through git-relay, as your own GitHub App.",
-    inputSchema: obj(["repo", "number", "body"], { repo: REPO, number: NUMBER, body: { type: "string" } }),
+    inputSchema: obj(["repo", "number", "body"], { repo: REPO, number: NUMBER, body: { type: "string" }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"} }),
   },
   {
     name: "gr_merge_pr",
@@ -352,14 +418,25 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_workflow_dispatch",
     title: "Dispatch Workflow",
-    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.",
-    inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object" }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
+    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.  Optional intent_id binds idempotency for a branch-shaped ref and does not read the branch.  Add expected_head_sha with the same intent_id to pin the branch head before send.",
+    inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object", maxProperties: 32, additionalProperties: { anyOf: [{ type: "string", maxLength: 1024 }, { type: "number" }, { type: "boolean" }] } }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
   },
   {
     name: "gr_resolve_thread",
     title: "Resolve Review Thread",
     description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.",
     inputSchema: obj(["repo", "thread_id"], { repo: REPO, thread_id: { type: "string" } }),
+  },
+  {
+    name: "gr_create_repo",
+    title: "Create Repository",
+    description: "Create a repository through git-relay, as your own GitHub App. Denied unless the seat policy grants create_repo. Owners are Simple-With-Us and jaywedgeworth22. Visibility defaults to private; public also needs create_repo_public. An existing repository returns already_exists and is not created again.",
+    inputSchema: obj(["repo"], {
+      repo: REPO,
+      visibility: { type: "string", enum: ["private", "public"] },
+      description: { type: "string", maxLength: 350 },
+      license_template: { type: "string", enum: ["apache-2.0"] },
+    }),
   },
 ]);
 export const GR_TOOL_NAMES = Object.freeze(GR_TOOLS.map((tool) => tool.name));

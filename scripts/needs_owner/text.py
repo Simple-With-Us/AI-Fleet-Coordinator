@@ -6,6 +6,7 @@ for secrets or stored:  control and invisible characters are dropped, every kind
 the code fence that holds the item's block or break out of a Zulip code span.  Case and wording are
 kept as typed.  `normalize` is only for comparing and hashing.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -51,8 +52,10 @@ def clean_text(raw: object, field: str, cap: int, *, required: bool = True) -> s
             raise Refusal("%s is empty" % field)
         return ""
     if len(cleaned) > cap:
-        raise Refusal("%s is %d characters;  the most is %d.  Say it shorter, and put the rest in --context or in the Linear "
-                      "issue" % (field, len(cleaned), cap))
+        raise Refusal(
+            "%s is %d characters;  the most is %d.  Say it shorter, and put the rest in --context or in the Linear "
+            "issue" % (field, len(cleaned), cap)
+        )
     return cleaned
 
 
@@ -68,9 +71,11 @@ def parse_ident(raw: str, field: str) -> str:
     return text.upper()
 
 
-def uid_hash(question: str, options: list[str], *, version: int = 1, mirror_msg: int | None = None) -> str:
+def uid_hash(
+    question: str, options: list[str], *, version: int = 1, mirror_msg: int | None = None
+) -> str:
     """The first 8 hex characters of the SHA-256 of the normalized question and options.  A mirrored item
-    also folds in the Zulip message it mirrors (two personas asking one question are two items), and a
+    also folds in the Zulip message it mirrors (two bots asking one question are two items), and a
     version above 1 (`--again`) is folded in too, so the uid stays three parts."""
     parts = ["q:" + normalize(question)]
     parts += ["o%d:%s" % (i, normalize(o)) for i, o in enumerate(options, 1)]
@@ -81,9 +86,19 @@ def uid_hash(question: str, options: list[str], *, version: int = 1, mirror_msg:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:8]
 
 
-def make_uid(scope: str, question: str, options: list[str], *, version: int = 1, mirror_msg: int | None = None) -> str:
+def make_uid(
+    scope: str,
+    question: str,
+    options: list[str],
+    *,
+    version: int = 1,
+    mirror_msg: int | None = None,
+) -> str:
     """needs-owner:<parent identifier or SEAT>:<sha8>"""
-    return "needs-owner:%s:%s" % (scope, uid_hash(question, options, version=version, mirror_msg=mirror_msg))
+    return "needs-owner:%s:%s" % (
+        scope,
+        uid_hash(question, options, version=version, mirror_msg=mirror_msg),
+    )
 
 
 UID_RE = re.compile(r"needs-owner:([A-Za-z0-9-]+):([0-9a-f]{8})")
@@ -109,6 +124,8 @@ def parse_index_list(values: list[str] | None, count: int, flag: str) -> list[in
             if not piece:
                 continue
             if not piece.isdigit() or not 1 <= int(piece) <= count:
-                raise Refusal("%s %r is not an option number from 1 to %d" % (flag, piece[:20], count))
+                raise Refusal(
+                    "%s %r is not an option number from 1 to %d" % (flag, piece[:20], count)
+                )
             found.add(int(piece))
     return sorted(found)

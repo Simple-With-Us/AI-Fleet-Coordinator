@@ -6,9 +6,9 @@ description: >-
 
 # Secret handoff (ZC)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 Load `~/.zcode/skills/secret-safety/SKILL.md` as well when that file exists.  This skill is the fleet overlay.
@@ -30,7 +30,7 @@ A consumer that reads one folder of Infisical on its own (an app on its own proj
 
 The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical (OPS-818).  Nothing may read the flat file; there is no `global-api-keys.env` either, and the superseded sibling is a recovery net, not a source.
 
-The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it needs a working login on this host:  without `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET` it cannot authenticate, so stop and report that instead of substituting another source.  It is never the path for new work; the shared Automation identity is not for a consumer that reads one folder.
+The shared reader `fleet-secrets` is for the shared Fleet-OPS reader alone, and it authenticates only with the caller's own scoped service token bound as `INFISICAL_TOKEN` (or `INFISICAL_AI_FLEET_COORDINATOR_TOKEN` for that project).  A noninteractive read with no token fails closed and names that variable; an explicit interactive `get` or `names` from an operator's terminal may fall back to the operator's own read-only Infisical CLI login session, never for automation.  `fleet-secrets set` writes only its built-in allowlist and requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`; the CLI login session is refused for writes.  It does not log in with a machine identity.  It is never the path for a consumer that reads one folder; that consumer uses its own scoped service token.
 
 On the Mac:
 
@@ -70,7 +70,7 @@ fleet-secrets run -- env
 # Read / open-file / cat / less / bat on any secrets file
 ```
 
-Allowed:  the shared `fleet-secrets` reader, and it needs a working login on this host — without one it cannot authenticate, so stop and report that instead of substituting another source.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
+Allowed:  the shared `fleet-secrets` reader, which authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  A consumer that reads one folder uses its own scoped service token (`service-tokens`) instead.
 
 ```bash
 fleet-secrets names

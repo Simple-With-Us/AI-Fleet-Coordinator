@@ -37,6 +37,14 @@ class BuilderTests(unittest.TestCase):
             with self.assertRaises(SyntaxError):
                 builder.image(b"before", b"def broken(")
 
+    def test_historical_fixture_passes_actual_candidate_gate(self):
+        historical = Path(__file__).parent / "fixtures" / "workflow-1549.py.txt"
+        candidate = historical.read_bytes()
+        with patch.object(builder, "BEFORE", builder.digest(b"baseline fixture")):
+            self.assertEqual(builder.image(b"baseline fixture", candidate), candidate)
+            with self.assertRaisesRegex(ValueError, "candidate drift"):
+                builder.image(b"baseline fixture", candidate + b"\n# later source")
+
     def test_render_binds_exact_manifest_and_modules(self):
         raw = b"manifest"
         sources = {"git_relay/a.py": b"content"}
@@ -57,10 +65,11 @@ class BuilderTests(unittest.TestCase):
 
     def test_build_has_only_one_exact_file_and_fixed_bindings(self):
         root = Path(__file__).resolve().parents[3]
-        self.assertEqual(
-            builder.digest((root / "git-relay/git_relay/workflow_verbs.py").read_bytes()),
-            builder.AFTER,
-        )
+        # This completed transaction pins the merged #1549 image, not whatever
+        # later workflow source happens to be in the checkout. New source must
+        # qualify a separate deployment binding; never regenerate this pin.
+        historical = Path(__file__).parent / "fixtures" / "workflow-1549.py.txt"
+        self.assertEqual(builder.digest(historical.read_bytes()), builder.AFTER)
         with tempfile.TemporaryDirectory() as directory:
             before = Path(directory) / "before"
             before.write_bytes(b"before")

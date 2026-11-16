@@ -119,7 +119,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          "d=$(mktemp -d) && git clone https://github.com/Simple-With-Us/Clutch.git $d/repo",
          CLONE, "spec", dest=TMPDIR_N + "/tmp.XXXXXXXXXX/repo"),
     deny("spec-mktemp-template-botfleet",
-         "D=$(mktemp -d /tmp/gt.XXXXXX); git clone git@github.com:jaywedgeworth22/BotFleet.git $D/bf",
+         "D=$(mktemp -d /tmp/gt.XXXXXX); git clone git@github.com:Simple-With-Us/BotFleet.git $D/bf",
          CLONE, "spec; MiniMax gt2./gittest. mktemp habit", dest="/tmp/gt.XXXXXX/bf"),
     deny("spec-mm-cc-baseline-dot",
          "mkdir -p /tmp/cc-baseline && cd /tmp/cc-baseline && git clone --filter=blob:none "
@@ -163,7 +163,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          "git -C /Users/fixture-home/Code/AI-Fleet-Coordinator worktree add -q --detach /tmp/afc-baseline",
          WT_ADD, "sweep tmp-evidence.txt minimax", dest="/tmp/afc-baseline"),
     deny("sweep-mm-verify-clone",
-         "git clone -q --depth 1 --branch main https://github.com/jaywedgeworth22/AI-Fleet-Coordinator.git /tmp/mm-verify",
+         "git clone -q --depth 1 --branch main https://github.com/Simple-With-Us/AI-Fleet-Coordinator.git /tmp/mm-verify",
          CLONE, "sweep tmp-evidence.txt minimax; pre-transfer owner", dest="/tmp/mm-verify"),
     deny("sweep-mm-bf-main-lint-from-lane",
          "git worktree add /tmp/bf-main-lint origin/main",
@@ -179,7 +179,7 @@ DENY_FIXTURES: tuple[GuardFixture, ...] = (
          WT_ADD, "sweep tmp-evidence.txt botfleet", cwd="/Users/fixture-home/Code/Socratic.Trade",
          dest="/tmp/st-4013-verify"),
     deny("sweep-relay-st-pr-ssh",
-         "mkdir -p /tmp/st-pr && git clone ssh://github.com/jaywedgeworth22/Socratic-Trade.git /tmp/st-pr/repo",
+         "mkdir -p /tmp/st-pr && git clone ssh://github.com/Simple-With-Us/Socratic-Trade.git /tmp/st-pr/repo",
          CLONE, "sweep /private/tmp/st-pr/repo reflog (bundle relay)", dest="/tmp/st-pr/repo"),
     deny("sweep-ag-cc163-verify",
          "git clone https://github.com/Simple-With-Us/CodeCaps.git /private/tmp/cc163-verify && "
@@ -569,7 +569,7 @@ ALLOW_FIXTURES: tuple[GuardFixture, ...] = (
           "git clone --depth 50 -b main https://github.com/Simple-With-Us/DealDex.git dealdex-work > /tmp/clone.log",
           "sweep tmp-evidence.txt (the log is in /tmp, the clone is not)", cwd="/Users/fixture-home/apps/lanes/DealDex"),
     allow("pnpm-runner-store",
-          "git clone git@github.com:jaywedgeworth22/Harness.git "
+          "git clone git@github.com:Simple-With-Us/Harness.git "
           "/home/runner/.local/share/pnpm/store/v10/tmp/_tmp_2373_73cd96a5c890493e34ca95f2d2bd2c7b",
           "sweep tmp-evidence.txt minimax/botfleet (a CI runner path, not a temp root)"),
     allow("downloads-clone", "git clone " + _DD + " ~/Downloads/dd",

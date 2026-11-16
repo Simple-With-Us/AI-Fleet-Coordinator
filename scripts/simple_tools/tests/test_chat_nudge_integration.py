@@ -233,6 +233,8 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual(offered, [])
 
     def test_pause_and_budget_gate_pending_delivery(self):
+        # No wake cap has a default (owner, Nov 10, 2026), so the seat sets the one under test.
+        self.write_config(budget="per_topic_per_hour = 2")
         daemon = self.daemon()
         daemon.chat_nudges.bind("simple-tools", "topic", "grok-leader", "host", "existing", "/repo")
         runner = self._grok_runner(daemon)
@@ -289,6 +291,7 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual(daemon.chat_nudges.snapshot()["items"][0]["status"], "accepted")
 
     def test_owner_keeps_owner_allowance_when_peer_budget_is_exhausted(self):
+        self.write_config(budget="per_topic_per_hour = 2")
         daemon = self.daemon()
         daemon.chat_nudges.bind("simple-tools", "topic", "grok-leader", "host", "existing", "/repo")
         runner = self._grok_runner(daemon)

@@ -154,9 +154,9 @@ test("post:  a text that already opens with the seat's own intro is never double
   };
   // post-intro v2.0 shapes render exactly once:  plain, folder intro, multi-threaded intro, optional leading 👀.
   assert.equal(await post("[GROK-WEB] plain"), "[GROK-WEB] plain");
-  assert.equal(await post("[GROK-WEB 📁OPS] status"), "[GROK-WEB 📁OPS] status");
-  assert.equal(await post("[GROK-WEB: W1.GEN.MAC 📁OPS] hi"), "[GROK-WEB: W1.GEN.MAC 📁OPS] hi");
-  assert.equal(await post("👀 [GROK-WEB 📁OPS] look"), "👀 [GROK-WEB 📁OPS] look");
+  assert.equal(await post("[GROK-WEB 📁OPS] status"), "[GROK-WEB\u200a\u200a📁\u200aOPS] status");
+  assert.equal(await post("[GROK-WEB: W1.GEN.MAC 📁OPS] hi"), "[GROK-WEB:\u200a\u200a\u200aW1.GEN.MAC\u200a\u200a📁\u200aOPS] hi");
+  assert.equal(await post("👀 [GROK-WEB 📁OPS] look"), "👀 [GROK-WEB\u200a\u200a📁\u200aOPS] look");
   // A different seat's marker is content, not this seat's attribution:  the tag is still prepended.
   assert.equal(await post("[MA 📁OPS] quoted"), "[GROK-WEB] [MA 📁OPS] quoted");
   // Untagged text keeps the existing prepend.
@@ -164,20 +164,89 @@ test("post:  a text that already opens with the seat's own intro is never double
 });
 
 
+test("post, reply and edit:  an own folder intro with no space or a non-ASCII space before 📁 is not tagged twice (AFC-676)", async () => {
+  const { fake, tools } = harness();
+  const content = (id) => fake.messages.find((m) => m.id === id).content;
+  // Live shape (Zulip 638830748):  `[GB-DEPLOYER📁AFC → ECHO]` went out as `[GB-DEPLOYER] [GB-DEPLOYER📁AFC → ECHO]`.
+  const tight = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB📁AFC → ECHO] status" }), "zulip_post").id;
+  assert.equal(content(tight), "[GROK-WEB\u200a\u200a📁\u200aAFC → ECHO] status");
+  const nbsp = ok(await tools.call("zulip_post", { topic: "t", text: "👀 [GROK-WEB\u00a0📁OPS]\nlook", to: ["CODEX"] }), "zulip_post").id;
+  assert.equal(content(nbsp), "👀 [GROK-WEB\u200a\u200a📁\u200aOPS → CODEX] @**Codex**\nlook");
+  const reply = ok(await tools.call("zulip_reply", { message_id: tight, text: "[GROK-WEB📁OPS] reply" }), "zulip_reply").id;
+  assert.equal(content(reply), "[GROK-WEB\u200a\u200a📁\u200aOPS] reply");
+  ok(await tools.call("zulip_edit_message", { message_id: tight, text: "[GROK-WEB\u2002📁OPS] edited" }), "zulip_edit_message");
+  assert.equal(content(tight), "[GROK-WEB\u200a\u200a📁\u200aOPS] edited");
+  const session = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB📁OPS] correlated", session: "abcd-1234-9999" }), "zulip_post").id;
+  assert.equal(content(session), "[GROK-WEB·abcd1234\u200a\u200a📁\u200aOPS] correlated");
+  // Lookalike seats and foreign folder intros are still content, so the caller's own tag stays in front.
+  for (const text of ["[GROK-WEBX📁OPS] lookalike", "[GROK-WEB-2📁OPS] lookalike", "[MA📁OPS] quoted"]) {
+    const row = ok(await tools.call("zulip_post", { topic: "t", text }), "zulip_post").id;
+    assert.equal(content(row), `[GROK-WEB] ${text}`);
+  }
+});
+
+test("AFC-689: body @-mentions are not silenced or doubled after an own intro", async () => {
+  const { fake, tools } = harness();
+  const content = (id) => fake.messages.find((m) => m.id === id).content;
+  const one = ok(
+    await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB 📁AFC] @**Codex** ping" }),
+    "zulip_post",
+  ).id;
+  assert.equal(content(one), "[GROK-WEB\u200a\u200a📁\u200aAFC] @**Codex** ping");
+  const selfMention = ok(
+    await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB 📁AFC] @**Grok (Web)** status" }),
+    "zulip_post",
+  ).id;
+  assert.equal(content(selfMention), "[GROK-WEB\u200a\u200a📁\u200aAFC] @**Grok (Web)** status");
+  const several = ok(
+    await tools.call("zulip_post", {
+      topic: "t",
+      text: "[GROK-WEB 📁AFC] @**Codex** and @**Fixture User|12345**",
+    }),
+    "zulip_post",
+  ).id;
+  assert.equal(content(several), "[GROK-WEB\u200a\u200a📁\u200aAFC] @**Codex** and @**Fixture User|12345**");
+  const arrow = ok(
+    await tools.call("zulip_post", {
+      topic: "t",
+      text: "[GROK-WEB 📁AFC →CODEX] @**Codex** please",
+      to: ["CODEX"],
+    }),
+    "zulip_post",
+  ).id;
+  assert.equal(content(arrow), "[GROK-WEB\u200a\u200a📁\u200aAFC → CODEX] @**Codex** please");
+});
+
+test("AFC-689: `to` is deduped by who is mentioned, not by matching text", async () => {
+  const { fake, tools } = harness();
+  const post = async (text) => {
+    const id = ok(await tools.call("zulip_post", { topic: "t", text, to: ["CODEX"] }), "zulip_post").id;
+    return fake.messages.find((m) => m.id === id).content;
+  };
+  const loud = (body) => (body.match(/@\*\*Codex/giu) ?? []).length;
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] @**Codex|1234** please")), 1, "an id form is the same person");
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] @**codex** please")), 1, "case does not make a new person");
+  // In code or a quote Zulip does not notify, so the `to` mention is still needed.
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] see `@**Codex**` there")), 2);
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] look\n> @**Codex** said")), 2);
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] look\n```\n@**Codex**\n```")), 2);
+  assert.equal(loud(await post("[GROK-WEB 📁AFC] mail x@**Codex** there")), 2, "no mention without a boundary before the @");
+});
+
 test("own intros preserve recipient semantics on named post, reply and edit entrypoints", async () => {
   const { fake, tools } = harness();
   const id = ok(await tools.call("zulip_post", { topic: "t", text: "👀 [GROK-WEB: HH.1.M 📁AFC, OPS] status", to: ["CODEX"] }), "zulip_post").id;
-  assert.equal(fake.messages.find((m) => m.id === id).content, "👀 [GROK-WEB: HH.1.M 📁AFC, OPS →CODEX] @**Codex** status");
+  assert.equal(fake.messages.find((m) => m.id === id).content, "👀 [GROK-WEB:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX] @**Codex** status");
   const reply = ok(await tools.call("zulip_reply", { message_id: id, text: "[GROK-WEB 📁OPS →MA] reply", to: ["CODEX"] }), "zulip_reply").id;
-  assert.equal(fake.messages.find((m) => m.id === reply).content, "[GROK-WEB 📁OPS →MA,CODEX] @**Codex** reply");
+  assert.equal(fake.messages.find((m) => m.id === reply).content, "[GROK-WEB\u200a\u200a📁\u200aOPS → MA,\u200a\u200aCODEX] @**Codex** reply");
   ok(await tools.call("zulip_edit_message", { message_id: id, text: "[GROK-WEB 📁OPS →CODEX] edited @**Codex**", to: ["CODEX"] }), "zulip_edit_message");
-  assert.equal(fake.messages.find((m) => m.id === id).content, "[GROK-WEB 📁OPS →CODEX] @**Codex** edited @_**Codex**");
+  assert.equal(fake.messages.find((m) => m.id === id).content, "[GROK-WEB\u200a\u200a📁\u200aOPS → CODEX] edited @**Codex**");
   const session = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB: HH.1.M 📁OPS] correlated", session: "abcd-1234-9999" }), "zulip_post").id;
-  assert.equal(fake.messages.find((m) => m.id === session).content, "[GROK-WEB·abcd1234: HH.1.M 📁OPS] correlated");
+  assert.equal(fake.messages.find((m) => m.id === session).content, "[GROK-WEB:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aOPS] correlated");
   const stale = ok(await tools.call("zulip_post", { topic: "t", text: "[GROK-WEB·old12345 📁OPS] refreshed", session: "abcd-1234-9999" }), "zulip_post").id;
-  assert.equal(fake.messages.find((m) => m.id === stale).content, "[GROK-WEB·abcd1234 📁OPS] refreshed");
+  assert.equal(fake.messages.find((m) => m.id === stale).content, "[GROK-WEB·abcd1234\u200a\u200a📁\u200aOPS] refreshed");
   const foreign = ok(await tools.call("zulip_post", { topic: "t", text: "[MA 📁OPS] quoted", to: ["CODEX"] }), "zulip_post").id;
-  assert.equal(fake.messages.find((m) => m.id === foreign).content, "[GROK-WEB→CODEX] @**Codex** [MA 📁OPS] quoted");
+  assert.equal(fake.messages.find((m) => m.id === foreign).content, "[GROK-WEB → CODEX] @**Codex** [MA 📁OPS] quoted");
   for (const text of ["[GROK-WEB missing close", "[GROK-WEB\n] malformed", "[GROK-WEB-OTHER] not own"]) {
     const row = ok(await tools.call("zulip_post", { topic: "t", text }), "zulip_post").id;
     assert.equal(fake.messages.find((m) => m.id === row).content, `[GROK-WEB] ${text}`);
@@ -188,9 +257,9 @@ test("scheduled create/edit retain one own intro and foreign-seat attribution", 
   const { fake, tools, clock } = harness();
   const when = Math.floor(clock.now / 1000) + 3600;
   const id = ok(await tools.call("zulip_scheduled_create", { topic: "later", text: "[GROK-WEB 📁OPS] later", deliver_at: when }), "zulip_scheduled_create").id;
-  assert.equal(fake.scheduled.get(id).content, "[GROK-WEB 📁OPS] later");
+  assert.equal(fake.scheduled.get(id).content, "[GROK-WEB\u200a\u200a📁\u200aOPS] later");
   ok(await tools.call("zulip_scheduled_edit", { scheduled_message_id: id, text: "👀 [GROK-WEB: HH.1.M 📁OPS] changed" }), "zulip_scheduled_edit");
-  assert.equal(fake.scheduled.get(id).content, "👀 [GROK-WEB: HH.1.M 📁OPS] changed");
+  assert.equal(fake.scheduled.get(id).content, "👀 [GROK-WEB:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aOPS] changed");
   ok(await tools.call("zulip_scheduled_edit", { scheduled_message_id: id, text: "[MA 📁OPS] quoted" }), "zulip_scheduled_edit");
   assert.equal(fake.scheduled.get(id).content, "[GROK-WEB] [MA 📁OPS] quoted");
 });
@@ -204,7 +273,7 @@ test("get, edit, history and delete:  edits own messages only, deletes as Zulip 
   assert.match(fence(got.content[0].text)[0].body, /\[marker removed\]/);
   const mine = ok(await tools.call("zulip_post", { topic: "t", text: "one" }), "zulip_post").id;
   assert.deepEqual(ok(await tools.call("zulip_edit_message", { message_id: mine, text: "two @**Codex**" }), "zulip_edit_message"), { id: mine, edited: true });
-  assert.equal(fake.messages.find((m) => m.id === mine).content, "[GROK-WEB] two @_**Codex**");
+  assert.equal(fake.messages.find((m) => m.id === mine).content, "[GROK-WEB] two @**Codex**");
   // `to` tags a peer on an edit as on a post:  the eavesdropper wakes the seat the edit newly tags.
   ok(await tools.call("zulip_edit_message", { message_id: mine, text: "three", to: ["CODEX"] }), "zulip_edit_message");
   assert.match(fake.messages.find((m) => m.id === mine).content, /@\*\*Codex\*\*/);
@@ -350,7 +419,7 @@ test("scheduled messages:  tagged, idempotent, channel rule, edit and delete", a
   const { fake, tools, clock, codex, jay } = harness();
   const when = Math.floor(clock.now / 1000) + 3600;
   const made = ok(await tools.call("zulip_scheduled_create", { topic: "later", text: "ping @**Codex**", deliver_at: when }), "zulip_scheduled_create");
-  assert.equal(fake.scheduled.get(made.id).content, "[GROK-WEB] ping @_**Codex**");
+  assert.equal(fake.scheduled.get(made.id).content, "[GROK-WEB] ping @**Codex**");
   const again = ok(await tools.call("zulip_scheduled_create", { topic: "later", text: "ping @**Codex**", deliver_at: when }), "zulip_scheduled_create");
   assert.deepEqual([again.id, again.duplicate], [made.id, true]);
   //  Jay is in the scheduled direct message (AFC-469):  it goes out only when the owner takes

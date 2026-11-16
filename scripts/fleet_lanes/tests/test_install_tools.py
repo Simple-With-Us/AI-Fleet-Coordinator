@@ -35,6 +35,7 @@ from fleet_lanes import guard as G
 from fleet_lanes import install_tools as T
 from fleet_lanes import lane_guard_hook as H
 from fleet_lanes.tests import fixtures_guard as F
+from fleet_lanes.tests import hermetic
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2]
 REAL_PKG = SCRIPTS_DIR / "fleet_lanes"
@@ -267,7 +268,10 @@ def snapshot(root: Path) -> dict:
 
 def run_main(*argv: str) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    rc = T.main(list(argv), stdout=out, stderr=err)
+    # T.main reads os.environ for the fleet roots, and these tests pass --home for a fake home:  without this a root in the
+    # caller's environment (on a server, the live apps folder) would decide where the install goes (hermetic.py).
+    with hermetic.without_fleet_roots():
+        rc = T.main(list(argv), stdout=out, stderr=err)
     return rc, out.getvalue(), err.getvalue()
 
 
@@ -303,12 +307,17 @@ class World(unittest.TestCase):
         path_patch = mock.patch.dict(os.environ, {"PATH": path_without_muse()})
         path_patch.start()
         self.addCleanup(path_patch.stop)
+        hermetic.clear()  # the fleet roots, if any got back in;  path_patch.stop restores the caller's environment
         tmp = tempfile.TemporaryDirectory(prefix="lane-tools-test-")
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(os.path.realpath(tmp.name))
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.paths = T.make_paths(str(self.home))
+        # Several tests delete and rebuild these:  refuse before any of them can touch a folder outside the temp tree.
+        hermetic.assert_inside(
+            self.tmp, self.paths.home, self.paths.stable, self.paths.apps_dir, self.paths.lane_shim, self.paths.hook_shim
+        )
         self.source = self.make_source("src")
 
     # -- builders

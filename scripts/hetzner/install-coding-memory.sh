@@ -16,6 +16,7 @@ install -m 0700 "$scripts/fleet-secrets" "$dest/settings/fleet-secrets"
 for source in "$scripts"/fleet_secrets/*.py; do
   install -m 0600 "$source" "$dest/settings/fleet_secrets/$(basename "$source")"
 done
+install -m 0600 "$scripts/fleet_infisical.py" "$dest/settings/fleet_infisical.py"
 install -m 0700 "$scripts/fleet_secrets/linux-entrypoint.py" "$dest/settings/linux-entrypoint.py"
 python3 - "$config/environment" <<'PY'
 import os, sys, uuid

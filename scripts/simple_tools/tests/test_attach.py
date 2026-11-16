@@ -13,6 +13,7 @@ from unittest import mock
 from simple_tools import attach
 from simple_tools import live as L
 from simple_tools import zulip as Z
+from simple_tools.tests.harness import TWO_INSTANCE_PARTITION
 from simple_tools.tests.listener_harness import ListenerHarness, fake_watcher, mode_of
 
 PID = os.getpid()
@@ -37,8 +38,12 @@ class AttachHarness(ListenerHarness):
         self.addCleanup(patcher.stop)
 
     def hook_env(self, **overrides):
+        # The hooks model a Claude session served by the Mac listener, so they read the two-instance
+        # fixture:  the live partition gives CLAUDE to the server since the one-listener cutover
+        # (owner, Tue, Nov 10), and there a Mac hook writes no lease.
         env = {"HOME": str(self.home), "SIMPLE_TOOLS_STATE_DIR": self.root, "CLAUDE_CODE_ENTRYPOINT": "cli",
-               "CLAUDE_PID": str(PID), "SIMPLE_TOOLS_REWAKE_POLL": "0.05", "SIMPLE_TOOLS_REWAKE_COALESCE": "0.05"}
+               "CLAUDE_PID": str(PID), "SIMPLE_TOOLS_REWAKE_POLL": "0.05", "SIMPLE_TOOLS_REWAKE_COALESCE": "0.05",
+               "SIMPLE_TOOLS_PARTITION": str(TWO_INSTANCE_PARTITION)}
         env.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():
             if value is None:
@@ -231,6 +236,8 @@ class RewakeTests(AttachHarness):
         self.assertEqual(budget["streak"], {L.topic_key("simple-tools", "t"): 1})
 
     def test_no_live_budget_room_means_no_wake(self) -> None:
+        # No live limit has a default, so the seat writes the per-topic spacing that leaves no room.
+        self.write_config(rewake=True, live="per_topic_minutes = 5")
         L.write_json(self.seat_paths().budget(LEASE), {"turns": [{"ts": time.time(), "topic": L.topic_key("simple-tools", "t"),
                                                                  "owner": False}]})
         L.append_live(self.seat_paths(), LEASE, [message_item(1)])

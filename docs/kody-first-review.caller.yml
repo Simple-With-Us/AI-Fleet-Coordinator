@@ -14,10 +14,11 @@ on:
         type: boolean
         default: true
 
-# A called workflow can only narrow these, so the caller grants all three.
+# A called workflow can only narrow these. The reusable comments on PRs, which on a
+# PR resource requires pull-requests: write (issues: write alone 403s there).
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
   issues: write
 
 jobs:

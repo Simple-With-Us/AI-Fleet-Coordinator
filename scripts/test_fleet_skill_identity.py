@@ -632,10 +632,10 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertIn("| MM | `MiniMax` | `minimax/` |", text)
         self.assertNotRegex(text, r"(?m)^\| DSH \|")
         self.assertIn("DSH, DeepSeek Harness (2026-09-19)", text)
-        # A post header names MiniMax as MM.  The Nov 5 post-header rule
-        # replaced the bare `[MM]` example with `[MM: HH.1.M 📁AFC, OPS]`,
-        # so accept either header form but never the old MINIMAX tag.
-        self.assertRegex(text, r"`\[MM(?:\]|: )")
+        # A post header names MiniMax as MM.  The current lettered form uses
+        # three hair spaces after the colon; historical bare and ASCII forms
+        # remain valid identity evidence, but the retired MINIMAX tag does not.
+        self.assertRegex(text, r"`\[MM(?:\]|: |:\u200a{3}[A-Z]{2}\.\d+\.[MSC])")
         self.assertNotIn("[MINIMAX", text)
         self.assertNotIn("| **MiniMax (`MINIMAX`)** |", text)
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
@@ -1513,6 +1513,18 @@ class InstallerRepoOnlyTests(unittest.TestCase):
         self.assertIn("Home-dir installs: skipped (--repo-only)", out)
         self.assertNotIn("fx-scanned", out)
 
+    def test_home_only_writes_home_and_skips_repo(self) -> None:
+        out = self._run(["--home-only"])
+        self.assertFalse((self.repo / "skills").exists())
+        self.assertFalse((self.repo / "docs" / "fleet-skills" / "by-seat").exists())
+        self.assertNotIn("Repo-tracked platform copies:", out)
+        self.assertIn("Home-dir installs:", out)
+        self.assertTrue((self.home / ".fx" / "skills" / "session-start" / "SKILL.md").is_file())
+
+    def test_home_only_and_repo_only_are_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            self._run(["--repo-only", "--home-only"])
+
     def test_repo_only_copies_equal_a_fresh_render(self) -> None:
         self._run(["--repo-only"])
         for dest, seat in repo_platform_copies(str(self.repo)):
@@ -2007,7 +2019,6 @@ class PrivateInventoryTests(unittest.TestCase):
         "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
         "docs/protocols/coolify-fleet-cli-sync.md": "AFC-505: the protocol for the sync that reaches the box",
         "fleet-sentry-monitor/monitor.py": "AFC-505: a live monitor that defaults to the alias",
-        "scripts/simple_tools/muse_bridge_mac.py": "AFC-505: the live bridge that defaults to the alias",
         "scripts/fleet-cli-sync.py": "AFC-505: a live sync that names the receiver it ships to",
         "scripts/fleet_rag/doctor.py": "AFC-505: a live doctor that defaults to the alias",
         "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by alias and address",
@@ -2515,6 +2526,12 @@ class GuardedBlockSyntaxTests(unittest.TestCase):
             [],
             "a block with a `:?` guard does not parse:\n" + "\n".join(broken),
         )
+
+
+def load_tests(loader, standard_tests, _pattern):
+    """Run the isolated shared registry recipe fixtures in this existing CI suite."""
+    standard_tests.addTests(loader.loadTestsFromName("test_service_token_recipe"))
+    return standard_tests
 
 
 if __name__ == "__main__":

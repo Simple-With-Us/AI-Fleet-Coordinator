@@ -31,6 +31,10 @@ from simple_tools.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
 SESSION = "11112222-3333-4444-5555-666677778888"
 TAG = "11112222"
+# The tests exercise both listener instances.  The live partition gives no agent seat to "mac" since
+# the one-listener cutover (owner, Tue, Nov 10), so a test environment reads the pre-cutover
+# partition by default;  a test of the live file names it (test_server.PARTITION).
+TWO_INSTANCE_PARTITION = Path(__file__).resolve().parent / "fixtures" / "two-instance-partition.toml"
 
 
 @dataclass
@@ -148,6 +152,7 @@ class Harness(unittest.TestCase):
             # the secret scan and idempotency, not the rule, so they run with it off.  The rule's
             # own tests are simple_tools/tests/test_dm_rule.py.
             "SIMPLE_TOOLS_DM_RULE": "off",
+            "SIMPLE_TOOLS_PARTITION": str(TWO_INSTANCE_PARTITION),
         }
         base.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():

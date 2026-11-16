@@ -17,10 +17,10 @@ enum MusterDestination: String, CaseIterable, Identifiable {
     case macAgents
     case complianceGrid
     case driftHistory
-    case wakeAndListener
     case seatDetail
     // The server
     case serverStatus
+    case `operator`
     case serverResourceLimits
     case serverUpdates
     // Across the fleet
@@ -43,9 +43,9 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .macAgents: return "Background Agents"
         case .complianceGrid: return "Compliance Grid"
         case .driftHistory: return "Drift History"
-        case .wakeAndListener: return "Wake & Listener"
         case .seatDetail: return "Seat Setup"
         case .serverStatus: return "Server Status"
+        case .operator: return "Operator"
         case .serverResourceLimits: return "Resource Limits"
         case .serverUpdates: return "Server Updates"
         case .appsAndWork: return "Apps & Work"
@@ -65,9 +65,9 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         case .macAgents: return "gearshape.2"
         case .complianceGrid: return "square.grid.3x3"
         case .driftHistory: return "exclamationmark.triangle"
-        case .wakeAndListener: return "bell.badge"
         case .seatDetail: return "checklist"
         case .serverStatus: return "cpu"
+        case .operator: return "antenna.radiowaves.left.and.right"
         case .serverResourceLimits: return "dial.low"
         case .serverUpdates: return "arrow.down.circle"
         case .appsAndWork: return "list.bullet.rectangle"
@@ -91,9 +91,9 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         switch self {
         case .overview:
             return nil
-        case .services, .macAgents, .complianceGrid, .driftHistory, .wakeAndListener, .seatDetail:
+        case .services, .macAgents, .complianceGrid, .driftHistory, .seatDetail:
             return .machine(.mac)
-        case .serverStatus, .serverResourceLimits, .serverUpdates:
+        case .serverStatus, .operator, .serverResourceLimits, .serverUpdates:
             return .machine(.server)
         case .appsAndWork, .seats, .controls, .hosts, .appProcesses, .virtualMachines, .actionHistory:
             return .acrossFleet
@@ -113,12 +113,16 @@ enum MusterDestination: String, CaseIterable, Identifiable {
         allCases.filter { $0.place == place }
     }
 
-    /// The saved spellings of panels that were split, and where each one went.
+    /// The saved spellings of panels that were split or replaced, and where each one went.
     ///
     /// Operations held the Mac's agents, the server's updates and the action log on one
     /// page under the Server heading.  Its saved spelling opens Server Updates, the part
-    /// that was the server's.
-    static let retiredSpellings: [String: MusterDestination] = ["operations": .serverUpdates]
+    /// that was the server's.  Wake & Listener read the Mac's retired listener;  the Operator
+    /// panel replaced it, so its saved spelling opens the Operator.
+    static let retiredSpellings: [String: MusterDestination] = [
+        "operations": .serverUpdates,
+        "wakeAndListener": .operator,
+    ]
 
     /// The destination a saved spelling names, or the overview when it names nothing.
     static func restored(from saved: String?) -> MusterDestination {
@@ -135,6 +139,85 @@ extension FleetPlace {
         case .machine(let host): return host.heading
         case .acrossFleet: return "Across The Fleet"
         }
+    }
+}
+
+// MARK: - Quick Open and shortcuts
+
+extension MusterDestination {
+    /// The words besides the title that find the panel in Quick Open, lowercase.
+    ///
+    /// There is no default:  a new panel cannot compile until it says how it is found.
+    var keywords: [String] {
+        switch self {
+        case .overview: return ["home", "summary", "cards", "start"]
+        case .services: return ["pm2", "launchagent", "launchctl", "restart", "stop", "start", "botfleet"]
+        case .macAgents: return ["agents", "hog hunter", "launchd", "background", "jobs"]
+        case .complianceGrid: return ["grid", "rules", "pass", "red", "cells", "check", "verdict"]
+        case .driftHistory: return ["drift", "history", "red", "alerts", "changes"]
+        case .seatDetail: return ["seat", "setup", "engine", "files", "platform"]
+        case .serverStatus: return ["server", "hetzner", "report", "units", "systemd", "health"]
+        case .operator: return ["operator", "eavesdropper", "wake", "wakes", "router", "letters", "chats", "registry", "zulip", "listener", "mentions"]
+        case .serverResourceLimits: return ["server", "memory", "cpu", "limits", "policy", "resources"]
+        case .serverUpdates: return ["server", "update", "allowlist", "upgrade", "apt"]
+        case .appsAndWork: return ["apps", "work", "lanes", "pull requests", "prs", "claims", "linear"]
+        case .seats: return ["seats", "sessions", "presence", "agents", "last post"]
+        case .controls: return ["knobs", "secrets", "infisical", "settings", "values"]
+        case .hosts: return ["tools", "worker", "workers", "doctor", "versions", "hosts"]
+        case .appProcesses: return ["processes", "scan", "doctor", "apps"]
+        case .virtualMachines: return ["vm", "vms", "machines", "parallels"]
+        case .actionHistory: return ["audit", "log", "actions", "ops", "history", "touch id"]
+        }
+    }
+
+    /// The digit that opens the panel with Command, or nil.  Nine keys cover the first nine
+    /// panels in the order the sidebar reads them;  the rest are reached by Quick Open.
+    /// Every digit is used at most once.
+    var shortcutDigit: Int? {
+        switch self {
+        case .overview: return 1
+        case .services: return 2
+        case .macAgents: return 3
+        case .complianceGrid: return 4
+        case .driftHistory: return 5
+        case .seatDetail: return 6
+        case .serverStatus: return 7
+        case .operator: return 8
+        case .serverResourceLimits: return 9
+        case .serverUpdates, .appsAndWork, .seats, .controls, .hosts, .appProcesses,
+             .virtualMachines, .actionHistory:
+            return nil
+        }
+    }
+
+    /// Writes this panel as the saved place the window follows, unless a sheet is up over the
+    /// window:  a sheet owns the window until it closes, so the panel beneath it is left alone.
+    /// Returns whether it wrote.
+    @discardableResult
+    func saveAsPlace(underSheet: Bool, in defaults: UserDefaults = .standard) -> Bool {
+        guard !underSheet else { return false }
+        defaults.set(rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        return true
+    }
+}
+
+/// Quick Open's search:  pure, so every panel's reachability is a test.
+enum QuickOpenSearch {
+    /// The panels that match the query, best first.  An empty query lists every panel in the
+    /// sidebar's order.  Every word of the query must be found in the title or a keyword,
+    /// ignoring case.  A title that starts with the first word comes first, then a title
+    /// that holds it, then a keyword match.
+    static func results(_ query: String) -> [MusterDestination] {
+        let words = query.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard let first = words.first else { return MusterDestination.allCases }
+        let matched = MusterDestination.allCases.enumerated().compactMap { index, destination -> (Int, Int, MusterDestination)? in
+            let title = destination.title.lowercased()
+            let haystack = ([title] + destination.keywords).joined(separator: " ")
+            guard words.allSatisfy({ haystack.contains($0) }) else { return nil }
+            let rank = title.hasPrefix(first) ? 0 : (title.contains(first) ? 1 : 2)
+            return (rank, index, destination)
+        }
+        return matched.sorted { ($0.0, $0.1) < ($1.0, $1.1) }.map { $0.2 }
     }
 }
 
@@ -170,12 +253,12 @@ extension MusterDestination {
                 ?? "Seat setup has not been checked on the Mac yet."
         case .driftHistory:
             return "Kept on the Mac, from the Mac's own checks."
-        case .wakeAndListener:
-            return "The wake settings file on the Mac, beside what the listener reports."
         case .seatDetail:
             return "One seat's setup on the Mac, for any platform:  the engine's answers and the files behind them."
         case .serverStatus:
             return Self.serverSourceLine(inputs.serverStatus)
+        case .operator:
+            return "Read from the Operator on the server:  its eavesdropper, its letter registry and its wake record."
         case .serverResourceLimits:
             return "Read from the server when this panel opens."
         case .serverUpdates:

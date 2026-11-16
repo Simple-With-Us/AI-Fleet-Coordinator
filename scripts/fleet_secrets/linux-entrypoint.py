@@ -10,13 +10,13 @@ from pathlib import Path
 
 def _load_core():
     here = Path(__file__).resolve().parent
-    for path in (here / "core.py", here / "fleet_secrets/core.py"):
+    for path in (here / "fleet_infisical.py", here.parent / "fleet_infisical.py"):
         if path.is_file():
             spec = importlib.util.spec_from_file_location("fleet_secrets_entry_core", path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             return module
-    raise RuntimeError("fleet-secrets core is unavailable")
+    raise RuntimeError("shared Infisical client is unavailable")
 
 
 core = _load_core()
@@ -50,7 +50,10 @@ def authenticated_env():
             except core.SecretsError:
                 raise EntryError(f"invalid scoped reader binding: {name}") from None
     if not any((env.get(name) or "").strip() for name in token_names) and not sys.stdin.isatty():
-        raise EntryError("a scoped service token is required for noninteractive commands")
+        accepted = ", ".join(token_names)
+        raise EntryError(
+            "a scoped service token is required for noninteractive commands: set " + accepted
+        )
     return env
 
 

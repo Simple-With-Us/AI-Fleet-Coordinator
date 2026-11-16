@@ -1,9 +1,10 @@
 """The DM rule and the Side-Chats route (owner decision, Wed, Oct 22 2026, hard cutover).
 
 Jay's decision (d):  bot-to-bot conversation happens in Side-Chats topics, never in DMs, and the
-only new DMs Operator may open are one clarifying question on a wake whose addressee it cannot
-resolve and, since Oct 29 2026, its one-to-one status message to the sender.  A seat may never
-open a DM on its own, on either MCP transport or the CLI.
+only new DM Operator may open is, since Oct 29 2026, its one-to-one status message to the sender.
+(The decision also let Operator open one clarifying question on a wake whose addressee it could not
+resolve;  Jay withdrew that on Nov 10, 2026:  the Operator asks nobody.)  A seat may never open a
+DM on its own, on either MCP transport or the CLI.
 
 The rule, in one place so all three surfaces enforce it the same way:
 
@@ -11,9 +12,6 @@ The rule, in one place so all three surfaces enforce it the same way:
   message that names where the message belongs instead, and audited.
 * **Allowed** — a reply inside a DM Operator already opened.  The conversation is Operator's; a seat
   answering in it is not opening anything.
-* **Allowed** — Operator opens a DM, and only to ask the sender one clarifying question when the
-  wake's addressee is ambiguous, at most one per message (`clarifying=True` below).  See clarify.py
-  for the queue and the 30-minute timeout.
 * **Allowed** — Operator opens a one-to-one DM to the sender to say what became of a wake (woken,
   alerted, queued, held, dropped or paused), owner ruling Thu, Oct 29 2026, about 3:35 AM (`status=True`
   below).  The text is deterministic and carries no project, topic or message content, so the
@@ -64,8 +62,7 @@ GUIDANCE_SEAT = (
     "the participants, never a direct message." % (SIDE_CHATS_NAME, SIDE_CHATS_STREAM_ID)
 )
 GUIDANCE_PEOPLE = (
-    "Direct messages are Operator's to open.  Put this in a #%s topic (stream %d) instead, or let "
-    "Operator ask one clarifying question if a wake could not be routed."
+    "Direct messages are Operator's to open.  Put this in a #%s topic (stream %d) instead."
     % (SIDE_CHATS_NAME, SIDE_CHATS_STREAM_ID)
 )
 
@@ -104,23 +101,12 @@ def rule_enabled(env: Mapping[str, str] | None = None) -> bool:
     return raw.strip().casefold() not in OFF
 
 
-def clarifying_exempt(identity: str, *, clarifying: bool) -> bool:
-    """True when the rule permits Operator's own clarifying question.
-
-    The one message the rule allows without knowing who the Operator is:  the Operator is the
-    sender, so nothing has to be proven.  A reply inside a conversation Operator opened still needs
-    the id, because only the id proves who opened it.
-
-    The surfaces ask this question before they resolve the Operator's id, so a host whose Operator
-    id cannot be read can still send the one question the rule permits (Kody review on AFC-473)."""
-    return identity == OPERATOR_SEAT and clarifying
-
-
 def status_exempt(identity: str, *, status: bool) -> bool:
     """True when the rule permits Operator's one-to-one status message to the sender.
 
-    Like the clarifying question it needs no Operator id:  the Operator is the sender.  Nothing else
-    qualifies, and a seat that asks for `status` is still a seat opening a DM."""
+    It needs no Operator id:  the Operator is the sender, so nothing has to be proven.  A reply
+    inside a conversation Operator opened still needs the id, because only the id proves who opened
+    it.  Nothing else qualifies, and a seat that asks for `status` is still a seat opening a DM."""
     return identity == OPERATOR_SEAT and status
 
 
@@ -160,7 +146,6 @@ def check_new_dm(
     identity: str,
     recipients: Sequence[Mapping[str, Any]],
     operator_opened: bool | None = False,
-    clarifying: bool = False,
     owner_user_id: int | None = None,
     status: bool = False,
 ) -> None:
@@ -170,7 +155,7 @@ def check_new_dm(
     provably Operator's, False when it is provably not, and None when a conversation exists and
     the Operator's id is not configured, so nobody can tell.
 
-    **Only Operator's own clarifying question is id-free.**  A reply inside a conversation Operator
+    **Only Operator's own status message is id-free.**  A reply inside a conversation Operator
     opened needs the id too:  `operator_opened_dm` has to resolve the id to prove the conversation
     is Operator's, and without it `missing_operator_user_id` applies.  A maintainer must not read
     the id as optional here, because deleting the fail-closed branch would reopen the direct
@@ -181,16 +166,15 @@ def check_new_dm(
     if operator_opened is True:
         return
     if identity == OPERATOR_SEAT:
-        # Operator may open a DM for exactly two reasons, and the caller says which.
-        if clarifying_exempt(identity, clarifying=clarifying) or status_exempt(
-            identity, status=status
-        ):
+        # Operator may open a DM for exactly one reason, its status message, and the caller says
+        # so.  It asks nobody a clarifying question (owner ruling, Nov 10, 2026).
+        if status_exempt(identity, status=status):
             return
         raise DmRefused(
-            "%s may open a direct message only to ask the sender one clarifying question when a wake "
-            "could not be routed.  Bot-to-bot work goes to a #%s topic (stream %d)."
+            "%s may open a direct message only for its status message to the sender.  Bot-to-bot "
+            "work goes to a #%s topic (stream %d)."
             % (OPERATOR_SEAT, SIDE_CHATS_NAME, SIDE_CHATS_STREAM_ID),
-            reason="operator_not_clarifying",
+            reason="operator_not_status",
         )
     kind = classify(recipients, owner_user_id=owner_user_id)
     if operator_opened is None and kind == "seat":
@@ -219,14 +203,16 @@ def check_new_dm(
 def needs_clarification(addressees: Sequence[str]) -> bool:
     """True when a wake's addressee cannot be resolved to exactly one seat.
 
-    One candidate routes cleanly and Operator says nothing.  Zero or several is ambiguous, and only
-    then may Operator open one clarifying DM to the sender (one per message, never more)."""
+    One candidate routes cleanly.  Zero or several is ambiguous.  Either way the Operator asks
+    nobody (owner ruling, Nov 10, 2026):  this helper belongs to the unwired clarify.py queue, and
+    only its tests call it."""
     seats = {(a or "").strip().upper() for a in addressees if (a or "").strip()}
     return len(seats) != 1
 
 
 def clarifying_question(addressees: Sequence[str]) -> str:
-    """The one question Operator asks:  which seat the wake is for.  Nothing else."""
+    """The question the unwired clarify.py queue was built to carry:  which seat the wake is for.
+    The Operator asks nobody (owner ruling, Nov 10, 2026), and only tests call this."""
     return (
         "Operator could not tell which seat this is for (candidates: %s).  Reply with the seat tag, or "
         "nothing happens and the wake is dropped when the timeout passes.  One question per message."
@@ -319,7 +305,7 @@ def operator_opened_dm(
     **None means unknown, not no.**  The Operator's id is the only thing that proves Operator opened
     the conversation, so without it the runtime does not guess and does not decide here either:  the
     id is a deployment setting, and the rule's own exemptions (a reply inside a conversation Operator
-    opened, Operator's one clarifying question) have to run before a missing variable becomes the
+    opened, Operator's status message) have to run before a missing variable becomes the
     answer.  `check_new_dm` raises `MissingOperatorId` once those exemptions have passed."""
     wanted = {int(p["user_id"]) for p in people if isinstance(p.get("user_id"), int)}
     if not wanted:
@@ -347,7 +333,7 @@ def operator_opened_dm(
     if operator_id is None:
         # The Operator's id is not configured, so no conversation is provably Operator-opened and
         # the answer would be a guess.  Report "unknown" instead of deciding here:  a permitted DM
-        # (a reply inside a conversation Operator opened, or Operator's own clarifying question)
+        # (a reply inside a conversation Operator opened, or Operator's own status message)
         # does not need the id, so the exemptions run first and only then does the missing
         # deployment setting become the answer (Kody review on AFC-473).
         return None

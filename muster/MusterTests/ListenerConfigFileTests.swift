@@ -398,8 +398,12 @@ final class ListenerConfigFileTests: XCTestCase {
         XCTAssertNil(WakeSettingKey.usdPerDay.value(from: "-0.5"))
         XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "nan"))
         XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "inf"))
-        // Zero is a real cap.
+        // Zero is read as a number.  For a wake cap it is Paused and allowed;  the draft refuses it
+        // only for the live caps where it would stop every wake.
         XCTAssertEqual(WakeSettingKey.wakesPerHour.value(from: "0"), .number(0))
+        XCTAssertNil(WakeSettingKey.wakesPerHour.fieldProblem(.number(0)))
+        XCTAssertNotNil(WakeSettingKey.livePerHour.fieldProblem(.number(0)))
+        XCTAssertNil(WakeSettingKey.liveLoopTurns.fieldProblem(.number(0)))
     }
 
     /// Two numbers with the same value are the same number,  whatever they are written as.
@@ -413,9 +417,9 @@ final class ListenerConfigFileTests: XCTestCase {
     /// A value the panel holds is read into the value the file holds.
     func test_a_value_from_the_panel_is_read_by_its_kind() {
         XCTAssertEqual(WakeSettingKey.wakesPerHour.value(from: " 6 "), .number(6))
-        XCTAssertEqual(WakeSettingKey.fallbackUncontained.value(from: "true"), .bool(true))
-        XCTAssertEqual(WakeSettingKey.wakeType.value(from: "muse"), .text("muse"))
+        XCTAssertEqual(WakeSettingKey.routineTimeout.value(from: "20"), .number(20))
+        XCTAssertEqual(WakeSettingKey.routineURLEnv.value(from: "MM_ROUTINE_URL"), .text("MM_ROUTINE_URL"))
         XCTAssertNil(WakeSettingKey.wakesPerHour.value(from: "six"))
-        XCTAssertNil(WakeSettingKey.wakeType.value(from: ""))
+        XCTAssertNil(WakeSettingKey.routineKeyEnv.value(from: ""))
     }
 }

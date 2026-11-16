@@ -2,7 +2,7 @@
 Mac facts.
 
     {"schema": 1, "tool": "open-loops", "version": "1.0.0",
-     "facts_id": "ol-20261011-0700-<host>",   "built_at": "2026-10-11T12:00:00Z",  "built_at_local": "Sun, Oct 11, 7:00am",
+     "facts_id": "ol-20261011-0700-<host>",   "built_at": "2026-10-11T12:00:00Z",  "built_at_local": "Sun, Oct 11, 7:00 AM",
      "host": "...", "no_mac": false,
      "sources": {"github": {"status": "ok", "reason": null}, "lanes": {...}, "mac_facts": {...}, "zulip": {...}, ...},
      "missing": [{"source": "autopush", "reason": "fleet-autopush is not installed"}],

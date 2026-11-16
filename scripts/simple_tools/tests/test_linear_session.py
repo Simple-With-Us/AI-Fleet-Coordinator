@@ -11,7 +11,7 @@ from simple_tools.tests.mcp_harness import (
 )  # the harness's CLAUDE_CODE_SESSION_ID
 from simple_tools.tests.mcp_harness import seat_bearer_file
 from simple_tools.tests.test_mcp_extras import FakePrograms
-from simple_tools.tests.test_mcp_identity import ENABLED, PERSONA
+from simple_tools.tests.test_mcp_identity import ENABLED, BOT
 
 
 class ChildEnvTests(unittest.TestCase):
@@ -119,9 +119,9 @@ class LinearSessionToolTests(FakePrograms):
                 "the server's session reached another identity",
             )
 
-    @unittest.skipUnless(PERSONA in ENABLED, "the persona is not enabled in this build")
+    @unittest.skipUnless(BOT in ENABLED, "the bot is not enabled in this build")
     def test_a_single_thread_identity_needs_none(self):
-        session = self.session(self.env(AGENT_SEAT=PERSONA, CLAUDE_CODE_SESSION_ID=None))
+        session = self.session(self.env(AGENT_SEAT=BOT, CLAUDE_CODE_SESSION_ID=None))
         for name, args in self.WRITES:
             self.assertNotIn("isError", session.call(name, args), name)
         for call in self.calls(self.board_out):

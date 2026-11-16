@@ -1107,6 +1107,29 @@ class DiscoveryTests(GitCase):
             self.assertIn(key, co)
         self.assertIn("by_layout_status", rep["summary"])
 
+    def test_zc_tool_inference_uses_current_registry_for_new_and_legacy_lanes(self) -> None:
+        registry_path = pathlib.Path(__file__).resolve().parents[3] / "fleet-apps.json"
+        self.registry = L.load_registry(registry_path, include_extras=False, env={})
+        roots = L.make_roots(self.home, self.env, registry=self.registry, case_insensitive=False)
+        lanes = []
+        for token in ("zc", "zcode"):
+            branch = f"{token}/tool-inference"
+            path = self.home / "apps" / "lanes" / "DealDex" / f"{token}-tool-inference"
+            self.add_worktree(self.parent, path, branch)
+            lanes.append(path)
+            lane_seat = L.explain_lane_name(path, self.registry, roots).seat
+            branch_seat = L.seat_from_branch(branch, self.registry)
+            with self.subTest(token=token):
+                self.assertEqual((lane_seat, branch_seat), ("zc", "zc"))
+                self.assertEqual(doctor.infer_tool(str(path), roots, branch, lane_seat, branch_seat),
+                                 ("zcode", "lane seat token:zc"))
+                self.assertEqual(doctor.infer_tool(str(self.home / "elsewhere"), roots, branch, None, branch_seat),
+                                 ("zcode", "branch prefix:zc"))
+        report = self.report()
+        for path in lanes:
+            with self.subTest(path=path.name):
+                self.assertEqual(self.one(report, path)["creating_tool"], "zcode")
+
     def test_creating_tool_inference(self) -> None:
         roots = L.make_roots(self.home, self.env, registry=self.registry, case_insensitive=False)
         home = self.home

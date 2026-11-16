@@ -194,7 +194,8 @@ def _build() -> _Parser:
         "--allow-dismisser",
         action="append",
         metavar="LOGIN",
-        help=f"an account allowed to dismiss kody-ai reviews (default {', '.join(A.DEFAULT_ALLOWED_DISMISSERS)})",
+        help=f"an account allowed to dismiss kody-ai reviews (default {', '.join(A.DEFAULT_ALLOWED_DISMISSERS)});  "
+        "the seats' own GitHub Apps from git-relay/deploy/seat-policy.json are allowed as well",
     )
     sp = sub.add_parser(
         "lanes", help="your lanes: runs ~/apps/lane prune with the options after it"
@@ -532,8 +533,8 @@ def main(
 
 
 def _lane_passthrough(argv: Sequence[str]):
-    lane = os.path.expanduser("~/apps/lane")
-    if not os.path.exists(lane):
+    lane = R.resolve_lane_tool()
+    if lane is None:
         return (
             69,
             "pr-sweep: ~/apps/lane is not installed (python3 -m fleet_lanes.install_tools apply tools)",

@@ -1,18 +1,41 @@
 import { assertPublicInputs } from "./linear-public-inputs.js";
 import { parse, Kind } from 'graphql';
-import { ToolError } from './contract.js';
+import { ToolError, scanSecret } from './contract.js';
 import { apiQuery, apiMutation } from './linear-api.js';
+import { linearClean, linearFieldErrors } from './linear.js';
 import { LINEAR_NAMED_BY_NAME } from './linear-named-specs.js';
+import {
+  COMPACT_DEFAULT_LIMIT,
+  LINEAR_LIST_SEARCH_PREFIX,
+  splitFullArg,
+} from './list-presentation.js';
+
+function selectionDocument(value) {
+  return parse(`fragment NamedSelection on NamedResource { ${value} }`, { maxTokens: 4000 });
+}
+
+function acceptSelection(document) {
+  return document.definitions.length === 1 && document.definitions[0].kind === Kind.FRAGMENT_DEFINITION && document.definitions[0].name.value === 'NamedSelection';
+}
 
 function selectedFields(value) {
   // A field selection cannot escape its wrapper and append operations/roots.
-  let document;
-  try { document = parse(`fragment NamedSelection on NamedResource { ${value} }`, { maxTokens: 4000 }); }
-  catch { throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.'); }
-  if (document.definitions.length !== 1 || document.definitions[0].kind !== Kind.FRAGMENT_DEFINITION || document.definitions[0].name.value !== 'NamedSelection') {
-    throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.');
+  // One pair of wrapping braces is the selection set itself.
+  const source = String(value).trim();
+  let chosen = source;
+  if (source.startsWith('{') && source.endsWith('}')) {
+    const inner = source.slice(1, -1).trim();
+    if (inner) {
+      try {
+        if (acceptSelection(selectionDocument(inner))) chosen = inner;
+      } catch { /* the caller's text is checked below */ }
+    }
   }
-  return value;
+  let document;
+  try { document = selectionDocument(chosen); }
+  catch { throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.'); }
+  if (!acceptSelection(document)) throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.');
+  return chosen;
 }
 
 export function buildNamedOperation(name, args) {
@@ -44,14 +67,67 @@ export function buildNamedOperation(name, args) {
 
 // The response budget applied when the caller omits max_chars, per tool.
 // Only document reads differ:  one whole document routinely passes the
-// shared 24,000 default (the 26.7K-char deficiency log did), and 64,000 is
-// the existing ceiling for every Linear read.
-export const NAMED_DEFAULT_MAX_CHARS = Object.freeze({ linear_get_document: 64000 });
+// shared 24,000 default (the 26.7K-char deficiency log did), and the
+// document ceiling is 1,000,000 — raised from 64,000 on 2026-11-08, when
+// 64,000 was both the default and the hard maximum, so a larger document
+// could not be read in full at any setting.
+export const NAMED_DEFAULT_MAX_CHARS = Object.freeze({ linear_get_document: 1000000 });
+
+// Slice a document read's content before the response budgets see it, so a
+// document past the 1,000,000 ceiling still reads in full across calls:
+// the caller walks content_offset by the returned slice length until it
+// reaches content_total.  The offsets and total count the cleaned text.
+// Only the linearCall result is rewritten;  every
+// other tools method binds through to the real object unchanged.
+function sliceDocumentContent(tools, offset, length) {
+  return new Proxy(tools, {
+    get(target, prop) {
+      if (prop === "linearCall") {
+        return async (fn, opts) => {
+          const data = await target.linearCall(fn, opts);
+          const doc = data?.document;
+          if (doc && typeof doc.content === "string") {
+            // Clean the whole document before slicing, the same way the
+            // response pass cleans an unsliced read:  a secret that straddles
+            // a slice boundary would otherwise pass the scan in both halves,
+            // and the offsets would drift once a slice was rewritten.
+            const scrubbed = target.scrub(doc.content);
+            const full = scanSecret(scrubbed, target.known) ? "[redacted secret]" : linearClean(scrubbed)[0];
+            const total = full.length;
+            const slice = length === undefined ? full.slice(offset) : full.slice(offset, offset + length);
+            const next = { ...data, document: { ...doc, content: slice, content_total: total, content_offset: offset } };
+            const partial = data?.[linearFieldErrors];
+            if (partial) Object.defineProperty(next, linearFieldErrors, { value: partial, enumerable: false });
+            return next;
+          }
+          return data;
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 export function callNamedLinear(tools, name, args, audit) {
-  const { entry, document, variables } = buildNamedOperation(name, args);
-  const shared = { variables, max_chars: args.max_chars ?? NAMED_DEFAULT_MAX_CHARS[name] };
-  return entry.write
-    ? apiMutation(tools, { ...shared, mutation: document, idempotency_key: args.idempotency_key, session: args.session }, audit)
-    : apiQuery(tools, { ...shared, query: document });
+  const { args: workArgs, full } = splitFullArg(args);
+  if (!full && workArgs.first === undefined && name.startsWith(LINEAR_LIST_SEARCH_PREFIX)) {
+    workArgs.first = COMPACT_DEFAULT_LIMIT;
+  }
+  const { entry, document, variables } = buildNamedOperation(name, workArgs);
+  const shared = { variables, max_chars: workArgs.max_chars ?? NAMED_DEFAULT_MAX_CHARS[name], full };
+  if (entry.write) {
+    return apiMutation(tools, { ...shared, mutation: document, idempotency_key: args.idempotency_key, session: args.session }, audit);
+  }
+  if (name === "linear_get_document" && (workArgs.content_offset !== undefined || workArgs.content_length !== undefined)) {
+    const offset = workArgs.content_offset ?? 0;
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new ToolError("invalid_argument", "content_offset must be a non-negative integer.");
+    }
+    if (workArgs.content_length !== undefined && (!Number.isInteger(workArgs.content_length) || workArgs.content_length < 1 || workArgs.content_length > 1000000)) {
+      throw new ToolError("invalid_argument", "content_length must be an integer between 1 and 1,000,000.");
+    }
+    return apiQuery(sliceDocumentContent(tools, offset, workArgs.content_length), { ...shared, query: document, full: true }, { compactName: name });
+  }
+  return apiQuery(tools, { ...shared, query: document }, { compactName: name });
 }

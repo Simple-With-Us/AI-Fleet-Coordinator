@@ -22,6 +22,10 @@ struct SeatActivityView: View {
     @ObservedObject private var serverStatus = ServerEavesdropperStatusStore.shared
     /// The seats whose session list is open.
     @State private var expanded: Set<String> = []
+    @State private var searchText: String = ""
+    @State private var filter: SeatActivityFilter = .all
+    @State private var grouping: SeatActivityGrouping = .byHolder
+    @State private var collapsedGroups: Set<String> = []
 
     /// How often the panel reads again on its own,  while the app is in front.
     ///
@@ -65,14 +69,37 @@ struct SeatActivityView: View {
                     }
                     if model.rosterProblem == nil {
                         sources(model)
+                        filterToolbar(model)
                         // One moment for the whole drawing, so the server heading and every server
                         // row judge whether the answer is current at the same instant.
                         let now = Date()
-                        ForEach(model.groups) { group in
-                            groupView(group, model: model, now: now)
+                        if grouping == .byHolder {
+                            let holderGroups = model.filteredGroups(filter: filter, search: searchText)
+                            if holderGroups.isEmpty && !model.rows.isEmpty {
+                                emptyFilterView
+                            } else {
+                                ForEach(holderGroups) { group in
+                                    groupView(group, model: model, now: now)
+                                }
+                            }
+                        } else {
+                            let sections = model.familySections(filter: filter, search: searchText)
+                            if sections.isEmpty && !model.rows.isEmpty {
+                                emptyFilterView
+                            } else {
+                                ForEach(sections) { section in
+                                    familySectionView(section, model: model, now: now)
+                                }
+                            }
                         }
-                        if model.groups.allSatisfy({ $0.kind != .server }), let note = model.otherServerSeatsNote {
-                            groupHeading(.server)
+                        let hasFamilyServerGroup = grouping == .byFamily
+                            && model.familySections(filter: filter, search: searchText)
+                                .contains { $0.groups.contains { $0.kind == .server } }
+                        if (grouping == .byFamily || model.groups.allSatisfy({ $0.kind != .server })),
+                           let note = model.otherServerSeatsNote {
+                            if !hasFamilyServerGroup {
+                                groupHeading(.server)
+                            }
                             Text(SeatActivityText.display(note))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -263,7 +290,65 @@ struct SeatActivityView: View {
         .font(.caption)
     }
 
-    // MARK: The groups
+    // MARK: Filter & Groups
+
+    private func filterToolbar(_ model: SeatActivityModel) -> some View {
+        let matchingRows = model.rows.filter { $0.matches(filter: filter, search: searchText) }
+        let expandableSeats = matchingRows.filter { !$0.sessions.isEmpty }.map(\.seat)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                MusterSearchField(prompt: "Filter seat, bot, platform, channel, or session\u{2026}", text: $searchText)
+                Picker("Filter", selection: $filter) {
+                    ForEach(SeatActivityFilter.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+            HStack(spacing: 8) {
+                Picker("Group", selection: $grouping) {
+                    ForEach(SeatActivityGrouping.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                Text("Showing \(matchingRows.count) of \(model.rows.count) seats")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !expandableSeats.isEmpty {
+                    let allSessionsOpen = expandableSeats.allSatisfy { expanded.contains($0) }
+                    Button(allSessionsOpen ? "Collapse Sessions" : "Expand Sessions") {
+                        if allSessionsOpen {
+                            expanded.subtract(expandableSeats)
+                        } else {
+                            expanded.formUnion(expandableSeats)
+                        }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                }
+            }
+        }
+    }
+
+    private var emptyFilterView: some View {
+        HStack(spacing: 8) {
+            Text("No seats match the current filter.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("Reset Filters") {
+                filter = .all
+                searchText = ""
+            }
+            .buttonStyle(.link)
+        }
+        .padding(.vertical, 6)
+    }
 
     private func groupHeading(_ kind: SeatPlaceGroup) -> some View {
         Label(kind.title, systemImage: kind.systemImage)
@@ -271,46 +356,135 @@ struct SeatActivityView: View {
             .padding(.top, 6)
     }
 
+    private func groupBadges(for rows: [SeatActivityRow]) -> [MusterBadgeSpec] {
+        var badges = [MusterBadgeSpec(text: "\(rows.count)", color: .secondary)]
+        let working = rows.filter(\.isWorking).count
+        let attention = rows.filter(\.needsAttention).count
+        if working > 0 { badges.append(MusterBadgeSpec(text: "\(working) working", color: .green)) }
+        if attention > 0 { badges.append(MusterBadgeSpec(text: "\(attention) attention", color: .orange)) }
+        return badges
+    }
+
     private func groupView(_ group: SeatActivityGroup, model: SeatActivityModel, now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            groupHeading(group.kind)
-            Text(SeatActivityText.display(group.kind.explanation))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if group.kind == .server {
-                Text(SeatActivityText.display(ServerSeatRowPresentation.groupLine(
-                    reading: serverStatus.reading,
-                    readAt: serverStatus.readAt,
-                    loading: serverStatus.loading,
-                    now: now
-                )))
+        let groupID = "holder:\(group.id)"
+        let isCollapsed = collapsedGroups.contains(groupID)
+        return VStack(alignment: .leading, spacing: 6) {
+            MusterGroupHeaderButton(
+                title: group.kind.title,
+                isExpanded: !isCollapsed,
+                summary: nil,
+                badges: groupBadges(for: group.rows)
+            ) {
+                if isCollapsed {
+                    collapsedGroups.remove(groupID)
+                } else {
+                    collapsedGroups.insert(groupID)
+                }
+            }
+            if !isCollapsed {
+                Text(SeatActivityText.display(group.kind.explanation))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if group.kind == .server, let note = model.otherServerSeatsNote {
-                Text(SeatActivityText.display(note))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            tableHeader(group.kind)
-            ForEach(group.rows) { row in
-                rowView(row, readAt: model.readAt, now: now)
+                if group.kind == .server {
+                    Text(SeatActivityText.display(ServerSeatRowPresentation.groupLine(
+                        reading: serverStatus.reading,
+                        readAt: serverStatus.readAt,
+                        loading: serverStatus.loading,
+                        now: now
+                    )))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // The registry's stale sweep is a fact about the whole server, so it is shown only
+                // from a current reading, like the global pause in the line above.
+                if group.kind == .server,
+                   let sweep = serverStatus.reading?.currentStatus(now: now)?.registrySweep,
+                   sweep.isReported {
+                    registrySweepLine(sweep, now: now)
+                }
+                if group.kind == .server, let note = model.otherServerSeatsNote {
+                    Text(SeatActivityText.display(note))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                tableHeader(group.kind)
+                ForEach(group.rows) { row in
+                    rowView(row, readAt: model.readAt, now: now)
+                }
             }
         }
+    }
+
+    private func familySectionView(_ section: SeatActivitySection, model: SeatActivityModel, now: Date) -> some View {
+        let groupID = "family:\(section.id)"
+        let isCollapsed = collapsedGroups.contains(groupID)
+        return VStack(alignment: .leading, spacing: 6) {
+            MusterGroupHeaderButton(
+                title: section.kind.title,
+                isExpanded: !isCollapsed,
+                summary: nil,
+                badges: groupBadges(for: section.rows)
+            ) {
+                if isCollapsed {
+                    collapsedGroups.remove(groupID)
+                } else {
+                    collapsedGroups.insert(groupID)
+                }
+            }
+            if !isCollapsed {
+                ForEach(section.groups) { subGroup in
+                    if section.groups.count > 1 || subGroup.kind != .mac {
+                        Text(subGroup.kind.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 2)
+                    }
+                    tableHeader(subGroup.kind == .mac || subGroup.kind == .server ? subGroup.kind : nil)
+                    ForEach(subGroup.rows) { row in
+                        rowView(row, readAt: model.readAt, now: now)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The server registry's last stale sweep (AFC-721):  when it ran,  OK or its error,  how many
+    /// chats it closed,  and the platforms the share guard held back.
+    private func registrySweepLine(_ sweep: ServerRegistrySweepFields, now: Date) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: sweep.symbolName)
+                .foregroundStyle(sweep.isProblem ? Color.orange : Color.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(ServerRegistrySweepFields.title)
+                        .font(.caption.weight(.semibold))
+                    Text(sweep.label)
+                        .font(.caption.weight(.semibold).monospaced())
+                        .foregroundStyle(sweep.isProblem ? Color.orange : Color.secondary)
+                }
+                Text(SeatActivityText.display(sweep.sentence(now: now)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: The table
 
     /// The column names.  The server's group names the server in its columns,  so its cells are
     /// never read as the Mac's.
-    private func tableHeader(_ kind: SeatPlaceGroup) -> some View {
+    private func tableHeader(_ kind: SeatPlaceGroup?) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text("Seat")
                 .frame(width: seatWidth, alignment: .leading)
-            Text(kind == .server ? "Sessions The Server Holds" : "Sessions On The Mac")
+            Text(kind == .server ? "Sessions The Server Holds" : (kind == nil ? "Sessions" : "Sessions On The Mac"))
                 .frame(width: sessionWidth, alignment: .leading)
             Text(kind == .server ? "Server Eavesdropper" : "Eavesdropper")
                 .frame(width: listenerWidth, alignment: .leading)
@@ -329,6 +503,7 @@ struct SeatActivityView: View {
         // A seat the server holds reads from the server's eavesdropper;  every other row is
         // built from the Mac's,  exactly as before.
         let server: ServerSeatRowPresentation? = row.place == .server ? serverPresentation(row, now: now) : nil
+        let router: ServerSeatRouter? = row.place == .server ? serverRouter(row, now: now) : nil
         return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -361,6 +536,15 @@ struct SeatActivityView: View {
                 }
                 postCell(row)
             }
+            // Whether the seat's wakes go to a ready router.  Readiness only:  it never says a
+            // wake reached a chat.
+            if let router, let line = router.line {
+                Text(SeatActivityText.display(line))
+                    .font(.caption)
+                    .foregroundStyle(router.isProblem ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, seatWidth + 8)
+            }
             if let server, expanded.contains(row.seat), !server.sessionLines.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(Array(server.sessionLines.enumerated()), id: \.offset) { item in
@@ -373,12 +557,23 @@ struct SeatActivityView: View {
                 .padding(.leading, seatWidth + 8)
             }
             if server == nil, expanded.contains(row.seat), !row.sessions.isEmpty {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(row.sessions) { session in
-                        Text(SeatActivityText.display(session.line))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(session.alive == true ? Color.primary : Color.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(row.sessionsByPlatform) { platformGroup in
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                MusterCountBadge(
+                                    text: "\(platformGroup.platform) (\(platformGroup.sessions.count))",
+                                    color: platformGroup.liveCount > 0 ? .green : .secondary
+                                )
+                            }
+                            ForEach(platformGroup.sessions) { session in
+                                Text(SeatActivityText.display(session.line))
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(session.alive == true ? Color.primary : Color.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.leading, 8)
+                            }
+                        }
                     }
                 }
                 .padding(.leading, seatWidth + 8)
@@ -403,6 +598,16 @@ struct SeatActivityView: View {
             }
         }
         .padding(.vertical, 4)
+        .contextMenu {
+            Button("Copy Seat Summary") {
+                let status = row.isWorking ? "Working" : "Idle"
+                let post = row.lastPost.value?.label ?? "Unknown"
+                MusterClipboard.copy("\(row.seat) — \(status) — Last post: \(post)")
+            }
+            Button("Copy Seat Name") {
+                MusterClipboard.copy(row.seat)
+            }
+        }
     }
 
     /// What the server's eavesdropper says about a seat the server holds,  as its row shows it.
@@ -414,6 +619,13 @@ struct SeatActivityView: View {
             loading: serverStatus.loading,
             now: now
         )
+    }
+
+    /// Whether a seat the server holds has its wakes go to a ready router,  from a current
+    /// reading only,  or nil when there is none.  A reading that is not current says nothing
+    /// about the router,  as it says nothing about the seat's other present state.
+    private func serverRouter(_ row: SeatActivityRow, now: Date) -> ServerSeatRouter? {
+        ServerSeatRowPresentation.seatReading(row.seat, reading: serverStatus.reading, now: now).facts?.router
     }
 
     /// The machine whose eavesdropper holds the seat,  in words with its symbol beside them.

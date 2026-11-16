@@ -29,10 +29,16 @@ enum MusterWindow {
     }
 
     /// Writes the saved place,  which the window follows,  and brings the window forward.
+    ///
+    /// A sheet owns the window until it closes, so under one the saved place is left alone and
+    /// the window only comes forward, whichever menu asked.
     static func show(_ destination: MusterDestination, openWindow: OpenWindowAction) {
-        UserDefaults.standard.set(destination.rawValue, forKey: MusterSettings.sidebarSelectionDefaultsKey)
+        destination.saveAsPlace(underSheet: hasSheet)
         show(openWindow: openWindow)
     }
+
+    /// Whether a sheet is up over the window, so a menu shortcut can leave the panel beneath it alone.
+    static var hasSheet: Bool { window?.attachedSheet != nil }
 }
 
 /// Attached to the window's root,  so `MusterWindow` knows the window.

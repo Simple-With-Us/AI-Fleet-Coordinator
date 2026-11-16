@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -55,7 +57,22 @@ class SyncCase(unittest.TestCase):
         run(["push", "-q", "origin", "HEAD:main"], seed)
         self.vars = {"HOME": str(self.home), "FLEET_CODE_ROOT": str(self.code), "FLEET_HOST_KIND": "mac",
                      "FLEET_LANE_GUARD_STATE_DIR": str(self.home / "state"), "GITHUB_TOKEN": "x",
+                     "FLEET_SYNC_RELAY_URL": str(self.upstream),
                      "FLEET_PLACEMENT_EXCEPTIONS": str(self.home / "no-rows.json")}
+        # Transport seam for the real local bare fixture; explicit relay tests still call the real builders.
+        relay_env, relay_url = S.relay_git_env, S.relay_fetch_url
+        def fixture_env(env, remote=None):
+            if env.get("FLEET_SYNC_RELAY_URL") == str(self.upstream) and remote in (None, str(self.upstream)):
+                return {"GIT_TERMINAL_PROMPT": "0"}
+            return relay_env(env, remote)
+        def fixture_url(env, repo):
+            if env.get("FLEET_SYNC_RELAY_URL") == str(self.upstream):
+                return str(self.upstream)
+            return relay_url(env, repo)
+        for attribute, replacement in (("relay_git_env", fixture_env), ("relay_fetch_url", fixture_url)):
+            patcher = mock.patch.object(S, attribute, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         (self.home / "no-rows.json").write_text('{"exceptions": []}\n', encoding="utf-8")
         self.lock = self.repo / ".git" / "index.lock"
 
@@ -77,11 +94,51 @@ class SyncCase(unittest.TestCase):
 
 
 class Basics(SyncCase):
+    def test_status_does_not_refresh_the_index_even_if_the_host_enables_optional_locks(self) -> None:
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        tracked = self.repo / "new.txt"
+        info = tracked.stat()
+        os.utime(tracked, ns=(info.st_atime_ns, info.st_mtime_ns + 2_000_000_000))
+        index = self.repo / ".git" / "index"
+        before = index.read_bytes()
+        with mock.patch.dict(os.environ, {"GIT_OPTIONAL_LOCKS": "1"}):
+            code, out, err = S.git_full(self.repo, "status", "--porcelain=v1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "")
+        self.assertEqual(index.read_bytes(), before, "a background status must not rewrite the index")
+
+    def test_fast_forward_runs_the_existing_post_merge_hook(self) -> None:
+        marker = self.home / "post-merge-ran"
+        hook = self.repo / ".git" / "hooks" / "post-merge"
+        hook.write_text('#!/bin/sh\nprintf "ran\\n" > "' + str(marker) + '"\n', encoding="utf-8")
+        hook.chmod(0o755)
+        config_before = (self.repo / ".git" / "config").read_bytes()
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.head(), self.origin())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "ran\n")
+        self.assertEqual((self.repo / ".git" / "config").read_bytes(), config_before)
+
     def test_a_clean_clone_moves(self) -> None:
         code, out = self.sync()
         self.assertEqual(code, 0, out)
         self.assertEqual(self.head(), self.origin())
         self.assertIn("updated Example", out)
+
+    def test_a_finished_run_writes_the_optional_stamp_and_a_dry_run_does_not(self) -> None:
+        stamp = self.home / "state" / "code-main-sync.json"
+        self.vars[S.ENV_CODE_SYNC_STATE] = str(stamp)
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        body = json.loads(stamp.read_text(encoding="utf-8"))
+        self.assertEqual(body["ok"], True)
+        self.assertEqual(body["exit"], 0)
+        self.assertEqual(stat.S_IMODE(stamp.stat().st_mode), 0o644)
+        stamp.unlink()
+        code, out = self.sync("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(stamp.exists())
 
     def test_dirty_work_is_never_touched(self) -> None:
         (self.repo / "mine.txt").write_text("keep\n", encoding="utf-8")
@@ -216,7 +273,7 @@ class OneBadClone(SyncCase):
 class Errors(unittest.TestCase):
     def test_only_fleet_github_origins_count(self) -> None:
         self.assertTrue(S.remote_is_fleet_github("https://github.com/Simple-With-Us/X.git"))
-        self.assertTrue(S.remote_is_fleet_github("git@github.com:jaywedgeworth22/Fleet-OPS.git"))
+        self.assertTrue(S.remote_is_fleet_github("git@github.com:Simple-With-Us/Fleet-OPS.git"))
         self.assertFalse(S.remote_is_fleet_github("https://github.com/someone/X.git"))
         self.assertFalse(S.remote_is_fleet_github("/local/path.git"))
 
@@ -290,7 +347,7 @@ class RelayRoute(SyncCase):
         seen: list[dict] = []
 
         def fake(repo, *args, **kwargs):
-            if args[0] in ("fetch", "-c"):
+            if args[0] in ("fetch", "merge"):
                 seen.append(dict(kwargs.pop("extra_env", None) or {}))  # the local bare origin needs no relay
             return real(repo, *args, **kwargs)
 
@@ -316,7 +373,48 @@ class RelayRoute(SyncCase):
             code, out = self.sync()
         self.assertEqual(code, 1)
         self.assertIn("configured but not usable", out)
+        self.assertNotIn("github route: own-seat relay", out)
         self.assertNotEqual(self.head(), self.origin())
+
+    def test_per_clone_unusable_origin_fails_inside_process_repo_when_job_preflight_passes(self) -> None:
+        self.route_vars()
+        real = S.git_full
+
+        def fake(repo, *args, **kwargs):
+            self.assertNotEqual(args[0], "fetch", "no fetch may run when per-clone origin_repo is None")
+            return real(repo, *args, **kwargs)
+
+        with mock.patch.object(S, "git_full", fake):
+            code, out = self.sync()
+        self.assertEqual(code, 1, out)
+        self.assertIn("github route: own-seat relay configured", out)
+        self.assertIn("configured but not usable", out)
+        self.assertNotEqual(self.head(), self.origin())
+
+    def test_bad_host_route_is_one_job_failure_without_clone_alerts(self) -> None:
+        for route in ({}, {"FLEET_SYNC_RELAY_URL": "https://relay.example"},
+                      {"FLEET_SYNC_RELAY_URL": "http://relay.example", "SIMPLE_TOOLS_BEARER": "fixture"}):
+            with self.subTest(route=route):
+                self.vars.pop("FLEET_SYNC_RELAY_URL", None)
+                self.vars.update(route)
+                stamp = self.home / "sync-state.json"
+                self.vars[S.ENV_CODE_SYNC_STATE] = str(stamp)
+                with mock.patch.object(S, "process_repo") as process, mock.patch.object(S, "alert_problems") as alert:
+                    code, out = self.sync()
+                self.assertEqual(code, 1, out)
+                self.assertEqual(json.loads(stamp.read_text())["ok"], False)
+                process.assert_not_called()
+                alert.assert_not_called()
+                self.assertNotIn("Agents must work in lanes", out)
+                self.assertNotIn("github route: own-seat relay", out)
+                self.assertEqual(out.count("fail job:"), 1)
+
+    def test_dry_run_needs_no_host_route_and_reports_no_active_github_route(self) -> None:
+        self.vars.pop("FLEET_SYNC_RELAY_URL")
+        with mock.patch.object(S, "relay_git_env", side_effect=AssertionError("dry-run loaded a bearer")):
+            code, out = self.sync("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertIn("github route: unused", out)
 
     def test_an_origin_git_will_not_resolve_to_the_route_fails_with_no_fetch(self) -> None:
         self.route_vars()
@@ -348,7 +446,7 @@ class RelayRoute(SyncCase):
                 mock.patch.object(S, "git_full", fake):
             code, out = self.sync()
         self.assertEqual(code, 0, out)
-        self.assertIn("github token: none (relay route)", out)
+        self.assertIn("github route: own-seat relay", out)
 
     def test_every_accepted_origin_form_resolves_to_the_route_in_real_git(self) -> None:
         """Including the forms a list of URL patterns misses:  an embedded login, a case-variant host, an explicit port."""
@@ -385,18 +483,21 @@ class RelayRoute(SyncCase):
                     self.assertEqual(S.origin_repo(origin), f"{canonical}/Some-Repo", origin)
         self.assertEqual(S.origin_repo("https://github.com/Other-Org/Some-Repo.git"), "Other-Org/Some-Repo")
 
-    def test_without_the_relay_a_failed_fetch_still_fails(self) -> None:
+    def test_without_the_relay_no_fetch_or_credential_lookup_can_start(self) -> None:
+        self.vars.pop("FLEET_SYNC_RELAY_URL")
         real = S.git_full
 
         def fake(repo, *args, **kwargs):
-            if args[0] == "fetch":
-                return 128, "", "fatal: could not read Username for 'https://github.com'"
+            self.assertNotEqual(args[0], "fetch")
             return real(repo, *args, **kwargs)
 
-        with mock.patch.object(S, "git_full", fake):
+        with mock.patch.object(S, "git_full", fake), mock.patch.object(
+            S, "resolve_github_token", side_effect=AssertionError("credential lookup")
+        ):
             code, out = self.sync()
         self.assertEqual(code, 1)
-        self.assertIn("could not read Username", out)
+        self.assertIn("required own-seat relay route is not configured", out)
+        self.assertNotEqual(self.head(), self.origin())
 
 
 class Source(unittest.TestCase):
@@ -404,6 +505,84 @@ class Source(unittest.TestCase):
         text = Path(S.__file__).read_text(encoding="utf-8")
         for mark in ("/mnt/", "/root/"):
             self.assertNotIn(mark, text)
+
+
+class DirtyAlertTests(unittest.TestCase):
+    """AFC-677:  dirty or failing Code clones are posted to Zulip, once per change or per day."""
+
+    ENV = {"ZULIP_SITE": "https://z.example", "ZULIP_EMAIL": "bot@z.example", "ZULIP_API_KEY": "k" * 32,
+           "FLEET_SYNC_ALERT_STREAM": "s", "FLEET_SYNC_ALERT_TOPIC": "t"}
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        self.posts: list[dict] = []
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _alert(self, problems, now, env=None):
+        def post(site, email, key, fields):
+            self.posts.append(dict(fields))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return S.alert_problems(problems, self.ENV if env is None else env, self.state, now=now, post=post)
+
+    def test_posts_on_change_and_daily_repeat_only(self) -> None:
+        p = [("Clutch", "dirty (2 paths)")]
+        self.assertTrue(self._alert(p, 1000))
+        self.assertTrue(self.posts[0]["content"].startswith("[GB-ORACLE \U0001f4c1OPS]\n"))
+        self.assertIn("`Clutch`: dirty (2 paths)", self.posts[0]["content"])
+        self.assertIn("\u00a0 ", self.posts[0]["content"])
+        self.assertEqual((self.posts[0]["to"], self.posts[0]["topic"]), ("s", "t"))
+        self.assertFalse(self._alert(p, 2000))                      # same set, same day:  quiet
+        self.assertTrue(self._alert(p + [("AI-Fleet-Coordinator", "dirty (1 path)")], 3000))  # set changed
+        self.assertTrue(self._alert(p + [("AI-Fleet-Coordinator", "dirty (1 path)")], 3000 + S.ALERT_REPEAT_S))
+        self.assertFalse(self._alert([], 4000 + S.ALERT_REPEAT_S))   # all clean:  nothing posted
+        self.assertEqual(len(self.posts), 3)
+
+    def test_unconfigured_or_failing_zulip_never_raises(self) -> None:
+        self.assertFalse(self._alert([("X", "dirty (1 path)")], 1, env={}))
+        def boom(*a):
+            raise OSError("down")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(S.alert_problems([("X", "dirty (1 path)")], self.ENV, self.state, now=1, post=boom))
+
+    def test_bad_state_file_or_unwritable_state_never_raises(self) -> None:
+        for raw in ("null", "[1]", '{"problems": ["X"], "at": "soon"}', "{"):
+            (self.state / S.ALERT_STATE).write_text(raw)
+            self.assertTrue(self._alert([("X", "dirty (1 path)")], S.ALERT_REPEAT_S + 10))
+        self.state = self.state / "missing" / "deeper"
+        self.state.parent.mkdir()
+        self.state.parent.chmod(0o500)
+        try:
+            self.assertTrue(self._alert([("Y", "dirty (1 path)")], 20))
+        finally:
+            self.state.parent.chmod(0o700)
+
+    def test_zulip_post_refuses_redirects_and_plain_http(self) -> None:
+        import urllib.error
+        import urllib.request
+
+        with self.assertRaises(ValueError):
+            S._zulip_post("http://z.example", "e", "k", {})
+        seen = []
+
+        class Opener:
+            def __init__(self, *handlers):
+                seen.extend(handlers)
+
+            def open(self, req, timeout=None):
+                raise urllib.error.URLError("stop")
+
+        orig = urllib.request.build_opener
+        urllib.request.build_opener = lambda *h: Opener(*h)
+        try:
+            with self.assertRaises(urllib.error.URLError):
+                S._zulip_post("https://z.example", "e", "k", {"a": "b"})
+        finally:
+            urllib.request.build_opener = orig
+        handler = seen[0]()
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example/"))
 
 
 if __name__ == "__main__":
