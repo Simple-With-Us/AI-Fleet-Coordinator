@@ -28,13 +28,68 @@ FILES = (
     "fleet_knobs/values.py",
     "fleet_secrets/__init__.py",
     "fleet_secrets/core.py",
+    "collect-repo-documents.py",
+    "export-repo-git-source.py",
+    "remote_git_source.py",
+    "repo_catalog.py",
+    "fleet_docs/__init__.py",
+    "fleet_docs/__main__.py",
+    "fleet_docs/pipeline.py",
+    "fleet_docs/snapshot.py",
 )
+# The first shared runtime shipped this exact closure before Docs was added.
+LEGACY_FILES = FILES[:15]
 
 
 def _real_parents(path):
     for parent in (path, *path.parents):
         if parent.is_symlink():
             raise ValueError("Symlink in installation path")
+
+
+def _fsync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _matches_payload(root, expected):
+    """Do not remove a published candidate if an unrelated writer changed it."""
+    if root.is_symlink() or not root.is_dir():
+        return False
+    observed = set()
+    allowed_dirs = {parent.as_posix() for name in expected for parent in Path(name).parents}
+    for folder, dirs, files in os.walk(root, followlinks=False):
+        metadata = Path(folder).lstat()
+        if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            return False
+        for name in dirs:
+            path = Path(folder) / name
+            if path.is_symlink() or path.relative_to(root).as_posix() not in allowed_dirs:
+                return False
+        for name in files:
+            path = Path(folder) / name
+            relative = path.relative_to(root).as_posix()
+            if relative not in expected:
+                return False
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                mode = 0o700 if relative == "scripts/code-main-keeper.sh" else 0o600
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_size != len(expected[relative])
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != mode
+                ):
+                    return False
+                if stream.read(len(expected[relative]) + 1) != expected[relative]:
+                    return False
+            observed.add(relative)
+    return observed == set(expected)
 
 
 def install(source, destination, source_commit):
@@ -56,6 +111,7 @@ def install(source, destination, source_commit):
             "scripts/fleet_lanes",
             "scripts/fleet_knobs",
             "scripts/fleet_secrets",
+            "scripts/fleet_docs",
         }
         for root, dirs, files in os.walk(destination, followlinks=False):
             for name in dirs + files:
@@ -71,7 +127,10 @@ def install(source, destination, source_commit):
         if not (destination / "manifest.json").is_file():
             raise ValueError("Existing bundle has no source manifest")
         previous = json.loads((destination / "manifest.json").read_text())
-        if previous.get("schema") != 1 or set(previous.get("files", {})) != set(FILES):
+        if previous.get("schema") != 1 or set(previous.get("files", {})) not in (
+            set(FILES),
+            set(LEGACY_FILES),
+        ):
             raise ValueError("Existing bundle manifest is not recognized")
         for name, digest in previous["files"].items():
             target = destination / "scripts" / name
@@ -84,28 +143,49 @@ def install(source, destination, source_commit):
         for name, data in payload.items():
             target = stage / "scripts" / name
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            target.write_bytes(data)
+            with target.open("wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
             target.chmod(0o700 if name == "code-main-keeper.sh" else 0o600)
         manifest = {
             "schema": 1,
             "source_commit": source_commit,
             "files": {name: hashlib.sha256(data).hexdigest() for name, data in payload.items()},
         }
-        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+        with (stage / "manifest.json").open("wb") as stream:
+            stream.write(manifest_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
         (stage / "manifest.json").chmod(0o600)
         for root, dirs, files in os.walk(stage):
             os.chmod(root, 0o700)
-        if destination.exists():
-            backup = destination.with_name(destination.name + ".backup-" + uuid.uuid4().hex)
-            os.rename(destination, backup)
+        for root, dirs, files in os.walk(stage, topdown=False):
+            _fsync_directory(root)
+        _fsync_directory(destination.parent)
+        published = False
         try:
+            if destination.exists():
+                backup = destination.with_name(destination.name + ".backup-" + uuid.uuid4().hex)
+                os.rename(destination, backup)
+                _fsync_directory(destination.parent)
             if backup is not None:
                 for root, dirs, files in os.walk(backup):
                     os.chmod(root, 0o700)
             os.rename(stage, destination)
+            published = True
+            _fsync_directory(destination.parent)
         except BaseException:
-            if backup is not None:
+            if published:
+                expected = {"scripts/" + name: data for name, data in payload.items()}
+                expected["manifest.json"] = manifest_bytes
+                if not _matches_payload(destination, expected):
+                    raise ValueError("Published candidate changed; active and backup preserved")
+                os.rename(destination, stage)
+            if backup is not None and backup.exists():
                 os.rename(backup, destination)
+            _fsync_directory(destination.parent)
             raise
         backup_prefix = destination.name + ".backup-"
         for old_backup in destination.parent.iterdir():

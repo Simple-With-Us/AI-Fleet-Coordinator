@@ -14,8 +14,8 @@ Two faults kept the old job failing on every run for days:
     as failed.  Removing the lock file loses nothing: git writes the new index there and renames it only on success.
   * git's stderr was thrown away, so `fast-forward exit=1` was all the log said.  It now carries git's first line.
 
-When FLEET_SYNC_RELAY_URL is set, every fetch goes through the relay's read-only `/git/` route as the seat that the bearer names,
-and a route that cannot be used fails the clone.  This job then holds and uses no GitHub credential.
+Every fetch requires FLEET_SYNC_RELAY_URL and goes through the relay's read-only `/git/` route as the seat that the bearer names.
+A missing or unusable route fails the eligible clone without a direct fetch.  This job never discovers or exports a GitHub credential.
 
 A folder that is not a repo (such as `Docs`) is passed over without a skip count, and a clone with a row in
 placement-exceptions.json (such as a service-pinned clone) is left alone with its reason logged.  Those rows use class
@@ -38,11 +38,13 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -98,7 +100,7 @@ def relay_fetch_url(env: Mapping[str, str], repo: str) -> str:
     return f"{(env.get('FLEET_SYNC_RELAY_URL') or '').strip().rstrip('/')}/git/{repo}.git"
 
 
-def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
+def relay_git_env(env: Mapping[str, str], remote: str | None = None) -> dict[str, str] | None:
     """The git environment that sends this clone's fetches through the relay as this job's seat, or None when it cannot.
 
     The clone's exact origin string is what gets rewritten, so an embedded login, a case-variant host or an explicit port
@@ -111,8 +113,9 @@ def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
     path = (env.get("FLEET_SYNC_BEARER_FILE") or "").strip()
     if not url or not (bearer or path):
         return None
-    repo = origin_repo(remote)
-    if repo is None:
+    # A job-level preflight uses the same validator without a clone-specific rewrite.
+    repo = origin_repo(remote) if remote is not None else None
+    if remote is not None and repo is None:
         log("relay route: refused, the origin cannot be read as owner/name on GitHub")
         return None
     parsed = urlsplit(url)
@@ -136,8 +139,9 @@ def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
     if not bearer or any(ch.isspace() for ch in bearer):
         log("relay route: refused, the bearer file has no usable value")
         return None
-    config = [
+    config = ([
         (f"url.{relay_fetch_url(env, repo)}.insteadOf", remote),
+    ] if remote is not None else []) + [
         (f"http.{url}/.extraHeader", f"Authorization: Bearer {bearer}"),
         ("http.followRedirects", "false"),
         ("http.postBuffer", str(8 * 1024 * 1024)),
@@ -184,33 +188,8 @@ def remote_is_fleet_github(remote: str) -> bool:
 
 
 def resolve_github_token(env: Mapping[str, str], home: Path) -> str:
-    """Name the token git's credential helper will use, fetching one through fleet-secrets if none is set.  Never logged.
-
-    `gh auth git-credential` reads GH_TOKEN and GITHUB_TOKEN and nothing else, so a token found under another name is exported
-    as GH_TOKEN, or git would never receive it.  A lookup that fails leaves the run to the public repos, and the log says why.
-    """
-    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if env.get(name):
-            return name
-    token = (env.get("GITHUB_ADMIN_PAT") or "").strip()
-    if not token:
-        tool = home / ".local" / "bin" / "fleet-secrets"
-        if not tool.is_file():
-            return ""
-        try:
-            result = subprocess.run([str(tool), "get", "GITHUB_ADMIN_PAT"], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, text=True, errors="replace", timeout=60, check=False)
-        except subprocess.TimeoutExpired:
-            log("github token: lookup timed out")
-            return ""
-        except OSError:
-            log("github token: lookup could not start")
-            return ""
-        token = result.stdout.strip() if result.returncode == 0 else ""
-    if not token:
-        return ""
-    os.environ["GH_TOKEN"] = token
-    return "GH_TOKEN"
+    """Retired compatibility hook; credential discovery and environment mutation are disabled."""
+    return ""
 
 
 def lock_is_held(lock: Path) -> bool | None:
@@ -351,7 +330,11 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         return
     fetch_args = ("fetch", "--quiet", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main")
     relay_env = None
-    if (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+    if not (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+        counters["failed"] += 1
+        log(f"fail {repo.name}: FLEET_SYNC_RELAY_URL is required (the required own-seat relay route is not configured)")
+        return
+    else:
         # The configured route is the only route:  every fetch runs as this job's seat, so nothing on this host (a login in
         # git's helper, an SSH key, a URL credential) can serve one.  If the route cannot be set up, the clone fails.
         relay_env = relay_git_env(env, remote)
@@ -365,7 +348,7 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
             counters["failed"] += 1
             log(f"fail {repo.name}: origin does not resolve to the relay route")
             return
-    code, _, err = git_full(repo, *fetch_args, extra_env=relay_env or {"GIT_TERMINAL_PROMPT": "0"})
+    code, _, err = git_full(repo, *fetch_args, extra_env=relay_env)
     if code != 0:
         counters["failed"] += 1
         log(f"fail {repo.name}: fetch exit={code}: {_first_line(err)}")
@@ -621,6 +604,87 @@ def shutdown_children() -> None:
         _terminate_process_group(proc)
 
 
+@contextmanager
+def state_directory(path, *, private=False):
+    """Create missing directories and pin every component without following symlinks."""
+    path = Path(os.path.abspath(path))
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            created = False
+            try:
+                os.mkdir(component, 0o700, dir_fd=fd)
+                created = True
+            except FileExistsError:
+                pass
+            following = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            if created:
+                os.fchmod(following, 0o700)
+            os.close(fd)
+            fd = following
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022 or (private and stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError("state-directory-not-private")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def run_child(command, *, timeout, capture_output=False, input=None, **options):
+    """Bound a child session and reap it and its process group on interruption."""
+    process = None
+    previous = None
+
+    def interrupted(signum, frame):
+        raise SystemExit(128 + signum)
+
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        if capture_output:
+            options.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if input is not None:
+            options["stdin"] = subprocess.PIPE
+        options.pop("check", None)
+        options["start_new_session"] = True
+        process = subprocess.Popen(command, **options)
+        with _CHILD_LOCK:
+            if _SHUTTING_DOWN:
+                _terminate_process_group(process)
+                raise SystemExit(130)
+            _ACTIVE_CHILDREN.add(process)
+        output, error = process.communicate(input=input, timeout=timeout)
+        return subprocess.CompletedProcess(command, process.returncode, output, error)
+    except BaseException:
+        if process is not None:
+            saved_handlers = {}
+            if threading.current_thread() is threading.main_thread():
+                saved_handlers = {
+                    value: signal.signal(value, signal.SIG_IGN)
+                    for value in (signal.SIGINT, signal.SIGTERM)
+                }
+            try:
+                for signum in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, signum)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                for value, handler in saved_handlers.items():
+                    signal.signal(value, handler)
+        raise
+    finally:
+        if process is not None:
+            with _CHILD_LOCK:
+                _ACTIVE_CHILDREN.discard(process)
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+
+
 def run_sweep_command(command: list[str]) -> int:
     """Keep the host's existing authorization bootstrap inside every sweep."""
     try:
@@ -804,11 +868,20 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     try:
         counters = {"updated": 0, "current": 0, "would_update": 0, "skipped": 0, "failed": 0}
         problems: list[tuple[str, str]] = []
-        # With the relay route set, this job acts as its seat's own App, so it never looks up an owner token.
-        relay_route = bool((env.get("FLEET_SYNC_RELAY_URL") or "").strip())
-        token_source = "" if args.dry_run or relay_route else resolve_github_token(env, home)
         log(f"start: {'dry-run local refs only' if args.dry_run else 'fetch and fast-forward'}")
-        log(f"github token: {token_source or ('none (relay route)' if relay_route else 'none (public repos only)')}")
+        if args.dry_run:
+            log("github route: unused (dry-run local refs only)")
+        else:
+            if not (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+                log("fail job: FLEET_SYNC_RELAY_URL is required (the required own-seat relay route is not configured)")
+                write_sync_stamp(env, 1)
+                return 1
+            if relay_git_env(env) is None:
+                log("github route: configured but not usable")
+                log("fail job: fix the host relay configuration before syncing Code clones")
+                write_sync_stamp(env, 1)
+                return 1
+            log("github route: own-seat relay configured; each clone verifies its URL rewrite")
         for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
             if repo.name.startswith(".") or not repo.is_dir():
                 continue
