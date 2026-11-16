@@ -13,6 +13,7 @@ import unittest
 from simple_tools import operator_registry as OR
 from simple_tools import platform_letter as PL
 from simple_tools import platform_letter_cursor as PC
+from simple_tools.tests.registry_fake import FakeRegistry
 
 CID = "7f3a1c52-0b8e-4d7a-9a51-2c4e6f0b9d11"
 
@@ -41,12 +42,16 @@ class Base(unittest.TestCase):
         self.home = os.path.join(self.tmp.name, "home")
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(self.home)
-        self.db = os.path.join(self.state, "operator", "registry.sqlite3")
-        OR.SessionRegistry(self.db).close_db()
+        # The one assigner:  the registry API, served in process over a temporary store.
+        self.assigner = FakeRegistry(os.path.join(self.tmp.name, "assigner"))
+        if getattr(self, "FAKE", True):
+            self.assigner.install()
+            self.addCleanup(self.assigner.uninstall)
+        self.db = self.assigner.db
         self.calls: list[list[str]] = []
 
     def env(self) -> dict[str, str]:
-        return {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, "SESSION_LETTER_LOCATION": "mac"}
+        return {"HOME": self.home, "SIMPLE_TOOLS_STATE_DIR": self.state, **(self.assigner.env() if getattr(self, "FAKE", True) else {}), "SESSION_LETTER_LOCATION": "mac"}
 
     def transport(self, argv: list[str]) -> dict:
         self.calls.append(list(argv))

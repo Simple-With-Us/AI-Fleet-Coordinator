@@ -7,12 +7,17 @@ latest **completed** runs on the **default branch** are a failing streak (ignori
 ## Run
 
 ```sh
-export GITHUB_TOKEN=…   # or GH_TOKEN
+export GITHUB_TOKEN=…   # or GH_TOKEN, or FLEET_READ_TOKEN for all fleet-apps.json repos
 python3 scripts/ci-red-report/__main__.py \
   --org Simple-With-Us \
   --json-out ci-red-report.json \
   --markdown-out ci-red-report.md
 ```
+
+When `FLEET_READ_TOKEN` is set, the default repo list is every `apps[].repo` in `fleet-apps.json`
+(on each repo’s default branch).  Without it, pass `--repo` or rely on the scheduled workflow
+(limiting the scan to this repository and recording a `visibility_note` that names the missing
+secret).
 
 Exit code is always `0` unless `--fail-if-streak-ge N` is set and any reported streak is
 `>= N`.

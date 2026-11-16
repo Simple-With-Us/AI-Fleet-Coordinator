@@ -152,6 +152,8 @@ def main(argv):
     catalog = []
     for tool in sorted(tools, key=lambda t: t["name"]):
         name = tool["name"]
+        if name == "gr_wf_pr_create":
+            continue  # Retired bot-author creation must not reappear from a stale capture.
         if not re.fullmatch(r"gr_[a-z0-9_]{1,80}", name):
             continue
         entry = {

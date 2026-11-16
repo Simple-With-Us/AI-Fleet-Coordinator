@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { SHARED_CHATGPT_SEATS, loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID, GR_VERIFY_CACHE_MAX_MS } from "../src/config.js";
 import { REALM } from "../src/zulip.js";
-import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
+import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT, SYNTHETIC_STREAM_ID } from "./helpers.mjs";
 
 test("GR_VERIFY_CACHE_MS:  the Git bearer verify cache is an hour by default (owner 2026-11-06), set by its own var alone, and capped at the relay's hour", () => {
   assert.equal(GR_VERIFY_CACHE_MAX_MS, 3_600_000);
@@ -169,10 +169,10 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ PUBLIC_HOST: "evil.example" }, /PUBLIC_HOST/],
     [{ SEATS: "{not json" }, /not valid JSON/],
     [{ SEATS: "" }, /not set/],
-    [{ CHANNELS_DENY: { "simple-tools": 642232 } }, /JSON array of stream ids/],
-    [{ CHANNELS_DENY: ["642232"] }, /must be stream ids/],
+    [{ CHANNELS_DENY: { "simple-tools": SYNTHETIC_STREAM_ID } }, /JSON array of stream ids/],
+    [{ CHANNELS_DENY: [String(SYNTHETIC_STREAM_ID)] }, /must be stream ids/],
     [{ CHANNELS_DENY: [0] }, /must be stream ids/],
-    [{ CHANNELS_DENY: [642232, 642232] }, /listed twice/],
+    [{ CHANNELS_DENY: [SYNTHETIC_STREAM_ID, SYNTHETIC_STREAM_ID] }, /listed twice/],
     [{ CHANNELS_DENY: "[1," }, /not valid JSON/],
     [{ OWNER_USER_ID: "" }, /OWNER_USER_ID/],
     [{ OWNER_CLIENTS: "" }, /OWNER_CLIENTS/],

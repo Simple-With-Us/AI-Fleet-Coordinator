@@ -128,7 +128,7 @@ test("inline and default input descriptions pass through untagged", async () => 
 test("a description that already opens with the seat's own intro is not tagged twice (AFC-692)", async () => {
   const { tools, requests } = harness();
   payload(await tools.call("linear_mutation", input({ variables: { id: "p1", input: { name: "Fleet", description: "[GROK-WEB 📁AFC] Details" } } })));
-  assert.equal(requests[0].variables.input.description, "[GROK-WEB 📁AFC] Details");
+  assert.equal(requests[0].variables.input.description, "[GROK-WEB\u200a\u200a📁\u200aAFC] Details");
 });
 
 test("claim label IDs, author overrides and protected label renames are refused", async () => {
