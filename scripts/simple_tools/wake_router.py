@@ -725,7 +725,7 @@ def _drop_own_seat_quotes(addressing: str, seat: str) -> str:
     picking docs, bounded by the delivery loop guard."""
     if not seat:
         return addressing
-    return re.sub(r"\[" + re.escape(seat) + r"(?:·[0-9a-f-]{8,})?[^\]\n]*\]", "", addressing)
+    return re.sub(r"\[" + re.escape(seat) + r"[^\]\n]{0,512}\]", "", addressing)
 
 
 def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
