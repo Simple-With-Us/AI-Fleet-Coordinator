@@ -136,7 +136,7 @@ class InfisicalStore:
     """Only the dedicated folder token is accepted; ambient auth is never consulted."""
 
     def __init__(self, ctx):
-        from fleet_secrets import core
+        import fleet_infisical as core
 
         self.core = core
         self.token = private_text(ctx.home / ".config/fleet-tools/resource-policy-token", ctx.uid)

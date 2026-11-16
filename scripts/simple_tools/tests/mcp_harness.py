@@ -19,7 +19,9 @@ import secrets
 import string
 import subprocess
 import sys
+import urllib.parse
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 import threading
 from pathlib import Path
@@ -46,8 +48,93 @@ FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-
 # the real binary resolves its Infisical project from this env or the home file and fails closed
 # without one, so the fake is always driven with a project named.
 FAKE_PROJECT_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-afc'))
+FAKE_INFISICAL_TOKEN = "st.fake-service-token-for-mcp-tests"
 MODERN = "2026-07-28"
 AUTO = object()  # McpSession.call:  a write names the session's default identity
+
+
+class _FakeInfisical:
+    """Minimal Infisical HTTP stub backed by McpHarness.infisical_values."""
+
+    def __init__(self, values: dict[str, str], project_id: str = FAKE_PROJECT_ID) -> None:
+        self._values = values
+        self._project_id = project_id
+        parent = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def _send_json(self, status: int, body: dict[str, Any]) -> None:
+                raw = json.dumps(body).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self) -> None:
+                parts = urllib.parse.urlsplit(self.path)
+                query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
+                path = parts.path
+                if path == "/api/v2/service-token":
+                    self._send_json(
+                        200,
+                        {
+                            "workspace": parent._project_id,
+                            "permissions": ["read"],
+                            "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
+                            "expiresAt": "2099-01-01T00:00:00Z",
+                        },
+                    )
+                    return
+                if path == "/api/v3/secrets/raw":
+                    hide = query.get("viewSecretValue", ["true"])[0] == "false"
+                    secrets_list = [
+                        {
+                            "type": "shared",
+                            "workspace": parent._project_id,
+                            "environment": "prod",
+                            "secretPath": "/zulip",
+                            "secretKey": k,
+                            "secretValue": "*" * 8 if hide else v,
+                            "secretValueHidden": hide,
+                        }
+                        for k, v in sorted(parent._values.items())
+                    ]
+                    self._send_json(200, {"secrets": secrets_list})
+                    return
+                if path.startswith("/api/v3/secrets/raw/"):
+                    name = urllib.parse.unquote(path[len("/api/v3/secrets/raw/"):])
+                    if name not in parent._values:
+                        self._send_json(404, {"message": "Secret not found"})
+                        return
+                    self._send_json(
+                        200,
+                        {
+                            "secret": {
+                                "type": "shared",
+                                "workspace": parent._project_id,
+                                "environment": "prod",
+                                "secretPath": "/zulip",
+                                "secretKey": name,
+                                "secretValue": parent._values[name],
+                                "secretValueHidden": False,
+                            }
+                        },
+                    )
+                    return
+                self._send_json(404, {"message": "Not found"})
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}/api"
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=2.0)
 CLIENT_META = {
     S.META_VERSION: MODERN,
     "io.modelcontextprotocol/clientCapabilities": {},
@@ -248,6 +335,8 @@ class McpHarness(Harness):
             self.tmp / "rc" / "Claude-zuliprc", email=BOT_EMAIL, key=self.key, site=self.fake.url
         )
         self.add_infisical_bot("CLAUDE", email=BOT_EMAIL, key=self.key)
+        self.fake_infisical = _FakeInfisical(self.infisical_values)
+        self.addCleanup(self.fake_infisical.stop)
         self.fake_secrets_file = self.tmp / "fake-fleet-secrets.json"
         self.clock = FakeClock()
         self.spec = T.load_served_tools()  # tools.json, then eavesdropper-tools.json (AFC-330)
@@ -321,6 +410,8 @@ class McpHarness(Harness):
             "CLAUDE_CODE_SESSION_ID": SESSION,
             "FLEET_SECRETS_BIN": str(FAKE_FLEET_SECRETS),
             "FAKE_FLEET_SECRETS_FILE": str(self.fake_secrets_file),
+            "FLEET_SECRETS_API": self.fake_infisical.url,
+            "INFISICAL_TOKEN": FAKE_INFISICAL_TOKEN,
             "INFISICAL_FLEET_OPS_PROJECT_ID": FAKE_PROJECT_ID,
             # The DM rule defaults ON (owner decision, Oct 22 2026).  The mechanical DM tool tests
             # are about tagging, grouping, the secret scan and idempotency, not the rule, so they run
