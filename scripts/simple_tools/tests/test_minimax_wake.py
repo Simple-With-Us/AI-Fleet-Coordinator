@@ -629,9 +629,9 @@ class TimeoutTests(Base):
 
     def test_a_timeout_is_a_refusal_that_says_nobody_knows(self):
         # The child was running the wake when the deadline passed, so the turn may have
-        # started.  The house outcome for that is a refusal whose code is outside NEVER_RAN:
+        # started.  The house outcome for that is a refusal whose code is outside NEVER_RAN:
         # the receipt records "nobody knows" (delivered: null) and there is no retry, because
-        # a retry could run the turn twice.  The sibling platforms return the same shape for a
+        # a retry could run the turn twice.  The sibling platforms return the same shape for a
         # resume timeout.
         delivery = self._deliver_local(timeout=True)
         self.assertEqual(delivery.outcome, "refused")
@@ -909,7 +909,7 @@ class SettingsTests(Base):
 
     def test_the_host_wide_file_is_not_read_by_this_seat(self):
         # The host-wide file is the service's:  the server reads it against every seat's
-        # settings and narrows it per seat.  This seat reads its own file, so a fact another
+        # settings and narrows it per seat.  This seat reads its own file, so a fact another
         # platform owns can never reach this delivery.
         shared = minimax_wake.state_dir(self.env).parent / "config.json"
         minimax_wake._private_dir(shared.parent)
@@ -986,6 +986,19 @@ class SettingsTests(Base):
         )
         self.assertEqual(answer["delivery"]["code"], "bad-request")
         self.assertEqual(answer["wake_id"], "")
+
+
+class ShippedSourceTests(unittest.TestCase):
+    """The module's own source, which the fleet CLI release smoke compiles."""
+
+    def test_the_module_source_carries_no_no_break_space(self):
+        # The shipped modules put two plain spaces after a sentence.  A no-break space is legal
+        # inside a docstring and a SyntaxError in a code position, and the fleet CLI release
+        # smoke compiles every shipped file, so one in a code position refuses the whole bundle
+        # with `python_compile_failed`.  The docs and the Markdown keep the no-break space;  the
+        # source does not.
+        source = Path(minimax_wake.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("\xa0", source)
 
 
 if __name__ == "__main__":

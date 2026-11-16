@@ -6,52 +6,52 @@ The router itself is the one shared service for every platform (`wake_service`,
 `simple-chat wake-router serve`), which builds the MM seat from `router_platform` here, with
 `DEFAULTS` as its settings and `state_dir` as its state folder (`wake_service.BUILDERS`).
 
-The two routes, and the rule between them.  A MiniMax chat is woken through the MiniMax Code
+The two routes, and the rule between them.  A MiniMax chat is woken through the MiniMax Code
 CLI:  `mcode exec --session <session_id> --cwd <workspace> --model <provider/model> --input -`
-runs one prompt, on the child's stdin, in an existing session without starting the TUI.  The
+runs one prompt, on the child's stdin, in an existing session without starting the TUI.  The
 workspace, the binary and the model come from the local settings file, where the deployment
 names them (this file carries no private path literal), and the workspace is also the binding,
-because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
+because a wake into another project's directory is a wrong-chat delivery.  A chat on this host
 delivers locally under a per-session file lock in `state_dir(env) / "locks"`, re-reading
-MiniMax Code's own session store once the lock is acquired.  A session the store does not know
+MiniMax Code's own session store once the lock is acquired.  A session the store does not know
 refuses (`session-not-found`);  one whose recorded workspace is gone refuses
 (`session-cwd-gone`);  one that is not a chat (a `cron` run) refuses (`session-not-a-chat`);  a
 row with a `parent_session_id` is a sub-agent child and refuses (`session-subagent`);  an
 archived chat refuses (`session-archived`);  a session whose status says a turn is running is
-`busy` and retried after `busy_retry_seconds`.  Once `mcode` has started, any exit code other
+`busy` and retried after `busy_retry_seconds`.  Once `mcode` has started, any exit code other
 than 0 is final (`refused`), because the turn may have already run;  exit 0 is only `sent`,
-because the runtime's own log shows a failed turn exiting 0.  A timeout is neither of those:
-the child was running the wake when the deadline passed, so the turn may have started.  It is a
+because the runtime's own log shows a failed turn exiting 0.  A timeout is neither of those:
+the child was running the wake when the deadline passed, so the turn may have started.  It is a
 refusal whose code is outside `NEVER_RAN`, which the receipt records as nobody knows, and it is
 not retried, because a retry could run the turn twice.
 
-The one seam.  Every child in the fleet is run through a runner, and this module runs its
+The one seam.  Every child in the fleet is run through a runner, and this module runs its
 `mcode` child through one too:  the default runner stops the child and reaps it before it
 raises, and a caller that hands over its own runner replaces the whole run, so a stub never
 runs beside the real binary.
 
-The store.  MiniMax Code's own SQLite table, `local_runtime_sessions` in
+The store.  MiniMax Code's own SQLite table, `local_runtime_sessions` in
 `~/.minimax/v2/sqlite/runtime-state.sqlite` (MINIMAX_DATA_DIR moves `~/.minimax`), read only.
 The columns this module uses are `session_id`, `session_kind`, `parent_session_id`, `archived`,
-`status` and `workspace_dir`.  A `conversation` or a `task` row is a chat, a row with a
+`status` and `workspace_dir`.  A `conversation` or a `task` row is a chat, a row with a
 `parent_session_id` is a sub-thread of that chat, and any other kind (a `cron` run) is not a
-chat.  The same store is the one `platform_letter_minimax` reads, so the letter half and the
+chat.  The same store is the one `platform_letter_minimax` reads, so the letter half and the
 wake half agree on what a chat is.
 
 The wake text is metadata:  who, where, the link and an instruction to read the message in
-Zulip.  The message body is never in it.  Topic and sender are Zulip-authored data, so they go
+Zulip.  The message body is never in it.  Topic and sender are Zulip-authored data, so they go
 into a fenced JSON block under an explicit notice that they are data and not instructions.
 Every one of those fields is scanned for credential material before the prompt is built, and a
 hit refuses the delivery (`wake-secret`):  the name of the field is recorded and the value never
-is.  The router's own note is kept only when it is one of the sentences the router writes
+is.  The router's own note is kept only when it is one of the sentences the router writes
 (`WR.link_note_ok`), and the prompt reaches `mcode` on its stdin, so none of it shows up in a
-process listing.  The model is named on the command line, because `mcode` otherwise inherits the
+process listing.  The model is named on the command line, because `mcode` otherwise inherits the
 install's own `defaultModel`, which can be an id the catalog no longer serves.
 
-A chat on the Mac.  When the router runs on the server and reaches a Mac target, delivery
-delegates to `claude_wake.deliver_remote` over ssh, specifying `platform="minimax"`.  On the
+A chat on the Mac.  When the router runs on the server and reaches a Mac target, delivery
+delegates to `claude_wake.deliver_remote` over ssh, specifying `platform="minimax"`.  On the
 Mac side, `simple-chat wake-deliver` looks up `"minimax"` in `wake_service.BUILDERS` and
-dispatches to `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before
+dispatches to `deliver_request` here.  The Mac rechecks the registry via `WR.holds()` before
 calling local delivery, ensuring the letter was not released or reassigned.
 
 Python 3.9+, standard library only.
@@ -80,15 +80,15 @@ from .config import MCODE_DEFAULT_MODEL
 SEAT = "MM"
 PLATFORM = "minimax"
 MENTION = "MiniMax"
-# A MiniMax Code session id:  "mvs_" and 32 lowercase hex digits.  The store holds 1608 of
+# A MiniMax Code session id:  "mvs_" and 32 lowercase hex digits.  The store holds 1608 of
 # them and no other shape, and the registry's live MiniMax rows carry the same shape.
 SESSION_RE = re.compile(r"^mvs_[0-9a-f]{32}$")
 LETTER_RE = re.compile(r"^[A-Z]{1,2}$")
 BAD_REQUEST = "bad-request"
-#: The refusal code for a Zulip-authored field that carries credential material.  The field name
+#: The refusal code for a Zulip-authored field that carries credential material.  The field name
 #: goes in the delivery's note;  the value, and any prefix of it, never leaves the scanner.
 SECRET_FIELD = "wake-secret"
-#: The wake fields that carry Zulip-authored text into the prompt.  Every one of them is scanned
+#: The wake fields that carry Zulip-authored text into the prompt.  Every one of them is scanned
 #: before the prompt is built.
 SCANNED_FIELDS = ("channel", "topic", "sender", "zulip_link", "link_note")
 #: The fields a request's target may carry:  the ones `WR.Target` has.
@@ -100,7 +100,7 @@ MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
 #: The bound on a link in a request, the same one the router keeps.
 MAX_LINK = 500
 #: The bounds on a request that arrives from another host:  how big it may be, how deep it may
-#: nest and how many values it may hold.  A request is untrusted input, so it is walked with
+#: nest and how many values it may hold.  A request is untrusted input, so it is walked with
 #: ceilings before anything is read out of it.
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_REQUEST_DEPTH = 6
@@ -109,13 +109,13 @@ MAX_REQUEST_NODES = 4096
 STOP_SECONDS = 5
 #: The refusal code for a state folder that cannot be made private.
 STATE_UNAVAILABLE = "state-unavailable"
-#: The session kinds the runtime store uses for a chat.  A `cron` row is a scheduled run, not
+#: The session kinds the runtime store uses for a chat.  A `cron` row is a scheduled run, not
 #: a chat, and a wake into one would be a wrong-chat delivery.
 CHAT_KINDS = ("conversation", "task")
 #: The store's status values that mean a turn is running in that chat right now.
 BUSY_STATUSES = ("started",)
 #: The top-level sections a delivery request carries:  the platform it names, the chat it
-#: addresses and the wake itself.  This is the request the router builds and sends over ssh
+#: addresses and the wake itself.  This is the request the router builds and sends over ssh
 #: (`claude_wake.deliver_remote` sends exactly these three), so a request with any other section,
 #: or with one of them missing, is refused before anything reads it.
 REQUEST_FIELDS = frozenset({"platform", "target", "wake"})
@@ -126,7 +126,7 @@ MCODE_PERMISSION = "off"
 #: (`adapters.MCODE_MAX_STEPS`):  at 8 the wake contract does not fit, and 16 is the cap the
 #: fleet measured.
 MCODE_MAX_STEPS = 16
-#: How many session ids one store query binds.  SQLite's variable limit is 999 on the builds
+#: How many session ids one store query binds.  SQLite's variable limit is 999 on the builds
 #: before 3.32 and 32766 after, and a candidate list longer than the limit would fail the whole
 #: query and leave the non-interactive filter off.
 STORE_CHUNK = 200
@@ -194,13 +194,13 @@ def _private_dir(folder: Path) -> None:
     """Make this folder private, and every level of it that is missing.
 
     A new level is created with mode 0o700 and the folder itself is refused when it is a
-    symlink:  a symlinked state folder would send the locks somewhere else.  `WR.private_dir`
+    symlink:  a symlinked state folder would send the locks somewhere else.  `WR.private_dir`
     makes one level;  this makes the chain, because a level with default permissions lets
     another user list what is under it.
 
     Every level of the chain is checked, not only the missing ones:  a level that is already
     there and is a symlink would redirect everything under it somewhere else, so it is refused
-    as well.  The walk stops at the first level that exists, because the levels above it are
+    as well.  The walk stops at the first level that exists, because the levels above it are
     the host's own and are none of this folder's business."""
     missing: list[Path] = []
     probe = folder
@@ -252,7 +252,7 @@ def _child_env(env: Mapping[str, str]) -> dict[str, str]:
 
 def _find_mcode_binary(child_env: Mapping[str, str], configured: str = "") -> str | None:
     """Locate the `mcode` CLI binary:  the setting, then MCODE_BIN, then PATH, then the runtime's
-    own folder.  The setting comes first, because a deployment that names its binary means it."""
+    own folder.  The setting comes first, because a deployment that names its binary means it."""
     for candidate in (configured, child_env.get("MCODE_BIN")):
         if not candidate:
             continue
@@ -296,7 +296,7 @@ def _session_rows(
                 conn.execute(
                     "SELECT session_id, session_kind, parent_session_id, archived, status, "
                     "workspace_dir FROM local_runtime_sessions WHERE session_id IN (%s)"
-                    % ",".join("?"  * len(chunk)),
+                    % ",".join("?" * len(chunk)),
                     chunk,
                 ).fetchall()
             )
@@ -318,7 +318,7 @@ def _session_rows(
 
 def _session_row(env: Mapping[str, str], session_id: str) -> tuple[str, dict[str, Any] | None]:
     """(`ok`|`missing`|`store-missing`|`error`, row) for one session from the MiniMax Code
-    store, read only.  A store that is not there is not a session that is not there."""
+    store, read only.  A store that is not there is not a session that is not there."""
     status, rows = _session_rows(env, [session_id])
     if status != "ok":
         return status, None
@@ -435,7 +435,7 @@ def _run_child(
     """Run one child the way `subprocess.run` runs it, with one difference:  the child is asked
     to stop before it is killed, and it is reaped before the exception goes on.
 
-    `subprocess.run` kills a child that runs past its deadline, and it kills it outright.  Here
+    `subprocess.run` kills a child that runs past its deadline, and it kills it outright.  Here
     the child gets the chance to stop first, and whatever happens, it is gone before this
     returns or raises:  no wake keeps running behind the router's back.
     """
@@ -513,7 +513,7 @@ def deliver_local(
         return WR.Delivery("refused", "wake", code="bad-workspace-path")
     if not workspace:
         # The deployment has not named a workspace, and delivering into an unknown directory is
-        # the wrong-chat delivery this platform exists to refuse.  A missing deployment setting
+        # the wrong-chat delivery this platform exists to refuse.  A missing deployment setting
         # is a bounded failure, exactly like a missing binary (`claude-not-found`,
         # `agy-not-found` in the sibling modules):  the delivery is retried up to `max_attempts`
         # and then ends in a dead receipt, and the code names the setting that is missing.
@@ -587,7 +587,7 @@ def deliver_local(
 
             # Every flag is its own element and every value is the element after it, the way the
             # house fallback runtime passes them (`adapters.mcode_argv`), which is the form the
-            # `mcode exec` help shows.  A value that could be read as an option of its own is
+            # `mcode exec` help shows.  A value that could be read as an option of its own is
             # refused before it reaches the command line:  the session id and the model have
             # their own shapes, and the workspace was checked above.
             argv = [
@@ -804,7 +804,7 @@ def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
 
 
 def _correlation(request: Mapping[str, Any]) -> dict[str, Any]:
-    """The ids an answer repeats back.  One that is not validly shaped comes back blank, so a
+    """The ids an answer repeats back.  One that is not validly shaped comes back blank, so a
     bad request is never mistaken for an answer to a good one, and the Mac's own check of the
     answer keeps this module's refusal instead of turning it into a platform mismatch."""
     body = request if isinstance(request, Mapping) else {}
@@ -834,7 +834,7 @@ def _delivery_config(env: Mapping[str, str]) -> dict[str, Any]:
     file that cannot be read refuses the delivery rather than quietly narrowing it.
 
     The host-wide file (`<state root>/config.json`) is the service's:  the server reads it against
-    every seat's settings and narrows it per seat.  It is not read here, so a fact another
+    every seat's settings and narrows it per seat.  It is not read here, so a fact another
     platform owns - its own workspace, its own binary, its own model - can never reach this
     seat's delivery."""
     from . import wake_settings as WS
@@ -847,7 +847,7 @@ def _bounded_request(request: object) -> Mapping[str, Any]:
     node count.
 
     A request arrives from another host over ssh, so it is untrusted input, and a huge or
-    deeply nested one must not cost the router more than a small one.  Its sections are checked
+    deeply nested one must not cost the router more than a small one.  Its sections are checked
     too:  a request carries exactly the platform, the target and the wake, so one with a section
     this module does not know, or with one of the three missing, is refused before anything
     reads it."""
@@ -899,7 +899,7 @@ def deliver_request(
         config = _delivery_config(env)
     except (Exception, SystemExit):
         # The settings could not be read:  fail closed, and name the source that could not be
-        # read, so the operator knows which dependency is missing.  The name is spelled with a
+        # read, so the operator knows which dependency is missing.  The name is spelled with a
         # hyphen, because the Mac's own `_short` keeps only `[A-Za-z0-9:_-]` and a dot in the
         # code would reach the router as "unreadable", which is no name at all.
         return _answer(request, WR.Delivery("failed", code="settings-unavailable-config-json"))
