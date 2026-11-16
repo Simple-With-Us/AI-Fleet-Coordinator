@@ -48,6 +48,7 @@ class World:
         self.login_rc = login_rc
         self.calls = []
         self.fetches = []
+        self.export_cwds = []
 
     def fetch_project(
         self, project, path, env, *, token=None, writer=False, names=None, timeout=None
@@ -115,6 +116,7 @@ class World:
                 )
             return subprocess.CompletedProcess(argv, 0, (ACCESS_TOKEN + "\n").encode(), b"")
         if argv[1] == "export":
+            self.export_cwds.append(kw.get("cwd"))
             if self.export_rc:
                 leak = ("denied " + VAL_A).encode()
                 return subprocess.CompletedProcess(argv, self.export_rc, leak, leak)

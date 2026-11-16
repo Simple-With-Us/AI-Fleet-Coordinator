@@ -45,16 +45,11 @@ _spec.loader.exec_module(seat_policy)
 
 DOC = seat_policy.load()
 SEATS = seat_policy.render(DOC)
-# ZC's seat row as the documented first-seat admission renders it.  The file excludes
-# ZC until install-seat --first-seat admits it, but the auth-reason behaviour for that
-# seat shape stays pinned here.
-SEATS_WITH_ZC = dict(
-    seat_policy.render(
-        dict(
-            DOC, seats=DOC["seats"] + [{"identity": "ZC", "app_slug": "swu-zc", "profile": "fleet"}]
-        )
-    )
-)
+# ZC's seat row is in the reviewed image since the first-seat admission landed
+# (2026-11-15;  the executed run's relay audit open_pr correlation is in the
+# relay host's root-only audit log;  the admission PR ran under the owner account).  The auth-reason behaviour for that
+# seat shape stays pinned here against the admitted policy itself.
+SEATS_WITH_ZC = SEATS
 ORG = "Simple-With-Us/"
 SYNTHETIC_REPO = "example-org/example-repo"
 
@@ -70,10 +65,10 @@ NOT_SWU_IDENTITY = {
 # Explicit policy exclusions, documented in the deployed policy's header.
 # Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
 # 2026-10-29 5:50am CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
-# KIMI is a newly added seat that does not have a deployed GitHub App yet.  ZC is added
-# by the owner (2026-11-02) but has no row in this image:  it is admitted after install
-# through the documented first-seat path, never through the wholesale render.
-EXCLUDED = {"JET", "BF-BUILDER", "KIMI", "ZC"}
+# KIMI and ZC were admitted 2026-11-15 through the documented first-seat path with
+# their own deployed Apps (swu-kimi, swu-zc), so they are in this image and in
+# BOT_IDENTITIES, no longer exclusions.
+EXCLUDED = {"JET", "BF-BUILDER"}
 # Every GB seat and every BF bot (owner 2026-10-29 5:50am CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {
@@ -315,7 +310,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "6691698ed53b400c")
+        self.assertEqual(seat_policy.digest(SEATS), "da3cae7d8afaac0e")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))

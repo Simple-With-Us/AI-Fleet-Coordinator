@@ -35,6 +35,18 @@ Owner rule, Nov 11, 2026.  Infisical is the sole source of truth for every secre
 
 Secret values are NEVER invented, guessed, or copied from anywhere: the six secret keys above are not yet created in the project and are documented here as "to be filled by admin".  (The Infisical CLI rejects empty values, so they cannot exist as empty placeholders.)
 
+## Git Relay Outcome Capacity
+
+This nonsecret startup policy belongs to **Fleet-OPS**, `prod`, in the relay's existing App-source folder, normally `/github-apps`.  The relay reads it through the same configured Source and protected credential binding as its App keys, using the folder-proven `verified_secret` method.  It does not read an environment override, use another source or acquire a new grant.
+
+| Key | Folder | Kind And Consumer |
+| --- | --- | --- |
+| `GIT_RELAY_OUTCOMES_MAX_ENTRIES` | Existing App-source folder, normally `/github-apps` | Nonsecret relay outcome capacity; canonical decimal integer from 5,000 through 50,000; intended production value `20000` |
+
+Provision the setting in the service's actual configured folder and verify an own-source cold read before starting App-enabled source that requires it.  A missing, unreadable or invalid setting stops startup before legacy-state adoption or outcome-store loading.  Source and test changes alone do not prove that the setting exists or that a runtime was activated.
+
+The capacity is loaded once per process.  Raising it preserves the same outcome path, successful replay records for their complete 24-hour window, and every pending or unknown outcome.  Lowering it does not evict protected records; a full store still refuses fresh writes.  The auth-free `OutcomeStore` library default remains 5,000, and explicit `GIT_RELAY_APP_MINT=0` retains that default without constructing an App Source or adding authentication.
+
 ## Muster Server Resource Policy
 
 This control plane uses the **Fleet-OPS** project, separate from the recall service settings above.  The existing `CODING_RAM_POLICY` remains authoritative for the complete resource policy; the controller loads and refreshes it, and the broker saves only one allowlisted field against a reviewed full-policy revision.
@@ -201,11 +213,11 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 
 | Key | Kind | Used by |
 |---|---|---|
-| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #Work-In-Progress |
-| `ZULIP_PAGERDUTY_EMAIL` / `ZULIP_PAGERDUTY_API_KEY` | env config / secret | PagerDuty v3 webhook to #incident-response |
-| `ZULIP_LINEAR_EMAIL` / `ZULIP_LINEAR_API_KEY` | env config / secret | Linear webhook to #issues |
-| `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
-| `ZULIP_DATADOG_EMAIL` / `ZULIP_DATADOG_API_KEY` | env config / secret | Datadog `zulip-alerts` webhook to #alerts (`slack_incoming`) |
+| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #Alerts, #Trading, #Work-In-Progress |
+| `ZULIP_PAGERDUTY_EMAIL` / `ZULIP_PAGERDUTY_API_KEY` | env config / secret | PagerDuty v3 webhook to #Incident-Response |
+| `ZULIP_LINEAR_EMAIL` / `ZULIP_LINEAR_API_KEY` | env config / secret | Linear webhook bot credentials |
+| `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #Alerts (`slack_incoming`) |
+| `ZULIP_DATADOG_EMAIL` / `ZULIP_DATADOG_API_KEY` | env config / secret | Datadog `zulip-alerts` webhook to #Alerts (`slack_incoming`) |
 
 ## pr-conflict-watch (Retired)
 
@@ -275,6 +287,9 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `FLEET_AUTOPUSH_IDLE_COMMIT` | C1 | bool | `false` | no | only set it to `false` | true lets the idle backstop commit on its own (mode full only) |
 | `FLEET_AUTOPUSH_IDLE_HOURS` | C1 | int 1 to 168 | `2` | no | only raise it | hours a lane sits unchanged before the backstop sweep acts |
 | `FLEET_AUTOPUSH_PUBLIC_DRAFTS` | C1 | list | empty | no | only remove entries | public repos where a draft PR may open;  empty means none |
+| `CODE_MIRROR_INTERVAL_SECONDS` | OPS-1088 | int 30 to 86400 | `300` | no | nothing | in folder `/code-mirrors`;  time between updates by the existing Mac and server Code mirror jobs |
+| `DOCS_SYNC_ENABLED` | AFC-793 | bool | `false` | no | nothing | in folder `/code-mirrors`;  refresh generated Docs and replicate the validated snapshot after the existing Git sweep |
+| `DOCS_SYNC_CONFIGURATION` | AFC-793 | str | unset | no | nothing | in folder `/code-mirrors`;  JSON profile with the existing SSH peer, exact private opt-ins and verified remote repository identities |
 | `FLEET_FACTS_SIGNING_KEY` | F7 | str | none, fails closed | secret | nothing | HMAC key for the signed facts files;  never cached, a job without it publishes nothing |
 | `FLEET_FACTS_PUBLISH_FULL_COPY` | F7 | bool | `false` | no | only set it to `false` | true also publishes the full mac-facts.json, which keeps lane paths and is readable by everything that can read fleet-loops-data;  false (the default) publishes only the path-free gb/ copy and the full list |
 | `FLEET_FACTS_PUBLISH_CAP_MINUTES` | F7 | int 10 to 60 | `20` | no | only lower it | minutes a publish run may take before it ends itself and its child processes;  10 is the least that leaves room for the gatherers (5 minutes are reserved) and the writes |
