@@ -148,6 +148,7 @@ class FakeRegistry:
                                 "secret": {
                                     "secretKey": name,
                                     "secretValue": values[name],
+                                    "secretValueHidden": False,
                                     "type": "shared",
                                     "workspace": PROJECT_ID,
                                     "environment": "prod",
