@@ -171,7 +171,46 @@ class Transaction:
         self.write_journal(doc)
 
     def recover(self, expected_rows):
-        doc = self.load(expected_rows)
+        try:
+            doc = self.load(expected_rows)
+        except (FileNotFoundError, NotADirectoryError):
+            # Failure before prepare() wrote the backup journal: nothing was
+            # applied.  Only a genuinely absent or exactly-staged backup takes
+            # this path - an unreadable or malformed journal still raises.
+            # NotADirectoryError means a path component is not a directory,
+            # which the invalid-remnants check below refuses.
+            # prepare() itself mkdirs the backup and stages the before/after
+            # images before writing the journal, so a crash in that window
+            # leaves remnants whose content is verifiable against the pinned
+            # manifest rows.  Symlinked, unexpected, mismatched, or
+            # non-directory remnants are tamper this path cannot judge.
+            # Verify every target's live bytes AND metadata against the
+            # pinned before-image; an after-image or any other content is a
+            # partial or foreign write that must be reconciled by hand, never
+            # blessed here.
+            if self.backup.is_symlink() or (self.backup.exists() and not self.backup.is_dir()):
+                raise TransactionError("invalid backup remnants without journal")
+            if self.backup.exists():
+                expected = {}
+                for index, row in enumerate(expected_rows):
+                    expected[f"{index}.after"] = row["after"]
+                    if row["before"] is not None:
+                        expected[f"{index}.before"] = row["before"]
+                for staged in self.backup.iterdir():
+                    if staged.is_symlink() or not staged.is_file():
+                        raise TransactionError("unexpected staged remnant without journal")
+                    if expected.get(staged.name) != sha(read_regular(staged)[0]):
+                        raise TransactionError("unexpected staged remnant without journal")
+            for row in expected_rows:
+                try:
+                    current, meta = read_regular(self.target(row))
+                except FileNotFoundError:
+                    current, meta = None, None
+                if (sha(current) if current is not None else None) != row["before"]:
+                    raise TransactionError("target drift without journal")
+                if current is not None and meta != row["meta"]:
+                    raise TransactionError("target metadata drift without journal")
+            return "aborted-no-write"
         if doc["phase"] in {"committed", "restored"}:
             return doc["phase"]
         if doc["phase"] not in {"prepared", "applying", "applied"} or not self.stopped():

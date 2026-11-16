@@ -50,6 +50,7 @@ from . import (
     bodyfile,
     listener_cli,
     notes_cli,
+    post_header,
     secretscan,
     textfmt,
     zulip_cli,
@@ -126,10 +127,10 @@ def _central_wall_clock(utc: dt.datetime) -> dt.datetime:
 
 
 def format_time(timestamp: float) -> str:
-    """'Wed, Oct 7, 6:41pm': America/Chicago, 12-hour, lowercase am/pm, no zone abbreviation."""
+    """'Wed, Oct 7, 6:41 PM': America/Chicago, 12-hour, spaced AM/PM, no zone abbreviation."""
     local = _central_wall_clock(dt.datetime.fromtimestamp(timestamp, dt.UTC))
     hour = local.hour % 12 or 12
-    suffix = "pm" if local.hour >= 12 else "am"
+    suffix = " PM" if local.hour >= 12 else " AM"
     return "%s, %s %d, %d:%02d%s" % (
         _WEEKDAYS[local.weekday()],
         _MONTHS[local.month - 1],
@@ -1654,7 +1655,9 @@ def _compose_intro_lead(
         if label not in peers:
             peers.append(label)
     arrow = (" \u2192" + ",".join(peers)) if peers else ""
-    bracket = "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    bracket = post_header.normalize_header(
+        "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    )
     marker = intro["marker"]
     if quiet and not marker:
         marker = ROUTER.NO_WAKE_MARKER + " "
@@ -1692,7 +1695,7 @@ def _compose(
                 )
             return led
     # Same complete-own-intro rule as the hosted composeBody transport.
-    leading = re.match(r"^(?:👀\s*)?\s*", text).group(0)
+    leading = re.match(r"^\s*(?:(?:👀|:eyes:)\s*)?", text).group(0)
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)
@@ -1708,23 +1711,20 @@ def _compose(
     )
     if own:
         intro = text[:end]
-        if folder:
-            # Exactly one ASCII space before 📁, the Policy shape the router parses.
-            intro = intro[:seat_end] + " " + intro[seat_end:].lstrip()
         if "·" in agent.tag_prefix:
-            suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
+            suffix = re.sub(r"^·(?:(?!->)[^\s:→\]])*", "", intro[seat_end:])
             intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
-        arrow = intro.find("→")
-        existing = [] if arrow < 0 else [v.strip() for v in intro[arrow + 1 :].split(",")]
+        arrow = re.search(r"→|->", intro)
+        existing = [] if arrow is None else [v.strip() for v in intro[arrow.end() :].split(",")]
         added = list(dict.fromkeys(label for label in labels if label not in existing))
         if added:
-            intro += (" →" if arrow < 0 else ",") + ",".join(added)
+            intro += (" →" if arrow is None else ",") + ",".join(added)
         tail = text[end + 1 :]
         if tail and not tail[0].isspace():
             tail = " " + tail
         added = _mentions_missing_from(tail, mentions)
         body = intro + "]" + (" " + " ".join(added) if added else "") + tail
-        if quiet and not leading.startswith(ROUTER.NO_WAKE_MARKER):
+        if quiet and not leading.lstrip().startswith(ROUTER.NO_WAKE_MARKERS):
             body = ROUTER.NO_WAKE_MARKER + " " + body
     else:
         parts: list[str] = []
@@ -1735,6 +1735,8 @@ def _compose(
         parts.extend(_mentions_missing_from(text, mentions))
         parts.append(text)
         body = " ".join(parts)
+    if not no_tag:
+        body = post_header.normalize_header(body)
     if len(body) > MAX_CONTENT_LENGTH:
         raise UsageError(
             "the message is %d characters; Zulip allows at most %d"

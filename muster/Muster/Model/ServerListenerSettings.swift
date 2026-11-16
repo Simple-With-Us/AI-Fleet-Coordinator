@@ -19,12 +19,16 @@ import Foundation
 //     exactly what was shown or nothing.  There is no other write path here.
 //   * the server's allowlist (`scripts/fleet-ops-eavesdropper-settings.json` beside its helper) is
 //     the judge.  Muster reads this checkout's copy only to know the type and range of each key,
-//     and offers a key only when it is a seat's `enabled` or `wake` and that copy lists it.
+//     and offers a key only when it is one of a seat's sendable keys
+//     (`ServerSettingsBuilder.seatSendableKeys`:  `enabled`, `wake` and the optional wake
+//     switches) and that copy lists it.
 //     It never adds a key to either copy, and a key the server answers that this copy does not
 //     list is shown read only.
 //   * a pin, a credential name or a key that reads as a secret, a path or a URL is never offered,
 //     whatever any allowlist says, and every read-only row says why.
-//   * only a seat's `enabled` and `wake` can be sent (`ServerSettingsBuilder.seatStructureKeys`).
+//   * only a seat's sendable keys can be sent (`ServerSettingsBuilder.seatSendableKeys`):  its
+//     `enabled` and `wake` routing structure, and its optional wake switches
+//     (`bracket_recipient_wakes`).
 //     Every other allowlisted key (a seat's `routine`, `budget` and `live` tables, and every key of
 //     the daemon and feature tables) is shown read only, because a knob's home is Infisical (the
 //     owner's rule, Nov 11, 2026) and AFC-773 registers them there.  Nothing is ever sent to
@@ -785,9 +789,10 @@ struct ServerListenerSettingsRequest: Equatable {
     }
 
     /// Whether a full key is one Muster may send:  only `seat.SEAT.name` where `name` is one of
-    /// `ServerSettingsBuilder.seatStructureKeys`, in the editor's own shape, and never a pin, a
-    /// credential name or a name that reads as a secret.  Every `table.name` key and every other
-    /// seat key is refused, because a knob's home is Infisical (AFC-773).
+    /// `ServerSettingsBuilder.seatSendableKeys`, in the editor's own shape, and never a pin, a
+    /// credential name or a name that reads as a secret.  Every `table.name` key and every seat
+    /// key outside the sendable set is refused:  a knob's home is Infisical (AFC-773), and the
+    /// optional wake switches (`seatOptionalWakeKeys`) are the named config exception.
     static func isOfferableKey(_ key: String) -> Bool {
         let parts = key.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         func isName(_ text: String) -> Bool {
@@ -799,7 +804,7 @@ struct ServerListenerSettingsRequest: Equatable {
             let seat = parts[1]
             guard (1...40).contains(seat.count), let first = seat.unicodeScalars.first, (65...90).contains(first.value),
                   seat.unicodeScalars.allSatisfy({ (65...90).contains($0.value) || (48...57).contains($0.value) || $0 == "-" }),
-                  isName(parts[2]), ServerSettingsBuilder.seatStructureKeys.contains(parts[2]) else { return false }
+                  isName(parts[2]), ServerSettingsBuilder.seatSendableKeys.contains(parts[2]) else { return false }
             return ServerSettingsAllowlist.mayOffer(table: "seat", name: parts[2])
         }
         return false
@@ -898,9 +903,9 @@ enum ServerSettingsCopy {
     static let notOnThisCopy = "The server's allowlist lists this, and this checkout's copy does not, so Muster does not offer it.\(gap)Update the checkout to offer it."
 
     /// Owner's rule (Nov 11, 2026):  a tunable knob (a timing, a cap, a feature switch) has its home in
-    /// Infisical.  Only a seat's routing structure has no Infisical home, so only that is written through
-    /// the server's settings editor.
-    static let knobHome = "A knob, and a knob's home is Infisical.\(gap)Muster shows the value the server holds and does not write it into the server's listener file.\(gap)It becomes editable in Controls once it is a registered knob."
+    /// Infisical.  Only a seat's routing structure and its optional wake switches have no Infisical home,
+    /// so only those are written through the server's settings editor.
+    static let knobHome = "A knob, and a knob's home is Infisical.\(gap)Muster shows the value the server holds and does not write it into the server's listener file.\(gap)It becomes editable in Controls once it is a registered knob.\(gap)Only a seat's routing (on or off, wake type) and its optional wake switches are listener-file config Muster sends here."
 
     static let applyOff = "Applying changes is switched off on the server.\(gap)Show Plan still works, and an apply is refused until the owner switches it on."
     static let applyUnknown = "The server did not say whether applying is switched on."
@@ -930,15 +935,30 @@ enum ServerSettingsCopy {
 
 enum ServerSettingsBuilder {
     /// A seat's routing structure:  whether the seat is on and how it is woken.  These have no
-    /// Infisical home, and they are the only settings Muster sends.  Every other allowlisted setting
+    /// Infisical home.  With the optional wake switches below they are the only settings Muster
+    /// sends.  Every other allowlisted setting
     /// (every sub-key of a seat's routine, budget and live tables, and every key of the daemon and
     /// feature tables) is shown read only:  a timing or a cap is a knob (`ServerSettingsCopy.knobHome`),
     /// and the rest says its own reason.
     static let seatStructureKeys: Set<String> = ["enabled", "wake"]
 
-    /// The value the daemon takes for a structure key the file does not set
-    /// (`scripts/simple_tools/config.py`:  `enabled` defaults to true, `wake` to `inbox`).
-    static let seatStructureDefaults: [String: ServerSettingValue] = ["enabled": .bool(true), "wake": .text("inbox")]
+    /// A seat's optional wake switches:  listener.toml booleans that change what wakes the seat.
+    /// `bracket_recipient_wakes` wakes the seat when a post's leading bracket intro names it in
+    /// the recipient list, with no @ needed (Jay, Nov 12 2026:  make this configurable).  Per-seat
+    /// and default-off are this implementation's choices.  The switch has no Infisical home - it
+    /// is a config-file switch, not a knob - so Muster sends it like a structure key, through the
+    /// same plan and consent flow.
+    static let seatOptionalWakeKeys: Set<String> = ["bracket_recipient_wakes"]
+
+    /// The seat keys Muster may send:  the routing structure and the optional wake switches.
+    static let seatSendableKeys: Set<String> = seatStructureKeys.union(seatOptionalWakeKeys)
+
+    /// The value the daemon takes for a sendable key the file does not set
+    /// (`scripts/simple_tools/config.py`:  `enabled` defaults to true, `wake` to `inbox`, and
+    /// `bracket_recipient_wakes` to false).
+    static let seatSendableDefaults: [String: ServerSettingValue] = [
+        "enabled": .bool(true), "wake": .text("inbox"), "bracket_recipient_wakes": .bool(false),
+    ]
 
     /// The rows for a get's settings, against this checkout's allowlist copy.
     static func groups(settings: [String: ServerSettingValue], allowlist: ServerSettingsAllowlist) -> [ServerSettingsGroup] {
@@ -962,7 +982,7 @@ enum ServerSettingsBuilder {
                 guard let spec = allowlist.seat[name] else { continue }
                 rows += self.rows(key: "\(prefix).\(name)", name: name, spec: spec,
                                   current: settings["\(prefix).\(name)"], hasRoutine: hasRoutine,
-                                  isStructure: seatStructureKeys.contains(name))
+                                  isStructure: seatSendableKeys.contains(name))
             }
             rows += (unknownByGroup[prefix] ?? []).sorted().map { readOnly($0, current: settings[$0], reason: ServerSettingsCopy.notOnThisCopy) }
             rows += ServerSettingsAllowlist.neverOfferedSeatKeys.map {
@@ -1017,7 +1037,7 @@ enum ServerSettingsBuilder {
             }
             return [ServerSettingRow(id: key, settingKey: key, subKey: nil, title: ServerSettingsCopy.rowTitle(name),
                                      current: current, control: control, readOnlyReason: reason,
-                                     defaultValue: isStructure ? seatStructureDefaults[name] : nil)]
+                                     defaultValue: isStructure ? seatSendableDefaults[name] : nil)]
         }
         let entries = current?.tableEntries ?? [:]
         return keys.keys.sorted().map { sub in
