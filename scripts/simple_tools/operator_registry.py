@@ -3180,8 +3180,9 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
         # against this CLI) cannot keep writing that copy after the cutover.  A failed
         # call prints its error and exits 2;  nothing falls back to the file.
         answer = registry_api.call(env, *_api_call_for(args))
-        print(json        return 0 if "error" not in answer else 2
-    db = getattr(args, "db", "") or default_db(env) default_db(env)
+        print(json.dumps(answer))
+        return 0 if "error" not in answer else 2
+    db = getattr(args, "db", "") or default_db(env)
     if not os.path.isfile(db):
         # Never bring a registry into being:  a second registry would hand out letters
         # that collide with the ones the Operator keeps.  Every op that takes a
