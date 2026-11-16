@@ -103,7 +103,7 @@ Unchanged:  the command line, the verbs and modes, the approval text and its fie
 
 ## 1.  Scope
 
-This spec covers what the root-owned helper `/usr/local/lib/fleet-resource-control/fleet-ops-control.py` does when started as `--from-muster`, and the trust-list rules every verifier shares.  It does not change the `--from-ssh` entry, its parser or its behaviour.
+This spec covers what the helper `/home/jay/.local/lib/fleet-resource-control/fleet-ops-control.py` does when started as `--from-muster`, and the trust-list rules every verifier shares.  It does not change the `--from-ssh` entry, its parser or its behaviour.
 
 ## 2.  Conventions
 
@@ -147,7 +147,7 @@ Free text that may hold other characters (log lines, read documents) travels as 
 ## 3.  The Forced Command And The Command Line
 
 ```
-restrict,from="127.0.0.1,::1",command="/usr/bin/python3 -I /usr/local/lib/fleet-resource-control/fleet-ops-control.py --from-muster" ssh-ed25519 AAAA... muster-exec@server
+restrict,from="127.0.0.1,::1",command="/usr/bin/python3 -I /home/jay/.local/lib/fleet-resource-control/fleet-ops-control.py --from-muster" ssh-ed25519 AAAA... muster-exec@server
 ```
 
 This line goes in `/home/jay/.ssh/authorized_keys`, beside `fleet-ops-ctl`'s.  `--from-muster` must be the only argument.  The helper reads `SSH_ORIGINAL_COMMAND` under the existing `SSH_COMMAND_MAX` (256) and `SSH_SAFE_RE` rules and splits it on single spaces into exactly four words, `SCOPE VERB TARGET MODE`, where `MODE` is `--plan` or `--yes`.  The answer is always JSON.  The branch sets an explicit `require_approval = True` that every shared function it calls must honour;  a shared function called without it behaves exactly as today.
@@ -336,7 +336,7 @@ Everything in this section is the version 4 proposal, kept so the problems in §
 
 **Checks (P1, and the same in `muster-pub` and `muster-exec`).**  One module, `muster_trust_files.py`, `lstat`s `/etc/muster`, `owner.pub`, `owner-history.jsonl` and, if it exists, `reopen-codes.jsonl`;  refuses any that is missing (the record excepted), a symbolic link, of the wrong type, not owned by uid 0, or writable by group or others;  refuses an `owner.pub` that is not one P-256 key, a history that is not contiguous from version 1 or has other than one open entry, an open entry whose key differs from `owner.pub`, and a record that fails §9's settled format;  and returns the bytes it read.  **Every caller calls it afresh for each verification:**  the helper once per request at P1;  `muster-pub` and `muster-exec` for every chain they verify, every acknowledgement or heartbeat they sign, and at least once a minute.  The helper answers `pin_unsafe`;  `muster-pub` and `muster-exec` stop publishing and executing and report it in their heartbeats.  While walking, every verifier also requires the body hash of each history line's `toVersion` to equal its `toSHA256`:  that is §8's check 3, and a mismatch is `history_hash` (v5.3).  The helper compares the list it holds at C2 the same way, and a held list that fails is `state_unsafe` (§12).
 
-**How the two copies stay equal.**  The repository holds one source file, `scripts/muster_agent/muster_trust_files.py`.  The helper's installer and `muster-agent`'s installer both copy that one file, to `/usr/local/lib/fleet-resource-control/` and `/usr/local/lib/muster-agent/`;  a repository test checks that both installers name that one source path and that no second copy exists in the repository.  On the server each installer, when the other copy is present, compares their SHA-256 after copying and fails on a difference, and `muster-agent trust-status` prints both hashes.
+**How the two copies stay equal.**  The repository holds one source file, `scripts/muster_agent/muster_trust_files.py`.  The helper's installer and `muster-agent`'s installer both copy that one file, to `/home/jay/.local/lib/fleet-resource-control/` (jay's own since Nov 12, 2026) and `/usr/local/lib/muster-agent/`;  a repository test checks that both installers name that one source path and that no second copy exists in the repository.  On the server each installer, when the other copy is present, compares their SHA-256 after copying and fails on a difference, and `muster-agent trust-status` prints both hashes.
 
 **Install.**  `muster-agent install` writes `owner.pub` and the line `{"fromVersion":1,"ownerKey":…,"toSHA256":null,"toVersion":null}` and prints the full fingerprint.  It refuses when `owner.pub` exists, unless no stored list exists anywhere on the server, in which case it replaces both after the same fingerprint comparison.
 

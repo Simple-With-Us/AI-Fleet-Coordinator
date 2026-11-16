@@ -29,7 +29,7 @@ from .builders import doctor_checkout, doctor_report
 from .ghfake import REPO, FakeGitHub
 
 SIGNER = "fixture-signing-key-0123456789abcdefABCDEF"
-NOW = datetime(2026, 10, 11, 17, 30, 0, tzinfo=timezone.utc)      # Sun, Oct 11, 12:30pm Central
+NOW = datetime(2026, 10, 11, 17, 30, 0, tzinfo=timezone.utc)      # Sun, Oct 11, 12:30 PM Central
 USERS = "/" + "Users" + "/someone"
 LANE_PATH = USERS + "/apps/lanes/Example/claude-stale-lane"
 
@@ -195,7 +195,7 @@ class Published(Sandbox):
         self.assertFalse(status["stale"])
         self.assertEqual(status["last_published_at"], "2026-10-11T17:30:00Z")
         self.assertEqual(status["last_published_generated_at"], "2026-10-11T17:30:00Z")
-        self.assertEqual(status["at_local"], "Sun, Oct 11, 12:30pm")
+        self.assertEqual(status["at_local"], "Sun, Oct 11, 12:30 PM")
         self.assertEqual(status["files"][p.GB_FACTS], "created")
         self.assertEqual(status["sources"]["lanes"], "ok")
         self.assertEqual(stat.S_IMODE((self.state / "mac-facts-publish.json").stat().st_mode), 0o600)
@@ -203,7 +203,7 @@ class Published(Sandbox):
         everything = json.dumps(status) + self.log
         for needle in (SIGNER, "claude-stale-lane", "claude/stale-branch", "diverged", "someone"):
             self.assertNotIn(needle, everything)
-        self.assertIn("12:30pm", self.log)
+        self.assertIn("12:30 PM", self.log)
 
     def test_a_second_run_with_the_same_input_leaves_every_file_unchanged(self):
         self.cycle()
@@ -246,7 +246,7 @@ class Published(Sandbox):
         note = self.gh.written(p.FULL_LIST).decode()
         self.assertNotIn("Example item", note, "the previous list is gone")
         self.assertIn("Full List Not Available", note)
-        self.assertIn("Sun, Oct 11, 3:30pm", note)
+        self.assertIn("Sun, Oct 11, 3:30 PM", note)
         self.machine.fail_open_loops = None
         self.cycle(now=NOW.replace(hour=23))
         self.assertEqual(self.gh.written(p.FULL_LIST).decode(), self.machine.list_text, "and the next good run brings the list back")
@@ -254,7 +254,7 @@ class Published(Sandbox):
 
     def test_the_note_uses_the_owners_clock_and_non_breaking_sentence_gaps(self):
         text = p.unavailable_text(NOW, "out of time before the full list")
-        self.assertIn("Sun, Oct 11, 12:30pm", text)
+        self.assertIn("Sun, Oct 11, 12:30 PM", text)
         self.assertNotIn("UTC", text)
         self.assertIn("\u00a0 Reason:  out of time before the full list.", text)
         self.assertEqual(text.count(". "), 0, "no ordinary one-space gap between sentences")

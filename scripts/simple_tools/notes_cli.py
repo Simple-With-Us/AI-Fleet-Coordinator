@@ -181,7 +181,10 @@ def add_parsers(
             help="mark as needing the owner",
         )
         q.add_argument(
-            "--summary", metavar="TEXT", default=None, help="one-line summary for the notification"
+            "--summary",
+            metavar="TEXT",
+            default=None,
+            help="optional Summary paragraph for a long note (max 5 sentences, real context beyond the title)",
         )
         q.add_argument(
             "--pr", metavar="N", default=None, help="pull request numbers for the date line"
@@ -607,7 +610,7 @@ def _cmd_runner(rt: Any, args: argparse.Namespace) -> int:
 
 
 def _when(value: Any) -> str:
-    """An ISO time as the fleet writes it:  'Thu, Oct 22, 5:03pm' (America/Chicago)."""
+    """An ISO time as the fleet writes it:  'Thu, Oct 22, 5:03 PM' (America/Chicago)."""
     from .cli import format_time
 
     try:

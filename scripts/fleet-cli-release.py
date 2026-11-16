@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -50,9 +51,8 @@ MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 # The 157th is simple_tools/platform_letter_zcode.py, the ZCode session-letter adapter (OPS-1048).
 # The 158th is scripts/zc-wake-bridge, the ZC seat's wake webhook receiver and deliverer (OPS-1048;  its systemd
 # unit template stays repo-only under simple_tools/server/).
-# The 159th is scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper (OPS-1048):  the copy the
-# install writes to ~/.local/bin/zc-letter/platform-letter, which sources the shared registry env before it execs
-# the checkout's real platform-letter.
+# The 159th was scripts/zcode-letter-hook/platform-letter, the ZC letter hook's wrapper, deleted with the ssh and
+# env-file paths (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
 # The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
 # simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
 # The 162nd is scripts/ag-wake-bridge, the AG seat's wake webhook receiver and deliverer (AFC-665;  its systemd
@@ -120,6 +120,7 @@ EXACT = frozenset(
         "scripts/simple-notes",
         "scripts/simple-peer-actions",
         "scripts/simple-board",
+        "scripts/simple_tools/post_header.py",
         # The git tools CLI entry wrapper and implementation.
         "scripts/simple-git",
         "scripts/git-tools/git",
@@ -161,11 +162,8 @@ EXACT = frozenset(
         # AFC-564:  the OpenCode letter plugin, a data file beside the Python modules (OpenCode loads it from the path
         # `platform-letter install --platform opencode` writes).  Its node test lives under tests/ and is not shipped.
         "scripts/simple_tools/opencode_letter_plugin/index.js",
-        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to), and the letter
-        # hook's wrapper (the copy `platform-letter install --platform zcode` writes, which sources the shared
-        # registry env file before it execs this checkout's real platform-letter).
+        # OPS-1048:  the ZC seat's wake bridge (the receiver the seat's http routine POSTs to).
         "scripts/zc-wake-bridge",
-        "scripts/zcode-letter-hook/platform-letter",
         # AFC-665:  the AG seat's wake bridge (delivering Operator wakes via the local agy CLI daemon API).
         "scripts/ag-wake-bridge",
     }
@@ -248,6 +246,8 @@ TOOL_REQUIRED = frozenset(
         # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
         # built before it stays a valid rollback target.
         "scripts/simple_tools/secretscan.py",
+        # Shared by the native chat and board formatters; required only for newly received bundles.
+        "scripts/simple_tools/post_header.py",
         # Imported by notes_client: new bundles need it, older rollback targets do not.
         "scripts/simple_tools/notes_service_reader.py",
         "scripts/simple_tools/peer_actions.py",
@@ -643,9 +643,57 @@ def root_exports(home: Path) -> str:
     )
 
 
+#: The tool whose wrapper carries the registry settings into the process it runs.  A session-letter hook is launched with no
+#: profile, so its environment holds neither the registry URL nor its key, and the host's own env script is what sets them.
+#: The settings are read in SHELL before the script is exec'd:  no Python of this repository reads that file.
+REGISTRY_ENV_SCRIPT = "scripts/platform-letter"
+#: The env scripts, under the home folder, in the order they are looked for:  the first one that is a file is the one used.
+REGISTRY_ENV_FILES = (".local/bin/platform-letter-registry-env", ".local/bin/operator-registry-env")
+REGISTRY_ENV_NAMES = (
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL",
+    "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY",
+)
+#: Managed wrappers a routine update REWRITES when the host has an older managed one (it carries MARKER, it is a regular
+#: file and no link):  the registry settings of a server's hooks arrive through the wrapper, so a wrapper without them
+#: would drop them at the update.  Every other wrapper is only ever written when it is missing.
+REFRESHED_WRAPPERS = frozenset({"platform-letter"})
+
+
+def registry_env_wrapper(home: Path, script: str) -> bytes:
+    """The wrapper of REGISTRY_ENV_SCRIPT:  a bash script that sources the host's registry env script, when there is
+    one, and then runs the release's script as every other managed Python tool is run (isolated, the arguments and the
+    standard input as they came).
+
+    The first of REGISTRY_ENV_FILES that is a file is used.  It is run once in a subshell with its output thrown away,
+    and is sourced into the wrapper only when that run got to its end, so a script that exits cannot stop the hook from
+    running:  the hook runs without the settings.  A script that fails, or does not parse, is sourced as far as bash
+    goes and the hook runs all the same.  Nothing it prints is shown, and its status is not the wrapper's.  The names
+    it may set are exported, whether or not it exported them."""
+    names = " ".join(REGISTRY_ENV_NAMES)
+    files = " ".join('"$HOME/%s"' % name for name in REGISTRY_ENV_FILES)
+    target = str(home / ".local/share/fleet-cli/current" / script)
+    return (
+        f"#!/bin/bash\n{MARKER}\n"
+        "# The registry settings of a session-letter hook come from the host's env script, sourced here in shell.\n"
+        f"for f in {files}; do\n"
+        '  if [ -f "$f" ]; then\n'
+        '    if [ "$( . "$f" >/dev/null 2>&1 </dev/null; echo ok )" = ok ]; then\n'
+        '      . "$f" >/dev/null 2>&1 </dev/null\n'
+        f"      export {names}\n"
+        "    fi\n"
+        "    break\n"
+        "  fi\n"
+        "done\n"
+        f'exec /usr/bin/python3 -I -B {shlex.quote(target)} "$@"\n'
+    ).encode()
+
+
 def wrapper(
     home: Path, script: str, extra: list[str] | None = None, codex_only: bool = False
 ) -> bytes:
+    if script == REGISTRY_ENV_SCRIPT and not extra and not codex_only:
+        return registry_env_wrapper(home, script)
     guard = ""
     if codex_only:
         guard = """
@@ -754,6 +802,20 @@ def new_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         for path, entry in wrapper_files(home).items()
         if not path.exists() and not path.is_symlink()
     }
+    return files
+
+
+def refreshed_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+    """The managed wrappers of REFRESHED_WRAPPERS the host has in an older form:  a regular file (never a link) that
+    carries MARKER and differs from what this release generates.  Anything else, a wrapper the host wrote itself
+    included, is left as it is."""
+    files = {}
+    for path, entry in wrapper_files(home).items():
+        if path.name not in REFRESHED_WRAPPERS or path.is_symlink() or not path.is_file():
+            continue
+        current = path.read_bytes()
+        if MARKER.encode() in current and current != entry[0]:
+            files[path] = entry
     return files
 
 

@@ -34,7 +34,7 @@ from simple_tools import live as L
 from simple_tools import service_identity as S
 from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.harness import TWO_INSTANCE_PARTITION, write_rc
-from simple_tools.tests.listener_harness import ListenerHarness
+from simple_tools.tests.listener_harness import ListenerHarness, SYNTHETIC_STREAM_ID
 
 REPO = Path(__file__).resolve().parents[3]
 SERVER_DIR = REPO / "scripts" / "simple_tools" / "server"
@@ -851,14 +851,23 @@ class RoutineBodyTests(unittest.TestCase):
                 now=1790000000.0,
             )
 
-        self.assertEqual(body({"stream_id": 642232})["stream_id"], 642232)
-        for bad in (True, False, "642232", 642232.0, 0, -4, None, [642232]):
+        self.assertEqual(body({"stream_id": SYNTHETIC_STREAM_ID})["stream_id"], SYNTHETIC_STREAM_ID)
+        for bad in (
+            True,
+            False,
+            str(SYNTHETIC_STREAM_ID),
+            float(SYNTHETIC_STREAM_ID),
+            0,
+            -4,
+            None,
+            [SYNTHETIC_STREAM_ID],
+        ):
             with self.subTest(stream_id=bad):
                 self.assertIsNone(body({"stream_id": bad})["stream_id"])
         self.assertIsNone(
             body({})["stream_id"], "a row without one (a quarantined item) sends null"
         )
-        dm = body({"type": "private", "stream_id": 642232, "recipients": [11, 16]})
+        dm = body({"type": "private", "stream_id": SYNTHETIC_STREAM_ID, "recipients": [11, 16]})
         self.assertIsNone(dm["stream_id"], "a DM never carries a stream id")
         self.assertIs(type(body({"stream_id": 7})["stream_id"]), int)
         self.assertIn(b'"stream_id":7', A.routine_bytes(body({"stream_id": 7})))

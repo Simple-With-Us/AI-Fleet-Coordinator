@@ -23,7 +23,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest rolled to 26.04 (2026-11-14), whose setup-python manifest has
+    # no 3.9 build, and the AFC-616 fleet_view leg below needs a real 3.9.  24.04 still
+    # carries it (3.9.25 verified in actions/python-versions).
+    runs-on: ubuntu-24.04
     # A stalled step once held this job open for over 15 minutes, and a rerun passed.  Each test
     # step has its own limit, about twice its normal run (a stall now fails in minutes and names
     # the step), and the whole job stops at 60 minutes;  a normal run takes 21 to 32 minutes.
@@ -292,15 +295,14 @@ jobs:
         cd scripts && python3 -m unittest discover -s simple_tools/tests -t . -v
         python3 -m unittest discover -s simple_tools/stdio_launcher/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
-    # The Operator's session registry and the MM seat's letter hook:  the letter
-    # allocation, the two letter spaces, the registry CLI, and the secret scan that
-    # guards every title.  Both files sit at the top of scripts/, outside the
-    # directories discovery walks, so nothing ran them:  before this step their
-    # assertions were decoration and a regression would ship under a green CI.
-    - name: Operator session registry and letter hook tests
+    # The Operator's session registry:  the letter allocation, the two letter spaces,
+    # the registry CLI, and the secret scan that guards every title.  The files sit at
+    # the top of scripts/, outside the directories discovery walks, so this step runs
+    # them.
+    - name: Operator session registry tests
       timeout-minutes: 10
       run: |
-        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter test_operator_export_attempts -v
+        cd scripts && python3 -m unittest test_operator_registry test_operator_export_attempts -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
@@ -314,6 +316,11 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
+    # ci-red-report (AFC-737): fixture-backed unit tests; no live GitHub API.
+    - name: ci-red-report tests
+      timeout-minutes: 5
+      run: |
+        cd scripts/ci-red-report && python3 -m unittest discover -s tests -t . -v
     # fleet_view (AFC-394):  the Fleet View collectors for lanes, open PRs and Linear claims, the
     # request budget, the blocker mapping and the pinned envelope.  Fake runners only;  no network.
     - name: fleet_view tests
