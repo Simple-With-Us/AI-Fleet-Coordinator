@@ -690,9 +690,7 @@ def router_platform(
                     )
                 )
                 top_level = _glob.glob(
-                    os.path.join(
-                        _glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*"
-                    )
+                    os.path.join(_glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*")
                 )
                 # As in MR.is_subagent, an id with a top-level folder is a chat.
                 by_root[root] = {os.path.basename(p) for p in nested} - {
