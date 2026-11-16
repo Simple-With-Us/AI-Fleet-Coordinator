@@ -592,9 +592,7 @@ def router_platform(
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         if target.host == "mac" and local_host != "mac":
-            return CW.deliver_remote(
-                here, config, target, wake, platform=PLATFORM, runner=runner
-            )
+            return CW.deliver_remote(here, config, target, wake, platform=PLATFORM, runner=runner)
         if target.host != local_host:
             return WR.Delivery("refused", code="unknown-host")
         request = {
@@ -607,9 +605,7 @@ def router_platform(
             },
             "wake": asdict(wake),
         }
-        answer = deliver_request(
-            request, env=here, settings=config, runner=runner, sleep=sleep
-        )
+        answer = deliver_request(request, env=here, settings=config, runner=runner, sleep=sleep)
         delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
         if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
             return WR.Delivery("refused", code="platform-bad-answer")
