@@ -124,25 +124,30 @@ def _chat_record(env: Mapping[str, str], session_id: str) -> Mapping[str, Any]:
 
 def _chat_env(env: Mapping[str, str], session_id: str) -> dict[str, str]:
     """The child delivery environment:  this host's HOME and PATH (so this host's `muse`
-    binary is the one resolved), with only the chat's recorded XDG_DATA_HOME restored.
-    A forced-command delivery has no login profile, so without that one value a chat that
-    ran under a non-default data home would be resumed against the wrong store."""
+    binary is the one resolved), with XDG_DATA_HOME set to the parent of the store this
+    delivery read.  A record with an empty `xdg_data_home` means the chat ran under its
+    recorded home's default (`<home>/.local/share`), so that default is named explicitly:
+    without it the child would resolve this host's default store instead."""
     out = dict(env)
     rec = _chat_record(env, session_id)
     if rec.get("xdg_data_home"):
         out["XDG_DATA_HOME"] = str(rec["xdg_data_home"])
+    elif rec.get("home"):
+        out["XDG_DATA_HOME"] = os.path.join(str(rec["home"]), ".local", "share")
     return out
 
 
 def data_root(env: Mapping[str, str], session_id: str = "") -> str:
     """This host's Muse data root:  the chat's recorded root when it has one, else the
-    delivery environment's."""
+    delivery environment's.  A record's empty `xdg_data_home` is a recorded default, not a
+    missing value, so the delivery environment's XDG does not override it."""
     home = str(env.get("HOME") or os.path.expanduser("~"))
     xdg = str(env.get("XDG_DATA_HOME") or "")
     if session_id:
         rec = _chat_record(env, session_id)
-        home = str(rec.get("home") or home)
-        xdg = str(rec.get("xdg_data_home") or xdg)
+        if rec:
+            home = str(rec.get("home") or home)
+            xdg = str(rec.get("xdg_data_home") or "")
     return MR.data_root(home, xdg)
 
 

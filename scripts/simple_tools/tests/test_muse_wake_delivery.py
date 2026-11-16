@@ -230,6 +230,46 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(self.calls[0]["env"]["XDG_DATA_HOME"], str(custom))
         self.assertEqual(self.calls[0]["env"]["HOME"], str(self.home))
 
+    def test_a_chat_under_its_recorded_home_default_is_found(self) -> None:
+        chat_home = self.home / "chat-home"
+        session = chat_home / ".local" / "share" / "muse" / "sessions" / "2026" / "11" / "11" / SID2
+        WR.private_dir(session)
+        (session / "session.jsonl").write_text(
+            json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8"
+        )
+        (session / ".session.lock").write_text("", encoding="utf-8")
+        path = Path(MW.PLM.spool_path(self.env, SID2))
+        WR.private_dir(path.parent)
+        path.write_text(
+            json.dumps(
+                {"session_id": SID2, "home": str(chat_home), "xdg_data_home": ""}
+            ),
+            encoding="utf-8",
+        )
+        original_runner = self._runner()
+
+        def run(argv, **kwargs):
+            self.session_dir = session
+            return original_runner(argv, **kwargs)
+
+        request = _request()
+        request["target"] = {
+            "session_id": SID2,
+            "letter": "CC",
+            "host": "mac",
+            "generation": 1,
+        }
+        answer = self._deliver(
+            request, runner=run, resolve_row=_row(native_session_id=SID2)
+        )
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        # The child resolves the same store the delivery read, from this host's HOME.
+        self.assertEqual(
+            self.calls[0]["env"]["XDG_DATA_HOME"],
+            str(chat_home / ".local" / "share"),
+        )
+        self.assertEqual(self.calls[0]["env"]["HOME"], str(self.home))
+
     def test_unheld_chat_gets_one_headless_run_in_its_own_session(self) -> None:
         answer = self._deliver()
         delivery = answer["delivery"]
