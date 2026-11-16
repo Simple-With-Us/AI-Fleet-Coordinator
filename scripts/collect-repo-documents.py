@@ -30,10 +30,12 @@ from urllib.parse import quote, unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import remote_git_source
 import repo_catalog
+from fleet_lanes.code_main_sync import CANONICAL_OWNERS
 
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSIONS = {1, 2}
 COLLECTION_POLICY_ID = repo_catalog.COLLECTION_POLICY_ID
+COLLECTION_IDENTITY_VERSION = 1
 VERIFIED_PRIVATE_DOC_REPOS = {
     "simple-with-us/fleet-ops",
     "simple-with-us/kodus-config",
@@ -82,12 +84,15 @@ class Blob:
     size_bytes: int | None = None
 
 
-def _fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
+def _fsync_directory(path: Path, *, fd: int | None = None) -> None:
+    owned = fd is None
+    if owned:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         os.fsync(fd)
     finally:
-        os.close(fd)
+        if owned:
+            os.close(fd)
 
 
 @contextmanager
@@ -146,6 +151,28 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
             os.close(fd)
 
 
+def _git_read_environment() -> dict[str, str]:
+    """Preserve normal host trust while refusing caller source/config injection."""
+    excluded = {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    }
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in excluded and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
+    return env
+
+
 def _run_git(
     repo: Path,
     *args: str,
@@ -160,14 +187,7 @@ def _run_git(
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=60,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "GIT_OPTIONAL_LOCKS": "0",
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_NO_LAZY_FETCH": "1",
-            },
+            env=_git_read_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         raise CollectionError("Git operation timed out after 60 seconds") from exc
@@ -247,6 +267,28 @@ def _github_owner_repo(remote: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
+def _private_opt_in_identity(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, str) or not value or value != value.strip() or value.count("/") != 1:
+        return None
+    owner, repo = value.split("/", 1)
+    if (
+        not GITHUB_REPO_RE.fullmatch(owner)
+        or not GITHUB_REPO_RE.fullmatch(repo)
+        or owner in {".", ".."}
+        or repo in {".", ".."}
+    ):
+        return None
+    return owner.casefold(), repo.casefold()
+
+
+def _is_verified_private_doc_repo(owner: str, repo: str) -> bool:
+    """Match VERIFIED_PRIVATE_DOC_REPOS against both exact and canonical fleet owners."""
+    exact = f"{owner}/{repo}".casefold()
+    canonical_owner = CANONICAL_OWNERS.get(owner.casefold(), owner)
+    canonical = f"{canonical_owner}/{repo}".casefold()
+    return exact in VERIFIED_PRIVATE_DOC_REPOS or canonical in VERIFIED_PRIVATE_DOC_REPOS
+
+
 def _repo_info(path: Path) -> RepoInfo | None:
     if path.is_symlink() or not path.is_dir() or repo_catalog.is_scratch_dir_name(path.name):
         return None
@@ -255,7 +297,7 @@ def _repo_info(path: Path) -> RepoInfo | None:
         resolved = path.resolve()
         if top != resolved:
             return None
-        remote = os.fsdecode(_run_git(path, "remote", "get-url", "origin").strip())
+        remote = os.fsdecode(_run_git(path, "config", "--get", "remote.origin.url").strip())
         parsed = _github_owner_repo(remote)
         if parsed is None:
             return None
@@ -313,18 +355,24 @@ def discover_repositories(
             if info is not None and (requested is None or info.name == requested):
                 candidates.append(info)
 
+    private_opt_in_identity = _private_opt_in_identity(private_docs_repo)
     for descriptor in git_source_descriptors or []:
         try:
             snapshot = remote_git_source.load_descriptor(Path(descriptor).expanduser())
             identity = snapshot.identity
             owner, name = identity["owner_repo"].split("/")
-            if identity["visibility"] == "private" and private_docs_repo != identity["owner_repo"]:
+            descriptor_identity = _private_opt_in_identity(identity["owner_repo"])
+            private_opt_in_matches = (
+                private_opt_in_identity is not None
+                and descriptor_identity is not None
+                and private_opt_in_identity == descriptor_identity
+            )
+            if identity["visibility"] == "private" and not private_opt_in_matches:
                 raise CollectionError(
                     "Private remote source requires its exact --private-docs-repo identity"
                 )
-            if (
-                identity["visibility"] == "private"
-                and identity["owner_repo"].casefold() not in VERIFIED_PRIVATE_DOC_REPOS
+            if identity["visibility"] == "private" and not _is_verified_private_doc_repo(
+                owner, name
             ):
                 raise CollectionError(
                     "Private remote source is not configured for a verified private repository"
@@ -342,7 +390,7 @@ def discover_repositories(
             selected, _, _ = _select_blobs(
                 info,
                 _parse_tree(info),
-                include_private_audits=private_docs_repo == identity["owner_repo"],
+                include_private_audits=private_opt_in_matches,
             )
             snapshot.require_selected(set(selected))
             candidates.append(info)
@@ -677,6 +725,11 @@ def _load_previous_manifest(path: Path, repo_name: str) -> dict[str, Any]:
     raw = _read_existing(path)
     if raw is None:
         return {}
+    return parse_existing_manifest(raw, repo_name)
+
+
+def parse_existing_manifest(raw: bytes, repo_name: str) -> dict[str, Any]:
+    """Validate manifest bytes already read through a caller's anchored file descriptor."""
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1061,6 +1114,22 @@ def _build_manifest(
         "files": dict(sorted(current.items())),
         "missing_local_links": missing_links,
     }
+    if "collection_identity_version" in previous:
+        previous_identity_version = previous["collection_identity_version"]
+        if (
+            type(previous_identity_version) is not int
+            or previous_identity_version != COLLECTION_IDENTITY_VERSION
+        ):
+            raise CollectionError(
+                "Existing manifest has an unsupported collection identity version"
+            )
+    else:
+        previous_identity_version = None
+    owner_repo = manifest["owner_repo"]
+    if previous_identity_version == COLLECTION_IDENTITY_VERSION or (
+        previous and previous.get("owner_repo") != owner_repo
+    ):
+        manifest["collection_identity_version"] = COLLECTION_IDENTITY_VERSION
     if private_docs_opt_in is not None:
         manifest["private_docs_opt_in"] = private_docs_opt_in
     if repo.snapshot is not None:
@@ -1082,6 +1151,15 @@ def _manifest_version_key(manifest: dict[str, Any]) -> str:
         commit = f"{commit}-private-docs"
     if manifest.get("source_provenance"):
         commit = f"{commit}-git-relay"
+    if "collection_identity_version" in manifest:
+        identity_version = manifest["collection_identity_version"]
+        if type(identity_version) is not int or identity_version != COLLECTION_IDENTITY_VERSION:
+            raise CollectionError("Manifest has an unsupported collection identity version")
+        owner_repo = manifest.get("owner_repo")
+        if not isinstance(owner_repo, str):
+            raise CollectionError("Manifest collection identity is invalid")
+        identity_hash = hashlib.sha256(owner_repo.encode("utf-8")).hexdigest()[:12]
+        commit = f"{commit}-identity-{identity_hash}"
     return commit
 
 
@@ -1482,10 +1560,40 @@ def collect_repository(
     manifest_path = _safe_output_path(repo_root, "manifest.json")
     previous = _load_previous_manifest(manifest_path, repo.name)
     previous_private_opt_in = previous.get("private_docs_opt_in")
-    if previous_private_opt_in is not None and previous_private_opt_in != private_docs_opt_in:
-        raise CollectionError(
-            "An existing private-document collection requires the same explicit opt-in"
+    if "private_docs_opt_in" in previous:
+        previous_private_identity = _private_opt_in_identity(previous_private_opt_in)
+        current_private_identity = _private_opt_in_identity(private_docs_opt_in)
+        previous_owner_identity = _private_opt_in_identity(previous.get("owner_repo"))
+        current_owner_identity = _private_opt_in_identity(f"{repo.owner}/{repo.name}")
+        same_private_identity = (
+            previous_private_identity is not None
+            and current_private_identity is not None
+            and previous_owner_identity is not None
+            and current_owner_identity is not None
+            and previous_private_identity
+            == current_private_identity
+            == previous_owner_identity
+            == current_owner_identity
         )
+        if not same_private_identity:
+            if (
+                current_private_identity is not None
+                and current_owner_identity is not None
+                and current_private_identity == current_owner_identity
+                and previous_owner_identity is not None
+                and previous_owner_identity != current_owner_identity
+            ):
+                previous_owner_repo = previous["owner_repo"]
+                current_owner_repo = f"{repo.owner}/{repo.name}"
+                raise CollectionError(
+                    f"Private-document consent for {previous_owner_repo} cannot transfer to "
+                    f"{current_owner_repo}. The existing private collection remains unchanged; "
+                    "continue only after a separately reviewed migration explicitly re-authorizes "
+                    f"private-document collection for {current_owner_repo}."
+                )
+            raise CollectionError(
+                "An existing private-document collection requires the same explicit opt-in"
+            )
     previous_catalog: dict[str, Any] | None = None
     previous_catalog_bytes: bytes | None = None
     if previous:
@@ -1508,10 +1616,11 @@ def collect_repository(
         previous_report_readme = _safe_output_path(
             repo_root, f"reports/{previous_version_key}/README.md"
         )
-        previous_report_expected = _version_readme(
-            RepoInfo(repo.path, repo.owner, repo.name, previous["source_ref"], previous_commit),
-            previous,
+        previous_owner, previous_name = previous["owner_repo"].split("/", 1)
+        previous_repo_info = RepoInfo(
+            repo.path, previous_owner, previous_name, previous["source_ref"], previous_commit
         )
+        previous_report_expected = _version_readme(previous_repo_info, previous)
         if _read_existing(previous_report_readme) != previous_report_expected:
             raise CollectionError("An immutable versioned report README was changed or deleted")
         if previous.get("collection_policy_id"):
@@ -1540,9 +1649,7 @@ def collect_repository(
             if _read_existing(versioned_catalog_path) != previous_catalog_bytes:
                 raise CollectionError("Versioned catalog differs from its current copy")
         old_readme = _read_existing(_safe_output_path(repo_root, "README.md"))
-        old_repo_info = RepoInfo(
-            repo.path, repo.owner, repo.name, previous["source_ref"], previous_commit
-        )
+        old_repo_info = previous_repo_info
         expected_old_readme = (
             _legacy_repo_readme(old_repo_info, previous)
             if not previous.get("collection_policy_id")
@@ -1641,12 +1748,16 @@ def _collect_unlocked(
     )
     private_repo: tuple[str, str] | None = None
     if private_docs_repo is not None:
-        private_repo = _github_owner_repo(f"https://github.com/{private_docs_repo}.git")
-        if private_repo is None or "/" not in private_docs_repo:
+        if _private_opt_in_identity(private_docs_repo) is None:
             raise CollectionError(
                 "Private-docs opt-in must be an exact GitHub owner/repository name"
             )
-        if f"{private_repo[0]}/{private_repo[1]}".casefold() not in VERIFIED_PRIVATE_DOC_REPOS:
+        private_repo = _github_owner_repo(f"https://github.com/{private_docs_repo}.git")
+        if private_repo is None:
+            raise CollectionError(
+                "Private-docs opt-in must be an exact GitHub owner/repository name"
+            )
+        if not _is_verified_private_doc_repo(private_repo[0], private_repo[1]):
             raise CollectionError(
                 "Private-docs opt-in is not configured for a verified private repository"
             )
@@ -1816,9 +1927,14 @@ def collect(
     )
     repositories, _ = discovered
     if git_source_descriptors and private_docs_repo is not None:
-        private_identity = private_docs_repo.casefold()
-        if private_identity not in VERIFIED_PRIVATE_DOC_REPOS or not any(
-            f"{repo.owner}/{repo.name}".casefold() == private_identity for repo in repositories
+        private_identity = _private_opt_in_identity(private_docs_repo)
+        if (
+            private_identity is None
+            or not _is_verified_private_doc_repo(private_identity[0], private_identity[1])
+            or not any(
+                (repo.owner.casefold(), repo.name.casefold()) == private_identity
+                for repo in repositories
+            )
         ):
             raise CollectionError(
                 "Private-docs opt-in must match an exact verified repository in this collection"

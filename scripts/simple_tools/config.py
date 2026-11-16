@@ -134,6 +134,7 @@ SEAT_KEYS: frozenset[str] = frozenset(
         "held_back",
         "live",
         "routine",
+        "bracket_recipient_wakes",
         "email_env",
         "key_env",
         "site_env",
@@ -507,6 +508,7 @@ class SeatConfig:
         fallback_uncontained_ok: bool = False,
         fallback_model: str = OPENROUTER_FALLBACK_MODEL,
         typing_indicator: bool = False,
+        bracket_recipient_wakes: bool = False,
         bearer_file: str | None = None,
         config_problems: list[str] | None = None,
     ) -> None:
@@ -557,6 +559,12 @@ class SeatConfig:
         # the conversation, so each seat turns it on for itself.  The indicator is cosmetic and
         # never changes whether the seat answers.
         self.typing_indicator = typing_indicator
+        # The per-seat switch for bracket-recipient wakes.  Off by default:  a post whose leading
+        # header names the seat in its recipient list (after the arrow) then counts as addressing
+        # the seat the way its own mention does, so the seat wakes without an @.  Only the
+        # recipient list counts - never the header's sender tag, and never code or quotes - and
+        # every wake guard (loop guard, budgets, coalescing) applies unchanged.
+        self.bracket_recipient_wakes = bracket_recipient_wakes
         self.held_back: dict[str, Any] = (
             held_back if held_back is not None else held_back_defaults(wake)
         )
@@ -1426,6 +1434,12 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(typing_indicator, bool):
             wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
             typing_indicator = False
+        bracket_recipient_wakes = section.get("bracket_recipient_wakes", False)
+        if not isinstance(bracket_recipient_wakes, bool):
+            wake_problems.append(
+                "seat.%s.bracket_recipient_wakes must be true or false" % seat_name
+            )
+            bracket_recipient_wakes = False
         if "bearer_locator" in section:
             wake_problems.append(
                 "seat.%s.bearer_locator is retired:  name bearer_file instead, an absolute path to the "
@@ -1716,6 +1730,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback_uncontained_ok=uncontained,
             fallback_model=fallback_model,
             typing_indicator=typing_indicator,
+            bracket_recipient_wakes=bracket_recipient_wakes,
             bearer_file=bearer_file,
             config_problems=wake_problems,
         )

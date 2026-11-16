@@ -10,10 +10,48 @@ from pathlib import Path
 from unittest import mock
 
 import fleet_infisical
+
 from fleet_knobs.tests._fake import ScopedReadAPI
 
 
 class SharedClientTests(unittest.TestCase):
+    def test_missing_shared_client_keeps_import_safe_and_returns_process_local_reason(self):
+        scripts = str(Path(__file__).resolve().parents[2])
+        boot = """
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.modules['fleet_infisical'] = None
+from fleet_knobs import source
+try:
+    source.fetch({'OPERATOR_API_URL'})
+except source.FetchFailed as exc:
+    print(exc.reason)
+else:
+    raise AssertionError('missing client allowed a read')
+"""
+        with tempfile.TemporaryDirectory() as home:
+            proc = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", boot, scripts],
+                env={"HOME": home, "PATH": "/unavailable"},
+                cwd=home,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "scoped-reader-unavailable")
+
+    def test_listener_image_includes_shared_client_in_payload_and_build_context(self):
+        server = Path(__file__).resolve().parents[2] / "simple_tools" / "server"
+        self.assertIn(
+            "COPY scripts/fleet_infisical.py /app/scripts/",
+            (server / "Dockerfile").read_text().splitlines(),
+        )
+        self.assertIn(
+            "!scripts/fleet_infisical.py",
+            (server / "Dockerfile.dockerignore").read_text().splitlines(),
+        )
+
     def test_legacy_import_is_an_alias_to_one_client(self):
         from fleet_secrets import core
 
@@ -21,7 +59,7 @@ class SharedClientTests(unittest.TestCase):
         self.assertIs(core.SecretsError, fleet_infisical.SecretsError)
 
     def test_real_scoped_read_runs_without_legacy_application_or_executable(self):
-        scripts = str(Path(__file__).resolve().parent)
+        scripts = str(Path(__file__).resolve().parents[2])
         boot = """
 import json,sys
 sys.path.insert(0, sys.argv[1])
@@ -30,7 +68,9 @@ sys.modules['fleet_secrets.core'] = None
 from fleet_knobs import source
 import fleet_infisical
 assert source._load_helper() is fleet_infisical
-print(json.dumps(source.fetch({'OPERATOR_API_URL'})))
+result = source.fetch({'OPERATOR_API_URL'})
+assert result == {'OPERATOR_API_URL': 'https://operator.invalid'}
+print(json.dumps(sorted(result)))
 """
         with (
             tempfile.TemporaryDirectory() as home,
@@ -57,7 +97,7 @@ print(json.dumps(source.fetch({'OPERATOR_API_URL'})))
                         self.assertEqual(proc.returncode, 0, proc.stderr)
                         self.assertEqual(
                             json.loads(proc.stdout),
-                            {"OPERATOR_API_URL": "https://operator.invalid"},
+                            ["OPERATOR_API_URL"],
                         )
                         self.assertEqual(len(api.requests), 2)
                     self.assertNotIn(api.token, proc.stdout + proc.stderr)
@@ -72,7 +112,7 @@ class NamesOnlyTests(unittest.TestCase):
             "workspace": self.project,
             "scopes": [{"environment": "prod", "secretPath": self.path}],
             "permissions": ["read"],
-            "expiresAt": None,
+            "expiresAt": "2099-01-01T00:00:00Z",
         }
         self.records = [self.record("B_KEY"), self.record("A_KEY")]
 
@@ -174,6 +214,48 @@ class NamesOnlyTests(unittest.TestCase):
                             self.project, self.path, env, token=token
                         )
                 api.assert_not_called()
+
+    def test_every_route_requires_future_timezone_aware_expiry_before_values(self):
+        invalid = (
+            None,
+            "",
+            False,
+            1,
+            "invalid-expiry",
+            "Infinity",
+            "2000-01-01T00:00:00Z",
+            "2099-01-01T00:00:00",
+        )
+        for route in ("names", "reader", "writer"):
+            for expiry in (*invalid, "missing"):
+                with self.subTest(route=route, expiry=expiry):
+                    metadata = dict(self.metadata, expiresAt=expiry)
+                    if expiry == "missing":
+                        metadata.pop("expiresAt")
+                    if route == "writer":
+                        metadata["permissions"] = ["read", "write"]
+                    with (
+                        mock.patch.object(
+                            fleet_infisical, "_api_json", return_value=(200, metadata)
+                        ) as api,
+                        self.assertRaisesRegex(
+                            fleet_infisical.SecretsError, "token-expired-or-invalid"
+                        ),
+                    ):
+                        if route == "names":
+                            fleet_infisical.list_project_names(
+                                self.project, self.path, self.env, token=self.token
+                            )
+                        else:
+                            fleet_infisical.fetch_project(
+                                self.project,
+                                self.path,
+                                self.env,
+                                token=self.token,
+                                writer=route == "writer",
+                                names=("A_KEY",),
+                            )
+                    self.assertEqual(api.call_count, 1)
 
 
 if __name__ == "__main__":

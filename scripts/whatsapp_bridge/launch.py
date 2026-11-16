@@ -1,6 +1,6 @@
 """Isolated service-token startup adapter; inert until approved installation.
 
-The reviewed fleet_secrets package is copied to release/lib at deploy.  Each
+The shared fleet_infisical module and compatibility package are copied to release/lib at deploy.  Each
 mode reads its own dedicated, server-scoped, read-only AFC service token from
 systemd LoadCredential.  Ambient/shared credentials are never a fallback.
 """

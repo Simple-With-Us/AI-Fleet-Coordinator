@@ -1226,7 +1226,7 @@ try {
     assert.deepEqual(dmSent.json.result.structuredContent, { id: dm.id, user_ids: [OWNER_ID], duplicate: false });
     assert.equal(dm.type, "private");
     assert.equal(dm.sender_email, "grok-web-bot@simplewithus.zulipchat.com");
-    assert.equal(dm.content, "[GROK-WEB→JAY] Direct note from Grok.\u00a0 Please read.");
+    assert.equal(dm.content, "[GROK-WEB → JAY] Direct note from Grok.\u00a0 Please read.");
     const answer = zulip.addDm("Jay Wedgeworth", [], "Got it, thanks");
     const dmRead = await call(t.body.access_token, "zulip_dm_read", { emails: ["jay@zulip.test"] });
     assert.deepEqual(fencedItems(dmRead.json.result).map((item) => item.id), [dm.id, answer.id]);

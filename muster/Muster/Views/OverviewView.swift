@@ -124,9 +124,41 @@ struct OverviewView: View {
                     }
                 }
                 watchLine
+                Divider()
+                    .padding(.vertical, 4)
+                Text("Fleet & Operator")
+                    .font(.headline)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 185), spacing: 12)], spacing: 12) {
+                    quickDestinationCard(.operator, detail: "Letter registry, live chats & wakes")
+                    quickDestinationCard(.seats, detail: "Seat leases, sessions & quota")
+                    quickDestinationCard(.appsAndWork, detail: "Apps, pull requests & claims")
+                    quickDestinationCard(.actionHistory, detail: "Audit log of actions")
+                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func quickDestinationCard(_ destination: MusterDestination, detail: String) -> some View {
+        OverviewCardButton(hint: "Opens \(destination.title)") {
+            selection = destination
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Label(destination.title, systemImage: destination.systemImage)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
