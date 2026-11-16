@@ -28,6 +28,7 @@ FILES = (
     "fleet_knobs/values.py",
     "fleet_secrets/__init__.py",
     "fleet_secrets/core.py",
+    "fleet_infisical.py",
     "collect-repo-documents.py",
     "export-repo-git-source.py",
     "remote_git_source.py",

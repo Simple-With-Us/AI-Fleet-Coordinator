@@ -629,6 +629,23 @@ class WriteIntentTests(unittest.TestCase):
                             core.fetch_project(PROJECT, PATH, {}, token=self.token, names=(NAME,))
         self.assertFalse(self.directory.exists())
 
+    def test_clear_unsettled_write_unblocks_namespace_and_tombstones_old_intent(self):
+        self.statuses, self.no_ack = [0], True
+        self.assert_outcome("outcome_unknown", self.put)
+        self.assert_outcome("prior_outcome_unknown", lambda: self.put(self.new_intent()))
+        cleared = core.clear_unsettled_write(NAME, PATH, self.env, intent=self.intent)
+        self.assertEqual(
+            (cleared.outcome, cleared.result, cleared.replayed), ("cleared", "cleared", False)
+        )
+        replayed = core.clear_unsettled_write(NAME, PATH, self.env, intent=self.intent)
+        self.assertEqual(
+            (replayed.outcome, replayed.result, replayed.replayed), ("cleared", "cleared", True)
+        )
+        self.assert_outcome("cancelled", self.reconcile)
+        self.statuses, self.no_ack = [200], False
+        self.intent = self.new_intent()
+        self.assertEqual(self.put().result, "updated")
+
 
 class ReadOnlyInstallTests(unittest.TestCase):
     def test_actual_linux_entrypoint_help_works_with_spec_loaded_fi_and_no_auth(self):
