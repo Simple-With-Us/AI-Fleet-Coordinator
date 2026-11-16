@@ -95,6 +95,9 @@ struct ListenerStatus: Decodable, Equatable {
         var routine: Routine?
         /// Whether the seat may route a wake to another seat.
         var routeEnabled: Bool?
+        /// Whether the seat wakes on being named in a leading bracket intro's recipient list.
+        /// An eavesdropper from before the switch does not publish it.
+        var bracketRecipientWakes: Bool?
 
         enum CodingKeys: String, CodingKey {
             case bot, provider, creds, connected, paused
@@ -105,6 +108,7 @@ struct ListenerStatus: Decodable, Equatable {
             case chatNudges = "chat_nudges"
             case quota, routine
             case routeEnabled = "route_enabled"
+            case bracketRecipientWakes = "bracket_recipient_wakes"
         }
     }
 
@@ -566,6 +570,7 @@ extension ListenerStatus.Seat {
         quota = container.lenient(ListenerStatus.Quota.self, .quota)
         routine = container.lenient(ListenerStatus.Routine.self, .routine)
         routeEnabled = container.lenient(Bool.self, .routeEnabled)
+        bracketRecipientWakes = container.lenient(Bool.self, .bracketRecipientWakes)
     }
 }
 

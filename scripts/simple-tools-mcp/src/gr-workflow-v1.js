@@ -232,10 +232,10 @@ export const WF_V1_READ_ACTIONS = Object.freeze(['wf_installation_metadata','wf_
 // candidate note sends seats at a refusal.  Give those two the working routes instead;
 // the note stays for the rest (it predates workflow verbs being enabled).
 const UNGRANTED_GUIDANCE = new Map([
-  ['wf_pr_create', 'UNGRANTED: no seat policy grants this verb.  PR creation runs through gr_open_pr, which opens the PR under the owner\'s account by owner design: review tooling does not review bot-identity PRs (owner 2026-10-21).  On relay failure, gh fallback under your own App is allowed per the owner\'s 2026-11-10 route direction with same-day logging in the Fleet GitOPS deficiencies document - EXCEPT operations whose identity the owner reserved: a seat-App PR is bot-identity and unreviewable, so report the relay failure and hold PR creation instead of substituting gh.'],
+  ['wf_pr_create', 'RETIRED: PR creation requires gr_open_pr. This legacy schema exists only to refuse stale callers; it is not advertised or executable.'],
   ['wf_pr_edit', 'UNGRANTED: no seat policy grants this verb.  PR title/body edits run through gr_edit_pr, which the current seat policy grants.  On relay failure, gh fallback under your own App is allowed per the owner\'s 2026-11-10 route direction; log the deficiency the same day in the Fleet GitOPS deficiencies document.'],
 ]);
-export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
+export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.filter(action => action !== "wf_pr_create").map(action => Object.freeze({
   name: `gr_${action}`, description: UNGRANTED_GUIDANCE.has(action) ? `${SPECS[action][0]} ${UNGRANTED_GUIDANCE.get(action)}` : `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
 })));

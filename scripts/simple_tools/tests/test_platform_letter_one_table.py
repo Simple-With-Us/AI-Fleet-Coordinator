@@ -391,6 +391,89 @@ class SharedBehaviour(Base):
 
     spec = make_spec()
 
+    def test_thread_link_capability_scans_before_registry_configuration_or_transport(self) -> None:
+        import secrets
+        from unittest import mock
+        from simple_tools import registry_api as RA
+
+        private = "synthetic-" + secrets.token_hex(20)
+        env = self.env(SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY=private)
+        original = dict(env)
+        record = PL._thread_link_recorder(PL.Chat(self.spec, env, "server", "scan-1", now=1.0))
+        unsafe = "sk-" + secrets.token_urlsafe(32)  # Fresh synthetic shape, never a credential.
+        for case, value in (("pattern", unsafe), ("parent binding", private)):
+            link = "https://example.test/thread?key=" + value
+            with self.subTest(case=case), mock.patch.object(RA, "base_url") as configured, mock.patch.object(RA, "call") as call:
+                answer = record(link)
+                self.assertEqual(answer, {"code": "thread_link_secret_detected", "error": "thread_link_secret_detected"})
+                self.assertNotIn(link, json.dumps(answer))
+                self.assertNotIn(private, json.dumps(answer))
+                configured.assert_not_called()
+                call.assert_not_called()
+        self.assertEqual(env, original)
+
+    def test_thread_link_capability_uses_parent_configuration_and_bound_location(self) -> None:
+        from unittest import mock
+        from simple_tools import registry_api as RA
+
+        env = self.env(SESSION_LETTER_LOCATION="mac")
+        chat = PL.Chat(self.spec, env, "server", "bound-1", now=1.0)
+        record = PL._thread_link_recorder(chat)
+        with mock.patch.object(RA, "call", return_value={"ok": True}) as call:
+            self.assertEqual(record("zcode://session/bound-1"), {"ok": True})
+        self.assertIs(call.call_args.args[0], env)
+        self.assertEqual(call.call_args.args[2]["location"], "server")
+        self.assertNotIn(RA.KEY_VAR, PL.child_process_env(env))
+
+    def test_optional_thread_link_callback_without_parent_url_is_quiet(self) -> None:
+        import contextlib
+        from unittest import mock
+        from simple_tools import platform_letter_zcode as PZ, registry_api as RA
+
+        env = self.env()
+        env.pop(RA.URL_ENV)
+        original = dict(env)
+        record = PL._thread_link_recorder(PL.Chat(self.spec, env, "server", "optional-1", now=1.0))
+        error = io.StringIO()
+        with mock.patch.object(RA, "call") as call, contextlib.redirect_stderr(error):
+            PZ._record_thread_link(PL.child_process_env(env), "optional-1", record=record)
+        call.assert_not_called()
+        self.assertEqual(error.getvalue(), "")
+        self.assertEqual(env, original)
+
+    def test_advice_receives_only_the_child_environment_and_preserves_parent_context(self) -> None:
+        seen = []
+
+        def advise(request):
+            seen.append(request)
+            return "Keep the assigned title."
+
+        spec = make_spec(title_advice=advise)
+        private = {
+            "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "fake.bootstrap",
+            "FLEET_KNOBS_INFISICAL_TOKEN": "fake.knobs",
+            "FLEET_KNOBS_WRITE_TOKEN": "fake.writer",
+            "INFISICAL_TOKEN": "fake.project",
+            "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "fake.afc",
+            "FLEET_RECALL_INFISICAL_TOKEN": "fake.recall",
+        }
+        env = self.env(AGENT_LAUNCHER="platform-launcher", **private)
+        original = dict(env)
+        chat = PL.Chat(spec, env, "server", "advice-1", now=1.0)
+        note = {"state": "open", "label": "AA", "title": "Words"}
+        self.assertEqual(PL.advice(chat, note, "Words", {}, "start"), "Keep the assigned title.")
+        request = seen[-1]
+        self.assertEqual(request.env["AGENT_LAUNCHER"], "platform-launcher")
+        for name in (*private, "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+            self.assertNotIn(name, request.env)
+        self.assertTrue(callable(request.record_thread_link))
+        self.assertEqual(env, original)
+        self.assertNotIn("fake.bootstrap", repr(request))
+        from dataclasses import asdict
+        serialized = json.dumps(asdict(request), default=str)
+        for value in private.values():
+            self.assertNotIn(value, serialized)
+
     def hook(self, payload: dict, *, now: float, transport=None) -> dict:
         return hook_answer(self.run_hook(self.spec, payload, env=self.env(SESSION_LETTER_LOCATION="server"),
                                          now=now, transport=transport or Calls(self)))
@@ -507,9 +590,11 @@ class RequestCommand(Base):
 
     def test_the_title_writer_is_given_the_chats_own_payload(self) -> None:
         seen = []
+        title_envs = []
 
         def writer(request):
             seen.append(dict(request.data))
+            title_envs.append(dict(request.env))
             return True
 
         spec = make_spec(platform="faux", seat="CODEX", title_in_output=False, title_writer=writer,
@@ -522,10 +607,19 @@ class RequestCommand(Base):
                                                     "source": "startup"})), io.StringIO(), platform="linux")
         seen.clear()
         out = io.StringIO()
-        code = PL.request_main(["--session-id", "f-0001"], self.env(SESSION_LETTER_LOCATION="server"), out,
+        env = self.env(SESSION_LETTER_LOCATION="server", AGENT_LAUNCHER="platform-launcher",
+                       SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN="fake.bootstrap",
+                       FLEET_KNOBS_INFISICAL_TOKEN="fake.old", FLEET_KNOBS_WRITE_TOKEN="fake.writer")
+        original = dict(env)
+        code = PL.request_main(["--session-id", "f-0001"], env, out,
                                platform="linux")
         self.assertEqual(code, 0, out.getvalue())
         self.assertEqual(seen[-1], {"session_id": "f-0001", "source": "startup"})
+        self.assertEqual(title_envs[-1]["AGENT_LAUNCHER"], "platform-launcher")
+        for name in ("SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN", "FLEET_KNOBS_INFISICAL_TOKEN",
+                     "FLEET_KNOBS_WRITE_TOKEN", "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"):
+            self.assertNotIn(name, title_envs[-1])
+        self.assertEqual(env, original)  # The registry successfully used the parent's own signing key.
 
     def test_simple_chat_letter_is_the_same_command(self) -> None:
         out = io.StringIO()

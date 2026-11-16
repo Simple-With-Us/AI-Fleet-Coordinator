@@ -5,9 +5,9 @@ description: Use Linear through the simple-tools MCP tools as the first place to
 
 # Board CLI on Linear (ZC)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 Linear is the system of record for fleet work (owner 2026-10-10), and the simple-tools MCP `linear_*` tools are how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app: ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, C, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
@@ -71,7 +71,7 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 
 ## What you owe Linear
 
-1. **Before substantial work:** list the app.  Claim the existing issue or file then claim.  Name the branch `<seat>/<id>-<slug>` (`zcode/afc-123-zulip-cutover`).
+1. **Before substantial work:** list the app.  Claim the existing issue or file then claim.  Name the branch `<seat>/<id>-<slug>` (`zc/afc-123-zulip-cutover`).
 2. **While working:** keep `--by <YOUR_TAG>`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **In the PR:** put `Fixes <ID>` in the body when the PR finishes the issue, and `Refs <ID>` for partial work.  A `Refs` PR never closes it, even with the id in the branch name.  Once Linear's GitHub automation is on (Jay enables it right after the cutover), a merge moves a `Fixes` issue to Done by itself; `linear_status` with `status` = `completed` does the same by hand, works before then, and is always safe to run.
 4. **When done:** `completed`, or `deployed` only after the production check, with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.

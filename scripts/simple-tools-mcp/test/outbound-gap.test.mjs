@@ -111,6 +111,10 @@ test("gapGitHubArgs gaps only the persisted text fields, and sentence_gap false 
 
 test("every GitHub and Linear prose-writing tool advertises sentence_gap, and nothing else does", () => {
   for (const action of Object.keys(GITHUB_GAP_FIELDS)) {
+    if (action === "wf_pr_create") {
+      assert.equal(HOSTED_TOOLS_BY_NAME.gr_wf_pr_create, undefined);
+      continue;
+    }
     const tool = HOSTED_TOOLS_BY_NAME[`gr_${action}`];
     assert.ok(tool, `gr_${action} is served`);
     assert.equal(tool.inputSchema.properties.sentence_gap?.type, "boolean", `gr_${action}`);

@@ -49,26 +49,7 @@ struct ResourceLimitsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                receiptStatus
-                serverGateNote
-                if let snapshot = reading.snapshot {
-                    summaryCard(snapshot)
-                    cpuCard(snapshot)
-                    memoryCard(snapshot)
-                    borrowingCard(snapshot)
-                    receiptCard(snapshot)
-                } else {
-                    unknownCard
-                }
-            }
-            .frame(maxWidth: 920, alignment: .leading)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .frame(maxWidth: .infinity, alignment: .center)
-        }
+        scrollContent
         .onAppear {
             polling.setActive(scenePhase == .active)
         }
@@ -98,6 +79,35 @@ struct ResourceLimitsView: View {
         }
     }
 
+    /// Both time-dependent parts (the receipt status and the summary) tick on this one schedule,
+    /// anchored at a fixed origin so they are handed the same instant.  The cards below do not
+    /// depend on the time and are not rebuilt on the tick.
+    private static let clockOrigin = Date()
+    private static var tick: PeriodicTimelineSchedule { .periodic(from: clockOrigin, by: 5) }
+
+    private var scrollContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                receiptStatus
+                serverGateNote
+                if let snapshot = reading.snapshot {
+                    timedSummary(snapshot)
+                    cpuCard(snapshot)
+                    memoryCard(snapshot)
+                    borrowingCard(snapshot)
+                    receiptCard(snapshot)
+                } else {
+                    unknownCard
+                }
+            }
+            .frame(maxWidth: 920, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(MusterDestination.serverResourceLimits.title)
@@ -110,10 +120,16 @@ struct ResourceLimitsView: View {
 
     // MARK: - Where the values came from and how old they are
 
-    /// Ticks every second,  so the age it shows is never frozen (RESOURCES-8).
+    /// Status line rendered from the shared `TimelineView` clock (RESOURCES-8).
     private var receiptStatus: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(Self.tick) { context in
             receiptStatusLine(now: context.date)
+        }
+    }
+
+    private func timedSummary(_ snapshot: ResourcePolicySnapshot) -> some View {
+        TimelineView(Self.tick) { context in
+            summaryBody(snapshot, state: reading.state(at: context.date))
         }
     }
 
@@ -213,14 +229,7 @@ struct ResourceLimitsView: View {
         }
     }
 
-    /// One sentence on whether the limits are in effect,  then every named cause or reason.
-    /// A reading that is not current never gets the green check:  it says what the last
-    /// report said,  in a neutral tint (RESOURCES-22).
-    private func summaryCard(_ snapshot: ResourcePolicySnapshot) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            summaryBody(snapshot, state: reading.state(at: context.date))
-        }
-    }
+    // Summary body is driven by `timedSummary`'s TimelineView on the shared tick (RESOURCES-22).
 
     private func summaryBody(_ snapshot: ResourcePolicySnapshot, state: ResourcePolicyReadState) -> some View {
         let applied = snapshot.status == "applied"

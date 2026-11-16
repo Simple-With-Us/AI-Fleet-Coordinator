@@ -144,7 +144,7 @@ def sentence_gap(text: str) -> str:
 # `J. Doe`).  A missed gap is the old behaviour;  a wrong one is a slightly wider space, never changed words.
 #
 # fleet_dates rewrites an ISO date in prose (`2026-10-19`, `2026-10-20T02:03:00Z`) into the fleet form
-# (`Mon, Oct 19`, `Mon, Oct 19, 9:03pm`), in Central, with the year only when it is not this year.  A date inside a
+# (`Mon, Oct 19`, `Mon, Oct 19, 9:03 PM`), in Central, with the year only when it is not this year.  A date inside a
 # name or a path (`backup-2026-10-19.tar`, `/2026-10-19/`) is left alone.
 #
 # Both skip code, math and mentions (the same protected ranges as sentence_gap), and both report what they changed,
@@ -296,7 +296,9 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
         r_hour = r_minute = None
 
     def clock(when: Any) -> str:
-        return str(when.hour % 12 or 12) + when.strftime(":%M") + ("am" if when.hour < 12 else "pm")
+        return (
+            str(when.hour % 12 or 12) + when.strftime(":%M") + (" AM" if when.hour < 12 else " PM")
+        )
 
     try:
         if hour is None:

@@ -636,6 +636,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
     case livePerTopicMinutes
     case liveOwnerPerDay
     case liveLoopTurns
+    case bracketRecipientWakes
     case hostLoadGate
 
     var id: String { rawValue }
@@ -662,6 +663,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         case .livePerTopicMinutes: return "Live minutes per topic"
         case .liveOwnerPerDay: return "Live owner wakes per day"
         case .liveLoopTurns: return "Live loop turns"
+        case .bracketRecipientWakes: return "Bracket-recipient wakes"
         case .hostLoadGate: return "Host load gate"
         }
     }
@@ -709,6 +711,7 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         case .livePerTopicMinutes: return ("live", ["per_topic_minutes"])
         case .liveOwnerPerDay: return ("live", ["owner_per_day"])
         case .liveLoopTurns: return ("live", ["loop_turns"])
+        case .bracketRecipientWakes: return ("bracket_recipient_wakes", [])
         case .hostLoadGate: return ("host_wake_load_per_core", [])
         case .routineURLEnv, .routineKeyEnv, .routineTimeout, .routineMethod, .routineAuth, .routineHeader:
             // Answered above, by the routine key.
@@ -752,6 +755,11 @@ enum WakeSettingKey: String, CaseIterable, Identifiable {
         default:
             return false
         }
+    }
+
+    /// Whether the setting is a switch:  true or false in the file, absent meaning Off.
+    var isBool: Bool {
+        self == .bracketRecipientWakes
     }
 
     /// What a wake cap with no value reads.
@@ -1025,10 +1033,16 @@ struct WakeSetting: Identifiable, Equatable {
     }
 
     /// What the file's column shows when it is not a field:  a wake cap reads No Limit when the
-    /// file was read and holds none, and Paused at 0.  A file that was not read is never No Limit.
+    /// file was read and holds none, and Paused at 0;  a boolean reads Off (default) only when the
+    /// file was read and holds no value.  A file that was not read is never No Limit and never
+    /// claims the daemon's default.
     var fileWords: String {
         if key.isWakeCap, fileLimit != .notKnown {
             return fileLimit.text
+        }
+        if key.isBool, fileLimit != .notKnown {
+            guard case .bool(let on) = configured else { return "Off (default)" }
+            return on ? "On" : "Off"
         }
         return configured?.displayText ?? "not set"
     }
@@ -2066,6 +2080,10 @@ enum WakeSettingsBuilder {
             return live?.live?["owner_per_day"]?.configValue
         case .liveLoopTurns:
             return live?.live?["loop_turns"]?.configValue
+        case .bracketRecipientWakes:
+            // An eavesdropper from before the switch publishes nothing for it:  the live
+            // column then says unpublished,  not Off.
+            return live?.bracketRecipientWakes.map { .bool($0) }
         case .hostLoadGate:
             return nil
         }
@@ -2108,6 +2126,9 @@ enum WakeSettingsBuilder {
             // published is not what the file chooses:  the two differ.  Every other setting the
             // file leaves out is the eavesdropper's default.
             if key.isWakeCap, live != nil { return .drift }
+            // A bool switch the file leaves out is Off by default, so a published On is not what
+            // the file chooses either.
+            if key.isBool, live == .bool(true) { return .drift }
             return .unset
         }
         guard let live else {

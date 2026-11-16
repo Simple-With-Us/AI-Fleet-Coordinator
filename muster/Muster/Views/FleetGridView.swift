@@ -168,10 +168,11 @@ struct FleetGridView: View {
                 // through a sleep reads its results as past their limit when it wakes.
                 TimelineView(.everyMinute) { context in
                     let now = GridPresentation.effectiveNow(timelineDate: context.date, wokeAt: wokeAt)
+                    let roster = visibleRoster
                     VStack(alignment: .leading, spacing: 0) {
                         scopeBlock
                             .padding(.bottom, 12)
-                        filterBar
+                        filterBar(visibleCount: roster.count)
                             .padding(.bottom, 12)
                         // A run in flight keeps the last answer on screen,  and says so in
                         // neutral words:  checking again is not a fault.
@@ -184,10 +185,10 @@ struct FleetGridView: View {
                                 .padding(.bottom, 10)
                         }
                         header(now: now)
-                        if visibleRoster.isEmpty {
+                        if roster.isEmpty {
                             emptyState
                         } else {
-                            ForEach(visibleRoster, id: \.self) { seat in
+                            ForEach(roster, id: \.self) { seat in
                                 row(for: seat, now: now)
                             }
                         }
@@ -393,7 +394,7 @@ struct FleetGridView: View {
         .padding(.vertical, 14)
     }
 
-    private var filterBar: some View {
+    private func filterBar(visibleCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
                 Picker("Seats", selection: $gridFilter) {
@@ -409,7 +410,7 @@ struct FleetGridView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .frame(maxWidth: 200)
                 Spacer()
-                Text("\(visibleRoster.count) of \(store.roster.count) seat(s)")
+                Text("\(visibleCount) of \(store.roster.count) seat(s)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
