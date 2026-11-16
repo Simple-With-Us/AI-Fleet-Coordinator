@@ -895,6 +895,27 @@ struct OpsCommandBuilder {
         )
     }
 
+    /// The read-only route that asks the server for the Operator's letter registry:
+    /// `server operator-sessions server --plan --json`.  It changes nothing, so it needs no sheet
+    /// and no Touch ID, and the helper takes `--plan` and the target `server` only.  It goes
+    /// through `serverInvocation`, as every server read does, so the route is built in one place.
+    func operatorSessionsInvocation() -> OpsInvocation {
+        serverInvocation(
+            tail: ["server", "operator-sessions", "server", "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
+    /// The read-only route that asks the server for the Operator's wake record:
+    /// `server operator-wakes server --plan --json`.  Like `operatorSessionsInvocation`, it
+    /// changes nothing and needs no sheet.
+    func operatorWakesInvocation() -> OpsInvocation {
+        serverInvocation(
+            tail: ["server", "operator-wakes", "server", "--plan", "--json"],
+            timeout: OpsControlRoute.planTimeout
+        )
+    }
+
     private func serverInvocation(tail: [String], timeout: TimeInterval) -> OpsInvocation {
         OpsInvocation(
             executable: OpsControlRoute.ssh,

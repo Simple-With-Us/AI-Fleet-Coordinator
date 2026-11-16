@@ -706,6 +706,87 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: twice.config, encoding: .utf8), both)
     }
 
+    /// The bracket-recipient switch:  read, shown, written on, and taken back out.  Off is the
+    /// default, so the panel never writes an explicit `false`:  Off takes the setting out.
+    func test_the_bracket_recipient_switch_round_trips() throws {
+        let config = """
+        [seat.MM]
+        bot = "MM"
+        routine = { url_env = "MM_ROUTINE_URL", key_env = "MM_ROUTINE_KEY" }
+        bracket_recipient_wakes = true
+        """
+        let document = ListenerConfigDocument(text: config)
+        let location = WakeSettingKey.bracketRecipientWakes.location(seat: "MM", in: document)
+        XCTAssertEqual(location.section, "seat.MM")
+        XCTAssertEqual(location.key, "bracket_recipient_wakes")
+        XCTAssertTrue(WakeSettingKey.bracketRecipientWakes.isBool)
+        XCTAssertFalse(WakeSettingKey.bracketRecipientWakes.isWakeCap)
+        XCTAssertEqual(WakeSettingKey.bracketRecipientWakes.value(from: "true"), .bool(true))
+        XCTAssertEqual(WakeSettingKey.bracketRecipientWakes.value(from: "false"), .bool(false))
+        XCTAssertNil(WakeSettingKey.bracketRecipientWakes.value(from: "perhaps"))
+
+        let seat = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: statusJSON)).seats.first)
+        let setting = try XCTUnwrap(seat.settings.first(where: { $0.key == .bracketRecipientWakes }))
+        XCTAssertEqual(setting.configured, .bool(true))
+        XCTAssertEqual(setting.fileWords, "On")
+
+        let space = try makeWorkspace(config: config)
+        let writer = WakeSettingsWriter(configURL: space.config, partitionURL: space.partition)
+        try writer.apply([WakeSettingsWriter.Edit(seat: "MM", key: .bracketRecipientWakes, value: nil)])
+        var written = try String(contentsOf: space.config, encoding: .utf8)
+        XCTAssertNil(ListenerConfigDocument(text: written).value(section: "seat.MM", key: "bracket_recipient_wakes"))
+        XCTAssertTrue(written.contains("[seat.MM]"))
+
+        try writer.apply([WakeSettingsWriter.Edit(seat: "MM", key: .bracketRecipientWakes, value: .bool(true))])
+        written = try String(contentsOf: space.config, encoding: .utf8)
+        XCTAssertEqual(ListenerConfigDocument(text: written).value(section: "seat.MM", key: "bracket_recipient_wakes"), .bool(true))
+        XCTAssertEqual(ListenerConfigDocument(text: written).problems, [])
+
+        // A file that holds nothing for the switch reads Off by default, never as a missing value.
+        let bare = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: """
+            [seat.MM]
+            bot = "MM"
+            routine = { url_env = "MM_ROUTINE_URL", key_env = "MM_ROUTINE_KEY" }
+            """, status: statusJSON)).seats.first)
+        XCTAssertEqual(bare.settings.first(where: { $0.key == .bracketRecipientWakes })?.fileWords, "Off (default)")
+
+        // An eavesdropper that publishes the switch gives the live column;  one from before it
+        // (the shared statusJSON above) decodes clean and publishes nothing.
+        XCTAssertNil(setting.live)
+        let publishing = """
+        {
+          "running": true,
+          "pid": 29131,
+          "status": {
+            "seats": {
+              "MM": {
+                "bot": "MM",
+                "routine": {"ready": true, "host": "routines.example"},
+                "connected": true,
+                "bracket_recipient_wakes": true,
+                "budget": {"wakes_per_hour": 5},
+                "live": {"per_day": 30}
+              }
+            },
+            "pause": {},
+            "updated": 1792657970.0
+          }
+        }
+        """
+        let seen = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: config, status: publishing)).seats.first)
+        let seenSetting = try XCTUnwrap(seen.settings.first(where: { $0.key == .bracketRecipientWakes }))
+        XCTAssertEqual(seenSetting.live, .bool(true))
+        XCTAssertEqual(seenSetting.state, .match)
+        let off = try XCTUnwrap(WakeSettingsBuilder.build(sources(config: """
+            [seat.MM]
+            bot = "MM"
+            routine = { url_env = "MM_ROUTINE_URL", key_env = "MM_ROUTINE_KEY" }
+            """, status: publishing)).seats.first)
+        let offSetting = try XCTUnwrap(off.settings.first(where: { $0.key == .bracketRecipientWakes }))
+        XCTAssertEqual(offSetting.live, .bool(true))
+        XCTAssertEqual(offSetting.state, .drift)
+    }
+
     /// A file that changed after the panel read it is not overwritten,  at either step.
     func test_a_file_that_changed_since_it_was_read_is_not_written() throws {
         let space = try makeWorkspace()

@@ -121,7 +121,7 @@ Issues created after the import have no board id.  Their prefix resolves only a
 | `--label`, `label add\|remove`, `list --label` | A flat workspace label from a fixed list: `needs-owner`, `ask-capture`, `fleet-report`, `stale-claim` (see Flat labels) |
 | claimed by, `--mine` | `claimed:<SEAT>` label plus a `CLAIMED` comment (see Claims).  The shared Fleet app cannot tell seats apart, so the label and the tag carry the seat, with a seat app too. |
 | reported or touched by | `seat:<SEAT>` label, attribution only.  The import put it on reporters and claimants alike, and `claim` adds the claimant's.  It is never read as a claim and never removed. |
-| `--by`, authorship | The first line of every issue and comment is the seat tag `[SEAT·session8]` (the session from `--session` or `CLAUDE_CODE_SESSION_ID`). |
+| `--by`, authorship | The seat's own Linear app is the author:  no seat tag line or `Reported by` line is added (AFC-692).  A single-thread seat (`GB-*`, `GROK-BOT`, MA, JET, ECHO, WISE, `BF-*`) has its own leading intro dropped from the body and gets no `Reported by` line on `file`;  a multi-threaded seat's intro is posted as typed (owner 2026-11-12). |
 | `--where`, `--env`, `--session` on comments | A `Where:` line and a `Sessions:` line at the end of the comment |
 | `--uid` | The issue id is a UUID derived from the routed team, any fallback slug and the uid, so `socratic`, `socratic-trade` and `ST` give the same id.  Before creating, the CLI looks up that id, then an attachment with the uid URL (`https://board.jays.services/uid/<app>/<uid>`, or the uid itself when it is a URL), then an imported issue whose footer says ``External uid: `<uid>` ``. |
 
