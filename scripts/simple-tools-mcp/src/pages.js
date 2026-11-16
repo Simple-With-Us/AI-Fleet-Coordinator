@@ -5,7 +5,7 @@ import { callSeatLabel, renderStatusOverview } from "./status.js";
 // could come from a client (a CIMD document, a registration, a query string)
 // goes through `escapeHtml`.  Copy follows FLEET-UI-COPY.md:  light theme,
 // Title Case headings and buttons, U+00A0 plus a space between sentences
-// (HTML collapses two ASCII spaces), 12-hour times with am or pm on Jay's
+// (HTML collapses two ASCII spaces), 12-hour times with spaced uppercase AM/PM on Jay's
 // clock and no zone abbreviation.
 
 export const SENTENCE_GAP = "\u00a0 ";
@@ -32,7 +32,7 @@ export function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"'`]/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-/** "Fri, Oct 9, 3:15am" on Jay's clock (Central), no zone abbreviation. */
+/** "Fri, Oct 9, 3:15 AM" on Jay's clock (Central), no zone abbreviation. */
 export function ownerTime(ms) {
   if (!Number.isFinite(ms)) return "";
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -45,7 +45,7 @@ export function ownerTime(ms) {
     hour12: true,
   }).formatToParts(new Date(ms));
   const get = (type) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${get("weekday")}, ${get("month")} ${get("day")}, ${get("hour")}:${get("minute")}${get("dayPeriod").toLowerCase()}`;
+  return `${get("weekday")}, ${get("month")} ${get("day")}, ${get("hour")}:${get("minute")} ${get("dayPeriod").toUpperCase()}`;
 }
 
 // `same-origin`, never `no-referrer`:  a browser sends `Origin: null` on a form

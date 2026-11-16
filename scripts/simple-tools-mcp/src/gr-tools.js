@@ -203,6 +203,7 @@ export class GrRelayClient {
   // Workflow verbs get a bounded stream, longer deadline and conservative write
   // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
+    if (action === "wf_pr_create") return {status:403,body:{error:"forbidden"},localFailure:true};
     // Bound depth/nodes/cycles before serialization, then cap raw JSON bytes
     // before recursive Zod parsing. Keep the normalized payload check below.
     const limit = workflowInputLimit(action);
@@ -417,7 +418,7 @@ export const GR_TOOLS = Object.freeze([
   {
     name: "gr_workflow_dispatch",
     title: "Dispatch Workflow",
-    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.",
+    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.  Optional intent_id binds idempotency for a branch-shaped ref and does not read the branch.  Add expected_head_sha with the same intent_id to pin the branch head before send.",
     inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object", maxProperties: 32, additionalProperties: { anyOf: [{ type: "string", maxLength: 1024 }, { type: "number" }, { type: "boolean" }] } }, intent_id: {type:"string",pattern:"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,99}$"}, expected_head_sha: {type:"string",pattern:"^[0-9a-f]{40}$"} }),
   },
   {

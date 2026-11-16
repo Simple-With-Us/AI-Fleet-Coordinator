@@ -90,6 +90,16 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "bad_file_set"):
             release.decode_bundle(json.dumps(self.bundle).encode())
 
+    def test_shared_header_formatter_is_static_and_required_only_for_new_bundles(self):
+        path = "scripts/simple_tools/post_header.py"
+        self.assertIn(path, release.EXACT)
+        self.assertIn(path, release.TOOL_REQUIRED)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+        self.bundle["files"].pop(path)
+        self.bundle["bundle_sha256"] = release.manifest_digest(self.bundle["files"])
+        with self.assertRaisesRegex(release.Refused, "bad_file_set"):
+            release.decode_bundle(json.dumps(self.bundle).encode())
+
     def test_bearer_gate_required_only_for_new_bundles(self):
         path = "scripts/simple_tools/mcp/bearer_gate.py"
         self.assertTrue(release.allowed_path(path))
@@ -366,7 +376,9 @@ class ReleaseTests(unittest.TestCase):
         text = path.read_text()
         self.assertIn(release.MARKER, text)
         self.assertIn("scripts/platform-letter", text)
-        self.assertIn("'/usr/bin/python3', '-I', '-B', str(release", text)
+        # A bash wrapper:  it sources the host's registry env script in shell, then execs the isolated script.
+        self.assertTrue(text.startswith("#!/bin/bash\n"))
+        self.assertIn("exec /usr/bin/python3 -I -B ", text)
         self.assertNotIn("FLEET_CODE_ROOT", text)
         self.assertEqual(path.stat().st_mode & 0o777, 0o755)
 
@@ -1247,6 +1259,120 @@ class ShippedDataFilesTests(unittest.TestCase):
         # half is ReleaseTests.test_simple_git_wrapper_runs_the_helper_only_when_a_trusted_one_is_installed.
         self.assertEqual(release.HELPER_COMMANDS.get("scripts/simple-git"), "simple-git")
         self.assertNotIn("scripts/git-tools/git", release.HELPER_COMMANDS)
+
+
+class RegistryEnvWrapperTests(unittest.TestCase):
+    """The managed `platform-letter` wrapper carries the registry settings into a session-letter hook, in shell:  a hook
+    is launched with no profile, and no Python of this repository reads the host's env script."""
+
+    URL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name).resolve() / "home"
+        (self.home / ".local/bin").mkdir(parents=True)
+        runtime = self.home / ".local/share/fleet-cli/current/scripts"
+        runtime.mkdir(parents=True)
+        # The fake runtime script says, as booleans and a fake tag, what reached it.
+        (runtime / "platform-letter").write_text(
+            "import json, os, sys\n"
+            "tag = os.environ.get('%s', '')\n"
+            "print(json.dumps({'url_set': bool(tag), 'tag': tag, 'argv': sys.argv[1:], 'stdin': sys.stdin.read()}))\n"
+            % self.URL
+        )
+        self.path = self.home / ".local/bin/platform-letter"
+        self.path.write_bytes(release.wrapper(self.home, "scripts/platform-letter"))
+        self.path.chmod(0o755)
+
+    def env_script(self, name, body):
+        path = self.home / ".local/bin" / name
+        path.write_text(body)
+        path.chmod(0o700)
+
+    def run_hook(self, stdin="payload"):
+        done = subprocess.run(
+            [str(self.path), "hook", "--platform", "claude"],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"},
+            timeout=60,
+        )
+        return done.returncode, done.stdout, done.stderr
+
+    def answer(self, stdin="payload"):
+        code, out, err = self.run_hook(stdin)
+        self.assertEqual(code, 0, err)
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 1, "the env script printed into the hook's output")
+        return json.loads(lines[0])
+
+    def test_the_platform_letter_env_script_is_sourced_and_beats_the_operator_one(self):
+        self.env_script("platform-letter-registry-env", "export %s=fake-from-platform\n" % self.URL)
+        self.env_script("operator-registry-env", "export %s=fake-from-operator\n" % self.URL)
+        got = self.answer()
+        self.assertEqual((got["url_set"], got["tag"]), (True, "fake-from-platform"))
+
+    def test_only_the_operator_env_script_is_used_when_that_is_all_there_is(self):
+        # It need not have exported the name (the retired Python read it unexported):  the wrapper exports it.
+        self.env_script("operator-registry-env", "%s=fake-from-operator\n" % self.URL)
+        got = self.answer()
+        self.assertEqual((got["url_set"], got["tag"]), (True, "fake-from-operator"))
+
+    def test_neither_env_script_still_runs_the_hook_without_the_settings(self):
+        got = self.answer()
+        self.assertEqual(got["url_set"], False)
+        self.assertEqual(got["argv"], ["hook", "--platform", "claude"])
+
+    def test_a_failing_or_garbled_env_script_never_stops_the_hook_and_prints_nothing(self):
+        for body in (
+            "echo LOUD-OUTPUT\nexit 3\n",  # exits:  the wrapper must go on without it
+            "echo LOUD-OUTPUT\nfalse\n",  # fails
+            "echo LOUD-OUTPUT\nif [ then fi ((( \n",  # does not parse
+            "echo LOUD-OUTPUT >&2\n. /nonexistent/file\n",
+        ):
+            with self.subTest(body=body):
+                self.env_script("platform-letter-registry-env", body)
+                code, out, err = self.run_hook()
+                self.assertEqual(code, 0, err)
+                self.assertNotIn("LOUD-OUTPUT", out + err)
+                self.assertEqual(len(out.strip().splitlines()), 1)
+        # A script that exits is not half-sourced:  its settings, set before the exit, do not leak.
+        self.env_script("platform-letter-registry-env", "export %s=fake-leak\nexit 3\n" % self.URL)
+        self.assertEqual(self.answer()["url_set"], False)
+
+    def test_the_arguments_and_the_standard_input_reach_the_script_intact(self):
+        self.env_script(
+            "platform-letter-registry-env", "export %s=fake\ncat >/dev/null\n" % self.URL
+        )
+        got = self.answer("a line\nand another\n")
+        self.assertEqual(got["stdin"], "a line\nand another\n")
+        self.assertEqual(got["argv"], ["hook", "--platform", "claude"])
+
+    def test_the_text_names_no_credential_and_no_python_reads_the_env_file(self):
+        text = self.path.read_text()
+        self.assertIn("platform-letter-registry-env", text)
+        self.assertIn("operator-registry-env", text)
+        self.assertEqual(text.count("exec "), 1)
+
+    def test_a_routine_refresh_rewrites_only_an_older_managed_platform_letter_wrapper(self):
+        bin_dir = self.home / ".local/bin"
+        old = ("#!/usr/bin/python3 -I\n" + release.MARKER + "\nimport os\n").encode()
+        self.path.write_bytes(old)
+        plan = release.refreshed_wrapper_plan(self.home)
+        self.assertEqual(list(plan), [self.path])
+        self.assertEqual(plan[self.path][0], release.wrapper(self.home, "scripts/platform-letter"))
+        # A current one, a wrapper the host wrote itself and a link are left alone.
+        self.path.write_bytes(release.wrapper(self.home, "scripts/platform-letter"))
+        self.assertEqual(release.refreshed_wrapper_plan(self.home), {})
+        self.path.write_text("#!/bin/sh\n# the host's own\n")
+        self.assertEqual(release.refreshed_wrapper_plan(self.home), {})
+        self.path.unlink()
+        target = bin_dir / "elsewhere"
+        target.write_bytes(old)
+        self.path.symlink_to(target)
+        self.assertEqual(release.refreshed_wrapper_plan(self.home), {})
 
 
 if __name__ == "__main__":
