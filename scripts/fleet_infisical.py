@@ -8,6 +8,7 @@ CLI login session or credential-file fallback runs.  Values stay in memory.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -59,6 +60,9 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+# Infisical's public wire marker from backend/src/services/secret/secret-fns.ts.
+# https://github.com/Infisical/infisical/blob/main/backend/src/services/secret/secret-fns.ts
+HIDDEN_VALUE_MASK = "<hidden-by-infisical>"
 
 ENV_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 PROJECT_FILE = ".simple-tools/fleet-ops-project-id"
@@ -147,6 +151,8 @@ class SecretsError(Exception):
         super().__init__(message)
         self.message = message
         self.code = code
+        # Stable policy reason; exit status remains backwards compatible.
+        self.reason = message if message == "token-expired-or-invalid" else None
 
 
 class UsageError(SecretsError):
@@ -232,8 +238,7 @@ def check_name(name: str) -> str:
 
 def _base_env(env: Mapping[str, str]) -> dict[str, str]:
     out = dict(env)
-    # An explicit interactive admin session must not inherit an automation identity or
-    # service token that could become an implicit fallback.
+    # The optional version probe never inherits an identity or service token.
     for name in AUTH_ENV_VARS:
         out.pop(name, None)
     out["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
@@ -301,14 +306,8 @@ def fetch_all(
     allow_session: bool = False,
     writer: bool = False,
 ) -> dict[str, str]:
-    """Read one declared folder using its read token unless writer is explicitly requested."""
+    """Read one declared folder with a scoped token; allow_session is a retired compatibility flag."""
     project = infisical_project_id(env, home_dir(env), project_name)
-    if (
-        token is None
-        and not (env.get(project_token_name(project_name)) or "").strip()
-        and allow_session
-    ):
-        return fetch_with_cli_session(project, path, env)
     return fetch_project(project, path, env, token=token, writer=writer)
 
 
@@ -321,50 +320,24 @@ def project_token_name(project_name: str) -> str:
 
 
 def project_name_for_id(project_id: str, env: Mapping[str, str]) -> str:
+    unavailable = []
     for name in PROJECT_SOURCES:
         try:
             if infisical_project_id(env, home_dir(env), name) == project_id:
                 return name
         except SecretsError:
+            env_name, project_file = PROJECT_SOURCES[name]
+            unavailable.append(f"{env_name} or ~/{project_file}")
             continue
-    raise SecretsError("project-token-binding-missing: project id has no configured token binding")
+    detail = "; unavailable or malformed sources: " + ", ".join(unavailable) if unavailable else ""
+    raise SecretsError(
+        "project-token-binding-missing: project id has no configured token binding" + detail
+    )
 
 
 def fetch_with_cli_session(project: str, path: str, env: Mapping[str, str]) -> dict[str, str]:
-    """Explicit interactive read-only admin route; automation must pass a scoped token."""
-    if not sys.stdin.isatty():
-        raise SecretsError("service-token-required: noninteractive reads require a scoped token")
-    cli = find_cli(env)
-    if not cli:
-        raise SecretsError("cli-missing")
-    child = _base_env(env)
-    argv = [
-        cli,
-        "export",
-        f"--env={ENVIRONMENT}",
-        f"--projectId={project}",
-        f"--path={path}",
-        "--format=json",
-        "--silent",
-    ]
-    try:
-        proc = subprocess.run(
-            argv,
-            stdin=None,
-            capture_output=True,
-            timeout=EXPORT_TIMEOUT,
-            cwd="/",
-            env=child,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        raise SecretsError("interactive-session-read-failed") from None
-    if proc.returncode or len(proc.stdout) > MAX_OUTPUT_BYTES:
-        raise SecretsError("interactive-session-read-failed")
-    try:
-        return _pairs(json.loads(proc.stdout.decode("utf-8")))
-    except (ValueError, UnicodeDecodeError):
-        raise SecretsError("fetch-failed: bad-output") from None
+    """Retired compatibility entry; a TTY never authorizes a tokenless consumer read."""
+    raise SecretsError("service-token-required: consumer reads require their own scoped token")
 
 
 def declared_paths(env: Mapping[str, str], path: str, *, writer: bool = False) -> tuple[str, ...]:
@@ -412,13 +385,14 @@ def validate_service_metadata(
     if len(actual_paths) != len(set(actual_paths)) or set(actual_paths) != set(paths):
         raise SecretsError("token-scope-mismatch")
     expiry = metadata.get("expiresAt")
-    if expiry is not None:
-        try:
-            parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-            if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
-                raise ValueError()
-        except (ValueError, TypeError, AttributeError):
-            raise SecretsError("token-expired-or-invalid") from None
+    try:
+        if not isinstance(expiry, str):
+            raise ValueError()
+        parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed <= datetime.now(timezone.utc):  # noqa: UP017 - Imported by Python 3.9 fleet knobs.
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise SecretsError("token-expired-or-invalid") from None
 
 
 def check_service_token(token: str) -> str:
@@ -455,13 +429,13 @@ def verify_service_token(
     return paths
 
 
-def secret_query(project: str, path: str) -> str:
+def secret_query(project: str, path: str, *, values: bool = True) -> str:
     return urllib.parse.urlencode(
         {
             "workspaceId": project,
             "environment": ENVIRONMENT,
             "secretPath": path,
-            "viewSecretValue": "true",
+            "viewSecretValue": "true" if values else "false",
             "expandSecretReferences": "false",
             "recursive": "false",
             "include_imports": "false",
@@ -469,14 +443,11 @@ def secret_query(project: str, path: str) -> str:
     )
 
 
-def validate_secret_record(
+def validate_secret_name_record(
     record: object, project: str, path: str, *, single_scope: bool = True
-) -> tuple[str, str]:
-    if (
-        not isinstance(record, dict)
-        or record.get("type") != "shared"
-        or record.get("secretValueHidden") is True
-    ):
+) -> str:
+    """The shared provenance and name checks for value reads and names-only listing."""
+    if not isinstance(record, dict) or record.get("type") != "shared":
         raise SecretsError("unverified-source")
     for field, expected in (
         ("workspace", project),
@@ -485,8 +456,20 @@ def validate_secret_record(
     ):
         if record.get(field) != expected and not (single_scope and field not in record):
             raise SecretsError("unverified-source")
-    key, value = record.get("secretKey"), record.get("secretValue")
-    if not isinstance(key, str) or not NAME_RE.fullmatch(key) or not isinstance(value, str):
+    key = record.get("secretKey")
+    if not isinstance(key, str) or not NAME_RE.fullmatch(key):
+        raise SecretsError("fetch-failed: bad-output")
+    return key
+
+
+def validate_secret_record(
+    record: object, project: str, path: str, *, single_scope: bool = True
+) -> tuple[str, str]:
+    key = validate_secret_name_record(record, project, path, single_scope=single_scope)
+    if record.get("secretValueHidden") is True:
+        raise SecretsError("unverified-source")
+    value = record.get("secretValue")
+    if not isinstance(value, str):
         raise SecretsError("fetch-failed: bad-output")
     return key, value
 
@@ -586,6 +569,53 @@ def fetch_project(
     return found
 
 
+def list_project_names(
+    project: str,
+    path: str,
+    env: Mapping[str, str],
+    *,
+    token: str | None = None,
+    timeout: float = EXPORT_TIMEOUT,
+) -> tuple[str, ...]:
+    """List one folder's names without requesting or retaining secret values.
+
+    The same transport and grant verifier serve every consumer.  A listing requires
+    exactly this prod folder and read-only permission; ambient folder declarations
+    cannot widen the grant accepted here.
+    """
+    check_path(path)
+    scoped_env = dict(env)
+    scoped_env[ENV_READ_PATHS] = path
+    if token is None:
+        project_name = project_name_for_id(project, scoped_env)
+        token = resolve_token(scoped_env, project_name=project_name)
+    deadline = time.monotonic() + timeout
+    verify_service_token(token, project, path, scoped_env, deadline=deadline)
+    status, payload = _api_json(
+        "GET",
+        "/v3/secrets/raw?" + secret_query(project, path, values=False),
+        token,
+        None,
+        scoped_env,
+        max_bytes=MAX_OUTPUT_BYTES,
+        deadline=deadline,
+    )
+    if status != 200 or not isinstance(payload, dict):
+        raise SecretsError("fetch-failed")
+    records = payload.get("secrets")
+    if not isinstance(records, list):
+        raise SecretsError("fetch-failed: bad-output")
+    found: set[str] = set()
+    for record in records:
+        key = validate_secret_name_record(record, project, path)
+        value = record.get("secretValue")
+        hidden_mask = record.get("secretValueHidden") is True and value == HIDDEN_VALUE_MASK
+        if key in found or (value is not None and value != "" and not hidden_mask):
+            raise SecretsError("unverified-source")
+        found.add(key)
+    return tuple(sorted(found))
+
+
 def _pairs(payload) -> dict[str, str]:
     """Accept the shapes ``export --format=json`` has used:  {KEY: value}, a list of
     {key, value} or {secretKey, secretValue} objects, or an API-style {"secrets": [...]}."""
@@ -605,14 +635,19 @@ def _pairs(payload) -> dict[str, str]:
         raise SecretsError("fetch-failed:  bad-output")
     found: dict[str, str] = {}
     for key, val in pairs:
-        if not isinstance(key, str) or not NAME_RE.match(key):
-            continue  # not usable as an environment variable name
+        if not isinstance(key, str) or not NAME_RE.fullmatch(key):
+            raise SecretsError("fetch-failed: bad-output")
+        if key in found:
+            raise SecretsError("fetch-failed: duplicate-output-key")
         if isinstance(val, bool):
             val = "true" if val else "false"
-        if isinstance(val, (int, float)):
+        elif isinstance(val, (int, float)):
+            if isinstance(val, float) and not math.isfinite(val):
+                raise SecretsError("fetch-failed: bad-output")
             val = str(val)
-        if isinstance(val, str):
-            found[key] = val
+        elif not isinstance(val, str):
+            raise SecretsError("fetch-failed: bad-output")
+        found[key] = val
     return found
 
 
@@ -628,9 +663,9 @@ def fetch_verified(
 ) -> str:
     """One folder-PROVEN secret, through the REST raw-secret endpoint.
 
-    `fetch_all` cannot prove provenance:  the CLI export row's secretPath
-    comes back empty, and a token scoped to one folder silently clamps a
-    --path it cannot read to its own.  Here the ANSWER's own fields must
+    This compatibility entry requires explicit row provenance as well as the
+    scoped metadata shared with fetch_all.  The retired CLI-export route never
+    runs.  Here the ANSWER's own fields must
     show the row came from exactly (Fleet-OPS, prod, `path`):  workspace,
     environment, secretPath, secretKey, and type "shared" (a personal
     override is exactly the shadow-precedence hazard).  Any missing or
@@ -724,6 +759,51 @@ def _opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(_NoRedirect())
 
 
+MAX_JSON_DEPTH = 32
+MAX_JSON_NODES = 100_000
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _invalid_json_constant(value):
+    raise ValueError("nonfinite JSON number")
+
+
+def _decode_json(raw: bytes):
+    """Bound external JSON before any consumer observes its graph."""
+    value = json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_unique_json_object,
+        parse_constant=_invalid_json_constant,
+    )
+    pending = [(value, 0)]
+    nodes = 0
+    while pending:
+        item, depth = pending.pop()
+        nodes += 1
+        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+            raise ValueError("JSON bounds exceeded")
+        if isinstance(item, dict):
+            if nodes + len(pending) + 2 * len(item) > MAX_JSON_NODES:
+                raise ValueError("JSON bounds exceeded")
+            nodes += len(item)
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            if nodes + len(pending) + len(item) > MAX_JSON_NODES:
+                raise ValueError("JSON bounds exceeded")
+            pending.extend((child, depth + 1) for child in item)
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("nonfinite JSON number")
+    return value
+
+
 def _api_json(
     method: str,
     path: str,
@@ -741,7 +821,7 @@ def _api_json(
 
     `max_bytes`, when set, bounds the socket read itself (not a post-read length
     check):  an oversized answer fails closed as (0, None) without the body being
-    buffered whole.  Existing callers pass nothing and keep the unbounded read.
+    buffered whole.  Calls without a narrower cap use MAX_OUTPUT_BYTES.
     """
     base = (env.get(ENV_API) or API_BASE).rstrip("/")
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -774,8 +854,8 @@ def _api_json(
     if max_bytes is not None and len(raw) > max_bytes:
         return 0, None
     try:
-        return status, json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+        return status, _decode_json(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return status, None
 
 

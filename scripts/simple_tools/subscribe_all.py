@@ -158,9 +158,7 @@ def infisical_credentials(realm: str) -> list[Z.Credentials]:
     except ModuleNotFoundError as exc:
         if exc.name != "fleet_infisical":
             raise
-        raise Failure(
-            "Infisical source unavailable (shared client is not installed)"
-        ) from None
+        raise Failure("Infisical source unavailable (shared client is not installed)") from None
 
     token = _service_token()
     env = {

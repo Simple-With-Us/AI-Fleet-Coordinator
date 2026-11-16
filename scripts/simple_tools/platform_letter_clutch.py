@@ -55,7 +55,6 @@ SEAT = "CLUTCH"
 SOURCE = "clutch-letter-hook"
 DISPLAY = "Clutch"
 
-ENV_OFF = "CLUTCH_LETTER"
 HOOK_FILE = os.path.join(".dsh", "hooks-letter.json")
 HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15}
 EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt"}
@@ -95,7 +94,6 @@ SPEC = PL.PlatformSpec(
     events=EVENTS,
     close_reasons=CLOSE_REASONS,
     locations=("mac",),
-    env_off=ENV_OFF,
 )
 
 #: The shared JSON installer writes the entries; its answer carries MOUNT as its `trust` step, the part

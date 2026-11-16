@@ -580,6 +580,44 @@ final class OperatorSeatsTableTests: XCTestCase {
         let unsure = statusDocument(seats: #"{"seat": "CLAUDE", "connected": true, "wake": "http", "routine": {"ready": null}}"#)
         XCTAssertEqual(try cell(try statusReading(unsure)).text, "Not reported")
     }
+
+    func test_seats_table_groups_by_platform_and_by_seat_and_filters_search_and_issues() throws {
+        let rows = """
+        {"letter": "A", "generation": 1, "seat": "CC", "platform": "claude-code", "host": "mac", "host_code": "M", "status": "active", "wake": "code-supported", "last_seen_at": "\(at(20))", "issues": []},
+        {"letter": "B", "generation": 1, "seat": "CX", "platform": "codex", "host": "server", "host_code": "S", "status": "active", "wake": "none", "last_seen_at": "\(at(10))", "issues": ["stale_heartbeat"]},
+        {"letter": "C", "generation": 1, "seat": "CR", "platform": "claude", "host": "mac", "host_code": "M", "status": "closed", "wake": "code-supported", "last_seen_at": "\(at(500))", "issues": []},
+        {"letter": "D", "generation": 1, "seat": "AG", "host": "server", "host_code": "S", "status": "closed", "wake": "code-supported", "last_seen_at": "\(at(900))", "issues": []}
+        """
+        let doc = try sessionsDocument(sessionsAnswer(rows: rows))
+
+        let byPlatform = OperatorPanelPresentation.seatsTable(doc, status: nil, now: now, grouping: .byPlatform)
+        XCTAssertEqual(byPlatform.totalMatchingCount, 4)
+        XCTAssertEqual(byPlatform.groups.map(\.title), ["Claude", "Codex", "Other"])
+        XCTAssertEqual(byPlatform.groups.first?.liveCount, 1)
+        XCTAssertEqual(byPlatform.groups.first?.goneCount, 1)
+        XCTAssertEqual(byPlatform.groups.first?.seatsSummary, "CC, CR")
+        XCTAssertEqual(byPlatform.groups[1].problemCount, 1)
+        XCTAssertEqual(byPlatform.groups[1].rows.first?.issues, ["Stale heartbeat"])
+
+        let bySeat = OperatorPanelPresentation.seatsTable(doc, status: nil, now: now, grouping: .bySeat)
+        XCTAssertEqual(bySeat.groups.count, 4)
+
+        let flat = OperatorPanelPresentation.seatsTable(doc, status: nil, now: now, grouping: .flat)
+        XCTAssertTrue(flat.groups.isEmpty)
+
+        let liveOnly = OperatorPanelPresentation.seatsTable(doc, status: nil, now: now, filter: .live)
+        XCTAssertEqual(Set(liveOnly.rows.map(\.seat)), ["CC", "CX"])
+
+        let problemsOnly = OperatorPanelPresentation.seatsTable(doc, status: nil, now: now, filter: .problems)
+        XCTAssertEqual(problemsOnly.rows.map(\.seat), ["CX"])
+
+        let searched = OperatorPanelPresentation.seatsTable(doc, status: nil, now: now, search: "heartbeat")
+        XCTAssertEqual(searched.rows.map(\.seat), ["CX"])
+
+        let unlimited = OperatorPanelPresentation.seatsTable(doc, status: nil, now: now, limit: Int.max)
+        XCTAssertEqual(unlimited.rows.count, 4)
+        XCTAssertEqual(unlimited.moreCount, 0)
+    }
 }
 
 // MARK: - Recent wakes
@@ -640,6 +678,44 @@ final class OperatorWakesTableTests: XCTestCase {
         XCTAssertEqual(t.rows.first?.time, OperatorPanelText.none)
         XCTAssertEqual(t.rows.first?.reason, OperatorPanelText.none)
         XCTAssertEqual(OperatorPanelText.humanized("held_back"), "Held back")
+    }
+
+    func test_wakes_table_filters_searches_groups_by_seat_and_tracks_loaded_vs_server_counts() throws {
+        let wakeRows = (1...20).map { i -> String in
+            let state = (i == 2 || i == 5) ? "dropped" : "done"
+            let dm = (i == 3) ? "true" : "false"
+            return #"{"wake_id": "w-\#(i)", "state": "\#(state)", "at": "\#(at(i * 10))", "reason": "mention", "dm": \#(dm), "owner": false, "catch_up": false}"#
+        }.joined(separator: ",")
+        let seats = """
+        {"seat": "CLAUDE", "recent": {"total": 20, "rows": [\(wakeRows)]}},
+        {"seat": "CODEX", "recent": {"total": 1, "rows": [{"wake_id": "w-cx", "state": "done", "at": "\(at(5))", "reason": "topic", "dm": false, "owner": true, "catch_up": false}]}}
+        """
+        let answer = wakesAnswer(totals: #"{"recent": 25, "held_back": 0, "held_back_lost": 0, "owner_queue": 0}"#, seats: seats)
+        let doc = try wakesDocument(answer)
+
+        let capped = OperatorPanelPresentation.wakesTable(doc, now: now)
+        XCTAssertEqual(capped.rows.count, 15)
+        XCTAssertEqual(capped.totalLoadedCount, 21)
+        XCTAssertEqual(capped.loadedMoreCount, 6)
+        XCTAssertEqual(capped.unloadedServerCount, 4)
+        XCTAssertEqual(capped.moreCount, 10)
+        XCTAssertEqual(capped.seatGroups.first?.seat, "CODEX")
+        XCTAssertEqual(capped.seatGroups.last?.seat, "CLAUDE")
+
+        let expanded = OperatorPanelPresentation.wakesTable(doc, now: now, limit: Int.max)
+        XCTAssertEqual(expanded.rows.count, 21)
+        XCTAssertEqual(expanded.loadedMoreCount, 0)
+        XCTAssertEqual(expanded.unloadedServerCount, 4)
+
+        let problems = OperatorPanelPresentation.wakesTable(doc, now: now, filter: .problems)
+        XCTAssertEqual(problems.rows.count, 2)
+        XCTAssertTrue(problems.rows.allSatisfy(\.isProblem))
+
+        let ownerDM = OperatorPanelPresentation.wakesTable(doc, now: now, filter: .ownerOrDM)
+        XCTAssertEqual(ownerDM.rows.count, 2)
+
+        let searched = OperatorPanelPresentation.wakesTable(doc, now: now, search: "CODEX")
+        XCTAssertEqual(searched.rows.map(\.seat), ["CODEX"])
     }
 }
 

@@ -220,7 +220,11 @@ class InfisicalSettings:
                 declared_paths(os.environ, "/", writer=writer),
                 ("read", "write") if writer else ("read",),
             )
-        except SecretsError:
+        except SecretsError as exc:
+            if exc.reason == "token-expired-or-invalid":
+                raise SettingsError(
+                    "Infisical service token needs a finite future expiry; replace it with the same project, prod folder, and permissions"
+                ) from None
             raise SettingsError(
                 "Infisical service-token scope does not match this project use"
             ) from None

@@ -167,7 +167,11 @@ def verify_writer(token: str, environ: dict[str, str], folder: str = KNOB_PATH) 
 
     try:
         secrets.verify_service_token(token, source.PROJECT_ID, folder, environ, writer=True)
-    except secrets.SecretsError:
+    except secrets.SecretsError as exc:
+        if exc.reason == "token-expired-or-invalid":
+            raise Refused(
+                "write token needs a finite future expiry; replace it with the same project, prod folder, and permissions"
+            ) from None
         raise Refused(
             "write token does not prove the configured project, prod folder, and permissions"
         ) from None
