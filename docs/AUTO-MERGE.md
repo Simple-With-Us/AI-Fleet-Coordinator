@@ -204,9 +204,13 @@ In rearm mode classify fetches the PR by number and validates the same
 preconditions the event path guarantees (open, not a draft, head in this
 repository) before any gate logic runs; every lookup fails closed, and
 every other rule above - hold labels, the owner 2026-10-21 in-flight
-gate, review gates, the arming boundary - runs identically.  Defaults
-are unchanged: callers that never set the input keep the documented
-event path.
+gate, review gates, the arming boundary - runs identically.  Two
+hardening notes: the gate-script checkout pins the repository's declared
+default branch from the event payload (the dispatch ref is
+caller-chosen and must never supply the gate), and the rearm fetch uses
+only the repository token (no personal-credential fallback for a
+re-arm).  Defaults are unchanged: callers that never set the input keep
+the documented event path.
 
 Loop safety: the re-arm dispatch fires only from lane-completion and
 queue-drop transitions; arming itself does not subscribe the caller to

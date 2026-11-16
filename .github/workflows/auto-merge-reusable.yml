@@ -232,9 +232,10 @@ jobs:
         with:
           # The gate script and CODEOWNERS come from the base branch, never the
           # PR head: an old or hostile branch cannot weaken the gate.  In rearm
-          # mode the caller dispatches from its default branch, which is the
-          # base branch for this fleet's PRs.
-          ref: ${{ inputs.rearm_pr_number != '' && github.ref_name || github.event.pull_request.base.ref }}
+          # mode the dispatch ref is caller-chosen and must never supply the
+          # gate, so the checkout pins the repository's declared default
+          # branch (the base for this fleet's PRs) from the event payload.
+          ref: ${{ inputs.rearm_pr_number != '' && format('refs/heads/{0}', github.event.repository.default_branch) || github.event.pull_request.base.ref }}
           fetch-depth: 1
       - name: Classify PR for auto-merge eligibility
         id: check
@@ -272,27 +273,28 @@ jobs:
           # preconditions, so every gate below is shared.
           skip() { echo "skip=true" >> "$GITHUB_OUTPUT"; echo "reason=$1" >> "$GITHUB_OUTPUT"; echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"; echo "::notice::not arming auto-merge: $1"; exit 0; }
           trap 'skip "classifier failed - fail closed"' ERR
+          # Written on every path (pass or skip): arm, disarm and the wise
+          # relay consume it, and a passing classification must not leave it
+          # empty (Kody #2267).
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
           if [ -n "$REARM_PR_NUMBER" ]; then
-            # Fetch and validate the rearm PR.  Fails closed on any drift from
-            # the preconditions the event path guarantees (open, ready, this
-            # repository) before any gate logic runs.
-            gate_token="$MERGE_TOKEN"
-            [ -n "$gate_token" ] || gate_token="$GH_TOKEN"
-            rearm_json="$(GH_TOKEN="$gate_token" gh api "repos/$REPO/pulls/$REARM_PR_NUMBER" 2>"$RUNNER_TEMP/rearm-err.txt")" || {
-              cat "$RUNNER_TEMP/rearm-err.txt" >&2
+            # Fetch and validate the rearm PR.  Repository-token reads only
+            # (no personal-credential fallback for a re-arm), fails closed on
+            # any drift from the preconditions the event path guarantees
+            # (open, ready, this repository), and nothing about the PR is
+            # persisted to disk - the JSON stays in a shell variable.
+            if ! rearm_json="$(gh api "repos/$REPO/pulls/$REARM_PR_NUMBER")"; then
               skip "rearm PR fetch failed - fail closed"
-            }
-            printf '%s' "$rearm_json" > "$RUNNER_TEMP/rearm.json"
-            [ "$(jq -r '.state' "$RUNNER_TEMP/rearm.json")" = "open" ] || skip "rearm PR is not open"
-            [ "$(jq -r '.draft' "$RUNNER_TEMP/rearm.json")" = "false" ] || skip "rearm PR is a draft"
-            [ "$(jq -r '.head.repo.full_name' "$RUNNER_TEMP/rearm.json")" = "$REPO" ] || skip "rearm PR head repo mismatch"
-            BASE="$(jq -r '.base.sha' "$RUNNER_TEMP/rearm.json")"
-            HEAD="$(jq -r '.head.sha' "$RUNNER_TEMP/rearm.json")"
-            HEAD_REF="$(jq -r '.head.ref' "$RUNNER_TEMP/rearm.json")"
-            TITLE="$(jq -r '.title' "$RUNNER_TEMP/rearm.json")"
-            PR_NUMBER="$REARM_PR_NUMBER"
-            LABELS_JSON="$(jq -c '[.labels[].name]' "$RUNNER_TEMP/rearm.json")"
+            fi
+            [ "$(jq -r '.state' <<< "$rearm_json")" = "open" ] || skip "rearm PR is not open"
+            [ "$(jq -r '.draft' <<< "$rearm_json")" = "false" ] || skip "rearm PR is a draft"
+            [ "$(jq -r '.head.repo.full_name' <<< "$rearm_json")" = "$REPO" ] || skip "rearm PR head repo mismatch"
+            BASE="$(jq -r '.base.sha' <<< "$rearm_json")"
+            HEAD="$(jq -r '.head.sha' <<< "$rearm_json")"
+            HEAD_REF="$(jq -r '.head.ref' <<< "$rearm_json")"
+            TITLE="$(jq -r '.title' <<< "$rearm_json")"
+            LABELS_JSON="$(jq -c '[.labels[].name]' <<< "$rearm_json")"
             echo "::notice::rearm gate for PR #$PR_NUMBER at $HEAD"
           fi
 
