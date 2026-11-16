@@ -3,6 +3,7 @@
 
 import importlib.util
 import io
+import json
 import pathlib
 import unittest
 from datetime import UTC, datetime
@@ -22,7 +23,9 @@ UNIVERSAL = "universal-auth-client-secret-must-not-be-used"
 DIGEST_KEY = "k" * 32
 AUD = "aud-value-should-not-print"
 EXTRA = "extra-value/should.*not-print"
-PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
+# A fixture UUID, never the real project id: the repo is public.
+PROJECT = "00000000-0000-4000-8000-000000000000"
+PROJECT_ENV = "WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID"
 FOLDER = "/workers/simple-tools-mcp"
 
 
@@ -204,13 +207,47 @@ class DiffAndPolicy(unittest.TestCase):
 
 class CommittedContract(unittest.TestCase):
     def test_one_folder_map_and_the_allowlist_is_names_only(self):
+        raw_map = pathlib.Path("scripts/worker-secret-folders.json").read_text()
+        self.assertNotIn('"project_id"', raw_map.replace("project_id_env", ""))
+        self.assertNotRegex(
+            raw_map,
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        )
         folders = sync.load_folder_map()
         self.assertEqual(set(folders), {"simple-tools-mcp"})
         row = folders["simple-tools-mcp"]
-        self.assertEqual(row["project_id"], PROJECT)
+        self.assertEqual(row["project_env"], PROJECT_ENV)
         self.assertEqual(row["environment"], "prod")
         self.assertEqual(row["folder"], FOLDER)
         self.assertEqual(row["token_env"], "WORKER_SECRET_SYNC_INFISICAL_TOKEN")
+        self.assertEqual(
+            sync.resolve_project_id(row, "simple-tools-mcp", env={PROJECT_ENV: PROJECT}),
+            PROJECT,
+        )
+        with self.assertRaises(sync.SyncError) as caught:
+            sync.resolve_project_id(row, "simple-tools-mcp", env={})
+        self.assertEqual(
+            str(caught.exception),
+            "project-id-env-missing " + PROJECT_ENV + " simple-tools-mcp",
+        )
+        with self.assertRaises(sync.SyncError) as caught:
+            sync.resolve_project_id(row, "simple-tools-mcp", env={PROJECT_ENV: "not-a-uuid"})
+        self.assertEqual(
+            str(caught.exception),
+            "project-id-env-missing " + PROJECT_ENV + " simple-tools-mcp",
+        )
+        with self.assertRaises(sync.SyncError) as caught:
+            sync.sync_worker(
+                "no-such-worker",
+                env={},
+                account="acct",
+                apply_flag=False,
+                strict=False,
+                transport=None,
+                guard=lambda worker: False,
+                now=sync.datetime.now(sync.UTC),
+            )
+        self.assertEqual(str(caught.exception), "unknown-worker")
         names = sync.load_allowlist("simple-tools-mcp")
         self.assertIn("ACCESS_AUD", names)
         self.assertNotIn(sync.DIGEST_KEY_NAME, names)
@@ -249,6 +286,7 @@ class FakeCloud:
             {"type": "plain_text", "name": "PUBLIC_HOST", "text": "agents.example"},
         ]
         self.digest = None
+        self.annotations = None
         self.puts = []
         self.patches = []
         self.bearers = set()
@@ -281,7 +319,10 @@ class FakeCloud:
                 bindings.append(
                     {"type": "plain_text", "name": sync.DIGEST_BINDING, "text": self.digest}
                 )
-            return {"success": True, "result": {"bindings": bindings}}
+            result = {"bindings": bindings}
+            if self.annotations is not None:
+                result["annotations"] = dict(self.annotations)
+            return {"success": True, "result": result}
         if path.endswith("/settings") and method == "PATCH":
             self.patches.append(payload)
             for binding in payload["settings"]["bindings"]:
@@ -319,6 +360,7 @@ def run_cli(argv, env, cloud, guard=None):
 class Cli(unittest.TestCase):
     def env(self, apply=None):
         values = {
+            PROJECT_ENV: PROJECT,
             "WORKER_SECRET_SYNC_INFISICAL_TOKEN": SERVICE,
             "CLOUDFLARE_API_TOKEN": CLOUDFLARE,
             "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "client-id-must-not-be-used",
@@ -379,6 +421,183 @@ class Cli(unittest.TestCase):
         self.assertEqual(cloud.bearers, {"service", "cloudflare"})
         self.assertNotIn(UNIVERSAL, out + err)
 
+    def test_typeless_binding_refuses_the_put(self):
+        cloud = FakeCloud(None)
+        cloud.infisical_body = cloud.folder()
+        for binding in cloud.bindings:
+            if binding["name"] == "ACCESS_AUD":
+                del binding["type"]
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("secret-type-preserved ACCESS_AUD", err)
+        self.assertEqual(cloud.puts, [])
+        self.assertEqual(cloud.patches, [])
+        self.assertNotIn(AUD, err)
+
+    def test_non_secret_text_binding_refuses_the_put(self):
+        cloud = FakeCloud(None)
+        cloud.infisical_body = cloud.folder()
+        for binding in cloud.bindings:
+            if binding["name"] == "ACCESS_AUD":
+                binding["type"] = "plain_text"
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("secret-type-preserved ACCESS_AUD", err)
+        self.assertEqual(cloud.puts, [])
+        self.assertNotIn(AUD, err)
+
+    def test_type_refusal_is_preflighted_before_any_put(self):
+        cloud = FakeCloud(None)
+        cloud.infisical_body = {
+            "secrets": [
+                secret_row(sync.DIGEST_KEY_NAME, DIGEST_KEY),
+                secret_row("ACCESS_AUD", AUD),
+                secret_row("ZULIP_KEY_ECHO", EXTRA),
+            ],
+            "totalCount": 3,
+        }
+        cloud.worker_names = ["ACCESS_AUD", "ZULIP_KEY_ECHO"]
+        # ACCESS_AUD sorts before ZULIP_KEY_ECHO, so without the pre-flight
+        # refusal ACCESS_AUD would be written before the refusal fires.
+        cloud.bindings = [
+            {"type": "secret_text", "name": "ACCESS_AUD", "text": "old-aud"},
+            {"type": "plain_text", "name": "ZULIP_KEY_ECHO", "text": "old-echo"},
+        ]
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("secret-type-preserved ZULIP_KEY_ECHO", err)
+        self.assertEqual(cloud.puts, [])
+        self.assertEqual(cloud.patches, [])
+
+    def test_server_set_annotation_is_not_echoed_and_not_drift(self):
+        class ServerAnnotatingCloud(FakeCloud):
+            def __call__(self, method, url, token, payload, accept_status):
+                if url.split("?", 1)[0].endswith("/settings") and method == "PATCH":
+                    # The server keeps the user-controlled keys and sets its
+                    # own read-only triggered_by on the new version.
+                    self.annotations = dict(payload["settings"].get("annotations", {}))
+                    self.annotations["workers/triggered_by"] = "api"
+                return super().__call__(method, url, token, payload, accept_status)
+
+        cloud = ServerAnnotatingCloud(None)
+        cloud.infisical_body = cloud.folder()
+        cloud.annotations = {
+            "workers/tag": "deploy-1",
+            "workers/message": "release",
+            "workers/triggered_by": "upload",
+        }
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 0, err)
+        sent = cloud.patches[0]["settings"]
+        self.assertEqual(
+            sent.get("annotations"),
+            {"workers/tag": "deploy-1", "workers/message": "release"},
+        )
+
+    def test_invalid_annotations_shape_fails_closed(self):
+        cloud = FakeCloud(None)
+        cloud.infisical_body = cloud.folder()
+        cloud.annotations = {"workers/tag": 5}
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("settings-incomplete annotations", err)
+        self.assertIn("partial application: wrote ACCESS_AUD", err)
+        self.assertNotIn(AUD, err)
+
+    def test_dropped_non_digest_binding_fails_the_write(self):
+        class BindingDroppingCloud(FakeCloud):
+            def __call__(self, method, url, token, payload, accept_status):
+                if url.split("?", 1)[0].endswith("/settings") and method == "PATCH":
+                    self.bindings = [
+                        item for item in self.bindings if item["name"] != "PUBLIC_HOST"
+                    ]
+                return super().__call__(method, url, token, payload, accept_status)
+
+        cloud = BindingDroppingCloud(None)
+        cloud.infisical_body = cloud.folder()
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("bindings-not-confirmed", err)
+        self.assertIn("partial application: wrote ACCESS_AUD", err)
+        self.assertNotIn(AUD, err)
+
+    def test_absent_binding_puts_and_records_the_digest(self):
+        cloud = FakeCloud(None)
+        cloud.infisical_body = cloud.folder()
+        cloud.bindings = [b for b in cloud.bindings if b["name"] != "ACCESS_AUD"]
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 0, err)
+        self.assertEqual([item["name"] for item in cloud.puts], ["ACCESS_AUD"])
+        self.assertTrue(cloud.patches)
+        recorded = json.loads(cloud.digest)
+        self.assertIn("ACCESS_AUD", recorded["keys"])
+        self.assertNotIn(AUD, json.dumps(recorded))
+
+    def test_digest_patch_preserves_current_annotations(self):
+        cloud = FakeCloud(None)
+        cloud.infisical_body = cloud.folder()
+        cloud.annotations = {"workers/tag": "deploy-1", "workers/message": "release"}
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 0, err)
+        sent = cloud.patches[0]["settings"]
+        self.assertEqual(sent.get("annotations"), cloud.annotations)
+        self.assertEqual(set(sent), {"bindings", "annotations"})
+
+    def test_annotation_loss_fails_the_write(self):
+        class AnnotationDroppingCloud(FakeCloud):
+            def __call__(self, method, url, token, payload, accept_status):
+                if url.split("?", 1)[0].endswith("/settings") and method == "PATCH":
+                    self.annotations = None
+                return super().__call__(method, url, token, payload, accept_status)
+
+        cloud = AnnotationDroppingCloud(None)
+        cloud.infisical_body = cloud.folder()
+        cloud.annotations = {"workers/tag": "deploy-1"}
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("settings-drift annotations", err)
+        self.assertIn("partial application: wrote ACCESS_AUD", err)
+        self.assertNotIn(AUD, err)
+
+    def test_settings_drift_fails_the_write(self):
+        class DriftingCloud(FakeCloud):
+            def __init__(self, body):
+                super().__init__(body)
+                self.settings_gets = 0
+
+            def __call__(self, method, url, token, payload, accept_status):
+                body = super().__call__(method, url, token, payload, accept_status)
+                if url.split("?", 1)[0].endswith("/settings") and method == "GET":
+                    self.settings_gets += 1
+                    body["result"]["usage_model"] = (
+                        "standard" if self.settings_gets < 3 else "bundled"
+                    )
+                return body
+
+        cloud = DriftingCloud(None)
+        cloud.infisical_body = cloud.folder()
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("settings-drift usage_model", err)
+        self.assertIn("partial application: wrote ACCESS_AUD", err)
+        self.assertNotIn(AUD, err)
+
+    def test_unrecorded_digest_patch_fails_the_write(self):
+        class SilentCloud(FakeCloud):
+            def __call__(self, method, url, token, payload, accept_status):
+                if url.split("?", 1)[0].endswith("/settings") and method == "PATCH":
+                    self.patches.append(payload)
+                    return {"success": True, "result": {}}
+                return super().__call__(method, url, token, payload, accept_status)
+
+        cloud = SilentCloud(None)
+        cloud.infisical_body = cloud.folder()
+        code, out, err = run_cli(["--apply", "simple-tools-mcp"], self.env("true"), cloud)
+        self.assertEqual(code, 1)
+        self.assertIn("digest-not-confirmed", err)
+        self.assertIn("partial application: wrote ACCESS_AUD", err)
+        self.assertNotIn(AUD, err)
+
     def test_guard_trip_puts_nothing(self):
         cloud = FakeCloud(None)
         cloud.infisical_body = cloud.folder()
@@ -415,7 +634,7 @@ class Cli(unittest.TestCase):
                 ["simple-tools-mcp"],
                 account=ACCOUNT,
                 guard=lambda _name: False,
-                env={"INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": UNIVERSAL},
+                env={"INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": UNIVERSAL, PROJECT_ENV: PROJECT},
                 now=NOW,
                 stdout=io.StringIO(),
                 stderr=stderr,
