@@ -68,6 +68,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TextIO
 
+from . import claude_wake as CW
 from . import muse_session_rename as MR
 from . import wake_router as WR
 
@@ -87,7 +88,8 @@ CONFIRM_POLL_SECONDS = 1.0
 #: own.  `wake_service` refuses a module whose DEFAULTS miss a router key (`bad-defaults`).
 DEFAULTS: dict[str, Any] = {
     **WR.ROUTER_DEFAULTS,
-    "local_host": "mac",
+    "local_host": "server",
+    "mac_ssh": "",
     "muse_bin": "muse",
     "resume_timeout_seconds": 900,
     "confirm_seconds": 20,
@@ -540,6 +542,10 @@ def deliver_request(
     except (ValueError, KeyError, TypeError, AttributeError):
         return _answer(request, WR.Delivery("refused", code=BAD_REQUEST))
     config = _config(settings)
+    if settings is None:
+        # This entry point is the Mac-side handler (`wake-deliver`); a server router passes
+        # its own settings when it delivers a chat on its own host.
+        config["local_host"] = "mac"
     if target.host != str(config.get("local_host") or ""):
         return _answer(request, WR.Delivery("refused", code="unknown-host"))
     # The lock comes first, so the registry recheck and the delivery cannot race a second
@@ -568,17 +574,29 @@ def deliver_request(
     return _answer(request, delivery)
 
 
-def router_platform(env: Mapping[str, str], settings: object = None) -> WR.Platform:
+def router_platform(
+    env: Mapping[str, str],
+    settings: object = None,
+    *,
+    runner: Runner = subprocess.run,
+    sleep: Callable[[float], None] = time.sleep,
+) -> WR.Platform:
     """This platform for the shared wake router service (`wake_service.BUILDERS` names this
-    function for seat MC).  Delivery goes through `deliver_request`, so the registry recheck
-    under the per-session lock and the exact-id answer apply on a router host exactly as
-    they do under the ssh forced command.  A target on another host is refused here:  Muse
-    chats are delivered on the host that holds their store, and the server router reaches
-    this host through `claude_wake`'s ssh route, not through this platform."""
+    function for seat MC).  A chat on this router's host goes through `deliver_request`, so
+    the registry recheck under the per-session lock and the exact-id answer apply exactly as
+    they do under the ssh forced command.  A Mac chat goes through the one fixed ssh route
+    in `claude_wake.deliver_remote`; any other host is refused."""
     here = dict(env)
     config = _config(settings)
+    local_host = str(config.get("local_host") or "server")
 
     def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+        if target.host == "mac" and local_host != "mac":
+            return CW.deliver_remote(
+                here, config, target, wake, platform=PLATFORM, runner=runner
+            )
+        if target.host != local_host:
+            return WR.Delivery("refused", code="unknown-host")
         request = {
             "platform": PLATFORM,
             "target": {
@@ -589,7 +607,9 @@ def router_platform(env: Mapping[str, str], settings: object = None) -> WR.Platf
             },
             "wake": asdict(wake),
         }
-        answer = deliver_request(request, env=here, settings=settings)
+        answer = deliver_request(
+            request, env=here, settings=config, runner=runner, sleep=sleep
+        )
         delivery = answer.get("delivery") if isinstance(answer, Mapping) else None
         if not isinstance(delivery, Mapping) or delivery.get("outcome") not in WR.OUTCOMES:
             return WR.Delivery("refused", code="platform-bad-answer")

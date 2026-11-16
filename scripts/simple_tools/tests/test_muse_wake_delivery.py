@@ -1,6 +1,6 @@
-"""Muse delivery for the wake router (AFC-713):  the registry recheck, the two routes
-(live chat by cross-session message, unheld chat by one headless run in its own session),
-and the failed/refused discipline AA set for every platform plugin.
+"""Muse delivery for the wake router (AFC-713):  the registry recheck, the server-to-Mac
+ssh route, one headless run in an unheld chat's own session, `busy` for a held chat, and
+the failed/refused discipline AA set for every platform plugin.
 
 Everything here is offline and pointed at a temporary HOME:  a fake `muse` binary that only
 records its argv, a session store the test writes itself, and a registry the test answers.
@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from simple_tools import muse_wake as MW
+from simple_tools import wake_router as WR
 
 SID = "11111111-2222-4333-8444-555555555555"
 SID2 = "22222222-3333-4444-8555-666666666666"
@@ -84,7 +85,7 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         binary.chmod(0o755)
         self.env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin"}
         self.calls: list[dict] = []
-        config = dict(MW.DEFAULTS, confirm_seconds=0)
+        config = dict(MW.DEFAULTS, confirm_seconds=0, local_host="mac")
         patcher = mock.patch.object(MW, "_config", return_value=config)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -319,6 +320,59 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         sub = WR.Target(session_id=SID2, letter="CC", host="mac", generation=1)
         top = WR.Target(session_id=SID, letter="CC", host="mac", generation=1)
         self.assertEqual(platform.exclude([sub, top]), {SID2})
+
+    def test_router_sends_a_mac_chat_over_ssh_from_the_server(self) -> None:
+        target = WR.Target(session_id=SID, letter="CC", host="mac", generation=1)
+        wake = WR.Wake(wake_id=WAKE_ID, seat="MC", letter="CC")
+        with (
+            mock.patch.object(
+                MW,
+                "_config",
+                side_effect=lambda settings=None: {**MW.DEFAULTS, **(settings or {})},
+            ),
+            mock.patch.object(
+                MW.CW,
+                "deliver_remote",
+                return_value=WR.Delivery("sent", "ssh:exec", ack="confirmed"),
+            ) as remote,
+        ):
+            platform = MW.router_platform(
+                self.env, {"local_host": "server", "mac_ssh": "mac-wake"}
+            )
+            delivery = platform.deliver(target, wake)
+        self.assertEqual(delivery.outcome, "sent")
+        remote.assert_called_once()
+        self.assertEqual(remote.call_args.kwargs["platform"], "muse")
+        self.assertEqual(remote.call_args.args[1]["mac_ssh"], "mac-wake")
+
+    def test_router_delivers_a_chat_on_its_own_host_locally(self) -> None:
+        target = WR.Target(session_id=SID, letter="CC", host="server", generation=1)
+        wake = WR.Wake(wake_id=WAKE_ID, seat="MC", letter="CC")
+        answer = {
+            "wake_id": WAKE_ID,
+            "session_id": SID,
+            "generation": 1,
+            "delivery": {
+                "outcome": "sent",
+                "route": "exec",
+                "ack": "confirmed",
+                "code": "",
+                "note": "",
+            },
+        }
+        with (
+            mock.patch.object(
+                MW,
+                "_config",
+                side_effect=lambda settings=None: {**MW.DEFAULTS, **(settings or {})},
+            ),
+            mock.patch.object(MW, "deliver_request", return_value=answer) as local,
+        ):
+            platform = MW.router_platform(self.env, {"local_host": "server"})
+            delivery = platform.deliver(target, wake)
+        self.assertEqual(delivery.ack, "confirmed")
+        local.assert_called_once()
+        self.assertEqual(local.call_args.kwargs["settings"]["local_host"], "server")
 
     def test_defaults_carry_every_router_key(self) -> None:
         from simple_tools import wake_router as WR
