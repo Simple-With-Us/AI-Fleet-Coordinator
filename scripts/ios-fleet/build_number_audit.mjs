@@ -3,9 +3,8 @@
  * build_number_audit.mjs — read-only fleet build-number audit (AFC-675).
  *
  * For every app in testflight-apps.json it reads App Store Connect builds and
- * reports drift from the owner's 2026-10-29 build ruling (Zulip Policy channel
- * @all; FLEET-PROTOCOL.md § App Version and Build Numbers):  main-merge timestamp
- * build numbers in YYYYMMDDHHMM form, Central Time, no dots and no counter,
+ * reports drift from the owner's build ruling (updated 2026-11-15):  every build,
+ * including rebuilds, is numbered by the time the build itself runs, in YYYYMMDDHHMM form, Central Time, no dots and no counter,
  * shared between iOS and Mac for a release, and monotonically increasing.
  * Marketing version is 0.1.0 for all apps except Congress.Trade (1.1.2), unless
  * an approved App Store version is higher.
@@ -36,8 +35,8 @@ import {
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-/** Standing rule (owner ruling 2026-10-29): the main-merge timestamp in
- * YYYYMMDDHHMM form, Central Time - no dots, no counter. */
+/** Standing rule (owner ruling, updated 2026-11-15): the time the build itself
+ * runs, in YYYYMMDDHHMM form, Central Time - no dots, no counter. */
 export const FLEET_BUILD_TIMESTAMP_RE = /^20\d{10}$/;
 
 export const EXIT_OK = 0;
@@ -118,7 +117,7 @@ export function invalidBuildDetail(build) {
   if (build == null || build === "") {
     return `build number is missing (${FLEET_BUILD_RULE_SOURCE})`;
   }
-  return `build ${shown} is not a main-merge timestamp build in YYYYMMDDHHMM form (${FLEET_BUILD_RULE_SOURCE})`;
+  return `build ${shown} is not a build-run timestamp build in YYYYMMDDHHMM form (${FLEET_BUILD_RULE_SOURCE})`;
 }
 
 /**
