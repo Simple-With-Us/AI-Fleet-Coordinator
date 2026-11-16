@@ -213,19 +213,41 @@ class CommittedContract(unittest.TestCase):
             raw_map,
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
         )
-        folders = sync.load_folder_map(env={PROJECT_ENV: PROJECT})
+        folders = sync.load_folder_map()
         self.assertEqual(set(folders), {"simple-tools-mcp"})
         row = folders["simple-tools-mcp"]
-        self.assertEqual(row["project_id"], PROJECT)
+        self.assertEqual(row["project_env"], PROJECT_ENV)
         self.assertEqual(row["environment"], "prod")
         self.assertEqual(row["folder"], FOLDER)
         self.assertEqual(row["token_env"], "WORKER_SECRET_SYNC_INFISICAL_TOKEN")
+        self.assertEqual(
+            sync.resolve_project_id(row, "simple-tools-mcp", env={PROJECT_ENV: PROJECT}),
+            PROJECT,
+        )
         with self.assertRaises(sync.SyncError) as caught:
-            sync.load_folder_map(env={})
-        self.assertEqual(str(caught.exception), "project-id-env-missing simple-tools-mcp")
+            sync.resolve_project_id(row, "simple-tools-mcp", env={})
+        self.assertEqual(
+            str(caught.exception),
+            "project-id-env-missing " + PROJECT_ENV + " simple-tools-mcp",
+        )
         with self.assertRaises(sync.SyncError) as caught:
-            sync.load_folder_map(env={PROJECT_ENV: "not-a-uuid"})
-        self.assertEqual(str(caught.exception), "project-id-env-missing simple-tools-mcp")
+            sync.resolve_project_id(row, "simple-tools-mcp", env={PROJECT_ENV: "not-a-uuid"})
+        self.assertEqual(
+            str(caught.exception),
+            "project-id-env-missing " + PROJECT_ENV + " simple-tools-mcp",
+        )
+        with self.assertRaises(sync.SyncError) as caught:
+            sync.sync_worker(
+                "no-such-worker",
+                env={},
+                account="acct",
+                apply_flag=False,
+                strict=False,
+                transport=None,
+                guard=lambda worker: False,
+                now=sync.datetime.now(sync.UTC),
+            )
+        self.assertEqual(str(caught.exception), "unknown-worker")
         names = sync.load_allowlist("simple-tools-mcp")
         self.assertIn("ACCESS_AUD", names)
         self.assertNotIn(sync.DIGEST_KEY_NAME, names)
