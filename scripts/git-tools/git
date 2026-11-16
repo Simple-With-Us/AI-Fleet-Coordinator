@@ -2105,8 +2105,11 @@ def _publish_path_check(path: str) -> None:
     refuses the first batch like the last, so it cannot leave a partial chain."""
     if _PUBLISH_PATH.fullmatch(path) is None:
         die(f"{path!r} is not a repo path the relay accepts", EXIT_USAGE)
-    if path in (".github", ".github/workflows") or path.startswith(".github/workflows/"):
-        die(f"{path!r} is a workflow path;  publish cannot write it", EXIT_USAGE)
+    # Actual workflow files use the same hosted batch route as other files.  The relay
+    # checks this seat's workflows:write ceiling and mints that permission only when
+    # needed.  Never mistake the directory entries themselves for writable files.
+    if path in (".github", ".github/workflows"):
+        die(f"{path!r} is a workflow directory, not a writable file", EXIT_USAGE)
 
 
 def _publish_payload(repo: str, branch: str, message: str, number: int, count: int, batch) -> dict:
