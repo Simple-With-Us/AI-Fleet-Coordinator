@@ -1,10 +1,11 @@
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from git_relay.deploy_host import LinuxHost
+from git_relay.deploy_host import READINESS_SECONDS, LinuxHost
 from git_relay.deploy_transaction import TransactionError
 
 
@@ -61,6 +62,129 @@ class LinuxHostTests(unittest.TestCase):
                 self.h.stop_for_recovery()
             resume.assert_called_once_with(expected)
             stop.assert_not_called()
+
+    def test_failed_unit_without_strays_counts_as_stopped(self):
+        # A crashed image (e.g. a new deployment that fails on import) leaves
+        # the unit failed with no main process: that is a stopped service,
+        # not "relay not active".  Regression: stop_for_recovery rejected
+        # this state, masking the original exception and blocking recovery.
+        shutil.rmtree(self.proc / "42")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertTrue(self.h.confirmed_stopped(None))
+            # Returns without demanding a live process to freeze or stop.
+            self.assertIsNone(self.h.stop_for_recovery())
+
+    def test_failed_unit_with_stray_process_refuses_recovery_stop(self):
+        # proc/42 from setUp carries the unit cgroup: it is a stray survivor
+        # of the crash and must keep recovery refused, named as such.
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertFalse(self.h.confirmed_stopped(None))
+            with self.assertRaises(TransactionError) as ctx:
+                self.h.stop_for_recovery()
+        self.assertEqual(str(ctx.exception), "failed unit retains live processes; guard retained")
+
+    def test_unreadable_extant_cgroup_fails_closed(self):
+        # An extant process whose cgroup cannot be read is not proof of no
+        # strays: the scan must refuse, keeping the guard retained.
+        (self.proc / "42" / "cgroup").unlink()
+        (self.proc / "42" / "cgroup").mkdir()  # extant but unreadable as a file
+        with self.assertRaises(TransactionError) as ctx:
+            self.h.stray_unit_processes()
+        self.assertIn("cannot prove no strays", str(ctx.exception))
+
+        # confirmed_stopped propagates the refusal instead of reporting stopped.
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with (
+            patch.object(self.h, "run_command", new=run),
+            self.assertRaises(TransactionError),
+        ):
+            self.h.confirmed_stopped(None)
+
+    def test_failed_before_auto_restart_is_never_stopped(self):
+        # systemd 259 leaves a crashed unit in failed/failed-before-auto-restart
+        # while the RestartUSec timer runs; recovery must not race the pending
+        # reactivation with a restore.
+        shutil.rmtree(self.proc / "42")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed-before-auto-restart\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertFalse(self.h.confirmed_stopped(None))
+            with self.assertRaises(TransactionError) as ctx:
+                self.h.stop_for_recovery()
+        self.assertEqual(
+            str(ctx.exception), "failed unit has a pending systemd action; guard retained"
+        )
+
+    def test_zombie_unit_process_is_not_a_stray(self):
+        (self.proc / "42" / "stat").write_text("42 (python) Z 1 0 0")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertTrue(self.h.confirmed_stopped(None))
+
+    def test_unreadable_stat_retains_stray_fail_closed(self):
+        (self.proc / "42" / "stat").unlink()
+        (self.proc / "42" / "stat").mkdir()
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+
+    def test_malformed_cgroup_line_fails_closed(self):
+        (self.proc / "42" / "cgroup").write_text("not-a-cgroup-line\n")
+        with self.assertRaises(TransactionError) as ctx:
+            self.h.stray_unit_processes()
+        self.assertIn("malformed cgroup line", str(ctx.exception))
+
+    def test_v1_root_and_colon_paths_parse(self):
+        # A v1 hierarchy root has an empty path; a path may contain a colon.
+        # Neither is malformed, and the colon path still matches the unit.
+        (self.proc / "42" / "cgroup").write_text(
+            "1:name=systemd:\n0::/system.slice/git-relay.service/with:colon\n"
+        )
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+        (self.proc / "42" / "cgroup").write_text("1:name=systemd:\n0::/user.slice\n")
+        self.h._stray_cache = None
+        self.assertEqual(self.h.stray_unit_processes(), [])
+
+    def test_subcgroup_descendant_counts_as_stray(self):
+        (self.proc / "42" / "cgroup").write_text("0::/system.slice/git-relay.service/spawned\n")
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+
+    def test_stray_scan_ignores_other_units_and_vanishing_processes(self):
+        other = self.proc / "43"
+        other.mkdir()
+        (other / "cgroup").write_text("0::/system.slice/other.service\n")
+        gone = self.proc / "44"
+        gone.mkdir()
+        (gone / "cgroup").write_text("0::/system.slice/git-relay.service\n")
+        shutil.rmtree(gone)
+        self.assertEqual(self.h.stray_unit_processes(), [42])
 
     def test_hash_target_anchor(self):
         with self.assertRaises(TransactionError):
@@ -146,8 +270,38 @@ class LinuxHostTests(unittest.TestCase):
             patch("git_relay.deploy_host.urlopen", side_effect=URLError("not bound")),
         ):
             self.assertFalse(self.h.runtime({"code/x": "new"}, {"pid": 42}))
-            self.assertLess(ticks[0], 8.2)
+            self.assertLess(ticks[0], READINESS_SECONDS + 0.2)
             proof.assert_not_called()
+
+    def test_cold_start_health_within_readiness_budget_passes(self):
+        # Health that only binds at t=20s fails the historical 8s window but
+        # passes inside the readiness budget, with the proof still one-shot.
+        import io
+        from unittest.mock import MagicMock
+        from urllib.error import URLError
+
+        identity = {"pid": 43}
+        ticks = [0.0]
+        self.h.clock = lambda ticks=ticks: ticks[0]
+        self.h.sleep = lambda n, ticks=ticks: ticks.__setitem__(0, ticks[0] + n)
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+        proof = MagicMock(return_value=True)
+        self.h.proof = proof
+
+        def flaky(url, timeout=None):
+            if ticks[0] < 20:
+                raise URLError("not bound")
+            return response
+
+        with (
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch("git_relay.deploy_host.urlopen", side_effect=flaky),
+        ):
+            self.assertTrue(self.h.runtime({"code/x": "new"}, {"pid": 42}))
+            proof.assert_called_once()
 
     def test_presignal_failure_thaws_exact_process(self):
         expected = {"pid": 42}
@@ -435,7 +589,7 @@ class LinuxHostTests(unittest.TestCase):
             patch("git_relay.deploy_host.urlopen") as health,
         ):
             self.assertFalse(self.h.runtime({}, None))
-            self.assertLess(ticks[0], 8.2)
+            self.assertLess(ticks[0], READINESS_SECONDS + 0.2)
             health.assert_not_called()
             self.h.proof.assert_not_called()
         (self.proc / "42/cgroup").write_text("0::/system.slice/not-git-relay.service\n")
@@ -514,3 +668,115 @@ class LinuxHostTests(unittest.TestCase):
                 self.h.process_identity()
             self.assertFalse(self.h.runtime({}, None))
             self.h.proof.assert_not_called()
+
+
+class RuntimePhaseAttributionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.proc = Path(self.temp.name)
+        (self.proc / "sys/kernel/random").mkdir(parents=True)
+        (self.proc / "sys/kernel/random/boot_id").write_text("boot-a")
+        p = self.proc / "42"
+        p.mkdir()
+        (p / "stat").write_text(
+            "42 (python unusual (name)) " + " ".join(["S"] + ["0"] * 18 + ["12345"])
+        )
+        (p / "cgroup").write_text("0::/system.slice/git-relay.service\n")
+        (p / "exe").symlink_to("/usr/bin/python3")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0, stdout="MainPID=42\nActiveState=active\nWatchdogUSec=0\n"
+            )
+
+        self.h = LinuxHost("x", {}, {}, None, lambda *args: True, run=run, proc=self.proc)
+
+    def _healthy(self):
+        import io
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        response.__enter__.return_value.read = io.BytesIO(b'{"ok":true}').read
+        return response
+
+    def test_each_refusal_records_its_nonsecret_phase(self):
+        from unittest.mock import MagicMock
+        from urllib.error import URLError
+
+        identity = {"pid": 43}
+        response = self._healthy()
+
+        with (
+            patch.object(self.h, "hashes", return_value={}),
+            patch.object(self.h, "process_identity", return_value=identity),
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "new"}, None))
+            self.assertEqual(self.h.last_phase, "hashes")
+
+        with (
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch.object(self.h, "process_identity", side_effect=TransactionError("nope")),
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "new"}, None))
+            self.assertEqual(self.h.last_phase, "identity")
+
+        with (
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch.object(self.h, "process_identity", return_value=identity),
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "new"}, identity))
+            self.assertEqual(self.h.last_phase, "prior-image")
+
+        ticks = [0.0]
+        self.h.clock = lambda ticks=ticks: ticks[0]
+        self.h.sleep = lambda n, ticks=ticks: ticks.__setitem__(0, ticks[0] + n)
+        with (
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch("git_relay.deploy_host.urlopen", side_effect=URLError("not bound")),
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "new"}, None))
+            self.assertEqual(self.h.last_phase, "health")
+
+        ticks[0] = 0.0
+        self.h.proof = MagicMock(return_value=False)
+        with (
+            patch.object(self.h, "hashes", return_value={"code/x": "new"}),
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch("git_relay.deploy_host.urlopen", return_value=response),
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "new"}, None))
+            self.assertEqual(self.h.last_phase, "proof")
+
+        ticks[0] = 0.0
+        self.h.proof = MagicMock(return_value=True)
+        states = iter([{"code/x": "new"}, {"code/x": "tampered"}])
+        with (
+            patch.object(self.h, "hashes", side_effect=lambda e: next(states)),
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch("git_relay.deploy_host.urlopen", return_value=self._healthy()),
+        ):
+            self.assertFalse(self.h.runtime({"code/x": "new"}, None))
+            self.assertEqual(self.h.last_phase, "final")
+
+    def test_runtime_proof_receives_pinned_image_generation(self):
+        from unittest.mock import MagicMock
+
+        identity = {"pid": 43}
+        response = self._healthy()
+        proof = MagicMock(return_value=True)
+        self.h.proof = proof
+        expected = {
+            "code/patch_secretscan.py": "after",
+            "code/provenance_patch.py": "sentinel-digest",
+        }
+        with (
+            patch.object(self.h, "process_identity", return_value=identity),
+            patch.object(self.h, "hashes", return_value=expected),
+            patch("git_relay.deploy_host.urlopen", return_value=response),
+        ):
+            self.assertTrue(self.h.runtime(expected, None))
+            self.assertEqual(self.h.last_phase, "final")
+        proof.assert_called_once_with(identity, expected)
