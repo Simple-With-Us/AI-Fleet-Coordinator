@@ -2,8 +2,8 @@
 """Names, digests and gates for the Worker secret sync.  No network and no real secret."""
 
 import importlib.util
-import json
 import io
+import json
 import pathlib
 import unittest
 from datetime import UTC, datetime
