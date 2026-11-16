@@ -1013,6 +1013,8 @@ class ReplyWakeDaemonTests(DaemonHarness):
         self.assertEqual(len(self.dumps()), 1)
 
     def test_the_existing_loop_guard_is_unchanged_and_a_reply_post_counts_nothing_on_it(self) -> None:
+        # The loop guard is off unless the config turns it on.
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
         self.chat_a_tags_codex(daemon)
         for n in range(3):

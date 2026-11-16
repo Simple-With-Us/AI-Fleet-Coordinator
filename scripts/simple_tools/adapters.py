@@ -2875,8 +2875,10 @@ class RoutineResult:
         self.response_len = 0
         self.response_sha = ""
         # The hosted MCP Worker's answer to an accepted wake, reduced to what says whether anything
-        # reached the seat (routine_answer); None for any other answer.  The body itself is never kept.
+        # reached the seat (routine_answer); None for any other answer.  The body itself is never
+        # kept, except by a runner made with keep_response (`daemon test-wake`, never the daemon).
         self.answer: dict[str, Any] | None = None
+        self.response: bytes | None = None
 
 
 def routine_answer(data: bytes) -> dict[str, Any] | None:
@@ -2925,7 +2927,9 @@ def routine_surfaced(result: RoutineResult) -> bool:
 class RoutineRunner:
     """Sends one wake body to a routine.  The body is serialized once by the caller, the header
     is computed over those bytes, and the identical bytes go out on every attempt.  No proxy and
-    no redirects (a redirect would re-send the key elsewhere), and an explicit timeout."""
+    no redirects (a redirect would re-send the key elsewhere), and an explicit timeout.
+    `keep_response` keeps the last answer's bytes (at most ROUTINE_RESPONSE_CAP) on the result, for
+    `daemon test-wake`, which shows the router's dry-run answer;  the daemon never sets it."""
 
     def __init__(
         self,
@@ -2935,12 +2939,14 @@ class RoutineRunner:
         retries: int = ROUTINE_RETRIES,
         backoff: Sequence[float] = ROUTINE_BACKOFF,
         should_stop: Callable[[], bool] | None = None,
+        keep_response: bool = False,
     ) -> None:
         self.sleep = sleep
         self.clock = clock
         self.retries = retries
         self.backoff = tuple(backoff)
         self.should_stop = should_stop
+        self.keep_response = keep_response
 
     def deliver(self, target: RoutineTarget, body: bytes, *, idempotency_key: str) -> RoutineResult:
         out = RoutineResult()
@@ -2986,6 +2992,8 @@ class RoutineRunner:
             out.status = status
             out.response_len = len(data)
             out.response_sha = hashlib.sha256(data).hexdigest()
+            if self.keep_response:
+                out.response = data
             if status is not None:
                 out.history.append(status)
                 if 200 <= status < 300:

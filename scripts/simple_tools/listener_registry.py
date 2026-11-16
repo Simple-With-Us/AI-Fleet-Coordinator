@@ -65,9 +65,10 @@ have no CLI verb on this tree;  their answers follow the shapes the existing cal
 use (reopen_closed in mm_session_letter.py, and a plain letters list for held).
 
 One writer (AFC-721).  The Eavesdropper is the only process that writes the registry, and
-every write it makes goes through this module:  the API ops above, the Operator's own
-location-answer flow (RegistryService.operator_register), and the one stale sweeper
-(Sweeper, below), which the Eavesdropper runs on a timer for every platform.  A host never
+every write it makes goes through this module:  the API ops above (the `register` op is the
+one caller of RegistryService.operator_register, and the daemon's note-link hook calls the
+`update` op in process;  the location-answer flow went with the registration question, owner
+ruling Nov 10, 2026) and the one stale sweeper (Sweeper, below), which the Eavesdropper runs on a timer for every platform.  A host never
 sweeps or closes rows itself;  it names the chats it knows are gone with an OPERATOR-signed
 report-gone call, and that call refuses to close more than a set share of the host's live
 rows within a window, so one broken host report, or many small ones, cannot end every letter
@@ -390,13 +391,12 @@ class RegistryService:
             self._seat_table_problem = problem
             self.log("registry-seat-table", ok=not problem, error=problem)
 
-    # ---- the Operator's own writes (in process, never over HTTP) --------------
+    # ---- the Operator's own writes --------------------------------------------
 
     def operator_register(self, **fields: Any) -> dict[str, Any]:
         """Issue a letter as the Operator:  the one register path of this process.
 
-        The `register` op and the Eavesdropper's own location-answer flow both come here, so
-        every letter the Eavesdropper issues passes the same store check.  It never brings a
+        The `register` op comes here (its only caller), so every letter the Eavesdropper issues passes the same store check.  It never brings a
         registry into being:  a store is created as a local act on the host that holds it,
         so a host with no store raises RegistryUnavailable (503 over the API) rather than
         starting a second registry that would hand out colliding letters.  The issuer is

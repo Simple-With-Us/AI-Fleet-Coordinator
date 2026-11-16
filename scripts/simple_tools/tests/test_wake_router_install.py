@@ -665,7 +665,7 @@ class CanaryTest(unittest.TestCase):
         self.assertIn("proven:", result.stdout)
         methods = [(m, p) for m, p, _a in router.seen]
         self.assertEqual(methods[:2], [("GET", "/health/" + SEAT), ("POST", "/wake/" + SEAT)])
-        self.assertEqual(router.seen[0][2], "")  # health carries no bearer
+        self.assertEqual(router.seen[0][2], "")  # health carries no Authorization header
         self.assertEqual(router.seen[1][2], "Bearer " + FAKE_KEY)
         sent = json.loads(router.bodies[1])
         self.assertEqual((sent["seat"], sent["letter"], sent["wake_id"]), (SEAT, "QQ", "w-1"))
@@ -709,6 +709,23 @@ class CanaryTest(unittest.TestCase):
                 result = self.run_canary(router, "--test")
                 self.assertEqual(result.returncode, code, result.stdout + result.stderr)
                 self.assertTrue(json.loads(router.bodies[1]).get("test"))
+
+    def test_a_wrong_pick_shows_the_other_seat_that_holds_the_letter(self) -> None:
+        answer = receipt("w-1", status="test", test=True, delivered=False, picked_letter="ZZ",
+                         letter_other_seat="ZC")
+        router = FakeRouter(self, self.healthy({"/wake/" + SEAT: [(200, answer)]}))
+        result = self.run_canary(router, "--test")
+        self.assertEqual(result.returncode, 6, result.stdout + result.stderr)
+        self.assertIn('"letter_other_seat": "ZC"', result.stdout)
+
+    def test_health_may_carry_the_other_seat_count(self) -> None:
+        health = {"seat": SEAT, "healthy": True, "delivery": True, "other_seat_rows": 3}
+        answer = receipt("w-1", status="test", test=True, delivered=False)
+        router = FakeRouter(self, {"/health/" + SEAT: [(200, health)],
+                                   "/wake/" + SEAT: [(200, answer)]})
+        result = self.run_canary(router, "--test")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('"other_seat_rows": 3', result.stdout)
 
     def test_session_prefix_must_match(self) -> None:
         accept = (202, {"wake_id": "w-1", "receipt_id": "r1", "status": "accepted"})

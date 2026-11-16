@@ -852,6 +852,8 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         self.assert_no_routine_secret()
 
     def test_refusals_other_than_the_budget_stay_plain_drops(self) -> None:
+        # The loop guard is off unless the config turns it on.
+        self.write_server_config(daemon_extra="wake_loop_prevention = true")
         daemon = self.started()
         daemon.pause(seat=SEAT, wakes_only=True, by="test")
         self.mention(daemon, "p")
@@ -1516,6 +1518,8 @@ class HeldBackClaudeTests(HeldMixin, DaemonHarness):
         self.assertEqual(self.held(), [])
 
     def test_a_loop_guarded_topic_is_still_a_plain_drop(self) -> None:
+        # The loop guard is off unless the config turns it on.
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
         self.mention(daemon, "lg")
         for _ in range(3):

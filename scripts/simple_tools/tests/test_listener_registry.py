@@ -1201,12 +1201,13 @@ class OneWriterTest(RegistryApiTest):
 
 
 class OneWriterGuardTest(unittest.TestCase):
-    """AFC-721 guard:  the files this change made single-writer stay that way.  The daemon and
-    the Operator's registration CLI write the registry only through listener_registry:  an AST
-    walk finds no call to a registry write function under any spelling (`OR.x(`, an imported
-    `x(`, an alias), no import of one, and no SessionRegistry built without read_only=True, so a
-    handle in either file can never write.  The fleet-wide guard (every client module) is
-    test_one_assigner, added when the clients become API-only."""
+    """AFC-721 guard:  the files this change made single-writer stay that way.  The daemon writes
+    the registry only through listener_registry:  an AST walk finds no call to a registry write
+    function under any spelling (`OR.x(`, an imported `x(`, an alias), no import of one, and no
+    SessionRegistry built without read_only=True, so a handle in it can never write.  (The
+    Operator's registration CLI, operator_registration.py, was the other file;  it went with the
+    registration question, owner ruling Nov 10, 2026.)  The fleet-wide guard (every client
+    module) is test_one_assigner, added when the clients become API-only."""
 
     WRITE_FUNCTIONS = frozenset(
         {
@@ -1251,12 +1252,6 @@ class OneWriterGuardTest(unittest.TestCase):
 
     def test_the_daemon_writes_the_registry_only_through_listener_registry(self) -> None:
         self.assertEqual(self.offences(self.tree("daemon.py")), [])
-
-    def test_the_registration_cli_never_writes_the_registry(self) -> None:
-        self.assertEqual(self.offences(self.tree("operator_registration.py")), [])
-        # The CLI issues no letter at all:  only the Eavesdropper takes an answer.
-        source = ast.unparse(self.tree("operator_registration.py"))
-        self.assertNotIn("operator_register", source)
 
     def test_the_guard_catches_every_spelling(self) -> None:
         snippet = ast.parse(

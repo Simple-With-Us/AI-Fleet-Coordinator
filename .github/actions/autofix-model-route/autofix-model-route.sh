@@ -5,6 +5,14 @@ VAR_BASE="${VAR_BASE:-}"
 VAR_MODEL="${VAR_MODEL:-}"
 DEFAULT_MODEL="${DEFAULT_MODEL:-MiniMax-M3.1-Flash}"
 
+repo_root="${GITHUB_WORKSPACE:-.}"
+if [ -f "$repo_root/scripts/autofix_provider_model.sh" ]; then
+  # shellcheck source=scripts/autofix_provider_model.sh
+  source "$repo_root/scripts/autofix_provider_model.sh"
+  VAR_BASE=$(autofix_trim "$VAR_BASE")
+  VAR_MODEL=$(autofix_trim "$VAR_MODEL")
+fi
+
 route=
 case "$VAR_BASE" in
   "" | https://api.minimax.io/anthropic) route=minimax ;;

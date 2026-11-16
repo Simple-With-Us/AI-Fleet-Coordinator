@@ -21,6 +21,8 @@ struct FleetOverviewView: View {
     @State private var destination: MusterDestination
     /// The filter an Overview card asked the grid to open on,  held by this window only.
     @State private var gridRequest: GridStateFilter?
+    /// Whether Quick Open is showing.  The Go menu's Quick Open reaches it by the focused scene.
+    @State private var quickOpenShown = false
 
     init() {
         let saved = UserDefaults.standard.string(forKey: MusterSettings.sidebarSelectionDefaultsKey)
@@ -132,6 +134,12 @@ struct FleetOverviewView: View {
         // The operations sheet hangs off the root the same way,  so every panel that starts
         // an action shares one plan,  one Touch ID question and one action in flight.
         .opsActionSheet()
+        .focusedSceneValue(\.quickOpenShown, $quickOpenShown)
+        .sheet(isPresented: $quickOpenShown) {
+            QuickOpenView(attention: attentionCounts(menu: menu)) { chosen in
+                destination = chosen
+            }
+        }
         .onChange(of: destination) { _, chosen in
             storedDestination = chosen.rawValue
             // A card's request is for the visit it started,  and no later one.
@@ -143,6 +151,16 @@ struct FleetOverviewView: View {
             if chosen != destination { destination = chosen }
         }
         .background(MusterWindowTracker())
+    }
+
+    /// The attention count of every panel that has one, for Quick Open.  It is the sidebar's own
+    /// badge for each row, taken from models already loaded:  nothing is read again.
+    private func attentionCounts(menu: MachineMenu) -> [MusterDestination: String] {
+        var counts: [MusterDestination: String] = [:]
+        for place in MusterDestination.allCases {
+            if let badge = sidebarBadge(place, menu: menu) { counts[place] = badge }
+        }
+        return counts
     }
 
     /// What the window knows about each panel's source,  for the line under its badge.

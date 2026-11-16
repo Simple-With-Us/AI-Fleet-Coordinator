@@ -682,8 +682,20 @@ class LedgerAndGuardTests(unittest.TestCase):
         self.assertTrue(guard.blocked("channel\x00topic"))
         self.assertEqual(len(guard.holding()), 1)
 
-    def test_loop_guard_resets_only_on_an_owner_post(self) -> None:
+    def test_loop_guard_is_off_unless_it_is_turned_on(self) -> None:
+        """Owner, Nov 10, 2026:  nothing throttles a wake, so the guard's own default is off.  It still
+        counts, and turning it on later blocks the topic from the history it kept."""
         guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        self.assertFalse(guard.enabled)
+        for n in range(4):
+            guard.note("k", wake_reply=True, owner=False, now=1000.0 + n)
+        self.assertEqual(guard.count("k"), 4)
+        self.assertFalse(guard.blocked("k"))
+        guard.enabled = True
+        self.assertTrue(guard.blocked("k"))
+
+    def test_loop_guard_resets_only_on_an_owner_post(self) -> None:
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"), enabled=True)
         for _ in range(3):
             guard.note("k", wake_reply=True, owner=False)
         self.assertTrue(guard.blocked("k"))
@@ -693,7 +705,7 @@ class LedgerAndGuardTests(unittest.TestCase):
         self.assertFalse(guard.blocked("k"))
 
     def test_a_topic_count_never_decays(self) -> None:
-        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"), enabled=True)
         for n in range(3):
             guard.note("k", wake_reply=True, owner=False, now=1000.0 + n)
         self.assertTrue(
@@ -704,7 +716,7 @@ class LedgerAndGuardTests(unittest.TestCase):
         """Owner 2026-10-09 made bot DMs wake.  The owner can never post in a DM between two bots, so a
         fixed count would block that pair for good:  there 3 wake replies within DM_WINDOW stop it, and it
         wakes again once the oldest of them ages out."""
-        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"), enabled=True)
         window = W.LoopGuard.DM_WINDOW
         for at in (1000.0, 1100.0):
             guard.note("dm", wake_reply=True, owner=False, rolling=True, now=at)

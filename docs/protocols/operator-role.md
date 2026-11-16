@@ -164,10 +164,9 @@ and defined outputs.
     `[OPERATOR·note]`.
 
 3.  **It never DMs and never asks.**  The Operator asks nobody a clarifying question, and anything
-    that would be a direct message goes in Side-Chats.  The code still sends a candidate list
-    (`scripts/simple_tools/operator_candidates.py`, `ask_operator_for_candidates`) and a registration
-    question (`operator_registration_ask.py`), and still DMs the owner;  those are what this rule
-    removes.
+    that would be a direct message goes in Side-Chats.  The candidate list and the registration
+    question are gone from the code (owner ruling, Nov 10, 2026).  The code still DMs the owner;
+    that is what this rule still removes.
 
 **No model answers.**  A wake is delivered to the picked chat, and that chat answers.  The router's
 optional decider, off by default, only picks a chat.  Its model is declared in
@@ -316,8 +315,8 @@ the one-standing-comment behaviour for topic-named issues stay exactly as they a
 
 *  The Operator's own tag, and the post-versus-reply rule, in the two places the wake tag is
     composed.
-*  Move the Operator's direct messages to Side-Chats, and remove the candidate list and the
-    registration question.
+*  Move the Operator's direct messages to Side-Chats.  (The candidate list and the registration
+    question are already removed.)
 *  The location column and the short summary column, in the registry and on the sheet.
 *  The relay's second key, for the message-named issue.
 *  The Operator's own voice on the server, so it authors its own threads instead of a seat

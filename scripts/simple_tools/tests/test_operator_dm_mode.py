@@ -1,16 +1,19 @@
-"""The Operator voice's direct-message mode (owner ruling, Tue, Nov 10 2026).
+"""The Operator voice's direct-message mode (owner rulings, Tue, Nov 10 2026).
 
-No seat or agent ever sends a direct message, and the Operator's own are only clarification questions
-about a wake.  `SIMPLE_TOOLS_OPERATOR_DM_MODE` stages that for `operator_post.OperatorVoice`:
+No seat or agent ever sends a direct message, and the Operator asks nobody anything, so it has no
+clarification question to send.  `SIMPLE_TOOLS_OPERATOR_DM_MODE` stages that for
+`operator_post.OperatorVoice`:
 
   * `legacy` (the default, and what an unset, empty or unrecognised value means) is today's behaviour;
-  * `clarify` refuses every `direct` message unless the caller passes `clarify=True`.
+  * `clarify` (the value keeps its old name) refuses every `direct` message, and nothing opens it:  the
+    `clarify=True` allowance a clarification question would have used is gone.
 
 Stream posts are never affected, a refusal sends nothing and builds no client, and it carries no message
 text anywhere.  An edit cannot rewrite a direct message the voice itself posted: the voice remembers the
-ids of those (a bounded memory, ids only) and refuses `edit` of one in `clarify` mode unless the caller
-passes `clarify=True`.  The daemon's five direct-message sites still send in `legacy` mode, which is the
-point of the staging, and its two choke points are tested in test_operator_voice.py.
+ids of those (a bounded memory, ids only) and refuses `edit` of one in `clarify` mode.  Such a message
+can only have been sent while the mode was `legacy`, so these tests send it in `legacy` and then move
+the mode.  The daemon's five direct-message sites still send in `legacy` mode, which is the point of the
+staging, and its two choke points are tested in test_operator_voice.py.
 
 The voice is driven on its own (a fake client, no network), exactly as in test_operator_voice.py.
 """
@@ -18,6 +21,7 @@ The voice is driven on its own (a fake client, no network), exactly as in test_o
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import itertools
 import unittest
@@ -31,6 +35,7 @@ from simple_tools.tests.test_operator_voice import OWNER, FakeOperatorClient, op
 
 MODE = "SIMPLE_TOOLS_OPERATOR_DM_MODE"
 PINS = {"OPERATOR_ZULIP_USER_ID": str(OPERATOR_USER_ID), "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL}
+CLARIFY = dict(PINS, **{MODE: "clarify"})
 
 # Distinctive on purpose: a refusal that leaks the message shows up as one of these strings somewhere.
 BODY_MARK = "ZXQ-body-7731-do-not-leak"
@@ -42,6 +47,8 @@ DM: dict[str, Any] = {
     "content": "hello " + BODY_MARK,
 }
 STREAM: dict[str, Any] = {"type": "stream", "to": "7", "topic": "wakes", "content": "hello stream"}
+#: Values a caller might once have passed as `clarify=`;  none of them is accepted any more.
+OLD_FLAG_VALUES = (True, False, None, 0, 1, "yes", "true", [True], {"clarify": True})
 
 
 class AnsweringClient(FakeOperatorClient):
@@ -82,6 +89,15 @@ class OperatorDmModeTests(unittest.TestCase):
             log=lambda event, **fields: self.logged.append((event, fields)),
         )
 
+    def voice_that_sent(self, *posts: dict[str, Any]) -> OPV.OperatorVoice:
+        """A voice that sent these posts in `legacy` mode and then moved to `clarify`:  the only way a
+        direct message of its own can exist while the mode refuses them."""
+        voice = self.voice("legacy")
+        for params in posts:
+            voice.post(params)
+        voice.update_env(dict(CLARIFY))
+        return voice
+
     def sent(self) -> list[tuple[str, str, Any]]:
         """Every write that reached a Zulip client (the `users/me` read is not a write)."""
         return [call for client in self.built for call in client.calls if call[0] != "GET"]
@@ -106,20 +122,32 @@ class OperatorDmModeTests(unittest.TestCase):
                 self.assertEqual(self.sent(), [("POST", "messages", DM)])
                 self.assertEqual(self.warnings(), [], "a value that means legacy is not a warning")
 
-    def test_clarify_true_changes_nothing_in_legacy_mode_and_never_reaches_zulip(self) -> None:
-        voice = self.voice("legacy")
-        self.assertEqual(voice.post(DM, clarify=True), {"id": 77})
-        self.assertEqual(
-            self.sent(), [("POST", "messages", DM)], "the keyword is not a Zulip parameter"
-        )
-
     def test_legacy_posts_carry_the_same_keywords_they_always_did(self) -> None:
         voice = self.voice()
         voice.post(STREAM, timeout=9.0)
         voice.post(DM, wait=True)
         self.assertEqual([call[:2] for call in self.sent()], [("POST", "messages")] * 2)
 
-    # ---- clarify refuses a direct message ----------------------------------------------------------
+    # ---- the clarification allowance is gone ---------------------------------------------------------
+    def test_no_write_takes_a_clarify_keyword_any_more(self) -> None:
+        # The Operator asks nobody anything (owner ruling, Nov 10, 2026), so nothing can mark a direct
+        # message as a clarification question.
+        for method in ("post", "edit", "refuse_unclarified_dm", "refuse_unclarified_edit"):
+            with self.subTest(method=method):
+                self.assertNotIn(
+                    "clarify", inspect.signature(getattr(OPV.OperatorVoice, method)).parameters
+                )
+        self.assertFalse(hasattr(OPV, "DM_CLARIFY_ONLY_REASON"))
+        self.assertNotIn("clarifying question", OPV.DM_REFUSED_REASON)
+
+    def test_the_old_keyword_is_refused_in_every_mode_and_sends_nothing(self) -> None:
+        for mode in ("legacy", "clarify"):
+            for value in OLD_FLAG_VALUES:
+                with self.subTest(mode=mode, value=value), self.assertRaises(TypeError):
+                    self.voice(mode).post(DM, clarify=value)
+        self.assertEqual(self.sent(), [], "nothing reached Zulip")
+
+    # ---- clarify refuses every direct message --------------------------------------------------------
     def test_clarify_refuses_a_direct_message_and_sends_nothing(self) -> None:
         voice = self.voice("clarify")
         for wait in (True, False):
@@ -134,13 +162,15 @@ class OperatorDmModeTests(unittest.TestCase):
         )
         self.assertEqual(self.logged, [], "the voice logs nothing about it")
 
-    def test_the_refusal_token_is_stable(self) -> None:
+    def test_the_refusal_token_is_stable_and_the_reason_promises_nothing(self) -> None:
         self.assertEqual(OPV.CODE_DM_CLARIFY_ONLY, "operator_dm_clarify_only")
         voice = self.voice("clarify")
         with self.assertRaises(OPV.OperatorRefused) as caught:
             voice.post(DM)
         self.assertEqual(caught.exception.code, "operator_dm_clarify_only")
         self.assertIn(MODE, caught.exception.reason, "the reason names the setting that caused it")
+        self.assertIn("asks nobody", caught.exception.reason)
+        self.assertNotIn("clarifying question", caught.exception.reason)
         self.assertNotEqual(caught.exception.code, OPV.CODE_SECRET, "not the scanner's token")
 
     def test_both_spellings_of_a_direct_message_type_are_refused(self) -> None:
@@ -150,32 +180,16 @@ class OperatorDmModeTests(unittest.TestCase):
                 voice.post(dict(DM, type=kind))
         self.assertEqual(self.sent(), [])
 
-    def test_clarify_true_lets_the_one_question_through_unchanged(self) -> None:
-        voice = self.voice("clarify")
-        self.assertEqual(voice.post(DM, clarify=True), {"id": 77})
-        self.assertEqual(
-            self.sent(), [("POST", "messages", DM)], "the keyword is not a Zulip parameter"
-        )
-
-    def test_only_the_value_true_counts_as_a_clarification(self) -> None:
-        voice = self.voice("clarify")
-        for value in (False, None, 0, 1, "yes", "true", [True], {"clarify": True}):
-            with self.subTest(value=value), self.assertRaises(OPV.OperatorRefused):
-                voice.post(DM, clarify=value)
-        self.assertEqual(self.sent(), [])
-
     def test_clarify_never_affects_stream_posts_or_edits(self) -> None:
         voice = self.voice("clarify")
         self.assertEqual(voice.post(STREAM), {"id": 77})
         self.assertEqual(voice.post(dict(STREAM, type="channel")), {"id": 77})
-        self.assertEqual(voice.post(STREAM, clarify=True), {"id": 77})
         voice.edit(901, "digest")
         self.assertEqual(
             self.sent(),
             [
                 ("POST", "messages", STREAM),
                 ("POST", "messages", dict(STREAM, type="channel")),
-                ("POST", "messages", STREAM),
                 ("PATCH", "messages/901", {"content": "digest"}),
             ],
         )
@@ -216,10 +230,9 @@ class OperatorDmModeTests(unittest.TestCase):
     def test_a_reload_moves_the_mode_without_a_new_voice(self) -> None:
         voice = self.voice("legacy")
         self.assertEqual(voice.post(DM), {"id": 77})
-        voice.update_env(dict(PINS, **{MODE: "clarify"}))
+        voice.update_env(dict(CLARIFY))
         with self.assertRaises(OPV.OperatorRefused):
             voice.post(DM)
-        self.assertEqual(voice.post(DM, clarify=True), {"id": 77})
         voice.update_env(dict(PINS))
         self.assertEqual(voice.post(DM), {"id": 77}, "the setting is gone, so legacy again")
         self.assertEqual(len(self.built), 1, "the same verified client throughout")
@@ -246,8 +259,7 @@ class OperatorDmModeTests(unittest.TestCase):
         return [call for call in self.sent() if call[0] == "PATCH"]
 
     def test_an_edit_of_a_dm_the_voice_posted_is_refused_in_clarify(self) -> None:
-        voice = self.voice("clarify")
-        self.assertEqual(voice.post(DM, clarify=True), {"id": 77})
+        voice = self.voice_that_sent(DM)
         calls = self.spy_on_client(voice)
         for wait in (True, False):
             with self.subTest(wait=wait), self.assertRaises(OPV.OperatorRefused) as caught:
@@ -263,18 +275,13 @@ class OperatorDmModeTests(unittest.TestCase):
         self.assertEqual(calls, [], "the refusal built no client")
         self.assertEqual(self.patches(), [], "nothing was edited")
 
-    def test_clarify_true_lets_an_edit_of_a_dm_through_and_is_not_sent_to_zulip(self) -> None:
-        voice = self.voice("clarify")
-        voice.post(DM, clarify=True)
-        voice.edit(77, "kept", clarify=True)
-        self.assertEqual(self.patches(), [("PATCH", "messages/77", {"content": "kept"})])
-
-    def test_only_the_value_true_opens_the_edit_gate(self) -> None:
-        voice = self.voice("clarify")
-        voice.post(DM, clarify=True)
-        for value in (False, None, 0, 1, "yes", "true", [True]):
-            with self.subTest(value=value), self.assertRaises(OPV.OperatorRefused):
+    def test_nothing_opens_the_edit_gate(self) -> None:
+        voice = self.voice_that_sent(DM)
+        for value in OLD_FLAG_VALUES:
+            with self.subTest(value=value), self.assertRaises(TypeError):
                 voice.edit(77, "x", clarify=value)
+        with self.assertRaises(OPV.OperatorRefused):
+            voice.edit(77, "x")
         self.assertEqual(self.patches(), [])
 
     def test_in_legacy_an_edit_of_a_dm_goes_through_as_it_does_today(self) -> None:
@@ -290,7 +297,7 @@ class OperatorDmModeTests(unittest.TestCase):
         voice = self.voice("legacy")
         voice.post(DM)  # sent, and remembered, while the mode is legacy
         voice.edit(77, "fine")
-        voice.update_env(dict(PINS, **{MODE: "clarify"}))
+        voice.update_env(dict(CLARIFY))
         with self.assertRaises(OPV.OperatorRefused):
             voice.edit(77, "no")
         voice.update_env(dict(PINS))
@@ -301,9 +308,7 @@ class OperatorDmModeTests(unittest.TestCase):
         # A stream post's id (the held-wake digest is one) and an id the voice never saw, such as a
         # direct message sent before a restart.
         self.answer = lambda params: {"id": 78 if params["type"] == "stream" else 77}
-        voice = self.voice("clarify")
-        voice.post(STREAM)
-        voice.post(DM, clarify=True)
+        voice = self.voice_that_sent(STREAM, DM)
         voice.edit(78, "digest")
         voice.edit(901, "digest")
         self.assertEqual([call[1] for call in self.patches()], ["messages/78", "messages/901"])
@@ -314,9 +319,7 @@ class OperatorDmModeTests(unittest.TestCase):
         self.assertEqual(OPV.DM_ID_MEMORY, 256)
         counter = itertools.count(1)
         self.answer = lambda params: {"id": next(counter)}
-        voice = self.voice("clarify")
-        for _ in range(OPV.DM_ID_MEMORY + 44):
-            voice.post(DM, clarify=True)  # ids 1 to 300
+        voice = self.voice_that_sent(*([DM] * (OPV.DM_ID_MEMORY + 44)))  # ids 1 to 300
         for forgotten in (1, 44):
             voice.edit(forgotten, "ok")  # the oldest are forgotten first
         for kept in (45, 300):
@@ -339,17 +342,19 @@ class OperatorDmModeTests(unittest.TestCase):
             with self.subTest(answer=answer):
                 self.built.clear()
                 self.answer = lambda params, answer=answer: answer
-                voice = self.voice("clarify")
-                self.assertEqual(voice.post(DM, clarify=True), answer)
+                voice = self.voice("legacy")
+                self.assertEqual(voice.post(DM), answer)
+                voice.update_env(dict(CLARIFY))
                 self.assertEqual(len(voice._dm_ids), 0)
                 for message_id in (1, 77):
                     voice.edit(message_id, "fine")
 
     def test_a_post_that_failed_remembers_nothing(self) -> None:
-        voice = self.voice("clarify")
+        voice = self.voice("legacy")
         voice.client().post_error = Z.ApiError("no", code="BAD_REQUEST", status=400)
         with self.assertRaises(Z.ApiError):
-            voice.post(DM, clarify=True)
+            voice.post(DM)
+        voice.update_env(dict(CLARIFY))
         voice.edit(77, "fine")
         self.assertEqual(self.patches(), [("PATCH", "messages/77", {"content": "fine"})])
 
@@ -357,7 +362,6 @@ class OperatorDmModeTests(unittest.TestCase):
         voice = self.voice("clarify")
         with self.assertRaises(OPV.OperatorRefused):
             voice.refuse_unclarified_dm(DM)
-        voice.refuse_unclarified_dm(DM, clarify=True)
         voice.refuse_unclarified_dm(STREAM)
         voice.refuse_unclarified_edit(77)  # nothing is remembered yet
         voice.refuse_unclarified_edit("not an id")  # the edit itself fails on it, as before

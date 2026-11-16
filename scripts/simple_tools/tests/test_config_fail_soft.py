@@ -31,11 +31,14 @@ def load(extra: str) -> C.Config:
 
 class FailSoftConfig(unittest.TestCase):
     def test_wake_loop_prevention_is_explicit_boolean(self) -> None:
-        self.assertTrue(C.from_dict({}).wake_loop_prevention)
+        # Off in the code (owner, Nov 10, 2026:  wakes are liberal, nothing throttles them), on only when
+        # the config says so.
+        self.assertFalse(C.from_dict({}).wake_loop_prevention)
+        self.assertTrue(C.from_dict({"daemon": {"wake_loop_prevention": True}}).wake_loop_prevention)
         self.assertFalse(C.from_dict({"daemon": {"wake_loop_prevention": False}}).wake_loop_prevention)
-        for value in ("false", 0, None):
+        for value in ("false", "true", 0, 1, None):
             cfg = C.from_dict({"daemon": {"wake_loop_prevention": value}})
-            self.assertTrue(cfg.wake_loop_prevention)
+            self.assertFalse(cfg.wake_loop_prevention, "a malformed value falls back to the off default")
             self.assertIn("daemon.wake_loop_prevention must be true or false", cfg.errors)
 
 

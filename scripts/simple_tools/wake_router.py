@@ -39,6 +39,28 @@ or the registry come back before `max_attempts` or `max_age_seconds` runs out.  
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
 wake is meant for it.
 
+The letter.  A chat is written as its platform's name and a letter of exactly two capitals,
+"Claude AA".  `letter_of` reads which one a message addresses, the same way for every platform:
+the body's `letter`;  else a real mention followed by the letter (`@**Claude** AA`);  else the
+recipient list of the post's leading header (`[GROK: BB.2.M → CLAUDE AA, CODEX BB]`), the fleet's
+own way to address a chat;  else `@Claude AA` anywhere;  else `Claude AA` at the start of a line or
+of the body, after the header and its mentions;  else `Claude AA,` or `Claude AA:` later in a line,
+when the text names no other chat of the seat.  The three plain forms do not read code, an inline
+span or a fenced block, which shows how a chat is written and addresses nobody.  A letter no live
+chat holds falls through the pick as no letter does, but the wake still carries it, and a wake that
+carries a letter is not picked again when its chat is released before delivery (`_released`).
+
+Another seat's rows.  A chat registered on this platform under another seat's tag is no target
+here (AFC-772:  three Claude chats were registered as seat ZC and their letters went unanswered).
+Who is picked does not change;  the router only says what it left out, in two places.  When the
+addressed letter is open on such a row, the receipt names that seat in `letter_other_seat`, and
+stderr gets the code `letter-other-seat:<SEAT>`.  Each read of the platform's history counts the
+open chats it left out for that reason alone (`other_seat`), and `/health/<SEAT>` gives the latest
+count as `other_seat_rows`.  Health needs no key, so it does not say when that read happened:  that
+would show when a seat was last woken.  The count is absent until a history has been read in this
+process, health asks the registry nothing, and the count never changes `healthy`.  A row with no
+seat or a malformed one is not counted:  it names nobody.
+
 A reply link.  The listener may add `"linked_by": "reply"` when the message answers one a chat
 posted, with the letter of that chat.  Any other value is ignored.  It changes no step of the pick:
 when that letter picks the chat, the receipt says `picked: "reply"` and `reason: "reply"`, and the
@@ -157,6 +179,7 @@ import subprocess
 import sys
 import threading
 import time
+from bisect import bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
@@ -189,6 +212,20 @@ FRAGMENT_RE = re.compile(
 # A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
 HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·(?:%s)?[0-9a-f-]{8,})?(.*)" % SESSION_PREFIX, re.DOTALL)
 HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
+# A chat written plainly, as the fleet writes one:  the name (filled in where it is used), a gap,
+# and the letter, which is exactly two capitals.  `Claude cc`, `Claude C`, `Claude CCC`,
+# `Claude Code` and `CLAUDE-CC` are not one.
+PLAIN_LETTER = r"%s[ \t]+([A-Z]{2})\b"
+# What a plain name may not follow:  a word character, or the `@`, `*`, `/` or `.` of an address, a
+# mention's stars or a path.  So `jay@Claude CC` and the silent `@_**Claude** CC` name nobody.
+NOT_A_TAIL = r"(?<![\w@*/.])"
+# Code shows how a chat is written and addresses nobody:  the opening line of a fenced block, and an
+# inline span on one line (`blank_code_spans` pairs the backtick runs;  a pattern for it
+# backtracks without bound on a long run of backticks).
+CODE_FENCE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})[^`\n]*")
+BACKTICK_RUN_RE = re.compile(r"`+")
+# The mentions a post opens with, real or silent, as the posting tools write them after the header.
+LEADING_MENTIONS_RE = re.compile(r"\A(?:\s*@_?\*\*[^*\n]+\*\*[,;]?)+")
 # An untrusted-text marker line:  BEGIN or END, then the kind (`_ZULIP`, or nothing).
 MARKER_LINE_RE = re.compile(r"(BEGIN|END)_UNTRUSTED([A-Z0-9_]*)\b")
 # The opening fence of a Zulip quote block.
@@ -379,6 +416,8 @@ class Pick:
     retry: bool = False
     candidates: tuple[str, ...] = ()
     link_note: str = ""
+    # The seat tag on the addressed letter's open row when it is another seat's, else "".
+    letter_other_seat: str = ""
 
 
 def clean(value: object, limit: int = NAME_CHARS) -> str:
@@ -388,26 +427,175 @@ def clean(value: object, limit: int = NAME_CHARS) -> str:
 
 
 def letter_of(payload: Mapping[str, Any], mention: str) -> str:
-    """The letter the sender addressed, or "".  An explicit field wins, then a real mention anywhere
-    in the excerpt (@**Name** AA, with or without Zulip's |id, the letter on its line or the next).
-    The plain "Name AA" form counts only at the start of a line:  later in a line it is usually a
-    reference to that chat, not an address.  The seat's own tag is not a letter, though a post often
-    opens with it under the mention ("ZC, can you").  A silent mention (@_**Name**) addresses
-    nobody."""
+    """The letter the sender addressed, or "".  A letter is exactly two capitals:  a main chat's
+    doubled pair (AA) or a child thread's pair (DE).  An explicit field wins.  Otherwise the
+    excerpt is read with its quotes left out, and the first of these forms that names a letter
+    gives it, in this order and the same way for every platform:
+
+    1. a real mention anywhere (@**Name** AA, with or without Zulip's |id, the letter on its line
+       or the next, the name said again or not:  @**Name** Name AA);
+    2. the recipient list of the post's leading header, the fleet's own way to address a chat
+       (`[GROK: BB.2.M → CLAUDE AA, CODEX BB]`;  see `header_letters`);
+    3. the plain at-form anywhere (@Name AA or @Name Name AA, the name after the @ in any ASCII
+       case), unless it is the tail of a word, an address or a path (`jay@Name AA`);
+    4. the plain form at the start of a line (Name AA), or of the body after the leading header
+       and the mentions that follow it (`opening_lines`);
+    5. the plain form later in a line with a comma or a colon after the letter (", Name AA,
+       please"), only when the text names no other chat by that mention name
+       (`sole_plain_letter`).
+
+    In 2 to 4, and where the name is said again, it is the platform's mention name or its seat
+    tag, except that 3 and 4 leave out a seat tag of two capitals (ZC, MC), which is itself
+    letter-shaped ("ZC PR is merged" names no chat);  the mention in 1 and the name in 5 are the
+    mention name alone.  3 to 5 do not read code
+    (`uncoded`).  Within a form the first letter wins.  The seat's own tag is not a letter, though
+    a post often opens with it under the mention ("ZC, can you").  A silent mention (@_**Name**)
+    in the body addresses nobody by itself;  the name said again after one that opens the body is the plain form of 4
+    ("@_**Name** Name AA")."""
     explicit = str(payload.get("letter") or "").strip()
     if re.fullmatch(r"[A-Z]{1,2}", explicit):
         return explicit
-    excerpt = unquoted(trusted_text(str(payload.get("excerpt") or "")))
-    name = re.escape(mention)
+    excerpt = str(payload.get("excerpt") or "")
+    text = unquoted(trusted_text(excerpt))
     seat = str(payload.get("seat") or "")
-    for form in (
-        r"@\*\*%s(?:\|\d+)?\*\*\s*([A-Z]{2})\b" % name,
-        r"(?m)^[ \t]*%s[ \t]+([A-Z]{2})\b" % name,
-    ):
-        for found in re.finditer(form, excerpt):
-            if found.group(1) != seat:
-                return found.group(1)
-    return ""
+    known = [re.escape(name) for name in dict.fromkeys((mention, seat)) if name]
+    if not known:
+        return ""
+    names = "(?:" + "|".join(known) + ")"
+    again = r"(?:%s[ \t]+)?" % names  # the name said again after a mention of it
+    # A seat tag of two capitals (ZC, MC) is itself letter-shaped, so in the plain forms "ZC PR is
+    # merged" would read PR as a letter.  Those forms take such a tag out;  the header's recipient
+    # list, where the tag is explicit, keeps it.
+    plain_known = [
+        re.escape(name)
+        for name in dict.fromkeys((mention, "" if re.fullmatch(r"[A-Z]{2}", seat) else seat))
+        if name
+    ]
+    plain = "(?:" + "|".join(plain_known) + ")" if plain_known else ""
+    prose = uncoded(text)
+
+    def first(letters: Iterable[str]) -> str:
+        return next((letter for letter in letters if letter != seat), "")
+
+    mentioned = r"@\*\*%s(?:\|\d+)?\*\*\s*%s([A-Z]{2})\b" % (re.escape(mention), again)
+    at_form = NOT_A_TAIL + r"@(?ai:%s)[ \t]+%s([A-Z]{2})\b" % (plain, again) if plain else ""
+    line_start = r"(?m)^[ \t]*" + PLAIN_LETTER % plain if plain else ""
+    return (
+        first(re.findall(mentioned, text))
+        or first(header_letters(excerpt, names))
+        or (first(re.findall(at_form, prose)) if at_form else "")
+        or (
+            first(re.findall(line_start, uncoded(opening_lines(excerpt, text))))
+            if line_start
+            else ""
+        )
+        # The router's own last resort, on its own line so it can go alone:  without it a plain
+        # name later in a line is a reference and addresses nobody.
+        or sole_plain_letter(prose, mention, seat)
+    )
+
+
+def header_letters(excerpt: str, names: str) -> list[str]:
+    """The letters a leading post header's recipient list gives one of these names, in the list's
+    order.  The list is the text after the header's arrow (`→`, or `->` as some write it), split
+    on commas.  An item counts when it is exactly the name and the letter:  `Name AA` or `@Name
+    AA`, the name in any ASCII case, because a header writes the seat tag (`CLAUDE AA`) and a
+    person the name (`Claude AA`);  or the name as a mention, `@**Name** AA`, which the fleet's
+    posting tools make silent in a bot's post (`@_**Name** AA`), so in this list alone a silent
+    mention is the address.  The letter may carry its session token (`CODEX BB.1.M`).  An item
+    that is the name alone names the seat and no chat.  `split_excerpt` finds the header, so the
+    listener's frame, a marked block and a cut header are read here as everywhere else."""
+    sender, addressing = split_excerpt(excerpt)
+    if not sender:
+        return []
+    listed = addressing.partition("\n")[0] or sender.partition("->")[2]
+    name = "(?ai:%s)" % names
+    item = re.compile(
+        r"[ \t]*(?:@_?\*\*%s(?:\|\d+)?\*\*|@?%s)[ \t]+([A-Z]{2})(?:\.[0-9]+\.[A-Z])?[ \t]*"
+        % (name, name)
+    )
+    return [found.group(1) for found in map(item.fullmatch, listed.split(",")) if found]
+
+
+def uncoded(text: str) -> str:
+    """The text with its code left blank:  fenced blocks (to their closing fence, or to the end
+    when there is none) and inline `spans`.  Code shows how a chat is written, as a post about the
+    router does, and addresses nobody.  Every line keeps its place."""
+    kept: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.split("\n"):
+        if fence is not None:
+            mark, length = fence
+            if re.fullmatch(r"[ \t]*%s{%d,}[ \t]*" % (re.escape(mark), length), line):
+                fence = None
+            kept.append("")
+            continue
+        opening = CODE_FENCE_RE.fullmatch(line)
+        if opening is not None:
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            kept.append("")
+            continue
+        kept.append(blank_code_spans(line))
+    return "\n".join(kept)
+
+
+def blank_code_spans(line: str) -> str:
+    """The line with its inline code spans replaced by a space each, paired as Markdown pairs
+    them:  a run of backticks opens a span that the next run of the same length closes, and a run
+    with no such partner is plain text.  One pass over the runs, so a long run of backticks (the
+    listener keeps 2,000 characters, a direct post up to 64 KB) costs no more than its length."""
+    runs = [(found.start(), found.end()) for found in BACKTICK_RUN_RE.finditer(line)]
+    if len(runs) < 2:
+        return line
+    by_length: dict[int, list[int]] = {}
+    for index, (start, end) in enumerate(runs):
+        by_length.setdefault(end - start, []).append(index)
+    pieces: list[str] = []
+    kept_from = 0
+    index = 0
+    while index < len(runs):
+        start, end = runs[index]
+        same = by_length[end - start]
+        at = bisect_right(same, index)
+        if at == len(same):
+            index += 1
+            continue
+        closing = same[at]
+        pieces.append(line[kept_from:start] + " ")
+        kept_from = runs[closing][1]
+        index = closing + 1
+    pieces.append(line[kept_from:])
+    return "".join(pieces)
+
+
+def opening_lines(excerpt: str, text: str) -> str:
+    """`text` (the excerpt, unquoted) with what a post opens with taken off:  its leading header,
+    when `split_excerpt` finds one, and the mentions that follow.  A fleet post puts its body on
+    the header's line, so this is what makes the body's first words the start of a line, as they
+    are in a post with no header."""
+    if split_excerpt(excerpt)[0]:
+        text = text.partition("]")[2]  # the header opens the text and holds no `]` of its own
+    return LEADING_MENTIONS_RE.sub("", text, count=1)
+
+
+def sole_plain_letter(text: str, mention: str, seat: str) -> str:
+    """The last resort, and the router's own choice (AFC-694), made under the owner's liberal-wake
+    ruling (Nov 10, 2026) and not his wording:  a plain "Name AA" later in a line addresses that
+    chat when it is written as an address, with a comma or a colon after the letter ("thanks,
+    Claude CC, that works"), and the text names no other chat by that mention name (a seat tag
+    or a silent mention elsewhere is not counted).  Anything else is a
+    reference and names nobody, so the pick falls back:  a name with no comma or colon after it
+    ("ask Claude AA about it") and two different letters ("so, Claude CC, see what Claude DD
+    said").  A possessive ("Claude CC's result") is a reference that does not count as a second
+    chat.  Only the mention name is read, because a seat tag of two capitals looks like a letter
+    in a list of seats ("cc ZC MM, AG").  It can be removed alone:  delete its line in
+    `letter_of`."""
+    if not mention:
+        return ""
+    plain = NOT_A_TAIL + PLAIN_LETTER % re.escape(mention)
+    named = set(re.findall(plain + r"(?!['’]s\b)", text)) - {seat}
+    addressed = set(re.findall(plain + r"(?=[,:])", text))
+    return named.pop() if len(named) == 1 and named <= addressed else ""
 
 
 def link_note_ok(text: object) -> bool:
@@ -759,6 +947,9 @@ class Router:
         self._stopping = False
         self._threads: list[threading.Thread] = []
         self._retiring: set[threading.Thread] = set()
+        # The latest read of the platform's history:  (open chats left out only because their row
+        # names another seat, when it was read).  None until one has been read in this process.
+        self.other_seat_scan: tuple[int, float] | None = None
 
     def routine_key(self) -> tuple[str, str]:
         """(key, why) for this request:  the key, or "" and a reason token.  A source that fails
@@ -776,6 +967,18 @@ class Router:
     def _valid(self, row: Mapping[str, Any]) -> Target | None:
         return target_from_row(row, self.platform.seat, self.platform.target_re)
 
+    def _other_seat(self, row: Mapping[str, Any]) -> str:
+        return other_seat(row, self.platform.seat, self.platform.target_re)
+
+    def other_seat_health(self) -> dict[str, Any]:
+        """What this seat's health says about the latest history read:  a count, never an id, a
+        title or the time of the read (health needs no key, and the time would show when the seat
+        was last woken), and {} before any read.  It reads only what a pick left here."""
+        scan = self.other_seat_scan
+        if scan is None:
+            return {}
+        return {"other_seat_rows": scan[0]}
+
     def _excluded(self, targets: list[Target]) -> set[str]:
         return self.platform.exclude(targets) if self.platform.exclude and targets else set()
 
@@ -788,8 +991,11 @@ class Router:
         chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
         to the most recent of the tied, and no step picks the sender's own chat.  A registry that
         cannot be read asks for a retry:  it is not "no live chat".  No live chat asks for one too,
-        because a chat may register in time."""
+        because a chat may register in time.  A chat whose row names another seat is never picked;
+        the pick only records that the addressed letter is on one (`letter_other_seat`) and how
+        many the history held (`other_seat_scan`)."""
         letter_live = False
+        letter_other_seat = ""
 
         def chosen(
             target: Target, picked: str, reason: str, among: Any = (), issue: str = ""
@@ -801,6 +1007,7 @@ class Router:
                 letter_live=letter_live,
                 candidates=tuple(t.letter for t in among),
                 link_note=LINK_NOTES[reason].format(issue=issue),
+                letter_other_seat=letter_other_seat,
             )
 
         if wake.letter:
@@ -824,6 +1031,11 @@ class Router:
                 ):
                     how = "reply" if wake.linked_by == "reply" else "letter"
                     return chosen(target, how, how)
+            elif live:
+                # The letter is open on a chat of another seat:  no target here, and said so.
+                letter_other_seat = self._other_seat(answer)
+                if letter_other_seat:
+                    self._log("letter-other-seat:" + letter_other_seat, wake.wake_id)
         answer = registry_api.call(
             self.env,
             "history",
@@ -831,26 +1043,41 @@ class Router:
             timeout=timeout,
         )
         if not isinstance(answer, Mapping) or "error" in answer:
-            return Pick(reason=registry_trouble(answer), retry=True)
+            # The letter was read before the outage, so what it said still goes on the receipt.
+            return Pick(
+                reason=registry_trouble(answer), retry=True, letter_other_seat=letter_other_seat
+            )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
         row_issues: dict[str, list[tuple[str, float | None]]] = {}
+        others: set[str] = set()  # open chats left out only because their row names another seat
         for row in answer.get("items") or []:
             if not isinstance(row, dict):
                 continue
             if _closed(row):
                 continue
             target = self._valid(row)
-            if target is not None and target.session_id not in live:
+            if target is None:
+                if self._other_seat(row):
+                    others.add(str(row.get("native_session_id")))
+                continue
+            if target.session_id not in live:
                 live[target.session_id] = target
                 seen[target.session_id] = _row_time(row)
                 row_issues[target.session_id] = _issues_of(row)
+        # One assignment, so a health read on another thread sees a whole pair.
+        self.other_seat_scan = (len(others - live.keys()), self.clock())
         excluded = self._excluded(list(live.values()))
         candidates = [
             t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
         ]
         if not candidates:
-            return Pick(reason="no-live-session", letter_live=letter_live, retry=True)
+            return Pick(
+                reason="no-live-session",
+                letter_live=letter_live,
+                retry=True,
+                letter_other_seat=letter_other_seat,
+            )
 
         named = _named_session(wake, live)
         target = next((t for t in candidates if t.session_id == named), None)
@@ -972,8 +1199,8 @@ class Router:
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
         """A test wake's answer:  `test`, `wake_id`, `receipt_id`, `picked`, `picked_letter`,
-        `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`.  It
-        delivers nothing and reserves nothing."""
+        `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`,
+        `letter_other_seat`.  It delivers nothing and reserves nothing."""
         pick = self.pick(wake, consult=False, timeout=TEST_REGISTRY_TIMEOUT)
         answer = self._receipt(
             {"wake": asdict(wake), "receipt_id": secrets.token_hex(8), "attempts": 0},
@@ -1357,6 +1584,8 @@ class Router:
             "status": status,
             "letter": wake["letter"],
             "letter_live": pick.letter_live,
+            # A seat tag (`row_seat`) or "":  the addressed letter is open under that other seat.
+            "letter_other_seat": pick.letter_other_seat,
             "picked": pick.picked,
             "picked_letter": target.letter if target else "",
             "picked_generation": target.generation if target else 0,
@@ -1483,6 +1712,19 @@ def target_from_row(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) 
         thread_link=str(row.get("thread_link") or ""),
         generation=generation,
     )
+
+
+def other_seat(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) -> str:
+    """The seat tag an open registry row names when that is the only thing keeping it from being
+    a chat of `seat`, else "".  The tag is `row_seat`'s, so it is shaped as a seat tag and nothing
+    else of the row is kept.  A row with no seat or a malformed one answers "":  it names nobody,
+    which is a row that cannot be read, not another seat's chat.  So does one whose session id,
+    letter or generation would not make a target under its own seat either.  The caller has
+    already ruled out a closed row, and the registry was asked for this platform's rows."""
+    theirs = row_seat(row)
+    if not seat or not theirs or theirs == seat:
+        return ""
+    return theirs if target_from_row(row, theirs, target_re) is not None else ""
 
 
 def holds(
@@ -1673,7 +1915,9 @@ class Seats:
         return self.down.get(seat)
 
     def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
-        """One seat's state:  reason tokens only, never a value."""
+        """One seat's state:  reason tokens, and for a served seat only the other-seat count
+        (`Router.other_seat_health`), never a value and never the time of the read:  health
+        needs no key, and that time would show when the seat was last woken."""
         router = self.routers.get(seat)
         if router is None:
             if seat in self.not_installed:
@@ -1681,7 +1925,8 @@ class Seats:
             reason = "seat-not-served:" + self.down.get(seat, "unknown")
             return 503, {"seat": seat, "healthy": False, "reason": reason}
         delivery = router.config.get("delivery_enabled") is True
-        answer: dict[str, Any] = {"seat": seat, "delivery": delivery}
+        # The other-seat count is a warning beside the answer:  it never changes `healthy`.
+        answer: dict[str, Any] = {"seat": seat, "delivery": delivery, **router.other_seat_health()}
         key, why = router.routine_key()
         if not key:
             reason = "routine-key-unavailable:" + why

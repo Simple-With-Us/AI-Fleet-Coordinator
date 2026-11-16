@@ -473,6 +473,13 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts/uptime-audit && python3 -m unittest discover -s tests -t . -v
+    # Weekly Actions spend report (AFC-749).  Fakes only:  no GitHub API call.
+    # Wired here so a regression fails the PR, not the Monday cron.
+    - name: Actions spend report tests
+      timeout-minutes: 10
+      run: |
+        pip install "PyYAML==6.0.3"
+        cd scripts/actions-spend && python3 -m unittest discover -s tests -t . -v
     # Owner rule 2026-10-21:  the request gate fires only on a tag that opens
     # the comment.  The test runs the reusables' own marked gate block.
     - name: Autofix request gate tests

@@ -196,6 +196,10 @@ def os_from_labels(labels):
     return "other"
 
 
+def _non_negative_int(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def minutes_from_timing(timing):
     """Return minute rows when the timing API reports a positive duration.
 
@@ -211,22 +215,31 @@ def minutes_from_timing(timing):
     totals = empty_minutes()
     any_positive = False
     for key, bucket in billable.items():
+        # A malformed bucket makes the whole payload unusable, so the caller
+        # measures this run from job timestamps instead.  Skipping only the bad
+        # bucket would silently understate that OS's minutes.
         if not isinstance(bucket, dict):
-            continue
+            return None
         os_name = _TIMING_OS.get(str(key).upper(), "other")
         job_runs = bucket.get("job_runs")
-        positive_jobs = []
-        if isinstance(job_runs, list):
-            positive_jobs = [
-                job
-                for job in job_runs
-                if isinstance(job, dict) and int(job.get("duration_ms") or 0) > 0
-            ]
-        if positive_jobs:
+        if job_runs is not None and not isinstance(job_runs, list):
+            return None
+        durations = []
+        for job in job_runs or []:
+            duration = job.get("duration_ms") if isinstance(job, dict) else None
+            if not _non_negative_int(duration):
+                return None
+            durations.append(duration)
+        positive = [duration for duration in durations if duration > 0]
+        if positive:
             any_positive = True
-            minutes = sum(rounded_ms(int(job.get("duration_ms") or 0)) for job in positive_jobs)
+            minutes = sum(rounded_ms(duration) for duration in positive)
         else:
-            total_ms = int(bucket.get("total_ms") or 0)
+            total_ms = bucket.get("total_ms", 0)
+            if total_ms is None:
+                total_ms = 0
+            if not _non_negative_int(total_ms):
+                return None
             if total_ms > 0:
                 any_positive = True
             minutes = rounded_ms(total_ms)
@@ -300,6 +313,8 @@ def slim_run(run):
 
 
 def iter_slices(start, end, hours):
+    if not hours > 0:
+        raise ValueError("slice hours must be greater than 0")
     cursor = start
     step = timedelta(hours=hours)
     while cursor < end:
@@ -392,9 +407,10 @@ def _cancel_mode(doc, raw_text):
     if not isinstance(concurrency, dict) or "cancel-in-progress" not in concurrency:
         return "missing"
     value = concurrency.get("cancel-in-progress")
-    if value is True:
+    # `== 1` / `== 0` so a YAML 1 / 0 reads like true / false (True == 1).
+    if value == 1 and not isinstance(value, str):
         return "true"
-    if value is False:
+    if value == 0 and not isinstance(value, str):
         if _intentional_false(raw_text):
             return "intentional-false"
         return "false"
@@ -471,7 +487,13 @@ def _job_spec(key, job):
 
 
 def _local_callee(uses, docs):
-    match = re.search(r"\.github/workflows/([^@\s]+\.ya?ml)", str(uses))
+    """Resolve only same-checkout reusable workflows (`./.github/workflows/x.yml`).
+
+    `owner/repo/.github/workflows/x.yml@ref` may be another repository or a
+    pinned revision whose jobs differ from the local file of the same name, so
+    it is treated as dynamic rather than borrowing unrelated runner data.
+    """
+    match = re.fullmatch(r"\./\.github/workflows/([^@\s/]+\.ya?ml)", str(uses).strip())
     if not match:
         return None
     return docs.get(match.group(1))
@@ -782,6 +804,14 @@ def _portable_macos_minutes(profile, by_job, workflow_macos):
             required_names.append(job["names"][0])
     if required_minutes == 0 and required and not portable and workflow_macos:
         required_minutes = workflow_macos
+    if not by_job and portable and required and workflow_macos:
+        # Timing-API runs carry no per-job names, so split the workflow's macOS
+        # total by macOS job count rather than dropping both proposals.
+        share = workflow_macos / (len(portable) + len(required))
+        portable_minutes = share * len(portable)
+        portable_names = [job["names"][0] for job in portable]
+        required_minutes = share * len(required)
+        required_names = [job["names"][0] for job in required]
     return portable_minutes, portable_names, required_minutes, required_names
 
 
@@ -900,6 +930,8 @@ def propose_cuts(grouped, profiles):
 def _duplicate_savings(rows):
     by_sha = defaultdict(lambda: {"push": 0, "pr": 0})
     for row in rows:
+        if not row.get("sha"):
+            continue
         if row["event"] == "push":
             by_sha[row["sha"]]["push"] += row["weighted"]
         elif row["event"] in ("pull_request", "pull_request_target"):

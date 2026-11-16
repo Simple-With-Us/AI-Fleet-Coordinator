@@ -55,13 +55,14 @@ REWAKE_PER_MESSAGE = 400
 DRAIN_MAX_CHARS = 6000
 DRAIN_PER_MESSAGE = 1500
 HEADLINE_NAME_MAX = 60
-LIVE_DEFAULTS = {
-    "per_hour": 6,
-    "per_day": 30,
-    "per_topic_minutes": 5,
-    "owner_per_day": 20,
-    "loop_turns": 3,
-}
+# The per-session live budget (`[seat.X] live = {...}`).  Every limit has NO default (owner, Nov 10,
+# 2026:  wakes are liberal and nothing throttles them):  a limit the seat's `live` table does not
+# carry is no limit, and a whole number of 0 or more written there still applies (anything else is
+# ignored, with a config warning), `0` included:  `0` blocks at once, except `per_topic_minutes` and
+# `loop_turns`, where `0` means no spacing and no streak limit.  The old defaults were 6 an hour, 30
+# a day, 5 minutes between interrupts in one topic, 20 a day for the owner, and a loop streak of 3.
+LIVE_LIMIT_KEYS = ("per_hour", "per_day", "per_topic_minutes", "owner_per_day", "loop_turns")
+LIVE_DEFAULTS: dict[str, int] = {}
 # The fleet's coordination channel, #Work-In-Progress.  This literal cannot come from
 # `zulip.DEFAULT_CHANNEL`:  live.py sits on the hook fast path, and test_live.py forbids importing
 # simple_tools.zulip there.  test_default_channel.py holds the two in step.
@@ -415,7 +416,7 @@ def live_limits(config: Mapping[str, Any], seat: str) -> dict[str, int]:
     seat_cfg = (config.get("seat") or {}).get(seat) or {}
     given = seat_cfg.get("live") if isinstance(seat_cfg.get("live"), dict) else {}
     limits = dict(LIVE_DEFAULTS)
-    for name in LIVE_DEFAULTS:
+    for name in LIVE_LIMIT_KEYS:
         value = given.get(name)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             limits[name] = value
@@ -1000,7 +1001,12 @@ def live_room(
 
     Owner interrupts count separately:  only `owner_per_day` bounds them, so the owner's follow-up
     in a topic is never held back by the per-topic spacing or by peer turns.  Peer limits (hourly,
-    daily, per-topic spacing, the loop streak) count peer turns only."""
+    daily, per-topic spacing, the loop streak) count peer turns only.
+
+    A limit the table does not carry is no limit (none has a default, `LIVE_DEFAULTS`):  only
+    the limits a seat's `live` table names apply.  `0` still blocks at once for the hourly, daily
+    and owner counts, and means no spacing and no streak limit for `per_topic_minutes` and
+    `loop_turns`."""
     turns = [
         t
         for t in (state.get("turns") or [])
@@ -1008,25 +1014,22 @@ def live_room(
     ]
     day = [t for t in turns if now - t["ts"] < 86400]
     if owner:
-        # A limit the table does not carry is no limit (the live table keeps its defaults today, so
-        # this only matters once a caller passes a table without one);  0 still blocks at once.
         cap = limits.get("owner_per_day")
         if cap is not None and sum(1 for t in day if t.get("owner")) >= cap:
             return "owner_per_day"
         return None
     others = [t for t in day if not t.get("owner")]
-    if sum(1 for t in others if now - t["ts"] < 3600) >= limits["per_hour"]:
+    per_hour = limits.get("per_hour")
+    if per_hour is not None and sum(1 for t in others if now - t["ts"] < 3600) >= per_hour:
         return "per_hour"
-    if len(others) >= limits["per_day"]:
+    per_day = limits.get("per_day")
+    if per_day is not None and len(others) >= per_day:
         return "per_day"
-    if (
-        limits["loop_turns"]
-        and int((state.get("streak") or {}).get(key) or 0) >= limits["loop_turns"]
-    ):
+    loop_turns = limits.get("loop_turns")
+    if loop_turns and int((state.get("streak") or {}).get(key) or 0) >= loop_turns:
         return "loop_guard"
-    if any(
-        t.get("topic") == key and now - t["ts"] < limits["per_topic_minutes"] * 60 for t in others
-    ):
+    spacing = limits.get("per_topic_minutes")
+    if spacing and any(t.get("topic") == key and now - t["ts"] < spacing * 60 for t in others):
         return "per_topic"
     return None
 
