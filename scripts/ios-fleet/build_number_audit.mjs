@@ -44,7 +44,7 @@ export const EXIT_OK = 0;
 export const EXIT_STRICT = 1;
 export const EXIT_FAILED = 2;
 
-export const FLEET_BUILD_RULE_SOURCE = "the 2026-10-29 owner build ruling (main-merge timestamp, Central; FLEET-PROTOCOL.md § App Version and Build Numbers)";
+export const FLEET_BUILD_RULE_SOURCE = "the 2026-10-29 owner build ruling (main-merge timestamp, Central Time)";
 
 /** App Store states that mean a version is approved and may raise the marketing floor. */
 export const APPROVED_STORE_STATES = new Set([
