@@ -413,11 +413,11 @@ This is owner items A4 and A1.  The mapped deploy path compares one Infisical f
 
 ### What the owner creates in Infisical
 
-1. Folder `/workers/simple-tools-mcp` in the AI Fleet Coordinator project, environment `prod`.  `scripts/worker-secret-folders.json` is the only Worker-to-folder map, and the service token's project id must match the id in that file.
+1. Folder `/workers/simple-tools-mcp` in the AI Fleet Coordinator project, environment `prod`.  `scripts/worker-secret-folders.json` is the only Worker-to-folder map.  The repo is public, so the project id is never committed:  the map names the environment variable that delivers it (`project_id_env`), and the service token's project id must match the value that variable resolves to.
 
 2. One secret for each name in `scripts/worker-secret-allowlists/simple-tools-mcp.json`.  Add a name to that file before apply will put it.  Also create `FLEET_SECRET_DIGEST_KEY` in the same folder, at least 16 random bytes.  That key is not put on the Worker, and it must not be added to the allowlist.  Git holds names only.
 
-3. One read-only Infisical service token for that project, `prod`, and exactly `/workers/simple-tools-mcp`, with an expiry.  Do not create a universal-auth identity or a machine identity.  Register the token on the service-tokens sheet.  Store it as the GitHub Actions secret `WORKER_SECRET_SYNC_INFISICAL_TOKEN`.  Do not widen `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`.  That secret stays the Fleet-OPS prod `/` reader for `CLOUDFLARE_FLEET_API_TOKEN`.
+3. One read-only Infisical service token for that project, `prod`, and exactly `/workers/simple-tools-mcp`, with an expiry.  Do not create a universal-auth identity or a machine identity.  Register the token on the service-tokens sheet.  Store it as the GitHub Actions secret `WORKER_SECRET_SYNC_INFISICAL_TOKEN`, and store the project id as the non-secret repository variable `WORKER_SECRET_SYNC_INFISICAL_PROJECT_ID` (never in a committed file).  Do not widen `AFC_WORKER_DEPLOY_INFISICAL_TOKEN`.  That secret stays the Fleet-OPS prod `/` reader for `CLOUDFLARE_FLEET_API_TOKEN`.
 
 4. Leave the repository variable `WORKER_SECRET_SYNC_APPLY` unset.  After the folder and the token exist, set `WORKER_SECRET_CHECK_ENABLED` to `true` to run the dry-run.  Read the names under `missing-on-worker`, `only-on-worker`, and `differ`.  Set `WORKER_SECRET_SYNC_APPLY` to the exact string `true` only when that dry-run is acceptable.  The deploy step passes `--apply` only in that case, and the script still refuses to put unless both are set.
 
