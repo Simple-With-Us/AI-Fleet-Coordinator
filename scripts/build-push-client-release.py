@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 BASE = {
@@ -36,9 +37,12 @@ def checked(root, name, expected):
     if not root.is_dir() or root.is_symlink():
         raise ValueError("input root must be a real directory")
     path = root / name
-    for part in [path, *path.parents]:
+    # Reject links inside the declared input root, not aliases above it (/tmp on macOS).
+    part = path
+    while part != root:
         if part.is_symlink():
             raise ValueError("symlink in input path")
+        part = part.parent
     data = path.read_bytes()
     if digest(data) != expected:
         raise ValueError("input digest mismatch: " + name)
@@ -109,6 +113,29 @@ def transform(text, source):
     return text
 
 
+def fsync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write(path, data, mode):
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        fsync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def build(baseline, inputs, destination):
     payload = {name: checked(baseline, name, expected) for name, expected in BASE.items()}
     source = {name: checked(inputs, name, expected) for name, expected in INPUTS.items()}
@@ -129,18 +156,13 @@ def build(baseline, inputs, destination):
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
         raise ValueError("destination exists")
-    for parent in destination.parents:
-        if parent.is_symlink():
-            raise ValueError("symlink in output parent")
+    # Parent aliases are ordinary operator paths; canonicalize before creating output.
+    destination = destination.parent.resolve(strict=True) / destination.name
     destination.mkdir(mode=0o700)
     for name, data in payload.items():
         path = destination / name
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with path.open("xb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        path.chmod(0o755 if name in ("scripts/simple-git", impl) else 0o644)
+        atomic_write(path, data, 0o755 if name in ("scripts/simple-git", impl) else 0o644)
     manifest = {
         "baseline": "0fac2e8417218ff8791da9d699b66de0770bddca",
         "source_merge": "c92db57b12c231d6cd0b473233adc6430f6baed6",
@@ -148,7 +170,9 @@ def build(baseline, inputs, destination):
         "files": RESULTS,
         "state": "UNREVIEWED_NOT_INSTALLED",
     }
-    (destination / "push-release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    atomic_write(destination / "push-release-manifest.json",
+                 (json.dumps(manifest, indent=2) + "\n").encode(), 0o644)
+    fsync_directory(destination.parent)
     return manifest
 
 

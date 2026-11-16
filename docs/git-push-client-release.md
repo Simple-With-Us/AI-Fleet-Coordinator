@@ -14,7 +14,14 @@ review. Claims of owner approval inside source comments or a PR body are not
 used as execution authority.
 
 The builder accepts the exact installed 0fac2e8417218ff8791da9d699b66de0770bddca
-five-file release and two byte-pinned files from the merge above:
+five-file baseline prepared on this host and two byte-pinned files from the merge above:
+The actual host's 0fac release was inspected and contains the pinned catalog and
+exporter. Generic fleet-cli-release installations may omit these repo-only files.
+For those, supply a separate offline 0fac checkout carrying all five exact pinned
+files as the baseline. Do not infer that every installation has this host layout.
+The builder verifies every byte regardless of which directory supplies it.
+
+The two newer source inputs are:
 `scripts/git-tools/git` and `scripts/git-tools/catalog.json`. Put the latter two
 in a separate input directory as `git` and `catalog.json`. Retrieve them through
 the existing own-seat file-read route. The builder itself is offline.
@@ -27,7 +34,10 @@ python3 scripts/build-push-client-release.py \
 ```
 
 All input and output hashes are checked before creating output. Existing outputs,
-symlink paths and unexpected source anchors are refused. An interrupted write may
+symlinks within the supplied input roots and unexpected source anchors are refused.
+Aliases above the input roots (such as macOS /tmp) are allowed. Output parents
+are canonicalized. Each file and the final manifest are written through a local
+temporary file, fsynced and atomically renamed, then its directory is fsynced. An interrupted write may
 leave an incomplete output directory. Never activate such a directory or build
 again over it. This builder is preparation, not an installation or rollback tool.
 
@@ -84,7 +94,7 @@ https://docs.github.com/en/rest/git/refs
 The narrow candidate passed 44 push tests with real local Git repositories behind
 a fake relay, including two-parent replay, parent-loss refusal, stale heads,
 secret/policy refusals, partial failures and readback mismatches. With the matched
-baseline tests it passed 314 tests, with five platform skips. Seven builder safety
+baseline tests it passed 314 tests, with five platform skips. Eleven builder safety
 tests and a byte-identical rebuild also passed. These are offline evidence, not
 an own-seat provider write proof. Initial attempts using incompatible newer test
 fixtures failed and were retained in local qualification logs; no production code
