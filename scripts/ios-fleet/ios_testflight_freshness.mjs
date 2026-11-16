@@ -120,9 +120,9 @@ export function splitInflight(runs, nowMs, maxHours = DEFAULT_INFLIGHT_MAX_HOURS
 /**
  * "202611160900" -> ms since epoch.  null when it is not a plausible cut time.
  *
- * The build number is the main-merge timestamp in YYYYMMDDHHmm form, Central
- * Time (owner ruling 2026-10-29), so the stamp reads as America/Chicago wall
- * time.  A retired commit-count build number matches nothing here and returns
+ * The build number is the time the build itself runs in YYYYMMDDHHmm form,
+ * Central Time (owner ruling updated 2026-11-15), so the stamp reads as
+ * America/Chicago wall time.  A retired commit-count build number matches nothing here and returns
  * null, leaving correlation by upload time as before.
  */
 export function buildCutTime(buildNumber, uploadedAt) {
