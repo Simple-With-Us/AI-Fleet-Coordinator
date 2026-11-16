@@ -9,12 +9,14 @@ from git_relay.shared_bearer import SharedBearerVerifier
 BOT_IDENTITIES = (
     "ECHO",
     "WISE",
-    "JET",
+    "JET-CHAT",
     "GROK-WEB",
     "CURSOR",
     "CLAUDE",
     "MA",
     "CODEX",
+    "KIMI",
+    "ZC",
     "AG",
     "CLUTCH",
     "FX",
@@ -22,7 +24,7 @@ BOT_IDENTITIES = (
     "MC",
     "MM",
     "OPENCODE",
-    "BF-BUILDER",
+    "AMP",
     "BF-COMPILER",
     "BF-DEPLOYER",
     "BF-DESIGNER",
@@ -53,7 +55,7 @@ BOT_IDENTITIES = (
 class BotCompatibility(unittest.TestCase):
     def test_each_bot_can_have_a_distinct_own_app_without_engine_selection(self):
         for identity in BOT_IDENTITIES:
-            principal = "swu-" + identity.lower()
+            principal = "swu-jet" if identity == "JET-CHAT" else "swu-" + identity.lower()
             cfg = {
                 principal: {
                     "auth": "shared",

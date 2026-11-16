@@ -1,0 +1,44 @@
+# The Cursor Cloud letter sweep, one Operator unit for the whole fleet (owner ruling, Nov 12, 2026, under
+# AGENTS.md "One Operator, No Special Seats").  It replaces the hand-installed per-seat registrar, and nothing in it
+# names a seat:  every Cloud agent registers under the Cursor platform's own seat, which the module fixes.
+#
+# Each run reads the open Cursor Cloud agents updated in the last 36 hours, registers each one in the Operator
+# letter registry at location cloud, and steers the agent through the Cursor API to put its letter in its title.  It
+# sends no Zulip message (--no-dm):  the Operator sends none (owner ruling).  It reaches the registry only through
+# its HTTPS API (--api-only):  no ssh remote and no shared registry env file.
+#
+# A systemd --user unit for the jay user, never root.  install-cursor-cloud-letters.sh installs it with its timer
+# (afc-cursor-cloud-letters.timer, every 10 minutes) and prepends its marker line.  The code is the installed
+# fleet-cli runtime, resolved at start the same way afc-wake-router.service finds it, so a new release is used from
+# the next run.
+#
+# The environment file ~/.config/afc-cursor-cloud-letters/env (mode 0600) holds exactly two read-only Infisical
+# service tokens and nothing else:
+#   FLEET_KNOBS_INFISICAL_TOKEN     afc-cursor-cloud-letters-knobs-ro, scoped to AI Fleet Coordinator prod
+#                                   /wake-router:  registry_api reads the registry's URL and signing key there as the
+#                                   knobs SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY,
+#                                   as the wake router does
+#   CURSOR_LETTERS_INFISICAL_TOKEN  afc-cursor-cloud-letters-ro, scoped to Fleet-OPS prod /cursor-cloud-letters:  the
+#                                   sweep reads CURSOR_SYNC_API_KEY with it and holds it in memory only
+# A missing file leaves both unset, and the run fails closed with a one-line reason (service-token-required):  under
+# --api-only the sweep reads the Cursor key with its own token or not at all.  UnsetEnvironment below also
+# drops any other Cursor key or Infisical login the user manager might pass on, as the retired wrapper stripped
+# them.  No value is ever logged.
+[Unit]
+Description=Cursor Cloud letter sweep: Operator letters for open Cloud agents, and the letter in each title
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/afc-cursor-cloud-letters/env
+UnsetEnvironment=CURSOR_API_KEY CURSOR_SYNC_API_KEY INFISICAL_TOKEN INFISICAL_AUTOMATION_CLIENT_ID INFISICAL_AUTOMATION_CLIENT_SECRET
+WorkingDirectory=%h/.local/share/fleet-cli/current/scripts
+# -E and -s keep PYTHON* variables and the user site out;  -m puts the runtime's scripts folder (the working
+# directory) first on the path, so the code is that runtime's and no other.
+ExecStart=/usr/bin/python3 -E -s -m simple_tools.cursor_cloud_letters sweep --api-only --no-dm
+# The sweep's own steer budget is 180 seconds;  this caps a hung API call well inside the 10 minute period.
+TimeoutStartSec=420
+Nice=10
+NoNewPrivileges=yes
+UMask=0077

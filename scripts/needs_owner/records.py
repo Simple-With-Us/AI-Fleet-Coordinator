@@ -27,7 +27,7 @@ NOTIFIED_HEAD = "[needs-owner] notified msg"
 PENDING_HEAD = "[needs-owner] notify_pending"
 REPLY_HEAD = "owner replied:"
 
-PENDING_REASONS = ("no_credential", "send_failed", "no_agent_sync", "unsent", "held")
+PENDING_REASONS = ("no_credential", "send_failed", "no_simple_tools", "unsent", "held")
 
 _NOTIFIED = re.compile(
     r"\A\s*\[needs-owner\]\s+notified\s+msg\s+([0-9]{1,12})\b(.*)\Z", re.IGNORECASE | re.DOTALL

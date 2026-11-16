@@ -47,9 +47,12 @@ class Delete(unittest.TestCase):
         with self.assertRaises(Refused):
             self.handle(c).run("wf_file_delete", self.args(branch="main"))
         self.assertEqual(len(c.calls), 1)
-        for path in [".github", ".github/workflows", ".github/workflows/ci.yml"]:
+        for path in [".github", ".github/workflows"]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape("wf_file_delete", self.args(path=path), REPO)
+
+        with self.assertRaises(Refused):
+            self.handle(Client()).run("wf_file_delete", self.args(path=".github/workflows/ci.yml"))
 
     def test_malformed_preread_is_definitely_unsent(self):
         c = Client([])

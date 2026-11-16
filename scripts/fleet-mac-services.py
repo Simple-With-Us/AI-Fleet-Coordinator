@@ -5,7 +5,11 @@ Writes ~/.local/state/fleet-tools/mac-services.json, mode 0600, atomically:
 
   {"schemaVersion": 1, "tool": "fleet-mac-services", "generatedAt": "<UTC>", "host": "mac",
    "agents": [{"label", "plistInRepo", "installed", "loaded", "pid", "lastExitStatus",
-               "controllable"}]}
+               "controllable", "role"?, "stopConsequence"?}]}
+
+`role` (reporting or updater) and `stopConsequence` (one printable-ASCII line, 1-200
+characters) are copied from the allowlist's mac.agents entry when it gives them in that shape,
+and left out otherwise, as the server report's units carry them.
 
 The expected agents are every `scripts/launchd/*.plist` label plus the `mac.agents` labels in
 `scripts/fleet-ops-control.json`.  An agent is installed when
@@ -25,13 +29,14 @@ standard library only.  It reads launchctl and changes nothing else.
 """
 
 import argparse
+import errno
 import json
 import os
 import plistlib
 import re
+import secrets
 import subprocess
 import sys
-import tempfile
 import time
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +48,10 @@ SCHEMA_VERSION = 1
 # Per `launchctl print` call;  about 20 labels must finish well inside the 300 s StartInterval.
 LAUNCHCTL_TIMEOUT = 5
 ACTIONS = ("start", "stop", "restart")
+# What depends on an agent, and what stopping it costs:  the same words and bound the server's
+# report uses for its units (fleet-server-status.py UNIT_ROLES, STOP_CONSEQUENCE_LIMIT).
+AGENT_ROLES = ("reporting", "updater")
+STOP_CONSEQUENCE_LIMIT = 200
 
 # A label becomes part of a launchctl target and a file name, so it is held to this shape.
 LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
@@ -81,26 +90,53 @@ def repo_labels(launchd_dir):
     return labels
 
 
-def control_agents(control_path):
-    """{label: [actions]} from the allowlist's mac.agents;  {} when it is missing or malformed."""
+def control_entries(control_path):
+    """The allowlist's mac.agents entries with a valid label;  [] when it is missing or malformed."""
     try:
         with open(control_path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
-        return {}
+        return []
     mac = data.get("mac") if isinstance(data, dict) else None
     agents = mac.get("agents") if isinstance(mac, dict) else None
     if not isinstance(agents, list):
-        return {}
+        return []
+    return [e for e in agents if isinstance(e, dict) and valid_label(e.get("label"))]
+
+
+def control_agents(control_path):
+    """{label: [actions]} from the allowlist's mac.agents;  {} when it is missing or malformed."""
     found = {}
-    for entry in agents:
-        if not isinstance(entry, dict) or not valid_label(entry.get("label")):
-            continue
+    for entry in control_entries(control_path):
         actions = entry.get("actions")
         if not isinstance(actions, list):
             actions = []
         found[entry["label"]] = [a for a in actions if a in ACTIONS]
     return found
+
+
+def valid_stop_consequence(value):
+    """One printable-ASCII line of 1 to STOP_CONSEQUENCE_LIMIT characters."""
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= STOP_CONSEQUENCE_LIMIT
+        and all(" " <= ch <= "~" for ch in value)
+    )
+
+
+def agent_notes(control_path):
+    """{label: {role, stopConsequence}} from the allowlist's mac.agents, as the server report's
+    unit_notes() does for units.  A value of the wrong shape is left out rather than carried."""
+    notes = {}
+    for entry in control_entries(control_path):
+        note = {}
+        if entry.get("role") in AGENT_ROLES:
+            note["role"] = entry["role"]
+        if valid_stop_consequence(entry.get("stopConsequence")):
+            note["stopConsequence"] = entry["stopConsequence"]
+        if note:
+            notes[entry["label"]] = note
+    return notes
 
 
 def parse_int(value):
@@ -164,6 +200,7 @@ def document(
 ):
     in_repo = repo_labels(launchd_dir)
     allowed = control_agents(control_path)
+    notes = agent_notes(control_path)
     uid = os.getuid() if uid is None else uid
     agents = []
     unavailable = False
@@ -186,6 +223,8 @@ def document(
             "lastExitStatus": status["lastExitStatus"],
             "controllable": bool(allowed.get(label)),
         }
+        # Present only when the allowlist gives them, as the server report's units carry them.
+        agent.update(notes.get(label, {}))
         if "error" in status:
             # Extra key:  this agent's "not loaded" is unknown, not observed.
             agent["error"] = status["error"]
@@ -207,30 +246,41 @@ def document(
 
 
 def write_atomic(path, doc):
+    """Atomic and private, through one O_NOFOLLOW descriptor for the state folder:  the temporary
+    file, the rename and the folder fsync all use it, so a folder swapped for a symlink after the
+    check cannot redirect the write (Kody, PR 1477)."""
     directory = os.path.dirname(path)
     if os.path.islink(directory):
         raise OSError("state directory is a symlink; refusing to write")
     os.makedirs(directory, mode=0o700, exist_ok=True)
-    if os.path.islink(directory):
-        raise OSError("state directory is a symlink; refusing to write")
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".mac-services-")
     try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(doc, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-        dir_fd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise OSError("state directory is a symlink; refusing to write") from error
         raise
+    try:
+        tmp = ".mac-services-%d-%s" % (os.getpid(), secrets.token_hex(8))
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd
+        )
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(doc, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, os.path.basename(path), src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def main(argv=None, runner=subprocess.run):

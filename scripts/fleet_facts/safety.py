@@ -1,8 +1,8 @@
 """The F3 safety helpers, loaded by path.
 
-`agent_sync/textsafe.py` (render_untrusted) and `agent_sync/secretscan.py` (redact_fields) import nothing
-from their package, so they are loaded by file path from `<this package's parent>/agent_sync/`.  That is
-`scripts/agent_sync/` in the repository and `<stable copy>/agent_sync/` in an installed copy (install.sh
+`simple_tools/textsafe.py` (render_untrusted) and `simple_tools/secretscan.py` (redact_fields) import nothing
+from their package, so they are loaded by file path from `<this package's parent>/simple_tools/`.  That is
+`scripts/simple_tools/` in the repository and `<stable copy>/simple_tools/` in an installed copy (install.sh
 copies exactly those two files plus an empty `__init__.py`).  A stable copy run with `python3 -I` therefore
 needs nothing else, and there is no second copy of either function in this package.
 
@@ -40,7 +40,7 @@ _loaded: dict[str, Any] = {}
 
 
 def _helper_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "agent_sync"
+    return Path(__file__).resolve().parent.parent / "simple_tools"
 
 
 def _load(name: str):
@@ -78,7 +78,7 @@ def secretscan():
 
 
 def textfmt():
-    """`agent_sync/textfmt.py` (sentence_gap), for a caller that needs the same gap rule simple-chat applies on
+    """`simple_tools/textfmt.py` (sentence_gap), for a caller that needs the same gap rule simple-chat applies on
     the way out (open-loops C2-1's DM lint).  Loaded only when asked for:  fleet-facts itself never needs it,
     so its stable copy does not carry the file."""
     return _load("textfmt")

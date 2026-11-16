@@ -20,9 +20,9 @@ not deny byte-dump tools run against a **variable** loaded from one.
   pipeline references `$NAME` / `${NAME}` and NAME looks like KEY / TOKEN /
   SECRET / PASSWORD / PASSWD / DSN.  `${#NAME}` (length) is not a value ref.
 - Tests: `scripts/fleet_rag/tests/test_secret_guard.py` (CI `unittest discover`).
-- Canon: `AGENT-SYNC.md` § Loaded-key byte dumps, `TEMPLATE-AGENTS.md`,
+- Canon: `FLEET-PROTOCOL.md` § Loaded-key byte dumps, `TEMPLATE-AGENTS.md`,
   onboarding hard rules, `docs/fleet-skills/secret-handoff`, housekeeper.
-- Live machine copies: `~/apps/AGENT-SYNC.md`, `~/.grok/GROK.md`,
+- Live machine copies: `~/apps/FLEET-PROTOCOL.md`, `~/.grok/GROK.md`,
   `~/.grok/rules/00-global.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
   `~/.gemini/config/AGENTS.md`, `~/.cursor/rules/fleet-standards.mdc`,
   `~/.claude/skills/secret-safety/SKILL.md`.

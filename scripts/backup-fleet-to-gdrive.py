@@ -24,6 +24,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -78,14 +79,16 @@ EXCLUDE_DIRS = {
     ".idea",
 }
 
-EXCLUDE_EXTS = {".sock", ".log", ".tmp", ".swp", ".pyc", ".env", ".pem", ".p12"}
-EXCLUDE_NAMES = {
-    ".env",
-    ".env.local",
-    ".env.production",
-    "credentials.json",
-    "global-api-keys",
-}
+EXCLUDE_EXTS = {".sock", ".log", ".tmp", ".swp", ".pyc"}
+EXCLUDE_NAMES = {"global-api-keys"}
+
+# Secret exclusion is by MEANING, fail-closed.  A name/ext denylist missed
+# .env.staging, *.key, id_rsa and service-account JSON, zipping live secrets
+# to Drive.  Any name whose parts mean "credential material" is excluded even
+# if its exact spelling was never listed.
+SECRET_EXTS = {"key", "pem", "p12", "pfx", "jks", "keystore", "env"}
+SECRET_NAMES = {".netrc", ".npmrc", ".pypirc"}
+SECRET_TOKENS = {"credential", "credentials", "secret", "secrets"}
 
 DOC_FILES = [
     "README.md",
@@ -152,8 +155,30 @@ def find_gdrive() -> Path:
     sys.exit(1)
 
 
+def is_secret_shaped(name: str) -> bool:
+    """True when a basename means credential material, listed or not."""
+    lower = name.lower()
+    if lower in SECRET_NAMES or lower.startswith(".env"):
+        return True
+    if lower.startswith("id_") and not lower.endswith(".pub"):
+        return True
+    # Every dot-suffix counts, so deploy-key.pem.txt is secret-shaped by its
+    # .pem component even though its final extension is .txt.
+    suffixes = lower.split(".")[1:]
+    if any(s in SECRET_EXTS for s in suffixes):
+        return True
+    tokens = [tok for tok in re.split(r"[^a-z0-9]+", lower) if tok]
+    if any(tok in SECRET_TOKENS for tok in tokens):
+        return True
+    if "serviceaccount" in "".join(tokens):
+        return True
+    if "private" in tokens and "key" in tokens:
+        return True
+    return False
+
+
 def should_skip_file(name: str) -> bool:
-    if name == ".DS_Store" or name in EXCLUDE_NAMES:
+    if name == ".DS_Store" or name in EXCLUDE_NAMES or is_secret_shaped(name):
         return True
     ext = os.path.splitext(name)[1].lower()
     return ext in EXCLUDE_EXTS

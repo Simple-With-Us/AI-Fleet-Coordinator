@@ -13,10 +13,15 @@ Sources (payload `source` value):
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
                  FLEET-PROTOCOL.md is ingested:  the public ones are the text of that file),
                  top-level ~/apps/*.md (not effort logs),
-                 ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
-  skill          ~/.claude/skills/*/SKILL.md and ~/.cursor/skills/*/SKILL.md
-                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree)
-  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md
+                 ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md.
+                 Skips node_modules, VCS, backups, build/dist/coverage output, vendored and
+                 generated trees, lockfiles, minified blobs, and files over DOC_MAX_BYTES.
+  skill          ~/.claude/skills/*/SKILL.md, ~/.cursor/skills/*/SKILL.md and ~/.grok/skills/*/SKILL.md
+                 (doc_id skill/<tree>/<name>; byte-identical copies collapse to the first tree).
+                 A set FLEET_RAG_MIRROR, or the server mirror when that tree is in use,
+                 replaces these home trees.
+  memory         ~/.claude/projects/*/memory/*.md and ~/.codex/memories/*.md.
+                 The same mirror replaces these home trees.
   apple-note     the iCloud "Coding" folder via notes_export (falls back to the on-disk cache
                  when Notes.app is unavailable and records a warning via `take_warnings`)
   chat-log       parsed agent transcripts (user + assistant text only) from Claude, Grok,
@@ -42,6 +47,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 
+from . import linear_board, mirror
 from .core import FleetRagError, now_ms
 
 HOME = pathlib.Path.home()
@@ -66,8 +72,8 @@ GROK_SESSIONS = GROK_HOME / "sessions"
 CURSOR_PROJECTS = HOME / ".cursor" / "projects"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 GEMINI_HOME = HOME / ".gemini"
-# The protocol document was renamed:  the live copy and the mirror each hold exactly one name now, and the old one
-# is gone.  The fleet points at FLEET-PROTOCOL.md by its current name only.
+# The live copy and the mirror of the protocol document each hold exactly one name.  The fleet points at
+# FLEET-PROTOCOL.md by that name only.
 PROTOCOL_DOC_NAMES = ("FLEET-PROTOCOL.md",)
 EXTRA_DOCS = (
     APPS_DIR / "FLEET-PROTOCOL.md",
@@ -75,7 +81,7 @@ EXTRA_DOCS = (
     APPS_DIR / "FLEET-UI-COPY.md",
     HOME / ".claude" / "CLAUDE.md",
 )
-SKILL_DIRS = (HOME / ".claude" / "skills", HOME / ".cursor" / "skills", GROK_HOME / "skills")
+SKILL_DIRS = tuple(HOME / directory / "skills" for _name, directory in mirror.SKILL_TREES)
 CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 CODEX_MEMORIES = HOME / ".codex" / "memories"
 DOC_MAX_BYTES = 400 * 1024
@@ -85,7 +91,9 @@ JSONL_LINE_MAX = 200_000
 
 # Restricted walk for product app repos (fleet coordinator / fleet-ops keep a broader walk).
 DOC_ROOT_NAMES = ("README.md", "AGENTS.md", "STATUS.md", "CLAUDE.md")
-DOC_SKIP_DIR_NAMES = frozenset(
+# Directories the walk already skipped before the AFC-746 diet.  Files under these are not
+# held back from prune: they were never part of the corpus this diet is migrating.
+DOC_SKIP_DIR_NAMES_LEGACY = frozenset(
     {
         "node_modules",
         ".git",
@@ -96,8 +104,113 @@ DOC_SKIP_DIR_NAMES = frozenset(
         ".secrets",
     }
 )
+# Directories the diet adds.  A hit is excluded and held out of prune until a dry-run
+# report and an explicit migration (FLEET_RAG_PRUNE_EXCLUDED or an allowlist).
+DOC_DIET_DIR_NAMES = frozenset(
+    {
+        "coverage",
+        ".next",
+        "out",
+        ".output",
+        "storybook-static",
+        ".turbo",
+        ".cache",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "target",
+        "third_party",
+        "third-party",
+        "vendored",
+        "external",
+        "bower_components",
+        "generated",
+        ".generated",
+        "htmlcov",
+        "site-packages",
+        "Pods",
+        "Carthage",
+        "DerivedData",
+        ".build",
+        ".yarn",
+        "dist-types",
+        ".parcel-cache",
+        ".svelte-kit",
+        ".nuxt",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
+    }
+)
+DOC_SKIP_DIR_NAMES = DOC_SKIP_DIR_NAMES_LEGACY | DOC_DIET_DIR_NAMES
+DOC_DIET_DIR_NAMES_FOLDED = frozenset(name.casefold() for name in DOC_DIET_DIR_NAMES)
+DOC_DIET_VERSION = "afc-746-1"
+# Reasons introduced by the diet.  The older reasons stay out of the prune hold.
+DOC_DIET_REASONS = frozenset({"skipped-dir", "lockfile", "minified", "generated", "binary"})
+DOC_LOCKFILE_NAMES = frozenset(
+    {
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lock",
+        "bun.lockb",
+        "cargo.lock",
+        "poetry.lock",
+        "pipfile.lock",
+        "composer.lock",
+        "gemfile.lock",
+        "packages.lock.json",
+        "package.resolved",
+        "go.sum",
+        "npm-shrinkwrap.json",
+        "shrinkwrap.yaml",
+        "pubspec.lock",
+        "flake.lock",
+        "uv.lock",
+        "gradle.lockfile",
+    }
+)
+DOC_BINARY_SUFFIXES = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".ico",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".tgz",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".mp4",
+        ".mp3",
+        ".wasm",
+        ".pyc",
+        ".so",
+        ".dylib",
+        ".a",
+        ".o",
+        ".class",
+        ".jar",
+        ".exe",
+        ".dll",
+        ".bin",
+        ".sqlite",
+        ".db",
+    }
+)
+# A line this long with almost no whitespace is a minified bundle, not prose.
+MINIFIED_LINE_CHARS = 8000
+MINIFIED_WHITESPACE_MAX = 0.05
 DOC_APP_REPOS = (
     "Socratic.Trade",
+    "Socratic-Trade",  # the checkout's current name;  missing it pruned the repo (AFC-677)
     "Congress.Trade",
     "congress-trading-shared",
     "API-usage-monitor",
@@ -127,6 +240,17 @@ SKIP_SKILL_COPY = "skill-copy"  # (b) covered by the skill source
 SKIP_EFFORT_LOG = "effort-log-mirror"  # (c) covered by the effort-log source
 SKIP_HANDBOOK_MIRROR = "handbook-mirror"  # (d) Fleet-OPS generated/ and public handbook pages: any ingested FLEET-PROTOCOL.md
 DOC_SKIPS: list[tuple[str, str]] = []
+# Diet excludes from the last iter_docs call: (reason, path).  Legacy skips are not listed.
+DOC_EXCLUDED_NEW: list[tuple[str, pathlib.Path]] = []
+# doc_ids of diet excludes.  Ingest withholds them from prune until a migration.
+DOC_HELD_IDS: set[str] = set()
+# {"kept": [Path], "excluded_new": [(reason, Path)]} from the last iter_docs, or None.
+LAST_DOC_WALK: dict | None = None
+SOURCE_READ_RECEIPTS: dict[str, dict] = {}
+
+
+def take_source_read_receipt(name: str) -> dict | None:
+    return SOURCE_READ_RECEIPTS.pop(name, None)
 
 
 def take_doc_skips() -> list[tuple[str, str]]:
@@ -136,10 +260,22 @@ def take_doc_skips() -> list[tuple[str, str]]:
     return out
 
 
-SOURCES = ("board", "effort-log", "doc", "skill", "memory", "apple-note", "chat-log")
+def take_held_doc_ids() -> set[str]:
+    """Return and clear doc_ids the last doc walk excluded under the diet rules."""
+    out = set(DOC_HELD_IDS)
+    DOC_HELD_IDS.clear()
+    return out
+
+
+SOURCES = ("linear", "doc", "skill", "memory", "apple-note", "chat-log")
 # Nightly / `ingest --all`.  chat-log is an infrequent owner-policy scan, not a lesson dump
 # (owner 2026-09-02).  Pass `--source chat-log` explicitly.
-NIGHTLY_SOURCES = ("board", "effort-log", "doc", "skill", "memory", "apple-note")
+# board and effort-log are retired sources (owner 2026-11-03: Linear is the only issue home).
+# Their iter_* readers stay for tests until the data is deleted;  they are not registered.
+# apple-note is write-time upsert only (AFC-685); nightly ingest must not read Apple Notes.
+NIGHTLY_SOURCES = ("linear", "doc", "skill", "memory")
+# The Hetzner nightly (AFC-687) is this same set.  It attests health without Apple Notes.
+SERVER_NIGHTLY_SOURCES = NIGHTLY_SOURCES
 
 WARNINGS: list[str] = []
 
@@ -624,9 +760,13 @@ def iter_effort_logs(
 # --------------------------------------------------------------------------- docs
 
 
-def _skip_doc(p: pathlib.Path) -> bool:
-    parts = set(p.parts)
-    if parts & DOC_SKIP_DIR_NAMES:
+def _legacy_skip(p: pathlib.Path) -> bool:
+    """True when the pre-diet walk already dropped this file.
+
+    Those files are not held from prune.  An unreadable path counts as already
+    skipped, matching the old ``_skip_doc`` which treated ``OSError`` as a skip.
+    """
+    if set(p.parts) & DOC_SKIP_DIR_NAMES_LEGACY:
         return True
     if "reviews" in p.parts and "raw" in p.name.lower():
         return True
@@ -636,6 +776,110 @@ def _skip_doc(p: pathlib.Path) -> bool:
     except OSError:
         return True
     return False
+
+
+@functools.lru_cache(maxsize=4096)
+def _git_toplevel(start: str) -> str:
+    """Git toplevel for ``start``, or "" when it is not in a repo. Cached per directory."""
+    if not start:
+        return ""
+    top = _git(["rev-parse", "--show-toplevel"], pathlib.Path(start))
+    if not top:
+        return ""
+    try:
+        return os.fspath(canonical_path(top.strip()))
+    except OSError:
+        return top.strip()
+
+
+def _diet_dir_parts(p: pathlib.Path) -> set[str]:
+    """Directory names that count for the diet.
+
+    Inside a git checkout, only the path relative to that checkout counts, so a parent
+    named ``out`` or ``target`` above the repo is not a build directory. With no repo,
+    the path relative to the home directory is the scope.
+    """
+    start = p if p.is_dir() else p.parent
+    try:
+        start_s = os.fspath(start)
+    except OSError:
+        start_s = ""
+    top = _git_toplevel(start_s) if start_s else ""
+    try:
+        full = canonical_path(p)
+    except OSError:
+        full = p
+    if top:
+        try:
+            rel = full.relative_to(top)
+        except ValueError:
+            rel = full
+    else:
+        try:
+            rel = full.resolve().relative_to(HOME)
+        except (ValueError, OSError):
+            rel = full
+    return {part.casefold() for part in rel.parts}
+
+
+def doc_exclude_reason(p: pathlib.Path, data: bytes | None = None) -> str | None:
+    """Why the doc walk drops ``p``, or None to keep it.
+
+    ``legacy-dir``, ``reviews-raw``, ``too-large`` and ``unreadable`` are the old
+    walk.  ``skipped-dir``, ``lockfile``, ``minified``, ``generated`` and ``binary``
+    are the diet.  Only the diet reasons are held out of prune.
+    """
+    if set(p.parts) & DOC_SKIP_DIR_NAMES_LEGACY:
+        return "legacy-dir"
+    if _diet_dir_parts(p) & DOC_DIET_DIR_NAMES_FOLDED:
+        return "skipped-dir"
+    fold = p.name.casefold()
+    if fold in DOC_LOCKFILE_NAMES or fold.endswith("-lock.json") or fold.endswith(".lock"):
+        return "lockfile"
+    if ".min." in fold or fold.endswith(".min"):
+        return "minified"
+    if fold.endswith(".generated.md") or fold.endswith(".gen.md") or ".generated." in fold:
+        return "generated"
+    if p.suffix.casefold() in DOC_BINARY_SUFFIXES:
+        return "binary"
+    if "reviews" in p.parts and "raw" in p.name.lower():
+        return "reviews-raw"
+    try:
+        size = len(data) if data is not None else p.stat().st_size
+    except OSError:
+        return "unreadable"
+    if size > DOC_MAX_BYTES:
+        return "too-large"
+    try:
+        if data is not None:
+            sample = data[:8192]
+        else:
+            with open(p, "rb") as fh:
+                sample = fh.read(8192)
+    except OSError:
+        return "unreadable"
+    if b"\x00" in sample:
+        return "binary"
+    if size == 0:
+        return None
+    try:
+        text = (
+            data.decode("utf-8", errors="replace")
+            if data is not None
+            else p.read_text(encoding="utf-8", errors="replace")
+        )
+    except OSError:
+        return "unreadable"
+    if not any(len(line) >= MINIFIED_LINE_CHARS for line in text.splitlines()):
+        return None
+    whitespace = sum(1 for ch in text if ch.isspace())
+    if text and whitespace / len(text) < MINIFIED_WHITESPACE_MAX:
+        return "minified"
+    return None
+
+
+def _skip_doc(p: pathlib.Path) -> bool:
+    return doc_exclude_reason(p) is not None
 
 
 def _is_effort_log_name(name: str) -> bool:
@@ -709,7 +953,7 @@ def mirror_skip_reason(
     fleet_repos: Iterable[pathlib.Path] = (),
     live_basenames: Iterable[str] = (),
     ops_repos: Iterable[pathlib.Path] = (),
-    agent_sync_ingested: bool | None = None,
+    simple_tools_ingested: bool | None = None,
 ) -> str | None:
     """Why the doc walk drops this file, or None to keep it.
 
@@ -723,7 +967,7 @@ def mirror_skip_reason(
         The effort-log source ingests the live boards.
     (d) SKIP_HANDBOOK_MIRROR: in a fleet-ops checkout, anything under generated/ and every public page under
         handbook/ (handbook_page_is_public), but only when a copy of FLEET-PROTOCOL.md is really ingested
-        (`agent_sync_ingested`;  left as None it means the live file is among `live_basenames`).  The public pages are
+        (`simple_tools_ingested`;  left as None it means the live file is among `live_basenames`).  The public pages are
         the text of that file, so a recall query for a handbook rule would otherwise return each rule twice:  once
         from the file (the live copy, or the AI-Fleet-Coordinator mirror when there is no live copy) and once from
         the page.  With no ingested copy at all (a fresh host, or both copies rejected by _skip_doc) the pages are the
@@ -746,9 +990,9 @@ def mirror_skip_reason(
     if live and name in live and name not in DOC_ROOT_NAMES and _under(p, fleet_repos):
         return SKIP_APPS_MIRROR
     ops = list(ops_repos)
-    if agent_sync_ingested is None:
-        agent_sync_ingested = any(n in live for n in PROTOCOL_DOC_NAMES)
-    if ops and agent_sync_ingested:
+    if simple_tools_ingested is None:
+        simple_tools_ingested = any(n in live for n in PROTOCOL_DOC_NAMES)
+    if ops and simple_tools_ingested:
         rel = _rel_under(p, ops)
         if rel is not None and rel.parts:
             if rel.parts[0] == "generated":
@@ -812,12 +1056,68 @@ def _unique_paths(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     return out
 
 
-def _dedupe_docs(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
+def doc_id_for_path(p: pathlib.Path, doc_prefix: str = "doc") -> str:
+    """The ``doc_id`` ``doc_from_file`` would assign, without reading the body."""
+    info = repo_info(p)
+    rel = ""
+    if info:
+        try:
+            rel = str(canonical_path(p).relative_to(info["top"]))
+        except (ValueError, OSError):
+            rel = ""
+    if info and rel:
+        repo = info["repo"] or pathlib.Path(info["top"]).name
+        return f"{doc_prefix}/{repo}/{rel}"
+    try:
+        home_rel = str(p.resolve().relative_to(HOME))
+    except (ValueError, OSError):
+        home_rel = str(p).lstrip("/")
+    return f"{doc_prefix}/local/{home_rel}"
+
+
+def _dedupe_docs(files: Iterable[pathlib.Path], repositories=()) -> list[pathlib.Path]:
     seen: set[tuple] = set()
     out: list[pathlib.Path] = []
     for f in files:
         try:
+            authoritative = None
+            repository_match = False
+            normalized = f.parent.resolve() / f.name
+            for repository in repositories:
+                try:
+                    relative = normalized.relative_to(repository.root).as_posix()
+                except ValueError:
+                    continue
+                repository_match = True
+                try:
+                    authoritative = repository.blob(relative)
+                except (ValueError, UnicodeError):
+                    authoritative = None
+                if authoritative is None:
+                    DOC_HELD_IDS.add(doc_id_for_path(f))
+                    break
+            if authoritative is not None:
+                reason = doc_exclude_reason(f, authoritative)
+                if reason is not None:
+                    DOC_SKIPS.append((reason, str(f)))
+                    DOC_HELD_IDS.add(doc_id_for_path(f))
+                    continue
+                key = fs_key(f)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(f)
+                continue
+            if repository_match:
+                continue
+            # _skip_doc stays the predicate tests patch.  OSError, including a patch
+            # that raises, drops the file the way the pre-diet walk did and does not
+            # hold it.
             if not f.is_file() or _skip_doc(f):
+                reason = doc_exclude_reason(f) if f.is_file() else None
+                if reason in DOC_DIET_REASONS and not _legacy_skip(f):
+                    DOC_EXCLUDED_NEW.append((reason, f))
+                    DOC_SKIPS.append((f"diet-{reason}", str(f)))
+                    DOC_HELD_IDS.add(doc_id_for_path(f))
                 continue
             key = fs_key(f)
         except OSError:
@@ -869,6 +1169,7 @@ def _doc_files(
     warning per rule.
     """
     files: list[pathlib.Path] = []
+    repositories = []
     files += _collect_repo_docs(fleet_repo, root_all_md=True)
     files += _collect_repo_docs(fleet_ops, root_all_md=True)
     files += _collect_handbook_pages(fleet_ops)
@@ -880,12 +1181,58 @@ def _doc_files(
         ops_repos.append(code_dir / "fleet-ops")
         for repo_dir in _unique_repo_dirs(code_dir):
             files += _collect_repo_docs(repo_dir, root_all_md=False)
+        from .docs_library import discover_repositories
+
+        repositories = discover_repositories(code_dir)
+        for discovered in repositories:
+            broad = discovered.name.casefold() in ("ai-fleet-coordinator", "fleet-ops")
+            files += _collect_repo_docs(discovered.root, root_all_md=broad)
+            if discovered.name.casefold() == "fleet-ops":
+                ops_repos.append(discovered.root)
+                files += _collect_handbook_pages(discovered.root)
     live: list[pathlib.Path] = [pathlib.Path(x) for x in extra if pathlib.Path(x).exists()]
     if apps_dir is not None:
         apps = pathlib.Path(apps_dir)
         if apps.is_dir():
             live += sorted(apps.glob("*.md"))
     files += live
+    # Never read the bodies of newly discovered untracked repository files.
+    filtered = []
+    for path in files:
+        normalized = path.parent.resolve() / path.name
+        allowed = True
+        if code_dir is not None:
+            try:
+                child_name = normalized.relative_to(pathlib.Path(code_dir).resolve()).parts[0]
+                child = pathlib.Path(code_dir).resolve() / child_name
+                if (child / ".git").exists() and all(
+                    repository.root != child for repository in repositories
+                ):
+                    allowed = False
+                    DOC_HELD_IDS.add(doc_id_for_path(path))
+                    DOC_SKIPS.append(("unapproved-repository-origin", str(path)))
+            except (ValueError, IndexError):
+                pass
+        for repository in repositories:
+            try:
+                relative = normalized.relative_to(repository.root).as_posix()
+            except ValueError:
+                continue
+            from .docs_library import _tracked_tree, relative_path
+
+            try:
+                allowed = relative_path(relative).as_posix() in _tracked_tree(
+                    repository.root, repository.commit
+                )
+            except ValueError:
+                allowed = False
+            if not allowed:
+                DOC_HELD_IDS.add(doc_id_for_path(path))
+                DOC_SKIPS.append(("untracked-or-unsafe-git-document", str(path)))
+            break
+        if allowed:
+            filtered.append(path)
+    files = filtered
     if grok_home is not None:
         grok = pathlib.Path(grok_home)
         docs = grok / "docs"
@@ -912,7 +1259,7 @@ def _doc_files(
         ):  # unreadable:  _dedupe_docs drops it too, so it cannot stand in for the pages
             return False
 
-    agent_sync_ingested = any(n in live_basenames for n in PROTOCOL_DOC_NAMES) or any(
+    simple_tools_ingested = any(n in live_basenames for n in PROTOCOL_DOC_NAMES) or any(
         _ingestable_mirror(f) for f in files
     )
     kept: list[pathlib.Path] = []
@@ -922,13 +1269,13 @@ def _doc_files(
             fleet_repos=fleet_repos,
             live_basenames=live_basenames,
             ops_repos=ops_repos,
-            agent_sync_ingested=agent_sync_ingested,
+            simple_tools_ingested=simple_tools_ingested,
         )
         if reason:
             DOC_SKIPS.append((reason, str(f)))
             continue
         kept.append(f)
-    return _dedupe_docs(kept)
+    return _dedupe_docs(kept, repositories)
 
 
 def doc_from_file(
@@ -946,16 +1293,11 @@ def doc_from_file(
             rel = str(canonical_path(p).relative_to(info["top"]))
         except (ValueError, OSError):
             rel = ""
+    doc_id = doc_id_for_path(p, doc_prefix)
     if info and rel:
-        doc_id = f"{doc_prefix}/{info['repo'] or pathlib.Path(info['top']).name}/{rel}"
         url = blob_url(info, rel)
         created = info["dates"].get(rel, 0) * 1000 or mtime_ms(p)
     else:
-        try:
-            home_rel = str(p.resolve().relative_to(HOME))
-        except ValueError:
-            home_rel = str(p.resolve()).lstrip("/")
-        doc_id = f"{doc_prefix}/local/{home_rel}"
         url = ""
         created = mtime_ms(p)
     md = read_text(p)
@@ -975,38 +1317,233 @@ def doc_from_file(
     )
 
 
+# An omitted directory follows the host env at call time.  An explicit None still
+# skips that walk, which is what the tests use to keep a fixture off the code tree.
+_CALLER_DEFAULT = object()
+
+
+def _configured_dir(value: object, env_name: str, fallback: pathlib.Path) -> pathlib.Path | None:
+    if value is None:
+        return None
+    if value is _CALLER_DEFAULT:
+        raw = (os.environ.get(env_name) or "").strip()
+        return pathlib.Path(raw) if raw else fallback
+    return pathlib.Path(str(value))
+
+
+def _default_checkout(name: str) -> pathlib.Path:
+    """A clone under FLEET_CODE_ROOT, or under ~/Code when that root is unset."""
+    root = _configured_dir(_CALLER_DEFAULT, "FLEET_CODE_ROOT", CODE_DIR)
+    if root is None:
+        root = CODE_DIR
+    return root / name
+
+
 def iter_docs(
-    fleet_repo: pathlib.Path | str = FLEET_REPO,
-    fleet_ops: pathlib.Path | str = FLEET_OPS_REPO,
+    fleet_repo: object = _CALLER_DEFAULT,
+    fleet_ops: object = _CALLER_DEFAULT,
     extra: Iterable[pathlib.Path] = EXTRA_DOCS,
     limit: int | None = None,
-    code_dir: pathlib.Path | str | None = CODE_DIR,
-    apps_dir: pathlib.Path | str | None = APPS_DIR,
+    code_dir: object = _CALLER_DEFAULT,
+    apps_dir: object = _CALLER_DEFAULT,
     grok_home: pathlib.Path | str | None = GROK_HOME,
 ) -> Iterator[Doc]:
-    ops = pathlib.Path(fleet_ops)
+    global LAST_DOC_WALK
+    warnings_before = len(WARNINGS)
+    repo = (
+        _default_checkout("AI-Fleet-Coordinator")
+        if fleet_repo is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_repo))
+    )
+    ops = (
+        _default_checkout("fleet-ops")
+        if fleet_ops is _CALLER_DEFAULT
+        else pathlib.Path(str(fleet_ops))
+    )
     DOC_SKIPS.clear()
+    DOC_EXCLUDED_NEW.clear()
+    DOC_HELD_IDS.clear()
     files = _doc_files(
-        pathlib.Path(fleet_repo),
+        repo,
         ops,
         extra,
-        code_dir=None if code_dir is None else pathlib.Path(code_dir),
-        apps_dir=None if apps_dir is None else pathlib.Path(apps_dir),
+        code_dir=_configured_dir(code_dir, "FLEET_CODE_ROOT", CODE_DIR),
+        apps_dir=_configured_dir(apps_dir, "FLEET_APPS_ROOT", APPS_DIR),
         grok_home=None if grok_home is None else pathlib.Path(grok_home),
     )
+    LAST_DOC_WALK = {"kept": list(files), "excluded_new": list(DOC_EXCLUDED_NEW)}
     _log_doc_skips()
-    for i, p in enumerate(files):
-        if limit and i >= limit:
+    from . import docs_library
+
+    code_root = _configured_dir(code_dir, "FLEET_CODE_ROOT", CODE_DIR)
+    repositories = docs_library.discover_repositories(code_root) if code_root else []
+    canonical = {}
+    documents = []
+    for p in files:
+        document = None
+        repository_match = False
+        for repository in repositories:
+            try:
+                relative = (p.parent.resolve() / p.name).relative_to(repository.root).as_posix()
+            except ValueError:
+                continue
+            repository_match = True
+            try:
+                raw = repository.blob(relative)
+            except (OSError, ValueError):
+                raw = None
+            if raw is not None:
+                try:
+                    text = docs_library.text_from_bytes(raw, p.suffix)
+                except (ValueError, UnicodeError):
+                    warn(f"doc: unreadable-or-excluded tracked file {relative}")
+                    continue
+                document = Doc(
+                    doc_id="doc/" + repository.name + "/" + relative,
+                    title=first_heading(text, p.name),
+                    text_markdown=text,
+                    source="doc",
+                    app=app_slug(repository.name),
+                    category="doc",
+                    seat="FLEET",
+                    path=str(p),
+                    url="https://github.com/"
+                    + repository.owner
+                    + "/"
+                    + repository.name
+                    + "/blob/"
+                    + repository.commit
+                    + "/"
+                    + relative,
+                    created_at_ms=mtime_ms(p),
+                    updated_at_ms=mtime_ms(p),
+                )
+                document.extra.update(
+                    source_commit=repository.commit, source_sha256=hashlib.sha256(raw).hexdigest()
+                )
+                canonical[document.doc_id] = (document, raw)
             break
-        yield doc_from_file(p, app=app_from_path(p, fleet_ops=ops))
+        if document is not None:
+            documents.append(document)
+        elif repository_match:
+            DOC_HELD_IDS.add(doc_id_for_path(p))
+            warn("doc: untracked or unsafe repository document excluded and held from prune")
+        else:
+            documents.append(doc_from_file(p, app=app_from_path(p, fleet_ops=ops)))
+    legacy = []
+    library_hashes = {}
+    if code_root:
+
+        def library_doc(path):
+            return Doc(
+                doc_id="",
+                title=path.stem,
+                text_markdown="",
+                source="doc",
+                app=app_from_path(path),
+                category="doc",
+                seat="FLEET",
+                path=str(path),
+                created_at_ms=mtime_ms(path),
+                updated_at_ms=mtime_ms(path),
+            )
+
+        def library_excluded(path):
+            # Path-only checks: library bytes are opened beneath a no-follow dirfd chain.
+            folded = {part.casefold() for part in path.parts}
+            return (
+                bool(folded & {part.casefold() for part in DOC_SKIP_DIR_NAMES})
+                or _is_effort_log_name(path.name)
+                or (path.name == "SKILL.md" and bool(folded & {"skills", "fleet-skills"}))
+                or (".min." in path.name.casefold())
+                or ("reviews" in folded and "raw" in path.name.casefold())
+            )
+
+        legacy = list(
+            docs_library.library_documents(
+                pathlib.Path(code_root) / "Docs",
+                repositories,
+                canonical,
+                library_doc,
+                library_excluded,
+                warn,
+                known_library_hashes=library_hashes,
+            )
+        )
+        mirrored = mirror.configured_root()
+        if mirrored is not None:
+            status = mirror.mirror_status(mirrored, time.time(), mirror.max_age_s())
+            if status.fresh:
+                if not (mirrored / "docs" / "legacy").is_dir():
+                    warn("doc: legacy Docs mirror tree missing from the otherwise fresh mirror")
+                legacy += list(
+                    docs_library.library_documents(
+                        mirrored / "docs" / "legacy",
+                        repositories,
+                        canonical,
+                        library_doc,
+                        library_excluded,
+                        warn,
+                        known_library_hashes=library_hashes,
+                    )
+                )
+            else:
+                warn("doc: legacy Docs mirror unavailable or stale; legacy prune must remain held")
+    known = {document.doc_id for document in documents}
+    documents += [entry[0] for did, entry in canonical.items() if did not in known]
+    documents += legacy
+    source_warnings = WARNINGS[warnings_before:]
+    incomplete = any(
+        any(
+            token in message
+            for token in (
+                "invalid or unreadable generated",
+                "symlink refused",
+                "PDF not indexed",
+                "pdf-extract",
+                "unavailable or stale",
+                "mirror tree missing",
+                "unreadable-or-excluded",
+            )
+        )
+        for message in source_warnings
+    )
+    selected = documents[:limit] if limit else documents
+    SOURCE_READ_RECEIPTS["doc"] = {
+        "source_complete": limit is None and not incomplete,
+        "deletion_authorized": False,
+        "selected_repositories": [repo.owner + "/" + repo.name for repo in repositories],
+        "repository_document_counts": {
+            repo.name: sum(doc.doc_id.startswith("doc/" + repo.name + "/") for doc in selected)
+            for repo in repositories
+        },
+        "supported_library_types": sorted(docs_library.HUMAN_SUFFIXES),
+        "unsupported_library_types": "JSON, JSONL, logs, code, archives, images and video; image-only PDFs receive no OCR",
+        "selected_document_count": len(selected),
+        "documents": {
+            doc.doc_id: {
+                "body_sha256": hashlib.sha256(doc.text_markdown.encode()).hexdigest(),
+                "source_sha256": doc.extra.get("source_sha256"),
+                "alias_count": len(doc.extra.get("source_aliases", [])),
+            }
+            for doc in selected
+        },
+        "receiver_coverage_verified": False,
+    }
+    for index, document in enumerate(documents):
+        if limit and index >= limit:
+            break
+        yield document
 
 
 def _log_doc_skips() -> None:
-    """One warning per mirror rule: count plus up to three example paths (home-relative)."""
+    """One warning per mirror or diet rule: count plus up to three example paths."""
     by_rule: dict[str, list[str]] = {}
     for rule, path in DOC_SKIPS:
         by_rule.setdefault(rule, []).append(path)
-    for rule in (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG, SKIP_HANDBOOK_MIRROR):
+    known = (SKIP_APPS_MIRROR, SKIP_SKILL_COPY, SKIP_EFFORT_LOG, SKIP_HANDBOOK_MIRROR)
+    diet = tuple(rule for rule in sorted(by_rule) if rule.startswith("diet-"))
+    for rule in known + diet:
         paths = by_rule.get(rule)
         if not paths:
             continue
@@ -1033,23 +1570,47 @@ def skill_tree(skill_dir: pathlib.Path) -> str:
     return tree or "local"
 
 
+def resolved_skill_dirs() -> tuple[pathlib.Path, ...]:
+    """Skill trees for this call.  The mirror root replaces the home trees."""
+    root = mirror.configured_root()
+    if root is not None:
+        return mirror.skill_dirs(root)
+    return SKILL_DIRS
+
+
+def resolved_memory_dirs() -> tuple[pathlib.Path, pathlib.Path]:
+    """Claude project memories and Codex memories for this call."""
+    root = mirror.configured_root()
+    if root is not None:
+        return mirror.memory_claude(root), mirror.memory_codex(root)
+    return CLAUDE_PROJECTS, CODEX_MEMORIES
+
+
 def iter_skills(
-    skill_dirs: Iterable[pathlib.Path] = SKILL_DIRS, limit: int | None = None
+    skill_dirs: Iterable[pathlib.Path] | None = None, limit: int | None = None
 ) -> Iterator[Doc]:
     """One Doc per SKILL.md.  doc_id is unique per tree (skill/claude/<name>, skill/cursor/<name>);
     a byte-identical copy in a later tree is skipped (the first tree wins) so the same content is
-    not chunked twice under two ids."""
+    not chunked twice under two ids.  An omitted directory list is resolved at call time."""
+    chosen = resolved_skill_dirs() if skill_dirs is None else skill_dirs
     seen_hash: set[str] = set()
     n = 0
-    for d in skill_dirs:
+    for d in chosen:
         d = pathlib.Path(d)
         if not d.exists():
             continue
         tree = skill_tree(d)
-        for p in sorted(d.glob("*/SKILL.md")):
+        for p in sorted(d.rglob("SKILL.md")):
             if limit and n >= limit:
                 return
-            md = read_text(p)
+            from .docs_library import safe_file
+
+            relative = p.relative_to(d).as_posix()
+            try:
+                md = safe_file(d, relative).decode("utf-8")
+            except (OSError, ValueError, UnicodeError):
+                warn("skill: unsafe or unreadable skill file skipped")
+                continue
             h = hashlib.sha256(md.encode("utf-8")).hexdigest()
             if h in seen_hash:
                 continue
@@ -1059,7 +1620,7 @@ def iter_skills(
             ts = mtime_ms(p)
             n += 1
             yield Doc(
-                doc_id=f"skill/{tree}/{p.parent.name}",
+                doc_id=f"skill/{tree}/{p.parent.relative_to(d).as_posix()}",
                 title=name,
                 text_markdown=md,
                 source="skill",
@@ -1135,8 +1696,8 @@ def app_from_path(path: pathlib.Path, fleet_ops: pathlib.Path | str | None = Non
     return app_from_project(slug)
 
 
-def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str) -> Doc:
-    md = read_text(p)
+def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str, text: str | None = None) -> Doc:
+    md = read_text(p) if text is None else text
     meta, _ = frontmatter(md)
     cat = _MEMORY_TYPES.get((meta.get("type") or "").lower(), "lesson")
     title = meta.get("name") or first_heading(md, p.stem)
@@ -1158,31 +1719,53 @@ def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str) -> Doc:
 
 
 def iter_memory(
-    claude_projects: pathlib.Path | str = CLAUDE_PROJECTS,
-    codex_memories: pathlib.Path | str = CODEX_MEMORIES,
+    claude_projects: pathlib.Path | str | None = None,
+    codex_memories: pathlib.Path | str | None = None,
     limit: int | None = None,
 ) -> Iterator[Doc]:
+    """Memory files.  An omitted path is resolved at call time, including the mirror."""
+    default_claude, default_codex = resolved_memory_dirs()
     n = 0
-    cp = pathlib.Path(claude_projects)
+    cp = pathlib.Path(default_claude if claude_projects is None else claude_projects)
     if cp.exists():
         for mem_dir in sorted(cp.glob("*/memory")):
             slug = project_slug(mem_dir.parent.name)
-            for p in sorted(mem_dir.glob("*.md")):
+            for p in sorted(mem_dir.rglob("*.md")):
                 if p.name == "MEMORY.md":
                     continue
                 if limit and n >= limit:
                     return
+                from .docs_library import safe_file
+
+                relative = p.relative_to(mem_dir).as_posix()
+                try:
+                    text = safe_file(mem_dir, relative).decode("utf-8")
+                except (OSError, ValueError, UnicodeError):
+                    warn("memory: unsafe or unreadable memory file skipped")
+                    continue
                 n += 1
                 yield _memory_doc(
-                    p, "CLAUDE", f"memory/claude/{slug}/{p.name}", app_from_project(slug)
+                    p,
+                    "CLAUDE",
+                    f"memory/claude/{slug}/{relative}",
+                    app_from_project(slug),
+                    text=text,
                 )
-    cm = pathlib.Path(codex_memories)
+    cm = pathlib.Path(default_codex if codex_memories is None else codex_memories)
     if cm.exists():
-        for p in sorted(cm.glob("*.md")):
+        for p in sorted(cm.rglob("*.md")):
             if limit and n >= limit:
                 return
+            from .docs_library import safe_file
+
+            relative = p.relative_to(cm).as_posix()
+            try:
+                text = safe_file(cm, relative).decode("utf-8")
+            except (OSError, ValueError, UnicodeError):
+                warn("memory: unsafe or unreadable memory file skipped")
+                continue
             n += 1
-            yield _memory_doc(p, "CODEX", f"memory/codex/{p.name}", "fleet")
+            yield _memory_doc(p, "CODEX", f"memory/codex/{relative}", "fleet", text=text)
 
 
 # --------------------------------------------------------------------------- apple notes
@@ -1761,36 +2344,26 @@ def iter_chat_logs(
 # THE BOARD was retired 2026-10-19 (AFC-363);  the frozen findings.db keeps the old rows
 # searchable, but nothing new can ever arrive from it, so the corpus has missed every board
 # point since the freeze.  Linear is the live board now (docs/protocols/linear-migration.md).
-# This generator reads Linear through the installed `simple-board` CLI - read verbs only,
-# which need no bearer and run as the shared Fleet app - so credential lookup, token caching
-# and rate limiting stay in the one sanctioned place instead of being duplicated here.
+# This generator reads Linear through the board CLI stack (in-process, read-only GraphQL)
+# so credential lookup, per-run token reuse, refresh on expiry or 401, and rate limiting
+# stay in the one sanctioned place instead of being duplicated here.
 #
-# What is yielded, so the frozen board docs are never duplicated and nothing is skipped:
-#   - every issue the frozen corpus does NOT already cover, however old.  Coverage is decided
-#     against the frozen findings.db, not the migration TSV alone:  the TSV also maps GitHub
-#     and effort-log rows that were imported into Linear without ever becoming board findings
-#     (measured 2026-10-28:  4,269 of 14,209 TSV rows have no frozen finding), so TSV
-#     membership by itself would skip thousands of never-covered issues, and
-#   - every covered issue touched at or after the freeze (LINEAR_FREEZE):  its frozen doc
-#     is stale and this fresh copy is its update.
-# The light scan (id + updatedAt only, one page per 250 issues) keeps the nightly cheap;  full
-# bodies and comments are fetched only for the selected ids.  Point ids stay stable
-# (doc_id linear/<identifier>) so a re-run re-embeds only what actually changed.
+# Linear replaces the frozen board corpus. Every live or archived issue is eligible,
+# including imported issues untouched since the freeze. Only committed ingest state may
+# suppress a routine refetch; FULL bypasses that cache. A committed updatedAt cursor
+# limits the id scan to issues updated since that cursor minus an overlap. The cursor
+# advances only after a clean source run. A missing, corrupt, or stale cursor, and a
+# weekly full sweep, read every id. Retired coverage files are used only by explicit
+# migration verification, never by the normal Linear source.
 
 LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
-SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
 LINEAR_PAGE = 250
 LINEAR_FULL_PAGE = 50  # full nodes are heavy (descriptions + comments);  keep each call modest
-# simple-board caps --max-chars at 64000 and exits 1 past it, so oversized responses cannot be
-# lifted away:  the fetch below halves its id chunk on overflow instead, and an issue that
-# overflows even alone is SKIPPED (flagged) rather than ingested partial.
+# Keep the CLI cap. Halve issue chunks, then retry a single issue with one node per
+# connection and adapt later connection-page widths. A single oversized field remains
+# explicitly incomplete; no response or document is truncated.
 LINEAR_MAX_CHARS = 64_000
 LINEAR_COMMENT_PAGE = 100
-# First page plus up to five follow-ups.  Beyond the bound the issue is SKIPPED (with a run
-# warning) rather than ingested truncated:  comments sort oldest-first, so a truncated doc
-# would never pick up the omitted tail and its content hash would freeze the partial copy in
-# place forever - including over an earlier complete one.
-LINEAR_COMMENT_MAX_PAGES = 6
 LINEAR_QUERY_TIMEOUT_S = 120
 # One absolute deadline shared by every page of one scan or fetch operation (Kody: a fresh
 # per-page timeout lets aggregate runtime grow without bound).
@@ -1817,8 +2390,8 @@ def _linear_remaining(deadline: float | None) -> int:
 _LINEAR_LIGHT_FIELDS = "nodes { id identifier updatedAt } pageInfo { hasNextPage endCursor }"
 _LINEAR_FULL_FIELDS = (
     "nodes { id identifier title url description priority createdAt updatedAt "
-    "state { name type } team { key } labels { nodes { name } } "
-    "attachments(first: 20) { nodes { url } } "
+    "state { name type } team { key } labels(first: 100) { nodes { name } pageInfo { hasNextPage endCursor } } "
+    "attachments(first: 100) { nodes { url } pageInfo { hasNextPage endCursor } } "
     "comments(first: %d, orderBy: createdAt) { nodes { body createdAt user { displayName } "
     "externalUser { displayName } } pageInfo { hasNextPage endCursor } } } "
     "pageInfo { hasNextPage endCursor }" % LINEAR_COMMENT_PAGE
@@ -1863,33 +2436,197 @@ class LinearSourceError(FleetRagError):
         self.overflow = overflow
 
 
+# Which seat's Linear app the ingest reads as (AFC-677, Jay 2026-11-09):  BF-ORACLE first, and
+# GB-ORACLE when BF-ORACLE's pair is missing or its credentials fail.  The pairs come from the
+# environment only (LINEAR_<SEAT>_CLIENT_ID / _SECRET, the names simple-board and Infisical AI
+# Fleet Coordinator /linear use);  the launcher exports them.  An explicit LINEAR_CLIENT_ID pair
+# in the environment still wins and is used alone.
+LINEAR_SEATS_ENV = "FLEET_RAG_LINEAR_SEATS"
+LINEAR_DEFAULT_SEATS = ("BF-ORACLE", "GB-ORACLE")
+LINEAR_MAX_SEATS = 2  # the preferred seat and one fallback;  more would only multiply failing calls
+_LINEAR_SEAT_RE = re.compile(r"[A-Z0-9-]{1,40}")
+# Only these count as "this seat's credentials do not work":  simple-board's missing-identity exit 4,
+# an OAuth invalid_client, or an HTTP 401/403 named as a status (word-bounded, so an id or count
+# that merely contains 401 never triggers a fallback).
+_LINEAR_AUTH_RE = re.compile(
+    r"no Linear app credentials|invalid_client|\b(?:HTTP|status)[ :]*(?:401|403)\b|\b(?:401|403) (?:Unauthorized|Forbidden)\b",
+    re.IGNORECASE,
+)
+_linear_failed_seats: set[str] = set()  # seats whose credentials failed in THIS run (by name)
+LINEAR_SEAT_USED: str | None = None
+
+
+def reset_linear_seat_state() -> None:
+    """Forget the previous run's seat outcome:  each run re-evaluates from the preferred seat."""
+    global LINEAR_SEAT_USED
+    _linear_failed_seats.clear()
+    LINEAR_SEAT_USED = None
+    linear_board.reset_sessions()
+
+
+def _linear_seat_names() -> list[str]:
+    raw = os.environ.get(LINEAR_SEATS_ENV, "").strip()
+    if not raw:
+        return list(LINEAR_DEFAULT_SEATS)
+    seats: list[str] = []
+    invalid = 0
+    for part in raw.split(","):
+        seat = part.strip().upper()
+        if not seat:
+            continue
+        if not _LINEAR_SEAT_RE.fullmatch(seat):
+            invalid += 1
+            continue
+        if seat not in seats:
+            seats.append(seat)
+    if invalid:
+        warn(f"linear: ignored {invalid} invalid seat name(s) in {LINEAR_SEATS_ENV}")
+    if len(seats) > LINEAR_MAX_SEATS:
+        warn(
+            f"linear: {LINEAR_SEATS_ENV} names {len(seats)} seats;  using the first {LINEAR_MAX_SEATS}"
+        )
+    return seats[:LINEAR_MAX_SEATS]
+
+
+def _linear_seat_envs() -> list[tuple[str, dict]]:
+    """(seat, subprocess env) for each configured seat whose pair is present, in order.  One base
+    snapshot of the environment is taken, with every seat pair removed, and each seat's env adds
+    only its own pair as LINEAR_CLIENT_ID / LINEAR_CLIENT_SECRET."""
+    if (
+        os.environ.get("LINEAR_CLIENT_ID", "").strip()
+        and os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+    ):
+        return [("LINEAR_CLIENT_ID", dict(os.environ))]
+    seats = _linear_seat_names()
+    pairs: list[tuple[str, str, str]] = []
+    for seat in seats:
+        k = seat.replace("-", "_")
+        cid = os.environ.get(f"LINEAR_{k}_CLIENT_ID", "").strip()
+        sec = os.environ.get(f"LINEAR_{k}_CLIENT_SECRET", "").strip()
+        if cid and sec:
+            pairs.append((seat, cid, sec))
+    if not pairs:
+        return []
+    base = {
+        key: val
+        for key, val in os.environ.items()
+        if not (key.startswith("LINEAR_") and key.endswith(("_CLIENT_ID", "_CLIENT_SECRET")))
+    }
+    return [
+        (seat, {**base, "LINEAR_CLIENT_ID": cid, "LINEAR_CLIENT_SECRET": sec})
+        for seat, cid, sec in pairs
+    ]
+
+
+def _linear_is_auth_failure(proc: subprocess.CompletedProcess) -> bool:
+    if proc.returncode == 0:
+        return False
+    return proc.returncode == 4 or bool(_LINEAR_AUTH_RE.search(proc.stderr or ""))
+
+
+def _linear_is_auth_failure_board(err: linear_board.BoardCliFailure) -> bool:
+    if err.code in (4, 6):
+        return True
+    return bool(_LINEAR_AUTH_RE.search(err.stderr or ""))
+
+
+def _linear_board_failure(err: linear_board.BoardCliFailure) -> LinearSourceError:
+    stderr = err.stderr or ""
+    if "exceeds --max-chars" in stderr:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: response exceeds the CLI size cap",
+            overflow=True,
+        )
+    if "no Linear app credentials" in stderr or err.code == 4:
+        return LinearSourceError(
+            f"linear: simple-board api query exited {err.code}: no Linear app identity "
+            f"for this run (the shared Fleet app was retired 2026-11-05;  export "
+            f"LINEAR_BF_ORACLE_CLIENT_ID/_SECRET or LINEAR_GB_ORACLE_CLIENT_ID/_SECRET, or "
+            f"LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET)"
+        )
+    return LinearSourceError(f"linear: simple-board api query exited {err.code}")
+
+
+def _linear_budget_left(deadline: float, timeout_s: int) -> float:
+    """The caller's remaining budget for this read, or a fail-closed budget error.
+
+    Every board attempt is forwarded the remaining budget as its own socket/retry
+    deadline, so the budget binds the blocking read itself on any thread and no
+    process-wide timer is ever touched."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _linear_board_failure(
+            linear_board.BoardCliFailure(124, f"linear: query exceeded {timeout_s}s budget")
+        )
+    return left
+
+
+def _linear_run(query: str, timeout_s: int) -> dict:
+    """One board GraphQL read as the first configured seat whose credentials have not failed
+    this run, falling back seat by seat on a credential failure (and only on one).  ``timeout_s``
+    is the caller's total budget for the read, seat fallbacks included:  each attempt gets
+    the remaining budget, never the board client's unrelated default."""
+    deadline = time.monotonic() + max(1, timeout_s)
+    global LINEAR_SEAT_USED
+    candidates = _linear_seat_envs()
+    if not candidates:
+        cid = os.environ.get("LINEAR_CLIENT_ID", "").strip()
+        sec = os.environ.get("LINEAR_CLIENT_SECRET", "").strip()
+        if not (cid and sec):
+            raise _linear_board_failure(
+                linear_board.BoardCliFailure(4, "no Linear app credentials")
+            )
+        try:
+            return linear_board.query(
+                "LINEAR_CLIENT_ID",
+                cid,
+                sec,
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
+            )
+        except linear_board.BoardCliFailure as err:
+            raise _linear_board_failure(err) from None
+    live = [c for c in candidates if c[0] not in _linear_failed_seats] or candidates[-1:]
+    last_err: linear_board.BoardCliFailure | None = None
+    for n, (seat, env) in enumerate(live):
+        try:
+            data = linear_board.query(
+                seat,
+                env["LINEAR_CLIENT_ID"],
+                env["LINEAR_CLIENT_SECRET"],
+                query,
+                max_chars=LINEAR_MAX_CHARS,
+                timeout_s=_linear_budget_left(deadline, timeout_s),
+            )
+        except linear_board.BoardCliFailure as err:
+            last_err = err
+            if not _linear_is_auth_failure_board(err):
+                raise _linear_board_failure(err) from None
+            _linear_failed_seats.add(seat)
+            if n + 1 < len(live):
+                warn(f"linear: {seat} credentials failed (exit {err.code});  falling back")
+            continue
+        if LINEAR_SEAT_USED != seat:
+            LINEAR_SEAT_USED = seat
+            warn(f"linear: reading Linear as {seat}")
+        return data
+    if last_err is not None:
+        raise _linear_board_failure(last_err)
+    raise LinearSourceError("linear: no configured Linear seat credentials")
+
+
 def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
-    """One GraphQL read through the simple-board CLI.  Fail-closed:  any transport, exit-code or
+    """One GraphQL read through the board stack.  Fail-closed:  any transport, exit-code or
     GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
     try:
-        proc = subprocess.run(
-            [SIMPLE_BOARD_CLI, "api", "query", "--max-chars", str(LINEAR_MAX_CHARS), query],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
+        data = _linear_run(query, timeout_s)
+    except LinearSourceError:
+        raise
+    except linear_board.BoardCliFailure as err:
+        raise _linear_board_failure(err) from None
+    except (OSError, ImportError) as e:
         raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
-    if proc.returncode != 0:
-        # stderr can carry request data or credentials, so it never reaches the error:  only
-        # the exit code plus a normalized reason from an allow-list of fixed CLI messages.
-        stderr = proc.stderr or ""
-        if "exceeds --max-chars" in stderr:
-            raise LinearSourceError(
-                f"linear: simple-board api query exited {proc.returncode}: response exceeds "
-                f"the CLI size cap",
-                overflow=True,
-            )
-        raise LinearSourceError(f"linear: simple-board api query exited {proc.returncode}")
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError as e:
-        raise LinearSourceError(f"linear: unreadable JSON from simple-board: {e}") from None
     if isinstance(data, dict) and data.get("errors"):
         raise LinearSourceError(f"linear: GraphQL errors: {str(data['errors'])[:300]}")
     if not isinstance(data, dict):
@@ -1897,18 +2634,21 @@ def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
     return data
 
 
-def _linear_light_scan(deadline: float | None = None) -> dict:
+def _linear_light_scan(deadline: float | None = None, updated_since: str | None = None) -> dict:
     """Every issue's id -> {identifier, updatedAt}, one 250-wide page at a time, oldest update
-    first.  Fail closed:  a missing connection or a zero-issue scan is a broken read, never an
-    empty board."""
+    first.  ``updated_since`` is a strict UTC timestamp:  the scan then asks only for issues
+    updated at or after that instant.  Fail closed:  a missing connection is a broken read.
+    A zero-issue scan is a broken read on a full sweep, and a quiet incremental window when
+    ``updated_since`` is set."""
     deadline = deadline if deadline is not None else _linear_deadline()
+    filt = _linear_updated_since_clause(updated_since)
     out: dict = {}
     after = None
     while True:
         clause = f', after: "{after}"' if after else ""
         data = _linear_query(
-            "query { issues(first: %d, includeArchived: true, orderBy: updatedAt%s) { %s } }"
-            % (LINEAR_PAGE, clause, _LINEAR_LIGHT_FIELDS),
+            "query { issues(first: %d, includeArchived: true%s, orderBy: updatedAt%s) { %s } }"
+            % (LINEAR_PAGE, filt, clause, _LINEAR_LIGHT_FIELDS),
             timeout_s=_linear_remaining(deadline),
         )
         conn = data.get("issues")
@@ -1928,7 +2668,7 @@ def _linear_light_scan(deadline: float | None = None) -> dict:
             }
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):
-            if not out:
+            if not out and updated_since is None:
                 raise LinearSourceError(
                     "linear: the issue scan returned zero issues;  refusing to treat a broken "
                     "read as an empty board"
@@ -2044,14 +2784,25 @@ def _linear_validate_full(node) -> None:
     for key in ("labels", "attachments", "comments"):
         if not isinstance(node[key], dict) or not isinstance(node[key].get("nodes"), list):
             raise LinearSourceError(f"linear: full issue {key} connection shape is invalid")
-    if not isinstance(node["comments"].get("pageInfo"), dict):
-        raise LinearSourceError("linear: full issue comments pageInfo shape is invalid")
+    for key, fields in (
+        ("labels", ("name",)),
+        ("attachments", ("url",)),
+        ("comments", ("body", "createdAt", "user", "externalUser")),
+    ):
+        connection = node[key]
+        if not isinstance(connection.get("pageInfo"), dict):
+            raise LinearSourceError(f"linear: full issue {key} pageInfo shape is invalid")
+        for item in connection["nodes"]:
+            if not isinstance(item, dict) or any(field not in item for field in fields):
+                raise LinearSourceError(f"linear: full issue {key} node shape is invalid")
 
 
 def _linear_fetch_chunk(chunk: list, deadline: float | None = None) -> list:
-    """One id chunk's full nodes.  A response too large for the CLI halves the chunk;  an issue
-    too large even alone degrades to a flagged placeholder (skipped downstream), never a partial
-    doc.  Any other read failure raises - fail closed."""
+    """Fetch a chunk, reducing issue and connection widths on overflow.
+
+    Single-field overflow is reported by UUID and identifier, never ingested partial.
+    Other read failures fail closed.
+    """
     id_list = ", ".join(json.dumps(i) for i in chunk)
     after = None
     nodes: list = []
@@ -2084,15 +2835,41 @@ def _linear_fetch_chunk(chunk: list, deadline: float | None = None) -> list:
             return _linear_fetch_chunk(chunk[:mid], deadline) + _linear_fetch_chunk(
                 chunk[mid:], deadline
             )
-        warn(
-            "linear: one issue exceeds the CLI size cap on its own;  skipped instead of "
-            "ingesting a truncated copy (any earlier complete version stays current)"
+        # Retry one issue with a single comment rather than treating a large
+        # combined body/thread as an indivisible response. Never truncate a field.
+        minimal = (
+            _LINEAR_FULL_FIELDS.replace(
+                f"comments(first: {LINEAR_COMMENT_PAGE}", "comments(first: 1"
+            )
+            .replace("labels(first: 100", "labels(first: 1")
+            .replace("attachments(first: 100", "attachments(first: 1")
         )
-        return [_linear_placeholder(chunk[0])]
+        try:
+            data = _linear_query(
+                "query { issues(first: 1, includeArchived: true, filter: { id: { in: [%s] } }) { %s } }"
+                % (id_list, minimal),
+                timeout_s=_linear_remaining(deadline),
+            )
+        except LinearSourceError as single:
+            if not _linear_is_overflow(single):
+                raise
+            placeholder = _linear_placeholder(chunk[0])
+            placeholder["_linear_skip_reason"] = (
+                "single issue with one comment exceeds CLI size cap"
+            )
+            warn(
+                f"linear: {placeholder['identifier']} ({chunk[0]}) exceeds the CLI size cap even with one comment"
+            )
+            return [placeholder]
+        nodes = (data.get("issues") or {}).get("nodes") or []
+        for node in nodes:
+            _linear_validate_full(node)
     if not nodes:
         raise LinearSourceError("linear: a full fetch returned no nodes for a non-empty id chunk")
     for node in nodes:
         _linear_complete_comments(node, deadline)
+        for connection, fields in (("labels", "name"), ("attachments", "url")):
+            _linear_complete_connection(node, connection, fields, deadline)
     return nodes
 
 
@@ -2116,53 +2893,76 @@ def _linear_fetch_full(ids: list, deadline: float | None = None) -> list:
     return nodes
 
 
-def _linear_complete_comments(node: dict, deadline: float | None = None) -> None:
-    """Page the comment connection past the first page when the issue has one.  Any truncation
-    risk - the page bound, or a comment page too large for the CLI - flags the node so the run
-    SKIPS it;  every other failure raises.  A truncated copy must never become the corpus's
-    current version of the doc (comments sort oldest-first, so the omitted tail would never
-    arrive and the partial hash would freeze in place)."""
-    comments = node.get("comments") or {}
-    page = comments.get("pageInfo") or {}
-    seen = 1
-    while page.get("hasNextPage") and seen < LINEAR_COMMENT_MAX_PAGES:
+def _linear_complete_connection(
+    node: dict, key: str, fields: str, deadline: float | None = None
+) -> None:
+    """Read every connection page, reducing page width on the CLI response cap.
+
+    Cursor progress and the shared deadline bound a stalled read. A single oversized
+    field is explicitly incomplete, never silently shortened or presented as complete.
+    """
+    connection = node.get(key) or {}
+    page = connection.get("pageInfo") or {}
+    cursors: set[str] = set()
+    width = LINEAR_COMMENT_PAGE
+    while page.get("hasNextPage"):
         after = page.get("endCursor")
-        if not after:
+        if not isinstance(after, str) or not after or after in cursors:
             raise LinearSourceError(
-                f"linear: comment pageInfo for {node.get('identifier')} lost its cursor"
+                f"linear: {key} paging for {node.get('identifier')} lost cursor progress"
             )
-        try:
-            # Singular issue(id:) includes native archives without an includeArchived argument.
-            # The archive-inclusive list queries above select ids; this direct lookup pages them.
-            data = _linear_query(
-                'query { issue(id: "%s") { comments(first: %d, after: "%s", orderBy: createdAt) '
-                "{ nodes { body createdAt user { displayName } externalUser { displayName } } "
-                "pageInfo { hasNextPage endCursor } } } }"
-                % (node.get("id"), LINEAR_COMMENT_PAGE, after),
-                timeout_s=_linear_remaining(deadline),
-            )
-        except LinearSourceError as e:
-            if not _linear_is_overflow(e):
-                raise
-            node["_linear_truncated"] = True
-            return
+        order = ", orderBy: createdAt" if key == "comments" else ""
+        while True:
+            try:
+                data = _linear_query(
+                    "query { issue(id: %s) { %s(first: %d, after: %s%s) { nodes { %s } "
+                    "pageInfo { hasNextPage endCursor } } } }"
+                    % (json.dumps(node["id"]), key, width, json.dumps(after), order, fields),
+                    timeout_s=_linear_remaining(deadline),
+                )
+                break
+            except LinearSourceError as error:
+                if not _linear_is_overflow(error):
+                    raise
+                if width == 1:
+                    node["_linear_truncated"] = True
+                    node["_linear_skip_reason"] = f"{key} single-node page exceeds CLI size cap"
+                    return
+                width = max(1, width // 2)
         issue = data.get("issue")
-        if not isinstance(issue, dict):
+        conn = issue.get(key) if isinstance(issue, dict) else None
+        if (
+            not isinstance(conn, dict)
+            or not isinstance(conn.get("nodes"), list)
+            or not isinstance(conn.get("pageInfo"), dict)
+        ):
             raise LinearSourceError(
-                f"linear: comment paging for {node.get('identifier')} returned no issue"
+                f"linear: {key} paging for {node.get('identifier')} returned malformed connection"
             )
-        conn = issue.get("comments")
-        if not isinstance(conn, dict):
-            raise LinearSourceError(
-                f"linear: comment paging for {node.get('identifier')} returned no connection"
-            )
-        comments.setdefault("nodes", []).extend(conn.get("nodes") or [])
-        page = conn.get("pageInfo") or {}
-        seen += 1
-    if page.get("hasNextPage"):
-        # See LINEAR_COMMENT_MAX_PAGES:  a truncated issue is skipped, never ingested partial.
-        node["_linear_truncated"] = True
-    comments["pageInfo"] = page
+        batch = conn["nodes"]
+        required = {
+            "comments": ("body", "createdAt", "user", "externalUser"),
+            "labels": ("name",),
+            "attachments": ("url",),
+        }[key]
+        if any(
+            not isinstance(item, dict) or any(field not in item for field in required)
+            for item in batch
+        ):
+            raise LinearSourceError(f"linear: {key} paging returned malformed nodes")
+        cursors.add(after)
+        connection.setdefault("nodes", []).extend(batch)
+        page = conn["pageInfo"]
+    connection["pageInfo"] = page
+
+
+def _linear_complete_comments(node: dict, deadline: float | None = None) -> None:
+    _linear_complete_connection(
+        node,
+        "comments",
+        "body createdAt user { displayName } externalUser { displayName }",
+        deadline,
+    )
 
 
 def _linear_severity(node: dict, label_names: list) -> str:
@@ -2244,34 +3044,178 @@ def _linear_scan_entry(node) -> tuple:
     return "", str(node or "")
 
 
+def _linear_state_path() -> pathlib.Path:
+    raw = os.environ.get("FLEET_RAG_LINEAR_STATE")
+    if raw:
+        return pathlib.Path(raw)
+    return pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json"
+
+
+def _linear_load_state() -> dict:
+    """The ingest state object, or {} when the file is missing or unreadable.
+
+    An unreadable file is the safe direction:  the next read is a full sweep and no
+    per-issue row is treated as fresh."""
+    try:
+        loaded = json.loads(_linear_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded
+
+
 def _linear_ingested_versions() -> dict:
     """doc_id -> ingest state row for the linear rows of the ingest state file, so a routine
     run fetches only issues Linear changed since they were ingested.  Any read problem
-    degrades to an empty map - the safe direction:  it refetches, it never skips.  This is why
-    the source must stay OUT of the nightly prune set:  prune deletes whatever a source did
-    not yield, and an incrementally skipped doc is still live.  A deliberate full pass
-    (FLEET_RAG_LINEAR_FULL=1, e.g. before a manual `--source linear --prune`) refetches all."""
-    path = pathlib.Path(
-        os.environ.get("FLEET_RAG_LINEAR_STATE")
-        or (pathlib.Path.home() / "apps" / "fleet-rag" / "state" / "ingest-state.json")
-    )
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    degrades to an empty map - the safe direction: it refetches, it never skips.
+    Linear is never a deletion inventory: FULL refetches selected issues but can
+    still omit truncated ones. The orchestrator skips Linear prune in nightly
+    runs and refuses a separate Linear prune before any write."""
     out: dict = {}
-    for doc_id, rec in state.items():
+    for doc_id, rec in _linear_load_state().items():
         if (
             isinstance(doc_id, str)
             and doc_id.startswith("linear/")
             and isinstance(rec, dict)
             and isinstance(rec.get("updated_at"), int)
+            and not isinstance(rec.get("updated_at"), bool)
         ):
             out[doc_id] = rec
     return out
 
 
 LINEAR_REFRESH_DAYS = 7  # FLEET_RAG_LINEAR_REFRESH_DAYS overrides
+# updatedAt high-water mark lives in the ingest state under this key.  It is not a
+# document:  it has no source and no chunk ids, so prune never treats it as a row.
+LINEAR_CURSOR_KEY = "_linear_sync"
+LINEAR_SWEEP_DAYS = 7  # FLEET_RAG_LINEAR_SWEEP_DAYS overrides
+LINEAR_OVERLAP_HOURS = 2  # FLEET_RAG_LINEAR_OVERLAP_HOURS overrides
+# Only this form is interpolated into the GraphQL filter.
+_LINEAR_CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _linear_bounded_int(name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        warn(f"linear: {name}={raw!r} is not an integer; using {default}")
+        return default
+    if value < lo or value > hi:
+        warn(f"linear: {name}={value} is outside {lo}..{hi}; using {default}")
+        return default
+    return value
+
+
+def _linear_sweep_ms() -> int:
+    days = _linear_bounded_int("FLEET_RAG_LINEAR_SWEEP_DAYS", LINEAR_SWEEP_DAYS, 1, 90)
+    return days * 24 * 3600 * 1000
+
+
+def _linear_overlap_ms() -> int:
+    hours = _linear_bounded_int("FLEET_RAG_LINEAR_OVERLAP_HOURS", LINEAR_OVERLAP_HOURS, 1, 168)
+    return hours * 3600 * 1000
+
+
+def _linear_epoch_ms(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _linear_iso(ms: int) -> str:
+    """UTC timestamp in the only form the incremental filter will interpolate."""
+    stamp = _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc)
+    text = stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+    if not _LINEAR_CURSOR_RE.fullmatch(text):
+        raise LinearSourceError("linear: could not format an updatedAt cursor")
+    return text
+
+
+def _linear_updated_since_clause(updated_since: str | None) -> str:
+    if updated_since is None:
+        return ""
+    if not _LINEAR_CURSOR_RE.fullmatch(updated_since):
+        raise LinearSourceError("linear: incremental updatedAt bound is not a timestamp")
+    return f', filter: {{ updatedAt: {{ gte: "{updated_since}" }} }}'
+
+
+def _linear_sync_status(state: dict) -> tuple[str, dict | None]:
+    """``missing``, ``corrupt``, or ``ok`` for the updatedAt cursor record."""
+    if LINEAR_CURSOR_KEY not in state:
+        return "missing", None
+    record = state.get(LINEAR_CURSOR_KEY)
+    if not isinstance(record, dict):
+        return "corrupt", None
+    cursor = record.get("updated_at_cursor")
+    if not isinstance(cursor, str) or not _LINEAR_CURSOR_RE.fullmatch(cursor):
+        return "corrupt", None
+    if parse_ts_ms(cursor) <= 0:
+        return "corrupt", None
+    return "ok", record
+
+
+def linear_read_plan(now: int | None = None) -> dict:
+    """Decide a full id sweep or an updatedAt window.
+
+    A full sweep is the explicit full flag, a missing or corrupt cursor, a cursor
+    older than the sweep interval, or a last successful full sweep older than that
+    interval.  An incremental read asks for issues updated since the cursor minus
+    the overlap.  The cursor itself advances only after the orchestrator commits a
+    fully successful source run.
+    """
+    current = now_ms() if now is None else int(now)
+    sweep_ms = _linear_sweep_ms()
+    overlap_ms = _linear_overlap_ms()
+    force_bodies = bool(os.environ.get("FLEET_RAG_LINEAR_FULL"))
+    status, record = _linear_sync_status(_linear_load_state())
+    cursor = record.get("updated_at_cursor") if record else None
+    cursor_ms = parse_ts_ms(cursor) if isinstance(cursor, str) else 0
+    last_full = _linear_epoch_ms(record.get("last_full_sweep_at_ms")) if record else None
+    reason = "incremental"
+    full_scan = False
+    if force_bodies:
+        full_scan = True
+        reason = "flag"
+    elif status == "missing":
+        full_scan = True
+        reason = "missing"
+    elif status == "corrupt" or cursor_ms <= 0:
+        full_scan = True
+        reason = "corrupt"
+    elif current - cursor_ms >= sweep_ms:
+        full_scan = True
+        reason = "cursor_stale"
+    elif last_full is None or current - last_full >= sweep_ms:
+        full_scan = True
+        reason = "sweep_due"
+    updated_since = None
+    if not full_scan:
+        updated_since = _linear_iso(max(0, cursor_ms - overlap_ms))
+    return {
+        "full_scan": full_scan,
+        "force_bodies": force_bodies,
+        "reason": reason,
+        "updated_since": updated_since,
+        "cursor": cursor if isinstance(cursor, str) and cursor_ms > 0 else None,
+        "scan_started_ms": current,
+        "cursor_candidate": _linear_iso(current),
+    }
+
+
+def _linear_mark_cursor(receipt: dict) -> None:
+    """A finished read may advance the cursor only when nothing was left unread."""
+    if receipt.get("limited"):
+        receipt["cursor_advance"] = False
+        return
+    rows = receipt.get("issues") or {}
+    receipt["cursor_advance"] = not any(
+        isinstance(row, dict) and row.get("status") in ("skipped", "not_fetched")
+        for row in rows.values()
+    )
 
 
 def iter_linear(
@@ -2282,19 +3226,57 @@ def iter_linear(
     light_scan=None,
     fetch_full=None,
     covered_ids=None,
+    receipt: dict | None = None,
 ) -> Iterator[Doc]:
-    """The live board:  Linear issues the frozen board corpus does not cover.  See the section
-    comment above for the selection rule.  `light_scan`/`fetch_full` are test injection points.
-    Selection advances from the ingest state file:  an issue already ingested at its current
-    updatedAt is not refetched (set FLEET_RAG_LINEAR_FULL=1 to force a full pass)."""
-    freeze = freeze or LINEAR_FREEZE
-    light_scan = light_scan or _linear_light_scan
+    """All Linear issues, independent of the retired registry.
+
+    Legacy map_path/freeze/covered_ids arguments remain accepted for callers, but cannot
+    exclude issues. FULL forces every scanned issue to be fetched. A receipt describes
+    source reads, not permission to delete or proof of a committed corpus replacement.
+    The updatedAt cursor selects an incremental window; the orchestrator advances it
+    only after this generator finishes cleanly.
+    """
+    reset_linear_seat_state()
+    plan = linear_read_plan()
+
+    def _production_scan() -> dict:
+        since = None if plan["full_scan"] else plan["updated_since"]
+        return _linear_light_scan(updated_since=since)
+
+    light_scan = light_scan or _production_scan
     fetch_full = fetch_full or _linear_fetch_full
-    imported = covered_ids if covered_ids is not None else load_linear_covered_ids(map_path)
     scan = light_scan()
-    selected = [
-        uid for uid in scan if uid not in imported or _linear_scan_entry(scan[uid])[1] >= freeze
-    ]
+    selected = list(scan)
+    if receipt is not None:
+        receipt.update(
+            {
+                "schema": 1,
+                "full": bool(plan["force_bodies"]),
+                "full_scan": bool(plan["full_scan"]),
+                "read_mode": "full" if plan["full_scan"] else "incremental",
+                "full_reason": plan["reason"] if plan["full_scan"] else "",
+                "updated_since": plan["updated_since"],
+                "cursor_before": plan["cursor"],
+                "cursor_candidate": plan["cursor_candidate"],
+                "cursor_advance": False,
+                "limited": limit is not None,
+                "scan_count": len(scan),
+                "source_complete": False,
+                "issues": {},
+            }
+        )
+        for uid, entry in scan.items():
+            identifier, updated = _linear_scan_entry(entry)
+            receipt["issues"][uid] = {
+                "identifier": identifier,
+                "scan_updated_at": updated,
+                "status": "not_fetched",
+            }
+    if plan["full_scan"] and not scan:
+        raise LinearSourceError(
+            "linear: the issue scan returned zero issues;  refusing to treat a broken "
+            "read as an empty board"
+        )
     if not os.environ.get("FLEET_RAG_LINEAR_FULL"):
         ingested = _linear_ingested_versions()
         refresh_ms = (
@@ -2319,24 +3301,57 @@ def iter_linear(
                     # upsert, dry run, crashed run) advances nothing and is always retried.
                     refreshed_at = int(row.get("refreshed_at") or 0)
                     if refreshed_at and now - refreshed_at < refresh_ms:
-                        continue  # ingested at this version, verified inside the window
+                        if receipt is not None:
+                            receipt["issues"][uid]["status"] = "cached"
+                        continue  # committed and verified inside the refresh window
                 kept.append(uid)
             selected = kept
     selected.sort(key=lambda uid: _linear_scan_entry(scan[uid])[1], reverse=True)
     if limit:
         selected = selected[: int(limit)]
+    if receipt is not None:
+        receipt["selected_count"] = len(selected)
     if not selected:
+        if receipt is not None:
+            _linear_mark_cursor(receipt)
         return
-    for node in fetch_full(selected):
+    found = set()
+    incomplete = []
+    selected_ids = set(selected)
+
+    # Production fetches one bounded issue chunk at a time. Do not retain the whole
+    # replacement inventory's full descriptions/comments in RAM before the first commit.
+    # Injected fetchers keep their established list contract for callers/tests.
+    def batches():
+        if fetch_full is _linear_fetch_full:
+            for start in range(0, len(selected), LINEAR_FULL_PAGE):
+                yield from fetch_full(selected[start : start + LINEAR_FULL_PAGE])
+        else:
+            yield from fetch_full(selected)
+
+    for node in batches():
+        uid = node.get("id")
+        if uid not in selected_ids or uid in found:
+            raise LinearSourceError(f"linear: unexpected or duplicate fetched id {uid}")
+        found.add(uid)
+        if receipt is not None:
+            receipt["issues"][uid]["identifier"] = node.get("identifier") or uid
         if node.get("_linear_truncated"):
+            incomplete.append(uid)
+            if receipt is not None:
+                receipt["issues"][uid].update(
+                    status="skipped",
+                    reason=node.get("_linear_skip_reason", "incomplete issue read"),
+                )
             warn(
-                f"linear: {node.get('identifier')} has more than "
-                f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} comments or exceeds the CLI "
+                f"linear: {node.get('identifier')} could not be read completely or exceeds the CLI "
                 f"size cap;  skipped instead of ingesting a truncated copy (any earlier "
                 f"complete version stays current)"
             )
             continue
-        labels = [l.get("name") or "" for l in (node.get("labels") or {}).get("nodes") or []]
+        labels = [
+            label.get("name") or "" for label in (node.get("labels") or {}).get("nodes") or []
+        ]
         team_key = (node.get("team") or {}).get("key")
         created = parse_ts_ms(node.get("createdAt"))
         updated = parse_ts_ms(node.get("updatedAt"))
@@ -2344,10 +3359,17 @@ def iter_linear(
         # doc_id keys on the issue's stable UUID:  moving a team changes the identifier (the
         # migration map's AFC-1 is CC-133 today), and a renamed identifier must update the same
         # corpus doc, not orphan one and mint a duplicate.
+        markdown = _linear_markdown(node, labels)
+        if receipt is not None:
+            receipt["issues"][uid].update(
+                status="fetched",
+                updated_at=node.get("updatedAt"),
+                content_sha256=hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+            )
         yield Doc(
             doc_id=f"linear/{node.get('id')}",
             title=(node.get("title") or "").strip() or f"Issue {node.get('identifier')}",
-            text_markdown=_linear_markdown(node, labels),
+            text_markdown=markdown,
             source="linear",
             app=_linear_app(team_key, labels),
             category="lesson" if done else "finding",
@@ -2364,13 +3386,29 @@ def iter_linear(
             },
         )
 
+    missing = set(selected) - found
+    if missing:
+        raise LinearSourceError(
+            f"linear: selected ids missing from full fetch: {sorted(missing)[:3]}"
+        )
+    if receipt is not None:
+        receipt["source_complete"] = (
+            not receipt["limited"]
+            and len(found) == len(scan)
+            and all(row["status"] == "fetched" for row in receipt["issues"].values())
+        )
+        _linear_mark_cursor(receipt)
+
+    if os.environ.get("FLEET_RAG_LINEAR_FULL") and incomplete and receipt is None:
+        raise LinearSourceError(
+            f"linear: FULL read skipped issues; replacement is incomplete: {incomplete}"
+        )
+
 
 # --------------------------------------------------------------------------- registry
 
 GENERATORS: dict[str, Callable[..., Iterator[Doc]]] = {
-    "board": iter_board,
     "linear": iter_linear,
-    "effort-log": iter_effort_logs,
     "doc": iter_docs,
     "skill": iter_skills,
     "memory": iter_memory,

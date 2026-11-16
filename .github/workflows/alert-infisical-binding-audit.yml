@@ -1,0 +1,44 @@
+name: Audit Alert Infisical Binding
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: Parent-reviewed exact main source SHA
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify Approved Source
+        env:
+          AUDIT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          expected = os.environ.get("AUDIT_EXPECTED_SOURCE_SHA", "")
+          valid = re.fullmatch(r"[0-9a-f]{40}", expected) and expected == os.environ.get("GITHUB_SHA")
+          print("source_verified=" + str(bool(valid)).lower())
+          raise SystemExit(0 if valid else 2)
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify Checkout And Offline Contract
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/test-audit-alert-infisical-binding.py
+      - name: Read Existing Binding Self Metadata
+        env:
+          AUDIT_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          AFC_ALERT_WORKERS_INFISICAL_TOKEN: ${{ secrets.AFC_ALERT_WORKERS_INFISICAL_TOKEN }}
+          INFISICAL_FLEET_OPS_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
+        run: python3 scripts/audit-alert-infisical-binding.py --audit

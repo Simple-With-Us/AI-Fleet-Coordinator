@@ -1,0 +1,44 @@
+{
+ "schema": 1,
+ "fetch": "failed",
+ "fetch_reason": "service-token-required",
+ "checked_epoch": 1794000000,
+ "write_token": "missing",
+ "knobs": [
+  {
+   "name": "LANE_SWEEP_MODE",
+   "owner": "C5",
+   "set": true,
+   "source": "lkg",
+   "stale": true,
+   "value": "act",
+   "reason": "unreachable:service-token-required"
+  },
+  {
+   "name": "CONSULT_ENABLED",
+   "owner": "C7",
+   "set": false,
+   "source": "default",
+   "stale": true,
+   "value": "false",
+   "reason": "unreachable:service-token-required"
+  },
+  {
+   "name": "OPERATOR_API_URL",
+   "owner": "N1",
+   "set": true,
+   "source": "lkg",
+   "stale": true,
+   "value": "https://operator.example.com",
+   "reason": "unreachable:service-token-required"
+  },
+  {
+   "name": "FLEET_FACTS_SIGNING_KEY",
+   "owner": "F7",
+   "set": false,
+   "source": "none",
+   "stale": false,
+   "reason": "unreachable:service-token-required"
+  }
+ ]
+}

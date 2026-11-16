@@ -23,14 +23,49 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"
+DEFAULT_SOURCE = "/Users/jay/apps/lanes/_managed/fleet/simple-tools-runtime"
 RECEIVER_PATH = "scripts/fleet-cli-release.py"
-# The reviewed allowlisted runtime contains 131 files. Keep the exact minimum
-# ceiling in sender and receiver: a new file still needs an explicit policy review.
-# The 130th file is fleet_bearer.py (from main);  the 131st is claude_app_lineage.py (AFC-564, PR 1127), added for
-# that review.
-MAX_FILES = 131
-MAX_BYTES = 8 * 1024 * 1024
+# The reviewed allowlisted runtime contains 166 files. Keep the exact minimum# ceiling in sender and receiver: a new file still needs an explicit policy review.
+# The 132nd file is storage_guard.py (from main);  the 133rd is platform_letter.py (AFC-564, the shared session-letter
+# library);  the 134th is platform_letter_codex.py (the Codex adapter);  the 135th and 136th are
+# platform_letter_opencode.py and opencode_letter_plugin/index.js (the OpenCode adapter);  the 137th is operator_post.py
+# (the Operator's voice for the daemon's own posts, owner ruling Oct 30 2026);  the 138th and 139th are notes_service_reader.py and mcp/bearer_gate.py (from main);  the 140th and 141st are platform_letter_muse.py and muse_session_rename.py (the Muse adapter);  the 142nd is platform_letter_grok_leader.py (the Grok adapter);  the 143rd is platform_letter_antigravity.py (the Antigravity adapter), added for that review.
+# The 144th and 145th are scripts/simple-git and scripts/git-tools/git (the git tools CLI entry wrapper
+# and its implementation;  tests and the offline catalog fixture stay repo-only).
+# The 146th is fleet_rag/recall_presentation.py, the lossless agent-facing recall boundary.
+# Files 147 and 148 are the existing low-level scoped verifier library; no secrets CLI ships.
+# The 149th is simple_tools/listener_registry.py, the Operator session-registry service the daemon
+# serves over the listener HTTPS API (Path B, operator.simplewithus.com).
+# The 151st is simple_tools/registry_api.py, the signed client the package's own registry callers
+# (the operator-registry CLI, the platform-letter registry side) use to reach that API.
+# The 153rd is simple_tools/operator_sheets_google.mjs;  must equal the receiver cap in
+# fleet-cli-release.py or build_bundle() rejects the newly included adapter.
+# The 154th is simple_tools/operator_sheets_drain.mjs (OPS-1037), the production drain runner.
+# The 155th is simple_tools/muster_service.py (AFC-654), the read-only Operator service `simple-chat`
+# dispatches for Muster's Seats panel.
+# The 156th is fleet_lanes/temp_build.py (AFC-618), the build-argv reader `lane`'s guard.py imports.
+# The 157th and 158th are the ZCode letter adapter and the ZC wake bridge (OPS-1048).  The 159th, the ZC letter hook
+# wrapper, was deleted (AFC-740):  ZCode's hooks run ~/.local/bin/platform-letter like every other platform's.
+# fleet-cli-release.py carries the same ledger.
+# The 160th and 161st are simple_tools/platform_letter_cursor.py (the Cursor session-letter adapter) and
+# simple_tools/cursor_cloud_letters.py (the Cursor Cloud letter sweep).
+# The 162nd is scripts/ag-wake-bridge (AFC-665), the AG seat's wake bridge.
+# The 163rd and 164th are the Clutch and Fx session-letter adapters;  fleet-cli-release.py carries the
+# same ledger.
+# The 166th and 167th are simple_tools/wake_router.py and simple_tools/claude_wake.py (OPS-1048).
+# The 168th is simple_tools/wake_settings.py (OPS-1048).
+# The 169th and 170th are simple_tools/thread_registry.py and thread_registry_export.mjs (the Operator
+# chat-thread registry and its Google drain);  fleet-cli-release.py carries the same ledger.
+# The 171st is simple_tools/wake_service.py (OPS-1048, the one wake router service for every platform).
+# The 172nd is simple_tools/mcp/list_presentation.py (AFC-756, compact list/search read payloads for seat MCP).
+# From here the cap is 180, set once (Nov 11, 2026) with room for the wake router's platform modules;
+# fleet-cli-release.py carries the same number and the reason.
+MAX_FILES = 180
+# Step 2 of the two-step cap raise:  ships at most 11 MiB, leaving at least 1 MiB under
+# fleet-cli-release.py MAX_BUNDLE_BYTES (12 MiB).  The receiver that runs is the published
+# scripts/fleet-cli-release.py blob from the same source commit, and receiver_policy()
+# refuses if that receiver's cap is below this one.
+MAX_BYTES = 11 * 1024 * 1024
 OVERALL_SECONDS = 90
 SSH_SECONDS = 65
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -220,7 +255,7 @@ def receiver_policy(text: bytes):
             finally:
                 sys.modules.pop(spec.name, None)
         if (
-            module.MAX_BUNDLE_BYTES != MAX_BYTES
+            module.MAX_BUNDLE_BYTES < MAX_BYTES
             or not callable(module.allowed_path)
             or not callable(module.manifest_digest)
         ):
@@ -244,7 +279,17 @@ def build_bundle(source: Path, runner: Runner | None = None) -> tuple[dict, byte
         raise SyncError("receiver_blob_refused")
     receiver_text = blobs(runner, source, [receiver])[RECEIVER_PATH]
     policy = receiver_policy(receiver_text)
-    selected = [row for row in entries if policy.allowed_path(row[0])]
+    # A receiver without shipped_path (before the repo-only list) ships everything it allows.
+    ships = getattr(policy, "shipped_path", None)
+    ships = ships if callable(ships) else policy.allowed_path
+    selected = [row for row in entries if ships(row[0])]
+    # A path in REQUIRED that is also in REPO_ONLY would build a bundle every host refuses
+    # with bad_file_set.  Only paths present in the source tree are checked, so a fixture
+    # tree that uses the real receiver but not the full allowlist still builds.
+    required = getattr(policy, "REQUIRED", set())
+    present = {row[0] for row in entries}
+    if not (required & present).issubset({row[0] for row in selected}):
+        raise SyncError("receiver_policy_invalid")
     if len(selected) > MAX_FILES:
         raise SyncError("bundle_too_many_files")
     if not selected:
@@ -303,7 +348,9 @@ def ssh_argv(receiver_text: str, *, install: bool = False) -> list[str]:
 
 def receipt(result: subprocess.CompletedProcess, bundle: dict) -> dict:
     if result.returncode:
-        raise SyncError("ssh_failed")
+        # The receiver names its refusal as `fleet-cli: <code>`;  carry it, so the Mac's state shows why.
+        said = re.fullmatch(rb"fleet-cli: ([a-z0-9_]{1,64})\n?", result.stderr or b"")
+        raise SyncError("receiver_" + said.group(1).decode("ascii") if said else "ssh_failed")
     if len(result.stdout) > 8192:
         raise SyncError("receipt_invalid")
     try:
@@ -444,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", type=Path, default=Path(DEFAULT_SOURCE))
     parser.add_argument(
-        "--state-dir", type=Path, default=Path.home() / ".agent-sync/coolify-cli-sync"
+        "--state-dir", type=Path, default=Path.home() / ".simple-tools/coolify-cli-sync"
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")

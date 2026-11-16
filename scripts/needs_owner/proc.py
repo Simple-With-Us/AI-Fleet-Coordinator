@@ -22,7 +22,7 @@ from . import seat as seatmod
 from .errors import BoardFailed, NeedsOwnerError
 
 BOARD_TIMEOUT = 240  # seconds:  the board waits out a Linear rate limit itself
-AGENT_SYNC_TIMEOUT = 90
+SIMPLE_TOOLS_TIMEOUT = 90
 
 
 @dataclass
@@ -137,8 +137,8 @@ class Runner:
         except ValueError:
             raise BoardFailed("board %s did not return JSON" % args[0]) from None
 
-    def agent_sync(self, *args: str, stdin: str | None = None) -> Result:
-        return self._run("simple-chat", args, stdin, AGENT_SYNC_TIMEOUT)
+    def simple_tools(self, *args: str, stdin: str | None = None) -> Result:
+        return self._run("simple-chat", args, stdin, SIMPLE_TOOLS_TIMEOUT)
 
     def require_board(self) -> None:
         if find_tool("simple-board", self.env) is None:

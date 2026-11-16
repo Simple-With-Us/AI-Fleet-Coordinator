@@ -2,8 +2,11 @@
 import base64
 import os
 import unittest
+from unittest import mock
 
+from fleet_facts import publish
 from fleet_facts import repo as r
+from fleet_knobs.knobs import SecretUnavailable
 
 from .ghfake import REPO, FakeGitHub, blob_sha
 
@@ -352,6 +355,108 @@ class Streams(unittest.TestCase):
     def test_git_blob_sha_matches_git(self):
         self.assertEqual(r.git_blob_sha(b""), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
         self.assertEqual(r.git_blob_sha(b"hello\n"), "ce013625030ba8dba906f756967f9e9ca394464a")
+
+
+class RelayWrites(unittest.TestCase):
+    def relay(self, files=None, default="main"):
+        state = {"files": dict(files or {}), "calls": []}
+
+        def post(action, body):
+            state["calls"].append((action, dict(body)))
+            if action == "wf_repo_get":
+                return 200, {"repository": {"default_branch": default}}
+            if action == "wf_file_get":
+                data = state["files"].get(body["path"])
+                if data is None:
+                    return 400, {"error": "github refused the request", "github_status": 404}
+                return 200, {"sha": blob_sha(data), "path": body["path"]}
+            if action == "wf_file_put":
+                state["files"][body["path"]] = base64.b64decode(body["content_b64"])
+                return 200, {"commit": "c" * 40, "path": body["path"]}
+            if action == "wf_file_delete":
+                state["files"].pop(body["path"], None)
+                return 200, {"deleted": True}
+            return 400, {"error": "no"}
+
+        relay = r.ContentsRelay("https://relay.example.test", "t" * 16, "main", post=post)
+        return relay, state
+
+    def test_a_configured_relay_writes_and_deletes_without_gh(self):
+        gh = good()
+        relay, state = self.relay()
+        writer = r.Writer(gh, GH, REPO, sleep=lambda _s: None, relay=relay)
+        self.assertEqual(writer.put("gb/mac-facts.json", b"one\n", "mac-facts: create"), "created")
+        self.assertEqual(state["files"]["gb/mac-facts.json"], b"one\n")
+        put = [body for action, body in state["calls"] if action == "wf_file_put"][0]
+        self.assertEqual(put["branch"], "main")
+        self.assertNotIn("prior_sha", put)
+        self.assertEqual(writer.put("gb/mac-facts.json", b"two\n", "mac-facts: update"), "updated")
+        updated = [body for action, body in state["calls"] if action == "wf_file_put"][-1]
+        self.assertEqual(updated["prior_sha"], blob_sha(b"one\n"))
+        gh.files["mac-facts.json"] = b"stay"
+        relay.files_view = state
+        self.assertEqual(writer.remove("mac-facts.json", "mac-facts: remove"), "absent")
+        state["files"]["mac-facts.json"] = b"{}"
+        self.assertEqual(writer.remove("mac-facts.json", "mac-facts: remove"), "removed")
+        self.assertNotIn("mac-facts.json", state["files"])
+        self.assertEqual(gh.puts, [])
+        self.assertEqual(gh.deletes, [])
+        self.assertFalse(any("contents/" in " ".join(call) for call in gh.calls))
+
+    def test_a_relay_refusal_does_not_fall_back_to_gh(self):
+        gh = good()
+        relay, state = self.relay()
+
+        def refuse(action, body):
+            state["calls"].append((action, body))
+            if action == "wf_repo_get":
+                return 200, {"repository": {"default_branch": "main"}}
+            if action == "wf_file_get":
+                return 400, {"github_status": 404}
+            return 400, {"error": "default branch is not writable"}
+
+        relay._post = refuse
+        writer = r.Writer(gh, GH, REPO, sleep=lambda _s: None, relay=relay)
+        with self.assertRaises(r.WriteFailed):
+            writer.put("gb/mac-facts.json", b"x", "m")
+        self.assertEqual(gh.puts, [])
+        self.assertEqual(gh.calls, [])
+
+    def test_a_branch_that_is_not_the_default_is_refused_before_a_write(self):
+        gh = good()
+        relay, state = self.relay(default="feature")
+        writer = r.Writer(gh, GH, REPO, sleep=lambda _s: None, relay=relay)
+        with self.assertRaises(r.Refused) as caught:
+            writer.put("gb/mac-facts.json", b"x", "m")
+        self.assertIn("default branch", caught.exception.reason)
+        self.assertFalse(any(action == "wf_file_put" for action, _body in state["calls"]))
+        self.assertEqual(gh.puts, [])
+
+    def test_load_relay_is_absent_until_the_url_is_set_and_then_fails_closed(self):
+        seen = []
+
+        def get(name):
+            seen.append(name)
+            if name == "FLEET_FACTS_RELAY_URL":
+                return ""
+            raise AssertionError(name)
+
+        with mock.patch("fleet_knobs.knobs.get", side_effect=get):
+            self.assertIsNone(publish.load_relay())
+        self.assertEqual(seen, ["FLEET_FACTS_RELAY_URL"])
+
+        def missing(name):
+            if name == "FLEET_FACTS_RELAY_URL":
+                return "https://relay.example.test"
+            if name == "FLEET_FACTS_RELAY_BRANCH":
+                return "main"
+            raise SecretUnavailable(name, "unset")
+
+        with mock.patch("fleet_knobs.knobs.get", side_effect=missing):
+            with self.assertRaises(r.Refused) as caught:
+                publish.load_relay()
+        self.assertIn("FLEET_FACTS_RELAY_TOKEN", caught.exception.reason)
+        self.assertNotIn("unset", caught.exception.reason)
 
 
 if __name__ == "__main__":

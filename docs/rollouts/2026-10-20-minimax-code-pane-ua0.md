@@ -91,7 +91,7 @@ OK
 
 ```console
 $ python3 scripts/check-fleet-registry.py
-note: live copy checks skipped (no FLEET_BOARD_HOME, /home/runner/apps has no AGENT-SYNC.md)
+note: live copy checks skipped (no FLEET_BOARD_HOME, /home/runner/apps has no FLEET-PROTOCOL.md)
 fleet registry check OK (17 apps)
 ```
 
@@ -112,13 +112,13 @@ for name in ("sentence-gap", "land-lane", "fleet-coordination"):
 All three equal.
 
 Not run here:  the live-copy assertions in `check-fleet-registry.py`, and the live
-`~/apps/AGENT-SYNC.md` sync, both of which need the Mac.
+`~/apps/FLEET-PROTOCOL.md` sync, both of which need the Mac.
 
 ## Follow-ups
 
 - `FLEET-UI-COPY.md` still drifts from the live `~/apps` copy in the first-visit theme default
   and the date-time lines.  That needs the owner rather than a silent sync and is not in this
   pull request.
-- Fleet-OPS #152 regenerated `generated/AGENT-SYNC.md` after its build check had been failing,
-  which is why the live `~/apps/AGENT-SYNC.md` kept the old row.  The sync job has since applied
+- Fleet-OPS #152 regenerated `generated/FLEET-PROTOCOL.md` after its build check had been failing,
+  which is why the live `~/apps/FLEET-PROTOCOL.md` kept the old row.  The sync job has since applied
   it.

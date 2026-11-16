@@ -33,7 +33,7 @@ class Variables(unittest.TestCase):
                 self.assertNotIn(action, _REAPPLY_STATE_ACTIONS)
             else:
                 self.assertIn(action, _REAPPLY_STATE_ACTIONS)
-            self.assertEqual(SPECS[action][0], {"variables": "write"})
+            self.assertEqual(SPECS[action][0], {"actions_variables": "write"})
 
     def test_nonsecret_closed_bounded(self):
         a = {"repo": REPO, "name": "BUILD_MODE", "value": "release"}
@@ -94,7 +94,7 @@ class Variables(unittest.TestCase):
     def test_supported_permission_key_not_a_configured_grant(self):
         from git_relay.app_tokens import MINT_PERMISSION_CEILING
 
-        self.assertIn("variables", MINT_PERMISSION_CEILING)
+        self.assertIn("actions_variables", MINT_PERMISSION_CEILING)
         self.test_permission_never_assumed_from_shared_ceiling()
 
     def test_read_blocks_external_credential_and_create_201_empty_object(self):
@@ -147,3 +147,33 @@ class Variables(unittest.TestCase):
             c.status = status
             with self.assertRaises(RelayGitHubError):
                 h.run(action, {"repo": REPO, "name": "MODE"})
+
+    def test_lone_surrogates_fail_closed_without_upstream_write(self):
+        import json
+
+        from git_relay.github_client import RelayGitHubError
+
+        for value in (json.loads('"\\ud800"'), json.loads('"\\udfff"'), "valid" + chr(0xD800)):
+            for action in ("wf_repo_variable_create", "wf_repo_variable_update"):
+                with self.assertRaises(Refused):
+                    WorkflowVerbs.check_shape(
+                        action, {"repo": REPO, "name": "MODE", "value": value}, REPO
+                    )
+            with self.assertRaises(RelayGitHubError) as caught:
+                WorkflowVerbs._variable_receipt(
+                    {"name": "MODE", "value": value, "created_at": "x", "updated_at": "x"}
+                )
+            self.assertEqual(caught.exception.status, 502)
+            self.assertNotIn(value, str(caught.exception))
+
+    def test_utf8_byte_boundary_is_preserved(self):
+        from git_relay.github_client import RelayGitHubError
+
+        for value in ("a" * 8192, "é" * 4096, "😀" * 2048):
+            self.assertEqual(WorkflowVerbs._variable_value({"value": value}), value)
+            receipt = {"name": "MODE", "value": value, "created_at": "x", "updated_at": "x"}
+            self.assertEqual(WorkflowVerbs._variable_receipt(receipt), receipt)
+            with self.assertRaises(Refused):
+                WorkflowVerbs._variable_value({"value": value + "a"})
+            with self.assertRaises(RelayGitHubError):
+                WorkflowVerbs._variable_receipt({**receipt, "value": value + "a"})

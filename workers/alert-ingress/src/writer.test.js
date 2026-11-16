@@ -63,7 +63,7 @@ const request = () =>
 test("missing durable writer fails closed", async () => {
   for (const path of ["/status", "/sweep", "/webhook/generic"])
     assert.equal(
-      (await worker.fetch(new Request(`https://test${path}`), {})).status,
+      (await worker.fetch(new Request(`https://test${path}`, { method: path.startsWith("/webhook") ? "POST" : "GET", headers: { authorization: "Bearer fixture" } }), { INGRESS_SHARED_TOKEN: "fixture" })).status,
       503,
     );
 });
@@ -542,10 +542,22 @@ test("the webhook path and the cron sweep reach the same writer object", async (
       get: () => ({ fetch: async () => new Response("{}") }),
     },
   };
-  await worker.fetch(new Request("https://test/status/alerts/x"), env);
+  await worker.fetch(new Request("https://test/status/alerts/x", { headers: { authorization: "Bearer fixture" } }), env);
   const pending = [];
   await worker.scheduled({}, env, { waitUntil: (p) => pending.push(p) });
   await Promise.all(pending);
   assert.equal(names.length, 2);
   assert.equal(names[0], names[1]);
+});
+
+test("invalid routes, methods and static credentials do not dispatch the DO", async () => {
+  let touched=0;
+  const env={INGRESS_SHARED_TOKEN:"fixture",ALERT_WRITER:{idFromName(){touched++;throw Error("DO touched");}}};
+  for (const [path,method,headers,status] of [
+    ["/random","GET",{},404], ["/webhook/generic","GET",{},405],
+    ["/webhook/generic","POST",{},401], ["/sweep","GET",{},401],
+    ["/status/alerts/topic","GET",{},401],
+    ["/webhook/generic","POST",{authorization:"Bearer fixture","content-length":"65537"},413],
+  ]) assert.equal((await worker.fetch(new Request("https://test"+path,{method,headers}),env)).status,status);
+  assert.equal(touched,0);
 });

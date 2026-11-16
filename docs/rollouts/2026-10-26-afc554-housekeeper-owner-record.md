@@ -6,7 +6,7 @@ The housekeeper lock is shared state with two readers in this repository: the Py
 
 ## Changes made
 
-The owner record gains a fifth key, `start`: the start time of the holder's process, read from the kernel through `ps` and kept as an opaque string that is compared and never parsed.  The C locale is forced when it is read, so the writer and the reader produce the same value for the same process on any machine and in any locale.  The shell reader now enforces the same schema the watcher enforces, value for value, and both readers compare the start time: a pid whose start time does not match the record names a different process, so the holder is gone and the lock is taken over at once instead of waiting out the whole stale window.  The watcher test stubs the hostname with a synthetic value and restores the original lookup after the host-sensitive cases.
+The owner record gains a fifth key, `start`: the holder's process start time, read from the kernel through `/bin/ps`.  Readers now request a UTC-form token with `TZ=UTC0` while preserving `LC_ALL=C`; writers keep the established local-time token during this reader-first rollout.  Exact UTC tokens identify the same process directly.  For records written before the timezone change, readers parse the C-locale civil timestamp and compare its wall-clock-as-UTC epoch with the current UTC process-start epoch, accepting a difference of at most 24 hours only when that process started no later than the record's `acquired_at`.  That acquisition-time bound prevents a later process that reused the pid from being mistaken for the holder.  If either token cannot be read or parsed, the owner record does not prove the holder gone and the existing age rule decides.  The shell reader enforces the same schema as the watcher.
 
 The class of the first finding is two implementations of one protocol drifting apart, so the fix is not only the schema check: a new case runs one table of owner records through both readers and fails when they disagree.  The table covers a good record, a missing key, an unknown key, a pid that is a string, a pid that is a bool, an empty start, an overlong start, another host, an owner older than the lock beside it, a dead pid, a live pid, a reused pid and a pid that cannot be signalled because it belongs to another user.
 
@@ -21,7 +21,11 @@ Files touched:
 
 ## Decisions and trade-offs
 
-The start time is compared as an opaque string rather than as a parsed timestamp.  A parsed date is locale dependent, and a token that differed only because the writer and the reader ran under different locales would read as a different process, which would take a live holder's lock away from it.  A start time that cannot be read at all is treated as no evidence: the record cannot speak for the lock and the age rule decides.
+Before a legacy-token mismatch can use `acquired_at` as a cutoff, that timestamp must agree with the lock-directory and owner-file mtimes within two seconds and must not be more than 60 seconds in the future.  An out-of-range timestamp is inconclusive, so the age rule decides.
+
+Exact UTC start tokens are compared as strings.  A differing token is parsed only as the fixed English civil form emitted under `LC_ALL=C`, so it can identify a legacy local-time record after the host timezone changes.  The bounded epoch comparison plus `acquired_at` check prevents an uncertain parse or a reused pid from being treated as the same live holder.  A start time that cannot be read or parsed is treated as no evidence: the record cannot speak for the lock and the age rule decides.
+
+This is the reader-compatibility phase.  Both writers still publish local-time tokens; switch either writer to UTC only after every reader that can encounter its owner records accepts both the exact UTC form and the legacy local form.
 
 The owner record is not written at all when the start time cannot be read, because a record without it cannot tell the holder from a reused pid.  A missing owner file is an ordinary state: the shell holder writes none at all and recovers by the age rule, so the failure mode is the one this protocol already had.
 

@@ -1,0 +1,8 @@
+name: Sentry CI Report
+on: workflow_run
+jobs:
+  report:
+    uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/sentry-ci-report-reusable.yml@abc
+    with:
+      cron_schedules: '{"Backup fleet GitHub repositories": "0 7 * * *"}'
+      app: AI-Fleet-Coordinator

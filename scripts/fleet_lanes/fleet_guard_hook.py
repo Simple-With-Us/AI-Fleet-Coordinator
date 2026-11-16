@@ -74,6 +74,7 @@ def decide(payload: dict, secret_guard=None):
         decision = guard.evaluate(payload)
         if decision.action == guard.DENY and decision.reason:
             return decision.reason, decision.destination
+        lgh.record_detection(decision)
     except Exception:
         pass
     try:

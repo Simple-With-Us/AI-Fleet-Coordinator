@@ -339,6 +339,14 @@ def _apply_proof(
     achieved = result.proof_level_achieved
     if achieved is not None and achieved.at_least(required):
         return result
+    if rule.collector is not Collector.MAC and runner is None:
+        return replace(
+            result,
+            state=CheckState.UNPROVEN,
+            reason="the remote observation did not satisfy the required %s proof" % required.value,
+            reason_code=ReasonCode.PROOF_NOT_RUN,
+            proof_level_achieved=achieved,
+        )
     outcome = _run_proof(rule, platform, ctx, prove, runner)
     if outcome.level is not None and outcome.level.at_least(required):
         return replace(
@@ -367,6 +375,18 @@ def _apply_proof(
             reason_code=outcome.reason_code,
             proof_level_achieved=outcome.level if outcome.level is not None else achieved,
         )
+    if outcome.reason_code in (ReasonCode.UNSUPPORTED, ReasonCode.NOT_APPLICABLE):
+        # A proof that cannot exist for this platform is unsupported,  and one that the
+        # platform has no surface for does not apply:  neither is unrun,  and relabelling
+        # either as unproven would say a proof is on its way.  The reason code is kept,
+        # because the verdict leaves a not-applicable result out.
+        return replace(
+            result,
+            state=CheckState.UNSUPPORTED,
+            reason=outcome.reason or "no proof exists for this platform",
+            reason_code=outcome.reason_code,
+            proof_level_achieved=outcome.level if outcome.level is not None else achieved,
+        )
     return replace(
         result,
         state=CheckState.UNPROVEN,
@@ -389,6 +409,21 @@ def _run_check(
     ``CheckError``, a timeout and a malformed return value all become results that say
     what went wrong.
     """
+    if rule.collector is Collector.API:
+        try:
+            from . import api_collector
+
+            return api_collector.api_collect(rule, platform, ctx)
+        except CheckError as exc:
+            return _unknown(rule, platform, str(exc), exc.reason_code, ctx)
+        except Exception as exc:  # noqa: BLE001 - a broken collector is a result, not a crash
+            return _unknown(
+                rule,
+                platform,
+                "the api collector failed: %s" % exc,
+                ReasonCode.ERROR,
+                ctx,
+            )
     if rule.collector is not Collector.MAC:
         return _unsupported(
             rule,
