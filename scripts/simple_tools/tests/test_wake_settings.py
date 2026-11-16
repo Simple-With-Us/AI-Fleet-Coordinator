@@ -751,6 +751,30 @@ class Wiring(Settings):
         self.assertEqual(served.seats.seat_health("MC"), (503, {
             "seat": "MC", "healthy": False, "reason": "not-installed"}))
 
+    def test_shared_config_with_uninstalled_seat_keys_does_not_fail_ready_seats(self) -> None:
+        """AFC-810: a shared config naming a registered-but-uninstalled seat's key (e.g. zcode_bin)
+        must not cause settings-refused for the seats that are ready on this host."""
+        self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, **REGISTRY})
+        config_dir = self.home / ".local" / "state" / "wake-router"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.json").write_text(
+            json.dumps({"zcode_bin": "/usr/local/bin/zcode", "muse_bin": "/usr/local/bin/muse"}),
+            encoding="utf-8",
+        )
+        pending = {SVC.BUILDERS[seat].module for seat in ("CODEX", "MC", "ZC")}
+        real = importlib.import_module
+
+        def importer(name):
+            if name in pending:
+                raise ModuleNotFoundError("No module named %r" % name, name=name)
+            return real(name)
+
+        with mock.patch.object(CW, "state_dir", return_value=self.state):
+            served = SVC.build({"HOME": str(self.home)}, importer=importer)
+        self.assertEqual(served.seats.not_installed, {"CODEX", "MC", "ZC"})
+        self.assertEqual(served.seats.down, {})
+        self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK"])
+
     def test_muse_code_present_but_broken_disables_only_mc_and_fails_health(self) -> None:
         self.fake.set(secrets={**ARMED, KEY_KNOB: KEY, **REGISTRY})
         real = importlib.import_module

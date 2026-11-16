@@ -92,6 +92,7 @@ class Builder:
     function: str = "router_platform"
     handler: str = "deliver_request"
     session_re: str = UUID_SESSION
+    defaults: Mapping[str, Any] = field(default_factory=dict)
     _compiled: re.Pattern[str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -104,13 +105,63 @@ class Builder:
 
 #: Every platform, keyed by seat:  the only platform table, on both hosts.
 BUILDERS: dict[str, Builder] = {
-    "AG": Builder("antigravity", "simple_tools.antigravity_wake"),
-    "CLAUDE": Builder("claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude"),
-    "CODEX": Builder("codex", "simple_tools.codex_wake"),
-    "MC": Builder("muse", "simple_tools.muse_wake"),
-    "ZC": Builder("zcode", "simple_tools.zcode_wake", session_re=r"^sess_[A-Za-z0-9._-]{1,123}$"),
+    "AG": Builder(
+        "antigravity",
+        "simple_tools.antigravity_wake",
+        defaults={"local_host": "server", "mac_ssh": "", "resume_timeout_seconds": 900},
+    ),
+    "CLAUDE": Builder(
+        "claude",
+        "simple_tools.claude_wake",
+        "make_platform",
+        "_deliver_claude",
+        defaults={
+            "local_host": "server",
+            "mac_ssh": "",
+            "resume_timeout_seconds": 900,
+            "confirm_seconds": 20,
+            "claude_bin": "claude",
+        },
+    ),
+    "CODEX": Builder(
+        "codex",
+        "simple_tools.codex_wake",
+        defaults={
+            "local_host": "server",
+            "mac_ssh": "",
+            "resume_timeout_seconds": 900,
+            "codex_bin": "codex",
+        },
+    ),
+    "MC": Builder(
+        "muse",
+        "simple_tools.muse_wake",
+        defaults={
+            "local_host": "server",
+            "mac_ssh": "",
+            "muse_bin": "muse",
+            "resume_timeout_seconds": 900,
+            "confirm_seconds": 20,
+        },
+    ),
+    "ZC": Builder(
+        "zcode",
+        "simple_tools.zcode_wake",
+        session_re=r"^sess_[A-Za-z0-9._-]{1,123}$",
+        defaults={
+            "local_host": "server",
+            "mac_ssh": "",
+            "resume_timeout_seconds": 900,
+            "zcode_bin": "",
+        },
+    ),
     # A live Grok TUI session id is a UUID, so the pattern is UUID_SESSION.
-    "GROK": Builder("grok-leader", "simple_tools.grok_wake", session_re=UUID_SESSION),
+    "GROK": Builder(
+        "grok-leader",
+        "simple_tools.grok_wake",
+        session_re=UUID_SESSION,
+        defaults={"mac_ssh": "", "resume_timeout_seconds": 900},
+    ),
 }
 
 
@@ -279,7 +330,9 @@ def build(
             else:
                 absent.append(seat)
             _log("seat %s not served (%s)" % (seat, exc.reason))
-    file_defaults: dict[str, Any] = {}
+    file_defaults: dict[str, Any] = dict(WR.ROUTER_DEFAULTS)
+    for entry in table.values():
+        file_defaults.update(entry.defaults)
     for seat_ready in ready:
         file_defaults.update(seat_ready.defaults)
     local_path = state_root(env) / "config.json"
