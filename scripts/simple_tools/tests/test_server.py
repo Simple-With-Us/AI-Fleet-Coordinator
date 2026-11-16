@@ -53,12 +53,11 @@ CLOUD_SEATS = {
     "ECHO": ("instinct-bat-bot@zulip.test", "Echo Bat"),
 }
 # The Mac CLI seats, held by the server listener since the one-listener cutover (owner, Tue,
-# Nov 10).  GROK and AMP are disabled there:  GROK's Infisical pair has the ZULIP_GROK_BUILD_*
-# stem, and AMP has no ZULIP_AMP_* pair.
+# Nov 10).  Only AMP is disabled, because it has no ZULIP_AMP_* pair.
 MAC_CLI_SEATS = [
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
 ]
-MAC_CLI_DISABLED = ["AMP", "GROK"]
+MAC_CLI_DISABLED = ["AMP"]
 # A lone seat (ZC) naming the router's bearer in another role (OPS-1048):  its error and reason.
 LONE_BEARER_ERROR = (
     "environment variable WAKE_ROUTER_KEY is the wake router's bearer and may be named only as a "
@@ -1589,7 +1588,7 @@ class PartitionTests(ServerHarness):
         self.assertEqual(
             sorted(server.disabled),
             MAC_CLI_DISABLED,
-            "only GROK and AMP are disabled, for want of a loadable Zulip pair (owner, Tue, Nov 10)",
+            "only AMP is disabled for want of a loadable Zulip pair",
         )
         self.assertEqual(
             sorted(server.seats),
@@ -2139,7 +2138,7 @@ class ContainerTests(unittest.TestCase):
         lines = [
             l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")
         ]
-        self.assertEqual(lines[0], "FROM python:3.14-slim")
+        self.assertEqual(lines[0], "FROM python:3.15-slim")
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
         self.assertEqual(users, ["simpletools"], "the daemon runs as a non-root user")
         self.assertIn("COPY scripts/simple_tools /app/scripts/simple_tools", lines)

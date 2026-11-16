@@ -320,39 +320,31 @@ class CredentialTests(FleetLinkHarness):
         self.assertEqual(only["env"]["FLEETLINK_SEAT"], "CLAUDE")
         self.assertEqual(only["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE)  # CLAUDE's own, from Infisical
 
-    def test_fleet_secrets_is_asked_for_the_ai_fleet_coordinator_project(self):
+    def test_the_direct_reader_uses_the_exact_ai_fleet_coordinator_folder(self):
         # The seat tokens live in AI Fleet Coordinator /fleetlink;  Fleet-OPS has no such folder.
         seen = []
 
-        def fake_run(argv, **kw):
-            seen.append(list(argv))
-            return mock.Mock(returncode=0, stdout=TOKEN_CLAUDE.encode())
+        def fetch(project, path, env, **kw):
+            seen.append((project, path, env, kw))
+            return {"FLEETLINK_TOKEN_CLAUDE": TOKEN_CLAUDE}
 
         from simple_tools import zulip as Z
 
         FL._token_cache.clear()
         with (
             mock.patch.object(Z, "infisical_enabled", lambda env: True),
-            mock.patch.object(Z, "fleet_secrets_bin", lambda env, home: "/x/fleet-secrets"),
-            mock.patch.object(FL.subprocess, "run", fake_run),
+            mock.patch.object(FL.FI, "fetch_project", side_effect=fetch),
         ):
-            token = FL._fleet_secrets_token("FLEETLINK_TOKEN_CLAUDE", {}, Path("/nonexistent"))
+            env = {"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": "11111111-2222-3333-4444-555555555555",
+                   "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4,
+                   "INFISICAL_READ_PATHS": "/fleetlink,/unrelated"}
+            found = FL._fleet_secrets_token("FLEETLINK_TOKEN_CLAUDE", env, Path("/nonexistent"))
         FL._token_cache.clear()
-        self.assertEqual(token, TOKEN_CLAUDE)
-        self.assertEqual(
-            seen,
-            [
-                [
-                    "/x/fleet-secrets",
-                    "get",
-                    "FLEETLINK_TOKEN_CLAUDE",
-                    "--path",
-                    "/fleetlink",
-                    "--project",
-                    "ai-fleet-coordinator",
-                ]
-            ],
-        )
+        self.assertEqual(found, TOKEN_CLAUDE)
+        self.assertEqual(seen[0][:2], (env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"], "/fleetlink"))
+        self.assertEqual(seen[0][2]["INFISICAL_READ_PATHS"], "/fleetlink")
+        self.assertEqual(seen[0][3]["names"], ("FLEETLINK_TOKEN_CLAUDE",))
+        self.assertEqual(seen[0][3]["token"], env["INFISICAL_AI_FLEET_COORDINATOR_TOKEN"])
 
     def test_only_a_definitive_answer_is_cached(self):
         # A timeout or an unexpected exit must not hide a good token for ten minutes;  a token or a clean "no
@@ -360,15 +352,15 @@ class CredentialTests(FleetLinkHarness):
         from simple_tools import zulip as Z
 
         outcomes = [
-            subprocess.TimeoutExpired("fleet-secrets", 60),
-            mock.Mock(returncode=4, stdout=b""),
-            mock.Mock(returncode=0, stdout=TOKEN_CLAUDE.encode()),
-            mock.Mock(returncode=0, stdout=b"never reached, the answer is cached"),
+            TimeoutError(),
+            FL.FI.SecretsError("fetch-failed"),
+            {"FLEETLINK_TOKEN_CLAUDE": TOKEN_CLAUDE},
+            {"FLEETLINK_TOKEN_CLAUDE": "never reached, the answer is cached"},
         ]
         calls = []
 
-        def fake_run(argv, **kw):
-            calls.append(argv)
+        def fetch(project, path, env, **kw):
+            calls.append((project, path))
             out = outcomes.pop(0)
             if isinstance(out, Exception):
                 raise out
@@ -377,10 +369,11 @@ class CredentialTests(FleetLinkHarness):
         FL._token_cache.clear()
         with (
             mock.patch.object(Z, "infisical_enabled", lambda env: True),
-            mock.patch.object(Z, "fleet_secrets_bin", lambda env, home: "/x/fleet-secrets"),
-            mock.patch.object(FL.subprocess, "run", fake_run),
+            mock.patch.object(FL.FI, "fetch_project", side_effect=fetch),
         ):
-            got = [FL._fleet_secrets_token("FLEETLINK_TOKEN_CLAUDE", {}, Path("/x")) for _ in range(4)]
+            env = {"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": "11111111-2222-3333-4444-555555555555",
+                   "INFISICAL_AI_FLEET_COORDINATOR_TOKEN": "st." + "synthetic-" * 4}
+            got = [FL._fleet_secrets_token("FLEETLINK_TOKEN_CLAUDE", env, Path("/x")) for _ in range(4)]
         FL._token_cache.clear()
         self.assertEqual(got, [None, None, TOKEN_CLAUDE, TOKEN_CLAUDE])
         self.assertEqual(len(calls), 3)
