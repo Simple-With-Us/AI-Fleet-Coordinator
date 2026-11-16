@@ -104,7 +104,6 @@ class IsolatedCommandTests(unittest.TestCase):
                     "HOME": directory,
                     "PATH": os.defpath,
                     "PYTHONPATH": directory,
-                    "INFISICAL_TOKEN": "synthetic-fixture",
                 },
                 capture_output=True,
                 text=True,
