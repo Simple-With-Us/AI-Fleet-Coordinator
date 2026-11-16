@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("push_builder", pathlib.Path(__file__).with_name("build-push-client-release.py"))
+SPEC = importlib.util.spec_from_file_location(
+    "push_builder", pathlib.Path(__file__).with_name("build-push-client-release.py")
+)
 B = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(B)
 
@@ -56,7 +58,10 @@ class Safety(unittest.TestCase):
         self.assertEqual(B.checked(self.base, "x", B.digest(b"data\n")), b"data\n")
 
     def test_late_result_mismatch_writes_nothing(self):
-        with mock.patch.object(B, "checked", return_value=b"{}"), mock.patch.object(B, "transform", return_value="pass\n"):
+        with (
+            mock.patch.object(B, "checked", return_value=b"{}"),
+            mock.patch.object(B, "transform", return_value="pass\n"),
+        ):
             with self.assertRaises((ValueError, KeyError)):
                 B.build(self.base, self.inputs, self.dest)
         self.assertFalse(self.dest.exists())

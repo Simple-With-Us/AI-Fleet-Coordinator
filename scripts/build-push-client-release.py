@@ -18,10 +18,13 @@ INPUTS = {
     "git": "47e12d5c2f9cbd8f3284801849cfa09f85abbb447ba3f69e4b504ba6853da6b4",
     "catalog.json": "3325eb0a1971fa3fb0b1843d9cf1f89d48e7867279576eb89535983d236f31cc",
 }
-RESULTS = dict(BASE, **{
-    "scripts/git-tools/git": "a9b33dd4edd3a71e19eed164416f275da86b9127d50b75e42fa07e45b445f297",
-    "scripts/git-tools/catalog.json": "0f9e7722bffb44cfed4da9bb612829eea2ea06f30f42fc2e4ce8e1a5fe4e9d61",
-})
+RESULTS = dict(
+    BASE,
+    **{
+        "scripts/git-tools/git": "a9b33dd4edd3a71e19eed164416f275da86b9127d50b75e42fa07e45b445f297",
+        "scripts/git-tools/catalog.json": "0f9e7722bffb44cfed4da9bb612829eea2ea06f30f42fc2e4ce8e1a5fe4e9d61",
+    },
+)
 
 
 def digest(data):
@@ -49,37 +52,59 @@ def once(text, old, new):
 
 
 def transform(text, source):
-    nodes = {n.name: n for n in ast.parse(source).body
-             if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    nodes = {
+        n.name: n for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+    }
 
     def segment(name):
         return ast.get_source_segment(source, nodes[name]) + "\n\n"
 
-    section = source[source.index("PUSH_MAX_COMMITS ="):
-                     source.index("# A report, never a merge authorization.")]
-    text = once(text, "# A report, never a merge authorization.",
-                section + "# A report, never a merge authorization.")
+    section = source[
+        source.index("PUSH_MAX_COMMITS =") : source.index(
+            "# A report, never a merge authorization."
+        )
+    ]
+    text = once(
+        text,
+        "# A report, never a merge authorization.",
+        section + "# A report, never a merge authorization.",
+    )
     text = once(text, "def env(name: str)", segment("HostedToolExit") + "def env(name: str)")
     anchor = "# ----------------------------------------------------------------- answer parsing (mirrors board)"
     text = once(text, anchor, segment("_refusal_reason_of") + anchor)
     old = '        die(f"{tool} failed on the hosted server: {shown}{detail}{after}{note}", EXIT_ERROR)'
-    new = '''        reason = _refusal_reason_of(result) if code == "relay_refused" else None
+    new = """        reason = _refusal_reason_of(result) if code == "relay_refused" else None
         sys.stderr.write(
             f"{prog()}: {tool} failed on the hosted server: {shown}{detail}{after}{note}\\n"
         )
         status = re.search(r", github_status=([0-9]{3})\\)\\Z", detail)
-        raise HostedToolExit(EXIT_ERROR, shown, reason, int(status.group(1)) if status else None)'''
+        raise HostedToolExit(EXIT_ERROR, shown, reason, int(status.group(1)) if status else None)"""
     text = once(text, old, new)
-    parser = next(n for n in ast.parse(text).body
-                  if isinstance(n, ast.FunctionDef) and n.name == "build_parser")
-    text = once(text, ast.get_source_segment(text, parser),
-                ast.get_source_segment(source, nodes["build_parser"]))
-    text = once(text, '    a = build_parser().parse_args(argv)\n',
-                '    a = build_parser().parse_args(argv)\n    if a.cmd == "push":\n        _push_refuse_early(a)\n')
-    text = once(text, "overall_deadline = time.monotonic() + OVERALL_DEADLINE_S",
-                'overall_deadline = time.monotonic() + (PUSH_DEADLINE_S if a.cmd == "push" else OVERALL_DEADLINE_S)')
-    text = once(text, '    if a.cmd == "list":\n',
-                '    if a.cmd == "push":\n        return cmd_push(tools, a, bearer, server_seat, overall_deadline)\n    if a.cmd == "list":\n')
+    parser = next(
+        n
+        for n in ast.parse(text).body
+        if isinstance(n, ast.FunctionDef) and n.name == "build_parser"
+    )
+    text = once(
+        text,
+        ast.get_source_segment(text, parser),
+        ast.get_source_segment(source, nodes["build_parser"]),
+    )
+    text = once(
+        text,
+        "    a = build_parser().parse_args(argv)\n",
+        '    a = build_parser().parse_args(argv)\n    if a.cmd == "push":\n        _push_refuse_early(a)\n',
+    )
+    text = once(
+        text,
+        "overall_deadline = time.monotonic() + OVERALL_DEADLINE_S",
+        'overall_deadline = time.monotonic() + (PUSH_DEADLINE_S if a.cmd == "push" else OVERALL_DEADLINE_S)',
+    )
+    text = once(
+        text,
+        '    if a.cmd == "list":\n',
+        '    if a.cmd == "push":\n        return cmd_push(tools, a, bearer, server_seat, overall_deadline)\n    if a.cmd == "list":\n',
+    )
     compile(text, "push-candidate", "exec")
     return text
 
@@ -116,10 +141,13 @@ def build(baseline, inputs, destination):
             handle.flush()
             os.fsync(handle.fileno())
         path.chmod(0o755 if name in ("scripts/simple-git", impl) else 0o644)
-    manifest = {"baseline": "0fac2e8417218ff8791da9d699b66de0770bddca",
-                "source_merge": "c92db57b12c231d6cd0b473233adc6430f6baed6",
-                "activation_performed": False, "files": RESULTS,
-                "state": "UNREVIEWED_NOT_INSTALLED"}
+    manifest = {
+        "baseline": "0fac2e8417218ff8791da9d699b66de0770bddca",
+        "source_merge": "c92db57b12c231d6cd0b473233adc6430f6baed6",
+        "activation_performed": False,
+        "files": RESULTS,
+        "state": "UNREVIEWED_NOT_INSTALLED",
+    }
     (destination / "push-release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest
 
