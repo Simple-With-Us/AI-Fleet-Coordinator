@@ -1,0 +1,17 @@
+{
+  "total_count": 2,
+  "workflows": [
+    {
+      "id": 9001,
+      "name": "CI",
+      "path": ".github/workflows/ci.yml",
+      "state": "active"
+    },
+    {
+      "id": 9002,
+      "name": "Disabled thing",
+      "path": ".github/workflows/old.yml",
+      "state": "disabled_inactivity"
+    }
+  ]
+}

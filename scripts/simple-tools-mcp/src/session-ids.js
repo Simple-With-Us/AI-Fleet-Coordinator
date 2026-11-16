@@ -50,12 +50,29 @@ export class SessionRequired extends Error {
 
 const seatOf = (seat) => canonicalSeatName(seat ?? "");
 
+const matchesPattern = (name, pattern) =>
+  new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`).test(name);
+
 /** True when this seat has a single thread with the owner and needs no session id (after the canonical name rule). */
 export function isExempt(seat) {
   const name = seatOf(seat);
   if (!name) return false;
   if (EXEMPT_SEATS.includes(name)) return true;
-  return EXEMPT_PATTERNS.some((pattern) => new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`).test(name));
+  return EXEMPT_PATTERNS.some((pattern) => matchesPattern(name, pattern));
+}
+
+// Linear intros (Jay, Thu Nov 12 2026):  a single-thread seat's Linear app already names it, so its own typed
+// `[SEAT 📁...]` intro is dropped from Linear bodies.  The single-thread seats are the session-exempt ones above
+// plus the BotFleet bots (BF-*), which keep the session-id rule unchanged.  Every other seat (CLAUDE, CODEX,
+// CURSOR, MM, ZC, ...) is multi-threaded and keeps its intro, which names the thread that posted.
+// scripts/linear-board/board SINGLE_THREAD_EXTRA_PATTERNS is the Python copy.
+export const SINGLE_THREAD_EXTRA_PATTERNS = Object.freeze(["BF-*"]);
+
+/** True for a seat with one thread with the owner:  its Linear posts need no bracketed intro. */
+export function isSingleThread(seat) {
+  if (isExempt(seat)) return true;
+  const name = seatOf(seat);
+  return Boolean(name) && SINGLE_THREAD_EXTRA_PATTERNS.some((pattern) => matchesPattern(name, pattern));
 }
 
 /** The value as a session id (trimmed), or a RangeError. */
