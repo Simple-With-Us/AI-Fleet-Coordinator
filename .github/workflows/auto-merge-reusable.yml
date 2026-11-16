@@ -215,11 +215,8 @@ jobs:
   classify:
     runs-on: ubuntu-latest
     if: >
-      inputs.rearm_pr_number != '' ||
-      (
-        github.event.pull_request.draft == false &&
-        github.event.pull_request.head.repo.full_name == github.repository
-      )
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
     outputs:
       skip: ${{ steps.check.outputs.skip }}
       reason: ${{ steps.check.outputs.reason }}
@@ -237,14 +234,13 @@ jobs:
           # mode the dispatch ref is caller-chosen and must never supply the
           # gate, so the checkout pins the repository's declared default
           # branch (the base for this fleet's PRs) from the event payload.
-          ref: ${{ inputs.rearm_pr_number != '' && format('refs/heads/{0}', github.event.repository.default_branch) || github.event.pull_request.base.ref }}
+          ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 1
       - name: Classify PR for auto-merge eligibility
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number }}
-          PR_URL: ${{ format('https://github.com/{0}/pull/{1}', github.repository, inputs.rearm_pr_number != '' && inputs.rearm_pr_number || github.event.pull_request.number) }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
