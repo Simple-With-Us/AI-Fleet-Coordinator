@@ -199,15 +199,15 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         (session / ".session.lock").write_text("", encoding="utf-8")
         path = Path(MW.PLM.spool_path(self.env, SID2))
         WR.private_dir(path.parent)
-        path.write_text(
-            json.dumps(
+        self.assertTrue(
+            MW.MR.write_record(
+                str(path),
                 {
                     "session_id": SID2,
                     "home": str(self.home / "chat-home"),
                     "xdg_data_home": str(custom),
-                }
-            ),
-            encoding="utf-8",
+                },
+            )
         )
         original_runner = self._runner()
 
@@ -240,11 +240,11 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         (session / ".session.lock").write_text("", encoding="utf-8")
         path = Path(MW.PLM.spool_path(self.env, SID2))
         WR.private_dir(path.parent)
-        path.write_text(
-            json.dumps(
-                {"session_id": SID2, "home": str(chat_home), "xdg_data_home": ""}
-            ),
-            encoding="utf-8",
+        self.assertTrue(
+            MW.MR.write_record(
+                str(path),
+                {"session_id": SID2, "home": str(chat_home), "xdg_data_home": ""},
+            )
         )
         original_runner = self._runner()
 
@@ -435,11 +435,11 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         WR.private_dir(custom / "muse" / "sessions" / "2026" / "11" / "11" / SID / "subagent" / sid3)
         spool = Path(MW.PLM.spool_path(self.env, sid3))
         WR.private_dir(spool.parent)
-        spool.write_text(
-            json.dumps(
-                {"session_id": sid3, "home": str(self.home), "xdg_data_home": str(custom)}
-            ),
-            encoding="utf-8",
+        self.assertTrue(
+            MW.MR.write_record(
+                str(spool),
+                {"session_id": sid3, "home": str(self.home), "xdg_data_home": str(custom)},
+            )
         )
         sub = WR.Target(session_id=SID2, letter="CC", host="mac", generation=1)
         custom_sub = WR.Target(session_id=sid3, letter="CC", host="mac", generation=1)

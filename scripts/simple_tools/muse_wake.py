@@ -127,7 +127,9 @@ def _chat_env(env: Mapping[str, str], session_id: str) -> dict[str, str]:
     binary is the one resolved), with XDG_DATA_HOME set to the parent of the store this
     delivery read.  A record with an empty `xdg_data_home` means the chat ran under its
     recorded home's default (`<home>/.local/share`), so that default is named explicitly:
-    without it the child would resolve this host's default store instead."""
+    without it the child would resolve this host's default store instead.  Non-store Muse
+    state under HOME (config, credentials) therefore remains the delivery host's, by
+    design:  the forced-command identity on this host is what can run its binary."""
     out = dict(env)
     rec = _chat_record(env, session_id)
     if rec.get("xdg_data_home"):
