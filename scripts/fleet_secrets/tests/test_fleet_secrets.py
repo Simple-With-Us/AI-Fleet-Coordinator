@@ -69,6 +69,24 @@ class World:
                 raise core.SecretsError("fetch-failed: bad-output") from None
         return {key: value for key, value in self.secrets.items() if core.NAME_RE.fullmatch(key)}
 
+    def list_project_names(self, project, path, env, *, token=None, timeout=None):
+        refusal = core.environment_refusal(env)
+        if refusal:
+            raise core.SecretsError(refusal, 2)
+        if self.export_rc:
+            message = "timeout" if self.export_rc == 124 else "fetch-failed"
+            raise core.SecretsError(message)
+        project_name = core.project_name_for_id(project, env)
+        token = token or core.resolve_token(env, project_name=project_name)
+        self.fetches.append((project, path, dict(env), token, False, None, timeout))
+        if self.export_stdout is not None:
+            try:
+                pairs = core._pairs(json.loads(self.export_stdout.decode("utf-8")))
+            except (ValueError, UnicodeDecodeError):
+                raise core.SecretsError("fetch-failed: bad-output") from None
+            return tuple(sorted(pairs))
+        return tuple(sorted(key for key in self.secrets if core.NAME_RE.fullmatch(key)))
+
     def run(self, argv, **kw):
         argv = list(argv)
         env = dict(kw.get("env") or {})
@@ -155,6 +173,9 @@ class Base(unittest.TestCase):
         fetch = mock.patch.object(core, "fetch_project", world.fetch_project)
         fetch.start()
         self.addCleanup(fetch.stop)
+        names = mock.patch.object(core, "list_project_names", world.list_project_names)
+        names.start()
+        self.addCleanup(names.stop)
         return world
 
     def call(self, *argv, env=None):
