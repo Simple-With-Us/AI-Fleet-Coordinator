@@ -1,5 +1,5 @@
 // Per-bot MCP bearers (src/gb-bearer.js):  token shape, hash-only storage, rotate, expiry, revoke, the
-// admin reveal page, and the guarantee that a bearer connection can act only as its own persona.
+// admin reveal page, and the guarantee that a bearer connection can act only as its own bot.
 
 import { withoutExpiry } from "./helpers.mjs";
 import test from "node:test";
@@ -16,7 +16,7 @@ import { okResult } from "../src/contract.js";
 const NOW = 1_800_000_000_000;
 const ID = GB_IDENTITIES[0];
 
-test("a new bearer names its persona, is 256 bits, and parses back", async () => {
+test("a new bearer names its bot, is 256 bits, and parses back", async () => {
   const { token, hash } = await newGbBearer(ID);
   assert.match(token, new RegExp(`^gbb_${roleOf(ID)}_[A-Za-z0-9_-]{43}$`));
   assert.equal(hash, await sha256Hex(token));
@@ -27,7 +27,7 @@ test("a new bearer names its persona, is 256 bits, and parses back", async () =>
   assert.notEqual(again.token, token);
 });
 
-test("every GB persona can mint, and nothing else can", async () => {
+test("every GB bot can mint, and nothing else can", async () => {
   for (const identity of GB_IDENTITIES) assert.equal(parseGbBearer((await newGbBearer(identity)).token).identity, identity);
   await assert.rejects(() => newGbBearer("ECHO"));
   assert.equal(parseGbBearer("gbb_echo_" + "a".repeat(43)), null);
@@ -119,7 +119,7 @@ class Stub {
   scrub(text) { return text; }
 }
 
-test("a bearer connection can act only as its own persona", async () => {
+test("a bearer connection can act only as its own bot", async () => {
   assert.deepEqual([...allowedIdentities(ID)], [ID]);
   const caller = new Stub(ID);
   const router = new IdentityRouter({ callerTools: caller, credentials: null, createIdentity: null });
@@ -137,7 +137,7 @@ test("a bearer connection can act only as its own persona", async () => {
 });
 
 test("the reveal page shows the token once, escaped, single-use form, and is not cacheable", async () => {
-  const res = gbBearerRevealPage({ identity: ID, token: "gbb_fixer_<script>x", expiresAt: NOW, kind: "persona", mcpAccept: true });
+  const res = gbBearerRevealPage({ identity: ID, token: "gbb_fixer_<script>x", expiresAt: NOW, kind: "bot", mcpAccept: true });
   const html = await res.text();
   assert.match(html, /only time it is shown/);
   assert.match(html, /resubmit only shows this bearer/);
@@ -167,10 +167,10 @@ test("the reveal send line matches what the minted bearer can actually do", asyn
   // that.  It names simple-board as the first tool and claims landing
   // support, never a shipped one.
   const fleetNote = "A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity&#39;s credential.";
-  // Persona:  Fleet MCP /mcp and Git Relay.
-  const persona = await gbBearerRevealPage({ identity: ID, token: "t", expiresAt: NOW, kind: "persona", mcpAccept: true }).text();
-  assert.ok(persona.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
-  assert.ok(persona.includes(fleetNote));
+  // Bot:  Fleet MCP /mcp and Git Relay.
+  const bot = await gbBearerRevealPage({ identity: ID, token: "t", expiresAt: NOW, kind: "bot", mcpAccept: true }).text();
+  assert.ok(bot.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
+  assert.ok(bot.includes(fleetNote));
   // Ticked seat:  same reach.
   const ticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: true }).text();
   assert.ok(ticked.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
@@ -337,7 +337,7 @@ test("a mid-mint failure rolls back: no bearer, no consumed form, retry succeeds
   assert.equal(transactions, 1, "check-consume-mint is a single transaction");
 });
 
-test("the admin form accepts the bearer actions for a persona or a known seat only", () => {
+test("the admin form accepts the bearer actions for a bot or a known seat only", () => {
   const csrf = "a".repeat(64);
   assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: ID }).success, true);
   assert.equal(AdminForm.safeParse({ csrf, action: "revoke_gb_bearer", identity: ID }).success, true);
@@ -348,7 +348,7 @@ test("the admin form accepts the bearer actions for a persona or a known seat on
   assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: ID, mint_id: "a".repeat(32) }).success, true);
   assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: ID, mint_id: "not-hex" }).success, false);
   // An uppercase unknown name passes the form's shape check;  the admin
-  // handler is what refuses an identity that is no persona and no seat.
+  // handler is what refuses an identity that is no bot and no seat.
 });
 
 test("the admin section lists status and buttons and never a token or hash", async () => {
@@ -685,7 +685,7 @@ test("alarm composition: a throwing sweep still reschedules for the buffered tai
 });
 
 test("bearer reveal copy preserves every internal rendered sentence gap in all mint modes", async () => {
-  for (const [kind, mcpAccept] of [["persona", true], ["seat", true], ["seat", false]]) {
+  for (const [kind, mcpAccept] of [["bot", true], ["seat", true], ["seat", false]]) {
     const html = await gbBearerRevealPage({ identity: "ECHO", token: "offline-preview", expiresAt: NOW, kind, mcpAccept }).text();
     const copy = html.match(/<p>Expires [\s\S]*?<\/p>/)?.[0];
     assert.ok(copy, "the reveal has expiry and send copy");
@@ -727,7 +727,7 @@ test("bearer activity cannot hide missing or unknown service readiness", async (
   const html = await adminPage({ email: "offline@example.invalid", seats: [], clients: [], refusals: [], audits: [], calls: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [
     {identity: "ECHO", kind: "seat", credentials: false, status: {active: true, mcp_accept: true}},
     {identity: "CODEX", kind: "seat", credentials: false, credentialsUnavailable: true, status: {active: true}},
-    {identity: ID, kind: "persona", credentials: false, status: {active: true}},
+    {identity: ID, kind: "bot", credentials: false, status: {active: true}},
     {identity: "WISE", kind: "seat", credentials: true, status: {active: true}},
   ]}, new Headers()).text();
   assert.match(html, /Service Readiness/);
@@ -739,14 +739,14 @@ test("bearer activity cannot hide missing or unknown service readiness", async (
 });
 
 
-test("persona admin lookup failure is unknown without aborting the page", async () => {
+test("bot admin lookup failure is unknown without aborting the page", async () => {
   const {adminDelegatedReadiness} = await import("../src/delegated-identities.js");
   const failed = await adminDelegatedReadiness({}, async () => {throw new Error("synthetic lookup failure");});
   assert.equal(failed.credentialsUnavailable, true);
   assert.equal(failed.roles.size, 0);
   const absent = await adminDelegatedReadiness({}, async () => ({roles: new Map()}));
   assert.equal(absent.credentialsUnavailable, false);
-  const html = await adminPage({ email: "preview@example.invalid", seats: [], clients: [], refusals: [], audits: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [{identity: ID, kind: "persona", credentials: false, credentialsUnavailable: failed.credentialsUnavailable, status: {active:true}}]}, new Headers()).text();
+  const html = await adminPage({ email: "preview@example.invalid", seats: [], clients: [], refusals: [], audits: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [{identity: ID, kind: "bot", credentials: false, credentialsUnavailable: failed.credentialsUnavailable, status: {active:true}}]}, new Headers()).text();
   assert.match(html, /Service readiness unknown/);
   assert.doesNotMatch(html, /Missing service credentials|No credentials loaded|name="action" value="mint_gb_bearer"/);
 });

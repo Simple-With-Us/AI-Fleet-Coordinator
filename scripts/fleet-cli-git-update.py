@@ -241,6 +241,21 @@ def write_new_wrappers(home: Path, repo: Path) -> list[str]:
     return written
 
 
+def refresh_wrappers(home: Path, repo: Path) -> list[str]:
+    """Rewrite the managed wrappers a release changes under a host that has the older form (the release module's
+    REFRESHED_WRAPPERS:  platform-letter, whose wrapper now carries the registry settings of a session-letter hook).  A
+    link, a file without the marker and every other wrapper are never touched."""
+    release = release_module(repo)
+    plan = getattr(release, "refreshed_wrapper_plan", None)
+    if plan is None:  # a checkout from before the release module knew how:  nothing to refresh
+        return []
+    done = []
+    for path, (data, mode) in plan(home).items():
+        release.atomic_write(path, data, mode)
+        done.append(path.name)
+    return done
+
+
 def point_current(base: Path) -> None:
     temporary = base / (".pointer-" + uuid.uuid4().hex)
     temporary.symlink_to("repo")
@@ -295,6 +310,10 @@ def wrappers(home: Path, repo: Path, result: dict) -> dict:
     if written:
         result["wrappers_written"] = written
         log("WRAPPERS  " + ", ".join(written))
+    refreshed = refresh_wrappers(home, repo)
+    if refreshed:
+        result["wrappers_refreshed"] = refreshed
+        log("WRAPPERS REFRESHED  " + ", ".join(refreshed))
     return result
 
 
@@ -410,6 +429,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["setup", "update", "rollback", "status"])
     parser.add_argument("--home", type=Path, default=Path.home())
     args = parser.parse_args(argv)
+    if args.command == "update":
+        # Unlettered-repair tick:  replay the start of this host's chats still showing "??: " - an app-driven
+        # chat's hook never runs, so only the scheduled update reaches it.  platform-letter's own stamp
+        # throttles the pass;  a failure here never fails the update, but names itself on stderr for the
+        # unit's journal (the command's own exit code stays the update's).
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(args.home / ".local" / "bin" / "platform-letter"),
+                    "repair",
+                    "--location",
+                    "server",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _, ticked_err = proc.communicate(timeout=90)
+            if (
+                ticked_err
+            ):  # the verb's own failures reach the unit's journal, stdout stays the command's
+                sys.stderr.write(ticked_err.decode(errors="replace")[:2000])
+        except subprocess.TimeoutExpired:
+            if proc is not None:
+                proc.kill()
+                proc.wait()
+            print(json.dumps({"repair_tick": "timeout"}), file=sys.stderr)
+        except FileNotFoundError:
+            print(json.dumps({"repair_tick": "platform-letter missing"}), file=sys.stderr)
+        except Exception:  # noqa: BLE001 - the tick is best-effort
+            pass
+        except BaseException:
+            # An interrupted updater must not leave the repair child running (concurrent
+            # repairs, stale state): terminate and reap it before re-raising.
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            raise
     try:
         result = {"setup": setup, "update": update, "rollback": rollback, "status": status}[
             args.command

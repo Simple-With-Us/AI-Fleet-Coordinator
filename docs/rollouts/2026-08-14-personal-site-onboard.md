@@ -8,7 +8,7 @@ and FLEET-PROTOCOL.
 ## Changes Made
 
 - `fleet-apps.json` row: repo `Personal-Site`, acronym `PS`, board
-  `PERSONAL-SITE-EFFORT-LOG.md`, prefix `personal`, Slack `Personal-Site`.
+  `BOTL-SITE-EFFORT-LOG.md`, prefix `personal`, Slack `Personal-Site`.
 - Digest + calendar `DEFAULT_REPOS`, badge `PS`, color `#be123c`, legend chip.
 - `FLEET-PROTOCOL.md` acronym + Slack `repo:` list (live `~/apps` kept in lockstep).
 - `EFFORT-LOG-PROTOCOL.md` board registry + `AGENT-COORDINATION-QUICKSTART.md`.

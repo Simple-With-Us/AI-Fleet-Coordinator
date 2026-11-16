@@ -49,7 +49,7 @@ const DAYS = {
   description: 'Lifetime in days (files at most 7, links at most 180).  Omit for the default:  3 days for files, 30 for links.',
 };
 const TEAM_ID = { type: "string", maxLength: 64, description: "A team id from fleetlink_list_teams.  Every seat is an admin of team_fleet (Fleet), with Jay." };
-const PERSONAL = { type: "boolean", description: "Keep it personal.  Without it, a seat's new share lands in the Fleet team with edit access, where Jay and every other seat can change it." };
+const BOTL = { type: "boolean", description: "Keep it personal.  Without it, a seat's new share lands in the Fleet team with edit access, where Jay and every other seat can change it." };
 const TEAM_ACCESS = {
   type: "string",
   enum: ["view", "edit"],
@@ -74,14 +74,14 @@ export const FLEETLINK_TOOLS = Object.freeze([
     description:
       "Publish a file or note at a FleetLink link owned by this seat:  base64 content with filename and content_type, or text, or markdown.  " +
       "It lands in the Fleet team (edit access) unless personal is true or team_id names another team.  Post the link in Zulip or Linear instead of pasting long output.",
-    inputSchema: object({ ...BODY, empty: { type: "boolean" }, reuse: { type: "boolean" }, filename: { type: "string", minLength: 1, maxLength: 200 }, slug: SLUG, days: DAYS, password: { type: "string", maxLength: 256 }, title: TITLE, team_id: TEAM_ID, team_access: TEAM_ACCESS, personal: PERSONAL }),
+    inputSchema: object({ ...BODY, empty: { type: "boolean" }, reuse: { type: "boolean" }, filename: { type: "string", minLength: 1, maxLength: 200 }, slug: SLUG, days: DAYS, password: { type: "string", maxLength: 256 }, title: TITLE, team_id: TEAM_ID, team_access: TEAM_ACCESS, personal: BOTL }),
     annotations: WRITE,
   },
   {
     name: "fleetlink_create_link",
     title: "FleetLink Create Short Link",
     description: "A short FleetLink link that redirects to an http or https url.  Same options as fleetlink_create_share.",
-    inputSchema: object({ url: { type: "string", minLength: 1, maxLength: 2048 }, slug: SLUG, days: DAYS, password: { type: "string", maxLength: 256 }, title: TITLE, team_id: TEAM_ID, team_access: TEAM_ACCESS, personal: PERSONAL }, ["url"]),
+    inputSchema: object({ url: { type: "string", minLength: 1, maxLength: 2048 }, slug: SLUG, days: DAYS, password: { type: "string", maxLength: 256 }, title: TITLE, team_id: TEAM_ID, team_access: TEAM_ACCESS, personal: BOTL }, ["url"]),
     annotations: WRITE,
   },
   {
@@ -174,7 +174,7 @@ export const FLEETLINK_TOOLS = Object.freeze([
       title: TITLE,
       team_id: TEAM_ID,
       team_access: TEAM_ACCESS,
-      personal: PERSONAL,
+      personal: BOTL,
     }, ["path"]),
     annotations: WRITE,
   },
@@ -445,9 +445,10 @@ export class FleetLinkError extends Error {
   }
 }
 
-/** FleetLink's own message, one line and cut. */
+/** FleetLink's own message, one line and cut.  ASCII whitespace collapses; a no-break space stays (AFC-729). */
 export function fleetlinkMessage(message) {
-  return clean(String(message ?? "").replace(/\s+/g, " ").trim(), FLEETLINK_MESSAGE_LIMIT)[0];
+  const flat = String(message ?? "").replace(/[ \t\n\r\f\v\u2028\u2029]+/g, " ").replace(/^[ \t]+|[ \t]+$/g, "");
+  return clean(flat, FLEETLINK_MESSAGE_LIMIT)[0];
 }
 
 /** A FleetLinkError as the ToolError the caller sees. */

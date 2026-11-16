@@ -6,7 +6,7 @@ Threads in production (`Daemon.run`):  one poller per seat bot, the router on th
 drive the same code step by step:  `connect_seat`, `pump`, `tick` and `run_jobs`, with a fake clock.
 
 Two instances run this code (owner decision, Thu, Oct 8):  `mac` holds the CLAUDE seat (live
-delivery and the tool-less claude wake), `server` holds the Grok Bot personas (environment
+delivery and the tool-less claude wake), `server` holds the Grok bots (environment
 credentials and the remote routine wake).  A daemon whose config holds a seat that the seat
 partition does not give to its instance (another instance's seat, a `none` seat, or one the
 partition does not list) refuses to start (config.partition_errors).
@@ -57,19 +57,15 @@ from . import inbox_delivery as IDEL
 from . import listener_api as LAPI
 from . import listener_registry as LREG
 from . import live as L
-from . import muse_bridge as MB
-from . import muse_bridge_mac as MBM
 from . import notes_queue as NQ
 from . import notes_wire as NW
-from . import operator_candidates as OC
 from . import operator_post as OPV
-from . import operator_registration as OREG
-from . import operator_registration_ask as ORASK
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
 from . import session_ids as SI
 from . import subscribe_all as SUB
+from . import thread_registry as TR
 from . import typing_signal as TYPING
 from . import wakes as W
 from . import zulip as Z
@@ -77,8 +73,6 @@ from .cli import format_time, seat_tag_for
 
 # "stream" and "subscription" keep the bot on every public channel and `streams` current (owner 2026-10-10).
 EVENT_TYPES = ["message", "update_message", "user_topic", "realm_user", "stream", "subscription"]
-# How often an unknown-delivery registration question re-runs its topic read-back.
-REGISTRATION_RECONCILE_INTERVAL = 900.0
 FLEET_ROLES = (
     300,
     400,
@@ -91,6 +85,8 @@ DEAD_QUEUE_SECONDS = 180.0
 DOWN_NOTIFY_SECONDS = 30 * 60.0
 CLOCK_JUMP_SECONDS = 120.0
 TOPIC_BACKFILL_CAP = 200
+#: How many of a seat's own latest posts seed the topic ledger at its first connect (one request).
+LEDGER_SEED_POSTS = 200
 PAGE = 100
 #: Session letters that are also ordinary English words.  They count as a tagged address only when
 #: they stand alone at the end of the message;  inside a sentence ("@**MiniMax** I think we ship")
@@ -107,10 +103,6 @@ LIVE_DIR_KEEP = 86400.0
 AGENTS_CACHE_SECONDS = 30.0
 LEASE_HEARTBEAT_LIMIT = 15 * 60.0
 POST_SPACING = 3.0
-# How long a sender is left alone after being told this seat's quota is spent.  Without it a hot
-# topic would produce one DM per message for every sender in it, which is the exact spam the caps
-# exist to prevent -- and a seat that cannot answer is the worst possible time to add traffic.
-QUOTA_HOLD_TELL_WINDOW = 3600.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
 # AFC-652 F8 (re-drive liveness):  a pass completes probes for at most this many parked ids
 # and spends at most this many synchronous REST attempts overall, each capped at
@@ -317,6 +309,8 @@ class SeatRunner:
         self.users: dict[int, dict[str, Any]] = {}
         self.users_version = 0  # bumped on every change to `users`, so the fleet-bot set is cached
         self.fleet_cache: tuple[Any, set[int]] | None = None
+        self.bot_names_cache: tuple[Any, dict[str, str]] | None = None
+        self.ledger_seeded = False  # the topic ledger was seeded from this seat's own recent posts
         self.streams: dict[int, str] = {}
         self.muted: set[str] = set()
         self.followed: set[str] = set()
@@ -603,27 +597,6 @@ def _is_fallbackable(reason: str | None) -> bool:
 PRIMARY_RUNTIMES = ("claude", "muse", "openrouter")
 
 
-# Chat-catalog statuses that must NOT be asked for a location (mirror of
-# chat_catalog._row's readability rule;  "available" and future readable
-# statuses are asked).
-_REGISTRATION_SKIP_STATUSES = frozenset({"unavailable", "stale", "metadata-only"})
-
-
-class RegistrationConfirmationPending(RuntimeError):
-    """A registration's confirmation send returned without landing, and may be retried.
-
-    Raised only once the registration is recorded in the route's done set, so the route's
-    retry loop (_route_message) re-enters through the confirm-retry branch and resends the
-    recorded reply:  never a second registry mutation (kody 4366258037).
-    """
-
-
-# The route done-set step that says a registration's confirmation cannot land in this
-# routing call (a terminal refusal or a rate limit):  the remaining attempts skip the
-# send, and the route's loop ends in quarantine.
-CONFIRMATION_HELD = "confirmation-held"
-
-
 @dataclass
 class InboxPending:
     """One message the native Zulip inbox delivery still owes the fleet.
@@ -663,7 +636,22 @@ def merge_routine_env(seats, env, home, *, fetch=None):
         return []
     if fetch is None:
         fetch = lambda ns: Z._fetch_from_fleet_secrets(ns, env, home)
-    for name, value in dict(fetch(tuple(names))).items():
+    try:
+        got = dict(fetch(tuple(names)))
+    except Z.CredentialError as exc:
+        # One batched `--only` read fails whole when any name is absent, and a routine's
+        # URL legitimately lives in the daemon environment (the plist) rather than the
+        # store while its key does not (OPS-1048):  fall back to one read per name, so
+        # the names the store holds still land.  An outage fails the same way it did.
+        if "key-absent" not in str(exc):
+            raise
+        got = {}
+        for name in names:
+            try:
+                got.update(dict(fetch((name,))))
+            except Z.CredentialError:
+                continue
+    for name, value in got.items():
         if value:
             env[name] = value
     return names
@@ -723,6 +711,7 @@ class Daemon:
         self.secrets_dir = Z.override_secrets_dir(self.env)
         self.hidden: list[str] = []
         self.hidden_lock = threading.Lock()
+        self._thread_store_lock = threading.Lock()
         self.stdout = stdout or sys.stdout
         tee = (
             self.stdout
@@ -782,12 +771,12 @@ class Daemon:
         # either, the voice is refused by name rather than guessed.
         self._pinned_from_config: set[str] = set()
         self._pin_operator_identity()
-        # The Operator's voice (owner ruling, Oct 30 2026): every post the daemon itself composes,
-        # and every edit and typing indicator that goes with it, goes out as the pinned Operator bot
-        # and never as a seat's bot.  Built on first use and checked against the pinned identity;
-        # with no Operator the post is refused and logged, there is no fallback to a seat
-        # (operator_post.py).  The factory is injectable, so a test hands it a client for the fake
-        # server.
+        # The Operator's voice (owner ruling, Oct 30 2026): every post the daemon itself composes (its
+        # alerts, its notes, its session-letter questions;  never an answer to a wake, owner ruling Nov 10
+        # 2026, see `post`) and every edit of one goes out as the pinned Operator bot and never as a
+        # seat's bot.  Built on first use and checked against the pinned identity;  with no Operator the
+        # post is refused and logged, there is no fallback to a seat (operator_post.py).  The factory is
+        # injectable, so a test hands it a client for the fake server.
         self.operator_voice = OPV.OperatorVoice(
             env=self.env,
             owner_user_id=lambda: int(self.config.owner_user_id or 0),
@@ -858,6 +847,10 @@ class Daemon:
             enabled=self.config.wake_loop_prevention,
         )
         self.global_ring = Ring()
+        # Who posted recently in each topic, as which chat and tagging whom (router.TopicLedger).  It is
+        # what turns an untagged reply into a wake for the chat it answers (router `reply_to_chat`).
+        # In memory only:  a restart empties it, and it fills again as posts arrive.
+        self.topic_ledger = R.TopicLedger()
         self.agents_cache: tuple[float, dict[int, str] | None] = (-1e9, None)
         self.start_cache: dict[int, tuple[float, int]] = {}
         self.children: set[subprocess.Popen[Any]] = (
@@ -887,12 +880,21 @@ class Daemon:
         # (_configure_listener_api), None while [linear_projects] is off.
         self.linear_projects_hook: Any | None = None
         self._linear_projects_spec: tuple[Any, ...] | None = None
-        # The Operator's session registry API (listener_registry.py), served by the
-        # listener API under /registry/v1/:  rebuilt with the API server on every start
-        # and reload (_configure_listener_api), None while the listener API is off or
-        # no principal has a key.
+        # The Operator's Zulip -> Linear living comments (operator_linear.py), the
+        # standalone relay hosted by this daemon:  rebuilt on every start and reload
+        # (_configure_linear_comments), None while [linear_comments] is off or no
+        # Infisical service token for the Operator's Linear developer token resolves.
+        self.linear_comments: Any | None = None
+        self._linear_comments_spec: tuple[Any, ...] | None = None
+        # The Operator's session registry service (listener_registry.py), rebuilt on every
+        # start and reload (_configure_listener_api calls _configure_registry first).  It
+        # exists on the server instance only, whether or not the listener API is on;  the
+        # API serves it under /registry/v1/ when a principal has a key (AFC-721).
         self.registry_service: LREG.RegistryService | None = None
         self._registry_spec: tuple[Any, ...] | None = None
+        # The one stale sweeper (AFC-721), built with the registry service and run from the
+        # tick only while it belongs to the live service, so it stops when the service does.
+        self.registry_sweeper: LREG.Sweeper | None = None
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -901,9 +903,8 @@ class Daemon:
             "grace": -1e9,
             "prune": -1e9,
             "held": -1e9,
-            "muse_bridge": -1e9,
+            "linear_comments": -1e9,
         }
-        self.muse_bridge_thread: threading.Thread | None = None
         self.config_notified = False
         self.reload_requested = False
         self.acronyms = A.fleet_acronyms()
@@ -1128,7 +1129,8 @@ class Daemon:
         for seat in sorted(self.config.outgoing_webhook_seats):
             if seat not in self.seats:
                 continue
-            name = "ZULIP_OUTGOING_%s_TOKEN" % C.env_code(seat)
+            # The name is C.outgoing_webhook_token_env's, which the config check holds to one seat.
+            name = C.outgoing_webhook_token_env(seat)
             token = self.env.get(name) or ""
             if token:
                 tokens[seat] = token
@@ -1154,16 +1156,12 @@ class Daemon:
     def listener_api_keys(self) -> dict[str, str]:
         """Each held seat's read-API key:  the seat's routine key when its wake is an hmac-sha256 http
         routine (the key the Worker holds as WAKE_HMAC_KEY_<SEAT>), else <CODE>_ROUTINE_KEY.  A seat
-        with neither, or with a key under 32 characters, gets no read API."""
+        with neither, or with a key under 32 characters, gets no read API.  The name is
+        C.listener_api_key_env's, which the config check also holds to one seat."""
         keys: dict[str, str] = {}
         for seat in sorted(self.seats):
             seat_cfg = self.config.seats.get(seat)
-            routine = getattr(seat_cfg, "routine", None)
-            name = (
-                routine.key_env
-                if routine is not None and routine.auth == "hmac-sha256"
-                else "%s_ROUTINE_KEY" % C.env_code(seat)
-            )
+            name = C.listener_api_key_env(seat, getattr(seat_cfg, "routine", None))
             value = Z._strip_quotes(self.env.get(name) or "")
             if len(value) >= LAPI.MIN_KEY_LEN:
                 keys[seat] = value
@@ -1188,6 +1186,44 @@ class Daemon:
                 self.hide_values([value])
             principals[name] = (value, seats[name])
         return principals
+
+    def _note_link_hook(self, seat: str, session_id: str, note_id: str) -> None:
+        """Record a finished note's Apple Notes link on its session's registry row (OPS-1048).
+
+        The queue hands over (seat, session id, note id) when a write created a note for a
+        named session;  the row is found by the session id across the platforms (a session id
+        belongs to one platform in practice), and the link is the notes:// URL the note's id
+        completes.  Every failure is swallowed and logged as an event name only:  the note
+        exists and the request finished whether or not its link was recorded."""
+        service = getattr(self, "registry_service", None)
+        if service is None:
+            return
+        try:
+            matches = OR.SessionRegistry(service.db_path, read_only=True).session_rows_for_id(
+                session_id
+            )
+        except (OSError, ValueError):
+            return
+        link = NQ.NotesQueue.NOTE_LINK_FORM.format(note_id=note_id)
+        for identity in matches:
+            status, _answer = service._op_update(
+                LREG.OPERATOR,
+                {
+                    "platform": identity["platform"],
+                    "location": identity["verified_host"],
+                    "scope": identity["profile_scope"],
+                    "session_id": session_id,
+                    "apple_note_link": link,
+                },
+            )
+            if status == 200:
+                self.log.write(
+                    "notes-link-recorded",
+                    seat=seat,
+                    platform=identity["platform"],
+                )
+                return
+        self.log.write("notes-link-no-session", seat=seat)
 
     def _configure_notes_queue(self) -> NQ.NotesQueue | None:
         """The Operator's Apple Notes queue (AFC-486) for the listener API to serve under /notes/v1/, or None:  off
@@ -1223,7 +1259,12 @@ class Daemon:
         else:
             try:
                 queue = NQ.NotesQueue(
-                    self.root, principals, env=self.env, clock=self.clock.time, log=self.log.write
+                    self.root,
+                    principals,
+                    env=self.env,
+                    clock=self.clock.time,
+                    log=self.log.write,
+                    note_link_hook=self._note_link_hook,
                 )
             except OSError as exc:
                 self.log.write("notes-queue-error", error=type(exc).__name__)
@@ -1319,34 +1360,209 @@ class Daemon:
         self._linear_projects_spec = (token,)
         return hook
 
+    def _configure_linear_comments(self) -> None:
+        """The Operator's Zulip -> Linear living comments (operator_linear.py), or None:
+        off unless [linear_comments] enabled is true and the Operator's Linear credential
+        loads — the owner's developer token in Infisical prod /linear, reached through
+        the scoped read-only Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN,
+        or the [linear_comments] infisical_token_file).  A reload that leaves the service
+        token as it was keeps the same engine object, so its ledger lock and its
+        (topic, issue) -> comment mapping survive — unless the engine has stopped (a
+        refused Linear credential), in which case the reload rebuilds it, so a repaired
+        credential takes effect without a daemon restart;  a service-token change also
+        builds a fresh engine on the same ledger file, which adopts the standing
+        comments by their marker instead of stacking new ones.  The key is fetched
+        inside the build, registered with the log scrubber there, and held in memory
+        only."""
+        old = getattr(self, "linear_comments", None)
+        old_spec = getattr(self, "_linear_comments_spec", None)
+        self.linear_comments = None
+        self._linear_comments_spec = None
+        if not getattr(self.config, "linear_comments_enabled", False):
+            return
+        try:
+            # Imported here, not at module load, so a missing module never stops the daemon.
+            from . import operator_linear as OPL
+        except ImportError as exc:
+            self.log.write("linear-comments-error", error=type(exc).__name__)
+            return
+        token_file = getattr(self.config, "linear_comments_infisical_token_file", "") or None
+        try:
+            service = OPL.service_token(self.env, token_file)
+        except OPL.CredentialRefused as exc:
+            # The token file itself is unusable (its permissions):  the message names
+            # the file and the mode, never a value.
+            self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            return
+        if not service:
+            self.log.write(
+                "linear-comments-off",
+                reason="no Infisical service token (OPERATOR_LINEAR_INFISICAL_TOKEN "
+                "is not set and no usable infisical_token_file)",
+                hint=ENV_RESTART_HINT,
+            )
+            return
+        self.hide_values([service])
+        if old is not None and old_spec == (service,) and getattr(old, "stopped", None) is None:
+            self.linear_comments = old
+            self._linear_comments_spec = old_spec
+            return
+        if old is not None:
+            # The credential changed:  release the old engine's ledger lock before the
+            # new engine opens the same file, or its open fails closed.
+            close = getattr(old, "close", None)
+            if callable(close):
+                close()
+        try:
+            engine = OPL.build(
+                self.env,
+                self.root,
+                log=lambda m: self.log.write("linear-comments", detail=self.scrub(m)),
+                clock=self.clock.time,
+                monotonic=self.clock.monotonic,
+                service_token_file=token_file,
+                hide=self.hide_values,
+            )
+        except OPL.CredentialRefused as exc:
+            # The developer-token fetch was refused:  this feature fails
+            # closed, the daemon does not.  The message names a stage and a status.
+            self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            return
+        except SystemExit as exc:
+            # The ledger refused to open (another holder, or unreadable state):  this
+            # feature fails closed, the daemon does not.
+            self.log.write("linear-comments-error", error=self.scrub(str(exc)))
+            return
+        except Exception as exc:  # noqa: BLE001 - the engine must never stop the daemon
+            self.log.write("linear-comments-error", error=type(exc).__name__)
+            return
+        if engine is None:
+            self.log.write(
+                "linear-comments-off",
+                reason="no Infisical service token",
+                hint=ENV_RESTART_HINT,
+            )
+            return
+        self.linear_comments = engine
+        self._linear_comments_spec = (service,)
+
+    def _observe_linear_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Feed one routed message to the Operator's Zulip -> Linear living comments
+        (operator_linear.py).  Observation is best-effort by design:  a comments failure
+        is logged and never touches routing, and the worker deduplicates by message id,
+        so the same message routed for several seats counts once."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None or not isinstance(message, Mapping) or message.get("type") != "stream":
+            return
+        try:
+            engine.feed_message(runner.client, message)
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
+    def _observe_linear_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
+        """Feed one update_message event (a topic rename or a stream move) to the living
+        comments, so a standing comment follows its topic.  Best-effort, like the message
+        path."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None:
+            return
+        try:
+            engine.feed_event(runner.client, event)
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
+    def _observe_linear_stream_event(self, runner: SeatRunner, event: Mapping[str, Any]) -> None:
+        """A stream create, update or delete: the living comments forget the public-stream
+        set and reload it on the next feed, as the standalone relay did."""
+        engine = getattr(self, "linear_comments", None)
+        if engine is None or event.get("op") not in ("create", "update", "delete"):
+            return
+        try:
+            engine.reload_streams(runner.client)
+        except Exception as exc:  # the comments must never break routing
+            self.log.write(
+                "linear-comments-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def _configure_registry(self) -> LREG.RegistryService | None:
-        """The Operator's session registry API for the listener API to serve under /registry/v1/, or None:
-        off unless at least one principal has a key.  The principals are the seats this instance holds, keyed
+        """The Operator's session registry service, or None off the server instance.  The listener API serves
+        it under /registry/v1/ only when at least one principal has a key;  the service itself, the note-link
+        hook and the sweeper do not depend on a key or on the API being on (AFC-721).  The principals are the seats this instance holds, keyed
         exactly as the read API keys them (the seat's routine `key_env` key), plus the OPERATOR principal,
         whose key is the value of the env var listener_registry.OPERATOR_KEY_ENV when it is set.  Every key
         value is hidden from the log by listener_api_keys / here, before anything can print it.  A reload that
         leaves the principals and the store as they were keeps the same service object.  Construction opens
-        no file:  the service opens the registry per call, through the registry's own functions."""
+        no file:  the service opens the registry per call, through the registry's own functions.
+
+        One writer (AFC-721):  only the server instance builds the service, and with it the one stale
+        sweeper ([registry] settings);  every other instance gets None and writes no registry row."""
         old = getattr(self, "registry_service", None)
         old_spec = getattr(self, "_registry_spec", None)
+        old_sweeper = getattr(self, "registry_sweeper", None)
         self.registry_service = None
         self._registry_spec = None
+        self.registry_sweeper = None
+        # One writer (AFC-721):  only the server instance, the Eavesdropper, holds the registry.
+        # Any other instance serves no registry API and writes no row, whatever keys it has.
+        if getattr(self.config, "instance", "mac") != "server":
+            return None
         keys = self.listener_api_keys()
         operator_key = Z._strip_quotes(self.env.get(LREG.OPERATOR_KEY_ENV) or "")
         if operator_key:
             self.hide_values([operator_key])
             keys[LREG.OPERATOR] = operator_key
-        usable = sorted(name for name, key in keys.items() if len(key) >= LREG.MIN_KEY_LEN)
-        if not usable:
-            return None
+        # The service is built on the server whether or not any principal has a usable key, and
+        # whether or not the API is on or bound:  the note-link hook and the sweeper run in
+        # process and need no key.  The keys decide only whether the API serves /registry/v1/.
         db_path = OR.registry_db_path(self.root, self.env)
-        spec = (db_path, tuple(sorted((name, key) for name, key in keys.items())))
+        share = self.config.registry_gone_report_max_share
+        window = self.config.registry_gone_report_window_minutes
+        spec = (db_path, share, window, tuple(sorted((name, key) for name, key in keys.items())))
         if old is not None and old_spec == spec:
             service = old
         else:
-            service = LREG.RegistryService(db_path, keys, clock=self.clock.time, log=self.log.write)
+            service = LREG.RegistryService(
+                db_path,
+                keys,
+                clock=self.clock.time,
+                log=self.log.write,
+                gone_report_max_share=share,
+                gone_report_window_minutes=window,
+            )
         self.registry_service = service
         self._registry_spec = spec
+        service.sweeper = None
+        if self.config.registry_sweep_enabled:
+            interval = self.config.registry_sweep_interval_minutes
+            stale = self.config.registry_stale_after_hours
+            max_share = self.config.registry_sweep_max_share
+            if (
+                old_sweeper is not None
+                and old_sweeper.service is service
+                and old_sweeper.interval_s == interval * 60.0
+                and old_sweeper.stale_after_minutes == max(1, round(stale * 60))
+                and old_sweeper.max_share == max_share
+            ):
+                self.registry_sweeper = old_sweeper
+                service.sweeper = old_sweeper
+            else:
+                self.registry_sweeper = LREG.Sweeper(
+                    service,
+                    interval_minutes=interval,
+                    stale_after_hours=stale,
+                    max_share=max_share,
+                    log=self.log.write,
+                )
         return service
 
     def _configure_listener_api(self) -> None:
@@ -1360,13 +1576,15 @@ class Daemon:
         self.listener_api_server = None
         if old is not None:
             old.close()
+        # The registry service and its sweeper live with the instance, not with the API
+        # (AFC-721):  an API that is off or fails to bind leaves them running.
+        service = self._configure_registry()
+        registry = service if service is not None and service.keys else None
         if not self.config.listener_api_enabled:
             self.notes_queue = None
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
-            self.registry_service = None
-            self._registry_spec = None
             if self.config.notes_queue_enabled:
                 self.log.write(
                     "notes-queue-off",
@@ -1381,7 +1599,6 @@ class Daemon:
         keys = self.listener_api_keys()
         notes = self._configure_notes_queue()
         hook = self._configure_linear_projects()
-        registry = self._configure_registry()
         if not keys and notes is None and hook is None and registry is None:
             self.log.write(
                 "listener-api-deny-all",
@@ -1410,8 +1627,6 @@ class Daemon:
             self._notes_queue_spec = None
             self.linear_projects_hook = None
             self._linear_projects_spec = None
-            self.registry_service = None
-            self._registry_spec = None
             return
         self.listener_api_server = server
         host, port = server.address
@@ -1554,6 +1769,7 @@ class Daemon:
         self._apply_config()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_linear_comments()
         self.log.write("reloaded", seats=sorted(self.seats), errors=len(self.config.errors))
 
     def _recover_ledgers(self) -> None:
@@ -1814,7 +2030,55 @@ class Daemon:
             muted=runner.muted,
             followed=runner.followed,
             operator_user_id=OPV.pinned_user_id(self.env),
+            seat_has_routine=runner.cfg.routine is not None,
+            topic_ledger=self.topic_ledger,
+            bracket_recipient_wakes=runner.cfg.bracket_recipient_wakes,
         )
+
+    def fleet_bot_names(self, runner: SeatRunner) -> dict[str, str]:
+        """The fleet bots' full names (case-folded) mapped to their seat tags, so a loud `@**Name**`
+        mention in a post reads as a tagged seat.  Cached until the user list, the tags or the owner pin
+        changes, like `eligible_ids`.  Only the realm's own fleet bots count (router.fleet_bots_by_seat)."""
+        key = (
+            runner.users_version,
+            self.fleet_tags,
+            self.config.owner_user_id,
+            self.config.outgoing_webhook_seats,
+        )
+        if runner.bot_names_cache is None or runner.bot_names_cache[0] != key:
+            names: dict[str, str] = {}
+            by_seat = R.fleet_bots_by_seat(
+                runner.users,
+                self.fleet_tags,
+                self.config.owner_user_id,
+                outgoing_webhook_seats=self.config.outgoing_webhook_seats,
+            )
+            for seat, bots in by_seat.items():
+                for bot in bots:
+                    name = str(bot.get("full_name") or "").strip().casefold()
+                    if name:
+                        names.setdefault(name, seat)
+            runner.bot_names_cache = (key, names)
+        return runner.bot_names_cache[1]
+
+    def record_topic_post(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Keep one stream message in the topic ledger, once (the ledger dedupes by message id, so the
+        same message arriving on every seat's queue, an edit's re-route and a retry change nothing).  A
+        direct message is never kept.  The seat of the sender is the realm's own answer, never the
+        message's:  only a fleet bot has one."""
+        message_id = message.get("id")
+        if message.get("type") == "private" or not isinstance(message_id, int):
+            return
+        key = L.topic_key(Z.message_channel(message), Z.message_topic(message))
+        if self.topic_ledger.seen(key, message_id):
+            return  # the first seat to route it kept it
+        sender = message.get("sender_id")
+        seat = ""
+        if isinstance(sender, int) and sender in self.eligible_ids(runner):
+            seat = seat_tag_for({"is_bot": True, "email": message.get("sender_email")})
+        post = R.topic_post(message, seat=seat, names=self.fleet_bot_names(runner))
+        if post is not None:
+            self.topic_ledger.record(key, post)
 
     def handle_events(self, runner: SeatRunner, events: Iterable[Mapping[str, Any]]) -> None:
         for event in events:
@@ -1824,10 +2088,12 @@ class Daemon:
                     self.route_message(runner, event["message"])
                 elif kind == "update_message":
                     self.handle_update(runner, event)
+                    self._observe_linear_event(runner, event)
                 elif kind == "user_topic":
                     runner.apply_user_topic(event)
                 elif kind == "stream":
                     self.handle_stream_event(runner, event)
+                    self._observe_linear_stream_event(runner, event)
                 elif kind == "subscription":
                     self.handle_subscription_event(runner, event)
                 elif kind == "realm_user":
@@ -1939,7 +2205,47 @@ class Daemon:
         runner.gaps = []
         runner.flush_cursor(force=True)
 
+    def _thread_registry_store(self) -> TR.ThreadRegistryStore:
+        store = getattr(self, "_thread_store", None)
+        if store is None:
+            # Double-checked under a lock:  two routing threads racing the lazy
+            # creation must not build two stores whose cached data clobber each
+            # other's flushes.
+            with self._thread_store_lock:
+                store = getattr(self, "_thread_store", None)
+                if store is None:
+                    store = TR.ThreadRegistryStore(TR.thread_store_path(self.root, self.env))
+                    self._thread_store = store
+        return store
+
+    def _observe_thread(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        """Fold one routed message into the Operator's thread registry
+        (thread_registry.py).  Observation is best-effort by design:  a registry failure
+        is logged and never touches routing, and the store deduplicates by message id,
+        so the same message arriving for several seats, or again through backfill,
+        counts once."""
+        if not isinstance(message, Mapping) or message.get("type") != "stream":
+            return
+        try:
+            enriched = dict(message)
+            sender_id = message.get("sender_id")
+            if isinstance(sender_id, int):
+                person = runner.users.get(sender_id)
+                if isinstance(person, dict) and isinstance(person.get("is_bot"), bool):
+                    enriched["sender_is_bot"] = person["is_bot"]
+            stream_id = message.get("stream_id")
+            stream_name = runner.streams.get(stream_id) if isinstance(stream_id, int) else None
+            self._thread_registry_store().observe(enriched, stream_name=stream_name)
+        except Exception as exc:  # the registry must never break routing
+            self.log.write(
+                "thread-registry-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+
     def route_message(self, runner: SeatRunner, message: Mapping[str, Any]) -> None:
+        self._observe_thread(runner, message)
+        self._observe_linear_message(runner, message)
         self._route_message(runner, message, advance_cursor=True)
 
     def _route_message(
@@ -2009,9 +2315,10 @@ class Daemon:
             or message_id in runner.edit_ring
         ):
             return
-        if not R.tags_seat(str(event.get("content") or ""), runner.me) or R.tags_seat(
-            str(event.get("orig_content") or ""), runner.me
-        ):
+        bracket_ok = runner.cfg.bracket_recipient_wakes
+        if not R.tags_seat(
+            str(event.get("content") or ""), runner.me, bracket_ok=bracket_ok
+        ) or R.tags_seat(str(event.get("orig_content") or ""), runner.me, bracket_ok=bracket_ok):
             return
         try:
             fetched = runner.client.get("messages/%d" % message_id, {"apply_markdown": "false"})
@@ -2025,7 +2332,7 @@ class Daemon:
             return
         message = dict(fetched.get("message") or {})
         if message.get("type") == "private" or not R.tags_seat(
-            str(message.get("content") or ""), runner.me
+            str(message.get("content") or ""), runner.me, bracket_ok=bracket_ok
         ):
             return  # a DM, or edited again since:  the newer edit's own event decides
         message["id"] = message_id
@@ -2072,7 +2379,7 @@ class Daemon:
             if c.dm
             else []
         )
-        return {
+        item: dict[str, Any] = {
             "kind": "message",
             "id": message.get("id"),
             "type": "private" if c.dm else "stream",
@@ -2094,11 +2401,14 @@ class Daemon:
             "stale": c.stale,
             "wake_worthy": d.wake_worthy,
             "wake_owner": d.wake_owner,
-            "muse_bridge": bool(
-                d.wake and not d.delivered_to and MB.enabled(self.config, runner.seat)
-            ),
             "routed_at": self.clock.time(),
         }
+        if c.reply_to_chat is not None:
+            # Why this untagged post reached the seat:  it answers the seat's own earlier post in the
+            # topic.  The letter is that post's chat ("" when it had none) and the id is that post.
+            item["reply_target_letter"] = c.reply_to_chat.letter
+            item["reply_target_id"] = c.reply_to_chat.message_id
+        return item
 
     def _route(
         self,
@@ -2111,12 +2421,24 @@ class Daemon:
         """Route one message.  `done` is shared by route_message's retries:  each append and the
         wake offer is recorded there once it succeeds, so a retry after a partial failure resumes
         instead of delivering a second copy.  `edited` is route_edit's re-route of a message an
-        edit newly tagged this seat in:  the item says so, and the owner's pause command and a
-        registration answer, which act on a message once, are never carried out again."""
+        edit newly tagged this seat in:  the item says so, and the owner's pause command, which
+        acts on a message once, is never carried out again."""
         assert runner.me is not None
         done = set() if done is None else done
         now = self.clock.time()
         views = self.lease_views(runner)
+        # The ledger takes the message before it is classified, and the classification reads only posts
+        # strictly earlier than the message, so the order of the seats' queues never changes an answer.
+        # A failure here costs one reply wake and never the routing of the message itself.
+        try:
+            self.record_topic_post(runner, message)
+        except Exception as exc:  # noqa: BLE001 - the ledger must never quarantine a message
+            self.log.write(
+                "topic-ledger-error",
+                seat=runner.seat,
+                id=message.get("id"),
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
         c, d = R.route(message, runner.me, self.context(runner), views)
         first_seen = message["id"] not in self.global_ring
         if first_seen:
@@ -2189,16 +2511,6 @@ class Daemon:
         ):
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
-        if (
-            not edited
-            and not c.dm
-            and self._maybe_registration_answer(
-                message, now, channel=c.channel, topic=c.topic, done=done
-            )
-        ):
-            # A location answer is carried out here, deterministically:  it never becomes a
-            # wake for the Operator's responder to interpret.
-            return
         item = self.make_item(runner, message, c, d)
         if edited:
             item["edited"] = True
@@ -2240,15 +2552,6 @@ class Daemon:
             if "inbox" not in done:
                 self._append_seat_inbox(runner, [row])
                 done.add("inbox")
-            if (
-                d.wake
-                and not d.delivered_to
-                and "wake" not in done
-                and MB.enabled(self.config, runner.seat)
-            ):
-                # The inbox is the durable source for the central router.  Keep the original wake
-                # adapter configured, but never start it in parallel with a bridge decision.
-                done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
                 if self._broadcast_all(c):
                     # Handed off, not delivered:  start_fanout (above, same gate) owns this wake.  The
@@ -2396,6 +2699,9 @@ class Daemon:
         if not old_channel:
             return
         old_key = L.topic_key(old_channel, old_topic)
+        # The posts the ledger kept follow the topic to its new name, so a reply after a rename still
+        # finds the chat it answers.  Every seat's queue brings this event, and the second move is a no-op.
+        self.topic_ledger.rename(old_key, L.topic_key(new_channel, new_topic))
         renamed = 0
         for lease_id in L.list_lease_ids(runner.paths):
 
@@ -2435,25 +2741,6 @@ class Daemon:
         if runner.seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(runner.seat).rename(
                 old_channel, old_topic, new_channel, new_topic, self.clock.time()
-            )
-        try:
-            for moved in OREG.retarget_routes(
-                self._registration_db(),
-                seat=runner.seat,
-                old_channel=old_channel,
-                old_topic=old_topic,
-                new_channel=new_channel,
-                new_topic=new_topic,
-            ):
-                self.log.write(
-                    "operator-registration-route-follow",
-                    entry_id=moved.get("entry_id"),
-                    channel=new_channel,
-                    topic=new_topic,
-                )
-        except Exception as exc:
-            self.log.write(
-                "operator-registration-route-follow", status="error", error=type(exc).__name__
             )
         self.log.write("rename", seat=runner.seat, leases=renamed)
 
@@ -2786,113 +3073,9 @@ class Daemon:
             kind="wake-" + reason,
             key="wake:%s:%s" % (runner.seat, reason),
         )
-        # A quota hold is the one reason worth telling the SENDER about:  the person or bot who asked
-        # learns why they got no reply instead of watching it disappear.  Every other hold (a stale
-        # pin, a pause, a count cap) is a configuration fact the owner notice above already covers.
-        if "quota" in reason or "exhausted" in reason:
-            self._tell_requester(runner, pending, reason, now)
-
-    def _tell_requester(
-        self, runner: SeatRunner, pending: W.Pending, reason: str, now: float
-    ) -> None:
-        """Tell whoever sent the message that this seat cannot answer right now, and when it can.
-
-        Owner 2026-10-13:  a person or a bot that messages a seat whose provider quota is spent should
-        be told, instead of watching their message go nowhere.  The DM names the reason and the reset
-        time when the provider gave one, so the sender knows whether to wait or re-plan.
-
-        Rules that keep this from becoming noise:  it is a DM to the trigger SENDER and never a post
-        into their topic (a wake that could not run must not add traffic to the conversation that woke
-        it);  it fires once per seat per window, not once per message;  and it stays silent unless the
-        provider snapshot actually says exhausted, so a hold for a pin or a pause is never dressed up
-        as a quota story.
-
-        The notice is the daemon's own deterministic text, so it goes out as the Operator and never as
-        the seat's bot (owner ruling, Oct 30 2026): the seat did not think or say it.  With no Operator
-        the notice is not sent and the refusal is logged; it does not fall back to the seat."""
-        if runner.fatal or runner.me is None:
-            return
-        if not runner.cfg.provider:
-            return
-        quota = A.provider_quota(runner.cfg.provider, now)
-        if not quota["known"] or not quota["exhausted"]:
-            return  # never invent an explanation the provider did not give
-        when = quota.get("reset_at")
-        text = (
-            "%s cannot answer right now: its %s quota is exhausted%s.  Your message is in its inbox and "
-            "will be picked up when the quota resets."
-            % (
-                runner.seat,
-                runner.cfg.provider,
-                " until %s" % A.clean_banner(str(when), 40) if when else "",
-            )
-        )
-        sender = pending.sender_id
-        if not isinstance(sender, int) or sender == runner.me.user_id:
-            return
-        # A direct message may go out only when the owner is in the conversation (AFC-469), so the
-        # quota hold goes to the owner as well as to the sender when the sender is not the owner.
-        # A quota hold is the owner's own spend, so the owner is the party who has to see it, and
-        # with the owner in the conversation the message is a legitimate group direct message
-        # rather than a bot to bot one.
-        owner_id = int(self.config.owner_user_id or 0)
-        if owner_id <= 0:
-            self.log.write(
-                "wake-quota-hold-tell-refused",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                sender_id=sender,
-                reason="owner_not_pinned",
-            )
-            return
-        recipients = [sender] if sender == owner_id else [sender, owner_id]
-        key = "quota-hold:%s:%s" % (runner.seat, sender)
-        # The Operator is checked BEFORE the once-per-window gate below spends the window: a notice
-        # that could not be sent has not told the sender anything, so the next held wake tries again.
-        # `wait=False`: a held wake is finalized on the router thread, which never waits for the
-        # Operator client to be built.  A notice that finds none ready is skipped, its window unspent.
-        try:
-            operator_id = self.operator_voice.user_id(wait=False)
-        except OPV.OperatorUnavailable as exc:
-            self._operator_refused(
-                "quota-hold", exc, seat=runner.seat, wake_id=pending.wake_id, sender_id=sender
-            )
-            return
-        if sender == operator_id:
-            return  # the Operator is not told that a seat is busy
-        try:
-            if not self.notifier.notify(
-                runner.seat,
-                "simple-chat %s" % runner.seat,
-                text,
-                kind="wake-quota-hold",
-                key=key,
-                once_per=QUOTA_HOLD_TELL_WINDOW,
-                trigger_ids=pending.trigger_ids,
-                sender_id=sender,
-                banners=False,
-            ):
-                return  # already told this sender recently
-            result = self._operator_send(
-                {"type": "direct", "to": recipients, "content": text}, wait=False
-            )
-            if result.get("id"):
-                self.log.write(
-                    "wake-quota-hold-told",
-                    seat=runner.seat,
-                    wake_id=pending.wake_id,
-                    sender_id=sender,
-                    reset_at=when,
-                    posted_by=OPV.VOICE,
-                )
-        except Z.SimpleToolsError as exc:
-            self.log.write(
-                "wake-quota-hold-tell-failed",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                sender_id=sender,
-                error=self.scrub(str(exc)),
-            )
+        # A quota hold is not told to the SENDER any more:  that DM was the Operator saying, on the
+        # seat's behalf, that the seat cannot answer, and the Operator never answers on behalf of a
+        # platform (owner ruling, Nov 10 2026).  The owner notice above is the whole of it.
 
     def _guard_drop(
         self,
@@ -3162,7 +3345,8 @@ class Daemon:
         and answering it elsewhere would be trying to get around a guard that just fired.
 
         There is no `fallback_uncontained_ok` here:  the call offers the model no tool, so nothing the
-        model says can act, and the reply still goes through the validator and the Operator's voice.
+        model says can act, and the reply still goes through the validator (and is then dropped:  the
+        Operator never answers on behalf of a platform).
 
         The fallback is only trusted once a person pinned it (its own pin, one per role), and a hold is
         logged with its reason, never silently skipped."""
@@ -3367,9 +3551,11 @@ class Daemon:
                 # The key could not be read a moment ago (state only, no network):  every call would
                 # fail the same way, so the wake is held rather than run to fail.
                 return "openrouter_unavailable"
-            # The reply goes out as the Operator, so a wake that cannot be answered is not run.  This is
-            # the cheap half of the preflight (no network, no thread, safe on the router thread): it
-            # only knows a build that failed recently.  run_wake does the blocking half.
+            # A wake is still not run while the Operator is known to be unreachable (the cheap half of
+            # the preflight:  no network, no thread, safe on the router thread;  it only knows a build
+            # that failed recently, and run_wake does the blocking half).  Since Nov 10 2026 the wake's
+            # reply is never posted, so the reply no longer needs the Operator;  the guard stays, with the
+            # wake types, until they are deleted.
             if self.operator_voice.known_unavailable():
                 return "operator_unavailable"
         elif runner.cfg.wake == "http":
@@ -3400,10 +3586,17 @@ class Daemon:
 
     def takeover(self, runner: SeatRunner, pending: W.Pending) -> str | None:
         """A live session that took over:  a lease on the topic, or for a mention trigger, a
-        wake-capable claude-code lease with mentions.  A lease the trigger came back from (grace
-        release or reap) never takes it again, so the headless wake runs instead of looping."""
+        wake-capable claude-code lease with mentions.  Never for a seat with a routine.  A lease
+        the trigger came back from (grace release or reap) never takes it again, so the headless
+        wake runs instead of looping."""
         skip = set(pending.skip_leases)
         views = [v for v in self.lease_views(runner) if v.lease_id not in skip]
+        if runner.cfg.routine is not None:
+            # One wake path:  every wake a routine seat runs was triggered by a mention-class
+            # message, and router.route never hands one to a lease, neither the newest session nor a
+            # lease on the topic.  A session letter must reach its chat whoever follows the topic,
+            # and only the routine's router can honour it.
+            return None
         if pending.type == "stream":
             on_topic = [v for v in views if pending.key in v.topics]
             if on_topic:
@@ -3544,42 +3737,21 @@ class Daemon:
         )
 
     def _typing_signal(self, runner: SeatRunner, pending: W.Pending) -> TYPING.TypingSignal | None:
-        """The typing indicator for this wake, shown as the OPERATOR, or None when the seat has it off,
-        the Operator is not available, or the wake has no single conversation to type in.
+        """No typing indicator is raised for a wake, whatever the seat's `typing_indicator` says.
 
-        "<seat> is typing" would be the seat's identity saying something the seat did not think: the
-        consultant is working, and the Operator is the one that will post what it wrote, so "Operator
-        is typing" is the true indicator (owner ruling, Oct 30 2026).  The seat's `typing_indicator`
-        switch still turns it off.  With no Operator there is no indicator at all, never the seat's.
-
-        The conversation is the one the Operator's reply will land in.  A channel wake types in the
-        trigger's topic.  A direct wake types in the original recipient set (the seat included, the
-        Operator excluded), which is where `post` sends the reply, and only when the owner is in it,
-        because a reply into a direct message without the owner is refused and an indicator for a
-        reply that cannot come would be a false promise."""
-        if not runner.cfg.typing_indicator:
-            return None
-        try:
-            # Cosmetic, so it never waits for a build and never holds the run back.
-            client = self.operator_voice.client(wait=False)
-            operator_id = self.operator_voice.user_id(wait=False)
-        except OPV.OperatorUnavailable as exc:
+        "Operator is typing" promised a reply, and none is coming:  the Operator never answers on
+        behalf of a platform (owner ruling, Nov 10 2026).  A seat that still has the switch on gets one
+        `typing-skipped` line per wake saying why.  `typing_signal.py` and the plumbing in `run_wake`
+        that starts and stops the indicator stay until the wake types are deleted;  with this answer
+        they never run."""
+        if runner.cfg.typing_indicator:
             self.log.write(
-                "typing-skipped", seat=runner.seat, wake_id=pending.wake_id, code=exc.code
+                "typing-skipped",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                code=W.OPERATOR_NEVER_ANSWERS,
             )
-            return None
-        params = TYPING.target(pending, operator_id)
-        if params is None:
-            return None
-        if params["type"] == "direct" and int(self.config.owner_user_id or 0) not in params["to"]:
-            return None
-        return TYPING.TypingSignal(
-            client,
-            params,
-            on_error=lambda exc: self.log.write(
-                "typing-failed", seat=runner.seat, error=self.scrub(str(exc)), posted_by=OPV.VOICE
-            ),
-        )
+        return None
 
     def _wake_prompt(
         self,
@@ -3609,7 +3781,7 @@ class Daemon:
             owner_of=self.owner_of,
             format_time=format_time,
             board_enabled=board_on,
-            route=self.route_gate(runner, pending),
+            route=self.route_gate(runner, pending) or W.OPERATOR_NEVER_ANSWERS,
             held_back=held,
             chats=chat_context,
             tagged_address=letter or None,
@@ -3862,7 +4034,7 @@ class Daemon:
             self._log_pin_drift(runner, runner.cfg.wake, drift)
         # The other half of the preflight, before any budget is spent or any child exists: this runs
         # on the seat's own wake worker, which may wait for the Operator client to be built (the router
-        # never does).  A wake whose reply could not be posted is not run at all.
+        # never does).  A wake is not run while the Operator cannot be built (see `_wake_block`).
         try:
             self.operator_voice.client()
         except OPV.OperatorUnavailable as exc:
@@ -3900,17 +4072,15 @@ class Daemon:
             exclude=pending.trigger_ids,
             limit=int(runner.cfg.held_back["items_in_wake"]),
         )
-        # Only a trigger message can carry the address, and the Operator's list goes to the sender
-        # of the message the letter was found in, not to the first trigger's sender.
-        letter, address_sender_id = self.tagged_letter(runner, history, pending.trigger_ids)
+        # Only a trigger message can carry the address.
+        letter, _sender = self.tagged_letter(runner, history, pending.trigger_ids)
         # The letter is resolved before the context is built, because the context ranks and
         # cuts its rows before the letters join, and the addressed session has to survive
         # that cut.
         chat_context = self.chat_context(runner, pending, history, letter)
         if letter:
-            # No platform is passed:  the ambiguity check is cross-platform and the platform named
-            # in the body is read off the registry rows the ask actually got.
-            self.ask_operator_for_candidates(runner, pending, letter, "", address_sender_id)
+            # Counted cross-platform, for the model gate only:  nothing is sent to anyone.
+            self.note_letter_candidates(runner, pending, letter)
         prompt = self._wake_prompt(runner, pending, history, held, chat_context, letter, board_on)
         fallback_prompt = self._fallback_prompt(
             runner, pending, history, held, chat_context, letter, board_on
@@ -3952,13 +4122,10 @@ class Daemon:
         schema = W.schema_text(self.fleet_tags)
         # The muse runtime sends its schema to a strict structured-output provider, which wants every key required.
         muse_schema = W.schema_text(self.fleet_tags, strict=True)
-        # The seat says it is typing while it thinks (AFC-515).  The run is silent for its
-        # whole length otherwise:  the adapter takes 30 to 50 seconds to answer and the reply
-        # is posted only after it has, so the person who woke the seat watches an empty
-        # topic the whole time.  The indicator is cosmetic:  it never decides whether the
-        # seat answers, and a failure to post it is logged and ignored.  It is raised for the
-        # whole of the answer's making, the primary run, the fallback and the chat
-        # inspection alike, because the seat is still thinking through all of them.
+        # No typing indicator is raised for a wake:  `_typing_signal` answers None for every seat,
+        # because the Operator never answers on behalf of a platform (owner ruling, Nov 10 2026) and
+        # "Operator is typing" would promise a reply that never comes.  The start and stop below stay
+        # until the wake types are deleted.
         typing = self._typing_signal(runner, pending)
         if typing is not None:
             typing.start()
@@ -4133,10 +4300,8 @@ class Daemon:
                             second.error = "recursive chat inspection rejected"
                         result = second
         finally:
-            # The answer exists now and the reply is posted next, so the indicator goes
-            # down.  The fallback and the chat inspection are inside this block on purpose:
-            # they are part of producing the answer, and the seat is still thinking while
-            # they run, so the indicator stays up for them.
+            # The indicator, if one was raised, goes down once the answer exists.  None is raised any
+            # more (`_typing_signal`).
             if typing is not None:
                 typing.stop()
         # What only an OpenRouter call has (the model asked for, its role, the status, the token counts,
@@ -4269,17 +4434,13 @@ class Daemon:
             return
         outcome = self.act(runner, pending, obj, history=history)
         finished = self.clock.time()
-        # Held refs are surfaced only after the wake handled its triggers.  A refusal (a mention
-        # that survived neutralizing, the secret scanner) and a reply that was attempted but did
-        # not land are failed, and the held refs stay held.  An owner wake that attempted no reply
-        # is delivered:  action none, a board item with no reply text, or a route-only result.
-        refused = outcome.get("refused")
-        attempted = bool(outcome.pop("reply_attempted", False))
-        landed = bool(outcome.get("posted_id") or outcome.get("draft_to"))
-        delivered = not refused and (landed or not attempted)
+        # Held refs are surfaced once the wake handled its triggers.  The wake's reply is never
+        # posted (the Operator does not answer on behalf of a platform, owner ruling Nov 10 2026), so a
+        # wake whose reply was dropped is as done as one that had none;  `post_error` on the row says
+        # the reply was dropped, and the held refs are surfaced either way.
         runner.ledger.append(
             pending.row(
-                "done" if delivered else "failed",
+                "done",
                 finished,
                 exit=result.exit,
                 secs=result.secs,
@@ -4293,18 +4454,6 @@ class Daemon:
                 **outcome,
             )
         )
-        if not delivered:
-            if pending.owner:
-                self.notifier.notify(
-                    runner.seat,
-                    "simple-chat %s" % runner.seat,
-                    "a wake was not delivered: %s"
-                    % A.clean_banner(refused or "the reply was not posted", 60),
-                    kind="wake-undelivered",
-                    key="wake-undelivered:%s" % pending.wake_id,
-                    once_per=0,
-                )
-            return
         self._surface(runner, pending, listed, lost, finished)
 
     @staticmethod
@@ -5940,7 +6089,7 @@ class Daemon:
                 continue
             try:
                 c, d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
-                if not d.wake or d.delivered_to or MB.enabled(self.config, seat):
+                if not d.wake or d.delivered_to:
                     continue
                 item = self.make_item(runner, message, c, d)
                 mid = message.get("id")
@@ -6097,7 +6246,8 @@ class Daemon:
 
         The sender is the one whose message carried the letter, which is not always the first
         trigger's sender (wakes.Pending.sender_id):  in a shared topic another user can ask the
-        same question.  The Operator's candidate list goes to the person who wrote the address.
+        same question.  Nothing is sent to that person:  the Operator asks nobody which session
+        a letter means (owner ruling, Nov 10, 2026).
 
         "I" and "A" are valid session letters and the two English words that collide with them, so
         they count as an address only when they stand alone at the end of the message.  In a
@@ -6168,7 +6318,7 @@ class Daemon:
 
         With no platform this is the cross-platform query.  The registry keeps at most one live
         holder of (platform, letter) - idx_alias_active - so the platform-scoped query can return
-        at most one row and can never show the ambiguity this list exists for.  The letter
+        at most one row and can never show an ambiguous letter.  The letter
         namespace is per platform, so the same letter can be live on several of them at once, and
         only the cross-platform query sees that.
         """
@@ -6177,121 +6327,21 @@ class Daemon:
             return OR.candidates_for(db_path, platform, letter)
         return OR.candidates_for_letter(db_path, letter)
 
-    def operator_dm_allowed(self, user_id: int) -> bool:
-        """Whether this user may be handed the candidate list.
+    def note_letter_candidates(self, runner: Any, pending: Any, letter: str) -> None:
+        """Record on the pending wake how many live sessions hold a tagged letter, for the model gate.
 
-        The list carries native session ids and session titles, which are the fleet's internal
-        inventory.  The listener watches every public channel the fleet bot is in, so any realm
-        user can trigger a wake; without this gate an unrelated user could be handed that
-        inventory by direct message.  Only the pinned owner, or a user the owner has explicitly
-        allowed in `[operator] dm_allow`, is a legal recipient.
+        Counted cross-platform (see operator_candidates).  The gate reads the two facts and must not
+        open the registry again for the same letter.  Nothing is sent:  the Operator asks nobody which
+        session a letter means (owner ruling, Nov 10, 2026).
         """
-        owner = int(getattr(self.config, "owner_user_id", 0) or 0)
-        if owner and int(user_id) == owner:
-            return True
-        allowed = getattr(self.config, "operator_dm_allow", None) or ()  # config.py parses it
-        return any(
-            isinstance(allow, int) and not isinstance(allow, bool) and int(allow) == int(user_id)
-            for allow in allowed
-        )
-
-    def ask_operator_for_candidates(
-        self,
-        runner: Any,
-        pending: Any,
-        letter: str,
-        platform: str = "",
-        address_sender_id: int | None = None,
-    ) -> None:
-        """Ask the Operator for the candidate list when a tagged letter is not one session.
-
-        The ask never blocks:  the seat answers in its own thread and names the letter it
-        used, and the Operator's own DM to the sender carries the list, so the seat's
-        thread stays clean.  The ask is made only when the letter does not name exactly
-        one session, because a letter that does name one needs no list.
-
-        `address_sender_id` is the sender of the message the letter was found in.  It is the
-        recipient, not the pending's first-trigger sender:  in a shared topic another user can
-        write the address, and that person is the one who asked which session it meant.
-        """
-        # Cross-platform on purpose:  see operator_candidates.  A platform-scoped query returns at
-        # most one row, which would make this send unreachable.
         candidates = self.operator_candidates("", letter)
-        # Handed to the model gate, which must not open the registry again for the same letter.
         try:
             pending.letter_candidates = len(candidates)
             pending.letter_holder_on_seat = len(candidates) == 1 and (
                 str(candidates[0].get("seat") or "").upper() == str(runner.seat).upper()
             )
-        except Exception:  # noqa: BLE001 - recording it for the gate never stops the ask
+        except Exception:  # noqa: BLE001 - recording it for the gate never stops the wake
             pass
-        if len(candidates) == 1:
-            return
-        if not candidates:
-            return
-        # The platform is never a hardcoded seat name:  it is the namespace the letter is actually
-        # live in, read off this seat's own registry row when it holds one.
-        platform = platform or self.platform_of(runner, candidates)
-        recipient = address_sender_id or getattr(pending, "sender_id", None)
-        if not recipient:
-            self.log.write(
-                "operator-candidate-list",
-                seat=runner.seat,
-                letter=letter,
-                status="skipped",
-                reason="no sender",
-            )
-            return
-        recipient = int(recipient)
-        if not self.operator_dm_allowed(recipient):
-            # Refused before any send:  the list carries internal session inventory, and an
-            # unvalidated realm user id from a public-channel trigger is not a legal recipient.
-            self.log.write(
-                "operator-candidate-list",
-                seat=runner.seat,
-                letter=letter,
-                status="skipped",
-                reason="recipient not the owner and not allowed",
-            )
-            return
-        try:
-            outcome = OC.send_candidate_list(
-                seat=runner.seat,
-                platform=platform,
-                letters=[letter],
-                candidates=candidates,
-                recipient=int(recipient),
-                env=self.env,
-                home=self.home,
-                owner_user_id=self.config.owner_user_id,
-            )
-        except Exception as exc:
-            # send_candidate_list is contracted to answer with a dict and never raise, so an escape
-            # here is a bug in this handler, not a delivery outcome:  log it as its own state so it
-            # is never mistaken for a terminal refusal.
-            self.log.write(
-                "operator-candidate-list",
-                seat=runner.seat,
-                letter=letter,
-                status="error",
-                # The module's own token, so one filter on `unknown` finds every possibly-sent row.
-                delivery_status=OC.DELIVERY_UNKNOWN,
-                error=type(exc).__name__,
-            )
-            return
-        self.log.write(
-            "operator-candidate-list",
-            seat=runner.seat,
-            letter=letter,
-            status=str(outcome.get("status") or ""),
-            # ok / unknown / refused / retryable, so a retryable or
-            # outcome-unknown delivery stays pending instead of being filed as a
-            # terminal failure.  The value is the module's own vocabulary and
-            # is logged verbatim, so one field tells the whole story.
-            delivery_status=str(outcome.get("delivery_status") or ""),
-            reason=str(outcome.get("reason") or ""),
-            candidates=len(candidates),
-        )
 
     def addressed_row(self, rows: list[dict[str, Any]], letter: str) -> dict[str, Any] | None:
         """The catalog row that holds the session letter the trigger addressed.
@@ -6363,23 +6413,6 @@ class Daemon:
                     continue
                 return row
         return None
-
-    def platform_of(self, runner: Any, candidates: list[dict[str, Any]]) -> str:
-        """The platform namespace this seat's sessions live in, read off the registry rows.
-
-        Never a hardcoded seat name:  the fleet runs `minimax`, `claude-code` and others, and the
-        letter namespace is per platform.  This seat's own row wins;  otherwise the first row that
-        names a platform is the best answer the registry can give.
-        """
-        fallback = ""
-        for row in candidates:
-            name = str(row.get("platform") or "").strip().lower()
-            if not name:
-                continue
-            if str(row.get("seat") or "").strip().upper() == str(runner.seat).strip().upper():
-                return name
-            fallback = fallback or name
-        return fallback
 
     def chat_context(
         self,
@@ -6456,7 +6489,6 @@ class Daemon:
             else:
                 rows = sorted(rows, key=relevance, reverse=True)[:24]
             labels = self.session_labels(rows)
-            self.maybe_ask_registrations(rows, labels)
             context = []
             remaining = 24000
             for row in rows:
@@ -6499,670 +6531,6 @@ class Daemon:
         except Exception as exc:
             self.log.write("chat-catalog-unavailable", error=type(exc).__name__)
             return []
-
-    def _registration_evidence(self, platform: str) -> str:
-        """The daemon's own fleet location as evidence - only for locally discovered chats.
-
-        A chat this daemon discovered from local files runs on this machine, so the
-        instance name is real evidence when it is itself a fleet location.  Genuinely
-        remote adapters (cursor-cloud discovers through Cursor's API, not local files)
-        carry no such evidence:  the chat does not run here.
-
-        cursor-cloud DOES pin "cloud" (kody 4366047282):  the adapter reads Cursor's
-        authenticated Cloud Agents API (/v1/agents), an endpoint that lists only
-        Cursor-hosted cloud agents - endpoint membership is the corroboration, since
-        a Mac- or server-local session cannot appear in it.  The listing carries no
-        per-agent runtime field;  the pin rests on that API's product semantics, and
-        a session whose real runtime ever differed surfaces through dual discovery
-        (the local adapter's own evidence) and the owner-settled conflict path.
-        """
-        if platform == "cursor-cloud":
-            return "cloud"
-        # The daemon's own instance from validated config, not the raw environment:
-        # config load already refused anything outside INSTANCES, so this cannot be
-        # empty-or-foreign while the daemon runs.
-        instance = str(getattr(self.config, "instance", "") or "").strip().lower()
-        return instance if instance in ("mac", "server") else ""
-
-    def _registration_seat_lease_map(self, seat: str) -> dict[str, list[dict[str, Any]]]:
-        """One scan of the seat's lease directory:  session id -> live topics.
-
-        maybe_ask_registrations walks every catalog row, so loading each lease once for
-        the seat replaces one directory scan plus one lease read per row with one scan
-        per seat per pass.  The first live lease naming a session wins, matching the
-        per-row scan's order.
-        """
-        found: dict[str, list[dict[str, Any]]] = {}
-        try:
-            paths = L.SeatPaths(self.root, seat)
-            now = self.clock.time()
-            for lease_id in L.list_lease_ids(paths):
-                lease = L.load_lease(paths, lease_id)
-                session_id = str(lease.get("session_id") or "")
-                if not session_id or session_id in found:
-                    continue
-                alive, _why = self.lease_alive(paths, lease)
-                if not alive:
-                    # A stale or recycled lease must not route a question to a dead or
-                    # unrelated session (same liveness discipline as the wake path).
-                    continue
-                live = []
-                for entry in lease.get("topics") or []:
-                    if not isinstance(entry, dict):
-                        continue
-                    expires = entry.get("expires")
-                    if isinstance(expires, (int, float)) and expires <= now:
-                        continue
-                    if expires is not None and not isinstance(expires, (int, float)):
-                        continue
-                    channel = str(entry.get("channel") or "").strip()
-                    topic = str(entry.get("topic") or "").strip()
-                    if channel and topic:
-                        live.append({"channel": channel, "topic": topic, "expires": expires})
-                if live:
-                    found[session_id] = live
-        except Exception:
-            pass
-        return found
-
-    def _registration_lease_topics(
-        self,
-        row: Mapping[str, Any],
-        lease_map: dict[str, list[dict[str, Any]]] | None = None,
-    ) -> list[dict[str, Any]]:
-        """The chat's live lease topics as {channel, topic, expires};  [] when unknown.
-
-        The lease is written by the chat's own attach hook, so the topics are grounded in
-        the chat's registration of itself - never in a guess from the catalog row.  The
-        whole list (not only the picked route) feeds the queue's rename-follow logic:  a
-        whole-topic rename rewrites the lease entry in place keeping its expiry, which is
-        how a pending question tells a rename from an unrelated new attachment.
-        """
-        session_id = str(row.get("session_id") or "")
-        seat = str(row.get("seat") or "")
-        if not session_id or not seat:
-            return []
-        if lease_map is None:
-            lease_map = self._registration_seat_lease_map(seat)
-        return list(lease_map.get(session_id) or [])
-
-    def _registration_route(
-        self, row: Mapping[str, Any], topics: list[dict[str, Any]] | None = None
-    ) -> dict[str, str] | None:
-        """The chat's own Zulip channel/topic, picked from its live lease topics."""
-        if topics is None:
-            topics = self._registration_lease_topics(row)
-        if not topics:
-            return None
-        # The active topic, not the oldest:  a permanently attached lane (no expiry) is
-        # the chat's home;  among expiring attachments the one renewed most recently wins.
-        picked = sorted(
-            topics, key=lambda item: (item["expires"] is not None, -(item["expires"] or 0.0))
-        )[0]
-        return {"channel": picked["channel"], "topic": picked["topic"]}
-
-    def _seat_bot_user_id(self, seat: str) -> int | None:
-        """The Zulip user id of a seat's own bot, when that seat is connected."""
-        runner = self.seats.get(str(seat or ""))
-        me = getattr(runner, "me", None) if runner is not None else None
-        user_id = getattr(me, "user_id", None) if me is not None else None
-        if isinstance(user_id, int) and not isinstance(user_id, bool):
-            return int(user_id)
-        return None
-
-    def _seat_bot_owned_by(self, seat: str, owner: int) -> bool:
-        """A seat bot speaks for the fleet's registrations only when the pinned owner owns it."""
-        runner = self.seats.get(str(seat or ""))
-        me = getattr(runner, "me", None) if runner is not None else None
-        bot_owner = getattr(me, "bot_owner_id", None) if me is not None else None
-        return isinstance(bot_owner, int) and not isinstance(bot_owner, bool) and bot_owner == owner
-
-    def _registration_db(self) -> str:
-        db = getattr(self, "_oreg_db", None)
-        if db is None:
-            db = OR.registry_db_path(self.root, self.env)
-            self._oreg_db = db
-        return db
-
-    @staticmethod
-    def _registrations(db: str, platform: str, session_id: str) -> list[dict[str, Any]]:
-        """The registry scan for the ask/answer flow;  a MISSING file reads as empty.
-
-        First run:  nothing has ever registered, so the file does not exist yet, and the
-        registry layer fails closed on that (its wake-path rule:  never let a lookup
-        bring a registry into being).  At this boundary a missing file is the truthful
-        "no letters yet" - asking is harmless, and the answer path's register creates
-        the file.  A file that exists but cannot be read still raises
-        RegistryUnavailable:  that is a broken identity source, not an empty one.
-        """
-        if not os.path.isfile(str(db)):
-            return []
-        return OR.registrations_for_native_id(db, platform, session_id)
-
-    def maybe_ask_registrations(
-        self, rows: list[dict[str, Any]], labels: dict[str, tuple[str, str]]
-    ) -> None:
-        """Ask each unlettered active chat for its location in its own topic.
-
-        Owner direction, Oct 23 2026:  when the Operator receives a session/chat id, it asks
-        the location (mac, server, cloud) before the session letter is assigned.  This is
-        the receipt point:  the catalog surfaced the session id, the registry has no letter
-        for it, so the Operator asks.  One question per session (the queue dedupes), one topic post
-        per question (the notified stamp), and a failure here never breaks the wake that
-        found the chats - the worst case is a chat that stays unlettered, which is today.
-        """
-        try:
-            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
-            # The question posts in the chat's own topic, never a DM:  owner DM permission
-            # must not gate this flow.  The owner id is still required - it is one of the
-            # two senders allowed to answer.
-            if not owner:
-                return
-            db = self._registration_db()
-            for entry in OREG.sweep(db):
-                # Each drop line has its own guard (kody 4368820879):  sweep() has already
-                # saved these drops, so a log write that raises must neither cost the
-                # other drops their line nor end the pass before any row is asked.
-                try:
-                    self.log.write(
-                        "operator-registration-drop",
-                        entry_id=entry.get("entry_id"),
-                        platform=entry.get("platform"),
-                        reason=entry.get("reason"),
-                    )
-                except Exception:
-                    pass
-            lease_maps: dict[str, dict[str, list[dict[str, Any]]]] = {}
-            for row in rows:
-                # The whole per-row body sits inside one guard (kody 4366012641):  a
-                # failure anywhere in it - the lease read, a stamp, a drop, or a log line
-                # - is logged by exception type and the batch goes on with the next row.
-                # The guard catches Exception only, so KeyboardInterrupt and SystemExit
-                # still end the pass (kody 4368820879).  The error line names the row's
-                # session, and its entry once begin() has returned one, so a failed lease
-                # read or begin() is as traceable as a failed send.  The error log write
-                # has its own guard, so a logger that raises cannot end the batch either.
-                trace: dict[str, str] = {}
-                try:
-                    self._ask_registration_row(
-                        row, labels, db=db, owner=owner, lease_maps=lease_maps, trace=trace
-                    )
-                except Exception as exc:
-                    try:
-                        mapping = isinstance(row, Mapping)
-                        self.log.write(
-                            "operator-registration-ask",
-                            entry_id=trace.get("entry_id") or None,
-                            platform=str(row.get("platform") or "") if mapping else "",
-                            session_id=self._loggable_session_id(
-                                row.get("session_id") if mapping else None
-                            ),
-                            status="error",
-                            error=type(exc).__name__,
-                        )
-                    except Exception:
-                        pass
-        except Exception as exc:
-            self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
-
-    @staticmethod
-    def _loggable_session_id(value: Any) -> str:
-        """A catalog row's session id as a per-row error line may carry it, or "".
-
-        A row can fail before begin() has checked its session id (the lease read comes
-        first), so the id gets begin()'s own checks here:  a valid session id with no
-        secret shape is logged, and anything else is left out of the line.
-        """
-        try:
-            native = SI.check(value, "the native session id")
-        except ValueError:
-            return ""
-        return "" if secretscan.scan(native) else native
-
-    def _ask_registration_row(
-        self,
-        row: Mapping[str, Any],
-        labels: dict[str, tuple[str, str]],
-        *,
-        db: str,
-        owner: int,
-        lease_maps: dict[str, dict[str, list[dict[str, Any]]]],
-        trace: dict[str, str] | None = None,
-    ) -> None:
-        """One catalog row of maybe_ask_registrations;  its caller isolates any failure.
-
-        ``trace`` receives the row's entry id once begin() returns one, so the caller's
-        error line can name the entry a later step failed on.
-        """
-        if labels.get(str(row.get("id") or ""), ("", ""))[0]:
-            return
-        # Ask the rows the catalog calls readable:  its vocabulary is
-        # available/stale/metadata-only/unavailable (chat_catalog._row),
-        # so skip exactly its unreadable set instead of matching one
-        # literal value - a literal "active" matched nothing the catalog
-        # produces and silently killed the flow (kody 4366047801).
-        if str(row.get("status") or "") in _REGISTRATION_SKIP_STATUSES:
-            return
-        platform = str(row.get("platform") or "")
-        scope = str(row.get("profile_scope") or "")
-        session_id = str(row.get("session_id") or "")
-        seat = str(row.get("seat") or "")
-        if not (platform and scope and session_id and seat):
-            return
-        if seat not in lease_maps:
-            lease_maps[seat] = self._registration_seat_lease_map(seat)
-        topics = self._registration_lease_topics(row, lease_maps[seat])
-        # A begin() failure (an unreadable queue or registry, a refused field) is not
-        # caught here:  it reaches the caller's per-row guard, whose error line is the
-        # row's one error line and names its session (kody 4369230758).
-        out = OREG.begin(
-            db,
-            platform=platform,
-            profile_scope=scope,
-            session_id=session_id,
-            seat=seat,
-            requester="catalog",
-            evidence_location=self._registration_evidence(platform),
-            route=self._registration_route(row, topics),
-            route_topics=topics,
-            registrations=lambda pf, sid: self._registrations(db, pf, sid),
-        )
-        # "refused" is a session a terminal refusal still holds:  nothing to ask, and
-        # its drop was logged once when it happened.
-        if out.get("status") not in ("ask", "pending"):
-            return
-        entry = out["entry"]
-        if trace is not None:
-            trace["entry_id"] = str(entry.get("entry_id") or "")
-        if out.get("route_change") == "lost":
-            self.log.write(
-                "operator-registration-route-lost",
-                entry_id=entry.get("entry_id"),
-                platform=platform,
-                session_id=session_id,
-            )
-        if entry.get("notified_at"):
-            return
-        if entry.get("route_lost"):
-            # The asked topic is gone and no rename continuation matched:  do not
-            # post into a dead topic name.  Drop the entry NOW (kody 4366047591):
-            # the next pass asks a fresh question on the chat's current route
-            # instead of the chat staying unasked until the 24h deadline.
-            OREG.mark_dropped(db, entry["entry_id"], "route_lost")
-            return
-        route = entry.get("route")
-        if not isinstance(route, dict):
-            # No known channel/topic for the chat:  the registration stays pending
-            # (recoverable - a later pass fills the route once the chat's lease
-            # names one) and the gap is logged, never routed to the owner by DM.
-            self.log.write(
-                "operator-registration-missing-route",
-                entry_id=entry.get("entry_id"),
-                platform=platform,
-                session_id=session_id,
-            )
-            return
-        reconciled = entry.get("reconciled_at")
-        if (
-            isinstance(reconciled, (int, float))
-            and not isinstance(reconciled, bool)
-            and time.time() - float(reconciled) < REGISTRATION_RECONCILE_INTERVAL
-        ):
-            # The last pass could not prove this question's delivery and already
-            # spent its topic read-back:  reconcile at most once per interval, so
-            # a stuck-unknown entry cannot stall the wake with a 10-page walk
-            # every pass.
-            return
-        try:
-            sent = ORASK.send_location_question(
-                question=out["question"],
-                entry_id=entry["entry_id"],
-                channel=str(route["channel"]),
-                topic=str(route["topic"]),
-                env=self.env,
-                home=self.home,
-                owner_user_id=owner,
-                # The ledger row must outlive every state that can resend:  keep
-                # it at least until the entry's own deadline (past it the sweep
-                # drops the entry, so no pass can post for it again) - never let
-                # a pruned row make a landed question look never-sent.
-                window=max(
-                    OC.DEDUPE_WINDOW,
-                    float(entry.get("deadline") or 0) - time.time() + 60,
-                ),
-            )
-            code = str(sent.get("code") or "")
-            refused_reason = ""
-            if sent.get("status") == "sent":
-                OREG.mark_notified(db, entry["entry_id"])
-            elif sent.get("delivery_status") == OC.DELIVERY_UNKNOWN:
-                OREG.mark_reconciled(db, entry["entry_id"])
-            elif code in OREG.TERMINAL_REFUSAL_CODES:
-                # Terminal refusals stay terminal (kody 4366047123):  the
-                # entry is dropped with a code-word reason, and begin() holds the
-                # session instead of opening a new question on the next pass
-                # (kody 4366099679);  retryable refusals stay unstamped for the
-                # next pass.
-                field = str(sent.get("field") or "")
-                if OREG.mark_refused(db, entry["entry_id"], code, field=field):
-                    refused_reason = OREG.refusal_reason(code, field)
-            # The log line stays inside the row's guard:  the complete begin,
-            # send, stamp and log sequence is isolated per row, so one row's
-            # failure can never abort the rest of the batch.  The delivery class
-            # and the refusal code ride along (kody 4365989242), so retryable and
-            # terminal refusals read apart in the log, not only through the
-            # reason text.
-            self.log.write(
-                "operator-registration-ask",
-                entry_id=entry.get("entry_id"),
-                platform=platform,
-                status=sent.get("status"),
-                reason=str(sent.get("reason") or "")[:80],
-                delivery_status=str(sent.get("delivery_status") or ""),
-                code=code,
-            )
-            if refused_reason:
-                # A terminal refusal is surfaced the way an expired question is
-                # (kody 4366099679, gap 3):  the same drop line the sweep's drops
-                # write, so a refused session is never visible only as a send line.
-                self.log.write(
-                    "operator-registration-drop",
-                    entry_id=entry.get("entry_id"),
-                    platform=platform,
-                    reason=refused_reason,
-                )
-        except Exception as exc:
-            # One row's failure never aborts the rest of the batch:  each
-            # question is independent, and the un-stamped entry is retried on
-            # the next pass.
-            self.log.write(
-                "operator-registration-ask",
-                entry_id=entry.get("entry_id"),
-                platform=platform,
-                status="error",
-                error=type(exc).__name__,
-            )
-
-    def _maybe_registration_answer(
-        self,
-        message: Mapping[str, Any],
-        now: float,
-        *,
-        channel: str,
-        topic: str,
-        done: set[Any] | None = None,
-    ) -> bool:
-        """Carry out a location answer posted in the asked chat's own topic;  True when consumed.
-
-        The question goes to the registering chat's channel/topic (the return route its own
-        lease names), so only an answer in that same topic counts:  it registers the session
-        at the answered location (operator_registration validates it and cross-checks the
-        registry) and the confirmation goes back in the same topic.  The sender must be the
-        owner or the bot of the seat the registration belongs to - the topic alone never
-        authorizes an answer.  A message that is not a parseable answer, an answer for an
-        entry with no known route, or an answer posted in any other place returns False and
-        follows its normal wake path.
-
-        The guarantee is seat-level, not exact-chat:  chats sharing a seat bot share one
-        Zulip identity, so the sender check cannot tell two chats of one seat apart.  What
-        binds the answer to the exact registration is the entry ref (one pending question
-        per session identity), and for locally discovered chats the evidence cross-check
-        rejects an answer that contradicts where discovery actually ran - so a wrong-seat
-        or same-seat sibling chat can at worst confirm the true location early, never
-        register a false one where evidence exists.
-
-        ``done`` is the route's retry ledger:  the registration mutation is recorded
-        after it runs and the confirmation send after it lands, so a route retry repeats
-        only the step that failed - never a second registry mutation, never a skipped
-        confirmation.  An exception once the mutation is recorded propagates so the
-        route's retry (not the ordinary wake path) finishes the confirmation, and a
-        confirmation send that returns without landing raises
-        RegistrationConfirmationPending:  the route resends it, or, when no resend can
-        land in this call, its loop ends in the seat-inbox quarantine.
-        """
-        reply_ready = False
-        out: dict[str, Any] | None = None
-        try:
-            # The cheap pure check comes first:  almost every routed message is not an
-            # answer, so the queue file is only opened for text that parses as one.
-            parsed = OREG.parse_answer(message.get("content"))
-            if parsed is None:
-                return False
-            # The Operator's own confirmation names the ref and the settled location,
-            # so it parses as an answer.  It is not one:  consume it quietly instead
-            # of refusing it and waking the seat on the daemon's own post.
-            sender_id_raw = message.get("sender_id")
-            operator_id = self._seat_bot_user_id("OPERATOR")
-            if (
-                operator_id is not None
-                and isinstance(sender_id_raw, int)
-                and not isinstance(sender_id_raw, bool)
-                and sender_id_raw == operator_id
-            ):
-                return True
-            message_id = message.get("id")
-            recorded = None
-            if done is not None and message_id is not None:
-                recorded = next(
-                    (
-                        item
-                        for item in done
-                        if isinstance(item, tuple)
-                        and len(item) == 3
-                        and item[0] == message_id
-                        and item[1] == "register-location"
-                    ),
-                    None,
-                )
-            if recorded is not None:
-                # The route retried after the mutation already landed:  never register
-                # twice (answer() would read its own settled entry as "ignored" and
-                # post a wrong reply);  complete only the confirmation, with the reply
-                # text recorded next to the mutation.  The send ledger dedupes a copy
-                # that already landed, so this posts at most one confirmation.
-                reply_ready = True
-                if (message_id, CONFIRMATION_HELD) in done:
-                    # An earlier attempt found that no resend can land in this routing
-                    # call:  skip the send, and let the route's loop end in quarantine.
-                    raise RegistrationConfirmationPending(
-                        "the registration confirmation is held for this routing call"
-                    )
-                sent = ORASK.send_location_question(
-                    question=recorded[2],
-                    entry_id=parsed["entry_id"],
-                    channel=str(channel or ""),
-                    topic=str(topic or ""),
-                    env=self.env,
-                    home=self.home,
-                    owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
-                    # The reply is its own read-back marker:  the question and every
-                    # other reply carry the same ref, so only this text proves this
-                    # reply landed (Sentry 4368820226, kody 4368936156).
-                    read_back_markers=(recorded[2],),
-                )
-                # Only a landed confirmation is done, on this path too (kody 4366258037):
-                # a returned refused or unknown outcome leaves the step open and goes
-                # back to the route's loop below.
-                if sent.get("status") == "sent":
-                    done.add((message_id, "send-confirmation"))
-                self.log.write(
-                    "operator-registration-answer",
-                    entry_id=parsed["entry_id"],
-                    status="confirm-retried",
-                    delivery=sent.get("status"),
-                )
-                if sent.get("status") != "sent":
-                    self._confirmation_not_landed(sent, message_id, done)
-                return True
-            db = self._registration_db()
-            # Asked entries answer directly;  conflicted ones settle through the same
-            # path (operator_registration.answer re-runs every cross-check).
-            pending = OREG.answerable_entries(db)
-            if not pending:
-                return False
-            entry = next(
-                (item for item in pending if item.get("entry_id") == parsed["entry_id"]), None
-            )
-            if entry is None:
-                return False
-            route = entry.get("route")
-            if not isinstance(route, dict):
-                return False
-            if str(route.get("channel") or "").casefold() != str(channel or "").casefold():
-                return False
-            if str(route.get("topic") or "").casefold() != str(topic or "").casefold():
-                return False
-            # The topic binds WHERE an answer counts;  it does not make every poster there
-            # the chat.  Only the owner or the bot of the seat the registration belongs to
-            # may speak for the chat's location.
-            sender = message.get("sender_id")
-            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
-            # No pinned owner, no answer authority at all:  the seat-bot leg exists to
-            # speak for the owner's fleet, which is meaningless until an owner is pinned.
-            allowed: set[int] = set()
-            if owner:
-                # The owner leg keeps the fleet-wide client check:  an owner API key
-                # used by a script (sender id matches, client is not a pinned owner
-                # client) must not mint a durable session letter.
-                if self.owner_of(message):
-                    allowed.add(owner)
-                # The seat-bot leg is pinned-owner-only:  the bot's own users/me says who
-                # owns it, and a bot owned by anyone else never speaks for this fleet's
-                # registrations (fail closed when the owner is unknown).
-                bot_user_id = self._seat_bot_user_id(str(entry.get("seat") or ""))
-                if bot_user_id is not None and self._seat_bot_owned_by(
-                    str(entry.get("seat") or ""), owner
-                ):
-                    allowed.add(bot_user_id)
-            if not isinstance(sender, int) or isinstance(sender, bool) or sender not in allowed:
-                self.log.write(
-                    "operator-registration-answer",
-                    entry_id=parsed["entry_id"],
-                    status="refused",
-                    reason="the sender is not the owner or the chat's own seat bot",
-                )
-                return False
-            out = OREG.answer(
-                db,
-                entry_id=parsed["entry_id"],
-                location=parsed["location"],
-                registrations=lambda pf, sid: self._registrations(db, pf, sid),
-                register=lambda **identity: OR.register_session(
-                    db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
-                ),
-                # Only the pinned owner's own answer attests an uncorroborated location;
-                # the seat bot's word needs discovery evidence (kody 4366047282).
-                answerer="owner" if sender == owner else "seat_bot",
-                now=now,
-            )
-            reply = OREG.answer_reply(out)
-            # Completion means the letter actually landed (kody 4366220094):  a
-            # refused or uncorroborated answer still gets its reply sent, but it must
-            # NOT close the register-location step, or the ledger would record a
-            # registration the owner never got and the open question would be lost.
-            registered = False
-            if out.get("status") == "registered" and done is not None and message_id is not None:
-                done.add((message_id, "register-location", reply))
-                registered = True
-            reply_ready = True
-            sent = ORASK.send_location_question(
-                question=reply,
-                entry_id=parsed["entry_id"],
-                channel=str(route["channel"]),
-                topic=str(route["topic"]),
-                env=self.env,
-                home=self.home,
-                owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
-                # Every reply, registered or not, is its own read-back marker
-                # (Sentry 4368820226, kody 4368936156).
-                read_back_markers=(reply,),
-            )
-            # Only a landed confirmation is done (kody 4366047395):  a failed or
-            # unknown delivery keeps the route step open so the pass retries the
-            # confirmation instead of recording a completion the owner never saw.
-            if sent.get("status") == "sent" and done is not None and message_id is not None:
-                done.add((message_id, "send-confirmation"))
-            self.log.write(
-                "operator-registration-answer",
-                entry_id=parsed["entry_id"],
-                status=out.get("status"),
-                delivery=sent.get("status"),
-            )
-            if registered and sent.get("status") != "sent":
-                # A returned (not raised) refused or unknown outcome goes back to the
-                # route like a raised one (kody 4366258037):  the registration is
-                # recorded above, so a retry resends only the confirmation.  A reply to
-                # an answer that registered nothing is not retried here - a retry would
-                # re-run answer(), and the open question takes the next answer anyway.
-                self._confirmation_not_landed(sent, message_id, done)
-            return True
-        except OR.RegistryUnavailable as exc:
-            # Fail closed and say so loudly:  no answer is registered while the identity
-            # source cannot be read (answer() checks before it registers, so nothing was
-            # written), and the named path makes the gap diagnosable.  Not SystemExit:
-            # a transiently locked SQLite must not kill the daemon for every seat.
-            self.log.write(
-                "operator-registration-registry-unavailable",
-                db=self._registration_db(),
-                error=str(exc)[:120],
-            )
-            return False
-        except Exception as exc:
-            if reply_ready:
-                # Audit BEFORE the raise (kody 4366047501):  an escaping confirmation
-                # failure still leaves exactly one outcome row - the fresh-answer path
-                # names the registration status, the confirm-retry path names the
-                # retry - so "letter minted, confirmation outstanding" is diagnosable.
-                # A returned outcome that did not land already wrote its row, with
-                # the delivery it returned.
-                if not isinstance(exc, RegistrationConfirmationPending):
-                    self.log.write(
-                        "operator-registration-answer",
-                        entry_id=parsed["entry_id"],
-                        status=(out or {}).get("status") or "confirm-retried",
-                        delivery="raised:" + type(exc).__name__,
-                    )
-                # The mutation is recorded in the route's done set:  let the route
-                # retry finish the confirmation rather than dropping the answer into
-                # the ordinary wake path with its letter already minted.
-                raise
-            self.log.write("operator-registration-answer", status="error", error=type(exc).__name__)
-            return False
-
-    @staticmethod
-    def _confirmation_resendable(sent: Mapping[str, Any]) -> bool:
-        """Whether resending a confirmation that did not land can help in this routing call.
-
-        Not after a terminal refusal:  a rejected credential or a secret-scan withhold
-        is refused again on every resend (OREG.TERMINAL_REFUSAL_CODES, the ask path's
-        rule).  Not after a rate limit either (kody 4368853546):  the client already
-        waited out the server's Retry-After on its own bounded retries
-        (zulip.MAX_RATE_LIMIT_RETRIES), so an immediate resend would only meet the same
-        limit and hold the listener thread for another round.  A provably unsent
-        failure is resent, and an unknown delivery is reconciled by the topic read-back,
-        never re-posted blind.
-        """
-        if str(sent.get("code") or "") in OREG.TERMINAL_REFUSAL_CODES:
-            return False
-        return sent.get("http_status") != 429
-
-    def _confirmation_not_landed(
-        self, sent: Mapping[str, Any], message_id: Any, done: set[Any]
-    ) -> None:
-        """Hand a registration whose confirmation did not land back to the route's loop.
-
-        Always raises RegistrationConfirmationPending, so the answer is never consumed
-        with its confirmation missing:  a resendable outcome is retried by the route,
-        and one that cannot land in this routing call is marked CONFIRMATION_HELD, so
-        the remaining attempts skip the send and the loop ends in the seat-inbox
-        quarantine that surfaces every other unconfirmed answer (kody 4368853431).
-        """
-        if not self._confirmation_resendable(sent):
-            done.add((message_id, CONFIRMATION_HELD))
-        raise RegistrationConfirmationPending(
-            "the registration confirmation did not land (%s)"
-            % str(sent.get("delivery_status") or "refused")[:20]
-        )
 
     @staticmethod
     def may_inspect_chat(pending: W.Pending) -> bool:
@@ -7491,15 +6859,17 @@ class Daemon:
         *,
         history: Iterable[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
-        """Carry out a validated result:  post the reply (mentions neutralized, secret-scanned,
-        tagged), file the board item when allowed, and send owner notes through notify-owner.  A
-        note about a peer request, or any request screened uncertain or high, is also sent to the
-        owner as a Zulip DM (`dm_owner`).
+        """Carry out a validated result:  hand the reply to a live session as a draft, file the board
+        item when allowed, send owner notes through notify-owner, and record a route suggestion as
+        dropped.  A note about a peer request, or any request screened uncertain or high, is also sent
+        to the owner as a Zulip DM from the Operator bot (`dm_owner`).
 
-        Every Zulip post here is made by the OPERATOR bot and never by the seat's own bot (owner
-        ruling, Oct 30 2026): the headless consultant wrote the words, not the seat, so the reply
-        keeps its `[OPERATOR·wake]` tag, and the Operator relays it.
-        With no Operator nothing is posted and the refusal is on the ledger row as `post_error`."""
+        The Operator never answers on behalf of a platform (owner ruling, Nov 10 2026), so a reply is
+        posted nowhere:  with a live session on the topic it goes to that session as a draft that says
+        it was not posted, and with none `post` records the refusal and the reply is dropped.  The row
+        carries `post_error = operator_never_answers` and never the reply's text.  The one Zulip message
+        this method can still cause is the owner's `[OPERATOR·note]` DM, which is the Operator's own
+        alert and not an answer."""
         outcome: dict[str, Any] = {"posted_id": None, "board_uid": None, "note": False}
         trigger = pending.trigger_ids[-1] if pending.trigger_ids else 0
         reply = obj.get("reply") if obj.get("action") in ("reply", "board", "escalate") else None
@@ -7529,26 +6899,8 @@ class Daemon:
             outcome["draft_to"] = lease_id
             reply = None
         if reply:
-            text = W.compose_reply(trigger, reply)
-            found = secretscan.scan(text, self.hidden)
-            if W.loud_mention(
-                text
-            ):  # never reached after neutralize_mentions; refuse rather than notify
-                outcome["refused"] = "a mention survived neutralizing"
-            elif found:
-                outcome["refused"] = "secret scanner: %s" % found
-                self.notifier.notify(
-                    runner.seat,
-                    "simple-chat %s" % runner.seat,
-                    "a wake reply was refused by the secret scanner",
-                    kind="wake-secret",
-                    key="secret:%s" % pending.wake_id,
-                    once_per=0,
-                )
-            else:
-                outcome["reply_attempted"] = True
-                outcome["posted_id"] = self.post(runner, pending, text)
-                self._note_post_outcome(outcome, pending)
+            self.post(runner, pending)
+            outcome["post_error"] = pending.post_refusal
         board = obj.get("board")
         if obj.get("action") == "board" and isinstance(board, dict):
             outcome.update(self.file_board(runner, pending, board, trigger))
@@ -7585,14 +6937,7 @@ class Daemon:
                         % (dm_note.strip(), route.get("seat"), gate)
                     ).strip()
                 outcome.update(self.dm_owner(runner, pending, dm_note, risk, history))
-            if pending.owner and not outcome["posted_id"] and not lease_id:
-                outcome["reply_attempted"] = True
-                outcome["posted_id"] = self.post(
-                    runner, pending, W.compose_reply(trigger, W.OWNER_ACK)
-                )
-                self._note_post_outcome(outcome, pending)
-        # The route comes last, after the reply:  two posts, because a `·wake`-tagged post never wakes
-        # anyone and the route post must wake its target.
+        # The route comes last:  `handle_route` records it as dropped, with the reason.
         route = obj.get("route")
         if isinstance(route, dict):
             try:
@@ -7619,7 +6964,12 @@ class Daemon:
         """Why this wake may not route at all, or None.  Known before the run, so the prompt header
         tells the model, and checked again after it.  Only an owner trigger (Jay, from a human Zulip
         app) in a channel topic can route:  a peer-only batch never can, so no peer fans out through
-        the seat, and a DM never can."""
+        the seat, and a DM never can.
+
+        None here still means no more than "the checks may go on":  a route is never carried out,
+        because the Operator never answers on behalf of a platform (owner ruling, Nov 10 2026).  The
+        prompt header says so (`W.OPERATOR_NEVER_ANSWERS`) and `handle_route` drops what the model
+        suggests anyway."""
         if not (self.config.route_enabled and runner.cfg.route_enabled):
             return "disabled"
         if pending.type == "private":
@@ -7744,82 +7094,23 @@ class Daemon:
         history: Iterable[Mapping[str, Any]],
         lease_id: str | None,
     ) -> dict[str, Any]:
-        """Check a route suggestion and, when it passes, post `[OPERATOR·route→TARGET]` in the trigger's
-        topic with one live mention (the daemon's, of the target bot), then tell the owner who was
-        paged and why.  A dropped route is recorded and reaches the owner as a note."""
+        """Record a route suggestion as dropped and put the reason in the owner queue.
+
+        A route used to be posted as `[OPERATOR·route→TARGET]` with one live mention, in the
+        trigger's topic, and the Operator then told the owner who it had paged.  That page is the
+        Operator speaking for a platform on the owner's behalf, and the Operator never does that (owner
+        ruling, Nov 10 2026), so a route the checks would have passed is dropped with
+        `operator_never_answers`.  The checks still run first, so a route that fails one keeps that
+        reason.  A dropped route is an owner-queue note (with a Mac banner), never a Zulip post."""
         seat = str(route.get("seat") or "").upper()
-        reason = str(route.get("reason") or "")
-        info: dict[str, Any] = {"seat": seat, "status": "dropped", "why": None}
-        history = list(history)
-        triggers = self.trigger_messages(runner, pending, history)
-        why, bot, mode = self.route_check(runner, pending, obj, seat, triggers, lease_id)
-        if why is None and bot is not None:
-            owner_trigger = pending.owner_ids[-1]
-            owner_text = str((triggers.get(owner_trigger) or {}).get("content") or "")
-            link = A.zulip_link(
-                self.realm,
-                {
-                    "id": owner_trigger,
-                    "type": pending.type,
-                    "recipients": pending.recipients,
-                    "channel": pending.channel,
-                    "topic": pending.topic,
-                    "stream_id": pending.stream_id,
-                },
-            )
-            text = W.compose_route(
-                runner.seat,
-                seat,
-                str(bot.get("full_name") or seat),
-                int(bot["user_id"]),
-                owner_trigger,
-                reason,
-                owner_text,
-                link,
-            )
-            found = secretscan.scan(text, self.hidden)
-            if W.loud_mentions(text) != 1:
-                why = (
-                    "mention_check"  # never reached:  the composer neutralizes every other mention
-                )
-            elif found:
-                why = "secret_scanner"
-            else:
-                posted = self.post(runner, pending, text)
-                if posted is None:
-                    info.update(status="failed", why="post_failed", mode=mode)
-                    self.log.write(
-                        "route-failed", seat=runner.seat, wake_id=pending.wake_id, target=seat
-                    )
-                    return info
-                info.update(
-                    status="posted",
-                    why=None,
-                    mode=mode,
-                    posted_id=posted,
-                    target_id=int(bot["user_id"]),
-                    re=owner_trigger,
-                )
-                self.log.write(
-                    "route-posted",
-                    seat=runner.seat,
-                    wake_id=pending.wake_id,
-                    target=seat,
-                    mode=mode,
-                    posted_id=posted,
-                )
-                info.update(
-                    self.note_route_posted(
-                        runner, pending, seat, mode or "", reason, owner_trigger, posted
-                    )
-                )
-                return info
-        info["why"] = why
+        triggers = self.trigger_messages(runner, pending, list(history))
+        why = self.route_check(runner, pending, obj, seat, triggers, lease_id)[0]
+        why = why or W.OPERATOR_NEVER_ANSWERS
         self.log.write(
             "route-dropped", seat=runner.seat, wake_id=pending.wake_id, target=seat, reason=why
         )
-        self.note_route_dropped(runner, pending, seat, why or "dropped")
-        return info
+        self.note_route_dropped(runner, pending, seat, why)
+        return {"seat": seat, "status": "dropped", "why": why}
 
     def note_route_dropped(
         self, runner: SeatRunner, pending: W.Pending, seat: str | None, why: str
@@ -7840,109 +7131,6 @@ class Daemon:
             trigger_ids=pending.trigger_ids,
             owner=pending.owner,
         )
-
-    def note_route_posted(
-        self,
-        runner: SeatRunner,
-        pending: W.Pending,
-        seat: str,
-        mode: str,
-        reason: str,
-        owner_trigger: int,
-        posted: int,
-    ) -> dict[str, Any]:
-        """Tell the owner who was paged and why: a `[OPERATOR·note]` DM sent by the Operator (the same
-        channel as escalation notes) and the owner queue.  Never raises; a failure is recorded, because
-        the route post is already out and the wake's `done` row must still be written."""
-        try:
-            return self._note_route_posted(
-                runner, pending, seat, mode, reason, owner_trigger, posted
-            )
-        except Exception as exc:  # noqa: BLE001 - a note failure must never lose the ledger row
-            error = self.scrub(type(exc).__name__ + ": " + str(exc))
-            self.log.write(
-                "route-note-error", seat=runner.seat, wake_id=pending.wake_id, error=error
-            )
-            return {"owner_dm": None, "owner_dm_error": error}
-
-    def _note_route_posted(
-        self,
-        runner: SeatRunner,
-        pending: W.Pending,
-        seat: str,
-        mode: str,
-        reason: str,
-        owner_trigger: int,
-        posted: int,
-    ) -> dict[str, Any]:
-        where = "#%s > %s" % (
-            A.clean_banner(pending.channel, 60),
-            A.clean_banner(pending.topic, 80),
-        )
-        self.notifier.notify(
-            runner.seat,
-            "simple-chat %s" % runner.seat,
-            "paged %s for you in %s" % (seat, where),
-            kind="route",
-            key="route:%s" % pending.wake_id,
-            once_per=0,
-            note="routed to %s (%s): %s"
-            % (seat, mode, A.clean_banner(reason, W.LIMITS["route_reason"])),
-            trigger_ids=pending.trigger_ids,
-            owner=pending.owner,
-        )
-        owner_id = self.config.owner_user_id
-        if owner_id <= 0 or runner.fatal:
-            return {"owner_dm": None, "owner_dm_error": "owner dm skipped"}
-        link = A.zulip_link(
-            self.realm,
-            {
-                "id": posted,
-                "type": pending.type,
-                "recipients": pending.recipients,
-                "channel": pending.channel,
-                "topic": pending.topic,
-                "stream_id": pending.stream_id,
-            },
-        )
-        text = W.neutralize_mentions(
-            "\n".join(
-                [
-                    "[%s\u00b7note] re=%d" % (W.OPERATOR_TAG, owner_trigger),
-                    "Seat: %s" % runner.seat,
-                    "Routed: %s (%s)" % (seat, mode),
-                    "Where: %s" % where,
-                    "```quote",
-                    A.clean_banner(reason.replace("`", "'"), W.LIMITS["route_reason"]),
-                    "```",
-                    "Route post: %s" % link,
-                ]
-            )
-        )
-        if secretscan.scan(text, self.hidden):
-            self.log.write(
-                "owner-dm-refused",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                reason="secret scanner",
-            )
-            return {"owner_dm": None, "owner_dm_error": "secret scanner"}
-        try:
-            result = self._operator_send({"type": "direct", "to": [owner_id], "content": text})
-        except OPV.OperatorUnavailable as exc:
-            self._operator_refused("route-note", exc, seat=runner.seat, wake_id=pending.wake_id)
-            return {
-                "owner_dm": None,
-                "owner_dm_error": self.scrub("operator unavailable: " + exc.reason),
-            }
-        except Z.SimpleToolsError as exc:
-            reason_text = self.scrub(str(exc))
-            self.log.write(
-                "owner-dm-failed", seat=runner.seat, wake_id=pending.wake_id, error=reason_text
-            )
-            return {"owner_dm": None, "owner_dm_error": reason_text}
-        message_id = result.get("id")
-        return {"owner_dm": int(message_id) if isinstance(message_id, int) else None}
 
     def owner_dm_text(
         self,
@@ -8076,86 +7264,33 @@ class Daemon:
             sent["owner_dm_note_withheld"] = withheld
         return sent
 
-    def post(self, runner: SeatRunner, pending: W.Pending, text: str) -> int | None:
-        """The wake's reply (and its route page), posted by the OPERATOR.
+    def post(self, runner: SeatRunner, pending: W.Pending, kind: str = "reply") -> None:
+        """Refuse to post a wake's reply:  the Operator never answers on behalf of a platform.
 
-        A channel trigger is answered in its topic; a DM trigger only by DM to the original
-        recipient set, never in a channel.  Posts are about 3 seconds apart.
+        Owner ruling, Nov 10 2026, after the complaint had been made five or six times in a week:
+        "The operator should never be answering on behalf of a platform."  This used to post the
+        headless run's words as `[OPERATOR·wake] re=<trigger id>` in the trigger's topic (or to the
+        original recipients of a DM), and the route page as `[OPERATOR·route→SEAT]`.  Those replies
+        answered questions as if the owner had asked the Operator to, and promised things it never
+        does.  It is a refusal now, for every seat and every wake type:  nothing is sent, no Operator
+        client is built, the text is not kept, and the wake finishes as it would have with nothing to
+        say.  The refusal is logged as `post-refused` and `pending.post_refusal` carries the reason onto
+        the wake's ledger row as `post_error`, as an Operator that could not post used to.
 
-        The Operator posts, not the seat (owner ruling, Oct 30 2026): the headless consultant wrote
-        the words, and the seat's bot would say the seat thought them.  The text keeps its
-        `[OPERATOR·wake]` tag, which names the wake it reports (`re=`) and is what the loop guard reads.  A
-        direct message goes to the original recipient set, the seat included and the Operator
-        excluded (it is the sender), so the seat and everyone who was in the thread see the reply;
-        Zulip makes that one new conversation with the Operator in it, and the owner-in-the-
-        conversation guard still applies, so a thread without the owner is refused as before.
+        What the Operator may still send is its own:  the held-wake digest, the owner's DM notes, the
+        `@all` reminder.  (The session-letter questions are gone:  the owner ruled on Nov 10 2026 that
+        the Operator asks no clarifying questions.)  None of them is an answer to a wake, and none goes
+        through here.
 
-        Never falls back to the seat's bot: with no Operator, or one that cannot post here (not in
-        a private channel, say), nothing is posted, the refusal is logged and `pending.post_refusal`
-        carries the reason onto the ledger row.  Returns the message id, or None."""
-        pending.post_refusal = None
-        if runner.fatal:
-            self.log.write(
-                "post-refused", seat=runner.seat, wake_id=pending.wake_id, reason="seat_refused"
-            )
-            pending.post_refusal = "seat_refused"
-            return None
-        try:
-            operator_id = self.operator_voice.user_id()
-            if pending.type == "private":
-                to = [
-                    i
-                    for i in pending.recipients
-                    if isinstance(i, int) and not isinstance(i, bool) and i != operator_id
-                ]
-                if not to:
-                    return None
-                params: dict[str, Any] = {"type": "direct", "to": to, "content": text}
-            else:
-                params = {
-                    "type": "stream",
-                    "to": pending.channel,
-                    "topic": pending.topic,
-                    "content": text,
-                }
-            result = self._operator_send(params)
-        except Z.DmGuardRefused as exc:
-            # A wake reply into a direct message with no owner in it is refused by the
-            # owner-in-the-conversation guard (AFC-469):  that thread has no owner taking part, so
-            # the answer belongs in a channel.  The refusal is recorded and the daemon keeps
-            # running:  a wake is not worth losing the seat over.
-            self.log.write(
-                "post-refused-dm",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                reason=exc.code,
-                error=self.scrub(str(exc)),
-            )
-            pending.post_refusal = exc.code
-            return None
-        except (OPV.OperatorUnavailable, OPV.OperatorRefused) as exc:
-            self._operator_refused("wake-reply", exc, seat=runner.seat, wake_id=pending.wake_id)
-            pending.post_refusal = exc.code
-            return None
-        except Z.SimpleToolsError as exc:
-            self.log.write(
-                "post-failed",
-                seat=runner.seat,
-                wake_id=pending.wake_id,
-                error=self.scrub(str(exc)),
-                posted_by=OPV.VOICE,
-            )
-            pending.post_refusal = "post_failed"
-            return None
-        message_id = result.get("id")
-        if pending.type == "private" and operator_id not in pending.recipients:
-            # The reply is in a NEW conversation (the Operator joined it), so the router counts it
-            # under that thread's key and the trigger thread's loop guard would never move.  Count it
-            # on the thread that woke the seat as well, so three wake replies still stop the thread.
-            self.loopguard.note(
-                pending.key, wake_reply=True, owner=False, rolling=False, now=self.clock.time()
-            )
-        return int(message_id) if isinstance(message_id, int) else None
+        Returns None, always.  `kind` only names what was refused in the log."""
+        pending.post_refusal = W.OPERATOR_NEVER_ANSWERS
+        self.log.write(
+            "post-refused",
+            seat=runner.seat,
+            wake_id=pending.wake_id,
+            reason=W.OPERATOR_NEVER_ANSWERS,
+            kind=kind,
+        )
 
     def file_board(
         self, runner: SeatRunner, pending: W.Pending, board: Mapping[str, Any], trigger: int
@@ -8508,6 +7643,8 @@ class Daemon:
         stands in a build of the client, which reads the vault and can take a minute.  With no client
         ready it raises OperatorUnavailable (code `operator_building`) and the build goes on in the
         background, so the post is skipped this time and tried again."""
+        # First, before the scan, the client build and the pacing wait: a refused DM costs nothing.
+        self.operator_voice.refuse_unclarified_dm(params)
         found = secretscan.scan(str(params.get("content") or ""), self.hidden)
         if found:
             raise OPV.OperatorRefused("secret scanner: %s" % found)
@@ -8517,6 +7654,7 @@ class Daemon:
 
     def _operator_edit(self, message_id: int, content: str, *, wait: bool = True) -> dict[str, Any]:
         """Edit one of the Operator's own messages, with the same scan and no other client."""
+        self.operator_voice.refuse_unclarified_edit(message_id)  # first: costs nothing when refused
         found = secretscan.scan(str(content or ""), self.hidden)
         if found:
             raise OPV.OperatorRefused("secret scanner: %s" % found)
@@ -8553,17 +7691,6 @@ class Daemon:
             reason=self.scrub(str(getattr(exc, "reason", None) or exc)),
             **fields,
         )
-
-    @staticmethod
-    def _note_post_outcome(outcome: dict[str, Any], pending: W.Pending) -> None:
-        """Put who posted, or why nothing was posted, on the wake's ledger row."""
-        if outcome.get("posted_id"):
-            outcome["posted_by"] = OPV.VOICE
-            outcome.pop(
-                "post_error", None
-            )  # an earlier post of this wake failed, a later one landed
-        elif pending.post_refusal:
-            outcome["post_error"] = pending.post_refusal
 
     def _catch_up(self, runner: SeatRunner, data: Mapping[str, Any], now: float) -> None:
         """One catch-up wake for a seat whose adapter runs a turn (`http` or `claude`), when its
@@ -8659,61 +7786,6 @@ class Daemon:
         return pending
 
     # ---- periodic work -------------------------------------------------------------------------
-    def _muse_bridge_native(self) -> None:
-        """Consume one approved server routine using the addressed seat's original runner."""
-        decision = MB.claim_native(self.root)
-        if decision is None:
-            return
-        seat, message_id, receipt = decision["source_seat"], decision["id"], decision["receipt"]
-        runner = self.seats.get(seat)
-        row = MB.find_source(self.root, self.config, seat, message_id)
-        if (
-            runner is None
-            or row is None
-            or row.get("seq") != decision.get("seq")
-            or runner.cfg.wake != "http"
-        ):
-            MB.finish_native(self.root, receipt, "held")
-            self.log.write("muse-bridge-held", seat=seat, id=message_id, reason="source_changed")
-            return
-        now = self.clock.time()
-        pending = W.Pending(
-            "muse-bridge-" + receipt[:32],
-            seat,
-            row,
-            owner=row.get("owner") is True,
-            now=now,
-            due=now,
-        )
-        pending.add(row, row.get("owner") is True)
-        try:
-            self.run_wake(runner, pending)
-        except Exception as exc:
-            # The pre-dispatch claim remains uncertain after an exception.  A retry could invoke the
-            # external routine twice, so an operator must inspect its receipt first.
-            self.log.write(
-                "muse-bridge-dispatch-uncertain",
-                seat=seat,
-                id=message_id,
-                error=self.scrub(type(exc).__name__),
-            )
-            return
-        # routine_delivered is the Worker's integer count, so the ledger's surfaced flag decides.
-        state = MB.native_outcome(runner.ledger.wakes().get(pending.wake_id) or {})
-        MB.finish_native(self.root, receipt, state)
-        self.log.write("muse-bridge-dispatch", seat=seat, id=message_id, state=state)
-
-    def _muse_bridge_mac_loop(self) -> None:
-        bridge = MBM.MacBridge(self)
-        while not self.stop.is_set():
-            try:
-                bridge.run_once()
-            except (
-                Exception
-            ) as exc:  # an unavailable server or model must leave inbox cursors untouched
-                self.log.write("muse-bridge-error", error=self.scrub(type(exc).__name__))
-            self.stop.wait(5.0)
-
     def tick(self) -> None:
         now = self.clock.time()
         if self.reload_requested:
@@ -8732,20 +7804,24 @@ class Daemon:
             self.last_tick["reap"] = now
             for runner in self.seats.values():
                 self.reap(runner)
-        if (
-            self.config.instance == "server"
-            and self.config.muse_bridge_enabled
-            and now - self.last_tick["muse_bridge"] >= 2
-        ):
-            self.last_tick["muse_bridge"] = now
-            try:
-                self._muse_bridge_native()
-            except Exception as exc:  # the bridge must not stop ordinary listener routing
-                self.log.write("muse-bridge-error", error=self.scrub(type(exc).__name__))
         if now - self.last_tick["grace"] >= 30:
             self.last_tick["grace"] = now
             for runner in self.seats.values():
                 self.release_grace(runner)
+        if now - self.last_tick["linear_comments"] >= 30:
+            self.last_tick["linear_comments"] = now
+            engine = getattr(self, "linear_comments", None)
+            if engine is not None:
+                # Any seat's client can load the public-stream set;  the tick itself only
+                # flushes edits whose batching interval has passed.
+                client = next((r.client for r in self.seats.values() if r.client is not None), None)
+                try:
+                    engine.tick(client)
+                except Exception as exc:  # the comments must never stop the tick
+                    self.log.write(
+                        "linear-comments-error",
+                        error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+                    )
         if now - self.last_tick["prune"] >= W.DAY:
             self.last_tick["prune"] = now
             for runner in self.seats.values():
@@ -8771,6 +7847,7 @@ class Daemon:
                 )
         for runner in self.seats.values():
             runner.flush_cursor()
+        self._maybe_start_registry_sweep(now)
         if now - self.last_tick["status"] >= STATUS_TICK_SECONDS:
             self.last_tick["status"] = now
             self.write_status()
@@ -8791,7 +7868,7 @@ class Daemon:
             classes = set(item.get("classes") or [])
             key = L.topic_key(str(item.get("channel") or ""), str(item.get("topic") or ""))
             if (
-                not (classes & {"direct", "dm", "fleet", "owner", "wildcard"})
+                not (classes & {"direct", "dm", "fleet", "owner", "wildcard", "reply"})
                 and key not in runner.followed
             ):
                 continue
@@ -9114,7 +8191,6 @@ class Daemon:
                 "last_event": runner.last_event_wall,
                 "wake": runner.cfg.wake,
                 "routine": routine,
-                "muse_bridge": MB.enabled(self.config, seat),
                 "pinned": (pin or muse_pin or or_pin or {}).get("pinned"),
                 "pin": pin or muse_pin or or_pin,
                 "claude": claude,
@@ -9144,6 +8220,8 @@ class Daemon:
                 "wakes_24h": len(day),
                 "routes_24h": W.routes_in(views.values(), now),
                 "route_enabled": bool(self.config.route_enabled and runner.cfg.route_enabled),
+                # Additive:  a reader that predates the switch ignores it (AFC-643-style decode).
+                "bracket_recipient_wakes": bool(runner.cfg.bracket_recipient_wakes),
                 # No dollar figures in the status at all (owner 2026-10-13):  the per-run cost of a wake was
                 # never a real signal, while the COUNT caps are what actually bound a seat.
                 "budget": runner.cfg.budget,
@@ -9166,17 +8244,6 @@ class Daemon:
             "updated": now,
             "instance": self.config.instance,
             "disabled": sorted(self.config.disabled),
-            "muse_bridge": {
-                "enabled": self.config.muse_bridge_enabled,
-                "remote_seats": list(self.config.muse_bridge_remote_seats),
-                "pin": (
-                    MBM.pin_state(
-                        self.root, MBM.resolve_bridge_muse(self.wake_path), C.MUSE_DEFAULT_MODEL
-                    )[1]
-                    if self.config.instance == "mac" and self.config.muse_bridge_enabled
-                    else "inactive"
-                ),
-            },
             "skipped_seats": {
                 seat: [self.scrub(p) for p in problems]
                 for seat, problems in sorted(self.config.skipped_seats.items())
@@ -9202,9 +8269,46 @@ class Daemon:
             # Whether the Operator itself can speak (AFC-602):  a listener that is up with a dead
             # Operator voice drops every wake it would have reported, and nothing else says so.
             "operator_voice": self.operator_voice.snapshot(),
+            # The one stale sweeper's last pass (AFC-721):  null where no sweeper runs (every
+            # instance but the server) and before the first pass.
+            "registry_sweep": self._registry_sweep_status(),
             "drain": self._drain_status(),
             "seats": seats,
         }
+
+    def _maybe_start_registry_sweep(self, now: float) -> None:
+        """Start the one stale sweeper's due pass on its own thread (AFC-721, kody 4544460899).
+
+        A pass is one write transaction, which can wait on the store's lock;  on its own thread
+        that wait never stalls routing.  One pass at a time:  while one runs, a due pass is not
+        claimed, so it starts on the first tick after the running one ends.  A sweeper whose
+        service has been dropped starts nothing."""
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return
+        running = getattr(self, "_registry_sweep_thread", None)
+        if running is not None and running.is_alive():
+            return
+        if not sweeper.claim(now):
+            return
+
+        def sweep() -> None:
+            try:
+                sweeper.run(now)
+            except Exception as exc:  # noqa: BLE001 - a sweep must never stop the router
+                self.log.write(
+                    "registry-sweep-error", error=self.scrub(type(exc).__name__ + ": " + str(exc))
+                )
+
+        thread = threading.Thread(target=sweep, name="registry-sweep", daemon=True)
+        self._registry_sweep_thread = thread
+        thread.start()
+
+    def _registry_sweep_status(self) -> dict[str, Any] | None:
+        sweeper = getattr(self, "registry_sweeper", None)
+        if sweeper is None or sweeper.service is not getattr(self, "registry_service", None):
+            return None
+        return sweeper.last
 
     def _drain_status(self) -> dict[str, Any]:
         """The planned-drain observability surface (AFC-652, F1):  every field a qualified
@@ -9313,7 +8417,55 @@ class Daemon:
         runner.failures = 0
         runner.down_since = None
         self.log.write("connected", seat=runner.seat, backfill=len(messages))
+        self._seed_topic_ledger(runner)
         return messages
+
+    def _seed_topic_ledger(self, runner: SeatRunner) -> None:
+        """Fill the topic ledger from the seat's own latest posts, once per seat per run.
+
+        The ledger is memory only, so after a restart a chat that tagged a peer an hour ago would not be
+        woken by the peer's reply until that chat posted again.  The seat's own posts are all the reply
+        rule ever reads (`TopicLedger.reply_target`), and one bounded page of them (`LEDGER_SEED_POSTS`,
+        newest first, one request, no paging) puts the recent ones back.  This runs on the seat's own
+        connect thread, never the router's, and only records:  nothing is routed, no lease or inbox is
+        touched and no wake can follow.  A failed read is logged and costs only that restart's gap."""
+        if (
+            runner.ledger_seeded
+            or runner.me is None
+            or runner.client is None
+            or runner.seat in R.NO_REPLY_WAKE_SEATS
+        ):
+            return
+        try:
+            page = runner.fetch(
+                [{"operator": "sender", "operand": runner.me.user_id}],
+                anchor="newest",
+                before=LEDGER_SEED_POSTS,
+            )
+        except (Z.SimpleToolsError, ValueError, OSError) as exc:
+            self.log.write(
+                "topic-ledger-seed-error",
+                seat=runner.seat,
+                error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+            )
+            return
+        runner.ledger_seeded = True
+        kept = 0
+        for message in sorted(
+            (m for m in page if isinstance(m, dict) and isinstance(m.get("id"), int)),
+            key=lambda m: m["id"],
+        ):
+            try:
+                self.record_topic_post(runner, message)
+                kept += 1
+            except Exception as exc:  # noqa: BLE001 - one odd message never costs the rest
+                self.log.write(
+                    "topic-ledger-error",
+                    seat=runner.seat,
+                    id=message.get("id"),
+                    error=self.scrub(type(exc).__name__ + ": " + str(exc)),
+                )
+        self.log.write("topic-ledger-seed", seat=runner.seat, posts=kept)
 
     def _refuse(self, runner: SeatRunner, text: str) -> None:
         """A credential or role problem:  no queue, retried slowly (every 5 minutes), never spun."""
@@ -9665,6 +8817,7 @@ class Daemon:
                 return self.refuse_start()
         self._configure_outgoing_webhook()
         self._configure_listener_api()
+        self._configure_linear_comments()
         for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
         self._broadcast_ledger_boot()
@@ -9709,15 +8862,6 @@ class Daemon:
         self.operator_voice.warm()
         try:
             while not self.stop.is_set():
-                if (
-                    self.config.instance == "mac"
-                    and self.config.muse_bridge_enabled
-                    and (self.muse_bridge_thread is None or not self.muse_bridge_thread.is_alive())
-                ):
-                    self.muse_bridge_thread = threading.Thread(
-                        target=self._muse_bridge_mac_loop, name="muse-bridge", daemon=True
-                    )
-                    self.muse_bridge_thread.start()
                 # Threads belong to a runner object, not a seat name:  a seat removed by a reload
                 # keeps its old threads only until they see runner.stop, and a seat added back
                 # gets a new runner with fresh threads.

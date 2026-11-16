@@ -5,7 +5,7 @@ import { callSeatLabel, renderStatusOverview } from "./status.js";
 // could come from a client (a CIMD document, a registration, a query string)
 // goes through `escapeHtml`.  Copy follows FLEET-UI-COPY.md:  light theme,
 // Title Case headings and buttons, U+00A0 plus a space between sentences
-// (HTML collapses two ASCII spaces), 12-hour times with am or pm on Jay's
+// (HTML collapses two ASCII spaces), 12-hour times with spaced uppercase AM/PM on Jay's
 // clock and no zone abbreviation.
 
 export const SENTENCE_GAP = "\u00a0 ";
@@ -32,7 +32,7 @@ export function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"'`]/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-/** "Fri, Oct 9, 3:15am" on Jay's clock (Central), no zone abbreviation. */
+/** "Fri, Oct 9, 3:15 AM" on Jay's clock (Central), no zone abbreviation. */
 export function ownerTime(ms) {
   if (!Number.isFinite(ms)) return "";
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -45,7 +45,7 @@ export function ownerTime(ms) {
     hour12: true,
   }).formatToParts(new Date(ms));
   const get = (type) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${get("weekday")}, ${get("month")} ${get("day")}, ${get("hour")}:${get("minute")}${get("dayPeriod").toLowerCase()}`;
+  return `${get("weekday")}, ${get("month")} ${get("day")}, ${get("hour")}:${get("minute")} ${get("dayPeriod").toUpperCase()}`;
 }
 
 // `same-origin`, never `no-referrer`:  a browser sends `Origin: null` on a form
@@ -242,14 +242,14 @@ function actionButton(csrf, action, label, fields = {}) {
  * atomically with the mint (src/seat-state.js gbBearerMintChecked), so an
  * accidental refresh or resubmit cannot touch the bearer - it is acked from
  * the stored outcome instead (gbBearerMintCompletedPage).  The
- * send line states what THIS minted bearer can actually do:  a persona bearer
+ * send line states what THIS minted bearer can actually do:  a bot bearer
  * and a seat bearer minted with the acceptance reach Fleet MCP's /mcp and Git Relay;
  * a seat bearer minted without it is Git Relay only.  Both forms also note that a
  * fleet tool verifying with this Worker (simple-board is the first) uses the
  * same bearer - the /mcp acceptance does not gate that, and per-tool support
  * is stated as landing, never as already shipped.
  */
-export function gbBearerRevealPage({ identity, token, expiresAt, kind = "persona", mcpAccept = true }) {
+export function gbBearerRevealPage({ identity, token, expiresAt, kind = "bot", mcpAccept = true }) {
   const onMcp = kind !== "seat" || mcpAccept === true;
   const send = onMcp
     ? "Send it as an Authorization: Bearer header to Fleet MCP's /mcp URL and to Git Relay;  it acts only as this identity.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential."

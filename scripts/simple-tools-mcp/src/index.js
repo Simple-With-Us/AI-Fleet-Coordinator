@@ -41,6 +41,7 @@ import {
   SEAT_SECRETS,
   SEAT_LABELS,
   WAKE_SECRETS,
+  LISTENER_KEY_SECRET_NAMES,
   KNOWN_SEATS,
   GRANT_MAX_AGE_MS,
 } from "./config.js";
@@ -70,7 +71,13 @@ import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } f
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveGrAssertVerify, grantSummaryIsLive, cachedGrantExists } from "./gr-assert-verify.js";
 import { grAssertionMinter } from "./gr-assert.js";
-import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
+import { resolveGrSecrets, grClientFromResolved, grUnavailableWhenNoClient } from "./gr-tools.js";
+
+function wireGrFront({ grSecrets, env, grClient, relayAuthAvailable }) {
+  if (grClient) return { gr: grClient, grUnavailableReason: null, grMissingEnv: [] };
+  const { reason, missing } = grUnavailableWhenNoClient(grSecrets, env, { relayAuthAvailable });
+  return { gr: null, grUnavailableReason: reason, grMissingEnv: missing };
+}
 import { isGitPath, serveGit } from "./git-route.js";
 import { HostedTools, HOSTED_READ_TOOLS } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
@@ -444,6 +451,12 @@ async function serveMcp(request, env, ctx) {
   const grMinter = result.code === "paused" || config.eventsOnlySeats.includes(seat)
     ? null
     : grAssertionMinter(env, { seat, scopes, epoch: props.epoch, approvedAt: props.approved_at, phase: props.phase, grantRef });
+  const grWire = wireGrFront({
+    grSecrets,
+    env,
+    grClient: grMinter ? grClientFromResolved(grSecrets, env, { minter: grMinter }) : null,
+    relayAuthAvailable: !!grMinter,
+  });
 
   // The eavesdropper key resolves through Infisical too (optional:  no wake key
   // means no eavesdropper tools, never a 500 - src/eavesdropper.js).
@@ -474,7 +487,9 @@ async function serveMcp(request, env, ctx) {
     // is unconfigured:  the gr_* tools then answer not_configured and every
     // other tool works as before.  The signer key itself resolves lazily
     // per Git call and fails only that call closed when unavailable.
-    gr: grMinter ? grClientFromResolved(grSecrets, env, { minter: grMinter }) : null,
+    gr: grWire.gr,
+    grUnavailableReason: grWire.grUnavailableReason,
+    grMissingEnv: grWire.grMissingEnv,
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
@@ -489,9 +504,11 @@ async function serveMcp(request, env, ctx) {
     // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
     // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
+    workerEnv: env,
   });
   // The authenticated grant assigns the acting principal. No per-call peer or
-  // persona credential loader is installed, even for legacy shared OAuth seats.
+  // bot credential loader is installed, even for legacy shared OAuth seats.
   const routedTools = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = {
     token: auth.token,
@@ -539,10 +556,10 @@ function safeHost(origin) {
 // ---------------------------------------------------------------- /mcp with a per-bot bearer
 
 /**
- * A Grok Bot persona's own bearer (src/gb-bearer.js) in place of an OAuth token.  The token names its persona;
- * that persona's SeatGate holds the hash.  The router is built with NO createIdentity, so the connection acts
- * only as that persona (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
- * generic 401.  Paused personas, an unset credential bundle and an expired bearer all refuse.
+ * A Grok bot's own bearer (src/gb-bearer.js) in place of an OAuth token.  The token names its bot;
+ * that bot's SeatGate holds the hash.  The router is built with NO createIdentity, so the connection acts
+ * only as that bot (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
+ * generic 401.  Paused bots, an unset credential bundle and an expired bearer all refuse.
  */
 async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   const config = configFor(env);
@@ -583,7 +600,7 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
     return refuse();
   }
   // A valid hash is not consent for hosted tool access.  Legacy missing rows
-  // and explicit GR-only rows both refuse before loading any persona bundle.
+  // and explicit GR-only rows both refuse before loading any bot bundle.
   if (checked.mcp_accept !== true) { IDENTITY_CACHE.evict(bearerHash); return refuse(); }
   // The pause flag rides the bearer check's own answer (R1):  no second
   // gate RPC for the one boolean.
@@ -607,6 +624,12 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
   const recallSecrets = await resolveRecallSecrets(env);
   const grSecrets = await resolveGrSecrets(env);
+  const grWire = wireGrFront({
+    grSecrets,
+    env,
+    grClient: grClientFromResolved(grSecrets, env, { bearer: token }),
+    relayAuthAvailable: true,
+  });
   const tools = new HostedTools({
     seat: identity,
     callerSeat: identity,
@@ -623,11 +646,15 @@ async function serveGbBearerMcp(request, env, token, ctx, credential = null) {
     identityEntry,
     // The GR front authenticates to the relay with this same bearer:  the
     // relay resolves it to the identity and applies its own allowlist.
-    gr: grClientFromResolved(grSecrets, env, { bearer: token }),
+    gr: grWire.gr,
+    grUnavailableReason: grWire.grUnavailableReason,
+    grMissingEnv: grWire.grMissingEnv,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
+    workerEnv: env,
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
     config: { ...config, botEmails: { ...config.botEmails, [identity]: credentials.email } },
@@ -687,7 +714,7 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     if (checked.reason === "expired") {
       try { await seatGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
     } else if (checked.reason === "mismatch") {
-      // Static seat set for the same outage reason as the persona path.
+      // Static seat set for the same outage reason as the bot path.
       try { await seatGate.gbBearerMismatch(seat, new Set(BEARER_SEATS)); } catch { /* A counter is observability, never the security path. */ }
     }
     rememberBadBearer(bearerHash);
@@ -729,6 +756,12 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     ? await resolveSecret(env, { name: listenerSecret, path: "/wake", envName: listenerSecret, optional: true })
     : "";
   const grSecrets = await resolveGrSecrets(env);
+  const grWire = wireGrFront({
+    grSecrets,
+    env,
+    grClient: grClientFromResolved(grSecrets, env, { bearer: token }),
+    relayAuthAvailable: true,
+  });
   const tools = new HostedTools({
     seat,
     callerSeat: seat,
@@ -739,9 +772,11 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     grantRef,
     paused: false,
     config: { ...config, botEmails: { ...config.botEmails, [seat]: email } },
-    // Same pass-through as the persona path:  the relay authenticates this
+    // Same pass-through as the bot path:  the relay authenticates this
     // bearer and enforces the seat's own allowlist.
-    gr: grClientFromResolved(grSecrets, env, { bearer: token }),
+    gr: grWire.gr,
+    grUnavailableReason: grWire.grUnavailableReason,
+    grMissingEnv: grWire.grMissingEnv,
     zulip: new ZulipClient({ email, key, ownerUserId: config.ownerUserId }),
     key,
     gate: seatGate,
@@ -757,6 +792,8 @@ async function serveSbtBearerMcp(request, env, token, ctx, credential = null) {
     fleetlink: fleetlinkClientFromSecret(Object.hasOwn(ADDITIONAL_BEARER_SEATS, seat) ? "" : fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     notes: operatorNotesClientFromEnv(env),
+    diagnosticsGate: gate(env, GATE_LOG_NAME),
+    workerEnv: env,
   });
   const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = { token: grantRef, clientId: "sbt-bearer", scopes, extra: { seat } };
@@ -848,8 +885,8 @@ async function serveSpike(request, env, ctx, config) {
   const wakeKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
-  // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
-  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
+  // SPIKE_HMAC_KEY must never equal any seat's wake or read key, not only this seat's.
+  const wakeKeys = await resolveWakeKeys(env, LISTENER_KEY_SECRET_NAMES);
   if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
@@ -891,7 +928,7 @@ async function serveSpike(request, env, ctx, config) {
 
 /**
  * The Linear token health of every seat that has Linear credentials (the six
- * LINEAR_SEATS and the twelve Grok Bot personas), for Muster's launchd reader.
+ * LINEAR_SEATS and the twelve Grok bots), for Muster's launchd reader.
  * 404 when HEALTH_HMAC_KEY is unset or equals any seat's wake key, POST only,
  * signed.  The body holds ages, counts and fixed codes:  no token or credential.
  */
@@ -900,8 +937,8 @@ async function serveLinearHealth(request, env, config) {
   if (!key) return notFound();
   // Every wake key Infisical serves, as serveSpike reads them (sentry
   // 4364275301):  in required mode the wake bindings may be gone, and an env
-  // read would miss a health key equal to a wake key.
-  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
+  // read would miss a health key equal to a wake key (or a read key).
+  const wakeKeys = await resolveWakeKeys(env, LISTENER_KEY_SECRET_NAMES);
   const spikeKeyRaw = typeof env.SPIKE_HMAC_KEY === "string" ? env.SPIKE_HMAC_KEY.trim() : "";
   if (wakeKeys.includes(key) || (spikeKeyRaw && spikeKeyRaw === key)) {
     console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));
@@ -919,7 +956,7 @@ async function serveLinearHealth(request, env, config) {
   }
   const identities = [];
   const missing = [];
-  // /zulip too:  the Grok Bot persona rows below read it (kody 4365622780).
+  // /zulip too:  the Grok bot rows below read it (kody 4365622780).
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   for (const seat of LINEAR_SEATS) {
     if (!linearSecretNames(seat) || !config.hostedSeats.includes(seat)) continue;
@@ -1353,7 +1390,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         const g = gate(env, identity);
         try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
         try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
-        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), credentialsUnavailable: delegatedReadiness.credentialsUnavailable, status, mismatches, mismatchesUnavailable };
+        return { identity, kind: "bot", credentials: delegatedRoles.has(identity), credentialsUnavailable: delegatedReadiness.credentialsUnavailable, status, mismatches, mismatchesUnavailable };
       }),
       // Every seat may hold a bearer too (owner direction 2026-10-23:  all apps in
       // this panel, one credential per identity, honored by ST-MCP and GR-MCP).
@@ -1499,8 +1536,8 @@ async function serveAdmin(request, env, config, oauth, email) {
           await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
           if (!(await resolveDelegatedCredentials(env)).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
           ({ token } = await newGbBearer(identity));
-          // A persona's bearer is its only credential:  accepted on /mcp by design.
-          mcpAccept = true; kind = "persona";
+          // A bot's bearer is its only credential:  accepted on /mcp by design.
+          mcpAccept = true; kind = "bot";
         } else {
           let credentials;
           try {

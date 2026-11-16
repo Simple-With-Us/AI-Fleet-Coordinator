@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import secrets
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -180,6 +181,12 @@ class Receiver(Base):
         with urllib.request.urlopen("http://%s:%d/health" % (host, bound), timeout=5) as response:
             answer = json.loads(response.read().decode())
         self.assertEqual(answer, {"ok": True, "seat": "AG"})
+        # `simple-chat daemon test-wake` tells this bridge from the wake router by the router's
+        # `GET /health/<SEAT>`, which the bridge must not answer (listener_cli._router_health).
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen("http://%s:%d/health/AG" % (host, bound), timeout=5)
+        self.assertEqual(caught.exception.code, 404)
+        caught.exception.close()
 
     def test_good_wake_is_accepted_and_deduped(self) -> None:
         env = self.env(
@@ -392,3 +399,46 @@ class DeliverCli(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServeStarts(Base):
+    """`serve` itself, in its own process, as the unit starts it:  it must get as far as listening (PR #1838 review:
+    a deleted attribute crashed it at startup while every handler-level test stayed green)."""
+
+    def test_serve_binds_and_listens(self) -> None:
+        env = self.env(
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_URL="https://registry.invalid",
+            SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY="k" * 40,
+        )
+        full_env = {"PATH": "/usr/bin:/bin", **env}
+        proc: subprocess.Popen | None = None
+
+        def stopped(signum, frame):
+            # A SIGTERM to the test runner skips `finally` by default, which would leave the bridge listening.
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+            raise SystemExit(128 + signum)
+
+        previous = signal.signal(signal.SIGTERM, stopped)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-I", str(BRIDGE), "serve", "--port", "0"],
+                env=full_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            line = proc.stdout.readline().decode("utf-8", "replace") if proc.stdout else ""
+            if not line:
+                proc.wait(timeout=10)
+                err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+                self.fail("serve exited before listening: %s" % err[-400:])
+            self.assertIn("ag-wake-bridge listening on 127.0.0.1:", line)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+            if proc is not None:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=10)
+                for stream in (proc.stdout, proc.stderr):
+                    if stream:
+                        stream.close()

@@ -75,7 +75,7 @@ struct ServerSeatRowPresentation: Equatable {
             var lines: [String] = []
             if paused { lines.append(facts.connection.label) }
             lines.append(Self.runLine(facts.runState))
-            lines.append("Wake: \(facts.wakeKind.label)")
+            lines.append(facts.wakeKind.rowText)
             if facts.lastEvent != nil {
                 lines.append("Last event \(facts.lastEventLabel(now: now))")
             }
@@ -246,7 +246,7 @@ struct ServerSeatRowPresentation: Equatable {
     static func lastKnownSentence(_ facts: ServerSeatFacts) -> String {
         var said = [facts.connection.label, runLine(facts.runState)]
         if facts.pauseState == .paused { said.append("Paused") }
-        said.append("wake \(facts.wakeKind.label)")
+        said.append(facts.wakeKind.rowText)
         said.append("quota \(facts.quotaReading.label)")
         return "The last reading said: \(said.joined(separator: ", "))."
             + gap + "That is old evidence, not the seat's state now."

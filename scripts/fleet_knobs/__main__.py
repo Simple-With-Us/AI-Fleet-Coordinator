@@ -1,8 +1,9 @@
 """``python3 -m fleet_knobs`` (run from scripts/):  look at knobs, never at secrets.
 
-status [--json]            fetch once and show each knob's source and whether it is set;
-                           secrets show only set or empty.  Exit 0, or 3 when Infisical was
-                           unreachable (the answers are last-known-good or defaults).
+status [--json]            fetch each knob folder once and show each knob's source and whether
+                           it is set;  secrets show only set or empty.  Exit 0, or 3 when any
+                           folder could not be read (its answers are last-known-good or
+                           defaults;  a token scoped to one folder cannot read another).
 get NAME                   print one NON-secret knob's value (lists and caps as text);
                            "stale" goes to stderr when Infisical was unreachable
 status --json --values     the same, plus each NON-secret knob's value, whether a write token

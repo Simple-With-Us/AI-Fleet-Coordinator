@@ -9,7 +9,7 @@ each rule has a test of its own.
             mean "ask again"; a tap on an option that is not low-stakes is not an answer ("this one needs a typed
             reply").
   control   A message that is only the word `pause` or `resume` controls the notifier and is never an answer.
-  request   A Grok Bot persona's fenced `needs-owner-request` JSON block, validated strictly.
+  request   A Grok bot's fenced `needs-owner-request` JSON block, validated strictly.
 """
 
 from __future__ import annotations
@@ -132,7 +132,7 @@ def rejected_request_text(reason: str) -> str:
     )
 
 
-# ---- a Grok Bot persona's request --------------------------------------------------------------------------
+# ---- a Grok bot's request --------------------------------------------------------------------------
 
 REQUEST_INFO = "needs-owner-request"
 REQUEST_KEYS = frozenset(
@@ -143,7 +143,7 @@ CONTEXT_ROOM = T.CONTEXT_MAX - 60  # the notifier puts "for GB-<ROLE>:  " in fro
 
 
 class RequestProblem(Exception):
-    """Why a request block is not accepted.  `reason` is a word, never the persona's text."""
+    """Why a request block is not accepted.  `reason` is a word, never the bot's text."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -199,7 +199,7 @@ def parse_request(content: object, sender_seat: str) -> Request | None:
     """The request in a message, None when it holds no `needs-owner-request` block, or RequestProblem.
 
     Strict:  one block, a JSON object, only the known keys, a question of 1 to 200 characters, 1 to 5 different
-    options, `seat` equal to the seat of the bot that sent the message (a persona files only for itself),
+    options, `seat` equal to the seat of the bot that sent the message (a bot files only for itself),
     `low_stakes` and `recommend` naming real options, no `urgent` with `low_stakes`, and the same secret and
     personal-data refusals as `needs-owner file`."""
     blocks = find_request_blocks(content)

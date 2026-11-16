@@ -38,7 +38,7 @@ must name it, reads without it act as the default.  The default follows the CLI'
 (identity.resolve_seat:  a launcher's AGENT_LAUNCH_SEAT wins and a differing --as or AGENT_SEAT exits 3,
 AGENT_LAUNCHER with no seat exits 3, then --as, AGENT_SEAT, and last --default-seat) and is optional:
 with none, every call names its identity.  The allowed set is every agent bot whose credentials this
-host can read (identities.py:  the seats, BF-* and the enabled GB-* personas), or the launcher's seat
+host can read (identities.py:  the seats, BF-* and the enabled GB-* bots), or the launcher's seat
 alone.  Keys come from Infisical Fleet-OPS /zulip (each identity's own three <BOT>_ZULIP_* names, read
 through fleet-secrets into memory only;  AFC-359:  no credential file is read), from an explicit
 --rc or env ZULIP_RC for the default identity (mode 600, realm-locked), or on the server from each

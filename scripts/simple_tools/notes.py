@@ -55,12 +55,13 @@ from . import identity as I
 from . import session_ids as SID
 
 REQUEST_VERSION = 2
-ACTIONS = ("create", "update", "pin", "unpin", "read", "list")
-WRITE_ACTIONS = ("create", "update", "pin", "unpin")
+ACTIONS = ("create", "update", "pin", "unpin", "read", "list", "delete")
+LOG_FILTER_ACTIONS = tuple(action for action in ACTIONS if action != "delete")
+WRITE_ACTIONS = ("create", "update", "pin", "unpin", "delete")
 BODY_ACTIONS = ("create", "update")
 FORMATS = ("html", "text", "raw")
 TITLE_MAX = 200
-SUMMARY_MAX = 280
+SUMMARY_MAX = 1000  # sanity cap on the optional "Summary:" block; the helper owns the real rules
 PR_MAX = 40
 QUERY_MAX = 100
 LIST_DEFAULT, LIST_MAX = 100, 500
@@ -83,8 +84,12 @@ SCRIPT_NAME = "apple-notes-coding.sh"
 #  instead of outliving it by the wait.
 #  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
 SCRIPT_TIMEOUT_S = 1200.0
+RAG_UPSERT_TIMEOUT_S = 180.0
+_SCRIPTS_ROOT = Path(__file__).resolve().parent.parent
 READ_TIMEOUT_S = 180.0  # a read or a list changes nothing, so it is not held to the write cap
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
+NOTE_ID_RE = re.compile(r"^x-coredata://[A-Za-z0-9][A-Za-z0-9_./:-]{7,511}$")
+NOTE_ID_MAX = 520
 SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
 _TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85  ]')
@@ -94,7 +99,7 @@ _BRACKET_RE = re.compile(
 )
 
 # Script exit codes (scripts/apple-notes-coding.sh header).
-EXIT_USAGE, EXIT_NOT_FOUND, EXIT_PIN_FAILED = 2, 3, 4
+EXIT_USAGE, EXIT_NOT_FOUND, EXIT_PIN_FAILED, EXIT_NOT_DELETABLE = 2, 3, 4, 5
 # The environment the script gets:  nothing that holds a credential.
 CHILD_ENV_KEYS = (
     "PATH",
@@ -114,7 +119,32 @@ CHILD_ENV_KEYS = (
     "APPLE_NOTES_PIN_RETRY",
     #  Not a credential:  where the script writes its action log (AFC-486), or `off`.
     "APPLE_NOTES_ACTION_LOG",
+    #  Not credentials:  the operator's local tuning for the optional Summary block
+    #  (body floor and share cap;  the script's compiled defaults hold when unset).
+    "APPLE_NOTES_SUMMARY_MIN_BODY_CHARS",
+    "APPLE_NOTES_SUMMARY_MAX_PCT",
 )
+#  Keys the write-time RAG child may inherit.  Values are never logged here.  On the Mac the
+#  scoped Infisical service-token binding (`FLEET_RECALL_INFISICAL_TOKEN`) is the supported
+#  path;  optional QDRANT/TEI env vars are forwarded only when the parent already holds them
+#  (local dev), never from the notes script allow-list alone.
+RAG_CHILD_ENV_KEYS = (
+    "FLEET_RECALL_INFISICAL_TOKEN",
+    "FLEET_RAG_INFISICAL_API",
+    "FLEET_RAG_INFISICAL_PROJECT",
+    "FLEET_RAG_INFISICAL_ENV",
+    "FLEET_SECRETS_BIN",
+    "QDRANT_URL",
+    "QDRANT_API_KEY",
+    "QDRANT_READONLY_API_KEY",
+    "QDRANT_FLEET_COLLECTION",
+    "TEI_URL",
+    "TEI_API_KEY",
+    "TEI_EMBED_MODEL",
+    "RECALL_HTTP_RETRIES",
+    "RECALL_HTTP_BACKOFF_MAX",
+)
+RAG_UPSERT_LOCK_TIMEOUT_S = 120.0
 
 
 class NotesError(Exception):
@@ -407,6 +437,30 @@ def check_request_id(raw: Any) -> str:
     return raw
 
 
+def check_note_id(raw: Any) -> str:
+    """The exact Apple Note id for delete:  one x-coredata URL, no wildcards."""
+    if not isinstance(raw, str):
+        raise NotesError("invalid_argument", "argument 'note_id' must be a string")
+    note_id = raw.strip()
+    if not note_id:
+        raise NotesError("invalid_argument", "argument 'note_id' must not be empty")
+    if len(note_id) > NOTE_ID_MAX:
+        raise NotesError(
+            "invalid_argument",
+            "argument 'note_id' is %d characters;  at most %d" % (len(note_id), NOTE_ID_MAX),
+        )
+    if any(ch in note_id for ch in "*?%"):
+        raise NotesError(
+            "invalid_argument", "argument 'note_id' must be an exact id, not a pattern"
+        )
+    if not NOTE_ID_RE.match(note_id):
+        raise NotesError(
+            "invalid_argument",
+            "argument 'note_id' must be the note's exact x-coredata id from notes_list or notes_read",
+        )
+    return note_id
+
+
 # --------------------------------------------------------------------------------------------
 # The Seat Tag in a title
 # --------------------------------------------------------------------------------------------
@@ -476,6 +530,7 @@ REQUEST_FIELDS = frozenset(
         "format",
         "query",
         "limit",
+        "note_id",
     }
 )
 _ACTION_FIELDS = {
@@ -485,6 +540,7 @@ _ACTION_FIELDS = {
     "unpin": frozenset({"title"}),
     "read": frozenset({"title", "format"}),
     "list": frozenset({"query", "limit"}),
+    "delete": frozenset({"note_id"}),
 }
 
 
@@ -508,6 +564,7 @@ def make_request(
     fmt: Any = None,
     query: Any = None,
     limit: Any = None,
+    note_id: Any = None,
 ) -> dict[str, Any]:
     """The request object for one call, validated.  Only the fields its action uses are set:  `session` (AFC-361) is
     the writer's session id, stamped in the note so a headless resume can find the session, and is left out when None
@@ -520,6 +577,9 @@ def make_request(
         "request_id": check_request_id(request_id),
         "identity": check_identity(identity),
     }
+    if action == "delete":
+        request["note_id"] = check_note_id(note_id)
+        return request
     if action != "list":
         request["title"] = check_title(title, action)
     if action in BODY_ACTIONS:
@@ -584,6 +644,7 @@ def check_request(raw: Any) -> dict[str, Any]:
         fmt=raw.get("format"),
         query=raw.get("query"),
         limit=raw.get("limit"),
+        note_id=raw.get("note_id"),
     )
 
 
@@ -656,6 +717,8 @@ def request_digest(request: Mapping[str, Any]) -> str:
 # Provenance and the body a read returns
 # --------------------------------------------------------------------------------------------
 
+TOOL_WRITER_MARKER = "fleet-notes-tool:v1"
+TOOL_WRITER_MARKER_HTML = "<!-- fleet-notes-tool:v1 -->"
 _FOOTER_TEXT = r"(?:Relayed for [^<\n]{1,80}? by the notes relay on|Written for [^<\n]{1,80}? through the Operator on)"
 # The footer the way Notes stores it:  its own <div> (italic text, maybe a link), after an <hr> that Notes keeps as a
 # <div><br><br></div> and any spacer rows, at the very end of the body.
@@ -670,11 +733,27 @@ _TEXT_FOOTER_RE = re.compile(r"(?:\n[ \t￼]*)*\n?" + _FOOTER_TEXT + r"[^\n]*\s*
 _SPACER_TAIL_RE = re.compile(r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)+\s*$", re.IGNORECASE)
 _STAMP_RE = re.compile(
     r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
-    r"\d{1,2}:\d{2}[ap]m(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
+    r"\d{1,2}:\d{2}(?:[ap]m|(?-i: [AP]M))(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
+    re.IGNORECASE,
+)
+# Looser than _STAMP_RE:  HTML blocks are joined without spaces, so the stamp may be followed by more text.
+_STAMP_FRAGMENT_RE = re.compile(
+    r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
+    r"\d{1,2}:\d{2}(?:[ap]m|(?-i: [AP]M))",
     re.IGNORECASE,
 )
 _SESSION_ROW_RE = re.compile(r"^Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\s+-\s+.{0,40})?$")
-_BANNER_PREFIXES = ("⚠️ NEEDS OWNER REVIEW", "📌 Mobile Quick View:")
+_SESSION_FRAGMENT_RE = re.compile(
+    r"Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\s+-\s+.{0,40})?"
+)
+_BANNER_PREFIXES = ("⚠️ NEEDS OWNER REVIEW", "📌 Mobile Quick View:", "Summary:")
+#  An HTML banner is only stripped with its generated background beside the label:  a body block
+#  can open with the same words ("Summary: the plan is ...") and must survive a read-back.
+_BANNER_SIGNATURES = (
+    ("#FFF3CD", "⚠️ NEEDS OWNER REVIEW"),
+    ("#F8F9FA", "📌 Mobile Quick View:"),
+    ("#F8F9FA", "Summary:"),
+)
 _LEAD_BLOCK_RE = re.compile(
     r"\s*(<(div|p|h[1-6])\b[^>]*>(?:(?!<(?:div|p|h[1-6])\b).)*?</\2>)", re.DOTALL | re.IGNORECASE
 )
@@ -699,6 +778,26 @@ def _on_tail(text: str, *patterns: re.Pattern[str]) -> str:
     for pattern in patterns:
         tail = pattern.sub("", tail)
     return text[:cut] + tail
+
+
+def is_tool_created_note(title: str, body: str, plaintext: str = "") -> bool:
+    """True when the note was created or updated through apple-notes-coding.sh (AFC-728).
+
+    Guards delete:  static Coding-folder notes and owner notes without the writer's shape are refused.
+    """
+    raw = body or plaintext or ""
+    if TOOL_WRITER_MARKER_HTML in raw or TOOL_WRITER_MARKER in raw:
+        return True
+    if _HTML_FOOTER_RE.search(raw) or _FOOTER_P_RE.search(raw):
+        return True
+    if _MD_FOOTER_RE.search(plaintext or raw) or _TEXT_FOOTER_RE.search(plaintext or raw):
+        return True
+    if title_agent(title) is None:
+        return False
+    text = (plaintext or _block_text(body)).strip()
+    if _SESSION_FRAGMENT_RE.search(text):
+        return True
+    return bool(_STAMP_FRAGMENT_RE.search(text))
 
 
 def strip_provenance(body: str, is_html: bool) -> str:
@@ -754,6 +853,11 @@ def _block_text(block: str) -> str:
     return " ".join(html.unescape(_TAG_RE.sub("", block)).split())
 
 
+def _is_banner_block(block: str, text: str) -> bool:
+    """True for a banner the flags write:  the label and its generated background together."""
+    return any(marker in block and text.startswith(label) for marker, label in _BANNER_SIGNATURES)
+
+
 def content_html(body: str, title: str) -> str:
     """A stored note's HTML without what the script writes on every save:  the title row, the date row, the Session
     row, the needs-owner and quick-view banners, one spacer, and the provenance line at the end.  What is left is the
@@ -773,8 +877,8 @@ def content_html(body: str, title: str) -> str:
             seen_stamp = True
         elif header and seen_stamp and not seen_session and _SESSION_ROW_RE.match(text):
             seen_session = True
-        elif text.startswith(_BANNER_PREFIXES):
-            pass  # the needs-owner and quick-view banners follow the spacer;  the flags write them again
+        elif _is_banner_block(block, text):
+            pass  # the needs-owner and summary banners follow the spacer;  the flags write them again
         elif (
             header
             and (seen_title or seen_stamp)
@@ -801,7 +905,9 @@ def content_text(plaintext: str, title: str) -> str:
             index += 1
     if index < len(lines) and not lines[index].strip() and index > 0:
         index += 1
-    while index < len(lines) and lines[index].strip().startswith(_BANNER_PREFIXES):
+    #  Banner lines strip only after the writer's header rows matched:  a note without them is
+    #  not tool-shaped, so a first line that opens with the same words stays.
+    while index > 0 and index < len(lines) and lines[index].strip().startswith(_BANNER_PREFIXES):
         index += 1
     text = _on_tail("\n".join(lines[index:]), _TEXT_FOOTER_RE)
     return text.rstrip()
@@ -1053,7 +1159,9 @@ def build_argv(
     }
     if requester:
         extra["AGENT_NOTES_REQUESTER"] = requester
-    if action == "pin":
+    if action == "delete":
+        argv += ["--delete", "--note-id", str(request["note_id"])]
+    elif action == "pin":
         argv += ["--pin-only"]
     elif action == "unpin":
         argv += ["--unpin-only"]
@@ -1090,7 +1198,7 @@ def build_argv(
         # script decides its single-thread exemption from this and from nothing the caller typed.  CHILD_ENV_KEYS strips
         # AGENT_SEAT.
         extra["AGENT_SEAT"] = str(request["identity"])
-    if action != "list":
+    if action not in ("list", "delete"):
         argv += ["--title", request["title"]]
     return argv, extra
 
@@ -1098,6 +1206,16 @@ def build_argv(
 def child_env(env: Mapping[str, str], extra: Mapping[str, str]) -> dict[str, str]:
     out = {key: env[key] for key in CHILD_ENV_KEYS if env.get(key)}
     out.update(extra)
+    return out
+
+
+def rag_subprocess_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Environment for the Fleet RAG upsert child:  the notes allow-list plus recall credentials."""
+    out = child_env(env, {})
+    for key in RAG_CHILD_ENV_KEYS:
+        value = env.get(key)
+        if value:
+            out[key] = value
     return out
 
 
@@ -1117,6 +1235,158 @@ def _pin_skipped(raw_stderr: bytes | None) -> str | None:
 def _note_id(stdout: str) -> str | None:
     match = re.search(r"\bid=(\S+)", stdout)
     return match.group(1)[:200] if match else None
+
+
+def _deleted_note_id(stdout: str) -> str | None:
+    match = re.search(r"\bdeleted note id=(\S+)", stdout)
+    return match.group(1)[:NOTE_ID_MAX] if match else None
+
+
+def _delete_result(
+    request: Mapping[str, Any], env: Mapping[str, str], *, apple_deleted: bool
+) -> dict[str, Any]:
+    note_id = str(request.get("note_id") or "")
+    rag = _fleet_rag_delete(note_id, env)
+    result: dict[str, Any] = {
+        "status": "done",
+        "note_id": note_id,
+        "apple_note_deleted": apple_deleted,
+        "rag_deleted": bool(rag.get("ok")),
+    }
+    if not rag.get("ok"):
+        result["partial"] = True
+        result["rag_error"] = str(rag.get("error") or "rag delete failed")[:200]
+    return result
+
+
+def _cancel_note_outbox(note_id: str, env: Mapping[str, str]) -> str | None:
+    """Cancel any queued outbox entry for note_id, retrying briefly on lock contention."""
+    from fleet_rag import note_outbox, note_upsert
+
+    root = Path(str(env.get("HOME") or Path.home())) / ".local/state/fleet-rag-note-outbox"
+    doc_id = note_upsert.note_doc_id(note_id)
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            note_outbox.cancel(doc_id, root=root)
+            return None
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return "rag-outbox-cancellation-unavailable"
+            time.sleep(0.05)
+        except Exception:
+            return "rag-outbox-cancellation-unavailable"
+
+
+def _fleet_rag_delete(note_id: str, env: Mapping[str, str]) -> dict[str, Any]:
+    """Best-effort Fleet RAG delete after the Apple Note is gone (AFC-728).  Returns the child result dict."""
+    cancel_error: str | None = None
+    try:
+        cancel_error = _cancel_note_outbox(note_id, env)
+    except Exception:
+        cancel_error = "rag-outbox-cancellation-unavailable"
+    payload = json.dumps({"note_id": note_id}, ensure_ascii=False).encode("utf-8")
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "fleet_rag.note_delete",
+                "--lock-timeout",
+                str(RAG_UPSERT_LOCK_TIMEOUT_S),
+            ],
+            input=payload,
+            capture_output=True,
+            timeout=RAG_UPSERT_TIMEOUT_S,
+            cwd=str(_SCRIPTS_ROOT),
+            env=rag_subprocess_env(env),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {"ok": False, "error": "subprocess failed"}
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:200]
+        return {"ok": False, "error": err or "rag delete child exited %d" % proc.returncode}
+    if cancel_error is not None:
+        return {"ok": False, "error": cancel_error}
+    return {"ok": True}
+
+
+def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str, str]) -> dict:
+    """Commit delivery intent before attempting RAG; Notes and RAG outcomes stay separate."""
+    if request.get("action") not in BODY_ACTIONS or not note_id:
+        return {"state": "excluded", "reason": "not-a-body-write"}
+    try:
+        from fleet_rag import note_outbox, note_upsert
+
+        queued = note_outbox.enqueue_id(note_upsert.note_doc_id(note_id))
+    except Exception:
+        return {"state": "failed", "reason": "durable-rag-queue-unavailable"}
+    try:
+        outcome = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "fleet_rag.note_upsert",
+                "--drain-outbox",
+                "--outbox-key",
+                queued["key"],
+            ],
+            capture_output=True,
+            timeout=RAG_UPSERT_TIMEOUT_S,
+            cwd=str(_SCRIPTS_ROOT),
+            env=rag_subprocess_env(env),
+            check=False,
+        )
+        if outcome.returncode == 0:
+            receipt = json.loads(outcome.stdout)
+            if receipt.get("verified") == 1:
+                return {"state": "receiver-verified"}
+            if receipt.get("quarantined"):
+                return {"state": "failed", "reason": "rag-delivery-record-quarantined"}
+    except subprocess.TimeoutExpired:
+        return {"state": "queued", "reason": "rag-delivery-timeout", "exit_code": 124}
+    except FileNotFoundError:
+        return {"state": "queued", "reason": "rag-delivery-executable-missing", "exit_code": 127}
+    except (OSError, subprocess.SubprocessError):
+        pass
+    except (ValueError, TypeError):
+        pass
+    return {"state": "queued", "reason": "receiver-verification-pending"}
+
+
+def retry_rag_outbox(env: Mapping[str, Any]) -> dict:
+    """One bounded retry in the existing Notes runner, with its existing credential route."""
+    try:
+        process = subprocess.run(
+            [sys.executable, "-m", "fleet_rag.note_upsert", "--drain-outbox", "--reconcile-coding"],
+            cwd=str(_SCRIPTS_ROOT),
+            env=rag_subprocess_env(env),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if process.returncode == 0:
+            record = json.loads(process.stdout)
+            summary = {
+                name: int(record.get(name, 0))
+                for name in ("verified", "pending", "superseded", "quarantined")
+            }
+            metadata = record.get("coding_metadata")
+            if isinstance(metadata, dict):
+                summary["coding_metadata"] = {
+                    name: metadata[name]
+                    for name in ("baseline_only", "observed", "changed", "queued", "failed")
+                    if name in metadata and type(metadata[name]) in (bool, int)
+                }
+            return summary
+    except subprocess.TimeoutExpired:
+        return {"failed": 1, "exit_code": 124, "reason": "timeout"}
+    except FileNotFoundError:
+        return {"failed": 1, "exit_code": 127, "reason": "executable-missing"}
+    except Exception:
+        pass
+    return {"failed": 1}
 
 
 def run_direct(
@@ -1224,6 +1494,9 @@ def run_direct(
     stdout = (proc.stdout or b"").decode("utf-8", "replace")
     stderr = " ".join((proc.stderr or b"").decode("utf-8", "replace").split())[:200]
     if code == 0:
+        if action == "delete":
+            nid = _deleted_note_id(stdout) or str(request.get("note_id") or "")
+            return _delete_result({**request, "note_id": nid}, env, apple_deleted=True)
         if action in ("read", "list"):
             try:
                 raw = json.loads(stdout)
@@ -1242,6 +1515,10 @@ def run_direct(
         note_id = _note_id(stdout)
         if note_id:
             result["note_id"] = note_id
+            if action in BODY_ACTIONS:
+                delivery = _fleet_rag_upsert(request, note_id, env)
+                if isinstance(delivery, dict):
+                    result["rag_delivery"] = delivery
         skipped = _pin_skipped(proc.stderr)
         if skipped:
             result["pin_skipped"] = skipped
@@ -1252,6 +1529,8 @@ def run_direct(
             "the notes script refused the request:  %s" % (stderr or "bad arguments"),
         )
     if code == EXIT_NOT_FOUND:
+        if action == "delete":
+            return _delete_result(request, env, apple_deleted=False)
         if existing:
             raise NotesError(
                 "not_found",
@@ -1259,6 +1538,11 @@ def run_direct(
                 "carries your own agent name (use create for a new note)",
             )
         raise NotesError("not_found", "no note with that title in the Coding folder")
+    if code == EXIT_NOT_DELETABLE:
+        raise NotesError(
+            "invalid_argument",
+            "this note was not written through the fleet notes tool, so delete was refused",
+        )
     if code == EXIT_PIN_FAILED:
         #  The helper has no GUI fallback (owner 2026-10-20):  when the Shortcut does not pin or unpin,
         #  the note is left as it was and this is the whole story.  A create or update never gets here,
@@ -1490,9 +1774,10 @@ def check_log_args(args: Mapping[str, Any]) -> dict[str, Any]:
                 "argument 'by_seat' looks like it contains a secret;  nothing was sent",
             )
     action = args.get("action")
-    if action is not None and action not in ACTIONS:
+    if action is not None and action not in LOG_FILTER_ACTIONS:
         raise NotesError(
-            "invalid_argument", "argument 'action' must be one of %s" % ", ".join(ACTIONS)
+            "invalid_argument",
+            "argument 'action' must be one of %s" % ", ".join(LOG_FILTER_ACTIONS),
         )
     title = check_query(args.get("title"), "title") or None
     return {

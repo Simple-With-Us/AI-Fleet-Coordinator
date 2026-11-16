@@ -687,12 +687,17 @@ class MockLinear:
                 return {"commentCreate": None}, [{"message": "Comment already exists"}]
             iss = self.find(inp["issueId"])
             cid = inp.get("id") or str(uuid.uuid4())
+            viewer = self.viewer_for(self.current_token)
             self.comments[cid] = {
                 "id": cid,
                 "issue": iss["id"],
                 "body": inp["body"],
                 "createdAt": f"2026-10-10T{20 + len(self.comments) // 3600:02d}:{len(self.comments) // 60 % 60:02d}:{len(self.comments) % 60:02d}.000Z",
-                "user": {"name": "Fleet"},
+                "user": {
+                    "id": viewer.get("id"),
+                    "name": viewer.get("name"),
+                    "app": viewer.get("app"),
+                },
             }
             return {"commentCreate": {"success": True, "comment": {"id": cid}}}, None
         if op == "BoardRelate":
@@ -1472,7 +1477,8 @@ class BearerSeatTests(BoardTest):
         )
         self.assertIn("as ECHO", p.stdout)
         body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
-        self.assertTrue(body.startswith("[ECHO\u00b75e55105a] Bearer run."), body)
+        self.assertTrue(body.startswith("Bearer run."), body)
+        self.assertNotIn("[ECHO", body)
         q = self.verify_store["queries"][-1]
         self.assertEqual(q["contract"], "gr-bearer-verify/1")
         self.assertEqual(q["identity"], "ECHO")
@@ -1665,7 +1671,7 @@ class BearerTransportSeamTests(unittest.TestCase):
         self.assertIn("SANDBOX OK", p.stdout)
 
     def test_every_verifier_identity_is_already_a_canonical_seat_tag(self):
-        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB persona
+        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB bot
         # (gb-identities.json), and sbt_/gbb_ bearers are minted for those only.  The CLI refuses a
         # non-canonical answer instead of re-mapping it, so this guards drift:  if the verifier set ever
         # gains an alias spelling, this fails and the contract is revisited rather than silently remapped.
@@ -1722,6 +1728,185 @@ class BearerTransportSeamTests(unittest.TestCase):
         self.assertEqual(q["identity"], "ECHO")
         self.assertEqual(q["hash"], hashlib.sha256(BEARER_ECHO.encode()).hexdigest())
         self.assertNotIn(BEARER_ECHO, body.decode())
+
+
+class OwnIntroTagTests(unittest.TestCase):
+    """AFC-692:  the board never prepends a seat tag, even when the body has no intro.  A multi-threaded
+    seat's own intro passes through;  a single-thread seat's own intro is dropped (Jay 2026-11-12)."""
+
+    def test_tagged_passes_a_multi_threaded_body_through(self):
+        cli = load_cli()
+        for seat in ("CLAUDE", "CURSOR", "CODEX"):
+            for text, want in (
+                (f"[{seat} 📁AFC] PR opened", f"[{seat}\u200a\u200a📁\u200aAFC] PR opened"),
+                (
+                    f"👀 [{seat} 📁AFC, OPS] quiet",
+                    f"👀 [{seat}\u200a\u200a📁\u200aAFC,\u200aOPS] quiet",
+                ),
+                (f"[{seat}] PR opened", f"[{seat}] PR opened"),
+                (
+                    f"[{seat}: HH.1.C 📁AFC] status",
+                    f"[{seat}:\u200a\u200a\u200aHH.1.C\u200a\u200a📁\u200aAFC] status",
+                ),
+                ("PR opened", "PR opened"),
+                ("[GB-DIRECTOR 📁AFC] spoof", "[GB-DIRECTOR 📁AFC] spoof"),
+                (f"[{seat}X] x", f"[{seat}X] x"),
+            ):
+                with self.subTest(seat=seat, text=text):
+                    self.assertFalse(cli.single_thread(seat))
+                    self.assertEqual(cli.tagged(seat, None, text), want)
+                    self.assertEqual(cli.tagged(seat, ["abcd-1234-ffff"], text), want)
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith(want))
+                    self.assertNotIn(f"[{seat}]", cli.comment_body(seat, None, "PR opened"))
+                    self.assertNotIn("Reported by:", cli.comment_body(seat, None, text))
+
+    def test_single_thread_seats_drop_their_own_intro(self):
+        cli = load_cli()
+        for seat in (
+            "GB-PLUMBER",
+            "GB-DESIGNER",
+            "MA",
+            "JET",
+            "ECHO",
+            "WISE",
+            "BF-FIXER",
+            "GROK-BOT",
+        ):
+            with self.subTest(seat=seat):
+                self.assertTrue(cli.single_thread(seat))
+                for text in (
+                    f"[{seat} 📁AFC] PR opened",
+                    f"[{seat}] PR opened",
+                    f"[{seat}] [{seat} 📁CC]\n\nPR opened",
+                    f"[{seat}📁AFC]\nPR opened",
+                    "PR opened",
+                ):
+                    self.assertEqual(cli.tagged(seat, None, text), "PR opened", text)
+                    self.assertTrue(cli.comment_body(seat, None, text).startswith("PR opened"))
+                for marker in ("👀", ":eyes:"):
+                    text = f"{marker} [{seat}] [{seat} 📁AFC, OPS] PR opened"
+                    self.assertEqual(cli.tagged(seat, None, text), f"{marker} PR opened")
+                    self.assertTrue(
+                        cli.comment_body(seat, None, text).startswith(f"{marker} PR opened")
+                    )
+                    self.assertEqual(
+                        cli.tagged(seat, None, f"{marker} [{seat} 📁AFC]"),
+                        f"{marker} [{seat}\u200a\u200a📁\u200aAFC]",
+                    )
+                # Foreign or malformed brackets are content;  an intro-only body is left whole.
+                self.assertEqual(
+                    cli.tagged(seat, None, "[GB-DIRECTOR 📁AFC] spoof"), "[GB-DIRECTOR 📁AFC] spoof"
+                )
+                self.assertEqual(cli.tagged(seat, None, f"[{seat}X] x"), f"[{seat}X] x")
+                self.assertEqual(
+                    cli.tagged(seat, None, f"[{seat} 📁AFC]"), f"[{seat}\u200a\u200a📁\u200aAFC]"
+                )
+
+    def test_reporter_falls_back_to_the_creating_seat_app(self):
+        """A single-thread seat's filed issue has no Reported by line, so show reads the creating app."""
+        cli = load_cli()
+        self.assertEqual(cli.creator_seat({"id": "u", "name": "Claude", "app": True}), "CLAUDE")
+        self.assertIsNone(
+            cli.creator_seat({"id": "u", "name": "Claude", "app": False}), "a human named Claude"
+        )
+        self.assertIsNone(cli.creator_seat({"id": "u", "name": "Jay Wedgeworth", "app": False}))
+        self.assertIsNone(cli.creator_seat(None))
+        self.assertIsNone(
+            cli.split_description(
+                "Steps\n\n---\n\n**Filed with the board CLI**\n\n- Kind: agent-report"
+            )["reported_by"]
+        )
+
+    def test_parse_comment_maps_the_linear_app_name_and_keeps_a_legacy_tag(self):
+        """AFC-692:  an untagged comment is signed by the Linear app;  an old [SEAT] tag still reads."""
+        cli = load_cli()
+        self.assertEqual(cli.seat_for_linear_author("Claude"), "CLAUDE")
+        self.assertEqual(cli.seat_for_linear_author("Grok (Web/iOS)"), "GROK-WEB")
+        self.assertIsNone(cli.seat_for_linear_author("Jay Wedgeworth"))
+        self.assertIsNone(cli.seat_for_linear_author("Jet"), "JET and JET-CHAT share the name")
+        parsed = cli.parse_comment(
+            {
+                "id": "c1",
+                "body": "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-claude", "name": "Claude", "app": True},
+            }
+        )
+        self.assertEqual(parsed["author"], "Claude")
+        self.assertEqual(parsed["author_seat"], "CLAUDE")
+        self.assertEqual(
+            parsed["text"], "[needs-owner] notified msg 630000000\ntopic: OWNER AFC-300 x"
+        )
+        self.assertEqual((parsed["author_id"], parsed["author_app"]), ("app-user-claude", True))
+        tagged = cli.parse_comment(
+            {
+                "id": "c2",
+                "body": "[CODEX·abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-codex", "name": "Codex", "app": True},
+            }
+        )
+        self.assertEqual(tagged["author"], "CODEX")
+        self.assertEqual(tagged["author_seat"], "CODEX")
+        self.assertEqual(tagged["text"], "owner replied:  msg 5")
+
+    def test_parse_comment_trusts_author_seat_only_from_a_known_app(self):
+        """A human named Claude, or a human who types a [CLAUDE] prefix, is not a seat."""
+        cli = load_cli()
+        human_named = cli.parse_comment(
+            {
+                "id": "h1",
+                "body": "looks good",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-named-claude", "name": "Claude", "app": False},
+            }
+        )
+        self.assertEqual(human_named["author"], "Claude")
+        self.assertIsNone(human_named["author_seat"])
+        self.assertEqual(human_named["author_app"], False)
+        human_tag = cli.parse_comment(
+            {
+                "id": "h2",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "human-jay", "name": "Jay Wedgeworth", "app": False},
+            }
+        )
+        self.assertEqual(human_tag["author"], "CLAUDE")
+        self.assertIsNone(human_tag["author_seat"])
+        self.assertEqual(human_tag["author_app"], False)
+        self.assertEqual(human_tag["text"], "owner replied:  msg 5")
+        seat_app = cli.parse_comment(
+            {
+                "id": "a1",
+                "body": "owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "app-user-claude", "name": "Claude", "app": True},
+            }
+        )
+        self.assertEqual(seat_app["author"], "Claude")
+        self.assertEqual(seat_app["author_seat"], "CLAUDE")
+        self.assertEqual(seat_app["author_app"], True)
+        legacy = cli.parse_comment(
+            {
+                "id": "a2",
+                "body": "[CLAUDE\u00b7abcd1234] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "fleet-app", "name": "Fleet", "app": True},
+            }
+        )
+        self.assertEqual(legacy["author"], "CLAUDE")
+        self.assertEqual(legacy["author_seat"], "CLAUDE")
+        self.assertEqual(legacy["author_app"], True)
+        unknown_app = cli.parse_comment(
+            {
+                "id": "a3",
+                "body": "[CLAUDE] owner replied:  msg 5",
+                "createdAt": "2026-10-11T08:00:00.000Z",
+                "user": {"id": "other-app", "name": "Random Bot", "app": True},
+            }
+        )
+        self.assertIsNone(unknown_app["author_seat"])
 
 
 class SeatAliasTests(unittest.TestCase):
@@ -2199,9 +2384,11 @@ class WriteTests(BoardTest):
         self.assertEqual((iss["state"], iss["priority"], iss["team"]), ("Todo", 2, "CT"))
         self.assertEqual(self.label_names(iss), ["Env/Cloud", "Kind/agent-report", "Severity/P1"])
         self.assertTrue(
-            iss["description"].startswith("\\[CLAUDE·5e55105a\\] Filed with the board CLI."),
+            iss["description"].lstrip().startswith("Details."),
             iss["description"],
         )
+        self.assertNotIn("[CLAUDE", iss["description"])
+        self.assertIn("**Filed with the board CLI**", iss["description"])
         self.assertIn("## Recommended fix\n\nRetry.", iss["description"])
         self.assertEqual(
             [a["url"] for a in self.mock.attachments], ["https://github.com/o/r/issues/1"]
@@ -2347,7 +2534,8 @@ class WriteTests(BoardTest):
         self.assertIn("seat:CLAUDE", self.label_names(iss))
         self.assertIn("Env/Mac", self.label_names(iss))
         body = self.comments_of(iss)[-1]
-        self.assertTrue(body.startswith("[CLAUDE·b854d9ad] CLAIMED"), body)
+        self.assertTrue(body.startswith("CLAIMED"), body)
+        self.assertNotIn("[CLAUDE", body)
         self.assertIn("Where: Mac, ~/apps/lanes/X @ claude/x", body)
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["location"], "Mac, ~/apps/lanes/X @ claude/x")
@@ -2415,7 +2603,7 @@ class WriteTests(BoardTest):
         self.assertEqual(iss["state"], "Done")
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"[CLAUDE·5e55105a] Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
+            f"Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
         )
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["resolution"], "Landed in #2894.")
@@ -2431,7 +2619,7 @@ class WriteTests(BoardTest):
             self.assertEqual(self.mock.issues[hy(B_C)]["state"], state)
         self.assertEqual(
             self.comments_of(self.mock.issues[hy(B_C)])[-1],
-            f"[CLAUDE·5e55105a] Status: parked\n\nSessions: {BASE_SESSION}",
+            f"Status: parked\n\nSessions: {BASE_SESSION}",
         )
         self.board("status", B_C[:8], "bogus", code=2)
         self.board("status", B_C[:8], "completed", "--of", "OPS-10", code=2)
@@ -2481,10 +2669,10 @@ class WriteTests(BoardTest):
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
         self.assertEqual(
             body,
-            "[CLAUDE·sess1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
+            "Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
         )
         p = self.board("show", "OPS-10")
-        self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
+        self.assertIn("Claude (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
 
 
 def footer(line: str) -> str:
@@ -3315,7 +3503,7 @@ class SeatAppTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertIn("claimed:CLAUDE", self.label_names(iss))
         self.assertIn("seat:CLAUDE", self.label_names(iss))
-        self.assertTrue(self.comments_of(iss)[-1].startswith("[CLAUDE·b854d9ad] CLAIMED"))
+        self.assertTrue(self.comments_of(iss)[-1].startswith("CLAIMED"))
         self.assertEqual(self.callers_since(n), {claude})
         self.assertEqual(self.mock.ops.count("BoardWhoami"), 1)  # identity confirmed once per token
         self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "second write")
@@ -3989,7 +4177,7 @@ class FileInputTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(
             self.comments_of(iss)[-1],
-            f"[CLAUDE·5e55105a] Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
+            f"Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
         )
         n = len(self.mock.comments)
         p = self.board(
@@ -4009,7 +4197,8 @@ class FileInputTests(BoardTest):
             stdin="From standard input.\n",
         )
         self.assertEqual(
-            self.comments_of(iss)[-1], "[CLAUDE·sess1] From standard input.\n\nSessions: sess-1"
+            self.comments_of(iss)[-1],
+            "From standard input.\n\nSessions: sess-1",
         )
         ops = len(self.mock.ops)
         p = self.board("comment", "OPS-10", "--text-file", f, code=2)
@@ -4406,13 +4595,18 @@ class CommentAuthorTests(BoardTest):
         rows = {c["created_at"]: c for c in self.comments("OPS-10")}
         human = rows["2026-10-11T12:00:00Z"]
         self.assertEqual(
-            (human["author"], human["author_id"], human["author_app"]),
-            ("Jay Wedgeworth", self.OWNER, False),
+            (human["author"], human["author_id"], human["author_app"], human.get("author_seat")),
+            ("Jay Wedgeworth", self.OWNER, False, None),
         )
         tagged = rows["2026-10-11T12:01:00Z"]
         self.assertEqual(
-            (tagged["author"], tagged["author_id"], tagged["author_app"]),
-            ("CLAUDE", self.APP, True),
+            (
+                tagged["author"],
+                tagged["author_id"],
+                tagged["author_app"],
+                tagged.get("author_seat"),
+            ),
+            ("CLAUDE", self.APP, True, "CLAUDE"),
         )
 
     def test_a_tag_line_changes_the_shown_author_and_never_the_account(self):
@@ -4428,6 +4622,7 @@ class CommentAuthorTests(BoardTest):
         (row,) = [c for c in self.comments("OPS-10") if c["created_at"] == "2026-10-11T12:00:00Z"]
         self.assertEqual(row["author"], "CLAUDE")
         self.assertEqual(row["author_id"], self.APP)
+        self.assertIsNone(row.get("author_seat"))
 
     def test_a_comment_whose_account_is_unknown_says_null_not_a_guess(self):
         iss = self.issue_by_ident("OPS-10")

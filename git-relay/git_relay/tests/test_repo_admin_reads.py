@@ -37,6 +37,58 @@ class RepoAdminReadTests(unittest.TestCase):
     def setUp(self):
         workflow_verbs._INSTALLATION_REPOS_CACHE.clear()
 
+    def test_check_shape_accepts_valid_new_reads(self):
+        # Regression (Seer HIGH): check_shape runs each verb against a probe
+        # whose policy is a stand-in;  wf_pr_search consults the seat scope
+        # before any upstream call and must stop at that probe, not crash.
+        for action in ("wf_pr_search", "wf_repo_list"):
+            self.assertIsNone(WorkflowVerbs.check_shape(action, {"repo": REPO}, REPO))
+
+    def test_check_shape_still_refuses_bad_new_read_args(self):
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape("wf_pr_search", {"repo": REPO, "state": "bogus"}, REPO)
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape("wf_pr_search", {"repo": REPO, "unexpected": 1}, REPO)
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape("wf_repo_list", {"repo": REPO, "page": 0}, REPO)
+
+    def test_installation_repos_cache_serialized_under_threads(self):
+        # Regression (Seer LOW): the relay serves on a threading server;  with
+        # an instantly-stale TTL every call sweeps and stores, so concurrent
+        # access without the cache lock raises RuntimeError/KeyError here.
+        import threading
+
+        old_ttl = workflow_verbs._INSTALLATION_REPOS_TTL_S
+        workflow_verbs._INSTALLATION_REPOS_TTL_S = 0.0
+        handle = WorkflowVerbs.__new__(WorkflowVerbs)
+        handle.bearer = "probe-bearer"
+        fetches = []
+        errors = []
+
+        def fake_get(path):
+            fetches.append(path)
+            return {"total_count": 1, "repositories": [REPO_ITEM]}
+
+        handle._get = fake_get
+
+        def hammer():
+            for _ in range(50):
+                try:
+                    handle._installation_repositories()
+                except Exception as exc:  # record any race failure
+                    errors.append(exc)
+
+        try:
+            threads = [threading.Thread(target=hammer) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            workflow_verbs._INSTALLATION_REPOS_TTL_S = old_ttl
+        self.assertEqual(errors, [])
+        self.assertGreaterEqual(len(fetches), 1)
+
     def run_action(self, action, args, *replies, repos=(REPO,)):
         client = Client(*replies)
         ceiling = {**CEILING, "metadata": "read", "pull_requests": "read"}

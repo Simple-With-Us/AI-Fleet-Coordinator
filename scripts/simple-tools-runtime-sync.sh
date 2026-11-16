@@ -58,6 +58,29 @@ main() {
   fi
   trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
+  # Unlettered-repair tick:  replay the start of this Mac's chats still showing "??: " - an app-driven
+  # chat's hook never runs, so only a scheduled tick reaches it.  platform-letter's own stamp throttles the
+  # pass to hourly;  a failure here never blocks the sync, and the 30s alarm keeps even a stalled tick well
+  # under the sync's 120s cadence (the pass itself starts no new replay after REPAIR_PASS_SECONDS).  stdout is
+  # dropped;  stderr reaches the launchd log.
+  if [ -x "$HOME/.local/bin/platform-letter" ]; then
+    perl -e 'alarm 30; exec @ARGV' "$HOME/.local/bin/platform-letter" repair --location mac >/dev/null || true
+  fi
+
+  # Mac GitOps G7 (AFC-375): optional check-only drift report against deploy/mac/manifest.toml.
+  # Never loads or unloads LaunchAgents; apply is only via mac_gitops reconcile --apply by hand.
+  if [ -e "$STATE_DIR/mac-gitops-check.enabled" ]; then
+    if [ -f "$RUNTIME/deploy/mac/manifest.toml" ] && [ -f "$RUNTIME/scripts/mac-gitops-reconcile.py" ]; then
+      if ! perl -e 'alarm 60; exec @ARGV' /opt/homebrew/bin/python3 -I \
+          "$RUNTIME/scripts/mac-gitops-reconcile.py" \
+          --manifest "$RUNTIME/deploy/mac/manifest.toml" \
+          --repo-root "$RUNTIME" \
+          --skip-excluded-report >/dev/null 2>&1; then
+        log "MAC-GITOPS-DRIFT  deploy/mac/manifest.toml differs from this Mac; run mac_gitops reconcile (check-only) for detail"
+      fi
+    fi
+  fi
+
   # Code-only Coolify CLI sync uses this same tick, lock and pause.  Run before the
   # local fetch/no-change exits so failed sends retry and a changed Mac revision
   # reaches Coolify on the next tick.  Updates never register wrappers or MCP.

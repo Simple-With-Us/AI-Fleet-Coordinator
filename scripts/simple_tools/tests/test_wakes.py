@@ -223,12 +223,10 @@ class ValidateTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    """The responder's contract is code:  it must carry the same screen the fleet documents.
+    """Keep the operative legacy contract aligned with its implementation documentation.
 
-    The screen the fleet documents lives in the Zulip fleet guide, which this repository owns
-    and which is canonical for chat conduct.  The protocol document is a generated mirror of
-    the Fleet-OPS handbook, and the trim of 2026-10-28 turned it into a tools manual that does
-    not restate the chat rules, so the screen is read from the guide and not from the mirror.
+    Current acting-session policy lives in AGENTS.md and the Zulip guide.  The listener
+    documentation describes the older runtime gates until their separate implementation rollout.
     """
 
     def contract(self) -> str:
@@ -247,7 +245,7 @@ class ContractTests(unittest.TestCase):
         self.assertLess(text.index("## Untrusted Content"), text.index("## Peer Requests"))
         self.assertLess(text.index("## Peer Requests"), text.index("## Choosing an Action"))
 
-    def test_the_high_risk_list_matches_the_documented_peer_screen(self) -> None:
+    def test_the_high_risk_list_matches_the_legacy_implementation_notes(self) -> None:
         text = self.contract()
         for phrase in (
             "secret, key, token or credential",
@@ -265,18 +263,25 @@ class ContractTests(unittest.TestCase):
                 self.assertIn(phrase, text)
                 self.assertIn(
                     phrase,
-                    self.zulip_guide(),
-                    "the contract and the fleet's peer screen name the same risk",
+                    self.listener_protocol(),
+                    "the legacy contract and its implementation notes name the same risk",
                 )
 
-    def zulip_guide(self) -> str:
-        """The Zulip fleet guide, which is canonical for chat conduct.
+    def listener_protocol(self) -> str:
+        path = os.path.join(
+            os.path.dirname(W.CONTRACT_PATH),
+            "..",
+            "..",
+            "..",
+            "docs",
+            "protocols",
+            "simple-tools-listener.md",
+        )
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
 
-        The trim of 2026-10-28 moved the working rules out of the protocol document and into
-        each repository's AGENTS.md, so the protocol document is now a tools manual that does
-        not restate them.  The peer screen itself is documented in this guide, which this
-        repository owns, so the guide and the contract are the two halves that have to agree.
-        """
+    def zulip_guide(self) -> str:
+        """The current fleet guide, used for CLI command documentation checks."""
         path = os.path.join(
             os.path.dirname(W.CONTRACT_PATH),
             "..",
@@ -336,10 +341,8 @@ class ContractTests(unittest.TestCase):
             "queued for the owner to confirm in one of this seat's next sessions", text
         )
         self.assertNotIn("Claude", text)
-        self.assertNotIn("Claude", W.OWNER_ACK)
-        self.assertIn("seat's next sessions", W.OWNER_ACK)
 
-    def test_the_listener_protocol_describes_the_ack_the_daemon_posts(self) -> None:
+    def test_the_listener_protocol_says_the_daemon_posts_no_reply_and_no_ack(self) -> None:
         path = os.path.join(
             os.path.dirname(W.CONTRACT_PATH),
             "..",
@@ -351,23 +354,44 @@ class ContractTests(unittest.TestCase):
         )
         with open(path, encoding="utf-8") as fh:
             doc = fh.read()
-        self.assertIn("seat's next sessions", doc)
         self.assertNotIn("queued for confirmation in a Claude session", doc)
+        self.assertNotIn("posts a fixed one-line ack", doc, "the owner ack is gone with the reply")
+        self.assertIn("The operator should never be answering on behalf of a platform", doc)
+        self.assertIn("operator_never_answers", doc)
+        self.assertFalse(hasattr(W, "OWNER_ACK"), "the fixed ack the Operator used to post is gone")
 
 
 class ReplyTextTests(unittest.TestCase):
-    def test_mentions_are_neutralized_and_groups_removed(self) -> None:
-        text = W.compose_reply(
-            4821,
-            "@**Codex** and @**Jay Wedgeworth|12**, ping @*fleet* and @_*ops* @**all**",
+    """What is left of the reply text helpers:  the mention neutralizer the Operator's notes still
+    use, and the secret scanner.  Nothing builds a wake reply any more (`operator_never_answers`)."""
+
+    def test_compose_sanitize_keeps_user_mentions_loud(self) -> None:
+        self.assertEqual(
+            W.sanitize_compose_mentions("ping @**Codex** please"),
+            "ping @**Codex** please",
         )
-        first, body = text.split("\n", 1)
-        self.assertEqual(first, "[OPERATOR·wake] re=4821")
+        self.assertEqual(W.sanitize_compose_mentions("heads up @*fleet* now"), "heads up  now")
+        self.assertEqual(W.sanitize_compose_mentions("@@*x***Bob**"), "@**Bob**")
+        self.assertEqual(
+            W.sanitize_compose_mentions("note @**all** and @**topic**"),
+            "note @**all** and @**topic**",
+        )
+        self.assertEqual(W.sanitize_compose_mentions("hi @**everyone**"), "hi @**everyone**")
+        self.assertEqual(W.sanitize_compose_mentions("@@*x***all**"), "@**all**")
+
+    def test_mentions_are_neutralized_and_groups_removed(self) -> None:
+        body = W.neutralize_mentions(
+            "@**Codex** and @**Jay Wedgeworth|12**, ping @*fleet* and @_*ops* @**all**"
+        )
         self.assertNotIn("@**", body)
         self.assertIn("@_**Codex**", body)
         self.assertIn("@_**Jay Wedgeworth|12**", body)
         self.assertNotIn("fleet", body)
         self.assertNotIn("ops", body)
+
+    def test_nothing_builds_a_wake_reply_or_a_route_page_any_more(self) -> None:
+        for name in ("compose_reply", "compose_route", "OWNER_ACK", "loud_mentions"):
+            self.assertFalse(hasattr(W, name), name)
 
     def test_removing_a_group_mention_never_rebuilds_a_live_mention(self) -> None:
         cases = [
@@ -416,7 +440,16 @@ class ReplyTextTests(unittest.TestCase):
 
 
 class BudgetTests(unittest.TestCase):
-    budget = dict(BUDGET_DEFAULTS)
+    # The five wake count caps have no default since Nov 10, 2026 (an unset cap is no limit, see
+    # test_seat_schema.py), so these tests set them, as a seat does, to the numbers they pin.
+    budget = dict(
+        BUDGET_DEFAULTS,
+        wakes_per_hour=6,
+        wakes_per_day=40,
+        per_topic_per_hour=2,
+        owner_per_day=20,
+        owner_per_topic_per_hour=6,
+    )
 
     def view(self, wake_id, at, *, owner=False, key="k", state="done", cost=0.03):
         return {
@@ -654,8 +687,20 @@ class LedgerAndGuardTests(unittest.TestCase):
         self.assertTrue(guard.blocked("channel\x00topic"))
         self.assertEqual(len(guard.holding()), 1)
 
-    def test_loop_guard_resets_only_on_an_owner_post(self) -> None:
+    def test_loop_guard_is_off_unless_it_is_turned_on(self) -> None:
+        """Owner, Nov 10, 2026:  nothing throttles a wake, so the guard's own default is off.  It still
+        counts, and turning it on later blocks the topic from the history it kept."""
         guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        self.assertFalse(guard.enabled)
+        for n in range(4):
+            guard.note("k", wake_reply=True, owner=False, now=1000.0 + n)
+        self.assertEqual(guard.count("k"), 4)
+        self.assertFalse(guard.blocked("k"))
+        guard.enabled = True
+        self.assertTrue(guard.blocked("k"))
+
+    def test_loop_guard_resets_only_on_an_owner_post(self) -> None:
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"), enabled=True)
         for _ in range(3):
             guard.note("k", wake_reply=True, owner=False)
         self.assertTrue(guard.blocked("k"))
@@ -665,7 +710,7 @@ class LedgerAndGuardTests(unittest.TestCase):
         self.assertFalse(guard.blocked("k"))
 
     def test_a_topic_count_never_decays(self) -> None:
-        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"), enabled=True)
         for n in range(3):
             guard.note("k", wake_reply=True, owner=False, now=1000.0 + n)
         self.assertTrue(
@@ -676,7 +721,7 @@ class LedgerAndGuardTests(unittest.TestCase):
         """Owner 2026-10-09 made bot DMs wake.  The owner can never post in a DM between two bots, so a
         fixed count would block that pair for good:  there 3 wake replies within DM_WINDOW stop it, and it
         wakes again once the oldest of them ages out."""
-        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"), enabled=True)
         window = W.LoopGuard.DM_WINDOW
         for at in (1000.0, 1100.0):
             guard.note("dm", wake_reply=True, owner=False, rolling=True, now=at)

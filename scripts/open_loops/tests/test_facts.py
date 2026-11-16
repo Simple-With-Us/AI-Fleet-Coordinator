@@ -26,7 +26,7 @@ class Facts(Sandbox):
         f = self.facts()
         self.assertEqual(f["schema"], 1)
         self.assertRegex(f["facts_id"], r"^ol-20261011-0700-[a-z0-9-]+$")
-        self.assertEqual(f["built_at_local"], "Sun, Oct 11, 7:00am")
+        self.assertEqual(f["built_at_local"], "Sun, Oct 11, 7:00 AM")
         self.assertEqual(f["built_at"], "2026-10-11T12:00:00Z")
         self.assertNotIn("CDT", json.dumps(f))
         for name in ("github", "linear", "lanes", "autopush", "needs_owner"):
@@ -37,15 +37,15 @@ class Facts(Sandbox):
         self.assertEqual(f["owner_asks"]["count"], None)
 
     def test_dst_correct_central_time(self):
-        winter = datetime(2026, 12, 15, 13, 0, tzinfo=timezone.utc)      # 7:00am CST
+        winter = datetime(2026, 12, 15, 13, 0, tzinfo=timezone.utc)      # 7:00 AM CST
         f = self.facts(now=winter)
-        self.assertEqual(f["built_at_local"], "Tue, Dec 15, 7:00am")
+        self.assertEqual(f["built_at_local"], "Tue, Dec 15, 7:00 AM")
         self.assertTrue(f["facts_id"].startswith("ol-20261215-0700-"))
         spring = datetime(2026, 3, 8, 7, 59, tzinfo=timezone.utc)        # the last minute before the clocks jump
-        self.assertEqual(central.stamp(spring), "Sun, Mar 8, 1:59am")
-        self.assertEqual(central.stamp(datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc)), "Sun, Mar 8, 3:00am")
-        self.assertEqual(central.stamp(datetime(2026, 11, 1, 6, 59, tzinfo=timezone.utc)), "Sun, Nov 1, 1:59am")
-        self.assertEqual(central.stamp(datetime(2026, 11, 1, 7, 0, tzinfo=timezone.utc)), "Sun, Nov 1, 1:00am")
+        self.assertEqual(central.stamp(spring), "Sun, Mar 8, 1:59 AM")
+        self.assertEqual(central.stamp(datetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc)), "Sun, Mar 8, 3:00 AM")
+        self.assertEqual(central.stamp(datetime(2026, 11, 1, 6, 59, tzinfo=timezone.utc)), "Sun, Nov 1, 1:59 AM")
+        self.assertEqual(central.stamp(datetime(2026, 11, 1, 7, 0, tzinfo=timezone.utc)), "Sun, Nov 1, 1:00 AM")
 
     def test_stuck_prs_use_head_age_with_a_48_hour_floor(self):
         f = self.facts()

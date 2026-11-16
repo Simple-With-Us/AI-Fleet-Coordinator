@@ -1,4 +1,4 @@
-# Operator listener, server instance:  the Grok Bot (GB) personas, woken through their Grok Bot
+# Operator listener, server instance:  the Grok bots (GB), woken through their Grok Bot
 # routine webhooks.  The Mac instance (the CLAUDE seat) is the LaunchAgent; a seat is never held by
 # both (docs/protocols/simple-tools-partition.toml).  Design and Coolify setup:
 # docs/protocols/eavesdropper-server.md.
@@ -10,7 +10,7 @@
 # loaded from Infisical by the entrypoint when Coolify binds the scoped INFISICAL_TOKEN
 # service token (server/infisical_env.py).  ZULIP_SITE is a Coolify
 # variable either way.  State, the config and the logs live on the /data volume.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -35,6 +35,7 @@ WORKDIR /app
 # The entry script and the package must be siblings:  the script puts its own directory on sys.path.
 COPY scripts/simple-chat /app/scripts/simple-chat
 COPY scripts/simple_tools /app/scripts/simple_tools
+COPY scripts/fleet_infisical.py /app/scripts/
 # The Operator's Linear project webhook (AFC-565) runs these two with the listener.
 COPY scripts/linear_project_linkifiers.py scripts/zulip_linkifiers.py /app/scripts/
 # The seat partition, read by the daemon at start (it refuses a seat of the Mac instance).

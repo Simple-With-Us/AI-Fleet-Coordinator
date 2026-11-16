@@ -1,5 +1,10 @@
 """The seat's typing indicator:  Zulip shows "<seat> is typing" while the seat thinks.
 
+NOT RAISED ANY MORE (owner ruling, Nov 10 2026:  "The operator should never be answering on
+behalf of a platform").  The daemon's `_typing_signal` answers None for every seat, because the
+indicator promised a reply and the Operator no longer posts one.  This module and the start and
+stop around a wake run in `Daemon.run_wake` stay only until the wake types are deleted.
+
 A wake run is silent for its whole length.  The daemon starts the adapter, the adapter
 takes 30 to 50 seconds to answer, and the reply is posted only after the model has
 finished, so the person who woke the seat watches an empty topic for the entire run

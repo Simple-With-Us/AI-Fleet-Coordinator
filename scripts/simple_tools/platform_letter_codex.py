@@ -21,7 +21,8 @@ What Codex gives a hook (read from the schemas the Codex binary embeds, and from
   none has been for half an hour; it prints nothing, because the SubagentStop output has no `hookSpecificOutput`.
 - SessionEnd carries `reason: "other"` for every end (an exit, an idle unload in the desktop app, an archive), so an
   end says nothing about whether a chat is over, and no SessionEnd hook is installed.  An idle chat's letter is freed
-  by the library's 36 hour sweep, and a resumed chat keeps its letter.
+  by the assigner's own sweep, and a resumed chat keeps its letter.  No client sweeps:  an archived chat's letter is
+  freed the same way.
 
 Naming a thread.  `rename_thread` puts the title in the thread's `name` (what Codex lists, resumes by and shows):
 1. through the local app-server daemon, over `codex app-server proxy` (a WebSocket on stdio): about 0.05 seconds; where
@@ -50,7 +51,7 @@ app-server for each hook's current hash (`hooks/list`) and records the hash of t
 never runs it: `python3 -m simple_tools.platform_letter_codex trust [--check]`.  Until it has run, the hooks are inert
 and Codex opens its blocking "Hooks need review" prompt at the next start of a TUI (the unattended `codex resume`
 seat included), so every `install` answer says whether this adapter's entries are trusted, `install --check` exits 0
-only when they are installed, current and trusted, and any install that changes the command (a new `--location`, a new `--remote`) makes them
+only when they are installed, current and trusted, and any install that changes the command (a new `--location`) makes them
 `modified` and needs `trust` again.
 Each hook command ends in `|| true`.  Codex blocks a prompt when a UserPromptSubmit hook exits 2 with a message on
 stderr, and `python3` exits 2 when the script it is asked to run is gone (the server's managed `platform-letter`
@@ -99,7 +100,9 @@ SKIP_ORIGINATORS = ("botfleet", "minimax-codex-mcp", *DRIVER_ORIGINATORS)
 HEADLESS_SOURCES = ("exec", "mcp")
 # The `thread_source` of a chat someone talks to; an older store has none.  Anything else (an automation, a voice
 # session, a guardian review) is not a chat.
-CHAT_THREAD_SOURCES = ("", "user")
+# `agent_created_thread` is a chat Codex Desktop opened for the user from another chat's tool call (Codex AA on the
+# Mac, Nov 10, 2026, is one):  the user talks to it like any other chat.
+CHAT_THREAD_SOURCES = ("", "user", "agent_created_thread")
 
 STORE_WAIT = 0.5  # seconds to wait for a locked store before reading nothing
 RPC_SECONDS = 6.0  # the whole rename, both routes, inside the hook's own timeout (15 to 20 seconds)
@@ -380,7 +383,7 @@ class Rpc:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env=dict(env),
+            env=PL.child_process_env(env),
         )
 
     def __enter__(self) -> Rpc:
@@ -605,6 +608,68 @@ def rename_thread(
     return False
 
 
+# The repair pass (`repair_unlettered`) scans for threads still showing the "??: " placeholder:  at most this
+# many, only chats old enough that their own start hook has finished (a brand-new chat's "??" can be its start in
+# flight), never an archived one (an archived chat is put away, not lost), and none older than a week (an ancient
+# "??" chat is history, not a repair).
+UNLETTERED_SCAN = 20
+UNLETTERED_MIN_AGE_SECONDS = 900
+UNLETTERED_MAX_AGE_SECONDS = 7 * 86400
+
+
+def codex_unlettered_sessions(env: Mapping[str, str]) -> list[str] | None:
+    """This host's chats that still show the "??: " placeholder, newest first, for the scheduled repair pass
+    (`repair_unlettered`).  Read-only, a short wait for a lock, and any doubt (no store, a locked one, a store
+    version without `created_at`) answers None:  no pass this time.  A chat's title is read again in its own
+    replayed start before anything changes."""
+    path = store_file(env)
+    if not path:
+        return None
+    try:
+        conn = sqlite3.connect(
+            Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=STORE_WAIT
+        )
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    now = time.time()
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT id FROM threads WHERE name LIKE '??: %' AND archived = 0"
+                " AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+                (
+                    now - UNLETTERED_MAX_AGE_SECONDS,
+                    now - UNLETTERED_MIN_AGE_SECONDS,
+                    UNLETTERED_SCAN,
+                ),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such column" not in str(exc):
+                raise
+            if "archived" not in str(exc):
+                return None  # a store version this old cannot say how old a chat is:  no pass
+            # A store from before `archived`:  no chat in it can be archived (the column did not exist to
+            # set), so the unfiltered scan loses nothing;  the age window, the cap and the pass's own scope
+            # gate still bind.
+            try:
+                rows = conn.execute(
+                    "SELECT id FROM threads WHERE name LIKE '??: %'"
+                    " AND created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+                    (
+                        now - UNLETTERED_MAX_AGE_SECONDS,
+                        now - UNLETTERED_MIN_AGE_SECONDS,
+                        UNLETTERED_SCAN,
+                    ),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return [str(row[0]) for row in rows]
+
+
 def codex_rename(req: PL.TitleRequest) -> bool:
     """The spec's title writer: put "XX: Words" on the thread (a sub-thread's own id, not its parent's)."""
     return rename_thread(req.session_id, req.title, req.env)
@@ -641,6 +706,7 @@ SPEC = PL.PlatformSpec(
     },
     quiet_events=("SubagentStop",),
     chat_payload=codex_chat_payload,
+    unlettered_sessions=codex_unlettered_sessions,
     title_writer=codex_rename,
 )
 
@@ -721,7 +787,14 @@ def install(
     buf = io.StringIO()
     code = PL.install_json_hooks(INSTALL, opts, env, buf)
     answer = PL._last_json(buf.getvalue())
-    if answer is None or opts.remove or "error" in answer or code != 0:
+    # A check that exits 1 only because an entry is not current still reports the trust state beside it.
+    outdated_only = (
+        opts.check
+        and isinstance(answer, dict)
+        and all(answer.get("installed", {}).values())
+        and not answer.get("retired")
+    )
+    if answer is None or opts.remove or "error" in answer or (code != 0 and not outdated_only):
         stdout.write(buf.getvalue())
         return code
     state = trust_state(env, popen=popen)
@@ -792,6 +865,9 @@ def trust_main(
     return _emit(stdout, answer, 0 if ok else 1)
 
 
+USAGE = "usage: python3 -m simple_tools.platform_letter_codex trust [--check]\n"
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -803,7 +879,7 @@ def main(
     stdout = stdout or sys.stdout
     if argv[:1] == ["trust"]:
         return trust_main(argv[1:], env, stdout)
-    stdout.write("usage: python3 -m simple_tools.platform_letter_codex trust [--check]\n")
+    stdout.write(USAGE)
     return 2
 
 

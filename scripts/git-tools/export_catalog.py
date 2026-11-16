@@ -102,6 +102,13 @@ WF_V1_READ_ACTIONS = [
     "wf_issue_events",
     "wf_issue_timeline",
     "wf_git_blob_binary_get",
+    "wf_repo_list",
+    "wf_pr_search",
+    "wf_repo_hooks",
+    "wf_deploy_keys",
+    "wf_org_installations",
+    "wf_branch_rules",
+    "wf_rulesets",
 ]
 READ_TOOLS = frozenset(
     ["gr_v1_pr_state", "gr_v1_pr_hold_state"] + ["gr_" + a for a in WF_V1_READ_ACTIONS]
@@ -112,6 +119,8 @@ INPUT_LIMITS = {
     "gr_wf_release_asset_upload_binary": 253952,
     "gr_wf_file_put": 6 * 1024 * 1024,
     "gr_wf_files_put": 6 * 1024 * 1024,
+    "gr_wf_git_blob_create": 212992,
+    "gr_wf_git_tree_create": 245760,
 }
 DEFAULT_INPUT_LIMIT = 65536
 
@@ -143,6 +152,8 @@ def main(argv):
     catalog = []
     for tool in sorted(tools, key=lambda t: t["name"]):
         name = tool["name"]
+        if name == "gr_wf_pr_create":
+            continue  # Retired bot-author creation must not reappear from a stale capture.
         if not re.fullmatch(r"gr_[a-z0-9_]{1,80}", name):
             continue
         entry = {

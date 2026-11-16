@@ -20,17 +20,92 @@ class MessageCommandTests(Harness):
         made = self.run_cli("post", "--topic", "t", "--to", "CODEX", intro + " status", "--json")
         self.assertEqual(made.code, 0, made.err)
         mid = json.loads(made.out)["id"]
-        self.assertEqual(self.fake._find(mid)["content"], "[CLAUDE·%s: HH.1.M 📁AFC, OPS →CODEX] @**Codex** status" % TAG)
+        self.assertEqual(self.fake._find(mid)["content"], '[CLAUDE:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aAFC,\u200aOPS → CODEX] @**Codex** status')
         edited = self.run_cli("edit", "--id", str(mid), "[CLAUDE·old12345 📁OPS] edited")
         self.assertEqual(edited.code, 0, edited.err)
-        self.assertEqual(self.fake._find(mid)["content"], "[CLAUDE·%s 📁OPS] edited" % TAG)
+        self.assertEqual(self.fake._find(mid)["content"], '[CLAUDE·%s\u200a\u200a📁\u200aOPS] edited' % TAG)
         scheduled = self.run_cli("scheduled", "create", "--topic", "later", "--at", str(int(time.time()) + 3600), "👀 " + intro + " later", "--json")
         self.assertEqual(scheduled.code, 0, scheduled.err)
         sid = json.loads(scheduled.out)["id"]
-        self.assertEqual(self.fake.scheduled[sid]["content"], "👀 [CLAUDE·%s: HH.1.M 📁AFC, OPS] later" % TAG)
+        self.assertEqual(self.fake.scheduled[sid]["content"], '👀 [CLAUDE:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aAFC,\u200aOPS] later')
         changed = self.run_cli("scheduled", "edit", "--id", str(sid), "[MA 📁OPS] quoted")
         self.assertEqual(changed.code, 0, changed.err)
         self.assertEqual(self.fake.scheduled[sid]["content"], "[CLAUDE·%s] [MA 📁OPS] quoted" % TAG)
+
+    def test_own_folder_intro_without_an_ascii_space_is_not_tagged_twice(self) -> None:
+        # AFC-676:  `[SEAT📁AFC]` and `[SEAT<NBSP>📁AFC]` went out as `[SEAT] [SEAT📁AFC]`.
+        for text, want in (
+            ("[CLAUDE📁AFC → ECHO] status", '[CLAUDE·%s\u200a\u200a📁\u200aAFC → ECHO] status' % TAG),
+            ("👀 [CLAUDE\u00a0📁OPS] look", '👀 [CLAUDE·%s\u200a\u200a📁\u200aOPS] look' % TAG),
+            ("[CLAUDEX📁OPS] lookalike", "[CLAUDE·%s] [CLAUDEX📁OPS] lookalike" % TAG),
+        ):
+            with self.subTest(text=text):
+                made = self.run_cli("post", "--topic", "t", text, "--json")
+                self.assertEqual(made.code, 0, made.err)
+                self.assertEqual(self.fake._find(json.loads(made.out)["id"])["content"], want)
+        posted = json.loads(self.run_cli("post", "--topic", "t", "first", "--json").out)["id"]
+        edited = self.run_cli("edit", "--id", str(posted), "[CLAUDE\u2002📁OPS] edited")
+        self.assertEqual(edited.code, 0, edited.err)
+        self.assertEqual(self.fake._find(posted)["content"], '[CLAUDE·%s\u200a\u200a📁\u200aOPS] edited' % TAG)
+
+    def test_body_mentions_are_not_doubled_after_own_intro(self) -> None:
+        cases = [
+            ("[CLAUDE 📁AFC] @**Codex** ping", '[CLAUDE·%s\u200a\u200a📁\u200aAFC] @**Codex** ping' % TAG),
+            ("[CLAUDE 📁AFC] @**Claude** status", '[CLAUDE·%s\u200a\u200a📁\u200aAFC] @**Claude** status' % TAG),
+            (
+                "[CLAUDE 📁AFC →CODEX] @**Codex** please",
+                '[CLAUDE·%s\u200a\u200a📁\u200aAFC → CODEX] @**Codex** please' % TAG,
+            ),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                made = self.run_cli("post", "--topic", "t", text, "--json")
+                self.assertEqual(made.code, 0, made.err)
+                mid = json.loads(made.out)["id"]
+                self.assertEqual(self.fake._find(mid)["content"], want)
+
+    def test_typed_mentions_and_wildcards_stay_real(self) -> None:
+        for text in ("ping @**Codex** now", "everyone @**all** now"):
+            with self.subTest(text=text):
+                made = self.run_cli("post", "--topic", "t", text, "--json")
+                self.assertEqual(made.code, 0, made.err)
+                self.assertIn(text, self.fake._find(json.loads(made.out)["id"])["content"])
+
+    def test_to_is_deduped_by_who_is_mentioned_not_by_text(self) -> None:
+        def loud(text: str) -> int:
+            made = self.run_cli("post", "--topic", "t", "--to", "CODEX", text, "--json")
+            self.assertEqual(made.code, 0, made.err)
+            return self.fake._find(json.loads(made.out)["id"])["content"].lower().count("@**codex")
+
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**Codex|1234** please"), 1)
+        self.assertEqual(loud("[CLAUDE 📁AFC] @**codex** please"), 1)
+        # In code or a quote Zulip does not notify, so the `to` mention is still needed.
+        self.assertEqual(loud("[CLAUDE 📁AFC] see `@**Codex**` there"), 2)
+        self.assertEqual(loud("[CLAUDE 📁AFC] look\n> @**Codex** said"), 2)
+
+    def test_edit_never_double_tags_an_already_tagged_body(self) -> None:
+        # AFC-666:  the edit path follows the post path's intro rule.  An already-tagged
+        # body keeps its single intro (a foreign compact intro is preserved as post
+        # preserves it), while plain text still gains exactly one seat tag.
+        posted = json.loads(self.run_cli("post", "--topic", "t", "first", "--json").out)["id"]
+        cases = [
+            ("[CLAUDE 📁OPS] status", '[CLAUDE·%s\u200a\u200a📁\u200aOPS] status' % TAG),
+            ("[CLAUDE: HH.1.M 📁OPS] threaded", '[CLAUDE:\u200a\u200a\u200aHH.1.M\u200a\u200a📁\u200aOPS] threaded'),
+            ("👀 [CLAUDE 📁OPS] look", '👀 [CLAUDE·%s\u200a\u200a📁\u200aOPS] look' % TAG),
+            ("[CLAUDE·old12345 📁OPS] refreshed", '[CLAUDE·%s\u200a\u200a📁\u200aOPS] refreshed' % TAG),
+            ("[GB-PLUMBER 📁AFC → GB-DIRECTOR] relayed", '[GB-PLUMBER\u200a\u200a📁\u200aAFC → GB-DIRECTOR] relayed'),
+            ("[MA 📁OPS] quoted", '[MA\u200a\u200a📁\u200aOPS] quoted'),
+            ("plain words", "[CLAUDE·%s] plain words" % TAG),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                edited = self.run_cli("edit", "--id", str(posted), text)
+                self.assertEqual(edited.code, 0, edited.err)
+                self.assertEqual(self.fake._find(posted)["content"], expected)
+        # `to` still merges labels into the kept intro and mentions the peer.
+        peer = self.run_cli("edit", "--id", str(posted), "--to", "CODEX", "[GB-PLUMBER 📁AFC] please")
+        self.assertEqual(peer.code, 0, peer.err)
+        self.assertEqual(self.fake._find(posted)["content"], '[GB-PLUMBER\u200a\u200a📁\u200aAFC → CODEX] @**Codex** please')
 
     def test_show_prints_one_message_with_its_flags(self) -> None:
         mid = self.fake.add_message("Codex", "simple-tools", "t", "hello @**Claude**")
@@ -67,7 +142,7 @@ class MessageCommandTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
             self.fake._find(posted)["content"],
-            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** now for you" % (TAG, FAKE_OWNER_ID),
+            '[CLAUDE·%s → OWNER] @**Jay Wedgeworth|%d** now for you' % (TAG, FAKE_OWNER_ID),
         )
 
     def test_edit_to_owner_unpinned_exits_2_before_any_request(self) -> None:
@@ -87,13 +162,13 @@ class MessageCommandTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
             self.fake._find(posted)["content"],
-            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** second words" % (TAG, FAKE_OWNER_ID),
+            '[CLAUDE·%s → OWNER] @**Jay Wedgeworth|%d** second words' % (TAG, FAKE_OWNER_ID),
         )
         peer = self.run_cli("edit", "--id", str(posted), "--to", "CODEX", "third words")
         self.assertEqual(peer.code, 0, peer.err)
         self.assertEqual(
             self.fake._find(posted)["content"],
-            "[CLAUDE·%s→OWNER,CODEX] @**Jay Wedgeworth|%d** @**Codex** third words"
+            '[CLAUDE·%s → OWNER,\u200a\u200aCODEX] @**Jay Wedgeworth|%d** @**Codex** third words'
             % (TAG, FAKE_OWNER_ID),
         )
 
@@ -109,7 +184,7 @@ class MessageCommandTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
             self.fake._find(posted)["content"],
-            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** second words" % (TAG, FAKE_OWNER_ID),
+            '[CLAUDE·%s → OWNER] @**Jay Wedgeworth|%d** second words' % (TAG, FAKE_OWNER_ID),
         )
         #  Like post --to with --no-tag, the bracket goes and the mention stays.
         raw = self.run_cli("edit", "--id", str(posted), "--no-tag", "third words")
@@ -131,7 +206,7 @@ class MessageCommandTests(Harness):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
             self.fake._find(posted)["content"],
-            "[CLAUDE·%s→OWNER] @**Jay Wedgeworth|%d** second words" % (TAG, FAKE_OWNER_ID),
+            '[CLAUDE·%s → OWNER] @**Jay Wedgeworth|%d** second words' % (TAG, FAKE_OWNER_ID),
         )
         multi = self.fake.add_message(
             "Claude",

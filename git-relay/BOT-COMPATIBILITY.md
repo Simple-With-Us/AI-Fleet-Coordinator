@@ -7,7 +7,7 @@ and `mint_permissions`. A bearer must verify to that exact configured identity.
 The server never synthesizes a policy entry merely because a bearer exists.
 
 The existing `GIT_RELAY_SEATS_JSON` accepts any persistent identity under this
-contract, including bearer-only bots, BotFleet roles and Grok Bot personas. It is
+contract, including bearer-only bots, BotFleet roles and Grok bots. It is
 not limited to the six currently deployed principals. Missing configuration or
 credentials refuses that bot only; there is no shared identity fallback. A new
 principal's explicit App slug must come from its configuration, not a guessed

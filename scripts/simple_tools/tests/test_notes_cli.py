@@ -29,7 +29,7 @@ from simple_tools.tests.test_notes_client import FakeFleet, FakeOperator, record
 
 TITLE = "[AFC, Claude] Cli Check"
 MASTER = "⭐️ Background Jobs Master List"
-VERBS = ("create", "update", "pin", "unpin", "read", "list", "log", "runner", "status")
+VERBS = ("create", "update", "pin", "unpin", "delete", "read", "list", "log", "runner", "status")
 
 
 class NotesCliHarness(Harness):
@@ -261,7 +261,7 @@ class MacTests(NotesCliHarness):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
             result.out,
-            "Thu, Oct 22, 5:03pm  %s\nMon, Jan 5, 12:30pm  %s\n(2 of 40 shown;  raise --limit or narrow --query)\n" % (TITLE, MASTER),
+            "Thu, Oct 22, 5:03 PM  %s\nMon, Jan 5, 12:30 PM  %s\n(2 of 40 shown;  raise --limit or narrow --query)\n" % (TITLE, MASTER),
         )
         self.assertEqual(run.calls[0]["argv"][1:], ["--list", "--limit", "2", "--query", "a"])
         a, b = self.direct(FakeRun(stdout=json.dumps(answer)))
@@ -269,6 +269,36 @@ class MacTests(NotesCliHarness):
             as_json = json.loads(self.notes("list", "--json").out)
         self.assertEqual((as_json["total"], len(as_json["notes"])), (40, 2))
         self.assertEqual(self.notes("list", "--limit", "0").code, 2)
+
+    def test_list_defaults_to_compact_and_honors_full(self):
+        notes = [
+            {
+                "title": "n%d" % i,
+                "id": "x-coredata://n%d" % i,
+                "created": "",
+                "modified": "2026-10-22T22:03:00Z",
+            }
+            for i in range(25)
+        ]
+        answer = {"notes": notes, "total": 25, "status": "done"}
+        run = FakeRun(stdout=json.dumps(answer))
+        a, b = self.direct(run)
+        with a, b:
+            compact = self.notes("list")
+        self.assertEqual(compact.code, 0, compact.err)
+        self.assertEqual(compact.out.count("\n") - 1, 10)  # ten rows plus the truncated footer
+        self.assertIn("10 of 25 shown", compact.out)
+        self.assertEqual(run.calls[0]["argv"][1:], ["--list", "--limit", "10"])
+        a, b = self.direct(FakeRun(stdout=json.dumps(answer)))
+        with a, b:
+            full = self.notes("list", "--full")
+        self.assertEqual(full.code, 0, full.err)
+        self.assertEqual(sum(1 for line in full.out.splitlines() if line.startswith("Thu,")), 25)
+        self.assertNotIn("shown", full.out)
+        a, b = self.direct(FakeRun(stdout=json.dumps(answer)))
+        with a, b:
+            as_json = json.loads(self.notes("list", "--json").out)
+        self.assertEqual((as_json["total"], len(as_json["notes"])), (25, 25))
 
     def test_log_prints_the_entries_of_this_macs_action_log(self):
         now = datetime.now(timezone.utc)
@@ -290,7 +320,7 @@ class MacTests(NotesCliHarness):
         self.assertEqual(result.code, 0, result.err)
         lines = result.out.splitlines()
         self.assertEqual(len(lines), 3)
-        time_re = r"\w{3}, \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m"
+        time_re = r"\w{3}, \w{3} \d{1,2}, \d{1,2}:\d{2} (?:AM|PM)"
         self.assertRegex(lines[0], r"^%s  pin  3  CODEX  mcp  %s$" % (time_re, re.escape(TITLE)))
         self.assertRegex(lines[1], r"^%s  update  ok  CLAUDE  runner  reformatted 2 dates, 1 gaps  %s$" % (time_re, re.escape(MASTER)))
         self.assertEqual(lines[2], "(2 entries from the mac log)")
@@ -535,7 +565,7 @@ class GatewayTests(NotesCliHarness):
         self.assertEqual(status.code, 0, status.err)
         self.assertEqual(status.out, "cli-status-0001:  refused, not_found:  no note with that title\n")
         self.assertEqual(read.out, "<div>Jobs</div>\n")
-        self.assertEqual(log.out, "Thu, Oct 22, 5:03pm  update  ok  CODEX  runner  %s\n(1 entries from the operator log)\n" % MASTER)
+        self.assertEqual(log.out, "Thu, Oct 22, 5:03 PM  update  ok  CODEX  runner  %s\n(1 entries from the operator log)\n" % MASTER)
         self.assertEqual(gw.calls[-1][:2], ("notes_log", {"limit": 5, "by_seat": "CODEX"}))
         self.assertEqual(self.audit_rows(), [], "status, read and log leave no audit row")
     def test_log_honors_explicit_seat_and_platform_default_without_env_seat(self):

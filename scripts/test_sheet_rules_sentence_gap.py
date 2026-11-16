@@ -104,13 +104,14 @@ class SheetRuleSentenceGapTests(unittest.TestCase):
     def test_the_two_chat_pane_exceptions_are_named(self) -> None:
         canonical = _canonical()
         detail = _rule()["detail"]
-        for pane in ("Claude Code", "MiniMax Code"):
+        for pane in ("Claude Code", "MiniMax Code", "Z Code"):
             self.assertIn(pane, canonical, "the canonical skill changed shape")
         pane_sentences = [s for s in _sentences(detail) if "&nbsp;" in s]
         self.assertTrue(pane_sentences, "the entity sentence is gone; update this gate")
         for sentence in pane_sentences:
             self.assertIn("Claude Code", sentence)
             self.assertIn("MiniMax Code", sentence)
+            self.assertIn("Z Code", sentence)
 
     def test_apple_notes_has_no_exception_of_its_own(self) -> None:
         """AFC-552 gave Apple Notes the narrow no-break space;  the Oct 29, 2026 measurement
@@ -137,7 +138,7 @@ class SheetRuleSentenceGapTests(unittest.TestCase):
         refusing = [s for s in _sentences(detail) if "entity" in s and "Never" in s]
         self.assertTrue(refusing, "the entity refusal is gone; update this gate")
         for sentence in refusing:
-            self.assertIn("outside the two chat panes", sentence)
+            self.assertIn("outside the three chat panes", sentence)
 
 
 if __name__ == "__main__":

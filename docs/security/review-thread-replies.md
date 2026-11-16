@@ -24,12 +24,15 @@ mutation, personal token, new grant or review trigger. Source publication and
 review are not installation or runtime-use clearance. This new capability is
 not included in the1511 two-image matcher transaction.
 
-## Separate grant and installation boundary
+## Grant and installation boundary
 
-Production fleet and pinned seat profiles intentionally do not grant this new
-action. Registration in policy.py is a recognized capability name, not a seat
-grant. Actual use requires a separately reviewed, exact own-seat grant and
-installation transaction. No profile or live policy is widened by this PR.
+As of AFC-629 (PR #1797), the reviewed source `fleet`, `amp` and `wise` profiles in
+git-relay/deploy/seat-policy.json grant this read-only action, as one of seven
+implemented verbs the owner's package approved together.  Registration in policy.py is
+still only a recognized capability name.  The grant reaches a seat only when the
+owner-gated `seat_policy.py install --apply --expect <digest>` transaction on the relay
+host runs, after a dry-run diff against the live seats file shows no removed actions.
+The ECHO-only package in deploy/echo-review-read remains the narrower alternative.
 
 Bodies are filtered with the sibling secret/provider guards, including the loaded
 bearer, and withheld bodies carry body_withheld plus the fixed redacted marker.

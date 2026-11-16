@@ -12,14 +12,12 @@ import sys
 import textwrap
 import threading
 import time
-import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from simple_tools import adapters as A
-from simple_tools import chat_catalog as CC
 from simple_tools import daemon as D
 from simple_tools import heldback as HELD
 from simple_tools import host_load as HL
@@ -27,11 +25,11 @@ from simple_tools import live as L
 from simple_tools import wakes as W
 from simple_tools import zulip as Z
 from simple_tools.daemon import LIVE_DIR_KEEP
+from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.fake_zulip import EPOCH
 from simple_tools.tests.harness import write_rc
 from simple_tools.tests.listener_harness import (
     BASE_CONFIG,
-    OPERATOR_USER_ID,
     ListenerHarness,
     fake_watcher,
     reply_output,
@@ -364,6 +362,8 @@ class RoutingTests(DaemonHarness):
         self.assertEqual(self.ledger(), [])
 
     def test_an_owner_follow_up_soon_after_a_live_turn_is_still_an_interrupt(self) -> None:
+        # No live limit has a default, so the seat writes the per-topic spacing that holds the peer.
+        self.write_config(live="per_topic_minutes = 5")
         daemon = self.started()
         self.write_lease("L1", topics=[("simple-tools", "t")])
         now = self.clock.time()
@@ -385,6 +385,122 @@ class RoutingTests(DaemonHarness):
         self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
         self.assertEqual(self.live_items("nowatcher"), [])
         self.assertIsNone(self.inbox()[0]["delivered_to"])
+
+
+class RoutineSeatLeaseTests(DaemonHarness):
+    """One wake path (OPS-1048):  a seat with a routine never hands a mention to a session, neither the
+    newest one nor one that follows the topic, at route time (router.route) or at wake time
+    (Daemon.takeover), so its routine's router picks the chat and a session letter beats topic ownership."""
+
+    ROUTINE_SEAT = textwrap.dedent("""\
+        [seat.CLAUDE]
+        bot = "Claude"
+        wake = "http"
+        routine = {}
+        """)
+
+    def wake_capable(self, *lease_ids) -> None:
+        for n, lease_id in enumerate(lease_ids):
+            self.write_lease(lease_id, last_prompt=10.0 * (n + 1))
+            self.addCleanup(os.close, fake_watcher(self.seat_paths(), lease_id))
+
+    def test_the_context_of_a_seat_without_a_routine_says_so(self) -> None:
+        daemon = self.started()
+        self.assertFalse(daemon.context(daemon.seats["CLAUDE"]).seat_has_routine)
+
+    def test_the_context_of_a_seat_with_a_routine_says_so(self) -> None:
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started()
+        self.assertTrue(daemon.context(daemon.seats["CLAUDE"]).seat_has_routine)
+
+    def test_a_mention_stays_off_the_session_and_the_routine_wake_is_queued(self) -> None:
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started()
+        self.wake_capable("old", "new")
+        mid = self.fake.add_message("Codex", "other", "elsewhere", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        self.assertEqual((self.live_items("old"), self.live_items("new")), ([], []))
+        self.assertIsNone(self.inbox()[0]["delivered_to"])
+        self.assertEqual([(r["state"], r["trigger_ids"]) for r in self.ledger()], [("queued", [mid])])
+
+    def test_the_wake_reaches_the_routine_and_the_newest_session_does_not_take_it_over(self) -> None:
+        routine = FakeRoutine()
+        routine.start()
+        self.addCleanup(routine.stop)
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started(
+            env=self.env(
+                CLAUDE_ROUTINE_URL=routine.url + "/hook?token=t", CLAUDE_ROUTINE_KEY="rk-test-key"
+            )
+        )
+        self.wake_capable("old", "new")
+        mid = self.fake.add_message("Codex", "other", "elsewhere", MENTION)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+        self.wake_cycle(daemon)
+        self.assertTrue(routine.wait_for(1, timeout=10), "the routine was never posted to")
+        self.assertEqual(routine.received[0].json()["message_id"], mid)
+        self.assertNotIn("skipped", [r["state"] for r in self.ledger()], "no lease took the wake")
+        self.assertEqual((self.live_items("old"), self.live_items("new")), ([], []))
+
+    def pending(self, topic: str) -> W.Pending:
+        now = self.clock.time()
+        return W.Pending("w-%s" % topic, "CLAUDE",
+                         {"type": "stream", "channel": "simple-tools", "topic": topic},
+                         owner=False, now=now, due=now)
+
+    def test_takeover_never_hands_a_routine_seats_wake_to_a_lease(self) -> None:
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started()
+        self.wake_capable("recent")
+        self.write_lease("owner", topics=[("simple-tools", "owned")], posted=[400], last_prompt=1)
+        runner = daemon.seats["CLAUDE"]
+        self.assertIsNone(daemon.takeover(runner, self.pending("owned")), "not the lease on the topic")
+        self.assertIsNone(daemon.takeover(runner, self.pending("unleased")), "not the newest session")
+
+    def test_takeover_still_hands_a_plain_seats_wake_to_the_topic_lease_or_the_newest_session(self) -> None:
+        self.write_config(rewake=True)
+        daemon = self.started()
+        self.wake_capable("recent")
+        self.write_lease("owner", topics=[("simple-tools", "owned")], posted=[400], last_prompt=1)
+        runner = daemon.seats["CLAUDE"]
+        self.assertEqual(daemon.takeover(runner, self.pending("owned")), "owner")
+        self.assertEqual(daemon.takeover(runner, self.pending("unleased")), "recent")
+
+    LETTERED = "@**Claude** AB can you check the AFC cutover?"
+
+    def test_a_lettered_mention_in_a_topic_another_session_follows_reaches_the_routine(self) -> None:
+        routine = FakeRoutine()
+        routine.start()
+        self.addCleanup(routine.stop)
+        self.write_config(rewake=True, seats=self.ROUTINE_SEAT)
+        daemon = self.started(
+            env=self.env(
+                CLAUDE_ROUTINE_URL=routine.url + "/hook?token=t", CLAUDE_ROUTINE_KEY="rk-test-key"
+            )
+        )
+        self.write_lease("CD", topics=[("simple-tools", "t")], posted=[401], last_prompt=90.0)
+        mid = self.fake.add_message("Codex", "simple-tools", "t", self.LETTERED)
+        self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
+
+        def classes() -> list[str]:
+            return [i["class"] for i in self.live_items("CD") if i["kind"] == "message"]
+
+        self.assertEqual(classes(), ["passive"], "the topic's session gets context, never an interrupt")
+        self.assertIsNone(self.inbox()[0]["delivered_to"])
+        self.assertEqual([(r["state"], r["trigger_ids"]) for r in self.ledger()], [("queued", [mid])])
+        self.wake_cycle(daemon)
+        self.assertTrue(routine.wait_for(1, timeout=10), "the routine was never posted to")
+        self.assertEqual(routine.received[0].json()["message_id"], mid)
+        self.assertNotIn("skipped", [r["state"] for r in self.ledger()], "no lease took the wake")
+        self.assertEqual(classes(), ["passive"])
+
+    def test_a_seat_without_a_routine_still_interrupts_the_topic_lease_for_a_lettered_mention(self) -> None:
+        daemon = self.started()
+        self.write_lease("CD", topics=[("simple-tools", "t")], posted=[401], last_prompt=90.0)
+        mid = self.fake.add_message("Codex", "simple-tools", "t", self.LETTERED)
+        self.pump_until(daemon, lambda: len(self.live_items("CD")) >= 1)
+        self.assertEqual([(i["id"], i["class"]) for i in self.live_items("CD")], [(mid, "interrupt")])
+        self.assertEqual((self.inbox(), self.ledger()), ([], []), "no inbox copy and no wake")
 
 
 class LeaseLifecycleTests(DaemonHarness):
@@ -469,7 +585,7 @@ class LeaseLifecycleTests(DaemonHarness):
         self.assertEqual(len(L.pending_items(self.seat_paths(), "L1")), 1, "the chatter stays with the lease")
 
 
-    def test_a_deaf_lease_releases_a_mention_once_and_the_headless_wake_answers_it(self) -> None:
+    def test_a_deaf_lease_releases_a_mention_once_and_the_headless_wake_runs_for_it(self) -> None:
         daemon = self.started()
         self.write_lease("deaf", topics=[("simple-tools", "t")])  # no watcher and rewake not verified:  cannot wake
         mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
@@ -482,9 +598,7 @@ class LeaseLifecycleTests(DaemonHarness):
         self.assertEqual(len([i for i in self.live_items("deaf") if i.get("id") == mid]), 1, "never copied back")
         self.assertEqual([r["id"] for r in self.inbox()], [mid], "one seat-inbox row")
         self.assertEqual(len(self.dumps()), 1, "the grace release ends in exactly one headless wake")
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d" % mid))
+        self.assertEqual(self.bot_posts(), [], "the Operator never answers on behalf of a platform")
         self.assertEqual([r["state"] for r in self.ledger()], ["queued", "accepted", "started", "done"])
         self.assertEqual(self.ledger()[0]["skip_leases"], ["deaf"])
 
@@ -533,7 +647,8 @@ class LeaseLifecycleTests(DaemonHarness):
 
 
 class WakeTests(DaemonHarness):
-    def test_a_peer_mention_wakes_claude_and_the_daemon_posts_the_reply(self) -> None:
+    def test_a_peer_mention_wakes_claude_and_the_reply_is_dropped_never_posted(self) -> None:
+        # Owner ruling, Nov 10 2026:  "The operator should never be answering on behalf of a platform."
         daemon = self.started()
         mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
@@ -546,36 +661,36 @@ class WakeTests(DaemonHarness):
         done = self.ledger()[-1]
         self.assertEqual(done["action"], "reply")
         self.assertNotIn("cost_usd", done, "wake rows are no longer costed (owner 2026-10-13)")
-        post = self.bot_posts()[-1]
-        self.assertEqual(post["id"], done["posted_id"])
-        self.assertEqual((post["display_recipient"], post["subject"]), ("simple-tools", "t"))
-        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re=%d\n" % mid))
+        self.assertEqual(self.bot_posts(), [], "the Operator posts nothing for a wake")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [], "nothing was even attempted")
+        self.assertIsNone(done["posted_id"])
+        self.assertEqual(done["post_error"], "operator_never_answers")
+        self.assertNotIn("posted_by", done)
+        refusals = [e for e in self.log_events("post-refused") if e.get("wake_id") == done["wake_id"]]
+        self.assertEqual([(e["seat"], e["reason"], e["kind"]) for e in refusals],
+                         [("CLAUDE", "operator_never_answers", "reply")])
+        self.assertEqual(self.terminal_wakes()[-1]["trigger_ids"], [mid])
         prompt = self.dumps()[0]["stdin"]
         self.assertIn("Trigger message ids: %d" % mid, prompt)
         self.assertIn("BEGIN_UNTRUSTED_ZULIP nonce=", prompt)
         self.assertIn("can you check", prompt)
 
-    def test_an_owner_dm_is_answered_by_dm_only(self) -> None:
+    def test_an_owner_dm_wake_is_never_answered_in_the_thread(self) -> None:
         daemon = self.started()
-        dm = self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
+        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon, 6)
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertEqual(posts[0]["type"], "private")
-        #  The Operator sends it (owner ruling, Oct 30 2026), so the thread is the original one plus
-        #  the Operator: the seat stays in it and the owner is in it.
-        self.assertEqual(
-            sorted(r["id"] for r in posts[0]["display_recipient"]), [10, 12, OPERATOR_USER_ID]
-        )
-        self.assertTrue(posts[0]["content"].startswith("[OPERATOR·wake] re=%d" % dm))
+        self.assertEqual(self.bot_posts(), [], "not in the DM thread, and not anywhere else")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         self.assertIn("direct message thread", self.dumps()[0]["stdin"])
         self.assertTrue(self.ledger()[0]["owner"])
+        row = self.terminal_wakes()[-1]
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"))
 
-    def test_a_bot_to_bot_dm_wake_reply_is_refused_and_the_daemon_stays_alive(self) -> None:
-        """AFC-469:  a direct message may go out only when the owner is in the conversation.  A
-        wake reply to a peer's DM has no owner in it, so it is refused:  the answer belongs in a
-        channel.  The refusal is recorded and the daemon keeps running."""
+    def test_a_bot_to_bot_dm_wake_is_dropped_the_same_way_and_the_daemon_stays_alive(self) -> None:
+        """The reply to a peer's DM used to be refused by the owner-in-the-conversation guard
+        (AFC-469) and the wake was `failed`.  The reply is refused before any guard now, by the rule
+        that the Operator never answers on behalf of a platform, and the wake is `done`."""
         daemon = self.started()
         self.fake.add_direct_message("Codex", "status of the cutover?", deliver=True)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
@@ -583,38 +698,31 @@ class WakeTests(DaemonHarness):
         self.assertEqual(self.bot_posts(), [])
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         row = self.terminal_wakes()[-1]
-        self.assertEqual(row["state"], "failed", row)
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"), row)
         self.assertIsNone(row.get("posted_id"))
-        log = (self.state_dir / "logs" / "listener.log").read_text()
-        self.assertIn("post-refused-dm", log)
-        self.assertIn("dm_owner_not_participant", log)
-        #  The daemon is still alive:  the next wake runs and its reply lands.
+        self.assertEqual([e["reason"] for e in self.log_events("post-refused")], ["operator_never_answers"])
+        self.assertEqual(self.log_events("post-refused-dm"), [], "the DM guard never even sees a reply")
+        #  The daemon is still alive:  the next wake runs, and it posts nothing either.
         before = len(self.ledger())
         self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) > before)
         self.wake_cycle(daemon)
-        self.assertEqual(len(self.bot_posts()), 1)
-        self.assertEqual(self.bot_posts()[0]["type"], "stream")
+        self.assertEqual(self.terminal_wakes()[-1]["state"], "done")
+        self.assertEqual(self.bot_posts(), [])
 
-    def test_a_channel_wake_reply_reaches_the_server_with_the_sentence_gap(self) -> None:
+    def test_the_dropped_reply_text_is_kept_nowhere(self) -> None:
         daemon = self.started()
-        mid = self.fake.add_message("Codex", "simple-tools", "t", MENTION)
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon)
-        post = self.bot_posts()[-1]
-        self.assertTrue(post["content"].startswith("[OPERATOR·wake] re=%d\n" % mid), post["content"])
-        self.assertIn("On it.\u00a0 The cutover is in review.", post["content"])
-        self.assertNotIn("On it.  ", post["content"])
-        self.assertEqual(self.fake.requests_to("POST", "messages")[-1].form["content"], post["content"])
-
-    def test_a_dm_wake_reply_reaches_the_server_with_the_sentence_gap(self) -> None:
-        daemon = self.started()
-        self.fake.add_direct_message("Jay Wedgeworth", "status of the cutover?", deliver=True)
-        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
-        self.wake_cycle(daemon, 6)
-        post = self.bot_posts()[-1]
-        self.assertEqual(post["type"], "private")
-        self.assertIn("On it.\u00a0 The cutover is in review.", post["content"])
+        self.assertEqual(self.bot_posts(), [])
+        needle = "The cutover is in review"
+        self.assertIn(needle, reply_output()["reply"], "control:  the model did say it")
+        for row in self.ledger():
+            self.assertNotIn(needle, json.dumps(row))
+        self.assertNotIn(needle, (self.state_dir / "logs" / "listener.log").read_text())
+        self.assertNotIn(needle, json.dumps(daemon.status()))
+        self.assertEqual(L.read_jsonl(self.seat_paths().owner_queue), [])
 
     def test_an_unpinned_binary_or_unpinned_owner_never_runs_claude(self) -> None:
         os.unlink(self.seat_paths().wake_pin)
@@ -751,6 +859,8 @@ class WakeTests(DaemonHarness):
         self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
 
     def test_peer_budget_per_topic(self) -> None:
+        # No wake cap has a default (owner, Nov 10, 2026), so the seat sets the one under test.
+        self.write_config(budget="per_topic_per_hour = 2")
         daemon = self.started()
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", MENTION + " %d" % n)
@@ -761,11 +871,37 @@ class WakeTests(DaemonHarness):
         self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         self.assertEqual(len(self.dumps()), 2)
 
-    def test_peer_budget_per_topic_with_loop_prevention_off(self) -> None:
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+    def test_a_seat_that_sets_no_cap_is_never_held_back(self) -> None:
+        """Owner, Nov 10, 2026:  an unset cap is no limit, so a burst in one topic wakes every time."""
         daemon = self.started()
-        self.assertFalse(daemon.loopguard.enabled)
+        self.assertNotIn("per_topic_per_hour", self.status_budget(daemon))
+        for n in range(3):
+            self.fake.add_message("Codex", "simple-tools", "t", MENTION + " %d" % n)
+            self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
+            self.wake_cycle(daemon, 95)
+        self.assertEqual([r for r in self.ledger() if r["state"] in ("held_back", "dropped")], [])
+        self.assertEqual(len(self.dumps()), 3)
+
+    def status_budget(self, daemon) -> dict:
+        return daemon.status()["seats"]["CLAUDE"]["budget"]
+
+    def test_a_cap_of_zero_pauses_wakes_and_holds_them_back(self) -> None:
+        self.write_config(budget="wakes_per_hour = 0")
+        daemon = self.started()
+        self.fake.add_message("Codex", "simple-tools", "t", MENTION)
+        self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 1)
+        self.wake_cycle(daemon, 95)
+        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "held_back"]
+        self.assertEqual(reasons, ["wakes_per_hour"], "0 keeps its meaning:  held back, never run")
+        self.assertEqual(len(self.dumps()), 0)
+
+    def test_peer_budget_per_topic_with_loop_prevention_on(self) -> None:
+        # The guard is off by default (owner, Nov 10, 2026):  turned on, it changes nothing here.
+        self.write_config(
+            budget="per_topic_per_hour = 2", extra_daemon="wake_loop_prevention = true"
+        )
+        daemon = self.started()
+        self.assertTrue(daemon.loopguard.enabled)
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", MENTION + " %d" % n)
             self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
@@ -837,12 +973,13 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         self.wake_cycle(daemon, 2)
         self.assertEqual([r["state"] for r in self.ledger()][-1], "done")
-        self.assertTrue(self.bot_posts(), "a valid wake still posts")
+        self.assertEqual(self.bot_posts(), [], "a valid wake posts nothing either")
 
-    def test_a_wake_act_refuses_does_not_surface(self) -> None:
-        # The second half of AFC-306:  act() can refuse after validation passed (a mention that
-        # survived neutralizing, or the secret scanner).  That must also be failed, and must not
-        # clear the held refs.  The secret sits in the reply, which is what the scanner reads.
+    def test_a_reply_holding_a_secret_is_dropped_like_any_other_and_surfaces(self) -> None:
+        # AFC-306, then the rule of Nov 10 2026.  The reply used to be refused by the secret scanner
+        # and the wake was failed, with the held refs kept.  The reply is never posted now, so there
+        # is nothing to scan and nothing to refuse:  the wake is done, the held refs are surfaced, and
+        # the text, secret and all, is kept nowhere.
         held_id = 900001
         self.write_config(extra_daemon="held_alert_minutes = 0")
         self.set_claude(mode="ok", output={"action": "reply", "reply": "here you go: " + self.key,
@@ -856,11 +993,15 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         self.wake_cycle(daemon, 2)
         row = self.terminal_wakes()[-1]
-        self.assertEqual(row["state"], "failed", row)
-        self.assertTrue(str(row.get("refused") or "").startswith("secret scanner"), row)
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"), row)
+        self.assertNotIn("refused", row)
         self.assertEqual(self.bot_posts(), [])
-        self.assertEqual(self.held_ids(), [held_id])
-        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        self.assertEqual(self.held_ids(), [])
+        self.assertTrue(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        self.assertNotIn(self.key, json.dumps(self.ledger()))
+        self.assertNotIn(self.key, (self.state_dir / "logs" / "listener.log").read_text())
+        kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
+        self.assertNotIn("wake-secret", kinds, "no secret-scanner banner either")
 
     def test_an_owner_wake_with_no_reply_is_done_and_surfaces_held_items(self) -> None:
         # action none attempts no channel reply.  A missing posted_id is success, and the held
@@ -903,7 +1044,9 @@ class WakeTests(DaemonHarness):
         kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
         self.assertNotIn("wake-undelivered", kinds)
 
-    def test_a_reply_that_fails_to_post_is_failed_and_keeps_held_items(self) -> None:
+    def test_a_server_that_would_reject_the_reply_changes_nothing_because_none_is_sent(self) -> None:
+        # A rejected reply used to be a failed wake that kept the held refs.  Nothing is sent now, so
+        # the rejection the fake server holds ready is never used, and the wake is done.
         held_id = 900003
         self.write_config(extra_daemon="held_alert_minutes = 0")
         self.set_claude(mode="ok", output=reply_output("this reply will not land"))
@@ -917,12 +1060,13 @@ class WakeTests(DaemonHarness):
         daemon.tick()
         self.wake_cycle(daemon, 2)
         row = self.terminal_wakes()[-1]
-        self.assertEqual(row["state"], "failed", row)
+        self.assertEqual((row["state"], row["post_error"]), ("done", "operator_never_answers"), row)
         self.assertNotIn("refused", row)
         self.assertIsNone(row.get("posted_id"))
-        self.assertEqual(self.bot_posts(), [])
-        self.assertEqual(self.held_ids(), [held_id])
-        self.assertFalse(any(entry["state"] == "surfaced" for entry in self.ledger()))
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [], "no post was even attempted")
+        self.assertEqual(self.log_events("post-failed"), [])
+        self.assertEqual(self.held_ids(), [])
+        self.assertTrue(any(entry["state"] == "surfaced" for entry in self.ledger()))
 
     def test_single_flight_fifo_overflow(self) -> None:
         daemon = self.started()
@@ -1024,20 +1168,24 @@ class WakeTests(DaemonHarness):
         # held refs.  The validator's reason is preserved on the row.
         self.assertEqual(finals[0]["state"], "failed")
         self.assertIn("keys extra extra", finals[0]["reason"])
-        self.assertEqual(finals[1]["state"], "failed")
-        self.assertTrue(finals[1]["refused"].startswith("secret scanner"))
+        # A reply that holds a secret is dropped like any other reply:  nothing is posted, and the wake
+        # is done, not failed (it used to be refused by the secret scanner).
+        self.assertEqual((finals[1]["state"], finals[1]["post_error"]), ("done", "operator_never_answers"))
+        self.assertNotIn("refused", finals[1])
         self.assertEqual((finals[2]["state"], finals[2]["reason"]), ("failed", "the init event listed tools or MCP servers"))
 
-    def test_escalation_notifies_the_owner_and_acks_an_owner_trigger(self) -> None:
+    def test_escalation_notifies_the_owner_and_posts_no_ack_for_an_owner_trigger(self) -> None:
         daemon = self.started()
         self.set_claude(mode="ok", output={"action": "escalate", "reply": None, "board": None,
                                            "owner_note": "Jay asked for a production deploy.", "risk": None})
         self.fake.add_message(self.fake.user_named("Jay Wedgeworth"), "simple-tools", "t", MENTION + " deploy now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         self.wake_cycle(daemon, 6)
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertIn(W.OWNER_ACK, posts[0]["content"])
+        self.assertEqual(self.bot_posts(), [], "the fixed one-line ack is gone with the reply")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        row = self.terminal_wakes()[-1]
+        self.assertEqual((row["state"], row["action"], row["note"]), ("done", "escalate", True))
+        self.assertNotIn("post_error", row, "there was no reply to drop")
         queue = L.read_jsonl(self.seat_paths().owner_queue)
         self.assertEqual(queue[-1]["note"], "Jay asked for a production deploy.")
         self.assertTrue(all("production deploy" not in arg for banner in self.banners for arg in banner),
@@ -1156,19 +1304,29 @@ class WakeTests(DaemonHarness):
         self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
         self.assertEqual(len(self.ledger()), 1)
 
-    def test_lock_handover_rebuild_applies_disabled_guard(self) -> None:
+    def test_lock_handover_rebuild_applies_the_loop_guard_setting_on_disk(self) -> None:
+        # The guard is off unless the config turns it on, so the rebuild is proved in the direction
+        # that differs from the default first (`true` on disk gives an enabled guard), then back.
         daemon = self.started()
+        self.assertFalse(daemon.loopguard.enabled, "absent means off")
         for _ in range(3):
             daemon.loopguard.note(TOPIC_KEY, wake_reply=True, owner=False)
-        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
-        daemon.rebuild_from_disk()
-        self.assertFalse(daemon.loopguard.enabled)
         self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
-        self.assertEqual(daemon.loopguard.count(TOPIC_KEY), 3)
+        for off in ("wake_loop_prevention = false", ""):
+            with self.subTest(then=off or "absent"):
+                self.write_config(extra_daemon="wake_loop_prevention = true")
+                daemon.rebuild_from_disk()
+                self.assertTrue(daemon.loopguard.enabled)
+                self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY), "the kept count holds it")
+                self.write_config(extra_daemon=off)
+                daemon.rebuild_from_disk()
+                self.assertFalse(daemon.loopguard.enabled)
+                self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
+                self.assertEqual(daemon.loopguard.count(TOPIC_KEY), 3)
 
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
+        # The guard is off unless the config turns it on.
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")
         for n in range(3):
@@ -1185,59 +1343,57 @@ class WakeTests(DaemonHarness):
         self.fake.add_message("Codex", "simple-tools", "t", MENTION + " now")
         self.pump_until(daemon, lambda: len(self.ledger()) >= 2)
 
-    def test_a_quota_hold_dms_the_sender_and_does_not_banner(self) -> None:
-        self.write_config(seats="""\
+    QUOTA_SEAT = """\
 [seat.CLAUDE]
 bot = "Claude"
 wake = "claude"
 model = "sonnet"
 provider = "Claude Code"
-""")
-        daemon = self.started()
-        self.warm_operator(daemon)  # a held wake is finalized on the router thread, which never waits for a build
+"""
+
+    def quota_pending(self, message_id: int) -> W.Pending:
         now = self.clock.time()
-        pending = W.Pending("q1", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
+        pending = W.Pending("q%d" % message_id, "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
                             owner=False, now=now, due=now)
-        pending.add({"id": 55, "sender_id": 11, "ts": now}, False)
+        pending.add({"id": message_id, "sender_id": 11, "ts": now}, False)
+        return pending
+
+    def test_a_quota_hold_tells_the_owner_and_never_the_sender(self) -> None:
+        # Owner 2026-10-13 had the sender told by DM that the seat cannot answer.  Since Nov 10 2026 the
+        # Operator never answers on behalf of a platform, so nobody is told by DM:  the owner notice and
+        # the Mac banner are the whole of it, and the message waits in the seat inbox.
+        self.write_config(seats=self.QUOTA_SEAT)
+        daemon = self.started()
+        self.warm_operator(daemon)
+        now = self.clock.time()
+        pending = self.quota_pending(55)
         quota = {"known": True, "exhausted": True, "remaining": 0.0, "reset_at": "2026-10-14T18:00:00Z",
                  "reason": "weekly", "source": "codecaps"}
         reason = "Claude Code quota is exhausted until 2026-10-14T18:00:00Z"
         with mock.patch("simple_tools.daemon.A.provider_quota", return_value=quota):
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
-        dms = [m for m in self.bot_posts() if m["type"] == "private"]
-        self.assertEqual(len(dms), 1, "one DM per sender per window, and the call must not raise")
-        #  The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
-        #  The Operator sends it, not the seat (owner ruling, Oct 30 2026).
-        self.assertEqual(
-            sorted(r["id"] for r in dms[0]["display_recipient"]), [11, 12, OPERATOR_USER_ID]
-        )
-        self.assertIn("cannot answer right now", dms[0]["content"])
-        self.assertIn("Claude Code", dms[0]["content"])
-        self.assertEqual([m for m in self.bot_posts() if m["type"] == "stream"], [])
-        self.assertFalse(any("cannot answer right now" in arg for banner in self.banners for arg in banner))
+        self.assertEqual(self.bot_posts(), [], "no DM to the sender, and nothing in the topic")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         self.assertTrue(any("was not run" in banner[8] for banner in self.banners))
+        self.assertFalse(any("cannot answer right now" in arg for banner in self.banners for arg in banner))
         kinds = [item["kind"] for item in L.read_jsonl(self.seat_paths().owner_queue)]
-        self.assertIn("wake-quota-hold", kinds)
+        self.assertNotIn("wake-quota-hold", kinds)
+        self.assertFalse(hasattr(D.Daemon, "_tell_requester"), "the notice itself is gone")
 
-    def test_a_quota_worded_hold_stays_silent_unless_the_snapshot_is_exhausted(self) -> None:
-        self.write_config(seats="""\
-[seat.CLAUDE]
-bot = "Claude"
-wake = "claude"
-model = "sonnet"
-provider = "Claude Code"
-""")
+    def test_a_quota_worded_hold_sends_nothing_whatever_the_snapshot_says(self) -> None:
+        self.write_config(seats=self.QUOTA_SEAT)
         daemon = self.started()
+        self.warm_operator(daemon)
         now = self.clock.time()
-        pending = W.Pending("q2", "CLAUDE", {"channel": "simple-tools", "topic": "t", "type": "stream"},
-                            owner=False, now=now, due=now)
-        pending.add({"id": 56, "sender_id": 11, "ts": now}, False)
-        quiet = {"known": True, "exhausted": False, "remaining": 40.0, "reset_at": None,
-                 "reason": None, "source": "codecaps"}
-        with mock.patch("simple_tools.daemon.A.provider_quota", return_value=quiet):
-            daemon._drop(daemon.seats["CLAUDE"], pending, "Claude Code quota is exhausted", now)
-        self.assertEqual([m for m in self.fake.messages if m["type"] == "private"], [])
+        pending = self.quota_pending(56)
+        for exhausted in (False, True):
+            with self.subTest(exhausted=exhausted):
+                snapshot = {"known": True, "exhausted": exhausted, "remaining": 0.0 if exhausted else 40.0,
+                            "reset_at": None, "reason": None, "source": "codecaps"}
+                with mock.patch("simple_tools.daemon.A.provider_quota", return_value=snapshot):
+                    daemon._drop(daemon.seats["CLAUDE"], pending, "Claude Code quota is exhausted", now)
+                self.assertEqual([m for m in self.fake.messages if m["type"] == "private"], [])
 
 
 class JetWakeTests(DaemonHarness):
@@ -1268,6 +1424,11 @@ class JetWakeTests(DaemonHarness):
         self.assertEqual((self.ledger()[0]["trigger_ids"], self.ledger()[0]["owner"]), ([mid], False))
 
     def test_the_loop_guard_blocks_jet_wakes_until_an_owner_post(self) -> None:
+        # The guard is off unless the config turns it on.
+        self.write_config(
+            eligible=BASE_CONFIG["eligible"] + [self.JET_ID],
+            extra_daemon="wake_loop_prevention = true",
+        )
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")
         for n in range(3):
@@ -1290,7 +1451,7 @@ class JetWakeTests(DaemonHarness):
 
 class EveryoneWakesTests(DaemonHarness):
     """Owner, Fri, Oct 9, 2026:  "everyone should be able to DM to wake anyone else or tag to wake anyone
-    else".  Every fleet bot (GB personas, ECHO, BF role bots and the rest) wakes a seat by mention or DM
+    else".  Every fleet bot (GB bots, ECHO, BF role bots and the rest) wakes a seat by mention or DM
     without a pin, inside the peer budgets and the loop guard.  Integrations, API posts from the owner's
     account and a seat's own posts still never wake."""
 
@@ -1306,6 +1467,10 @@ class EveryoneWakesTests(DaemonHarness):
 
     def now(self) -> int:
         return int(self.clock.time())
+
+    def guard_on(self) -> None:
+        """The loop guard is off unless the config turns it on, so a test about it writes that."""
+        self.write_config(eligible=[], extra_daemon="wake_loop_prevention = true")
 
     def test_a_gb_persona_mention_wakes_claude(self) -> None:
         daemon = self.started()
@@ -1378,6 +1543,7 @@ class EveryoneWakesTests(DaemonHarness):
         """Each side's wake reply is `·wake`-tagged, so it never wakes the other.  However the thread goes,
         3 wake replies within the DM window stop it waking; the owner is not in it, so the count is rolling
         and the pair wakes again once the oldest reply ages out."""
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             sender = self.fake.me if n % 2 else self.echo
@@ -1400,6 +1566,7 @@ class EveryoneWakesTests(DaemonHarness):
     def test_a_guard_drop_leaves_a_row_and_names_the_topic_in_status(self) -> None:
         """AFC-255.  Before, a guard drop wrote one `wake-blocked` log line and returned, so the ledger
         was empty and only the JSON log said a wake had been thrown away."""
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", "[CODEX·wake] re=%d\nreply" % n, timestamp=self.now())
@@ -1418,6 +1585,7 @@ class EveryoneWakesTests(DaemonHarness):
     def test_the_guard_notice_fires_once_per_topic_per_window_not_per_message(self) -> None:
         """The guard holds a hot topic for a long time, so one notice per drop would be a flood; one per
         topic per window is the story worth telling."""
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             self.fake.add_message("Codex", "simple-tools", "t", "[CODEX·wake] re=%d\nreply" % n, timestamp=self.now())
@@ -1513,6 +1681,7 @@ class EveryoneWakesTests(DaemonHarness):
         self.assertTrue(any("install a muse build" in red for red in seat["red"]), seat["red"])
 
     def test_a_topic_loop_guard_still_waits_for_the_owner(self) -> None:
+        self.guard_on()
         daemon = self.started()
         for n in range(3):
             self.fake.add_message(self.gb, "simple-tools", "t", "[GB-COMPILER·wake] re=%d\nreply" % n,
@@ -1665,9 +1834,10 @@ class MuseSeatTests(DaemonHarness):
         )
 
 class PeerScreenTests(DaemonHarness):
-    """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
-    answered, uncertain and high risk reach the owner by Zulip DM from the Operator bot (owner ruling,
-    Oct 30 2026: the seat's own bot never carries the daemon's text)."""
+    """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  uncertain and
+    high risk reach the owner by Zulip DM from the Operator bot (owner ruling, Oct 30 2026: the seat's own
+    bot never carries the daemon's text).  The peer itself is told nothing, whatever the risk:  the Operator
+    never answers on behalf of a platform (owner ruling, Nov 10 2026)."""
 
     OWNER_ID = 12
 
@@ -1690,10 +1860,7 @@ class PeerScreenTests(DaemonHarness):
         output = {"action": "escalate", "reply": "I can't share credentials.", "board": None, "risk": "high",
                   "owner_note": "Codex asked for the Zulip key.  Declined.  @**Jay Wedgeworth** see the trigger."}
         _, mid = self.wake(output)
-        replies = self.stream_posts()
-        self.assertEqual(len(replies), 1)
-        self.assertEqual(replies[0]["subject"], "AFC 18f61cf4 cutover")
-        self.assertIn("I can't share credentials.", replies[0]["content"])
+        self.assertEqual(self.stream_posts(), [], "the peer is told nothing in the topic")
         dms = self.owner_dms()
         self.assertEqual(len(dms), 1, "every decline reaches the owner")
         text = dms[0]["content"]
@@ -1714,15 +1881,16 @@ class PeerScreenTests(DaemonHarness):
         self.assertTrue(all("Zulip key" not in arg for banner in self.banners for arg in banner),
                         "a banner never shows the note")
 
-    def test_the_peer_reply_gets_the_sentence_gap_and_the_owner_dm_keeps_its_shape(self) -> None:
+    def test_the_owner_dm_keeps_its_shape_and_the_peer_reply_is_not_posted(self) -> None:
         output = {"action": "escalate", "reply": "I can't share that.  Not now.", "board": None, "risk": "high",
                   "owner_note": "Codex asked for the key.  Declined."}
         self.wake(output)
-        self.assertIn("I can't share that.\u00a0 Not now.", self.stream_posts()[0]["content"])
+        self.assertEqual(self.stream_posts(), [])
         text = self.owner_dms()[0]["content"]
         self.assertTrue(text.startswith("[OPERATOR\u00b7note] re="), text)
         quoted = text.split("```quote\n", 1)[1].split("\n```", 1)[0]
         self.assertNotIn("\u00a0", quoted, "the quote block holds the note as the daemon wrote it")
+        self.assertNotIn("I can't share that", text, "the dropped reply is not in the note")
 
     def test_an_uncertain_request_is_escalated_even_when_the_model_chose_reply(self) -> None:
         output = {"action": "reply", "reply": "Not sure I should; checking.", "board": None, "risk": "uncertain",
@@ -1731,29 +1899,30 @@ class PeerScreenTests(DaemonHarness):
         row = self.ledger()[-1]
         self.assertEqual((row["action"], row["risk"]), ("escalate", "uncertain"))
         self.assertEqual(row["coerced"], "risk uncertain: action reply to escalate; owner_note synthesized")
-        self.assertEqual(len(self.stream_posts()), 1, "the peer still hears that it is waiting")
+        self.assertEqual(self.stream_posts(), [], "the peer is not told it is waiting")
         dms = self.owner_dms()
         self.assertEqual(len(dms), 1)
         self.assertIn("Risk: uncertain", dms[0]["content"])
         self.assertIn("peer request screened uncertain; see the trigger", dms[0]["content"])
 
-    def test_a_low_risk_request_is_answered_and_the_owner_is_not_bothered(self) -> None:
+    def test_a_low_risk_request_is_not_answered_and_the_owner_is_not_bothered(self) -> None:
         output = {"action": "reply", "reply": "Queued for the seat's next session.", "board": None, "risk": "low",
                   "owner_note": None}
         self.wake(output, text=MENTION + " please review PR 12 when you can")
-        self.assertEqual(len(self.stream_posts()), 1)
+        self.assertEqual(self.stream_posts(), [], "the Operator does not answer for the seat")
         self.assertEqual(self.owner_dms(), [])
         self.assertEqual(L.read_jsonl(self.seat_paths().owner_queue), [])
         self.assertEqual(self.ledger()[-1]["risk"], "low")
+        self.assertEqual(self.ledger()[-1]["post_error"], "operator_never_answers")
 
-    def test_an_owner_trigger_is_acked_and_not_dmd_back_to_the_owner(self) -> None:
+    def test_an_owner_trigger_is_not_acked_in_the_topic_and_not_dmd_back_to_the_owner(self) -> None:
         output = {"action": "escalate", "reply": None, "board": None, "risk": None,
                   "owner_note": "Jay asked for a production deploy."}
         self.wake(output, sender="Jay Wedgeworth", text=MENTION + " deploy now")
         self.assertEqual(self.owner_dms(), [])
-        posts = self.bot_posts()
-        self.assertEqual(len(posts), 1)
-        self.assertIn(W.OWNER_ACK, posts[0]["content"])
+        self.assertEqual(self.bot_posts(), [], "the fixed ack the Operator used to post is gone")
+        queue = L.read_jsonl(self.seat_paths().owner_queue)
+        self.assertEqual(queue[-1]["note"], "Jay asked for a production deploy.")
 
     def test_an_unscreened_peer_escalation_still_reaches_the_owner(self) -> None:
         output = {"action": "escalate", "reply": None, "board": None, "risk": None, "owner_note": "needs the owner"}
@@ -1796,7 +1965,7 @@ class PeerScreenTests(DaemonHarness):
         row = self.ledger()[-1]
         self.assertEqual((row["state"], row["action"], row["owner_dm"]), ("done", "escalate", None))
         self.assertIn("rate limited", row["owner_dm_error"])
-        self.assertEqual(len(self.stream_posts()), 1, "the decline to the peer was still posted")
+        self.assertEqual(self.stream_posts(), [], "and the decline to the peer was never posted")
         self.assertEqual(L.read_jsonl(self.seat_paths().owner_queue)[-1]["note"], "asked for a key",
                          "the owner queue still holds the note")
 
@@ -1838,14 +2007,13 @@ class RecoveryTests(DaemonHarness):
         self.assertEqual(self.dumps(), [])
         self.assertTrue(any("stopped mid-run" in b[8] for b in self.banners))
 
-    def test_a_crash_between_started_and_done_never_reruns_with_loop_prevention_off(self) -> None:
+    def test_a_crash_between_started_and_done_never_reruns_with_loop_prevention_on(self) -> None:
         paths = self.seat_paths()
         L.append_jsonl(paths.wakes, [{"ts": self.clock.time(), "wake_id": "w1", "seat": "CLAUDE", "state": "started",
                                       "owner": True, "reserved_usd": 0.25, "trigger_ids": [5], "topic_key": TOPIC_KEY}])
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
-        self.assertFalse(daemon.loopguard.enabled)
+        self.assertTrue(daemon.loopguard.enabled)
         self.wake_cycle(daemon)
         self.assertEqual([r["state"] for r in self.ledger()], ["started", "failed"])
         self.assertEqual(self.dumps(), [])
@@ -1862,11 +2030,10 @@ class RecoveryTests(DaemonHarness):
         self.assertEqual([(r["state"], r.get("reason")) for r in self.ledger()], [("queued", None), ("dropped", "stale")])
         self.assertEqual(self.dumps(), [])
 
-    def test_a_peer_wake_that_went_stale_while_the_daemon_was_down_never_runs_with_loop_prevention_off(self) -> None:
-        path = self.state_dir / "listener.toml"
-        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+    def test_a_peer_wake_that_went_stale_while_the_daemon_was_down_never_runs_with_loop_prevention_on(self) -> None:
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
-        self.assertFalse(daemon.loopguard.enabled)
+        self.assertTrue(daemon.loopguard.enabled)
         self.fake.add_message("Codex", "simple-tools", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         daemon.shutdown()
@@ -2040,7 +2207,7 @@ class SecurityTests(DaemonHarness):
         self.write_lease("L2", session_id="sess-bbbbbbbb")
         daemon = self.daemon()
         D.OR.register_session(
-            daemon._registration_db(),
+            D.OR.registry_db_path(daemon.root, daemon.env),
             platform="claude",
             verified_host="mac",
             profile_scope="default",
@@ -2067,7 +2234,7 @@ class SecurityTests(DaemonHarness):
         # has no letter, and the read never brings the registry file into being.
         self.write_lease("L1", session_id="sess-aaaaaaaa")
         daemon = self.daemon()
-        db = daemon._registration_db()
+        db = D.OR.registry_db_path(daemon.root, daemon.env)
         self.assertFalse(os.path.exists(db))
         leases = daemon.status()["seats"]["CLAUDE"]["leases"]
         self.assertEqual(leases[0]["session_id"], "sess-aaaaaaaa")
@@ -2139,7 +2306,7 @@ class ThreadedRunTests(DaemonHarness):
         while not any(r["state"] == "done" for r in self.ledger()) and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertEqual(self.ledger()[-1]["state"], "done")
-        self.assertEqual(len(self.bot_posts()), 1)
+        self.assertEqual(self.bot_posts(), [])
         second = self.daemon(clock=Clock())
         self.assertEqual(second.run(), 1, "a second listener refuses to start")
         daemon.stop.set()
@@ -2318,1192 +2485,103 @@ class HostWakeTests(DaemonHarness):
             self.assertIsNone(daemon._wake_block(runner, retry, self.clock.time()))
 
 
-class OperatorRegistrationWiringTests(DaemonHarness):
-    """The daemon's ask-before-letter wiring:  the registering chat is asked in its own
-    channel/topic and answers there before its letter is issued (owner direction, Oct 23
-    2026).  The send is mocked at the module seam (the send itself is covered end to end in
-    test_operator_registration_ask against the fake realm);  everything in front of it - the
-    queue, the registry, the lease route, the gates - is real.
-    """
+class OneRegistryWriterTests(DaemonHarness):
+    """AFC-721:  the Eavesdropper (the server instance) is the only registry writer.  Any other
+    instance builds no registry service and runs no sweeper."""
 
-    def _rows(self, **overrides):
-        row = {
-            "id": "row-1",
-            "platform": "claude",
-            "profile_scope": "default",
-            "session_id": "sess-aaaaaaaa",
-            "seat": "CLAUDE",
-            "status": "available",
-        }
-        row.update(overrides)
-        return [row]
-
-    def _registry(self, daemon):
-        """Bring the empty registry into being, the way the first registration would."""
-        db = daemon._registration_db()
-        if not os.path.exists(db):
-            registry = D.OR.SessionRegistry(db)
-            registry.close_db()
-        return db
-
-    def _ask_once(self, daemon, send_return=None):
-        with mock.patch.object(
-            D.ORASK, "send_location_question", return_value=send_return or {"status": "sent"}
-        ) as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-        return send
-
-    def test_unlettered_active_chat_is_asked_once_in_its_own_topic(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
+    def _operator_daemon(self, instance):
         daemon = self.daemon()
-        db = self._registry(daemon)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-            daemon.maybe_ask_registrations(self._rows(), {})
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual(send.call_args.kwargs["channel"], "simple-tools")
-        self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
-        # The ledger row outlives every state that can resend:  the window is the
-        # entry's own 24h deadline, not the 15-minute dedupe default.
-        self.assertGreater(send.call_args.kwargs["window"], 23 * 3600)
-        pending = D.OREG.pending_entries(db)
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0].get("route"), {"channel": "simple-tools", "topic": "AFC Work"})
-        self.assertTrue(pending[0].get("notified_at"))
+        daemon.env[D.LREG.OPERATOR_KEY_ENV] = "k" * 40
+        daemon.config.instance = instance
+        return daemon
 
-    def test_a_dead_chat_lease_gives_no_route(self):
-        # A lease whose pid is gone must not route the question (review finding:
-        # cached leases need liveness checks).
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        paths = self.seat_paths("CLAUDE")
-        lease = D.L.load_lease(paths, "L1")
-        lease["pid"] = 999999937  # no such process
-        D.L.write_json(paths.lease("L1"), lease)
+    def test_a_mac_instance_builds_no_registry_service(self):
+        daemon = self._operator_daemon("mac")
+        self.assertIsNone(daemon._configure_registry())
+        self.assertIsNone(daemon.registry_service)
+        self.assertIsNone(daemon.registry_sweeper)
+
+    def test_the_server_instance_builds_the_service_and_the_sweeper(self):
+        daemon = self._operator_daemon("server")
+        service = daemon._configure_registry()
+        self.assertIsNotNone(service)
+        self.assertIs(daemon.registry_sweeper.service, service)
+        self.assertEqual(daemon.registry_sweeper.stale_after_minutes, 36 * 60)
+        # A reload with the same settings keeps both objects.
+        sweeper = daemon.registry_sweeper
+        self.assertIs(daemon._configure_registry(), service)
+        self.assertIs(daemon.registry_sweeper, sweeper)
+        daemon.config.registry_sweep_enabled = False
+        daemon._configure_registry()
+        self.assertIsNone(daemon.registry_sweeper)
+
+    def test_the_server_service_needs_no_key_and_outlives_the_api(self):
+        # Sentry 4544409379:  the service and its sweeper do not depend on a key, on the
+        # listener API being on, or on the API binding.
         daemon = self.daemon()
-        db = self._registry(daemon)
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 0)
-        self.assertNotIn("route", D.OREG.pending_entries(db)[0])
-
-    def test_a_chat_with_no_known_route_stays_pending_and_recovers(self):
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        # No lease names a topic for the chat:  no send, no owner DM - the entry waits.
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 0)
-        pending = D.OREG.pending_entries(db)
-        self.assertEqual(len(pending), 1)
-        self.assertNotIn("route", pending[0])
-        # The route arriving later (the chat attaches to a topic) makes the ask go out.
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual(D.OREG.pending_entries(db)[0].get("route", {}).get("topic"), "AFC Work")
-
-    def test_lettered_and_stale_rows_are_not_asked(self):
-        daemon = self.daemon()
-        self._registry(daemon)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            daemon.maybe_ask_registrations(self._rows(), {"row-1": ("A", "CLAUDE A")})
-            daemon.maybe_ask_registrations(self._rows(status="stale"), {})
-        self.assertEqual(send.call_count, 0)
-        self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
-
-    def test_a_first_run_with_no_registry_file_is_still_asked(self):
-        # A fresh host has no registry file at all:  a missing file reads as "no letters
-        # yet", not as an unavailable registry - and the wake path still never creates one.
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = daemon._registration_db()
-        self.assertFalse(os.path.exists(db))
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 1)
-        self.assertFalse(os.path.exists(db))
-        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
-
-    def test_one_rows_send_failure_does_not_stop_the_batch(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        rows = [
-            {"id": "row-1", "platform": "claude", "profile_scope": "default",
-             "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available"},
-            {"id": "row-2", "platform": "claude", "profile_scope": "default",
-             "session_id": "sess-bbbbbbbb", "seat": "CLAUDE", "status": "available"},
-        ]
-        with mock.patch.object(
-            D.ORASK, "send_location_question",
-            side_effect=[RuntimeError("boom"), {"status": "sent"}],
-        ) as send:
-            daemon.maybe_ask_registrations(rows, {})
-        self.assertEqual(send.call_count, 2)
-        pending = D.OREG.pending_entries(db)
-        self.assertEqual(len(pending), 2)
-        stamped = [e for e in pending if e.get("notified_at")]
-        self.assertEqual(len(stamped), 1)
-
-    def test_evidence_comes_from_the_validated_instance_not_the_environment(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        daemon.env["SIMPLE_TOOLS_INSTANCE"] = "server"  # contradicts the validated config
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual(D.OREG.pending_entries(db)[0].get("evidence_location"), "mac")
-
-    def test_a_broken_registry_fails_closed_and_names_the_path(self):
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        db = daemon._registration_db()
-        with open(db, "wb") as handle:
-            handle.write(b"this is not a sqlite database")
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-        self.assertFalse(consumed)
-        self.assertEqual(send.call_count, 0)
-        log = (self.state_dir / "logs" / "listener.log").read_text()
-        self.assertIn("operator-registration-registry-unavailable", log)
-        self.assertIn(db, log)
-        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
-
-    def test_an_unknown_delivery_reconciles_at_most_once_per_interval(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        unknown = {
-            "status": "refused",
-            "reason": "the location question delivery is unknown",
-            "delivery_status": D.OC.DELIVERY_UNKNOWN,
-        }
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=unknown) as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-            # The reconciliation ran once and stamped the attempt:  a pass inside the
-            # interval skips instead of re-running the whole topic read-back.
-            daemon.maybe_ask_registrations(self._rows(), {})
-            self.assertEqual(send.call_count, 1)
-            entry = D.OREG.pending_entries(db)[0]
-            self.assertTrue(entry.get("reconciled_at"))
-            self.assertFalse(entry.get("notified_at"))
-            # Past the interval the question reconciles again.
-            data = D.OREG.load(db)
-            data["entries"][entry["entry_id"]]["reconciled_at"] = (
-                entry["reconciled_at"] - D.REGISTRATION_RECONCILE_INTERVAL - 1
-            )
-            D.OREG.save(db, data)
-            daemon.maybe_ask_registrations(self._rows(), {})
-            self.assertEqual(send.call_count, 2)
-
-    def test_lease_topics_are_read_once_per_seat_per_pass(self):
-        """A batch of unlettered rows on one seat costs one lease-directory scan."""
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        rows = self._rows()
-        second = dict(rows[0], **{"id": "row-2", "session_id": "sess-bbbbbbbb"})
-        with mock.patch.object(
-            D.ORASK, "send_location_question", return_value={"status": "sent"}
-        ), mock.patch.object(D.L, "list_lease_ids", wraps=D.L.list_lease_ids) as listed:
-            daemon.maybe_ask_registrations(rows + [second], {})
-        self.assertEqual(listed.call_count, 1)
-
-    def test_a_failed_send_is_retried_on_the_next_pass(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        with mock.patch.object(
-            D.ORASK,
-            "send_location_question",
-            # A provably-unsent failure:  retryable, never a terminal refusal.
-            return_value={
-                "status": "refused",
-                "reason": "offline",
-                "delivery_status": D.OC.DELIVERY_RETRYABLE,
-            },
-        ) as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-            daemon.maybe_ask_registrations(self._rows(), {})
-        self.assertEqual(send.call_count, 2)
-        self.assertFalse(D.OREG.pending_entries(db)[0].get("notified_at"))
-
-    def _pending_entry(self, daemon):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        db = self._registry(daemon)
-        self._ask_once(daemon)
-        return D.OREG.pending_entries(db)[0]
-
-    def test_an_answer_in_the_chats_topic_registers_and_confirms_there(self):
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-        self.assertTrue(consumed)
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual(send.call_args.kwargs["channel"], "simple-tools")
-        self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
-        self.assertIn("letter AA", send.call_args.kwargs["question"])
-        self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
-
-    def test_a_failed_confirmation_retries_without_a_second_registration(self):
-        """The route done set carries the mutation across a retry:  the registry write
-        never repeats and the failed confirmation is the only step retried."""
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        done = set()
-        message = {
-            "id": 42,
-            "content": "mac %s" % entry["entry_id"],
-            "sender_id": 12,
-            "client": "website",
-        }
-        with mock.patch.object(
-            D.ORASK, "send_location_question", side_effect=RuntimeError("zulip down")
-        ):
-            with self.assertRaises(RuntimeError):
-                daemon._maybe_registration_answer(
-                    message, 2000.0, channel="simple-tools", topic="AFC Work", done=done
-                )
-        # The mutation landed and is recorded with its reply;  the confirmation is not stamped.
-        self.assertTrue(
-            any(
-                isinstance(item, tuple)
-                and len(item) == 3
-                and item[0] == 42
-                and item[1] == "register-location"
-                for item in done
-            )
-        )
-        self.assertNotIn((42, "send-confirmation"), done)
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
-        # kody 4366047501:  the escaping confirmation failure still leaves its outcome
-        # row - "letter minted, confirmation outstanding" is diagnosable from the log.
-        log = (self.state_dir / "logs" / "listener.log").read_text()
-        self.assertIn("operator-registration-answer", log)
-        self.assertIn('"delivery": "raised:RuntimeError"', log)
-        # The retry:  no second answer() (the settled entry would read "ignored" and post
-        # a wrong reply) - the recorded reply goes out once and the step is stamped.
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                message, 2001.0, channel="simple-tools", topic="AFC Work", done=done
-            )
-        self.assertTrue(consumed)
-        self.assertIn((42, "send-confirmation"), done)
-        self.assertEqual(send.call_count, 1)
-        self.assertIn("letter AA", send.call_args.kwargs["question"])
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual(len(rows), 1)
-
-    def test_an_answer_in_any_other_topic_is_not_consumed(self):
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
-                2000.0,
-                channel="simple-tools",
-                topic="Elsewhere",
-            )
-        self.assertFalse(consumed)
-        self.assertEqual(send.call_count, 0)
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-
-    def test_local_discovery_stamps_the_daemons_location_remote_discovery_does_not(self):
-        daemon = self.daemon()
-        daemon.env["SIMPLE_TOOLS_INSTANCE"] = "mac"
-        entry = self._pending_entry(daemon)
-        self.assertEqual(entry.get("evidence_location"), "mac")
-        # The answer contradicting the local-discovery evidence is a conflict:  nothing registers.
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            consumed = daemon._maybe_registration_answer(
-                {"content": "server %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-        self.assertTrue(consumed)
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-        # cursor-cloud is discovered through Cursor's authenticated Cloud Agents API,
-        # an endpoint that lists only Cursor-hosted cloud agents:  endpoint membership
-        # pins "cloud" as the entry's evidence (kody 4366047282).
-        self.write_lease(
-            "L2", seat="CURSOR", platform="cursor-cloud", session_id="sess-bbbbbbbb",
-            topics=[("simple-tools", "Cursor Cloud")],
-        )
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            daemon.maybe_ask_registrations(
-                self._rows(id="row-2", platform="cursor-cloud", session_id="sess-bbbbbbbb", seat="CURSOR"),
-                {},
-            )
-            remote_entry = [
-                e for e in D.OREG.pending_entries(daemon._registration_db())
-                if e["session_id"] == "sess-bbbbbbbb"
-            ][0]
-            self.assertEqual(remote_entry.get("evidence_location"), "cloud")
-            # The owner's answer contradicting the pinned cloud evidence is a conflict.
-            consumed = daemon._maybe_registration_answer(
-                {"content": "server %s" % remote_entry["entry_id"], "sender_id": 12, "client": "website"},
-                2000.0,
-                channel="simple-tools",
-                topic="Cursor Cloud",
-            )
-            self.assertTrue(consumed)
-            self.assertEqual(
-                D.OR.registrations_for_native_id(daemon._registration_db(), "cursor-cloud", "sess-bbbbbbbb"),
-                [],
-            )
-            # A corroborated answer mints.
-            consumed = daemon._maybe_registration_answer(
-                {"content": "cloud %s" % remote_entry["entry_id"], "sender_id": 12, "client": "website"},
-                2001.0,
-                channel="simple-tools",
-                topic="Cursor Cloud",
-            )
-        self.assertTrue(consumed)
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "cursor-cloud", "sess-bbbbbbbb")
-        self.assertEqual([row["verified_host"] for row in rows], ["cloud"])
-
-    def test_a_dm_that_is_not_an_answer_is_not_consumed(self):
-        daemon = self.daemon()
-        self.assertFalse(
-            daemon._maybe_registration_answer(
-                {"content": "thanks, no ref here"}, 2000.0, channel="simple-tools", topic="AFC Work"
-            )
-        )
-
-    # ---- follow-ups to PR #885's review (AFC-412) ---------------------------------------
-
-    def _log_rows(self, event):
-        path = self.state_dir / "logs" / "listener.log"
-        if not path.exists():
-            return []
-        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-        return [row for row in rows if row.get("event") == event]
-
-    @staticmethod
-    def _registration_marked(done, message_id):
-        return any(
-            isinstance(item, tuple)
-            and len(item) == 3
-            and item[0] == message_id
-            and item[1] == "register-location"
-            for item in done
-        )
-
-    def test_a_terminal_refusal_opens_no_new_question_on_later_passes(self):
-        # kody 4366099679, gap 1, pinned at the pass level:  after a terminal refusal the
-        # next passes open no new question for the session (one entry, one send).
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        rejected = {
-            "status": "refused",
-            "reason": "the Operator credential (operator-bot@example.com) was rejected (401)",
-            "delivery_status": D.OC.DELIVERY_REFUSED,
-            "code": "credential_rejected",
-        }
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=rejected) as send:
-            for _ in range(3):
-                daemon.maybe_ask_registrations(self._rows(), {})
-        self.assertEqual(send.call_count, 1)
-        entries = list(D.OREG.load(db)["entries"].values())
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["state"], D.OREG.STATE_DROPPED)
-        self.assertEqual(entries[0]["reason"], "refused:credential_rejected")
-        # Gap 3:  surfaced the way an expired question is - one drop line, written once.
-        drops = self._log_rows("operator-registration-drop")
-        self.assertEqual(
-            [(row["entry_id"], row["reason"]) for row in drops],
-            [(entries[0]["entry_id"], "refused:credential_rejected")],
-        )
-        # kody 4365989242:  the ask row carries the delivery class and the code.
-        asks = [
-            row for row in self._log_rows("operator-registration-ask")
-            if row.get("entry_id") == entries[0]["entry_id"]
-        ]
-        self.assertEqual(len(asks), 1)
-        self.assertEqual(asks[0]["delivery_status"], D.OC.DELIVERY_REFUSED)
-        self.assertEqual(asks[0]["code"], "credential_rejected")
-
-    def test_a_retryable_refusal_without_a_code_still_retries_on_the_next_pass(self):
-        # The other half of kody's pass-level test:  a missing credential is a config
-        # state the owner can fix, so it keeps its one asked entry and retries.
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        missing = {
-            "status": "refused",
-            "reason": "the Operator credential is missing: not installed",
-            "delivery_status": D.OC.DELIVERY_REFUSED,
-        }
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=missing) as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-            daemon.maybe_ask_registrations(self._rows(), {})
-        self.assertEqual(send.call_count, 2)
-        pending = D.OREG.pending_entries(db)
-        self.assertEqual(len(pending), 1)
-        self.assertFalse(pending[0].get("notified_at"))
-        self.assertEqual(len(D.OREG.load(db)["entries"]), 1)
-        self.assertEqual(self._log_rows("operator-registration-drop"), [])
-
-    def test_every_readable_catalog_status_is_asked_and_no_unreadable_one(self):
-        # kody 4366081475:  the skip set is checked against the catalog's own rows, so a
-        # change to the catalog's readability rule cannot quietly stop the asks again.
-        catalog = CC.ChatCatalog(home=str(self.home), host="test-host")
-        daemon = self.daemon()
-        self._registry(daemon)
-        statuses = (
-            "available", "idle", "active", "busy", "unknown",
-            "stale", "metadata-only", "unavailable",
-        )
-        unreadable = set()
-        for status in statuses:
-            row = catalog._row(
-                "claude", "CLAUDE", "sess-aaaaaaaa",
-                cwd=None, title="t", updated_at=1.0, status=status,
-            )
-            readable = row["capabilities"]["read"]
-            if not readable:
-                unreadable.add(status)
-            with mock.patch.object(
-                D.OREG, "begin", return_value={"status": "already_registered"}
-            ) as begin:
-                daemon.maybe_ask_registrations([row], {})
-            self.assertEqual(begin.call_count, 1 if readable else 0, status)
-        self.assertEqual(set(D._REGISTRATION_SKIP_STATUSES), unreadable)
-
-    def test_a_failed_lease_read_on_one_row_does_not_stop_the_batch(self):
-        # kody 4366012641:  the lease read sat outside every per-row guard.
-        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        rows = self._rows() + self._rows(id="row-2", session_id="sess-bbbbbbbb")
-        real = daemon._registration_lease_topics
-
-        def flaky(row, lease_map):
-            if row.get("id") == "row-1":
-                raise RuntimeError("lease read failed")
-            return real(row, lease_map)
-
-        with mock.patch.object(daemon, "_registration_lease_topics", side_effect=flaky), \
-                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            daemon.maybe_ask_registrations(rows, {})
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual([e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-bbbbbbbb"])
-        errors = [
-            row for row in self._log_rows("operator-registration-ask")
-            if row.get("status") == "error"
-        ]
-        self.assertEqual([row["error"] for row in errors], ["RuntimeError"])
-        # kody 4368820879:  the error line names the row's session;  the lease read
-        # failed before begin(), so there is no entry to name yet.
-        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
-        self.assertEqual(errors[0]["platform"], "claude")
-        self.assertIsNone(errors[0]["entry_id"])
-
-    def test_a_row_failing_after_begin_names_its_entry_and_session(self):
-        # kody 4368820879:  a step after begin() (here the missing-route line) fails, and
-        # the outer guard's error line names the entry begin() returned.
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        real_write = daemon.log.write
-
-        def flaky_write(event, **fields):
-            if event == "operator-registration-missing-route":
-                raise OSError("log unwritable")
-            return real_write(event, **fields)
-
-        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
-                mock.patch.object(D.ORASK, "send_location_question") as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-        self.assertEqual(send.call_count, 0)
-        pending = D.OREG.pending_entries(db)
-        self.assertEqual(len(pending), 1)
-        errors = [
-            row for row in self._log_rows("operator-registration-ask")
-            if row.get("status") == "error"
-        ]
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(errors[0]["error"], "OSError")
-        self.assertEqual(errors[0]["entry_id"], pending[0]["entry_id"])
-        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
-
-    def test_a_failing_begin_writes_one_error_line_naming_the_session(self):
-        # kody 4369230758:  begin() failures reach the outer guard, so the row's one
-        # error line names its session like every other per-row failure.
-        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        rows = self._rows() + self._rows(id="row-2", session_id="sess-bbbbbbbb")
-        real = D.OREG.begin
-
-        def flaky(registry_db, **kwargs):
-            if kwargs.get("session_id") == "sess-aaaaaaaa":
-                raise ValueError("the queue file is unreadable")
-            return real(registry_db, **kwargs)
-
-        with mock.patch.object(D.OREG, "begin", side_effect=flaky), \
-                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            daemon.maybe_ask_registrations(rows, {})
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual([e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-bbbbbbbb"])
-        errors = [
-            row for row in self._log_rows("operator-registration-ask")
-            if row.get("status") == "error"
-        ]
-        self.assertEqual(len(errors), 1)
-        self.assertEqual(errors[0]["error"], "ValueError")
-        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
-        self.assertIsNone(errors[0]["entry_id"])
-
-    def test_a_session_id_begin_would_refuse_is_left_out_of_the_error_line(self):
-        # The lease read comes before begin()'s session id checks, so the error line runs
-        # them itself:  a secret-shaped or malformed id is never written to the log.
-        daemon = self.daemon()
-        self._registry(daemon)
-        secret_shaped = "sk-" + "placeholder" * 2
-        rows = self._rows(session_id=secret_shaped) + self._rows(
-            id="row-2", session_id="not a session id"
-        )
-        with mock.patch.object(
-            daemon, "_registration_lease_topics", side_effect=RuntimeError("lease read failed")
-        ), mock.patch.object(D.ORASK, "send_location_question") as send:
-            daemon.maybe_ask_registrations(rows, {})
-        self.assertEqual(send.call_count, 0)
-        errors = [
-            row for row in self._log_rows("operator-registration-ask")
-            if row.get("status") == "error"
-        ]
-        self.assertEqual([row["session_id"] for row in errors], ["", ""])
-        log = (self.state_dir / "logs" / "listener.log").read_text()
-        self.assertNotIn(secret_shaped, log)
-        self.assertNotIn("not a session id", log)
-
-    def test_a_drop_line_that_raises_neither_costs_the_other_drops_nor_ends_the_pass(self):
-        # kody 4368820879:  sweep() has already saved its drops when their lines are
-        # written, so each drop line has its own guard.
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        long_ago = time.time() - 2 * D.OREG.DEFAULT_TIMEOUT_SECONDS
-        for session_id in ("sess-cccccccc", "sess-dddddddd"):
-            D.OREG.begin(
-                db, platform="claude", profile_scope="default", session_id=session_id,
-                seat="CLAUDE", requester="catalog", registrations=lambda pf, sid: [],
-                now=long_ago,
-            )
-        real_write = daemon.log.write
-        drop_calls = []
-
-        def flaky_write(event, **fields):
-            if event == "operator-registration-drop":
-                drop_calls.append(fields["entry_id"])
-                if len(drop_calls) == 1:
-                    raise OSError("log unwritable")
-            return real_write(event, **fields)
-
-        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
-                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-        self.assertEqual(len(drop_calls), 2)
-        drops = self._log_rows("operator-registration-drop")
-        self.assertEqual([row["entry_id"] for row in drops], drop_calls[1:])
-        self.assertEqual(drops[0]["reason"], D.OREG.REASON_NO_REPLY)
-        # The pass went on:  the live row was still asked.
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual(
-            [e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-aaaaaaaa"]
-        )
-
-    def test_a_log_line_that_raises_on_one_row_does_not_stop_the_batch(self):
-        # kody 4366012641:  the logger itself failing - for the row's own line and then
-        # for its error line - still leaves the next row asked.
-        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        rows = self._rows() + self._rows(id="row-2", session_id="sess-bbbbbbbb")
-        real_write = daemon.log.write
-
-        def flaky_write(event, **fields):
-            # row-1 has no route, so its missing-route line is the step that raises.
-            if event == "operator-registration-missing-route" or (
-                event == "operator-registration-ask" and fields.get("status") == "error"
-            ):
-                raise OSError("log unwritable")
-            return real_write(event, **fields)
-
-        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
-                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            daemon.maybe_ask_registrations(rows, {})
-        self.assertEqual(send.call_count, 1)
-        notified = [e["session_id"] for e in D.OREG.pending_entries(db) if e.get("notified_at")]
-        self.assertEqual(notified, ["sess-bbbbbbbb"])
-
-    def test_a_refused_answer_records_no_registration_and_says_not_registered(self):
-        # kody 4365985885 and 4366258037 item 1:  the registry writer refuses, so the
-        # route ledger gets no register-location step and the chat is told "Not
-        # registered", never a "Registered:" line.
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        db = daemon._registration_db()
-        refusing = {
-            "record_id": "r", "label": "", "generation": 0,
-            "created": False, "outcome": "resumed_closed",
-        }
-        message = {
-            "id": 43, "content": "mac %s" % entry["entry_id"],
-            "sender_id": 12, "client": "website",
-        }
-        done = set()
-        with mock.patch.object(D.OR, "register_session", return_value=refusing) as register, \
-                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                message, 2000.0, channel="simple-tools", topic="AFC Work", done=done
-            )
-        self.assertTrue(consumed)
-        self.assertEqual(register.call_count, 1)
-        self.assertFalse(self._registration_marked(done, 43))
-        posted = send.call_args.kwargs["question"]
-        self.assertTrue(posted.startswith("Not registered"), posted)
-        self.assertIn("resumed_closed", posted)
-        self.assertNotIn("Registered:", posted)
-        # kody 4368936156:  a reply that registered nothing is its own read-back
-        # marker too, so the question can never stand in for it.
-        self.assertEqual(send.call_args.kwargs["read_back_markers"], (posted,))
-        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
-        # A reply to an answer that registered nothing is not retried by the route:  it
-        # returns consumed, records nothing, and the question stays open.
-        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
-        done = set()
-        with mock.patch.object(D.OR, "register_session", return_value=refusing), \
-                mock.patch.object(D.ORASK, "send_location_question", return_value=unsent):
-            consumed = daemon._maybe_registration_answer(
-                dict(message, id=44), 2001.0, channel="simple-tools", topic="AFC Work", done=done
-            )
-        self.assertTrue(consumed)
-        self.assertEqual(done, set())
-        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
-
-    def test_a_returned_unsent_confirmation_stays_open_and_raises_for_the_route(self):
-        # kody 4366258037 item 2:  a confirmation send that RETURNS refused or unknown
-        # (rather than raising) is not recorded as done, on either path, and goes back
-        # to the route's retry loop.
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        message = {
-            "id": 42, "content": "mac %s" % entry["entry_id"],
-            "sender_id": 12, "client": "website",
-        }
-        done = set()
-        retryable = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=retryable):
-            with self.assertRaises(D.RegistrationConfirmationPending):
-                daemon._maybe_registration_answer(
-                    message, 2000.0, channel="simple-tools", topic="AFC Work", done=done
-                )
-        self.assertTrue(self._registration_marked(done, 42))
-        self.assertNotIn((42, "send-confirmation"), done)
-        # The confirm-retry branch:  an unknown delivery returned again stays open too.
-        unknown = {"status": "refused", "reason": "unknown", "delivery_status": D.OC.DELIVERY_UNKNOWN}
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=unknown):
-            with self.assertRaises(D.RegistrationConfirmationPending):
-                daemon._maybe_registration_answer(
-                    message, 2001.0, channel="simple-tools", topic="AFC Work", done=done
-                )
-        self.assertNotIn((42, "send-confirmation"), done)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                message, 2002.0, channel="simple-tools", topic="AFC Work", done=done
-            )
-        self.assertTrue(consumed)
-        self.assertIn((42, "send-confirmation"), done)
-        self.assertIn("letter AA", send.call_args.kwargs["question"])
-        # Sentry 4368820226:  the confirmation is its own read-back marker, so the
-        # question (same ref) is never read as the landed confirmation.
-        self.assertEqual(
-            send.call_args.kwargs["read_back_markers"], (send.call_args.kwargs["question"],)
-        )
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual(len(rows), 1)
-        # Each returned outcome wrote its own row with the delivery it returned.
-        deliveries = [row.get("delivery") for row in self._log_rows("operator-registration-answer")]
-        self.assertEqual(deliveries, ["refused", "refused", "sent"])
-
-    REJECTED = {
-        "status": "refused", "reason": "rejected",
-        "delivery_status": "refused", "code": "credential_rejected",
-    }
-    RATE_LIMITED = {
-        "status": "refused", "reason": "rate-limited", "delivery_status": "retryable",
-        "http_status": 429, "retry_after_seconds": 5.0,
-    }
-
-    def _assert_held_not_resent(self, outcome, message_id):
-        # kody 4368853431 and 4368853546:  a confirmation that cannot land in this
-        # routing call (a terminal refusal, a rate limit the client already waited out)
-        # is not resent, but the answer is never consumed with it missing either:  each
-        # attempt raises, and the attempts after the first skip the send.
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        message = {
-            "id": message_id, "content": "mac %s" % entry["entry_id"],
-            "sender_id": 12, "client": "website",
-        }
-        done = set()
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=outcome) as send:
-            with self.assertRaises(D.RegistrationConfirmationPending):
-                daemon._maybe_registration_answer(
-                    message, 2000.0, channel="simple-tools", topic="AFC Work", done=done
-                )
-            # The confirm-retry branch skips the send.
-            with self.assertRaises(D.RegistrationConfirmationPending):
-                daemon._maybe_registration_answer(
-                    message, 2001.0, channel="simple-tools", topic="AFC Work", done=done
-                )
-        self.assertEqual(send.call_count, 1)
-        self.assertIn((message_id, D.CONFIRMATION_HELD), done)
-        self.assertTrue(self._registration_marked(done, message_id))
-        self.assertNotIn((message_id, "send-confirmation"), done)
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual(len(rows), 1)
-
-    def test_a_terminally_refused_confirmation_is_held_not_resent(self):
-        self._assert_held_not_resent(self.REJECTED, 45)
-
-    def test_a_rate_limited_confirmation_is_held_not_resent(self):
-        self._assert_held_not_resent(self.RATE_LIMITED, 46)
-
-    def test_the_route_quarantines_a_held_confirmation_after_one_send(self):
-        # Through _route_message:  one send, no resend, and the answer is surfaced in
-        # the seat inbox instead of being consumed silently (kody 4368853431).
-        daemon = self.started()
-        entry = self._pending_entry(daemon)
-        message = self._owner_answer(daemon, entry)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=self.REJECTED) as send:
-            daemon.route_message(daemon.seats["CLAUDE"], message)
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual(len(self._log_rows("quarantined")), 1)
-        self.assertTrue(any(item.get("quarantined") for item in self.inbox()))
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual(len(rows), 1)
-
-    def _owner_answer(self, daemon, entry):
-        owner = self.fake.user_by_id(12)
-        self.fake.add_message(
-            owner, "simple-tools", "AFC Work", "mac %s" % entry["entry_id"], deliver=False
-        )
-        return self.fake.messages[-1]
-
-    def test_the_route_retries_a_returned_unsent_confirmation(self):
-        # End to end through _route_message:  the first confirmation returns unsent,
-        # the route's retry resends the recorded reply once, and nothing registers twice.
-        daemon = self.started()
-        entry = self._pending_entry(daemon)
-        message = self._owner_answer(daemon, entry)
-        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
-        with mock.patch.object(
-            D.ORASK, "send_location_question", side_effect=[unsent, {"status": "sent"}]
-        ) as send:
-            daemon.route_message(daemon.seats["CLAUDE"], message)
-        self.assertEqual(send.call_count, 2)
-        first, second = (call.kwargs["question"] for call in send.call_args_list)
-        self.assertIn("letter AA", first)
-        self.assertEqual(second, first)
-        # Both the fresh send and the retry read back by the confirmation's own text.
-        for call in send.call_args_list:
-            self.assertEqual(call.kwargs["read_back_markers"], (first,))
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(len(self._log_rows("route-error")), 1)
-        self.assertEqual(self._log_rows("quarantined"), [])
-
-    def test_the_route_stops_after_three_unsent_confirmations(self):
-        # The retry is bounded by the route's own loop:  three attempts, then the
-        # answer is quarantined to the seat inbox - the registration still stands.
-        daemon = self.started()
-        entry = self._pending_entry(daemon)
-        message = self._owner_answer(daemon, entry)
-        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=unsent) as send:
-            daemon.route_message(daemon.seats["CLAUDE"], message)
-        self.assertEqual(send.call_count, 3)
-        self.assertEqual(len(self._log_rows("quarantined")), 1)
-        self.assertTrue(any(item.get("quarantined") for item in self.inbox()))
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual(len(rows), 1)
-
-
-class OperatorRegistrationRouteTests(DaemonHarness):
-    """The route is the chat's ACTIVE topic, not the oldest one (review finding)."""
-
-    def _rows(self):
-        return [{
-            "id": "row-1", "platform": "claude", "profile_scope": "default",
-            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
-        }]
-
-    def test_the_route_is_the_active_topic_not_the_oldest(self):
-        daemon = self.daemon()
-        now = self.clock.time()
-        self.write_lease(
-            "L1", session_id="sess-aaaaaaaa",
-            topics=[("simple-tools", "Old Lane"), ("simple-tools", "Active Lane")],
-        )
-        paths = self.seat_paths("CLAUDE")
-        lease = D.L.load_lease(paths, "L1")
-        lease["topics"][0]["expires"] = now + 50
-        lease["topics"][1]["expires"] = now + 5000
-        D.L.write_json(paths.lease("L1"), lease)
-        self.assertEqual(
-            daemon._registration_route(self._rows()[0]),
-            {"channel": "simple-tools", "topic": "Active Lane"},
-        )
-        # A permanently attached lane is the chat's home even beside a fresher expiring one.
-        lease["topics"][1]["expires"] = None
-        D.L.write_json(paths.lease("L1"), lease)
-        self.assertEqual(
-            daemon._registration_route(self._rows()[0]),
-            {"channel": "simple-tools", "topic": "Active Lane"},
-        )
-        lease["topics"][0]["expires"] = None
-        lease["topics"][1]["expires"] = now + 5000
-        D.L.write_json(paths.lease("L1"), lease)
-        self.assertEqual(
-            daemon._registration_route(self._rows()[0]),
-            {"channel": "simple-tools", "topic": "Old Lane"},
-        )
-
-
-class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
-    """The bound topic says WHERE an answer counts;  the sender says WHO may answer
-    (the owner, or the bot of the seat the registration belongs to).  Another chat's bot,
-    or any other poster in the same topic, cannot claim this registration's location."""
-
-    def _pending_entry(self, daemon):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        db = daemon._registration_db()
-        if not os.path.exists(db):
-            registry = D.OR.SessionRegistry(db)
-            registry.close_db()
-        rows = [{
-            "id": "row-1", "platform": "claude", "profile_scope": "default",
-            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
-        }]
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            daemon.maybe_ask_registrations(rows, {})
-        return D.OREG.pending_entries(db)[0]
-
-    def _answer(self, daemon, entry, sender_id):
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            return daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": sender_id},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-
-    def test_the_chats_own_seat_bot_may_answer(self):
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
-        self.assertTrue(self._answer(daemon, entry, 4242))
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
-
-    def test_the_answerer_class_reaches_answer(self):
-        # kody 4366047282:  the registry must know WHO answered.  The owner leg maps
-        # to "owner", the seat-bot leg to "seat_bot";  mock at the module seam and
-        # assert the mapping both ways.
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
-        with mock.patch.object(D.OREG, "answer", return_value={"status": "registered"}) as ans:
-            self.assertTrue(self._answer(daemon, entry, 4242))
-            self.assertEqual(ans.call_args.kwargs["answerer"], "seat_bot")
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
-                2001.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-            self.assertTrue(consumed)
-            self.assertEqual(ans.call_args.kwargs["answerer"], "owner")
-
-    def test_a_seat_bot_answer_without_evidence_is_refused_for_the_owner(self):
-        # kody 4366047282 end to end:  no channel-authenticated evidence (mocked at
-        # the evidence seam), the seat bot's word mints nothing;  the owner's does.
-        daemon = self.daemon()
-        with mock.patch.object(D.Daemon, "_registration_evidence", return_value=""):
-            entry = self._pending_entry(daemon)
-        self.assertEqual(entry.get("evidence_location"), "")
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 4242},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-        self.assertTrue(consumed)
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-        # The question stays open:  the owner's own answer still mints.
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
-                2001.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-        self.assertTrue(consumed)
-        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
-        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
-
-    def test_an_uncorroborated_answer_records_no_registration_and_says_not_registered(self):
-        # kody 4366258037 item 1, the uncorroborated half:  a seat bot's word with no
-        # discovery evidence leaves no register-location step, and the chat is told
-        # "Not registered", never a "Registered:" line.
-        daemon = self.daemon()
-        with mock.patch.object(D.Daemon, "_registration_evidence", return_value=""):
-            entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
-        done = set()
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                {"id": 51, "content": "mac %s" % entry["entry_id"], "sender_id": 4242},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-                done=done,
-            )
-        self.assertTrue(consumed)
-        self.assertFalse(
-            any(isinstance(item, tuple) and item[1] == "register-location" for item in done)
-        )
-        posted = send.call_args.kwargs["question"]
-        self.assertTrue(posted.startswith("Not registered"), posted)
-        self.assertNotIn("Registered:", posted)
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-
-    def test_another_seats_bot_may_not_answer(self):
-        # The bound bot is the ENTRY's seat bot:  a different seat's bot in the same
-        # topic is as much a stranger as any other poster (cross-seat refusal).
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
-        daemon.seats["CURSOR"] = types.SimpleNamespace(
-            me=types.SimpleNamespace(user_id=5555, bot_owner_id=12)
-        )
-        # A stub seat is not a runner:  drop it again before the harness shuts the
-        # daemon down (cleanups run last-in-first-out, so this beats the shutdown).
-        self.addCleanup(daemon.seats.pop, "CURSOR", None)
-        self.assertFalse(self._answer(daemon, entry, 5555))
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
-
-    def test_a_bot_owned_by_another_owner_may_not_answer(self):
-        # The seat-bot leg is pinned-owner-only:  a bot whose users/me names a different
-        # owner never speaks for this fleet's registrations, even with the right user id.
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=999)
-        self.assertFalse(self._answer(daemon, entry, 4242))
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
-
-    def test_the_operators_own_confirmation_is_consumed_quietly(self):
-        # The confirmation names the ref and the settled location, so it parses as an
-        # answer;  the Operator's own post must be consumed without a refusal or a wake.
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        daemon.seats["OPERATOR"] = types.SimpleNamespace(
-            me=types.SimpleNamespace(user_id=7777)
-        )
-        self.addCleanup(daemon.seats.pop, "OPERATOR", None)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
-            consumed = daemon._maybe_registration_answer(
-                {
-                    "content": "Registered:  the chat is on mac, letter A (ref %s)."
-                    % entry["entry_id"],
-                    "sender_id": 7777,
-                },
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-        self.assertTrue(consumed)
-        self.assertEqual(send.call_count, 0)
-        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
-        log = (self.state_dir / "logs" / "listener.log").read_text()
-        self.assertNotIn("operator-registration-answer", log)
-
-    def test_another_bot_in_the_same_topic_may_not_answer(self):
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
-        self.assertFalse(self._answer(daemon, entry, 9999))
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
-
-    def test_the_owner_through_an_unpinned_client_may_not_answer(self):
-        # An owner API key driving a script carries the owner's sender id but not a
-        # pinned owner client - the fleet-wide owner_of check must gate the answer.
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "ZulipPython"},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work",
-            )
-        self.assertFalse(consumed)
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-
-    def test_no_pinned_owner_denies_even_the_chats_own_seat_bot(self):
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
-        daemon.config.owner_user_id = 0
-        self.assertFalse(self._answer(daemon, entry, 4242))
-        self.assertFalse(self._answer(daemon, entry, 12))
-        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
-
-    def test_an_answer_with_no_sender_is_not_consumed(self):
-        daemon = self.daemon()
-        entry = self._pending_entry(daemon)
-        self.assertFalse(self._answer(daemon, entry, None))
-        self.assertEqual(
-            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
-            [],
-        )
-
-
-class OperatorRegistrationRouteFollowTests(DaemonHarness):
-    """A pending question is re-pointed by a whole-topic rename EVENT (handle_update's
-    own provenance), kept beside unrelated new attachments, and never posted to a dead
-    topic name when the topic vanishes with no rename event."""
-
-    def _rows(self):
-        return [{
-            "id": "row-1", "platform": "claude", "profile_scope": "default",
-            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
-        }]
-
-    def _registry(self, daemon):
-        db = daemon._registration_db()
-        if not os.path.exists(db):
-            registry = D.OR.SessionRegistry(db)
-            registry.close_db()
-        return db
-
-    def _ask_once(self, daemon):
-        with mock.patch.object(
-            D.ORASK, "send_location_question", return_value={"status": "sent"}
-        ) as send:
-            daemon.maybe_ask_registrations(self._rows(), {})
-        return send
-
-    def _rewrite_topics(self, lease_id, topics):
-        paths = self.seat_paths("CLAUDE")
-        lease = D.L.load_lease(paths, lease_id)
-        lease["topics"] = topics
-        D.L.write_json(paths.lease(lease_id), lease)
-
-    def test_a_rename_event_repoints_the_question_and_the_answer_works(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        self._ask_once(daemon)
-        entry_id = D.OREG.pending_entries(db)[0]["entry_id"]
-        runner = daemon.seats["CLAUDE"]
-        runner.streams = {1: "simple-tools"}
-        daemon.handle_update(
-            runner,
-            {
-                "propagate_mode": "change_all",
-                "stream_id": 1,
-                "orig_subject": "AFC Work",
-                "subject": "AFC Work Renamed",
-            },
-        )
-        route = D.OREG.pending_entries(db)[0]["route"]
-        self.assertEqual(route, {"channel": "simple-tools", "topic": "AFC Work Renamed"})
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 0)  # already notified; the question moved with the topic
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
-            consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry_id, "sender_id": 12, "client": "website"},
-                2000.0,
-                channel="simple-tools",
-                topic="AFC Work Renamed",
-            )
-        self.assertTrue(consumed)
-        rows = D.OR.registrations_for_native_id(db, "claude", "sess-aaaaaaaa")
-        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
-
-    def test_an_unrelated_new_topic_does_not_steal_the_question(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        self._ask_once(daemon)
-        now = self.clock.time()
-        self._rewrite_topics("L1", [
-            {"channel": "simple-tools", "topic": "AFC Work", "expires": None},
-            {"channel": "simple-tools", "topic": "Shiny New", "expires": now + 5000},
-        ])
-        self._ask_once(daemon)
-        route = D.OREG.pending_entries(db)[0]["route"]
-        self.assertEqual(route, {"channel": "simple-tools", "topic": "AFC Work"})
-
-    def test_a_topic_gone_without_a_rename_event_is_never_posted_to(self):
-        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("simple-tools", "AFC Work")])
-        daemon = self.daemon()
-        db = self._registry(daemon)
-        self._ask_once(daemon)
-        # The topic expired out of the lease and an unrelated permanent topic appeared -
-        # even one carrying the SAME expiry is not a continuation (expiry equality is
-        # not provenance);  the entry fails closed and nothing posts to the dead name.
-        self._rewrite_topics("L1", [{"channel": "simple-tools", "topic": "Elsewhere", "expires": None}])
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 0)
-        entry = D.OREG.pending_entries(db)[0]
-        self.assertTrue(entry.get("route_lost"))
-        self.assertEqual(entry["route"], {"channel": "simple-tools", "topic": "AFC Work"})
+        daemon.env.pop(D.LREG.OPERATOR_KEY_ENV, None)
+        daemon.config.instance = "server"
+        daemon.config.listener_api_enabled = False
+        daemon._configure_listener_api()
+        self.assertIsNotNone(daemon.registry_service)
+        self.assertEqual(daemon.registry_service.keys, {})
+        self.assertIs(daemon.registry_sweeper.service, daemon.registry_service)
+        self.assertIsNone(daemon.listener_api_server)
+        daemon.config.listener_api_enabled = True
+        daemon.env[D.LREG.OPERATOR_KEY_ENV] = "k" * 40  # now the API has a principal to serve
+        with mock.patch.object(D.LAPI, "ListenerReadApi", side_effect=OSError("in use")) as api:
+            daemon._configure_listener_api()
+        self.assertEqual(api.call_count, 1)
+        self.assertIsNone(daemon.listener_api_server)
+        self.assertIsNotNone(daemon.registry_service)
+        self.assertIs(daemon.registry_sweeper.service, daemon.registry_service)
+
+    def test_the_status_carries_the_sweepers_last_pass(self):
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        self.assertIsNone(daemon.status()["registry_sweep"])
+        daemon.registry_sweeper.last = {"ok": True, "ended": 0}
+        self.assertEqual(daemon.status()["registry_sweep"], {"ok": True, "ended": 0})
+        mac = self._operator_daemon("mac")
+        mac._configure_registry()
+        self.assertIsNone(mac.status()["registry_sweep"])
+
+    def test_the_tick_runs_the_sweeper_only_with_its_own_service(self):
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        sweeper = daemon.registry_sweeper
+        with mock.patch.object(sweeper, "run", return_value={}) as run:
+            daemon.tick()
+            daemon._registry_sweep_thread.join(5)
+            self.assertEqual(run.call_count, 1)
+            daemon.registry_service = None  # the service was dropped (a reload, a shutdown)
+            sweeper.next_at = 0.0
+            daemon.tick()
+            daemon._registry_sweep_thread.join(5)
+            self.assertEqual(run.call_count, 1)
+
+    def test_a_sweep_pass_runs_off_the_tick_and_one_at_a_time(self):
+        # kody 4544460899:  a pass waiting on the store's lock never stalls the tick.
+        daemon = self._operator_daemon("server")
+        daemon._configure_registry()
+        sweeper = daemon.registry_sweeper
+        release = threading.Event()
+        started = threading.Event()
+
+        def slow_run(now):
+            started.set()
+            release.wait(5)
+            return {}
+
+        with mock.patch.object(sweeper, "run", side_effect=slow_run) as run:
+            daemon.tick()  # returns while the pass is still running
+            self.assertTrue(started.wait(5))
+            sweeper.next_at = 0.0
+            daemon.tick()  # a pass is running:  no second one starts, and none is claimed
+            self.assertEqual(sweeper.next_at, 0.0)
+            release.set()
+            daemon._registry_sweep_thread.join(5)
+            self.assertEqual(run.call_count, 1)
 
 
 class FallbackPromptBoundTests(DaemonHarness):

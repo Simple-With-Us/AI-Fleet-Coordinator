@@ -1265,7 +1265,6 @@ class Bridge:
                 "id": "lark:%s" % message_id,
                 "is_bot": False,
                 "kind": "message",
-                "muse_bridge": False,
                 "owner": owner,
                 "owner_api": False,
                 "recipients": [],

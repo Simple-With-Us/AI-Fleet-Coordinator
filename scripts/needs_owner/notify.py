@@ -8,7 +8,7 @@ with the message on standard input.  The mention comes from the owner id pinned 
 (`--to-owner`), never from a name.  On success a comment `[needs-owner] notified msg <id>` records the
 message.  When the post fails or the seat has no bot credential the item gets `[needs-owner]
 notify_pending` and CLAUDE's fallback notifier (C6-2) sends it.  A mirrored item (`--mirror-of`) has no
-post of its own:  the Grok Bot persona's topic is the notice, so its message id is recorded and the
+post of its own:  the Grok bot's topic is the notice, so its message id is recorded and the
 Linear link is replied in that topic.
 
 A post that may or may not have gone through (simple-chat exit 5 or 6, or a timeout) is never retried
@@ -693,7 +693,7 @@ def notify(
 
 
 def _mirror(runner: Runner, item: Item, link: linkmod.TopicLink) -> Notice:
-    """A Grok Bot persona already opened the topic:  record its message as the notice, then reply there
+    """A Grok bot already opened the topic:  record its message as the notice, then reply there
     with the Linear link (the reply is a courtesy;  its failure is reported and does not undo the record)."""
     notice = _announce(runner, item, link.message_id, link.topic)
     reply = "Filed in Linear as %s:  %s\n\nAnswer here or as a comment on the Linear issue.\n" % (

@@ -11,6 +11,7 @@ Owner direction (quoted):  "I don't want notes going from Zulip to Apple notes."
 | create | `simple-notes create TITLE` | `notes_create` | A new note.  The title must be `[TEAM_KEY, Agent] Topic` with the caller's own agent name. |
 | update | `simple-notes update TITLE` | `notes_update` | Replace a note's body.  Any Coding note.  A note whose title does not carry the caller's name is never created by an update. |
 | pin, unpin | `simple-notes pin TITLE` | `notes_pin`, `notes_unpin` | Any Coding note. |
+| delete | `simple-notes delete NOTE_ID` | `notes_delete` | Delete one fleet-written note by exact `x-coredata` id (`notes_list` / `notes_read`) and its Fleet RAG doc (`note/<id>`).  Static notes and owner notes are refused.  No bulk delete.  If Apple Notes is already gone but RAG removal failed, retry the same request. |
 | read | `simple-notes read TITLE` | `notes_read` | One note's content, as `html` (ready to send back with `update --html`), `text` or `raw` (exactly what Notes stores).  A line that looks like a credential reads as `[withheld: secret-shaped]`. |
 | list | `simple-notes list` | `notes_list` | The Coding folder's notes, newest first:  title, id, created, modified.  `query` filters titles. |
 | status | `simple-notes status ID` | `notes_status` | Where a queued request stands. |
@@ -19,6 +20,8 @@ Owner direction (quoted):  "I don't want notes going from Zulip to Apple notes."
 The verbs, their options and the tool arguments are one contract:  `scripts/simple_tools/mcp/notes-tools.json`.  `scripts/simple_tools/tests/test_notes_parity.py` fails when `simple-notes`, the stdio server or the hosted Worker drifts from it.
 
 The output is the same everywhere:  a write answers `status: done` with the `note_id`, a read answers the note, and only a request still waiting when the caller's wait ran out answers `queued` or `running` with its `request_id`.
+
+A pin the Shortcut does not do still answers `done`.  The result also carries `pin_skipped`, the reason, and the note is saved unpinned.  `notes_status` on the direct path and on the Operator path returns that same field, and a pin that ran omits it.  The Mac runner writes the result, including `pin_skipped`, into its spool before it reports.  A crash after that write reports the same result again on the next pass, and a second pass reports nothing.  The queue stores one `pin_skipped`: a repeat of the same claim is the record already stored, not a second acknowledgement.  AFC-455 first described this as a Zulip reply on `#notes-relay`.  That channel is retired (AFC-486), and this result field is the report a requester reads.
 
 ## Where a Request Runs
 
@@ -67,7 +70,7 @@ good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON
  "session": "<session-id>"}
 ```
 
-`action` is one of create, update, pin, unpin, read, list.  `title` is required except for list;  `markdown` and `flags` (pin, notify, needs_owner, summary, pr, html) only for create and update;  `format` (html, text, raw) only for read;  `query` (at most 100 characters) and `limit` (1 to 500, default 100) only for list.
+`action` is one of create, update, pin, unpin, read, list, delete.  `title` is required except for list and delete;  `note_id` (exact `x-coredata` id) only for delete;  `markdown` and `flags` (pin, notify, needs_owner, summary, pr, html) only for create and update;  `format` (html, text, raw) only for read;  `query` (at most 100 characters) and `limit` (1 to 500, default 100) only for list.
 
 **Endpoints.**
 

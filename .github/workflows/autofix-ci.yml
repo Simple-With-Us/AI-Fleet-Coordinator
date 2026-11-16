@@ -1,4 +1,5 @@
 name: autofix.ci
+# autofix-ci/action refuses to run under any other workflow name, so keep this one.
 
 on:
   pull_request:
@@ -12,15 +13,31 @@ concurrency:
   group: autofix-ci-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Two ways the Ruff result reaches a branch:
+#   - A pull request from this repository commits and pushes it itself, with an installation token
+#     of the fleet's autofix GitHub App, whoever authored the PR's commits.  The autofix.ci hosted
+#     service refuses heads whose recent commits are bot-authored ("refusing to patch repeated bot
+#     commits"), and most fleet PRs are pushed by bot identities, so it cannot be the route for them
+#     (owner:  "change it so that bot commits aren't discriminated against").  A push made with an
+#     App token starts CI on the new head;  one made with github.token would not, so this path never
+#     pushes with github.token.
+#   - A fork PR, a push to main, or a run where the App id or key is not available falls back to
+#     autofix-ci/action, exactly as before.
+
 jobs:
   autofix:
     # The handbook sync job owns handbook-sync/mirror and refuses a pull request whose head it did not push (AFC-402).
     if: github.head_ref != 'handbook-sync/mirror'
     runs-on: ubuntu-latest
+    env:
+      SAME_REPO_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # A same-repo PR is formatted on its own head, so the fix commit sits directly on it.
+          # Forks and pushes keep the default ref (the PR merge commit, or the pushed commit).
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || '' }}
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -41,11 +58,116 @@ jobs:
             echo "$CHANGED_FILES"
             echo "$CHANGED_FILES" | xargs ruff format || true
             echo "$CHANGED_FILES" | xargs ruff check --fix-only || true
+            # A lint fix can leave a line ruff format would change;  format once more so the
+            # result is stable and a second pass over it makes no diff.
+            echo "$CHANGED_FILES" | xargs ruff format || true
           else
             echo "No changed Python files to format."
           fi
 
+      - name: Check Autofix App Credentials
+        id: app_push
+        # A step if cannot reference secrets (AFC-308 startup validation), so the key is checked here.
+        if: env.SAME_REPO_PR == 'true' && vars.SWU_AUTOFIX_GITHUB_APP_ID != ''
+        env:
+          AUTOFIX_APP_PRIVATE_KEY: ${{ secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AUTOFIX_APP_PRIVATE_KEY" ]; then
+            echo "mint_token=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "mint_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint Autofix Push Token
+        id: push_token
+        if: steps.app_push.outputs.mint_token == 'true'
+        # A failed mint leaves the token empty, so autofix-ci/action below still runs.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.SWU_AUTOFIX_GITHUB_APP_ID }}
+          private-key: ${{ secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Commit And Push The Ruff Fix As The Autofix App
+        id: app_commit
+        if: env.SAME_REPO_PR == 'true' && steps.push_token.outputs.token != ''
+        env:
+          PUSH_TOKEN: ${{ steps.push_token.outputs.token }}
+          GH_TOKEN: ${{ steps.push_token.outputs.token }}
+          APP_SLUG: ${{ steps.push_token.outputs.app-slug }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The App token may not change workflow files;  leave them out so the rest still lands.
+          git add -A -- . ':(exclude).github/workflows'
+          workflow_files=$(git diff --name-only -- .github/workflows | paste -sd ' ' -)
+          if [ -n "$workflow_files" ]; then
+            echo "::warning::Ruff changed files under .github/workflows (${workflow_files});  they are left out of the autofix commit and need formatting by hand."
+          fi
+          if git diff --cached --quiet; then
+            if [ -n "$workflow_files" ]; then
+              # Only workflow files changed.  A mixed change gets here one run later, on the head this
+              # App pushed, which is why this sits before the loop guard.  No route may push them:
+              # autofix-ci/action refuses to modify anything under .github and fails its step.  Run it
+              # anyway, as before this workflow pushed anything, so the unformatted files fail the
+              # check instead of passing unnoticed.
+              echo "fallback=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Ruff only changed files under .github/workflows (${workflow_files});  autofix-ci/action reports them and does not fix them."
+              exit 0
+            fi
+            echo "Ruff made no changes;  nothing to push."
+            exit 0
+          fi
+          files=$(git diff --cached --name-only | tr '\n' ' ')
+          app_user_id=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          app_name="${APP_SLUG}[bot]"
+          app_email="${app_user_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          # Loop guard, against this App only:  if the head is already this App's own fix commit and
+          # Ruff still changes it, another push would only start the same cycle again.  Ruff on its own
+          # output makes no diff, so a normal run stops after one fix.  Other bots are never guarded.
+          # A newer push to the branch starts its own run on the new head;  do not race it.
+          remote_sha=$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)
+          if [ -n "$remote_sha" ] && [ "$remote_sha" != "$HEAD_SHA" ]; then
+            echo "::notice::${BRANCH} moved from ${HEAD_SHA} to ${remote_sha} during this run;  the run on the new head formats it."
+            exit 0
+          fi
+          head_email=$(git log -1 --format=%ae "$HEAD_SHA")
+          head_name=$(git log -1 --format=%an "$HEAD_SHA")
+          if [ "$head_email" = "$app_email" ] || [ "$head_name" = "$app_name" ]; then
+            echo "::error::The head ${HEAD_SHA} is already a ${app_name} autofix commit, but Ruff still changes:  ${files}.  Refusing to push again;  format these files by hand."
+            exit 1
+          fi
+          git config user.name "$app_name"
+          git config user.email "$app_email"
+          git commit -m "style: ruff format (autofix)"
+          # actions/checkout persists the job token as an http extraheader, which would win over the
+          # App token;  clear it for this push.  The credential helper reads PUSH_TOKEN from the
+          # environment, so the token is never in a URL or on a command line.
+          if ! git -c http.https://github.com/.extraheader= -c credential.helper= \
+            -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${PUSH_TOKEN}"; }; f' \
+            push "https://github.com/${GH_REPO}.git" "HEAD:refs/heads/${BRANCH}"; then
+            remote_sha=$(git ls-remote origin "refs/heads/${BRANCH}" | cut -f1)
+            if [ -n "$remote_sha" ] && [ "$remote_sha" != "$HEAD_SHA" ]; then
+              echo "::notice::${BRANCH} moved to ${remote_sha} before the push landed;  the run on the new head formats it."
+              exit 0
+            fi
+            echo "::error::Pushing the Ruff fix to ${BRANCH} failed."
+            exit 1
+          fi
+          echo "::notice::Pushed the Ruff fix as ${app_name} to ${BRANCH} (${files});  CI runs on the new head."
+
+      - name: Note The Missing Autofix App
+        if: env.SAME_REPO_PR == 'true' && steps.push_token.outputs.token == ''
+        run: |
+          echo "::notice::The autofix App id (vars.SWU_AUTOFIX_GITHUB_APP_ID) or key (secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY) is not available to this run, so autofix-ci/action handles it;  bot-authored heads are not covered, because the autofix.ci service refuses repeated bot commits."
+
       - uses: autofix-ci/action@v1
+        # Forks, pushes to main, and same-repo PRs without the App token.
+        if: steps.push_token.outputs.token == '' || steps.app_commit.outputs.fallback == 'true'
         with:
           fail-fast: false
-

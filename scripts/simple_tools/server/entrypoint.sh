@@ -6,10 +6,11 @@
 # `simple-chat daemon init` pins the owner in that copy.  Then it execs simple-chat with the
 # container's arguments (default:  daemon run --wait-lock).
 #
-# Credentials:  INFISICAL_TOKEN and INFISICAL_PROJECT_ID are required.  infisical_env.py loads
-# the listener's variables from Infisical (prod, /zulip) with the scoped service token, then
-# execs simple-chat with the loaded values and without the token.  Missing credentials or a
-# failed fetch stop startup; the listener never falls back to container copies.
+# Credentials:  INFISICAL_TOKEN, EAVESDROPPER_WAKE_ROUTER_INFISICAL_TOKEN and INFISICAL_PROJECT_ID are
+# required.  infisical_env.py loads the listener's variables from Infisical (prod /zulip and /operator
+# with the primary token, /wake-router with the second) and the optional bound sources, then execs
+# simple-chat with the loaded values and without any token.  Missing credentials or a failed fetch
+# stop startup; the listener never uses a container copy of a name the loader supplies.
 #
 # `docker exec` gets the container's original environment, not the one PID 1 was started with.
 # Run a command that needs the seats' credentials (daemon init, for one) through this script:

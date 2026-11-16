@@ -1,11 +1,13 @@
 # Fleet calendars + daily digest
 
-Generated artifacts (do not hand-edit ICS; change the scripts/workflows):
+Generated artifacts (do not hand-edit ICS; change the scripts/workflows).  They are **not**
+tracked on `main`; the workflow publishes fresh trees to `published/fleet-activity` and
+deploys HTML to GitHub Pages.
 
 | File | What it is |
 |------|------------|
-| [`agent-activity.ics`](./agent-activity.ics) | Timed VEVENTs per **commit** across verified public repos |
-| [`daily-digest.ics`](./daily-digest.ics) | **All-day** VEVENT per day: merged PRs and issues opened/closed in public repos |
+| `agent-activity.ics` | Timed VEVENTs per **commit** across verified public repos |
+| `daily-digest.ics` | **All-day** VEVENT per day: merged PRs and issues opened/closed in public repos |
 
 ## Hosted site (GitHub Pages)
 
@@ -18,12 +20,12 @@ https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics
 https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics
 ```
 
-Raw-from-main mirrors (always available even before Pages is enabled):
+Raw mirrors on branch `published/fleet-activity` (refreshed every workflow run; not `main`):
 
 ```text
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/agent-activity.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/calendar/daily-digest.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/digest.md
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/agent-activity.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/daily-digest.ics
+https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/site/digest.md
 ```
 
 ## Subscribe
@@ -42,4 +44,4 @@ python3 scripts/build-agent-calendar.py
 python3 scripts/build-fleet-daily-digest.py
 ```
 
-Workflow: `.github/workflows/fleet-activity-site.yml` (every 6h + on script changes).
+Workflow: `.github/workflows/fleet-activity-site.yml` (every 6h + on script changes).  Snapshots are pushed to `published/fleet-activity`, not protected `main`.

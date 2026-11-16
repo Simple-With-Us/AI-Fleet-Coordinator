@@ -56,9 +56,6 @@ class _HttpWorld:
     def __init__(self):
         self.calls: list[tuple] = []
         self.secrets: dict[str, str] = {}
-        self.fail_login = False
-        self.login_delay = 0.0             # seconds to hold a login open
-        self.login_tokens: list[str] = []  # one access token per login, in order
         self.fail_fetch: list = []          # exceptions / statuses to raise/return in order
         self.fail_write = False
         self.patch_statuses: list[int] = []  # statuses to return for PATCH, in order
@@ -71,17 +68,10 @@ class _HttpWorld:
         auth = req.get_header("Authorization")
         self.calls.append((method, path, body, auth))
         if path == "/api/v1/auth/universal-auth/login":
-            if self.login_delay:
-                # Hold the login open so concurrent callers really overlap.
-                time.sleep(self.login_delay)
-            if self.fail_login:
-                raise urllib.error.URLError("login down")
-            if self.login_tokens:
-                return _FakeHTTPResponse(200, {"accessToken": self.login_tokens.pop(0)})
-            return _FakeHTTPResponse(200, {"accessToken": "tok-1"})
+            raise AssertionError("universal-auth login is retired")
         if path == "/api/v2/service-token":
             return _FakeHTTPResponse(200, {"workspace": PROJECT, "permissions": ["read", "write"] if auth == "Bearer " + WRITER_TOKEN else ["read"],
-                "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None})
+                "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"})
         if path.startswith("/api/v3/secrets/raw"):
             if method == "GET":
                 if self.fail_fetch:
@@ -153,7 +143,7 @@ class InitTests(_SettingsCase):
         self.assertEqual(s.get("API_TOKEN"), "tok")
         self.assertEqual(s.get("BACKEND_URL"), "http://x")
         self.assertIsNone(s.get("NOPE"))
-        # Exactly two network calls: login + one secrets fetch.
+        # Exactly two network calls: service-token metadata, then one secrets fetch.
         self.assertEqual(self.world.network_calls, 2)
 
     def test_runtime_reads_make_zero_network_calls_after_init(self):
@@ -225,7 +215,7 @@ class InitTests(_SettingsCase):
         s = self.make()
         with mock.patch.object(s, "_request", side_effect=[
             (200, {"workspace": PROJECT, "permissions": ["read"],
-                   "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+                   "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}),
             (200, {"secrets": [{"secretKey": "SOME_RANDOM_KEY", "secretValue": "ignored",
                                 "type": "shared", "workspace": "wrong-project"}]}),
         ]):
@@ -239,7 +229,7 @@ class InitTests(_SettingsCase):
                 record = {"secretKey": key, "secretValue": "synthetic", "type": "shared"}
                 with mock.patch.object(s, "_request", side_effect=[
                     (200, {"workspace": PROJECT, "permissions": ["read"],
-                           "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": None}),
+                           "scopes": [{"environment": "prod", "secretPath": "/"}], "expiresAt": "2099-01-01T00:00:00Z"}),
                     (200, {"secrets": [record, dict(record)]}),
                 ]):
                     with self.assertRaisesRegex(mod.SettingsError, "scope validation"):
@@ -419,7 +409,7 @@ class ServiceTokenTests(_SettingsCase):
     that path, and a 401 there cannot be answered by a re-login."""
 
     def _with_token(self, token):
-        """The service token in the environment, with the automation pair still set."""
+        """Bind the scoped service token.  No machine-identity variables are set."""
         return mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token, "INFISICAL_WRITE_TOKEN": WRITER_TOKEN}, clear=False)
 
     def _logins(self):
@@ -431,7 +421,7 @@ class ServiceTokenTests(_SettingsCase):
         with self._with_token(SERVICE_TOKEN):
             s.init()
         self.assertEqual(s.get("API_TOKEN"), "tok")
-        # One call, and it is the secrets fetch:  the pair was never logged in with.
+        # Service-token metadata, then one secrets fetch.  No login is issued.
         self.assertEqual(self.world.network_calls, 2)
         self.assertEqual(self.world.calls[0][0], "GET")
         self.assertEqual(self.world.calls[0][3], "Bearer " + SERVICE_TOKEN)

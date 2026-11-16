@@ -589,7 +589,7 @@ const OFFICIAL_TOOLS = [
 
 const MAX_STRING_LENGTH = 24000;
 const MAX_LIST_ITEMS = 250;
-const outputLimit = { type: "integer", minimum: 1000, maximum: 64000, default: 24000 };
+const outputLimit = { type: "integer", minimum: 1000, maximum: 1000000, default: 24000 };
 const idempotencyKey = { type: "string", minLength: 1, maxLength: 100, pattern: "^[A-Za-z0-9_.:-]+$" };
 const session = { type: "string", maxLength: 80, pattern: "^[A-Za-z0-9_.:-]+$" };
 

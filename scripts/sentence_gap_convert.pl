@@ -20,9 +20,9 @@
 #  survived, which no grep over the body can see.
 #
 #  The mode.  `--entity` makes the gap with the HTML entity `&nbsp;` plus a normal
-#  space, in place of a real U+00A0 plus a space.  The entity is the form only the two
-#  chat panes take, because they normalize a raw U+00A0 away:  the Claude Code Code tab
-#  and the MiniMax Code pane.  No flag keeps the real U+00A0, which is the form every
+#  space, in place of a real U+00A0 plus a space.  The entity is the form only the three
+#  chat panes take, because they normalize a raw U+00A0 away:  the Claude Code Code tab,
+#  the MiniMax Code pane and the Z Code pane.  No flag keeps the real U+00A0, which is the form every
 #  other surface takes -- a GitHub title, body, comment or review comment, a Zulip post,
 #  a Linear row, a commit message, a repo doc and a skill (owner ruling 2026-10-23,
 #  final:  one mechanism everywhere else, and two plain ASCII spaces are never the

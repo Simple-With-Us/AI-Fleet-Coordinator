@@ -1,16 +1,17 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
+import { DIGEST_FIXTURE_PATH } from './digest-fixture-path';
 import { serveRepo, serveErrors } from './serve-repo';
 
 const viewports = [{ width: 1440, height: 1000 }, { width: 390, height: 844 }];
 
-test.describe('digest page (site/index.html)', () => {
+test.describe('digest page (pinned fixture)', () => {
   for (const viewport of viewports) {
     test(`loads with header, repo legend, and day cards ${viewport.width}`, async ({ page }) => {
       await page.setViewportSize(viewport);
       await serveRepo(page);
-      await page.goto('/site/index.html');
+      await page.goto(DIGEST_FIXTURE_PATH);
       await expect(page.locator('h1')).toHaveText("Jay's Daily Log");
       await expect(page.locator('.legend')).toBeVisible();
       await expect(page.locator('.day').first()).toBeVisible();
@@ -21,10 +22,12 @@ test.describe('digest page (site/index.html)', () => {
     test(`repo legend lists the fleet surfaces ${viewport.width}`, async ({ page }) => {
       await page.setViewportSize(viewport);
       await serveRepo(page);
-      await page.goto('/site/index.html');
-      for (const label of ['Socratic.Trade', 'Congress.Trade', 'BotFleet.app', 'Hog Hunter']) {
+      await page.goto(DIGEST_FIXTURE_PATH);
+      for (const label of ['Socratic.Trade', 'Congress.Trade', 'BotFleet.app', 'Hog Hunter', 'Muster', 'FleetLink', 'Simple With Us', 'OpenCode', 'Instinct', 'Z Code', 'Fx', 'Clutch']) {
         await expect(page.locator('.legend')).toContainText(label);
       }
+      await expect(page.locator('link[rel="icon"][type="image/png"]')).toHaveAttribute('href', 'agent-logos/app-afc.png');
+      await expect(page.locator('link[rel="icon"][media]')).toHaveAttribute('href', 'agent-logos/app-afc-dark.webp');
       expect(serveErrors(page)).toEqual([]);
     });
   }

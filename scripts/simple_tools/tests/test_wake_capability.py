@@ -14,6 +14,11 @@ def _session_id(seed: str = "a") -> str:
     return "sess-" + seed * 8
 
 
+# The seat each platform's chats register under, by namespace:  the registry refuses a platform
+# under another seat (AFC-772).
+SEATS = {"claude": "CLAUDE", "codex": "CODEX", "cursor": "CURSOR", "zcode": "ZC"}
+
+
 class WakeCapabilityTableTest(unittest.TestCase):
     def test_nudge_transports_come_from_the_same_table(self) -> None:
         self.assertEqual(set(OR.implemented_wake_platforms()), CN.SUPPORTED_PLATFORMS)
@@ -60,7 +65,7 @@ class RegisterDerivationTest(unittest.TestCase):
             verified_host="mac",
             profile_scope="default",
             native_session_id=_session_id(platform.replace("-", "x")),
-            seat="CODEX",
+            seat=SEATS[OR.normalize_platform(platform)],
             source="test",
             issuer=OR.ISSUER_OPERATOR,
         )
@@ -180,7 +185,7 @@ class SentinelNormalizationTest(unittest.TestCase):
             verified_host="mac",
             profile_scope="default",
             native_session_id=_session_id(platform.replace("-", "x")),
-            seat="CODEX",
+            seat=SEATS[OR.normalize_platform(platform)],
             source="test",
             issuer=OR.ISSUER_OPERATOR,
         )

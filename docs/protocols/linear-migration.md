@@ -45,7 +45,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
 |---|---|---|
 | Pilot (2) | `Claude`, `Board Import` | Mac; `Board Import` is temporary |
 | After the gates: registered seats (11) | `Codex`, `AG`, `Cursor`, `Grok` (terminal Grok and Grok Build are one seat, GROK, owner 2026-10-08), `Grok Web` (GROK-WEB cloud seat), `Clutch`, `Fx`, `MM`, `Muse Assist`, `Muse Code`, `Grok Bot` | Mac file and/or that seat's cloud env |
-| After the gates: Grok Bot personas (4) | `GB-Housekeeper`, `GB-Monitor`, `GB-Compiler`, `GB-Plumber` | Grok Bot VM |
+| After the gates: Grok bots (4) | `GB-Housekeeper`, `GB-Monitor`, `GB-Compiler`, `GB-Plumber` | Grok Bot VM |
 | After the gates: BotFleet roles (11) | `BF-Fixer`, `BF-Director`, `BF-Compiler`, `BF-Designer`, `BF-Publisher`, `BF-Plumber`, `BF-Oracle`, `BF-Monitor`, `BF-Housekeeper`, `BF-Deployer`, `BF-Builder` | BotFleet containers, one role's values per process |
 | Service (1) | `Fleet Reader` (`read` only: recall, admin panel, digests, wake poll, backups, rollback replay) | Infisical, then the job or Worker |
 | Decision 7 | `Instinct` (option B only) | Mac |
@@ -178,7 +178,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
   - Closed rows with real activity since Sep 24, judged by `created_at`, a comment or `claimed_at`, **not `updated_at`**: 1,125 rows. [DB]  Bulk resyncs rewrote `updated_at` on 2,741 rows at 2:25am Oct 4, and on 698 rows on Oct 7 (639 at 8:35am), so an `updated_at` window would pull 3,518.  Planned total: 3,935, not 6,300.
   - Stale claims (no `addressed_by`, or no comment or claim in 14 days) import as Todo with `stale-claim`.
   - Older rows stay in the read-only archive and recall.
-- **GitHub duplicates.**  Repo transfers left two rows per issue (`jaywedgeworth22/...` and `Simple-With-Us/...`): 171 pairs are both live, and 276 pairs touch the import set. [DB]  Normalize the owner to `Simple-With-Us` and the repo name, import one issue per pair with both URLs as attachments, and report the pair count in the pilot.
+- **GitHub duplicates.**  Repo transfers left two rows per issue (`Simple-With-Us/...` and `Simple-With-Us/...`): 171 pairs are both live, and 276 pairs touch the import set. [DB]  Normalize the owner to `Simple-With-Us` and the repo name, import one issue per pair with both URLs as attachments, and report the pair count in the pilot.
 - **Attribution normalization**, applied to `reported_by`, `addressed_by` and comment authors before resolving app users: strip `@` and brackets; MINIMAX → MM (33 live claims under MINIMAX); MUSE → MA; bare DIRECTOR, COMPILER, FIXER, DESIGNER, PLUMBER, PUBLISHER, PRODUCER, DEPLOYER, MONITOR, HOUSEKEEPER, ORACLE → `BF-<ROLE>`; DSH, DEEPSEEK, HARNESS → `Clutch` as delegate for live claims (the lineage: DSH retired Sep 19, HARNESS Oct 7), footer otherwise.  DSH's apparent 217 recent writes are the Oct 4 resync; its last comment was Sep 15, but it still holds 12 `addressed` rows, and HARNESS holds 1 in-progress claim from Sep 28.  Whatever stays unmapped is reported in the pilot.
 - **Field map**
 
@@ -247,7 +247,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
 **Open owner decisions** (recommended defaults in bold)
 
 1. **Plan and teams.**  **Business with one team per app** (13 teams; only Jay is billable).  Alternative: Basic with one `Fleet` team and an `App` label group.
-2. **Bot roster.**  **The 29 apps in section 2:** every registered seat plus every BF role and GB persona with real board writes in 14 days.  BF-Producer on first need; DOT and FINCH only after Jay confirms them; retired seats none.
+2. **Bot roster.**  **The 29 apps in section 2:** every registered seat plus every BF role and GB bot with real board writes in 14 days.  BF-Producer on first need; DOT and FINCH only after Jay confirms them; retired seats none.
 3. **History depth.**  **Live rows (2,810) plus closed rows created, commented or claimed since Sep 24 (1,125): 3,935 in all.**  Older rows stay in the archive and recall.
 4. **Effort logs and GitHub-issue mirroring.**  **Retire the live and repo effort logs and the effort-issues workflows; move and close the live GitHub issues in step 4a; one-way sync for new ones.**
 5. **Wake path.**  **Phase 1 polling through `Fleet Reader`; phase 2 one Worker for data-change webhooks**, and agent sessions only if gate 9 allows.

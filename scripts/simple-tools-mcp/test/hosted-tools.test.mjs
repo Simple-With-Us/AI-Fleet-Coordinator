@@ -178,14 +178,14 @@ test("fixtures:  secret (refused before any request, naming the field)", async (
   assert.match(reply.message, /a loaded credential/);
 });
 
-test("fixtures:  mentions (raw mentions silenced, wildcards and groups neutralized), and `to`", async () => {
+test("fixtures:  mentions (user mentions and wildcards kept, groups removed), and `to`", async () => {
   const { fake, tools } = harness();
   for (const [n, c] of fixtures("mentions").entries()) {
     structured(await tools.call("zulip_post", { channel: "sandbox", topic: `m${n}`, text: c.input }), "zulip_post");
     assert.equal(fake.messages.at(-1).content, `[GROK-WEB] ${c.expect}`, c.case);
   }
   structured(await tools.call("zulip_post", { channel: "sandbox", topic: "to", text: "please look", to: ["codex"] }), "zulip_post");
-  assert.equal(fake.messages.at(-1).content, "[GROK-WEB→CODEX] @**Codex** please look");
+  assert.equal(fake.messages.at(-1).content, "[GROK-WEB → CODEX] @**Codex** please look");
   const before = fake.requestsTo("POST", "messages").length;
   const error = toolError(await tools.call("zulip_post", { channel: "sandbox", topic: "to", text: "x", to: ["Codex", "Nobody At All"] }), "invalid_argument");
   assert.match(error.message, /to\[1\]/);
@@ -538,7 +538,7 @@ test("read_topic:  stateless since_id, own posts hidden unless include_self, own
   assert.deepEqual(items.map((i) => i.owner), [true, false]);
   assert.equal(items[0].sender_id, OWNER_ID);
   assert.equal(items[0].is_bot, false);
-  assert.match(items[0].time, /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}(am|pm)$/);
+  assert.match(items[0].time, /^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} (AM|PM)$/);
   assert.deepEqual(structured(await tools.call("zulip_read_topic", { topic: "work", include_self: true, since_id: b.id }), "zulip_read_topic"), { count: 1, ids: [c.id], next_since_id: c.id });
   assert.deepEqual(structured(await tools.call("zulip_read_topic", { topic: "work", since_id: c.id }), "zulip_read_topic"), { count: 0, ids: [], next_since_id: c.id });
   // The narrow uses the pinned stream id, never a name lookup.
@@ -551,8 +551,13 @@ test("a long body is cut and flagged, and every request is redirect manual on th
   const { fake, tools } = harness();
   fake.addMessage("Codex", "simple-tools", "long", "x".repeat(5000));
   const item = fence((await tools.call("zulip_read_topic", { topic: "long" })).content[0].text)[0];
-  assert.equal(item.body.length, 4000);
+  assert.ok(item.body.length <= 283);
   assert.equal(item.truncated, true);
+  const full = fence(
+    (await tools.call("zulip_read_topic", { topic: "long", full: true })).content[0].text,
+  )[0];
+  assert.equal(full.body.length, 4000);
+  assert.equal(full.truncated, true);
   assert.ok(fake.requests.every((r) => r.redirect === "manual"));
 });
 

@@ -361,15 +361,15 @@ class ToolTests(TI.IdentityHarness):
         self.assertEqual(self.run.calls, [])
 
     def test_an_exempt_identity_writes_without_a_session_and_no_argument_exempts_anyone_else(self):
-        persona = TI.PERSONA
+        bot = TI.BOT
         env = self.mcp_env(CLAUDE_CODE_SESSION_ID=None)
-        persona_env = self.mcp_env(AGENT_SEAT=persona, CLAUDE_CODE_SESSION_ID=None)  # authenticated as the persona
+        persona_env = self.mcp_env(AGENT_SEAT=bot, CLAUDE_CODE_SESSION_ID=None)  # authenticated as the bot
         result = self.write(
-            env=persona_env, identity=persona, title="[AFC, %s] t" % persona, request_id="persona-request-1"
+            env=persona_env, identity=bot, title="[AFC, %s] t" % bot, request_id="bot-request-1"
         )
         self.assert_structured("notes_create", result)
         self.assertEqual(self.script_sessions(), [None])
-        self.assertEqual(self.run.calls[-1]["env"]["AGENT_SEAT"], persona)
+        self.assertEqual(self.run.calls[-1]["env"]["AGENT_SEAT"], bot)
         # the schema has no way to claim an exemption, and a made-up argument is refused outright
         for extra in ({"exempt": True}, {"single_thread": True}, {"seat": "MA"}):
             self.assertTrue(self.write(env=env, **extra).get("isError"), extra)
