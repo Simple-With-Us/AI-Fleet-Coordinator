@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -556,6 +557,26 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertFalse(result["apple_note_deleted"])
         self.assertTrue(result["rag_deleted"])
 
+    def test_fleet_rag_delete_runs_note_delete_after_outbox_lock_contention(self):
+        clock = [0.0]
+
+        def fake_sleep(seconds):
+            clock[0] += max(float(seconds or 0), 0.05)
+
+        def fake_monotonic():
+            return clock[0]
+
+        with (
+            mock.patch("fleet_rag.note_outbox.cancel", side_effect=BlockingIOError("locked")),
+            mock.patch.object(N.time, "sleep", side_effect=fake_sleep),
+            mock.patch.object(N.time, "monotonic", side_effect=fake_monotonic),
+            mock.patch.object(N.subprocess, "run", return_value=mock.Mock(returncode=0, stderr=b"")) as sub_run,
+        ):
+            result = N._fleet_rag_delete("x-coredata://stub/note/9", self.ENV)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "rag-outbox-cancellation-unavailable")
+        sub_run.assert_called_once()
+
     def test_successful_write_triggers_fleet_rag_upsert(self):
         run = FakeRun()
         body = "Fleet RAG upsert integration body with enough text to index."
@@ -1023,7 +1044,7 @@ class DirectOnceTests(unittest.TestCase):
 
 
 class ProvenanceTests(unittest.TestCase):
-    NOW = datetime(2026, 10, 22, 22, 3, tzinfo=timezone.utc)  # Thu, Oct 22, 5:03pm in Chicago
+    NOW = datetime(2026, 10, 22, 22, 3, tzinfo=timezone.utc)  # Thu, Oct 22, 5:03 PM in Chicago
     LINE = "Written for MM through the Operator on Thu, Oct 22, 2026 (request requestid-0001)."
 
     def update(self, markdown, html=False):
@@ -1076,6 +1097,32 @@ class ProvenanceTests(unittest.TestCase):
 
 
 class ContentTests(unittest.TestCase):
+    def test_legacy_and_current_stamps_strip_identical_header_rows(self):
+        for stamp in ("3:05am", "3:05 AM", "3:05pm", "3:05 PM"):
+            with self.subTest(stamp=stamp):
+                body = STORED_HTML.replace("3:05am", stamp)
+                text = STORED_TEXT.replace("3:05am", stamp)
+                self.assertEqual(N.content_html(body, STORED_TITLE), STORED_CONTENT_HTML)
+                self.assertEqual(N.content_text(text, STORED_TITLE), STORED_CONTENT_TEXT)
+
+    def test_delete_guard_recognizes_both_stamp_shapes_and_refuses_lookalikes(self):
+        guard = Path(__file__).resolve().parents[2] / "notes_delete_guard.py"
+        for stamp, title, expected in (
+            ("3:52pm", STORED_TITLE, 0),
+            ("3:52 PM", STORED_TITLE, 0),
+            ("3:52 pm", STORED_TITLE, 5),
+            ("3:52 pM", STORED_TITLE, 5),
+            ("3:52 PM", "Hand Made", 5),
+            ("3:52 XM", STORED_TITLE, 5),
+        ):
+            with self.subTest(stamp=stamp, title=title):
+                result = subprocess.run(
+                    [sys.executable, str(guard)],
+                    input=json.dumps({"title": title, "body": f"<div>Sun, Aug 9, {stamp}</div>"}),
+                    text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_the_stored_note_reads_back_as_its_content_only(self):
         html_content = N.content_html(STORED_HTML, STORED_TITLE)
         self.assertEqual(html_content, STORED_CONTENT_HTML)

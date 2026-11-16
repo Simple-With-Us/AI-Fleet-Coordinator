@@ -59,13 +59,13 @@ The pattern is identical everywhere: extract the one value you actually need, pr
 KEY="$(fleet-secrets get SOME_KEY)"          # exit 3 means the key is absent
 fleet-secrets run --only A,B -- some-command  # A and B appear in that command's environment only
 ```
-The two commands above are the shared reader, and it authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  A consumer that reads one folder reads it through its own scoped service token (`service-tokens`) instead.
+The two commands above are the shared reader, and it authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`).  A consumer that reads one folder reads it through its own scoped service token (`service-tokens`) instead.
 
 A key that was stored with quote-wrapping elsewhere comes back without quotes from `fleet-secrets get`.  A file the owner hands you at some other path (a `chmod 600` file) gets the same treatment: never `cat` it, `grep` it loosely, or open it with any whole-file-view tool (see above).
 
 Listing just the key NAMES is fine — that's metadata, not a value — but **only** if
 the command cannot emit a value.  Use `-o` so the match is the name only.  The names come from
-the shared `fleet-secrets` reader, which authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing; a consumer that
+the shared `fleet-secrets` reader, which authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`); a consumer that
 reads one folder uses its own scoped service token (`service-tokens`) instead.
 
 ```bash
