@@ -387,21 +387,22 @@ class Publish(unittest.TestCase):
         workflow = self.file("wf", 10)
         specs = [f"{good}=ok.txt", f"{workflow}=.github/workflows/x.yml"]
         self.assertEqual(self.publish(specs), 0)
-        self.assertEqual([n for n, _, _ in self.sent],
-                         ["gr_wf_branch_get", "gr_wf_files_put"])
+        self.assertEqual([n for n, _, _ in self.sent], ["gr_wf_branch_get", "gr_wf_files_put"])
         put = self.puts()[0]
         self.assertEqual(put["identity"], "CLAUDE")
         self.assertEqual(put["expected_head_sha"], "a" * 40)
-        self.assertEqual([f["path"] for f in put["files"]],
-                         ["ok.txt", ".github/workflows/x.yml"])
-        self.assertEqual(base64.b64decode(put["files"][1]["content_b64"]),
-                         Path(workflow).read_bytes())
+        self.assertEqual([f["path"] for f in put["files"]], ["ok.txt", ".github/workflows/x.yml"])
+        self.assertEqual(
+            base64.b64decode(put["files"][1]["content_b64"]), Path(workflow).read_bytes()
+        )
 
     def test_workflow_directories_still_refused_before_any_commit(self):
         for path in (".github", ".github/workflows"):
             with self.subTest(path=path):
-                specs = [f"{self.file('good-dir', 10)}=ok.txt",
-                         f"{self.file('bad-dir', 10)}={path}"]
+                specs = [
+                    f"{self.file('good-dir', 10)}=ok.txt",
+                    f"{self.file('bad-dir', 10)}={path}",
+                ]
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                     self.publish_unmocked(specs)
                 self.assertEqual(self.sent, [])
