@@ -545,9 +545,7 @@ def _cloudflare_token(token):
 ABSENT_BINDING = object()
 
 
-def put_secret(
-    transport, token, account, worker, name, value, existing_type=ABSENT_BINDING
-):
+def put_secret(transport, token, account, worker, name, value, existing_type=ABSENT_BINDING):
     if not NAME_RE.fullmatch(name):
         raise SyncError("invalid-secret-name")
     # A value put always writes secret_text; never silently convert a live
@@ -603,8 +601,7 @@ def write_digest_binding(transport, token, account, worker, settings, digest_tex
     annotations = result.get("annotations")
     if annotations is not None:
         if not isinstance(annotations, dict) or any(
-            not isinstance(k, str) or not isinstance(v, str)
-            for k, v in annotations.items()
+            not isinstance(k, str) or not isinstance(v, str) for k, v in annotations.items()
         ):
             raise SyncError("settings-incomplete annotations")
         # Echo only the user-controlled annotation keys: workers/triggered_by
@@ -633,7 +630,9 @@ def write_digest_binding(transport, token, account, worker, settings, digest_tex
     after_bindings = after_result.get("bindings")
     if not isinstance(after_bindings, list):
         raise SyncError("cloudflare-incomplete")
-    got = {(item.get("name"), item.get("type")) for item in after_bindings if isinstance(item, dict)}
+    got = {
+        (item.get("name"), item.get("type")) for item in after_bindings if isinstance(item, dict)
+    }
     if got != sent:
         raise SyncError("bindings-not-confirmed")
     for key, value in result.items():
@@ -709,9 +708,7 @@ def sync_worker(
         else:
             existing_type = ABSENT_BINDING
         try:
-            put_secret(
-                transport, cf, account, worker, name, values[name], existing_type
-            )
+            put_secret(transport, cf, account, worker, name, values[name], existing_type)
         except SyncError as exc:
             if written:
                 raise SyncError(
