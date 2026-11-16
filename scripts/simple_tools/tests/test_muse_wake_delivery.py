@@ -174,7 +174,9 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(answer["delivery"]["code"], "chat-live")
         self.assertEqual(self.calls, [])
 
-    def test_a_pid_reused_by_another_program_is_a_stale_lock(self) -> None:
+    def test_a_holder_whose_identity_is_unproven_is_busy_never_unheld(self) -> None:
+        # Muse's lock records no process start time, so a live pid that does not read as
+        # Muse (reuse, a wrapper, a bundle) is a doubt: busy, and nothing runs.
         (self.session_dir / ".session.lock").write_text(
             "pid=%d\n" % os.getpid(), encoding="utf-8"
         )
@@ -183,23 +185,25 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         )
         with mock.patch.object(MW.MR, "read_proc", return_value=other):
             answer = self._deliver()
-        self.assertEqual(answer["delivery"]["outcome"], "sent")
+        self.assertEqual(answer["delivery"]["outcome"], "busy")
+        self.assertEqual(answer["delivery"]["code"], "holder-unknown")
+        self.assertEqual(self.calls, [])
 
     def test_a_chat_under_its_recorded_xdg_root_is_found(self) -> None:
         custom = self.home / "xdg-custom"
         session = custom / "muse" / "sessions" / "2026" / "11" / "11" / SID2
-        session.mkdir(parents=True)
+        WR.private_dir(session)
         (session / "session.jsonl").write_text(
             json.dumps({"cwd": str(self.work)}) + "\n", encoding="utf-8"
         )
         (session / ".session.lock").write_text("", encoding="utf-8")
         path = Path(MW.PLM.spool_path(self.env, SID2))
-        path.parent.mkdir(parents=True, exist_ok=True)
+        WR.private_dir(path.parent)
         path.write_text(
             json.dumps(
                 {
                     "session_id": SID2,
-                    "home": str(self.home),
+                    "home": str(self.home / "chat-home"),
                     "xdg_data_home": str(custom),
                 }
             ),
@@ -222,7 +226,9 @@ class MuseWakeDeliveryTest(unittest.TestCase):
             request, runner=run, resolve_row=_row(native_session_id=SID2)
         )
         self.assertEqual(answer["delivery"]["outcome"], "sent")
+        # The store root is the chat's recorded one; the child still runs as this host.
         self.assertEqual(self.calls[0]["env"]["XDG_DATA_HOME"], str(custom))
+        self.assertEqual(self.calls[0]["env"]["HOME"], str(self.home))
 
     def test_unheld_chat_gets_one_headless_run_in_its_own_session(self) -> None:
         answer = self._deliver()
@@ -380,15 +386,25 @@ class MuseWakeDeliveryTest(unittest.TestCase):
         self.assertEqual(platform.mention, "Muse Code")
         self.assertTrue(platform.target_re.fullmatch(SID))
         nested = self.session_dir / "subagent" / SID2
-        nested.mkdir(parents=True)
+        WR.private_dir(nested)
         (nested / "session.jsonl").write_text("{}\n", encoding="utf-8")
         # The same id nested elsewhere does not make the top-level chat a sub-agent.
-        (self.session_dir / "subagent" / SID).mkdir(parents=True)
-        from simple_tools import wake_router as WR
-
+        WR.private_dir(self.session_dir / "subagent" / SID)
+        sid3 = "33333333-4444-4555-8666-777777777777"
+        custom = self.home / "xdg-custom"
+        WR.private_dir(custom / "muse" / "sessions" / "2026" / "11" / "11" / SID / "subagent" / sid3)
+        spool = Path(MW.PLM.spool_path(self.env, sid3))
+        WR.private_dir(spool.parent)
+        spool.write_text(
+            json.dumps(
+                {"session_id": sid3, "home": str(self.home), "xdg_data_home": str(custom)}
+            ),
+            encoding="utf-8",
+        )
         sub = WR.Target(session_id=SID2, letter="CC", host="mac", generation=1)
+        custom_sub = WR.Target(session_id=sid3, letter="CC", host="mac", generation=1)
         top = WR.Target(session_id=SID, letter="CC", host="mac", generation=1)
-        self.assertEqual(platform.exclude([sub, top]), {SID2})
+        self.assertEqual(platform.exclude([sub, custom_sub, top]), {SID2, sid3})
 
     def test_router_sends_a_mac_chat_over_ssh_from_the_server(self) -> None:
         target = WR.Target(session_id=SID, letter="CC", host="mac", generation=1)

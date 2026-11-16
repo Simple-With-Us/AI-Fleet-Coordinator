@@ -123,13 +123,12 @@ def _chat_record(env: Mapping[str, str], session_id: str) -> Mapping[str, Any]:
 
 
 def _chat_env(env: Mapping[str, str], session_id: str) -> dict[str, str]:
-    """The delivery environment with the chat's recorded HOME and XDG_DATA_HOME restored.
-    A forced-command delivery has no login profile, so without this a chat that ran under a
-    non-default data home would be looked for in the wrong store and refused for good."""
+    """The child delivery environment:  this host's HOME and PATH (so this host's `muse`
+    binary is the one resolved), with only the chat's recorded XDG_DATA_HOME restored.
+    A forced-command delivery has no login profile, so without that one value a chat that
+    ran under a non-default data home would be resumed against the wrong store."""
     out = dict(env)
     rec = _chat_record(env, session_id)
-    if rec.get("home"):
-        out["HOME"] = str(rec["home"])
     if rec.get("xdg_data_home"):
         out["XDG_DATA_HOME"] = str(rec["xdg_data_home"])
     return out
@@ -138,11 +137,13 @@ def _chat_env(env: Mapping[str, str], session_id: str) -> dict[str, str]:
 def data_root(env: Mapping[str, str], session_id: str = "") -> str:
     """This host's Muse data root:  the chat's recorded root when it has one, else the
     delivery environment's."""
-    chat = _chat_env(env, session_id) if session_id else dict(env)
-    return MR.data_root(
-        str(chat.get("HOME") or os.path.expanduser("~")),
-        str(chat.get("XDG_DATA_HOME") or ""),
-    )
+    home = str(env.get("HOME") or os.path.expanduser("~"))
+    xdg = str(env.get("XDG_DATA_HOME") or "")
+    if session_id:
+        rec = _chat_record(env, session_id)
+        home = str(rec.get("home") or home)
+        xdg = str(rec.get("xdg_data_home") or xdg)
+    return MR.data_root(home, xdg)
 
 
 def wake_text(wake: WR.Wake) -> str:
@@ -281,9 +282,10 @@ def _holder(session_dir: str | None) -> bool | None:
     is Muse's own way of saying the chat was let go, and that is a fact (False).  A pid that
     exists but is not ours counts as held:  it may be the chat, and a headless run against it
     would be a second writer.  The lock file is Muse's and carries no process start time to
-    compare against, so a live pid is checked for being Muse at all:  a pid since reused by
-    another program is a stale lock (False), while one reused by another Muse process stays
-    held, which is the safe answer.  Muse itself also refuses a held session (`already in
+    compare against, so a live pid is checked for being Muse at all:  a Muse process is
+    held (True), and anything else — a reused pid, a wrapper or bundle whose name does not
+    read as Muse, an unreadable process — is a doubt (None, so `busy`), never proof the
+    chat was let go.  Muse itself also refuses a held session (`already in
     use`, probed on 1.4.15), but that is the last line, not this check."""
     if session_dir is None:
         return False
@@ -317,9 +319,9 @@ def _holder(session_dir: str | None) -> bool | None:
         return None
     if proc is None:
         return None  # raced with its exit, or unreadable: busy is the safe answer
-    return bool(
-        MR.MUSE_NAME.match(proc.name) or MR.MUSE_NAME.match(os.path.basename(proc.exe))
-    )
+    if MR.MUSE_NAME.match(proc.name) or MR.MUSE_NAME.match(os.path.basename(proc.exe)):
+        return True
+    return None  # identity unproven (reuse, wrapper, bundle): a doubt, never a no
 
 
 class StoreUnreadable(Exception):
@@ -528,7 +530,7 @@ def deliver_local(
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
         return WR.Delivery("refused", code="bad-session-id")
     chat_env = _chat_env(env, session_id)
-    root = data_root(chat_env)
+    root = data_root(env, session_id)
     try:
         session_dir = _find_session_dir(root, session_id)
         if session_dir is None and MR.is_subagent(root, session_id):
@@ -658,25 +660,44 @@ def router_platform(
         )
 
     def exclude(targets: list[WR.Target]) -> set[str]:
-        # One walk for the whole batch (glob hides its own errors, and delivery re-checks
-        # every pick against the store anyway, so a doubt here excludes nothing).
+        # One walk per distinct store root (glob hides its own errors, and delivery
+        # re-checks every pick against the store anyway, so a doubt here excludes nothing).
+        # A chat may live under its own recorded root, so the root is per target.
         import glob as _glob
 
-        root = data_root(here)
-        nested = _glob.glob(
-            os.path.join(
-                _glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*", "subagent", "*"
-            )
-        )
-        top_level = _glob.glob(
-            os.path.join(_glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*")
-        )
-        # As in MR.is_subagent, an id with a top-level folder is a chat, never a sub-agent.
-        subagents = {os.path.basename(path) for path in nested} - {
-            os.path.basename(path) for path in top_level
-        }
         local = str(config.get("local_host") or "")
-        return {t.session_id for t in targets if t.host == local and t.session_id in subagents}
+        by_root: dict[str, set[str]] = {}
+
+        def subagents(root: str) -> set[str]:
+            if root not in by_root:
+                nested = _glob.glob(
+                    os.path.join(
+                        _glob.escape(root),
+                        "sessions",
+                        "[0-9]*",
+                        "[0-9]*",
+                        "[0-9]*",
+                        "*",
+                        "subagent",
+                        "*",
+                    )
+                )
+                top_level = _glob.glob(
+                    os.path.join(
+                        _glob.escape(root), "sessions", "[0-9]*", "[0-9]*", "[0-9]*", "*"
+                    )
+                )
+                # As in MR.is_subagent, an id with a top-level folder is a chat.
+                by_root[root] = {os.path.basename(p) for p in nested} - {
+                    os.path.basename(p) for p in top_level
+                }
+            return by_root[root]
+
+        return {
+            t.session_id
+            for t in targets
+            if t.host == local and t.session_id in subagents(data_root(here, t.session_id))
+        }
 
     return WR.Platform(
         seat=SEAT,
