@@ -36,8 +36,11 @@ def build(source, destination):
     payload = {}
     for name, expected in FILES.items():
         path = source / name
-        if any(p.is_symlink() for p in [path, *path.parents] if p != source.parent):
-            raise ValueError("symlink in source path")
+        current = path
+        while current != source:
+            if current.is_symlink():
+                raise ValueError("symlink in source path")
+            current = current.parent
         data = path.read_bytes()
         if digest(data) != expected:
             raise ValueError("baseline digest mismatch: " + name)
