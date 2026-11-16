@@ -227,8 +227,7 @@ def exclude_non_interactive(
             return excluded
         try:
             rows = conn.execute(
-                "SELECT task_id, workspace_path FROM tasks WHERE task_id IN (%s)"
-                % placeholders,
+                "SELECT task_id, workspace_path FROM tasks WHERE task_id IN (%s)" % placeholders,
                 local_ids,
             ).fetchall()
         except sqlite3.Error:
