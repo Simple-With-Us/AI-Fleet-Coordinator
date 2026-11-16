@@ -142,7 +142,7 @@ def render_report(diff):
     return "\n".join(lines) + "\n"
 
 
-def load_folder_map(path=FOLDERS_PATH):
+def load_folder_map(path=FOLDERS_PATH, env=None):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -153,19 +153,24 @@ def load_folder_map(path=FOLDERS_PATH):
     for worker, row in data.items():
         if not WORKER_RE.fullmatch(worker) or not isinstance(row, dict):
             raise SyncError("folder-map-unreadable " + str(path))
-        project = row.get("project_id")
+        project_env = row.get("project_id_env")
         environment = row.get("environment")
         folder = row.get("folder")
         token_env = row.get("token_env")
         if (
-            not isinstance(project, str)
-            or not PROJECT_RE.fullmatch(project)
+            not isinstance(project_env, str)
+            or not TOKEN_ENV_RE.fullmatch(project_env)
             or environment != "prod"
             or not _folder_ok(folder)
             or not isinstance(token_env, str)
             or not TOKEN_ENV_RE.fullmatch(token_env)
         ):
             raise SyncError("folder-map-unreadable " + str(path))
+        # The repo is public: the project id is never committed.  It is
+        # resolved from the environment variable the map names.
+        project = (os.environ if env is None else env).get(project_env) or ""
+        if not PROJECT_RE.fullmatch(project):
+            raise SyncError("project-id-env-missing " + worker)
         parsed[worker] = {
             "project_id": project,
             "environment": "prod",
@@ -652,7 +657,7 @@ def sync_worker(
     site=INFISICAL_SITE,
 ):
     """Returns ``(report, exit_code)``.  Values stay in this process."""
-    folders = load_folder_map()
+    folders = load_folder_map(FOLDERS_PATH, env)
     if worker not in folders:
         raise SyncError("unknown-worker")
     spec = folders[worker]
@@ -771,7 +776,7 @@ def cli(argv, *, account, guard, env=None, transport=None, now=None, stdout=None
         # interpolates one, using whatever credentials this process was given.
         secret_values = [env.get("CLOUDFLARE_API_TOKEN") or ""]
         try:
-            token_env = load_folder_map()[worker]["token_env"]
+            token_env = load_folder_map(FOLDERS_PATH, env)[worker]["token_env"]
             secret_values.append(env.get(token_env) or "")
         except (SyncError, KeyError):
             pass
