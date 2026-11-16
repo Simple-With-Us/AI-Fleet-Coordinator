@@ -1,4 +1,4 @@
-// Tests for agent_sync/operator_sheets_google.mjs (AFC-428).  No network: fetch is injected.
+// Tests for simple_tools/operator_sheets_google.mjs (AFC-428).  No network: fetch is injected.
 // Run: node --test scripts/test_operator_sheets_google.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -6,7 +6,7 @@ import { generateKeyPairSync, createVerify } from "node:crypto";
 import {
   OperatorSheetsGoogle, OperatorSheetsError, createServiceAccountTokenProvider,
   SESSION_HEADERS, EVENT_HEADERS,
-} from "./agent_sync/operator_sheets_google.mjs";
+} from "./simple_tools/operator_sheets_google.mjs";
 
 const SPREADSHEET = "sheet_ABC-123";
 const IDS = { sessions: 2033000102, events: 2033000103 };
@@ -214,8 +214,8 @@ test("a confirmation for the wrong tab is rejected", async () => {
   await assert.rejects(sheetsWith(fake).appendSession(sessionRow()), { code: "write_confirmation_mismatch" });
 });
 
-test("http failures: rejected statuses are certain, server errors are uncertain, body is never leaked", async () => {
-  for (const [status, uncertain] of [[400, false], [403, false], [429, true], [500, true], [503, true]]) {
+test("http failures: rejected statuses (429 included) are certain, server errors are uncertain, body is never leaked", async () => {
+  for (const [status, uncertain] of [[400, false], [403, false], [429, false], [500, true], [503, true]]) {
     const fake = fakeSheets({
       write: () => new Response("SECRET-ECHO cell content", { status, headers: { "retry-after": "12" } }),
     });
@@ -427,8 +427,8 @@ test("oversized, deep or malformed responses fail closed", async () => {
 
 test("the header contract's three copies stay equal (registry, exporter, adapter)", async () => {
   const { readFileSync } = await import("node:fs");
-  const exporter = await import("./agent_sync/operator_sheets_export.mjs");
-  const registry = readFileSync(new URL("./agent_sync/operator_registry.py", import.meta.url), "utf8");
+  const exporter = await import("./simple_tools/operator_sheets_export.mjs");
+  const registry = readFileSync(new URL("./simple_tools/operator_registry.py", import.meta.url), "utf8");
   const tuple = (name) => {
     const block = registry.match(new RegExp(name + " = \\((.*?)\\)", "s"));
     assert.ok(block, name + " tuple present in operator_registry.py");
@@ -438,4 +438,97 @@ test("the header contract's three copies stay equal (registry, exporter, adapter
   assert.deepEqual([...EVENT_HEADERS], [...exporter.EVENTS_HEADERS]);
   assert.deepEqual([...SESSION_HEADERS], tuple("SESSIONS_HEADERS"));
   assert.deepEqual([...EVENT_HEADERS], tuple("EVENTS_HEADERS"));
+});
+// ---- OPS-1037: workbook-profile tables (the live SWU Operator workbook shape) ----
+
+// The live workbook's Sessions tab carries all 16 canonical columns (OPS-1037).
+const WB_SESSIONS_HEADERS = [...SESSION_HEADERS];
+const WB_TABLES = {
+  sessions: { title: 'Sessions', headers: WB_SESSIONS_HEADERS },
+  events: { title: 'Events', headers: EVENT_HEADERS },
+};
+const WB_IDS = { sessions: 1000000001, events: 1000000002 }; // synthetic fixture ids
+const WB_SESSION_ROW = ['r1', 'A', 'MM', 'zulip', 'mac', 'native-1', 'Title', '', '', '',
+  'open', 'none', '', '', '', 'test'];
+
+function fakeWorkbookFetch({ metadataSheets = null } = {}) {
+  const sheets = metadataSheets ?? [
+    { properties: { sheetId: WB_IDS.sessions, title: 'Sessions', gridProperties: { rowCount: 50, columnCount: 26 } } },
+    { properties: { sheetId: WB_IDS.events, title: 'Events', gridProperties: { rowCount: 50, columnCount: 26 } } },
+  ];
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    const parsed = new URL(url);
+    const path = decodeURIComponent(parsed.pathname);
+    if (!path.includes('/values/')) return jsonResponse({ spreadsheetId: SPREADSHEET, sheets });
+    const range = path.slice(path.indexOf('/values/') + 8);
+    if (range.endsWith(':append')) {
+      const sessions = range.includes('Sessions');
+      const cols = sessions ? WB_SESSIONS_HEADERS.length : EVENT_HEADERS.length;
+      return jsonResponse({ spreadsheetId: SPREADSHEET, updates: {
+        spreadsheetId: SPREADSHEET, tableRange: sessions ? 'Sessions!A1:P1' : 'Events!A1:I1',
+        updatedRange: sessions ? 'Sessions!A2:P2' : "'Events'!A2:I2",
+        updatedRows: 1, updatedColumns: cols, updatedCells: cols } });
+    }
+    if (range.startsWith("'Sessions'!") || range.startsWith('Sessions!')) {
+      const values = range.endsWith(':Z1') ? [WB_SESSIONS_HEADERS] : [];
+      return jsonResponse({ spreadsheetId: SPREADSHEET, range, majorDimension: 'ROWS', values });
+    }
+    if (range.startsWith("'Events'!") || range.startsWith('Events!')) {
+      const values = range.endsWith(':Z1') ? [EVENT_HEADERS] : [];
+      return jsonResponse({ spreadsheetId: SPREADSHEET, range, majorDimension: 'ROWS', values });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  return { fetch, calls };
+}
+
+test('workbook profile: inspect, validate and appends confirm on real tab titles', async () => {
+  const { fetch } = fakeWorkbookFetch();
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  const view = await adapter.inspect();
+  assert.deepEqual(view, {
+    sessions: { rowCount: 50, columnCount: 26 },
+    events: { rowCount: 50, columnCount: 26 },
+  });
+  await adapter.validateHeaders();
+  assert.deepEqual(await adapter.appendSession(WB_SESSION_ROW), { rowNumber: 2 });
+  assert.deepEqual(await adapter.appendEvent(eventRow()), { rowNumber: 2 });
+});
+
+test('workbook profile: a renamed tab fails identity validation', async () => {
+  const { fetch } = fakeWorkbookFetch({ metadataSheets: [
+    { properties: { sheetId: WB_IDS.sessions, title: 'Session', gridProperties: { rowCount: 50, columnCount: 26 } } },
+    { properties: { sheetId: WB_IDS.events, title: 'Events', gridProperties: { rowCount: 50, columnCount: 26 } } },
+  ] });
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  await assert.rejects(adapter.inspect(), /sheet_identity_mismatch/);
+});
+
+test('workbook profile: a 10-column row (the old short layout) is refused by the 16-column profile', async () => {
+  const { fetch, calls } = fakeWorkbookFetch();
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  await assert.rejects(adapter.appendSession(WB_SESSION_ROW.slice(0, 10)), /invalid_row/);
+  assert.equal(calls.length, 0); // refused locally, before any request
+});
+
+test('workbook profile: a tab that still has the old 10 headers fails header validation', async () => {
+  const shortHeaders = SESSION_HEADERS.slice(0, 10);
+  const fetch = async (url) => {
+    const path = decodeURIComponent(new URL(url).pathname);
+    if (!path.includes('/values/')) {
+      return jsonResponse({ sheets: [
+        { properties: { sheetId: WB_IDS.sessions, title: 'Sessions', gridProperties: { rowCount: 5, columnCount: 26 } } },
+        { properties: { sheetId: WB_IDS.events, title: 'Events', gridProperties: { rowCount: 5, columnCount: 26 } } },
+      ] });
+    }
+    return jsonResponse({ values: [path.includes('Sessions') ? shortHeaders : [...EVENT_HEADERS]] });
+  };
+  const adapter = new OperatorSheetsGoogle({ spreadsheetId: SPREADSHEET, sheetIds: WB_IDS, tables: WB_TABLES,
+    token: async () => 'token', fetch });
+  await assert.rejects(adapter.validateHeaders(), { code: 'header_mismatch' });
 });

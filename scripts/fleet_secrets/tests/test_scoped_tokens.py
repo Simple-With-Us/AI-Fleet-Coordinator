@@ -26,7 +26,7 @@ def grant(project=PROJECT, paths=("/",), permissions=("read",)):
         "workspace": project,
         "permissions": list(permissions),
         "scopes": [{"environment": "prod", "secretPath": path} for path in paths],
-        "expiresAt": None,
+        "expiresAt": "2099-01-01T00:00:00Z",
     }
 
 

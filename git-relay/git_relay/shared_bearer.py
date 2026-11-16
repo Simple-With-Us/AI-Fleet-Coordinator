@@ -4,19 +4,26 @@ one credential per identity, shared between ST-MCP and GR-MCP, minted in the adm
 A seat presents its admin-minted bearer (today the gbb_<role>_<secret> family).  This
 module resolves the bearer to its identity by asking the Worker's HMAC-authed internal
 verify route.  The raw bearer NEVER leaves this process:  only its SHA-256 hex travels,
-inside a body signed with the same X-Agent-Sync-Signature scheme as the wake listener
+inside a body signed with the same X-Simple-Tools-Signature scheme as the wake listener
 (HMAC-SHA256 over the raw bytes, freshness window on sent_at).  The verify key itself
 is read through the fleet-secrets CLI only, like every other credential this service
 touches - never from the process environment.
 
-Failure shape:  fail closed.  A malformed token, an unreachable Worker, a bad answer,
-an expired or paused identity - all resolve to None (the caller answers 401).  Neither
-the bearer nor its hash is ever logged or included in an error string.
+Failure shape:  fail closed.  resolve() returns None for a malformed token, an
+unreachable Worker, a bad answer, or an expired or paused identity.  resolve_detail()
+names which of those it was (bearer_rejected or verifier_unavailable) so the caller
+can say so without logging the bearer or its hash.  Neither the bearer nor its hash
+is ever logged or included in an error string.
 
-A live answer is not reused unless GIT_RELAY_VERIFY_CACHE_S is set, so by default a
-revocation or pause reaches the next Git call.  Only a refusal is remembered as one:  a
-Worker that is down or over its daily limit says nothing about the bearer, so that call
-fails and the next one asks again.
+A live positive answer is reused for up to an hour by default (owner ruling 2026-11-06:
+a checked token may work for an hour, because a seat is never cut off through the
+tools), never past the bearer's own expiry.  So a revocation or pause can reach a
+seat's Git calls, writes included, up to an hour late in one relay process.  The hour
+runs from the Worker's own live check (its answer's verified_at), so a Worker answer
+served from the Worker's cache does not start a second hour.
+GIT_RELAY_VERIFY_CACHE_S sets a shorter window, and 0 turns the reuse off.  Only a
+refusal is remembered as one:  a Worker that is down or over its daily limit says
+nothing about the bearer, so that call fails and the next one asks again.
 """
 
 from __future__ import annotations
@@ -31,10 +38,10 @@ import urllib.error
 import urllib.request
 
 VERIFY_CONTRACT = "gr-bearer-verify/1"
-SIGNATURE_HEADER = "X-Agent-Sync-Signature"
+SIGNATURE_HEADER = "X-Simple-Tools-Signature"
 
 # The bearer families this resolver understands, both admin-minted:
-#   gbb_<role>_<43>      a Grok Bot persona (identity GB-<ROLE>)
+#   gbb_<role>_<43>      a Grok bot (identity GB-<ROLE>)
 #   sbt_<seat>_<43>      an OAuth-capable seat (identity is its KNOWN_SEATS name)
 # Further families join here when the admin panel mints them.
 TOKEN_RES = (
@@ -44,12 +51,14 @@ TOKEN_RES = (
 
 MAX_RESPONSE_BYTES = 4096
 REQUEST_TIMEOUT_S = 10
-# Positive answers are NOT cached by default:  a revoked or paused identity must lose GR
-# access with its SeatGate row, not with a cache entry.  The cost is that every Git call
-# is a Worker request and SeatGate RPCs against daily caps.  An operator may accept up to
-# POSITIVE_CACHE_CAP_S of revocation lag to save them, by setting GIT_RELAY_VERIFY_CACHE_S.
-DEFAULT_POSITIVE_CACHE_S = "0"
-POSITIVE_CACHE_CAP_S = 60
+# Positive answers are reused for an hour by default (owner ruling 2026-11-06), so one
+# relay process asks the Worker about a bearer at most once an hour instead of on every
+# Git call (each ask is a Worker request and a SeatGate RPC against daily caps).  The
+# trade:  a revoked or paused identity can keep GR access, writes included, for up to
+# the window.  GIT_RELAY_VERIFY_CACHE_S sets the window in seconds, capped at
+# POSITIVE_CACHE_CAP_S;  0 turns it off.  An entry never outlives the bearer's expiry.
+DEFAULT_POSITIVE_CACHE_S = "3600"
+POSITIVE_CACHE_CAP_S = 3600
 NEGATIVE_CACHE_S = 30  # a wrong guess must not hammer the Worker
 # The verify route answers a bearer's verdict as a 200, so the only non-200s that can be
 # remembered as refusals are its own 400 (an identity it does not know) and 401, and a
@@ -124,7 +133,7 @@ class SharedBearerVerifier:
     def parse_identity(token: str) -> str | None:
         """The identity a bearer names, or None when malformed.
 
-        gbb_ names a persona (GB-<ROLE>);  sbt_ names a seat exactly as its
+        gbb_ names a bot (GB-<ROLE>);  sbt_ names a seat exactly as its
         KNOWN_SEATS entry (JET-CHAT included, hyphen preserved).
         """
         if not isinstance(token, str):
@@ -140,38 +149,61 @@ class SharedBearerVerifier:
 
     def resolve(self, token: str) -> str | None:
         """The verified identity for a presented bearer, or None.  Never raises."""
+        identity, _reason = self.resolve_detail(token)
+        return identity
+
+    def resolve_detail(self, token: str) -> tuple[str | None, str]:
+        """(identity, "") when confirmed, else (None, reason).  Never raises.
+
+        reason is unauthenticated (not a bearer), bearer_rejected (the Worker
+        refused, including a cached refusal), or verifier_unavailable (the
+        Worker could not be asked).  An outage is not cached.
+        """
         try:
             identity = self.parse_identity(token)
             if identity is None:
-                return None
+                return None, "unauthenticated"
             digest = hashlib.sha256(token.strip().encode()).hexdigest()
             with self._lock:
                 cached = self._cache.get(digest)
             now = time.time()
             if cached and cached[1] > now:
-                return cached[0]
+                if cached[0] is None:
+                    return None, "bearer_rejected"
+                return cached[0], ""
             resolved = self._verify_remote(identity, digest, now)
             # Positive answers cache for the TTL above, never past the bearer's
-            # own expiry.  Refusals always cache briefly, or a guessing loop costs
-            # one Worker call per request.
+            # own expiry, and never more than the TTL after the Worker's own
+            # live check (verified_at):  the Worker may answer from its cache,
+            # and the two layers together must stay within one window.
+            # Refusals always cache briefly, or a guessing loop costs one
+            # Worker call per request.
             with self._lock:
                 if len(self._cache) >= CACHE_MAX_ENTRIES:
                     oldest = min(self._cache, key=lambda k: self._cache[k][2])
                     del self._cache[oldest]
                 if resolved is not None:
-                    identity_name, expires_at_s = resolved
-                    ttl = min(self._positive_ttl, max(0.0, expires_at_s - now))
-                    if ttl > 0:
+                    identity_name, expires_at_s, verified_at_s = resolved
+                    ttl = min(
+                        self._positive_ttl,
+                        max(0.0, expires_at_s - now),
+                        max(0.0, verified_at_s + self._positive_ttl - now),
+                    )
+                    # A verdict stored by a call that started after this one
+                    # (a refusal, above all) is newer than this answer:  an
+                    # older positive answer never writes over it.
+                    newer = self._cache.get(digest)
+                    if ttl > 0 and not (newer is not None and newer[2] > now):
                         self._cache[digest] = (identity_name, now + ttl, now)
                 else:
                     self._cache[digest] = (None, now + NEGATIVE_CACHE_S, now)
             if resolved is not None:
-                return identity_name
-            return None
+                return identity_name, ""
+            return None, "bearer_rejected"
         except _VerifyUnavailable:
-            return None  # fail closed, and let the next call ask again
+            return None, "verifier_unavailable"  # fail closed, and let the next call ask again
         except Exception:
-            return None  # fail closed, always
+            return None, "bearer_rejected"  # fail closed, always
 
     def _verify_remote(self, identity: str, digest: str, now: float):
         body = json.dumps(
@@ -216,4 +248,13 @@ class SharedBearerVerifier:
         expires_at = answer.get("expires_at")
         if not isinstance(expires_at, (int, float)) or expires_at <= now * 1000:
             return None  # expires_at is epoch milliseconds;  already-expired refuses
-        return identity, expires_at / 1000.0
+        # verified_at (epoch ms) is when the Worker last checked the bearer
+        # live;  an older Worker omits it, and then the check counts as now.
+        # A value from the future counts as now too, so it can never stretch
+        # the window.
+        verified_at = answer.get("verified_at")
+        if isinstance(verified_at, bool) or not isinstance(verified_at, (int, float)):
+            verified_at_s = now
+        else:
+            verified_at_s = min(now, verified_at / 1000.0)
+        return identity, expires_at / 1000.0, verified_at_s

@@ -156,6 +156,65 @@ class HttpWriteRetryTests(unittest.TestCase):
         self.assertEqual(calls["n"], 3)
 
 
+class MalformedJsonTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sleep = mock.patch.object(core.time, "sleep")
+        self.sleep.start()
+
+    def tearDown(self) -> None:
+        self.sleep.stop()
+
+    def test_a_non_json_200_is_a_fleet_rag_error_without_the_body(self) -> None:
+        class Raw:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self) -> bytes:
+                return b"<html>secret-body-must-not-leak</html>"
+
+        with mock.patch.object(core.urllib.request, "urlopen", return_value=Raw()):
+            with self.assertRaises(FleetRagError) as caught:
+                core.http_json("https://qdrant.example.test/collections/fleet/points/scroll")
+        message = str(caught.exception)
+        self.assertIn("malformed JSON", message)
+        self.assertNotIn("secret-body", message)
+        self.assertNotIn("<html>", message)
+
+
+class QdrantScrollValidationTests(unittest.TestCase):
+    def qdrant(self):
+        return core.Qdrant({
+            "QDRANT_URL": "https://qdrant.example.test",
+            "QDRANT_API_KEY": "key",
+            "QDRANT_FLEET_COLLECTION": "fleet",
+        })
+
+    def test_scroll_yields_points_from_a_normal_envelope(self) -> None:
+        q = self.qdrant()
+        pages = [
+            {"result": {"points": [{"id": "a", "payload": {}}], "next_page_offset": "next"}},
+            {"result": {"points": [{"id": "b", "payload": {}}]}},
+        ]
+        with mock.patch.object(core.Qdrant, "_call", side_effect=pages):
+            self.assertEqual([point["id"] for point in q.scroll()], ["a", "b"])
+
+    def test_scroll_fails_closed_on_malformed_envelopes(self) -> None:
+        q = self.qdrant()
+        cases = [
+            ("malformed response", []),
+            ("malformed result", {"result": None}),
+            ("malformed points", {"result": {"points": None}}),
+            ("malformed point", {"result": {"points": ["bad"]}}),
+        ]
+        for message, response in cases:
+            with self.subTest(message=message), mock.patch.object(core.Qdrant, "_call", return_value=response):
+                with self.assertRaisesRegex(FleetRagError, message):
+                    list(q.scroll())
+
+
 class QdrantRetrieveValidationTests(unittest.TestCase):
     def qdrant(self):
         return core.Qdrant({

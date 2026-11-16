@@ -129,7 +129,7 @@ final class MacServicesReportTests: XCTestCase {
         let url = URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)/mac-services.json")
         let reading = MacServicesReportReader.read(at: url)
         XCTAssertTrue(reading.problem?.contains(url.path) == true)
-        XCTAssertTrue(reading.problem?.contains("Read Current Agents") == true)
+        XCTAssertTrue(reading.problem?.contains("Read The Mac's Agents") == true)
         XCTAssertFalse(reading.isCurrent)
     }
 }

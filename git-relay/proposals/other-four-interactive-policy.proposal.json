@@ -29,7 +29,7 @@
       "Simple-With-Us/Usage-Monitor",
       "Simple-With-Us/congress-trading-shared",
       "Simple-With-Us/homebrew-tap",
-      "jaywedgeworth22/Fleet-OPS"
+      "Simple-With-Us/Fleet-OPS"
     ],
     "app_slug": "swu-jet",
     "mint_permissions": {
@@ -70,7 +70,7 @@
       "Simple-With-Us/Usage-Monitor",
       "Simple-With-Us/congress-trading-shared",
       "Simple-With-Us/homebrew-tap",
-      "jaywedgeworth22/Fleet-OPS"
+      "Simple-With-Us/Fleet-OPS"
     ],
     "app_slug": "swu-grok-web",
     "mint_permissions": {
@@ -111,7 +111,7 @@
       "Simple-With-Us/Usage-Monitor",
       "Simple-With-Us/congress-trading-shared",
       "Simple-With-Us/homebrew-tap",
-      "jaywedgeworth22/Fleet-OPS"
+      "Simple-With-Us/Fleet-OPS"
     ],
     "app_slug": "swu-cursor",
     "mint_permissions": {
@@ -152,7 +152,7 @@
       "Simple-With-Us/Usage-Monitor",
       "Simple-With-Us/congress-trading-shared",
       "Simple-With-Us/homebrew-tap",
-      "jaywedgeworth22/Fleet-OPS"
+      "Simple-With-Us/Fleet-OPS"
     ],
     "app_slug": "swu-claude",
     "mint_permissions": {

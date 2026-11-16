@@ -54,6 +54,31 @@ final class FleetConfigContractTests: XCTestCase {
         XCTAssertFalse(result.failing)
     }
 
+    /// GRID-19:  the engine names the surfaces it does not check and the rules it cannot
+    /// run,  and the app reads both;  an engine that sends neither is read as before.
+    func test_the_uncovered_and_not_implemented_lists_decode() throws {
+        let json = Fixtures.envelope.replacingOccurrences(
+            of: "\"results\": [",
+            with: """
+            "uncovered": [{"seat": "MM", "surface": "~/.minimax/config.json", "reason": "The channel config fits no kind."}],
+             "notImplemented": [{"ruleId": "compliance-backup-heartbeat", "ownerSeat": "CLAUDE", "reason": "No command reads it yet."}],
+             "results": [
+            """
+        )
+        let envelope = try EnvelopeDecoder.decode(Data(json.utf8))
+        XCTAssertEqual(
+            envelope.uncoveredSurfaces,
+            [UncoveredSurface(seat: "MM", surface: "~/.minimax/config.json", reason: "The channel config fits no kind.")]
+        )
+        XCTAssertEqual(
+            envelope.notImplementedRules,
+            [NotImplementedRule(ruleId: "compliance-backup-heartbeat", ownerSeat: "CLAUDE", reason: "No command reads it yet.")]
+        )
+        let plain = try EnvelopeDecoder.decode(Data(Fixtures.envelope.utf8))
+        XCTAssertTrue(plain.uncoveredSurfaces.isEmpty)
+        XCTAssertTrue(plain.notImplementedRules.isEmpty)
+    }
+
     /// The proof a rule did not reach is never dressed as one it did.
     func test_a_rule_without_a_reached_proof_says_so() throws {
         let json = Fixtures.envelope.replacingOccurrences(

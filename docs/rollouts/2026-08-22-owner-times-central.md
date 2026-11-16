@@ -2,7 +2,7 @@
 
 **Superseded 2026-10-05.**  Keep the conversion.  Drop the zone abbreviation.
 Say `3:15am`, not `3:15am CT`.  Name a zone only when citing UTC.  Canonical:
-`AGENT-SYNC.md` § Timestamps.
+`FLEET-PROTOCOL.md` § Timestamps.
 
 Owner: agents kept saying `00:00 UTC`.  Convert.  Binding for every seat,
 every platform, including chat.
@@ -25,7 +25,7 @@ formats (JSON, logs, DB) stay UTC.
 
 ## Files
 
-- `AGENT-SYNC.md` § Timestamps (live `~/apps/AGENT-SYNC.md` + this repo)
+- `FLEET-PROTOCOL.md` § Timestamps (live `~/apps/FLEET-PROTOCOL.md` + this repo)
 - `FLEET-UI-COPY.md`
 - `docs/ONBOARDING-NEW-AGENT.md` hard rule 8
 - `TEMPLATE-AGENTS.md`

@@ -463,7 +463,7 @@ class LiveTree(unittest.TestCase):
     def test_this_tree_passes(self):
         self.assertEqual(guards.main(["--root", str(self.root)]), 0)
 
-    def test_registry_names_all_nine_workers(self):
+    def test_registry_names_all_eight_workers(self):
         self.assertEqual(
             set(self.registry["workers"]),
             {
@@ -471,7 +471,6 @@ class LiveTree(unittest.TestCase):
                 "alert-ingress",
                 "expenses-jays-services",
                 "fleet-share-api",
-                "pr-conflict-watch",
                 "simple-tools-mcp",
                 "start-jays-services",
                 "usage-monitor-receipt-inbox",
@@ -481,7 +480,7 @@ class LiveTree(unittest.TestCase):
 
     def test_workers_dev_is_on_only_where_it_serves_traffic(self):
         on = {n for n, row in self.registry["workers"].items() if row["workers_dev"]}
-        self.assertEqual(on, {"alert-ingress", "pr-conflict-watch"})
+        self.assertEqual(on, {"alert-ingress"})
 
     def test_inbox_ceiling_covers_large_pdf_mail(self):
         row = self.registry["workers"]["usage-monitor-receipt-inbox"]
@@ -511,9 +510,9 @@ class LiveTree(unittest.TestCase):
         for line, expected in zip(sorted(out), sorted(above)):
             self.assertIn(expected, line)
 
-    def test_the_deploy_config_is_named_first_for_pr_conflict_watch(self):
-        row = self.registry["workers"]["pr-conflict-watch"]
-        self.assertEqual(row["config"], "workers/pr-conflict-watch/zulip-cutover/wrangler.toml")
+    def test_retired_pr_conflict_watch_is_gone(self):
+        # Retired and its live Worker deleted on 2026-11-06, at the owner's request.
+        self.assertNotIn("pr-conflict-watch", self.registry["workers"])
 
 
 if __name__ == "__main__":

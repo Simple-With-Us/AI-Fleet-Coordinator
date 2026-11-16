@@ -5,6 +5,7 @@ Injected only in offline contract tests until review and host qualification.
 
 from .audit import UnauthorizedAuditor
 from .outcomes import OutcomeStoreError, key_for
+from .policy import auth_failure_response
 from .typed_disarm import PreflightUnavailable, RateLimited, Refused, TypedDisarm
 
 ACTIONS = ("pr_state", "pr_hold_state", "pr_automerge_disable")
@@ -29,10 +30,10 @@ class TypedGateway:
             return False
 
     def handle(self, token, action, args, proof=None):
-        seat = self.policy.authenticate(token, proof)
+        seat, auth_reason = self.policy.authenticate_with_reason(token, proof)
         if seat is None:
-            self._unauth_auditor.record(self.audit, action)
-            return 401, {"error": "unauthenticated"}
+            self._unauth_auditor.record(self.audit, action, auth_reason)
+            return auth_failure_response(auth_reason)
         key = None
         repo = ""
         result = "refused"

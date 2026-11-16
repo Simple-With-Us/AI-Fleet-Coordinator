@@ -16,31 +16,57 @@ import SwiftUI
 /// anything runs on the server:  a unit the report marks `controllable` gets Start,  Stop and
 /// Restart,  and a Coolify application whose uuid came from a Coolify label gets Redeploy when
 /// the allowlist allows redeploys (the same rule the server applies before it plans one).
+///
+/// The report is the one the menu reads,  held by `PlaceWatch`,  and the state at the top
+/// is the menu's own words for the server,  so the panel and the menu cannot disagree.
 struct ServerStatusPanel: View {
-    @State private var reading: ServerStatusReading?
-    @State private var loading = false
-    /// The allowlist in this Mac's checkout,  which decides the buttons.
-    @State private var allowlist: OpsAllowlist?
+    @EnvironmentObject private var watch: PlaceWatch
+    @EnvironmentObject private var admin: FleetAdmin
+    @EnvironmentObject private var monitor: DriftMonitor
+    @EnvironmentObject private var router: ServiceActionRouter
     @ObservedObject private var controller = OpsController.shared
+    @State private var searchText = ""
+    @State private var problemsOnly = false
+    @State private var collapsedSections: Set<String> = []
+
+    /// The allowlist in the Mac's checkout,  which decides the buttons.  It is the router's,
+    /// which the menu reads too.
+    private var allowlist: OpsAllowlist? { router.allowlist }
 
     var body: some View {
+        let menu = MachineMenu(MachineMenuInputs(admin: admin, monitor: monitor, watch: watch, router: router))
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
-                if loading && reading == nil {
-                    Text("Reading the server's report…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else if let reading {
-                    reportLine(reading)
-                    if let problem = reading.problem {
+                stateLine(menu.serverCard)
+                if let reading = watch.status {
+                    pathLine(reading)
+                    // The age of the Mac's copy,  in words that say it is a copy.  It is worked
+                    // out at `PlaceWatch`'s own moment,  which moves every minute and on wake,
+                    // so it can never disagree with the state line above.
+                    ReportAgeText(origin: .serverCopiedByDoctor,
+                                  freshness: ReportFreshness(
+                                      generatedAt: reading.generatedAt, copiedAt: reading.copiedAt,
+                                      maxAge: TimeInterval(ServerStatusContract.maxAgeSeconds), now: watch.now))
+                    nextStep(menu.server.reach)
+                    // The body follows the menu's reach,  the same value the state line
+                    // says,  so the two never give different verdicts for one reading.
+                    let mode = ServerPanelMode.make(reach: menu.server.reach, reading: reading)
+                    switch mode {
+                    case .reading:
+                        EmptyView()
+                    case .problem(let problem):
                         problemBox(problem)
-                    } else if !reading.isCurrent {
-                        problemBox("This report is stale. Refresh after the collector writes a new report; old rows are not current health evidence.")
-                    } else {
+                    case .lastKnown(let offersRepairs):
+                        if let note = mode.lastKnownNote {
+                            problemBox(note)
+                        }
+                        lastKnownSection(reading, offersRepairs: offersRepairs)
+                    case .current:
                         if reading.hostMetrics != nil {
                             hostSection(reading)
                         }
+                        serverFilterToolbar
                         if reading.hasServicesHalf {
                             servicesSection(reading)
                         }
@@ -48,19 +74,16 @@ struct ServerStatusPanel: View {
                         processesSection(reading)
                         configSection(reading)
                     }
-                } else {
-                    Text("No report yet.  Refresh to read it.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .task { await load() }
-        // A finished action changes what the server reports,  so the report is read again.
-        .onChange(of: controller.completedRuns) { _, _ in
-            Task { await load() }
+        // A finished action changes what the server reports,  and `PlaceWatch` reads the
+        // report again after every run,  so the panel follows it with nothing of its own.
+        .task {
+            router.reloadAllowlist()
+            watch.readNow()
         }
     }
 
@@ -69,15 +92,16 @@ struct ServerStatusPanel: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Server Status")
+                Text(MusterDestination.serverStatus.title)
                     .font(.largeTitle.weight(.semibold))
                 Spacer()
                 Button {
-                    Task { await load() }
+                    router.reloadAllowlist()
+                    watch.readNow()
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Read The Mac's Copy Again", systemImage: "arrow.clockwise")
                 }
-                .disabled(loading)
+                .help("Reads the copy of the server's report the Mac holds.\u{00A0} It asks the server nothing.")
             }
             Text("What the server's own report says about the host, the units it watches, its containers, its processes, and the fleet's config files.")
                 .font(.callout)
@@ -85,42 +109,137 @@ struct ServerStatusPanel: View {
         }
     }
 
-    /// The report itself:  how old it is,  and whether it can be believed.
-    ///
-    /// A report that is out of its window gets no badge of its own:  the rows carry
-    /// the state,  and a red badge beside "it may not be current" would be alarm the
-    /// panel has no reason to raise.
-    private func reportLine(_ reading: ServerStatusReading) -> some View {
+    /// The server's state,  in the menu's own words,  and the menu's first line about it.
+    private func stateLine(_ card: PlaceCard) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                if reading.problem == nil && reading.isCurrent {
-                    FleetToolsStateBadge(state: reading.state, width: 92)
+            PlaceHealthLabel(health: card.health)
+            if let first = card.lines.first {
+                Text(first)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// What to do when the report is not current:  the next step in words,  the job that copies
+    /// the report and when it next runs,  and the two actions the menu offers for the same
+    /// state.  Fetch plans a restart of the doctor on this Mac,  which asks the server for its
+    /// report;  Ask The Server Now changes nothing and only tries the connection.
+    @ViewBuilder
+    private func nextStep(_ reach: ServerReach) -> some View {
+        if let sentence = ServerNextStep.sentence(reach) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(sentence)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                if reach.offersFetch {
+                    Text(DoctorSchedule.serverCopyLine(lastRunAt: watch.tools?.generatedAt, now: watch.now))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                if !reading.host.isEmpty {
-                    Text(reading.host)
-                        .font(.system(size: 11, design: .monospaced))
+                HStack(spacing: 8) {
+                    if reach.offersFetch {
+                        Button("Fetch From The Server Again\u{2026}") {
+                            router.plan(.macAgent(verb: .restart, label: OpsNames.fetchAgentLabel))
+                        }
+                        .disabled(router.isBusy)
+                        .help("Plans a restart of the Fleet Tools Doctor on this Mac, which asks the server for its report.\u{00A0} The plan shows first, and nothing runs without your approval.")
+                    }
+                    if Self.offersAsk(reach) {
+                        if watch.isAsking {
+                            ProgressView().controlSize(.small)
+                            Text("Asking the server\u{2026}")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Button("Ask The Server Now") { watch.askServer() }
+                                .help("Tries the read-only route to the server.\u{00A0} It changes nothing.")
+                        }
+                    }
+                }
+                if let asked = watch.asked {
+                    Text(asked.answered
+                        ? "The server answered at \(FleetTime.clock(asked.at))."
+                        : "The server did not answer at \(FleetTime.clock(asked.at)).")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let age = reading.age {
-                    Text("Report read \(age) ago")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(reading.isCurrent ? Color.secondary : Color.orange)
-                }
-                if !reading.isCurrent && reading.problem == nil {
-                    Text("It may not be current.")
-                        .font(.caption)
-                        .foregroundStyle(Color.orange)
-                }
-                Spacer(minLength: 0)
             }
-            Text(reading.path)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(reading.path)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.secondary.opacity(0.08))
         }
+    }
+
+    /// Ask The Server Now helps only where the question is whether the server answers.
+    private static func offersAsk(_ reach: ServerReach) -> Bool {
+        switch reach {
+        case .fetchStopped, .unreachable: return true
+        default: return false
+        }
+    }
+
+    /// Where the Mac keeps its copy of the report.
+    private func pathLine(_ reading: ServerStatusReading) -> some View {
+        Text(reading.path)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .help(reading.path)
+    }
+
+    /// The last report's units,  said to be not current,  with the repairs the allowlist
+    /// names when the menu offers them too.  Each one plans first and asks Touch ID before
+    /// it runs on the server.
+    private func lastKnownSection(_ reading: ServerStatusReading, offersRepairs: Bool) -> some View {
+        // With a day word,  so a report from last night never reads as this morning's.
+        let from = reading.generatedAt.map { "As of \(FreshnessWords.stamp($0, now: watch.now)), not current" } ?? ""
+        let rows = ServerLastKnown.rows(reading.services, offersRepairs: offersRepairs)
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Last Known, Not Current", nil, from)
+            if rows.isEmpty {
+                Text("The last report names no units.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(rows) { row in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(OpsNames.unitTitle(row.unit))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(row.scope.map { "\(row.unit) (\($0))" } ?? row.unit)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Text(row.lastState)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    ForEach(ServerLastKnown.actions(unit: row.unit, scope: row.scope, allowlist: allowlist,
+                                                    offersRepairs: offersRepairs), id: \.title) { action in
+                        Button(Self.verbWord(action)) {
+                            controller.plan(action)
+                        }
+                        .controlSize(.small)
+                        .disabled(controller.refusesNewPlan)
+                        .help(action.title)
+                        .accessibilityLabel(action.title)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    /// The short word on a last-known row's button.  The full title,  which names the
+    /// server,  is its help and its spoken label.
+    private static func verbWord(_ action: OpsAction) -> String {
+        if case .logs = action { return "Logs" }
+        return "Restart"
     }
 
     /// Why the report could not be read at all.
@@ -141,6 +260,53 @@ struct ServerStatusPanel: View {
     }
 
     // MARK: The sections
+
+    private var serverFilterToolbar: some View {
+        let sectionIDs = ["units", "containers", "processes", "files"]
+        let allCollapsed = sectionIDs.allSatisfy { collapsedSections.contains($0) }
+        return HStack(spacing: 10) {
+            MusterSearchField(prompt: "Filter units, containers, processes, or files\u{2026}", text: $searchText)
+            Toggle("Problems Only", isOn: $problemsOnly)
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+            Button(allCollapsed ? "Expand Sections" : "Collapse Sections") {
+                if allCollapsed {
+                    collapsedSections.removeAll()
+                } else {
+                    collapsedSections = Set(sectionIDs)
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.link)
+        }
+    }
+
+    private func matchesSearch(_ fields: String?...) -> Bool {
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return true }
+        return fields.compactMap { $0 }.contains { $0.localizedCaseInsensitiveContains(needle) }
+    }
+
+    private func collapsibleSectionHeader(_ id: String, _ title: String, _ state: CellState?, _ detail: String) -> some View {
+        let isCollapsed = collapsedSections.contains(id)
+        return Button {
+            if isCollapsed {
+                collapsedSections.remove(id)
+            } else {
+                collapsedSections.insert(id)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 10)
+                sectionHeader(title, state, detail)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 
     /// The title of a section,  with the state of that half of the report.
     private func sectionHeader(_ title: String, _ state: CellState?, _ detail: String) -> some View {
@@ -279,15 +445,28 @@ struct ServerStatusPanel: View {
     }
 
     private func servicesSection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Fleet Units", reading.servicesState, unitsDetail(reading))
-            collectionNote(reading.collection?.services)
-            collectionNote(reading.collection?.failedUnits)
-            ForEach(reading.failedUnits ?? []) { unit in
-                failedUnitRow(unit)
-            }
-            ForEach(reading.services) { service in
-                serviceRow(service)
+        let failed = (reading.failedUnits ?? []).filter { matchesSearch($0.unit, $0.scope, $0.detailText()) }
+        let services = reading.services.filter { service in
+            (!problemsOnly || service.state != .passed)
+                && matchesSearch(service.unit, service.scope, service.description)
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            collapsibleSectionHeader("units", "Fleet Units", reading.servicesState, unitsDetail(reading))
+            if !collapsedSections.contains("units") {
+                collectionNote(reading.collection?.services)
+                collectionNote(reading.collection?.failedUnits)
+                if failed.isEmpty && services.isEmpty {
+                    Text("No units match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(failed) { unit in
+                        failedUnitRow(unit)
+                    }
+                    ForEach(services) { service in
+                        serviceRow(service)
+                    }
+                }
             }
         }
     }
@@ -378,7 +557,7 @@ struct ServerStatusPanel: View {
                         controller.plan(.serverUnit(verb: verb, unit: service.unit))
                     }
                     .controlSize(.small)
-                    .disabled(controller.isPresenting)
+                    .disabled(controller.refusesNewPlan)
                     .help(verb == .stop ? (service.stopConsequence ?? verb.title) : verb.title)
                 }
                 if service.offersLogs {
@@ -386,7 +565,7 @@ struct ServerStatusPanel: View {
                         controller.plan(.logs(unit: service.unit))
                     }
                     .controlSize(.small)
-                    .disabled(controller.isPresenting)
+                    .disabled(controller.refusesNewPlan)
                     .help("Plan reading this unit's last journal lines.")
                 }
             }
@@ -398,25 +577,40 @@ struct ServerStatusPanel: View {
     /// The verbs a controllable unit gets:  the ones the report lists,  because the collector
     /// asked the helper on the server.  A report that lists none gets the ones this Mac's
     /// allowlist names for it,  or
-    /// all three when this checkout has no entry for it.  The server checks its own
+    /// all three when the allowlist was read and has no entry for it,  and none when the
+    /// allowlist is missing or refused.  The server checks its own
     /// allowlist again either way.
     private func verbs(for service: ServerService) -> [OpsVerb] {
         if let listed = service.listedVerbs { return listed }
-        let named = allowlist?.verbs(forServerUnit: service.unit) ?? []
+        // An allowlist that is missing or refused gives no buttons:  one typo refuses the
+        // whole file on the server too,  so buttons drawn without it would only ever fail.
+        guard let allowlist else { return [] }
+        let named = allowlist.verbs(forServerUnit: service.unit)
         return named.isEmpty ? OpsVerb.allCases : named
     }
 
     private func coolifySection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Containers", reading.coolifyState, containersDetail(reading))
-            collectionNote(reading.collection?.coolify)
-            if reading.coolify.isEmpty {
-                Text("The report names no containers.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(reading.coolifyProblemsFirst) { resource in
-                    coolifyRow(resource, reading: reading)
+        let containers = reading.coolifyProblemsFirst.filter { resource in
+            (!problemsOnly || resource.resourceStatus != .running
+                || (resource.restartCount ?? 0) > 0 || resource.oomKilled == true)
+                && matchesSearch(resource.name, resource.container)
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            collapsibleSectionHeader("containers", "Containers", reading.coolifyState, containersDetail(reading))
+            if !collapsedSections.contains("containers") {
+                collectionNote(reading.collection?.coolify)
+                if reading.coolify.isEmpty {
+                    Text("The report names no containers.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if containers.isEmpty {
+                    Text("No containers match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(containers) { resource in
+                        coolifyRow(resource, reading: reading)
+                    }
                 }
             }
         }
@@ -491,15 +685,18 @@ struct ServerStatusPanel: View {
             // server refuses every other row,  so a button there would only lead to a
             // refused plan.
             if allowlist?.coolifyRedeploy == true, offersRedeploy {
+                let scope = RedeployScope.make(reading: reading, resource: resource)
                 Button("Redeploy") {
+                    // The plan says the whole application restarts,  not only this row.
+                    RedeployScopeNotes.shared.note(scope, uuid: resource.uuid)
                     controller.plan(.coolifyRedeploy(
                         uuid: resource.uuid,
                         name: reading.redeployName(of: resource)
                     ))
                 }
                 .controlSize(.small)
-                .disabled(controller.isPresenting)
-                .help(reading.redeployHelp(of: resource))
+                .disabled(controller.refusesNewPlan)
+                .help("Plan a redeploy of this application on the server.\(ServerStatusCopy.sentenceGap)\(scope.sentence)")
             }
             FleetToolsStateBadge(state: resource.state, width: 92)
         }
@@ -507,17 +704,31 @@ struct ServerStatusPanel: View {
     }
 
     private func processesSection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let processes = reading.processes.filter {
+            matchesSearch($0.displayName, $0.owner, $0.belongsTo, "\($0.pid)")
+        }
+        return VStack(alignment: .leading, spacing: 8) {
             // No badge:  a list of busy processes checks nothing,  so it cannot pass.
-            sectionHeader("Top Processes", nil, processesDetail(reading))
-            collectionNote(reading.collection?.processes)
-            if reading.processes.isEmpty {
-                Text("The report names no processes.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(reading.processes) { process in
-                    processRow(process)
+            collapsibleSectionHeader("processes", "Top Processes", nil, processesDetail(reading))
+            if !collapsedSections.contains("processes") {
+                collectionNote(reading.collection?.processes)
+                if problemsOnly {
+                    Text("Top busy processes are not health-checked.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if reading.processes.isEmpty {
+                    Text("The report names no processes.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if processes.isEmpty {
+                    Text("No processes match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(processes) { process in
+                        processRow(process)
+                    }
                 }
             }
         }
@@ -568,45 +779,67 @@ struct ServerStatusPanel: View {
     }
 
     private func configSection(_ reading: ServerStatusReading) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader(
+        let drifted = reading.driftedFiles.filter { matchesSearch($0.fileName, $0.path) }
+        let noticed: [WatchedFile] = problemsOnly ? [] : reading.noticedFiles.filter { matchesSearch($0.fileName, $0.path) }
+        let removedCheckouts: [ServerRemovedCheckout] = problemsOnly ? [] : reading.removedCheckouts.filter { matchesSearch($0.text) }
+        return VStack(alignment: .leading, spacing: 8) {
+            collapsibleSectionHeader(
+                "files",
                 "Changed Since The Last Report",
                 reading.configState,
                 "\(reading.driftedFiles.count) of \(reading.files.count) \(reading.files.count == 1 ? "file" : "files") changed"
             )
-            if reading.filesTruncated {
-                sectionNote(partialListText(reading.filesSummary))
-            } else {
-                collectionNote(reading.collection?.files)
-            }
-            ForEach(reading.removedCheckouts) { checkout in
-                Text(checkout.text)
+            if !collapsedSections.contains("files") {
+                // What "changed" is measured against,  so it never reads as drift from what the
+                // checkout should hold.
+                Text(ServerConfigCopy.comparisonNote)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if reading.files.isEmpty {
-                Text("The report watches no files.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else if reading.driftedFiles.isEmpty {
-                Text(reading.noticedFiles.isEmpty
-                    ? "No watched file changed since the last report."
-                    : "Only files kept for information changed since the last report.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(reading.driftedFiles) { file in
-                    fileRow(file)
+                if reading.filesTruncated {
+                    sectionNote(partialListText(reading.filesSummary))
+                } else {
+                    collectionNote(reading.collection?.files)
                 }
-            }
-            if !reading.noticedFiles.isEmpty {
-                Text("Changed, for information only")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-                ForEach(reading.noticedFiles) { file in
-                    fileRow(file)
+                ForEach(removedCheckouts) { checkout in
+                    Text(checkout.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if reading.files.isEmpty {
+                    Text("The report watches no files.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if problemsOnly && reading.driftedFiles.isEmpty {
+                    Text(reading.noticedFiles.isEmpty
+                        ? "No watched file changed since the last report."
+                        : "No drifted watched files (informational changes hidden by Problems Only).")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if reading.driftedFiles.isEmpty {
+                    Text(reading.noticedFiles.isEmpty
+                        ? "No watched file changed since the last report."
+                        : "Only files kept for information changed since the last report.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if drifted.isEmpty && noticed.isEmpty {
+                    Text("No files match the current filter.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(drifted) { file in
+                        fileRow(file)
+                    }
+                }
+                if !noticed.isEmpty {
+                    Text("Changed, for information only")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    ForEach(noticed) { file in
+                        fileRow(file)
+                    }
                 }
             }
         }
@@ -665,23 +898,4 @@ struct ServerStatusPanel: View {
         case .covered: return .secondary
         }
     }
-
-    // MARK: The read
-
-    /// Read the report off the main thread.
-    private func load() async {
-        loading = true
-        defer { loading = false }
-        let url = ServerStatusReportReader.reportURL()
-        let allowlistURL = OpsAllowlist.url(repoRoot: FleetConfigLocation.resolve().repoRoot)
-        let result = await Task.detached(priority: .userInitiated) {
-            (ServerStatusReportReader.read(at: url), OpsAllowlist.read(at: allowlistURL))
-        }.value
-        reading = result.0
-        allowlist = result.1
-    }
-}
-
-#Preview {
-    ServerStatusPanel()
 }

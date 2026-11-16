@@ -232,11 +232,11 @@ COORDINATOR_SELF_ID = "AFC"
 
 
 def _load_gb_role_tags() -> tuple[str, ...]:
-    """The enabled Grok Bot personas, from the one list the MCP servers use (scripts/agent_sync/mcp/gb-identities.json,
+    """The enabled Grok bots, from the one list the MCP servers use (scripts/simple_tools/mcp/gb-identities.json,
     which the hosted Worker imports as GB_IDENTITIES).  Never a list of its own here, so a skill cannot name a
-    persona the connectors refuse or miss one they accept."""
+    bot the connectors refuse or miss one they accept."""
     path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "agent_sync", "mcp", "gb-identities.json"
+        os.path.dirname(os.path.abspath(__file__)), "simple_tools", "mcp", "gb-identities.json"
     )
     with open(path, encoding="utf-8") as fh:
         enabled = json.load(fh).get("enabled")
@@ -406,15 +406,17 @@ KIMI_EXTRA = (
 
 ZCODE_IDENTITY = (
     "This pack is for **ZC** (Z Code desktop IDE by Z.ai / Zhipu AI).\u00a0 "
-    "Session tag `[ZC·session8]`.\u00a0 Notes name `ZCode`.\u00a0 Branches `zcode/<slug>` only.\u00a0 "
-    "Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.\u00a0 "
+    "Session tag `[ZC·session8]`.\u00a0 Notes name `ZCode`.\u00a0 New branches `zc/<slug>`.\u00a0 "
+    "New lanes `~/apps/lanes/<Repo>/zc-<slug>`; legacy lanes `~/apps/lanes/<Repo>/zcode-<slug>` "
+    "and existing `zcode/` branches remain accepted for existing work.\u00a0 "
     "Pin `AGENT_SEAT=ZC`."
 )
 
 ZCODE_EXTRA = (
     "> **Runtime (Z Code).**\u00a0 Z Code desktop IDE (`/Applications/ZCode.app`) with config in "
     "`~/.zcode`.\u00a0 Skills installed here (`~/.zcode/skills`) are loaded by Z Code.\u00a0 "
-    "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).\u00a0 A seat a launcher assigned "
+    "Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or "
+    "`~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).\u00a0 A seat a launcher assigned "
     "beats the ZC default.\n\n"
 )
 
@@ -693,8 +695,8 @@ SEATS: dict[str, Seat] = {
     "zcode": Seat(
         "ZC",
         "ZCode",
-        "zcode",
-        "zcode",
+        "zc",
+        "zc",
         "~/.zcode/skills",
         "exclusive",
         ZCODE_IDENTITY,
@@ -815,12 +817,6 @@ IDENTITY_SKILL_NAMES = {
 # ios-ship-now / --force-ship loop.
 NEVER_INSTALL = frozenset({"ios-ship"})
 
-# TEMPORARY rename scaffolding - remove when the rename is complete.  Skill directories that an earlier install left
-# under a name that no longer exists.  The installer deletes them (and their zip) from every install target, so a seat
-# never keeps a stale copy beside the renamed skill.  Delete this set, its use in install-fleet-skills.py and its test
-# once every seat home has been re-rendered.
-RENAMED_SKILL_OLD_NAMES = frozenset({"agent-sync-tools-guide"})
-
 # Optional allowlist of Seat.seat_key values.  A missing key means every
 # seat except NEVER_INSTALL.  Use this when a skill is only meaningful on
 # one harness.  `codex-triage` is not Codex-only — the name is historical;
@@ -940,7 +936,7 @@ def catalog_skill_names(docs_skills: str) -> list[str]:
         path = os.path.join(docs_skills, entry)
         if not os.path.isdir(path) or entry.startswith(".") or entry == "by-seat":
             continue
-        if entry in NEVER_INSTALL or entry in RENAMED_SKILL_OLD_NAMES:
+        if entry in NEVER_INSTALL:
             continue
         if os.path.isfile(os.path.join(path, "SKILL.md")):
             names.append(entry)

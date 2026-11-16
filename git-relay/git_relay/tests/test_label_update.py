@@ -190,7 +190,11 @@ class LabelUpdate(unittest.TestCase):
             self.assertEqual(sum(x[0] == "PATCH" for x in c.calls), 3)
 
     def test_embedded_provider_and_surrogate_labels_never_call_provider(self):
-        for value in ("prefixsk-proj-" + "X" * 32, "prefixsk_live_" + "X" * 32, "\ud800"):
+        for value in (
+            "prefixsk-proj-" + "X" * 74 + "T3BlbkFJ" + "Y" * 74,
+            "prefixsk_live_" + "X" * 32,
+            "\ud800",
+        ):
             c = Client()
             with self.assertRaises(Refused):
                 self.handle(c).run("wf_label_update", self.args(new_name=value))
@@ -203,3 +207,13 @@ class LabelUpdate(unittest.TestCase):
                 with self.assertRaises(Refused):
                     self.handle(c).run("wf_label_update", self.args(**{key: name}))
                 self.assertEqual(c.calls, [])
+
+    def test_ordinary_scoped_filename_label_reaches_expected_update(self):
+        for name in ["disk-admin-guide-for-the-server", "task-ant-guide-for-the-server"]:
+            c = Client(
+                {"id": 7, "name": "old/label"},
+                {"id": 7, "name": name, "color": "aabbee", "description": "Description"},
+            )
+            out = self.handle(c).run("wf_label_update", self.args(new_name=name))
+            self.assertEqual(out["label"]["name"], name)
+            self.assertEqual(c.calls[-1][0], "PATCH")

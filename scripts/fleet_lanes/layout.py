@@ -415,7 +415,7 @@ EXTRA_APPS: tuple[App, ...] = (
 class RoleLane:
     """A lane-eligible role from a seatApps.patterns `lane` block (AFC-620):  the role tag, its lane
     folder and its branch prefix.  Parsed tolerantly here (a malformed block is skipped);
-    scripts/agent_sync/identity.py and check-fleet-registry.py own the strict validation."""
+    scripts/simple_tools/identity.py and check-fleet-registry.py own the strict validation."""
 
     tag: str  # BF-FIXER
     role: str  # FIXER
@@ -775,9 +775,26 @@ ROLE_TOKENS = frozenset(
 )
 
 
+def _fallback_seat_aliases(registry: Registry | None = None) -> dict[str, str]:
+    """Keep established aliases equivalent when the registry promotes one to its suffix.
+
+    Only an explicit alias pair can reverse; a branch prefix alone never transfers ownership.
+    If both spellings have registered owners, both keep their own suffix.
+    """
+    out = dict(SEAT_ALIASES)
+    if registry is not None:
+        suffixes = {s.suffix.lower() for s in registry.seats}
+        for alias, target in SEAT_ALIASES.items():
+            if alias in suffixes and target not in suffixes:
+                del out[alias]
+                out[target] = alias
+    return out
+
+
 def canonical_seat_set(registry: Registry | None = None) -> frozenset[str]:
     out = set(CANONICAL_SEATS)
     if registry is not None:
+        out.difference_update(_fallback_seat_aliases(registry))
         out.update(s.suffix.lower() for s in registry.seats)
     return frozenset(out)
 
@@ -785,7 +802,7 @@ def canonical_seat_set(registry: Registry | None = None) -> frozenset[str]:
 def seat_alias_map(registry: Registry | None = None) -> dict[str, str]:
     """Alias token -> canonical token: the hand table plus, from the registry, each tag whose
     lowercase differs from its suffix (ag, mm, dsh, ...) and each single-segment branch prefix."""
-    out = dict(SEAT_ALIASES)
+    out = _fallback_seat_aliases(registry)
     if registry is None:
         return out
     canon = canonical_seat_set(registry)
@@ -2131,9 +2148,9 @@ def seat_owns_folder(seat: Seat, registry: Registry) -> bool:
 def _role_lane_seat(raw: str, registry: Registry) -> Seat | None:
     """A role tag (BF-FIXER, GB-PLUMBER) becomes a lane seat from its seatApps.patterns `lane`
     block (AFC-620);  anything else stays None so the caller's unknown-tag refusal stands.
-    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> personas are the lane form.
+    GROK-BOT itself opens no lanes (registry note) - its GB-<ROLE> bots are the lane form.
     Reads only layout's parsed Registry.role_lanes, so the installed standalone lane copy
-    resolves roles without an agent_sync dependency."""
+    resolves roles without a simple_tools dependency."""
     tag = raw.strip().upper()
     role = next((rl for rl in registry.role_lanes if rl.tag.upper() == tag), None)
     if role is None:
@@ -2182,7 +2199,7 @@ def resolve_seat(env: Mapping[str, str], registry: Registry) -> Seat:
     # enough - the same precedence identity.resolve_seat gives every caller.  Without a launcher
     # the registry alone reads AGENT_SEAT, exactly as before.
     try:
-        from agent_sync import identity as SI
+        from simple_tools import identity as SI
     except ImportError:
         SI = None
     if SI is not None and SI.launched(env):
@@ -2191,8 +2208,8 @@ def resolve_seat(env: Mapping[str, str], registry: Registry) -> Seat:
             raise Refusal(res.problem)
         raw = res.seat or ""
     elif SI is None:
-        # Installed standalone shape: agent_sync does not ship next to the lane package, so the
-        # same launcher contract is applied from the environment alone (AFC-620).  With agent_sync
+        # Installed standalone shape: simple_tools does not ship next to the lane package, so the
+        # same launcher contract is applied from the environment alone (AFC-620).  With simple_tools
         # present the canonical identity.resolve_seat above decides (it also canonicalizes aliases).
         launcher = (env.get("AGENT_LAUNCHER") or "").strip()
         launch_seat = (env.get("AGENT_LAUNCH_SEAT") or "").strip()

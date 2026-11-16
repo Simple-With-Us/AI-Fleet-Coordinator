@@ -13,8 +13,10 @@ import Foundation
 //     LaunchAgent the allowlist names,  and everything on the server
 //   * `.admin`:  `FleetAdmin` directly,  for BotFleet Server and for a LaunchAgent the
 //     allowlist does not name.  Their start and stop are not something an allowlist argv
-//     can say,  so they have no plan,  no Touch ID and no audit row.  Stop still asks,  and
-//     BotFleet Server's Restart asks when a fresh read finds work in flight
+//     can say,  so they have no plan,  no Touch ID and no audit row.  Stop still asks,
+//     BotFleet Server's Restart asks when a fresh read finds work in flight,  and the Mac
+//     eavesdropper's Restart always asks,  because it was retired at the one-listener cutover
+//     and a restart would bring it back
 //
 // A start that Muster takes on its own (`ServiceReconciler`) asks `route(forStarting:)` for
 // the same route a Start button would take.  On `.ops` it runs the same helper with the same
@@ -40,7 +42,9 @@ enum MenuRoute: Equatable {
     var asksFirst: Bool {
         switch self {
         case .ops: return true
-        case .admin(let action, _): return action == .stop
+        case .admin(let action, let serviceID):
+            if action == .stop { return true }
+            return action == .restart && FleetServices.restartAlwaysAsksBody(forServiceID: serviceID) != nil
         }
     }
 
@@ -103,7 +107,8 @@ struct ServiceActionSubject: Equatable {
         case .logs:
             title = action.subjectTitle
             self.verb = .readLogs
-        case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .serverResource, .resourceStatus:
+        case .serverUpdate, .coolifyRedeploy, .knobSet, .knobUnset, .serverResource, .resourceStatus,
+             .eavesdropperStatus, .unitStatus, .serverListenerSettings:
             title = action.title
             self.verb = .other
         }
@@ -399,6 +404,13 @@ final class ServiceActionRouter: ObservableObject {
         MenuRoute.forService(.start, entry: entry, allowlist: allowlist)
     }
 
+    /// True while an action on the direct route is between its click and its result,  or a
+    /// service is being acted on.  Unlike `isBusy`,  an open plan sheet alone is not counted:
+    /// nothing runs until the owner confirms it.  An update's relaunch waits on this.
+    var hasActionInFlight: Bool {
+        directInFlight || admin.busyServiceID != nil
+    }
+
     /// Reads the allowlist again.
     func reloadAllowlist() {
         allowlist = readAllowlist()
@@ -449,7 +461,7 @@ final class ServiceActionRouter: ObservableObject {
         }
         // A stop always asks.  A restart runs at once unless a fresh read says it could end
         // work in flight:  BotFleet Server refuses a stop for that work,  and a restart does
-        // not ask it.
+        // not ask it.  The Mac's eavesdropper always asks before a restart.
         var message: String?
         var word = "Stop"
         if managed == .stop {

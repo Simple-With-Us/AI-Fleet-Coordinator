@@ -1,0 +1,410 @@
+"""External own-seat proof: refusal set, audit binding, receipt gates, replay store.
+
+Forged, stale, replayed, wrong-seat and other-transaction receipts are refused;
+a receipt is accepted only with exactly one matching row in the relay's actual
+audit log; a timeout is an inconclusive record that is never signed and whose
+retry carries a fresh id. The replay store survives a process restart.
+"""
+
+import hashlib
+import json
+import os
+import tempfile
+import time
+import unittest
+
+from git_relay.deploy_proof import (
+    INCONCLUSIVE,
+    NULL_OID,
+    PROVEN,
+    REFUSALS,
+    REFUSED,
+    ExternalProof,
+    ReplayStore,
+    probe_path,
+    read_audit_rows,
+    sign_receipt,
+    verify_receipt,
+)
+
+# Fixtures never name a real organization repository (review rule:  synthetic
+# hostnames and paths in fixtures).  The proof under test is pinned to it
+# through the subclass, so production keeps its own constants.
+REPO = "example-org/example-repo"
+KEY = b"test-only proof key"
+BEFORE = "a" * 64
+AFTER = "b" * 64
+
+
+class _Response:
+    def __init__(self, status, payload):
+        self.code = self.status = status
+        self._raw = json.dumps(payload).encode()
+
+    def read(self, _limit):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class FakeRelay:
+    """Answers as the current API: repo read plus the documented probe refusal."""
+
+    def __init__(self, refusal="default branch is not writable", fail_read=None, fail_probe=None):
+        self.refusal = refusal
+        self.fail_read = fail_read
+        self.fail_probe = fail_probe
+        self.requests = []
+        self.headers = []
+
+    def open(self, request, timeout):
+        body = json.loads(request.data.decode())
+        self.requests.append((request.full_url, body))
+        self.headers.append(dict(request.header_items()))
+        if self.fail_read and "wf_repo_get" in request.full_url:
+            raise self.fail_read
+        if self.fail_probe and "wf_file_patch" in request.full_url:
+            raise self.fail_probe
+        if "wf_repo_get" in request.full_url:
+            return _Response(200, {"repository": {"full_name": REPO, "default_branch": "main"}})
+        return _Response(400, {"error": self.refusal})
+
+
+class _Proof(ExternalProof):
+    """The external proof pinned to the synthetic fixture repository."""
+
+    REPO = REPO
+
+
+def proof(relay):
+    return _Proof("test-bearer", opener=relay)
+
+
+def audit_row(record, **over):
+    """The row the relay's audit log actually writes for the denied probe call."""
+    row = {
+        "reason": record.get("refusal", "default branch is not writable"),
+        "branch": "main",
+        "path": record["probe_path"],
+        "expected_head_sha": NULL_OID,
+        "ts": "2026-11-08T01:00:00Z",
+        "seat": record["seat"],
+        "action": "wf_file_patch",
+        "repo": record["repo"],
+        "result": "bad_request",
+    }
+    row.update(over)
+    return row
+
+
+class ExternalProofTests(unittest.TestCase):
+    def test_proven_record_carries_audit_correlation_fields(self):
+        relay = FakeRelay()
+        record = proof(relay)("swu-zc", "proof-0001", BEFORE, AFTER)
+        self.assertEqual(record["outcome"], PROVEN)
+        self.assertEqual(record["refusal"], "default branch is not writable")
+        for field in (
+            "v",
+            "seat",
+            "proof_id",
+            "ts",
+            "url",
+            "repo",
+            "probe_path",
+            "policy_before",
+            "policy_after",
+        ):
+            self.assertIn(field, record)
+        # The proof id rides the negative probe's PATH: the field the relay's
+        # audit row carries for a denied workflow call (never the message).
+        probe = next(body for url, body in relay.requests if "wf_file_patch" in url)
+        self.assertEqual(probe["path"], probe_path("proof-0001"))
+        self.assertIn("proof-0001", probe["path"])
+        self.assertEqual(record["probe_path"], probe["path"])
+        self.assertEqual((record["policy_before"], record["policy_after"]), (BEFORE, AFTER))
+
+    def test_probe_is_mutation_free_by_construction(self):
+        relay = FakeRelay()
+        proof(relay)("swu-zc", "proof-0005", BEFORE, AFTER)
+        probe = next(body for url, body in relay.requests if "wf_file_patch" in url)
+        # The git null object id never names a ref head, commit or blob, so no
+        # provider write can be satisfied from this request whatever the
+        # service allows (the relay's comparisons cannot match it, and the
+        # provider enforces expectedHeadOid server-side). Empty edits on top.
+        self.assertEqual(NULL_OID, "0" * 40)
+        self.assertEqual(probe["expected_head_sha"], NULL_OID)
+        self.assertEqual(probe["base_blob_sha"], NULL_OID)
+        self.assertEqual(probe["edits"], [{"start": 0, "end": 0, "text": ""}])
+        self.assertEqual(probe["branch"], "main")
+
+    def test_every_documented_refusal_proves_without_a_manifest_digest(self):
+        for refusal in sorted(REFUSALS):
+            record = proof(FakeRelay(refusal=refusal))("swu-zc", "proof-0002", BEFORE, AFTER)
+            self.assertEqual(record["outcome"], PROVEN, refusal)
+            self.assertEqual(record["refusal"], refusal)
+
+    def test_a_wrong_answer_or_failed_read_is_refused_not_proven(self):
+        record = proof(FakeRelay(refusal="something else entirely"))("swu-zc", "p1", BEFORE, AFTER)
+        self.assertEqual(record["outcome"], REFUSED)
+
+    def test_an_unpathable_proof_id_is_refused_before_any_call(self):
+        relay = FakeRelay()
+        for bad_id in ("bad/id with spaces", "", None, 7):
+            with self.assertRaises(ValueError):
+                proof(relay)("swu-zc", bad_id, BEFORE, AFTER)
+        self.assertEqual(relay.requests, [])
+
+    def test_an_empty_or_nonstring_seat_is_refused_before_any_call(self):
+        relay = FakeRelay()
+        for bad_seat in ("", None, 7):
+            with self.assertRaises(ValueError):
+                proof(relay)(bad_seat, "proof-0008", BEFORE, AFTER)
+        self.assertEqual(relay.requests, [])
+
+    def test_timeout_is_inconclusive_and_never_signed(self):
+        relay = FakeRelay(fail_probe=TimeoutError("timed out"))
+        record = proof(relay)("swu-zc", "proof-0003", BEFORE, AFTER)
+        self.assertEqual(record["outcome"], INCONCLUSIVE)
+        self.assertEqual(record["stage"], "probe")
+        with self.assertRaises(ValueError):
+            sign_receipt(KEY, record)
+        # The recovery contract: a retry runs under a FRESH proof id, so the old
+        # id's unknown relay state can never be replayed as a success.
+        relay.fail_probe = None
+        retry = proof(relay)("swu-zc", "proof-0004", BEFORE, AFTER)
+        self.assertEqual(retry["outcome"], PROVEN)
+        self.assertNotEqual(retry["proof_id"], record["proof_id"])
+
+    def test_external_calls_name_themselves_with_a_user_agent(self):
+        relay = FakeRelay()
+        proof(relay)("swu-zc", "proof-0006", BEFORE, AFTER)
+        agents = [h.get("User-agent") for h in relay.headers]
+        self.assertTrue(agents)
+        for agent in agents:
+            self.assertEqual(agent, ExternalProof.USER_AGENT)
+        self.assertNotIn("Python-urllib", agents[0])
+
+    def test_a_none_or_shaped_wrong_repository_is_refused_not_a_crash(self):
+        class NoneRepo(FakeRelay):
+            def open(self, request, timeout):
+                if "wf_repo_get" in request.full_url:
+                    return _Response(200, {"repository": None})
+                return super().open(request, timeout)
+
+        record = proof(NoneRepo())("swu-zc", "p7", BEFORE, AFTER)
+        self.assertEqual((record["outcome"], record["stage"]), (REFUSED, "read"))
+
+    def test_read_timeout_is_inconclusive(self):
+        record = proof(FakeRelay(fail_read=TimeoutError("timed out")))(
+            "swu-zc", "p2", BEFORE, AFTER
+        )
+        self.assertEqual((record["outcome"], record["stage"]), (INCONCLUSIVE, "read"))
+
+
+class ReceiptGateTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.store = ReplayStore(os.path.join(self.dir.name, "proofs.json"))
+        self.record = proof(FakeRelay())("swu-zc", "proof-1001", BEFORE, AFTER)
+        self.receipt = sign_receipt(KEY, self.record)
+        self.now = int(time.time())
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def verify(self, receipt, **over):
+        kwargs = {
+            "seat": "swu-zc",
+            "now": self.now,
+            "store": self.store,
+            "policy_before": BEFORE,
+            "policy_after": AFTER,
+            "audit_rows": [audit_row(self.record)],
+            "repo": REPO,
+        }
+        kwargs.update(over)
+        return verify_receipt(KEY, receipt, **kwargs)
+
+    def test_signed_receipt_verifies_once(self):
+        record = self.verify(self.receipt)
+        self.assertEqual(record["proof_id"], "proof-1001")
+        with self.assertRaisesRegex(ValueError, "replayed"):
+            self.verify(self.receipt)
+
+    def test_replay_refusal_survives_a_process_restart(self):
+        self.verify(self.receipt)
+        # A new process reads the same store file: the accepted id persists.
+        fresh = ReplayStore(os.path.join(self.dir.name, "proofs.json"))
+        with self.assertRaisesRegex(ValueError, "replayed"):
+            self.verify(self.receipt, store=fresh)
+
+    def test_a_malformed_store_refuses_everything(self):
+        with open(os.path.join(self.dir.name, "proofs.json"), "w") as fh:
+            fh.write("not json")
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            ReplayStore(os.path.join(self.dir.name, "proofs.json"))
+
+    def test_forged_receipts_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "forged"):
+            verify_receipt(
+                b"another key",
+                self.receipt,
+                seat="swu-zc",
+                now=self.now,
+                store=self.store,
+                policy_before=BEFORE,
+                policy_after=AFTER,
+                audit_rows=[audit_row(self.record)],
+            )
+        tampered = {
+            "record": dict(self.receipt["record"], refusal="default branch is not writable!"),
+            "hmac": self.receipt["hmac"],
+        }
+        with self.assertRaisesRegex(ValueError, "forged"):
+            self.verify(tampered)
+
+    def test_stale_receipt_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "stale"):
+            self.verify(self.receipt, now=self.now + 601)
+
+    def test_wrong_seat_receipt_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "another seat"):
+            self.verify(self.receipt, seat="swu-echo")
+
+    def test_receipt_of_another_transaction_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "another transaction"):
+            self.verify(self.receipt, policy_before="c" * 64)
+        with self.assertRaisesRegex(ValueError, "another transaction"):
+            self.verify(self.receipt, policy_after="d" * 64)
+
+    def test_receipt_of_another_outcome_is_refused(self):
+        record = dict(self.record, outcome=INCONCLUSIVE)
+        with self.assertRaises(ValueError):
+            sign_receipt(KEY, record)
+
+    def test_audit_binding_is_required_and_authoritative(self):
+        # No matching audit row: the operator's signed claim alone is not proof.
+        with self.assertRaisesRegex(ValueError, "relay audit"):
+            self.verify(self.receipt, audit_rows=[])
+        # A row for another probe path (another proof id) does not bind this one.
+        with self.assertRaisesRegex(ValueError, "relay audit"):
+            self.verify(
+                self.receipt, audit_rows=[audit_row(self.record, path="deploy-proof/other.probe")]
+            )
+        # A row whose reason differs from the recorded refusal does not bind.
+        with self.assertRaisesRegex(ValueError, "relay audit"):
+            self.verify(self.receipt, audit_rows=[audit_row(self.record, reason="seat policy")])
+        # Two matching rows are ambiguous: refuse, and nothing is stored.
+        with self.assertRaisesRegex(ValueError, "relay audit"):
+            self.verify(self.receipt, audit_rows=[audit_row(self.record), audit_row(self.record)])
+        self.assertFalse(self.store.seen("proof-1001"))
+
+    def test_a_receipt_for_another_proof_target_is_refused(self):
+        # Same key, same seat, valid HMAC - but another endpoint, repo or
+        # record version must never verify here.
+        for field, value in (
+            ("url", "https://elsewhere.example/v1/"),
+            ("repo", "example-org/other-repo"),
+            ("v", 1),
+        ):
+            record = dict(self.record, **{field: value})
+            receipt = sign_receipt(KEY, record)
+            with self.assertRaisesRegex(ValueError, "another proof target"):
+                self.verify(receipt)
+        self.assertFalse(self.store.seen("proof-1001"))
+
+    def test_dry_run_verification_consumes_nothing(self):
+        # The guarded transaction's dry run checks every gate without storing;
+        # the apply then verifies the same receipt again and records it.
+        self.verify(self.receipt, store_id=False)
+        self.assertFalse(self.store.seen("proof-1001"))
+        self.assertEqual(self.verify(self.receipt)["proof_id"], "proof-1001")
+
+    def test_a_refused_receipt_is_never_recorded(self):
+        with self.assertRaisesRegex(ValueError, "stale"):
+            self.verify(self.receipt, now=self.now + 601)
+        self.assertFalse(self.store.seen("proof-1001"))
+        # The same receipt inside its window then verifies: only acceptance stores.
+        self.assertEqual(self.verify(self.receipt)["proof_id"], "proof-1001")
+
+    def test_a_redacted_probe_path_binds_by_hash_and_length(self):
+        # A long mixed-class proof id makes the probe path credential-shaped to
+        # the relay's audit hygiene: the log then carries path_sha256/path_len,
+        # never the path. Binding hash+length of the expected path is the same
+        # string equality under that privacy rule; the path stays withheld.
+        long_id = "Proof2026MixedClassIdExtraLong01"
+        record = proof(FakeRelay())("swu-zc", long_id, BEFORE, AFTER)
+        row = audit_row(record)
+        del row["path"]
+        row["path_sha256"] = hashlib.sha256(record["probe_path"].encode()).hexdigest()
+        row["path_len"] = len(record["probe_path"])
+        receipt = sign_receipt(KEY, record)
+        self.verify(receipt, audit_rows=[row], store_id=False)
+        self.assertFalse(self.store.seen(long_id))
+        self.assertEqual(self.verify(receipt, audit_rows=[row])["proof_id"], long_id)
+
+    def test_a_redacted_probe_path_with_a_wrong_hash_or_length_is_refused(self):
+        long_id = "Proof2026MixedClassIdExtraLong02"
+        record = proof(FakeRelay())("swu-zc", long_id, BEFORE, AFTER)
+        row = audit_row(record)
+        del row["path"]
+        row["path_sha256"] = hashlib.sha256(record["probe_path"].encode()).hexdigest()
+        row["path_len"] = len(record["probe_path"])
+        wrong_hash = dict(row, path_sha256=hashlib.sha256(b"deploy-proof/other.probe").hexdigest())
+        wrong_len = dict(row, path_len=row["path_len"] + 1)
+        # A path that is present but different never falls back to the hash.
+        both = dict(row, path="deploy-proof/other.probe")
+        for bad in (wrong_hash, wrong_len, both):
+            with self.assertRaisesRegex(ValueError, "relay audit"):
+                self.verify(sign_receipt(KEY, record), audit_rows=[bad])
+        self.assertFalse(self.store.seen(long_id))
+
+
+class ReadAuditRowsTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.dir.name, "audit.jsonl")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def write_rows(self, rows):
+        with open(self.path, "w") as fh:
+            fh.writelines(json.dumps(row) + "\n" for row in rows)
+
+    def test_a_small_log_parses_every_row(self):
+        rows = [{"n": i, "seat": "swu-zc"} for i in range(5)]
+        self.write_rows(rows)
+        self.assertEqual(read_audit_rows(self.path), rows)
+
+    def test_a_log_past_the_cap_is_tailed_not_refused(self):
+        rows = [{"n": i, "pad": "x" * 40} for i in range(50)]
+        self.write_rows(rows)
+        window = read_audit_rows(self.path, max_bytes=512)
+        # Only whole recent rows: the partial first line of the window is dropped.
+        self.assertGreater(len(window), 0)
+        self.assertLess(len(window), len(rows))
+        self.assertEqual(window, rows[-len(window) :])
+
+    def test_a_malformed_line_in_the_window_still_refuses(self):
+        with open(self.path, "w") as fh:
+            fh.write('{"ok": 1}\nnot json at all\n{"ok": 2}\n')
+        with self.assertRaises(ValueError):
+            read_audit_rows(self.path)
+        pad = '{"pad": "%s"}\n' % ("x" * 200)
+        with open(self.path, "w") as fh:
+            fh.write(pad * 40 + "broken line\n")
+        with self.assertRaises(ValueError):
+            read_audit_rows(self.path, max_bytes=1024)
+
+    def test_a_missing_log_is_an_os_error_for_the_caller(self):
+        with self.assertRaises(OSError):
+            read_audit_rows(self.path)
+
+
+if __name__ == "__main__":
+    unittest.main()

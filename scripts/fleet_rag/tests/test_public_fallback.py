@@ -978,6 +978,8 @@ class CallWithFallbackTests(unittest.TestCase):
             "rerank": False,
             "prefer_lessons": True,
             "since_days": None,
+            "full": True,
+            "fields": ["doc_id", "text"],
             "bogus_local_only": "x",
         }
         with mock.patch.object(public_fallback, "call_public", fake_call_public):
@@ -992,6 +994,8 @@ class CallWithFallbackTests(unittest.TestCase):
                 "per_doc": 2,
                 "rerank": False,
                 "prefer_lessons": True,
+                "full": True,
+                "fields": ["doc_id", "text"],
             },
         )
 

@@ -1,0 +1,62 @@
+name: simple-tools MCP Worker
+
+# The hosted ST-MCP Worker's workerd flow:  the bundled Worker run in
+# Miniflare against fake Access certificates, mocked client metadata documents
+# and a fake Zulip.  Path-filtered, so it costs nothing on unrelated PRs.  It never
+# deploys and holds no secrets:  a merge is not a deploy (DEPLOY.md).
+# The pure unit suites also run in ci.yml, with no npm install.
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "scripts/simple-tools-mcp/**"
+      # The shared contract and the Python side of the parity tests.
+      - "scripts/simple_tools/mcp/tools.json"
+      - "scripts/simple_tools/mcp/fixtures.jsonl"
+      - "scripts/simple_tools/textfmt.py"
+      - "scripts/simple_tools/tests/test_textfmt.py"
+      # The board CLI's copy of the Linear catalogs, pinned to the server's export.
+      - "scripts/linear-board/catalog/**"
+      - "scripts/linear-board/testdata/**"
+      - ".github/workflows/simple-tools-mcp.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "scripts/simple-tools-mcp/**"
+      # The shared contract and the Python side of the parity tests.
+      - "scripts/simple_tools/mcp/tools.json"
+      - "scripts/simple_tools/mcp/fixtures.jsonl"
+      - "scripts/simple_tools/textfmt.py"
+      - "scripts/simple_tools/tests/test_textfmt.py"
+      # The board CLI's copy of the Linear catalogs, pinned to the server's export.
+      - "scripts/linear-board/catalog/**"
+      - "scripts/linear-board/testdata/**"
+      - ".github/workflows/simple-tools-mcp.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  workerd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: scripts/simple-tools-mcp
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+    - uses: actions/checkout@v7
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version: '26'
+    # The lockfile was resolved with --before=2026-09-25 (the fleet's two-week
+    # rule), and install scripts stay off.
+    - name: Install pinned dependencies
+      run: npm ci --ignore-scripts
+    - name: Unit suites
+      run: npm test
+    - name: Worker flow in Miniflare
+      run: npm run test:workerd

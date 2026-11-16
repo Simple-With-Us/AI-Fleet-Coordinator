@@ -165,6 +165,33 @@ permissions:
   issues: read
 
 jobs:
+  # The arming job and hold-guard already treat these names as holds.  Create
+  # only the ones this repository does not have.  The checkout is the reusable
+  # workflow's own commit, so the script matches the workflow that is running.
+  # continue-on-error keeps a checkout or permission miss from failing the
+  # auto-merge check.  A missing issues:write grant warns and exits 0.
+  ensure-hold-labels:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out the reusable workflow repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          sparse-checkout: scripts/hold_labels
+          persist-credentials: false
+          path: hold-label-src
+      - name: Ensure fleet hold labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python3 hold-label-src/scripts/hold_labels/provision.py
+
   classify:
     runs-on: ubuntu-latest
     if: >

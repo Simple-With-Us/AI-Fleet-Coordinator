@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Tests for the seat-helper integration of simple-git.
 
-These run the REAL host helper (seat-remote-defaults.py from the grounding capture, referenced by the
-shipped integrations/seat-remote-defaults.py.patch) with the patch's COMMANDS entry applied in memory, so
-the simple-git routing is tested against the code that actually runs on the hosts - not a stub.  The seat's
+These run the REAL host helper (seat-remote-defaults.py from the capture, which carries the simple-git
+COMMANDS entry the hosts run), so the simple-git routing is tested against that code - not a stub.  The seat's
 bearer file read is faked (the pinned owner and its directory exist only on the hosts).
 
 The capture ships at testdata/seat-remote-defaults.capture.py (nonsecret host configuration); GIT_CLI_TEST_HELPER_SRC overrides it.
@@ -23,11 +22,7 @@ CANDIDATES = [
 ]
 LIVE_HELPER = next((p for p in CANDIDATES if str(p) and p.is_file()), None)
 
-PATCH_OLD = '    "recall": {"mode": "SIMPLE_RECALL_REMOTE", "native": None},\n'
-PATCH_NEW = (
-    PATCH_OLD
-    + '    "simple-git": {"mode": "SIMPLE_GIT_REMOTE", "native": "SIMPLE_GIT_NATIVE_ECHO"},\n'
-)
+ENTRY = '    "simple-git": {"mode": "SIMPLE_GIT_REMOTE", "native": "SIMPLE_GIT_NATIVE_ECHO"},\n'
 
 OWN = "a" * 40
 OTHER = "b" * 40
@@ -37,10 +32,9 @@ OTHER = "b" * 40
 class TestHelperPlan(unittest.TestCase):
     def setUp(self):
         source = LIVE_HELPER.read_text()
-        assert PATCH_OLD in source, "the capture no longer matches the patch anchor"
-        patched = source.replace(PATCH_OLD, PATCH_NEW, 1)
+        assert ENTRY in source, "the helper no longer carries the simple-git entry"
         tmp = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
-        tmp.write(patched)
+        tmp.write(source)
         tmp.close()
         self.addCleanup(os.unlink, tmp.name)
         loader = importlib.machinery.SourceFileLoader("helper_patched", tmp.name)

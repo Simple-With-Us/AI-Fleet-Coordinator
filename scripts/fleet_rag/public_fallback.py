@@ -155,6 +155,8 @@ PUBLIC_ALLOWED_ARGS = {
         "rerank",
         "prefer_lessons",
         "include_retracted",
+        "full",
+        "fields",
     },
     "recall_stats": set(),
     "recall_contribute": {"text", "category", "app", "seat", "title", "url"},

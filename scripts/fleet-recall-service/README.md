@@ -14,8 +14,8 @@ service is the one that does not depend on the Mac.
 | Method | Path | Auth | What |
 |---|---|---|---|
 | GET | `/health` | none | `{ok, name, version, fleet_rag, collection, points, backend_ok, mcp, recall}` — `points` is the live count, cached 30 s; `ok` is the process, `backend_ok` is Qdrant |
-| GET | `/recall/stats` | bearer | `recall_stats()` |
-| POST | `/recall/search` | bearer | `recall_search(**body)` — `query` required; `limit`, `category`, `app`, `source`, `seat`, `since_days`, `include_retracted` |
+| GET | `/recall/stats` | bearer | `recall_stats()`, including `search_cache` hit and miss counts |
+| POST | `/recall/search` | bearer | `recall_search(**body)` — `query` required; `limit`, `category`, `app`, `source`, `seat`, `since_days`, `include_retracted`, `compact`, `full` |
 | POST | `/recall/contribute` | bearer | `recall_contribute(**body)` — `text`, `category`, **`seat` required**; `app`, `title`, `url`.  `force`, if present, is dropped before validation (the local duplicate-guard knob; not part of this tool schema) |
 | POST | `/recall/correct` | bearer | `recall_correct(**body)` — `doc_id`, `text`, `reason`, **`seat` required**; `title`, `url`, `expected_revision` |
 | POST | `/recall/retract` | bearer | `recall_retract(**body)` — `doc_id`, `reason`, **`seat` required**; `expected_revision` |
@@ -61,6 +61,8 @@ stalled body on an authenticated POST is answered **408** with close.  Neither p
 `handle_error`, so there is no traceback, and an idle keep-alive connection is closed by
 `http.server` after the same timeout (Traefik reconnects transparently).
 
+**Search cache.**  Repeated identical `recall_search` calls in this process skip the embedder and Qdrant.  The cache is an in-process LRU of 256 entries that live for 10 minutes, unless `RECALL_SEARCH_CACHE_SIZE` or `RECALL_SEARCH_CACHE_TTL_SECONDS` says otherwise.  The key is the normalized query, the filters, the limit, and the compact and full flags.  The embedder and the reranker still see the caller's casing.  A completed ingest writes `search-cache-epoch.json` next to `last-run.json`, and the cache drops its entries when either file changes.  A container that cannot read that directory keeps entries until the TTL.  A contribution, correction, or retraction publishes that same epoch file when the directory is visible, so other processes miss too.  `compact` and `full` do not change the JSON hit text.
+
 **Mutation gate.**  `recall_contribute`, `recall_correct` and `recall_retract` over this surface
 are gated exactly as on the Mac: the regex scrub runs, then gitleaks scans the scrubbed text or
 metadata and refuses anything it still flags
@@ -87,6 +89,8 @@ Configuration is **Infisical-first** (see `INFISICAL.md` at the repo root): when
 | `TEI_EMBED_MODEL` | no | informational |
 | `PORT` / `HOST` | no | default `8080` / `0.0.0.0` |
 | `RECALL_SOCKET_TIMEOUT` | no | per-connection socket timeout in seconds (default `15`); a stalled body is answered and closed instead of parking a thread.  Empty / unparsable / non-positive values fall back to the default |
+| `RECALL_SEARCH_CACHE_SIZE` | no | in-process search cache capacity (default `256`).  `0` stores nothing, and an unparsable or out-of-range value uses the default |
+| `RECALL_SEARCH_CACHE_TTL_SECONDS` | no | how long a cached search stays valid, in seconds (default `600`, ten minutes).  `0` stores nothing |
 | `SETTINGS_REFRESH_SECONDS` | no | background settings-refresh interval in seconds (default `300`); itself tunable in Infisical |
 | `INFISICAL_ENVIRONMENT` | no | the Infisical env the service reads.  `prod` is the only environment (default `prod`);  unset or empty means prod and any other slug is refused (the service exits 2) |
 | `RECALL_REF` | no | git ref the bootstrap fetches (default `main`) |

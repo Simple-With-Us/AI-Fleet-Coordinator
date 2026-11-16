@@ -447,6 +447,10 @@ def public_snapshot(policy, state, cpu, now=None):
         "ramCriticalGiB": policy["critical_budget_bytes"] / gib,
         "reserveGiB": policy["reserve_bytes"] / gib,
         "allowBorrowing": policy.get("allow_borrowing", True),
+        # The available-memory levels that start pressure and critical mode, so the page
+        # can say when each RAM limit takes effect.
+        "pressureAvailableGiB": policy["pressure_available_bytes"] / gib,
+        "criticalAvailableGiB": policy["critical_available_bytes"] / gib,
     }
     for source, dest in (("cpu_cores", "cpuCores"), ("cpu_weight", "cpuWeight")):
         if source in policy:
@@ -473,7 +477,37 @@ def public_snapshot(policy, state, cpu, now=None):
             value = value if type(value) is int and value >= 0 else default
         observed[dest] = value
     observed["controlWriteFailures"] += cpu.failures
+    # Counts that say whether a limit is hurting or even applying.  Each is projected only
+    # when the controller measured it:  an unmeasured count stays absent, never zero.
+    for source, dest in (
+        ("available_bytes", "availableBytes"),
+        ("production_protected_groups", "productionProtectedGroups"),
+        ("production_unprotected_groups", "productionUnprotectedGroups"),
+        ("oom_kill_delta", "oomKillDelta"),
+        ("excluded_units", "excludedUnits"),
+    ):
+        value = report.get(source)
+        if type(value) is int and value >= 0:
+            observed[dest] = value
     observed["updatedAt"] = now
+    reasons = [
+        code
+        for flag, code in (
+            (not report, "no-controller-report"),
+            (observed["policyStale"], "policy-stale"),
+            (not observed["codingGroups"], "no-coding-groups"),
+            (cpu.invalid or cpu.missing or not observed["cpuGroups"], "cpu-controls-unreadable"),
+            (not observed["cpuOnline"], "no-online-cpus"),
+            (not observed["productionGroups"], "no-production-groups"),
+            (report.get("production_unprotected_groups", 0), "production-unprotected"),
+            ("cpu_cores" not in policy or "cpu_weight" not in policy, "cpu-policy-missing"),
+            (observed["controlWriteFailures"], "control-write-failures"),
+            (observed["controlSuspended"], "controls-suspended"),
+            (observed["cpuMismatches"], "cpu-mismatch"),
+            (observed["actualHighMismatches"], "memory-limit-mismatch"),
+        )
+        if flag
+    ]
     unavailable = (
         cpu.invalid
         or not report
@@ -490,6 +524,18 @@ def public_snapshot(policy, state, cpu, now=None):
         or observed["controlSuspended"]
     )
     drift = observed["cpuMismatches"] or observed["actualHighMismatches"]
+    # A measurement the controller has not made yet, as before its first memory check, is
+    # left out rather than published as zero.  The status above already used the safe default.
+    for source, dest in (
+        ("coding_current_bytes", "ramCurrentBytes"),
+        ("coding_target_bytes", "ramTargetBytes"),
+        ("total_bytes", "ramTotalBytes"),
+        ("coding_groups", "codingGroups"),
+        ("production_groups", "productionGroups"),
+    ):
+        value = report.get(source)
+        if type(value) is not int or value < 0 or (dest == "ramTotalBytes" and value == 0):
+            observed.pop(dest, None)
     return {
         "schemaVersion": 1,
         "generatedAt": now,
@@ -497,6 +543,9 @@ def public_snapshot(policy, state, cpu, now=None):
         "desired": desired,
         "observed": observed,
         "status": "unavailable" if unavailable else "drift" if drift else "applied",
+        # Fixed codes, never free text:  why the status is not applied, in an order a reader
+        # can show as it is.
+        "reasons": reasons,
     }
 
 

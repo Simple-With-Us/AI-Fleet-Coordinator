@@ -45,6 +45,7 @@ __all__ = [
     "MANIFEST_FILENAME",
     "MANIFEST_SCHEMA_VERSION",
     "REGISTRY_FILENAME",
+    "RUN_PLACES",
     "ManifestError",
     "default_manifest_path",
     "default_registry_path",
@@ -72,6 +73,12 @@ REGISTRY_FILENAME = "fleet-apps.json"
 
 # The top-level key the fleet-wide compliance family lives under.
 COMPLIANCE_RULES_KEY = "complianceRules"
+
+# The place words a seat's optional ``runsOn`` list may hold (Muster's seat grid reads them).
+# ``runsOn`` is an additive optional key of a seat entry, so the schema version stays 2:
+# a reader that does not know it ignores it, and a seat that omits it is a seat whose place
+# is not known.
+RUN_PLACES = ("mac", "server", "vm", "cloud")
 
 # The check types each kind supports, from design doc section 5.  A rule whose check
 # type is not listed for its kind is rejected:  the pairing is fixed, so a rule can
@@ -219,6 +226,7 @@ def _parse_rule(raw: object, seat: str) -> Rule:
                 None,
                 "rule %s expected timeoutSeconds" % rule_id,
             ),
+            guards=_guards(expected_raw.get("guards"), rule_id),
         ),
         proof_level=_enum(ProofLevel, raw.get("proofLevel"), "rule %s proofLevel" % rule_id),
         owner_seat=str(raw.get("ownerSeat") or ""),
@@ -233,6 +241,21 @@ def _parse_rule(raw: object, seat: str) -> Rule:
         implemented=True if implemented_raw is None else implemented_raw,
         implementation_reason=str(raw.get("implementationReason") or ""),
     )
+
+
+GUARD_SCOPES: tuple[str, ...] = ("shell", "file")
+
+
+def _guards(value: object, rule_id: str) -> tuple[str, ...]:
+    """The guard scopes a hook rule asks for:  ``shell``, ``file``, both or neither."""
+    names = _str_tuple(value, "rule %s expected guards" % rule_id)
+    for name in names:
+        if name not in GUARD_SCOPES:
+            raise ManifestError(
+                "rule %s expects the guard scope %r, which is not one of %s"
+                % (rule_id, name, ", ".join(GUARD_SCOPES))
+            )
+    return names
 
 
 def _int_field(value: object, default: int | None, what: str) -> int | None:
@@ -260,6 +283,27 @@ def _int_field(value: object, default: int | None, what: str) -> int | None:
         except ValueError:
             raise ManifestError("%s must be a number, not %r" % (what, value)) from None
     raise ManifestError("%s must be a number, not %r" % (what, value))
+
+
+def _parse_runs_on(tag: str, raw: dict) -> tuple[str, ...]:
+    """The seat's ``runsOn`` places, () when the key is absent, or ManifestError.
+
+    A present key is a non-empty list of distinct words from ``RUN_PLACES``;  a null, an
+    empty list or a repeated word is an error rather than a quiet "not known"."""
+    if "runsOn" not in raw:
+        return ()
+    value = raw["runsOn"]
+    what = "seat %s runsOn" % tag
+    if not isinstance(value, list) or not value:
+        raise ManifestError("%s must be a non-empty list of places" % what)
+    for place in value:
+        if not isinstance(place, str) or place not in RUN_PLACES:
+            raise ManifestError(
+                "%s has the place %r, which is not one of %s" % (what, place, ", ".join(RUN_PLACES))
+            )
+    if len(set(value)) != len(value):
+        raise ManifestError("%s names a place more than once" % what)
+    return tuple(value)
 
 
 def _parse_seat(tag: str, raw: object) -> SeatManifest:
@@ -299,6 +343,7 @@ def _parse_seat(tag: str, raw: object) -> SeatManifest:
         rules=rules,
         not_applicable=tuple(covers),
         uncovered=tuple(uncovered),
+        runs_on=_parse_runs_on(tag, raw),
     )
 
 

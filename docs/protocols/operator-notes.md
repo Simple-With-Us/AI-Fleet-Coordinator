@@ -11,14 +11,17 @@ Owner direction (quoted):  "I don't want notes going from Zulip to Apple notes."
 | create | `simple-notes create TITLE` | `notes_create` | A new note.  The title must be `[TEAM_KEY, Agent] Topic` with the caller's own agent name. |
 | update | `simple-notes update TITLE` | `notes_update` | Replace a note's body.  Any Coding note.  A note whose title does not carry the caller's name is never created by an update. |
 | pin, unpin | `simple-notes pin TITLE` | `notes_pin`, `notes_unpin` | Any Coding note. |
+| delete | `simple-notes delete NOTE_ID` | `notes_delete` | Delete one fleet-written note by exact `x-coredata` id (`notes_list` / `notes_read`) and its Fleet RAG doc (`note/<id>`).  Static notes and owner notes are refused.  No bulk delete.  If Apple Notes is already gone but RAG removal failed, retry the same request. |
 | read | `simple-notes read TITLE` | `notes_read` | One note's content, as `html` (ready to send back with `update --html`), `text` or `raw` (exactly what Notes stores).  A line that looks like a credential reads as `[withheld: secret-shaped]`. |
 | list | `simple-notes list` | `notes_list` | The Coding folder's notes, newest first:  title, id, created, modified.  `query` filters titles. |
 | status | `simple-notes status ID` | `notes_status` | Where a queued request stands. |
 | log | `simple-notes log` | `notes_log` | The action log of `apple-notes-coding.sh`. |
 
-The verbs, their options and the tool arguments are one contract:  `scripts/agent_sync/mcp/notes-tools.json`.  `scripts/agent_sync/tests/test_notes_parity.py` fails when `simple-notes`, the stdio server or the hosted Worker drifts from it.
+The verbs, their options and the tool arguments are one contract:  `scripts/simple_tools/mcp/notes-tools.json`.  `scripts/simple_tools/tests/test_notes_parity.py` fails when `simple-notes`, the stdio server or the hosted Worker drifts from it.
 
 The output is the same everywhere:  a write answers `status: done` with the `note_id`, a read answers the note, and only a request still waiting when the caller's wait ran out answers `queued` or `running` with its `request_id`.
+
+A pin the Shortcut does not do still answers `done`.  The result also carries `pin_skipped`, the reason, and the note is saved unpinned.  `notes_status` on the direct path and on the Operator path returns that same field, and a pin that ran omits it.  The Mac runner writes the result, including `pin_skipped`, into its spool before it reports.  A crash after that write reports the same result again on the next pass, and a second pass reports nothing.  The queue stores one `pin_skipped`: a repeat of the same claim is the record already stored, not a second acknowledgement.  AFC-455 first described this as a Zulip reply on `#notes-relay`.  That channel is retired (AFC-486), and this result field is the report a requester reads.
 
 ## Where a Request Runs
 
@@ -39,7 +42,7 @@ The script is the one place formatting is enforced (the title row, the date row,
 
 ## The Wire Protocol
 
-Contract `agent-sync-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.  When the knob reads empty, the Python side asks `fleet-secrets get OPERATOR_API_URL --path / --project ai-fleet-coordinator` for the same key, the way it reads its principal's key.  This is for the server:  its agent shells carry no Infisical automation pair, so fleet_knobs there has only its last-known-good copy, which lapses after 48 hours, while `fleet-secrets` logs in for itself.
+Contract `simple-tools-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.  When the knob reads empty, the Python side asks `fleet-secrets get OPERATOR_API_URL --path / --project ai-fleet-coordinator` for the same key, the way it reads its principal's key.  This is for the server:  its agent shells carry no Infisical automation pair, so fleet_knobs there has only its last-known-good copy, which lapses after 48 hours, while `fleet-secrets` logs in for itself.
 
 **Principals.**  Every request is signed by one of three principals, each with its own key in Infisical (project AI Fleet Coordinator, `prod`, folder `/operator`, at least 32 characters):
 
@@ -53,9 +56,9 @@ Each principal works on its own, on purpose:  the Operator serves the principals
 
 The three keys separate what each caller may do over the network:  a leaked Worker key cannot claim a request, and a leaked runner key cannot enqueue one.  They are not a boundary between processes on one host.  Today the server's and the Mac's Infisical identities can each read all of `/operator`, so any process on either host that can run `fleet-secrets` can take any of the three keys.
 
-**Signing.**  Three headers:  `X-Agent-Sync-Principal`, `X-Agent-Sync-Timestamp` (unix seconds) and `X-Agent-Sync-Signature`, the lowercase hex HMAC-SHA256, keyed with the principal's key, of
+**Signing.**  Three headers:  `X-Simple-Tools-Principal`, `X-Simple-Tools-Timestamp` (unix seconds) and `X-Simple-Tools-Signature`, the lowercase hex HMAC-SHA256, keyed with the principal's key, of
 
-    agent-sync-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\n<principal>\n<sha256 hex of the body bytes>
+    simple-tools-notes/1\n<METHOD>\n<path>\n<raw query>\n<timestamp>\n<principal>\n<sha256 hex of the body bytes>
 
 good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON, at most 4 MiB.  An unknown principal, a principal with no key, an unknown path:  404.  A bad or stale signature:  401.  A principal on a path it may not use, or a seat it may not act for:  403.
 
@@ -67,7 +70,7 @@ good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON
  "session": "<session-id>"}
 ```
 
-`action` is one of create, update, pin, unpin, read, list.  `title` is required except for list;  `markdown` and `flags` (pin, notify, needs_owner, summary, pr, html) only for create and update;  `format` (html, text, raw) only for read;  `query` (at most 100 characters) and `limit` (1 to 500, default 100) only for list.
+`action` is one of create, update, pin, unpin, read, list, delete.  `title` is required except for list and delete;  `note_id` (exact `x-coredata` id) only for delete;  `markdown` and `flags` (pin, notify, needs_owner, summary, pr, html) only for create and update;  `format` (html, text, raw) only for read;  `query` (at most 100 characters) and `limit` (1 to 500, default 100) only for list.
 
 **Endpoints.**
 

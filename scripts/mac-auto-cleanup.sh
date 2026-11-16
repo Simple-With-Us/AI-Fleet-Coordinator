@@ -1025,7 +1025,7 @@ fi
 
 # 3b. Reap node_modules and .next from suffixed/inactive feature worktrees in ~/apps/
 # Only reap from verified git worktrees that are clean (ignoring build junk) and idle (>4h).
-# Explicitly preserve standing runtimes like agent-sync-push, agy-acp-runtime, etc.
+# Explicitly preserve standing runtimes like agy-acp-runtime, etc.
 if [ "$PRESSURE" = "1" ]; then
 echo "Pruning duplicate build caches on suffixed feature worktrees (pressure mode)..."
 python3 <<'PY'
@@ -1035,7 +1035,7 @@ import os, glob, json, shutil, re, subprocess, time, fcntl
 # more.  Matched against the path as found AND its on-disk spelling (see canon below).
 KEEP_RE = re.compile(
     r"^/Users/jay/apps/[a-z0-9]+-(claude|codex|live|antigravity|cursor|monet|grok|grok-build|deepseek|minimax|mm)$|"
-    r"^/Users/jay/apps/(botfleet-server|agent-sync|agent-sync-push|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
+    r"^/Users/jay/apps/(botfleet-server|grok-acp-runtime|agy-acp-runtime|shellular-runtime|mac-collab|senate-relay-runtime|scout-runtime|dsh-runtime|clutch-runtime|seat-mcp|KIMI-SALVAGE-.*)$|"
     r"^/Users/jay/Code/.*$",
     re.IGNORECASE,
 )

@@ -6,10 +6,11 @@ followed by a normal space, on every surface -- Zulip, GitHub titles, bodies and
 comments, Linear, commit messages, repo docs and Markdown, skills, agent
 instructions, UI copy, and chat replies.
 
-The one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code
-(the MiniMax Code pane) normalize a raw U+00A0 away, so a chat reply there uses the
-`&nbsp;` entity plus a normal space, outside code spans.  The entity is never the
-form anywhere else, and two plain ASCII spaces are never the rule.
+The one exception:  the chat panes of Claude Code (the Code tab), MiniMax Code
+(the MiniMax Code pane) and Z Code (the Z Code pane) normalize a raw U+00A0 away,
+so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code
+spans.  The entity is never the form anywhere else, and two plain ASCII spaces
+are never the rule.
 
 The 2026-10-22 GitHub-entity split is superseded:  GitHub takes the real U+00A0
 like every other surface, and no file may tell an agent to write two plain ASCII
@@ -22,9 +23,10 @@ Three checks run here.
     itself as superseded, or as history, records a ruling rather than prescribing
     one, so it is allowed to hold the old text.
 
-2.  Every file that states the rule names the one exception, with both panes and
-    the entity together, so the rule cannot be read as "never the entity" again,
-    and no file may claim that every chat pane takes the real U+00A0.
+2.  Every file that states the rule names the one exception, with all three panes
+    and the entity together, so the rule cannot be read as "never the entity" again,
+    and no file may claim that every chat pane takes the real U+00A0.  A bare
+    "Z Code" elsewhere in the file does not satisfy the check.
 
 3.  The published note takes a real U+00A0:  `scripts/fleet_facts/publish.py`
     writes its gap to GitHub, so the GAP constant is the real U+00A0 plus a
@@ -74,9 +76,9 @@ STALE_RULE_FILES = (
     # surface, so it states the exception with it.
     "docs/compliance/inventory.md",
     # The converter and its own test describe the entity mode, and each one names the
-    # two chat panes as the surfaces that take it.  They are scanned here so the
+    # three chat panes as the surfaces that take it.  They are scanned here so the
     # withdrawn 2026-10-22 GitHub-entity split can never come back into them.  The
-    # mode itself is still the right form for the two chat panes, which is why these
+    # mode itself is still the right form for the three chat panes, which is why these
     # two files are scanned rather than forbidden.
     "scripts/sentence_gap_convert.pl",
     "scripts/test_sentence_gap_program.py",
@@ -124,7 +126,7 @@ EXCEPTION_FILES = (
     # stale line here reaches every seat's prompt.
     "scripts/fleet_lanes/rules/fleet-common.md",
     # The rules the pr_sweep agent runs on, and the packs that state the rule
-    # for a bot or a routine:  one mechanism everywhere, so the two chat panes
+    # for a bot or a routine:  one mechanism everywhere, so the three chat panes
     # have to be named or a seat that reads only these writes the wrong gap.
     "scripts/pr_sweep/rules.md",
     "docs/grok-web/skills/grok-web-work-items/SKILL.md",
@@ -148,7 +150,7 @@ EXCEPTION_FILES = (
 # block reaches every app, so it has to carry the exception with it.
 PASTED_BLOCK_FILES = ("docs/AGENTS-RECALL-SNIPPET.md",)
 
-# Every file that states the rule states the one exception, the two chat panes, and
+# Every file that states the rule states the one exception, the three chat panes, and
 # none of them gives an Apple Note body a character of its own.  One list, so a
 # rule-stating file can never be left out of the Apple Notes gate.
 APPLE_NOTES_FILES = EXCEPTION_FILES
@@ -156,7 +158,7 @@ APPLE_NOTES_FILES = EXCEPTION_FILES
 # The stale prescriptions, as they are written.  Each one is a live instruction a
 # reader could follow:  GitHub takes the entity, or two plain ASCII spaces are the
 # rule.  The windows are tight on purpose, so a file that names the entity for the
-# two chat panes is not caught by them.
+# three chat panes is not caught by them.
 STALE_PATTERNS = (
     # GitHub takes the `&nbsp;` entity plus a space.
     re.compile(r"GitHub[^\n]{0,80}`&nbsp;` entity plus"),
@@ -171,7 +173,7 @@ STALE_PATTERNS = (
     re.compile(r"Two literal ASCII spaces"),
 )
 
-# A blanket claim that every chat pane takes the real U+00A0.  The two panes below
+# A blanket claim that every chat pane takes the real U+00A0.  The three panes below
 # contradict it, so a file that says it has not absorbed the exception.
 BLANKET_PANE_CLAIMS = (
     re.compile(r"chat replies in every pane"),
@@ -211,8 +213,8 @@ EXCEPTION_PHRASE_RE = re.compile(
 # for a note body.
 APPLE_NOTES_FORBIDDEN = ("narrow no-break space", "&#8239;", "U+202F")
 
-# A live line that counts a second exception, while the rule has one:  the two chat
-# panes.  The first of two panes is not a second exception, so only the count words
+# A live line that counts a second exception, while the rule has one:  the three chat
+# panes.  Naming a second pane is not a second exception, so only the count words
 # are matched.
 SECOND_EXCEPTION_CLAIMS = re.compile(
     r"\btwo exceptions\b|\bsecond exception\b|\bsecond of two\b", re.IGNORECASE
@@ -257,18 +259,23 @@ def _is_history(line: str) -> bool:
 
 
 def _states_the_exception(text: str) -> bool:
-    """Whether the text calls the entity the exception for both panes.
+    """Whether the text calls the entity the exception for the three panes.
 
     The entity is mentioned in several places, and only the mention that sits with
-    both pane names is the exception itself.  The word "exception" has to sit in
-    the same window, so the panes are called an exception rather than listed as
-    one option among many.
+    Claude Code, MiniMax Code and Z Code is the exception itself.  The word
+    "exception" has to sit in the same window, so the panes are called an exception
+    rather than listed as one option among many.  A bare "Z Code" elsewhere in the
+    file does not count.
     """
     for match in re.finditer(re.escape("`&nbsp;`"), text):
         window = text[max(0, match.start() - 600) : match.end() + 600]
-        if "Claude Code" in window and "MiniMax Code" in window:
-            if EXCEPTION_PHRASE_RE.search(window):
-                return True
+        if (
+            "Claude Code" in window
+            and "MiniMax Code" in window
+            and "Z Code" in window
+            and EXCEPTION_PHRASE_RE.search(window)
+        ):
+            return True
     return False
 
 
@@ -340,7 +347,7 @@ class StaleGuidanceTests(unittest.TestCase):
 class PaneExceptionTests(unittest.TestCase):
     """Every file that states the rule names the pane exception."""
 
-    def test_each_file_names_both_panes_and_the_entity_together(self) -> None:
+    def test_each_file_names_the_three_panes_and_the_entity_together(self) -> None:
         for rel in EXCEPTION_FILES:
             with self.subTest(rel=rel):
                 text = _read(rel)
@@ -351,11 +358,32 @@ class PaneExceptionTests(unittest.TestCase):
                     "MiniMax Code", text, "%s does not name the MiniMax Code chat pane" % rel
                 )
                 self.assertIn("`&nbsp;`", text, "%s does not name the entity" % rel)
+                self.assertIn("Z Code", text, "%s does not name the Z Code chat pane" % rel)
                 self.assertIn("U+00A0", text, "%s does not state the real U+00A0 rule" % rel)
                 self.assertTrue(
                     _states_the_exception(text),
-                    "%s does not state the entity as the exception for the two panes" % rel,
+                    "%s does not state the entity as the exception for the three panes" % rel,
                 )
+
+    def test_z_code_outside_the_exception_window_does_not_count(self) -> None:
+        """A file that names Z Code away from the exception sentence still fails.
+
+        The 2026-11-11 widening is part of the one exception.  A later mention of
+        the pane, or a mention that omits it from the sentence that names the
+        entity, is not that exception.
+        """
+        separated = (
+            "The one exception is the Claude Code Code tab and the MiniMax Code "
+            "chat pane, which take the `&nbsp;` entity. "
+            + ("x" * 700)
+            + " Z Code appears only in a later section."
+        )
+        self.assertFalse(_states_the_exception(separated))
+        together = (
+            "The one exception is the Claude Code Code tab, the MiniMax Code "
+            "chat pane and the Z Code chat pane, which take the `&nbsp;` entity."
+        )
+        self.assertTrue(_states_the_exception(together))
 
     def test_no_file_claims_every_chat_pane_takes_the_real_nbsp(self) -> None:
         problems = []
@@ -377,7 +405,7 @@ class PaneExceptionTests(unittest.TestCase):
         )
 
     def test_a_pasted_block_states_no_rule_without_the_exception(self) -> None:
-        """A pasted block that states the gap rule must name the two panes.
+        """A pasted block that states the gap rule must name the three panes.
 
         The note above the block is for whoever pastes it, so the block is the
         text that reaches every app.  If it ever states the rule, it has to

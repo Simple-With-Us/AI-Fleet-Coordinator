@@ -242,6 +242,8 @@ struct VmStatusReading: Identifiable {
     var report: VmStatusReport?
     /// When the report says it was written.
     var generatedAt: Date?
+    /// When the doctor copied it to this Mac,  from the file's own modification date.
+    var copiedAt: Date?
     /// How old the report is,  in the app's own words.
     var age: String?
     /// Whether the report is inside the forty-five minute window.
@@ -325,7 +327,9 @@ enum VmStatusReportReader {
         reading.label = url.deletingPathExtension().lastPathComponent
         reading.path = url.path
 
-        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber,
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        reading.copiedAt = attributes?[.modificationDate] as? Date
+        if let size = attributes?[.size] as? NSNumber,
             size.intValue > VmStatusContract.maxReportBytes
         {
             reading.problem =

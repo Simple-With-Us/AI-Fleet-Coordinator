@@ -380,7 +380,7 @@ class Config:
     repository: str = ""  # a restic repository to use instead of B2 (tests, a local mirror)
     launchctl_bin: str = "launchctl"
     check_wait_s: int = 90
-    agent_sync_bin: str = ""  # '' is <home>/.local/bin/simple-chat (launchd's PATH does not have it)
+    simple_tools_bin: str = ""  # '' is <home>/.local/bin/simple-chat (launchd's PATH does not have it)
     fleet_secrets_bin: str = (
         ""  # '' is <home>/.local/bin/fleet-secrets (launchd's PATH does not have it)
     )
@@ -468,7 +468,7 @@ def config_from_env() -> Config:
     cfg.s3_endpoint = os.environ.get("FLEET_WORK_BACKUP_S3_ENDPOINT", cfg.s3_endpoint)
     cfg.repository = os.environ.get("FLEET_WORK_BACKUP_REPOSITORY", cfg.repository)
     cfg.launchctl_bin = os.environ.get("FLEET_WORK_BACKUP_LAUNCHCTL", cfg.launchctl_bin)
-    cfg.agent_sync_bin = os.environ.get("FLEET_WORK_BACKUP_SIMPLE_CHAT", cfg.agent_sync_bin)
+    cfg.simple_tools_bin = os.environ.get("FLEET_WORK_BACKUP_SIMPLE_CHAT", cfg.simple_tools_bin)
     cfg.fleet_secrets_bin = os.environ.get("FLEET_WORK_BACKUP_FLEET_SECRETS", cfg.fleet_secrets_bin)
     cfg.infisical_bin = os.environ.get("FLEET_WORK_BACKUP_INFISICAL", cfg.infisical_bin)
     cfg.alert_seat = os.environ.get("FLEET_WORK_BACKUP_ALERT_SEAT", cfg.alert_seat)
@@ -2791,28 +2791,58 @@ def fleet_secrets_path(cfg: Config) -> str:
 
 def read_credentials(cfg: Config) -> dict[str, str]:
     """The credentials this job uses that ``fleet-secrets`` can supply (OPS-818;  the old flat
-    credentials file is retired), from one Infisical fetch.  Callers overlay the environment
-    on top.  A missing command or any failure is an empty dict, so the caller reports the missing NAMES.
-    Skipped when the environment already holds all four job credentials.  Values stay in this process."""
+    credentials file is retired).  Callers overlay the environment on top.  A missing command or any
+    failure is an empty dict, so the caller reports the missing NAMES.  Skipped when the environment
+    already holds all four job credentials.  Values stay in this process.
+
+    Least privilege:  one ``run --only`` fetch injects just the job's own names into the child (a plain
+    ``run`` would inject every secret the token can read), and the B2 master key names are asked for only
+    when FLEET_WORK_BACKUP_ALLOW_MASTER=1, the same gate ``restic_env`` applies before it uses them.
+    ``--only`` exits non-zero when any one name is absent, so a failure falls back to one ``get`` per name:
+    the names that do exist still come back and the caller reports the rest."""
     if all(os.environ.get(n) for n in CRED_NAMES.values()):
         return {}
     binary = fleet_secrets_path(cfg)
     if not os.access(binary, os.X_OK):
         return {}
-    wanted = list(CRED_NAMES.values()) + list(MASTER_NAMES.values())
+    wanted = list(CRED_NAMES.values())
+    if os.environ.get("FLEET_WORK_BACKUP_ALLOW_MASTER") == "1":
+        wanted += list(MASTER_NAMES.values())  # only a restore may use the master key
     try:
         p = subprocess.run(
-            [binary, "run", "--", sys.executable, "-c", _PICK_CREDENTIALS, *wanted],
+            [
+                binary,
+                "run",
+                "--only",
+                ",".join(wanted),
+                "--",
+                sys.executable,
+                "-c",
+                _PICK_CREDENTIALS,
+                *wanted,
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=120,
         )
-        if p.returncode != 0:
-            return {}
-        got = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+        if p.returncode == 0:
+            got = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+            return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
+        out: dict[str, str] = {}
+        for name in wanted:
+            g = subprocess.run(
+                [binary, "get", name],
+                stdin=subprocess.DEVNULL,  # a terminal's stdin would let `get` use a person's own login
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=30,  # a timeout ends the whole read (the except below), never four in a row
+            )
+            value = g.stdout.decode("utf-8", "replace").strip() if g.returncode == 0 else ""
+            if value:
+                out[name] = value
+        return out
     except (OSError, subprocess.SubprocessError, ValueError):
         return {}
-    return {k: v for k, v in got.items() if k in wanted and isinstance(v, str) and v}
 
 
 def restic_env(cfg: Config, allow_master: bool = False) -> tuple[dict | None, list[str]]:
@@ -3525,10 +3555,10 @@ def bump_not_ok(state: dict) -> int:
 
 
 def simple_chat_path(cfg: Config) -> str:
-    return cfg.agent_sync_bin or str(cfg.home / ".local" / "bin" / "simple-chat")
+    return cfg.simple_tools_bin or str(cfg.home / ".local" / "bin" / "simple-chat")
 
 
-def _agent_sync_send(cmd: list, text: str) -> bool:
+def _simple_tools_send(cmd: list, text: str) -> bool:
     """Run one simple-chat command with ``text`` on stdin.  Never raises;  False when it did not succeed."""
     try:
         p = subprocess.run(
@@ -3572,9 +3602,9 @@ def post_alert(cfg: Config, text: str, wake: bool = True, failed: list | None = 
                 post += ["--to", who]
         post.append("-")
         topic_text = f"{text}{ALERT_GAP}{cfg.alert_note}" if wake and cfg.alert_note else text
-        ok_post = _agent_sync_send(post, topic_text)
+        ok_post = _simple_tools_send(post, topic_text)
         if cfg.alert_dm_owner:
-            ok_dm = _agent_sync_send(
+            ok_dm = _simple_tools_send(
                 [exe, "dm", "--as", cfg.alert_seat, "--session", "fwbackup", "--owner", "-"], text
             )
     if failed is not None:

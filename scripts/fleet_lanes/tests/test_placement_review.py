@@ -741,7 +741,7 @@ class DoctorRows(TD.Case):
             return co.placement_violation
 
         self.assertTrue(verdict("Simple-With-Us/BotFleet"))
-        self.assertFalse(verdict("jaywedgeworth22/old-thing"))
+        self.assertFalse(verdict("Simple-With-Us/old-thing"))
 
     def test_a_row_near_its_expiry_is_a_warning_and_not_a_strict_failure(self) -> None:
         soon = (dt.date.today() + dt.timedelta(days=10)).isoformat()
@@ -799,9 +799,9 @@ class WatcherInstall(WatchReview):
         self.assertIn(W.board_env(P.HOST_SERVER), allowed)
         self.assertIn(W.board_env(P.HOST_MAC), allowed)
 
-    def test_the_templates_carry_the_bearer_locator_and_registry(self) -> None:
+    def test_the_templates_carry_the_bearer_file_and_registry(self) -> None:
         plist = (PKG / "templates" / "com.jay.lane-placement-watch.plist").read_text(encoding="utf-8")
-        self.assertIn("SIMPLE_BOARD_BEARER_LOCATOR", plist)
+        self.assertIn("SIMPLE_BOARD_BEARER_FILE", plist)
         self.assertIn("FLEET_APPS_JSON", plist)
         unit = (REPO / "scripts" / "systemd" / "lane-placement-watch.service").read_text(encoding="utf-8")
         self.assertIn("placement-watch.conf", unit)
@@ -814,7 +814,7 @@ class WatcherInstall(WatchReview):
         self.assertEqual(rc, W.EXIT_FILING)
         status = json.loads(Path(self.state, W.STATUS_NAME).read_text(encoding="utf-8"))
         self.assertFalse(status["ok"])
-        self.assertIn("SIMPLE_BOARD_BEARER_LOCATOR", " ".join(status["errors"]))
+        self.assertIn("SIMPLE_BOARD_BEARER_FILE", " ".join(status["errors"]))
 
     def test_an_unreadable_registry_is_a_status_and_not_a_crash(self) -> None:
         self.vars["FLEET_APPS_JSON"] = self.p("missing.json")
@@ -1153,30 +1153,15 @@ class SyncToken(unittest.TestCase):
         tool.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
         tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
 
-    def test_gh_token_is_honoured_first(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(S.resolve_github_token({"GH_TOKEN": "a", "GITHUB_ADMIN_PAT": "b"}, Path(tmp)), "GH_TOKEN")
-
-    def test_a_fetched_token_reaches_the_name_the_credential_helper_reads(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GH_TOKEN", None)
-            self.fake_tool(Path(tmp), "printf dummy-value")
-            self.assertEqual(S.resolve_github_token({}, Path(tmp)), "GH_TOKEN")
-            self.assertEqual(os.environ["GH_TOKEN"], "dummy-value")
-
-    def test_a_token_variable_the_helper_ignores_is_exported_under_the_name_it_reads(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GH_TOKEN", None)
-            self.assertEqual(S.resolve_github_token({"GITHUB_ADMIN_PAT": "b"}, Path(tmp)), "GH_TOKEN")
-            self.assertEqual(os.environ["GH_TOKEN"], "b")
-
-    def test_a_lookup_that_hangs_is_logged_and_the_run_continues(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(S.subprocess, "run", side_effect=subprocess.TimeoutExpired("x", 60)):
-            self.fake_tool(Path(tmp), "exit 0")
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(S.resolve_github_token({}, Path(tmp)), "")
-            self.assertIn("timed out", out.getvalue())
+    def test_retired_lookup_never_reads_an_app_or_reexports_an_owner_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            self.fake_tool(Path(tmp), "exit 99")
+            for supplied in ({}, {"GH_TOKEN": "a"}, {"GITHUB_TOKEN": "a"}, {"GITHUB_ADMIN_PAT": "b"}):
+                with self.subTest(names=list(supplied)), mock.patch.object(
+                    S.subprocess, "run", side_effect=AssertionError("retired credential application executed")
+                ):
+                    self.assertEqual(S.resolve_github_token(supplied, Path(tmp)), "")
+                    self.assertEqual(dict(os.environ), {})
 
 
 if __name__ == "__main__":
@@ -1239,7 +1224,11 @@ class ShellOptions(ShimReview):
         # Running as sh turns posix on, and an exported SHELLOPTS would hand that to a #!/bin/bash hook.
         folder = self.home / "external"
         folder.mkdir()
-        (folder / "git-shows").symlink_to(shutil.which("printenv"))
+        # A #!/bin/bash hook that prints its environment.  Not a symlink to printenv:  a multi-call coreutils (uutils)
+        # refuses to run under another name ("Requested utility git-shows does not match executable name").
+        hook = folder / "git-shows"
+        hook.write_text('#!/bin/bash\nexec printenv "$@"\n', encoding="utf-8")
+        hook.chmod(0o755)
         res = self.git("shows", "SHELLOPTS", SHELLOPTS="errexit", PATH=f"{self.bin}:{folder}:/usr/bin:/bin")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("errexit", res.stdout)
@@ -1705,9 +1694,9 @@ class FirstInstall(WatchRoundTwo):
             self.assertEqual(self.run_watch(self.one(self.p("foo")), run), W.EXIT_FILING)
         self.assertEqual(len(run.calls), sent)
 
-    def test_the_readme_names_the_locator_before_the_first_apply(self) -> None:
+    def test_the_readme_names_the_bearer_file_before_the_first_apply(self) -> None:
         text = (PKG / "README.md").read_text(encoding="utf-8")
-        self.assertLess(text.index("export " + W.BEARER_LOCATOR + "="), text.index("--apply --accept-burst"))
+        self.assertLess(text.index("export " + W.BEARER_FILE + "="), text.index("--apply --accept-burst"))
 
 
 class CliExits(WatchRoundTwo):
@@ -1761,7 +1750,7 @@ class CliExits(WatchRoundTwo):
         self.assertEqual(len(run.named("simple-chat", "dm")), 2)
 
     def test_the_words_this_relies_on_are_in_the_clis(self) -> None:
-        text = (REPO / "scripts" / "agent_sync" / "cli.py").read_text(encoding="utf-8")
+        text = (REPO / "scripts" / "simple_tools" / "cli.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(text.count(W.CHAT_MAYBE_SENT), 2)
         self.assertIn("(already filed; unchanged)", (REPO / "scripts" / "linear-board" / "board").read_text(encoding="utf-8"))
 

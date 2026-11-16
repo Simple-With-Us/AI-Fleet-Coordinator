@@ -29,6 +29,13 @@ final class AppIconFollower: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A server action that was sent and has not answered is the one thing a quit can lose,
+    /// so Muster asks first.  The question lives with the plan sheet,  in `OpsQuitGuard`.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let quit = MainActor.assumeIsolated { OpsQuitGuard.confirmQuit() }
+        return quit ? .terminateNow : .terminateCancel
+    }
+
     private func update() {
         let systemIsDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let wanted = ThemeChoice.saved(in: .standard).appIcon(systemIsDark: systemIsDark)

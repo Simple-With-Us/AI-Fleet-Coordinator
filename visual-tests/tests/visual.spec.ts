@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { DIGEST_FIXTURE_PATH } from './digest-fixture-path';
 import { serveRepo, serveErrors } from './serve-repo';
 
 /**
@@ -17,7 +18,7 @@ for (const viewport of viewports) {
     test.setTimeout(120_000);
     await page.setViewportSize(viewport);
     await serveRepo(page);
-    await page.goto('/site/index.html');
+    await page.goto(DIGEST_FIXTURE_PATH);
     await expect(page.locator('.legend')).toBeVisible();
     // The lede carries the digest "Created" timestamp and every .day card holds
     // date-bucketed activity that regenerates 4x daily via cron — mask them all.
@@ -35,7 +36,7 @@ for (const viewport of viewports) {
   test(`digest day cards render unmasked from fixture ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await serveRepo(page);
-    await page.goto('/visual-tests/tests/fixtures/digest-2day.html');
+    await page.goto(DIGEST_FIXTURE_PATH);
     await expect(page.locator('.day').first()).toBeVisible();
     // The fixture is byte-pinned: newest day expanded, older day collapsed.
     await expect(page.locator('section.day')).toHaveCount(1);

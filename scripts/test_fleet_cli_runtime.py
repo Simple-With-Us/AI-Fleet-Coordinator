@@ -61,8 +61,8 @@ PROTOCOL = (
     + r"""
 import io
 sys.path.insert(0, sys.argv[1])
-from agent_sync.mcp.stdio import Server
-from agent_sync.mcp.tools import load_served_tools
+from simple_tools.mcp.stdio import Server
+from simple_tools.mcp.tools import load_served_tools
 class CatalogueOnly:
     seat = "CODEX"
     spec = load_served_tools()
@@ -152,13 +152,13 @@ class ActualRuntime(unittest.TestCase):
         cls.receiver = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.receiver)
         candidates = set(cls.receiver.EXACT)
-        for directory in ("scripts/agent_sync", "scripts/agent_sync/mcp"):
+        for directory in ("scripts/simple_tools", "scripts/simple_tools/mcp"):
             candidates.update(
                 path.relative_to(ROOT).as_posix() for path in (ROOT / directory).glob("*.py")
             )
         files = {}
         for name in sorted(candidates):
-            if not cls.receiver.allowed_path(name):
+            if not cls.receiver.shipped_path(name):
                 continue
             path = ROOT / name
             if path.is_symlink() or not path.is_file():
@@ -242,7 +242,7 @@ class ActualRuntime(unittest.TestCase):
         )
 
     def test_notes_reader_import_is_in_installed_runtime(self):
-        path = "scripts/agent_sync/notes_service_reader.py"
+        path = "scripts/simple_tools/notes_service_reader.py"
         self.assertIn(path, self.bundle["files"])
         self.assertIn(path, self.receiver.TOOL_REQUIRED)
         self.assertNotIn(path, self.receiver.BASE_REQUIRED)
@@ -252,7 +252,7 @@ class ActualRuntime(unittest.TestCase):
             "-B",
             "-c",
             AUDIT + "\nimport sys; sys.path.insert(0, sys.argv[1]); "
-            "from agent_sync import notes_client, notes_service_reader; "
+            "from simple_tools import notes_client, notes_service_reader; "
             "assert notes_client.SR is notes_service_reader; "
             "assert notes_service_reader.load() is None",
             str(self.release / "scripts"),
@@ -260,6 +260,49 @@ class ActualRuntime(unittest.TestCase):
         result = RUN(command, env=self.env, cwd=self.home, capture_output=True, timeout=15)
         self.assert_exit(result, 0)
         self.assertFalse(result.stdout)
+
+    def test_installed_cli_serializes_the_shared_header_and_refuses_a_missing_helper(self):
+        relative = "scripts/simple_tools/post_header.py"
+        self.assertIn(relative, self.bundle["files"])
+        self.assertIn(relative, self.receiver.EXACT)
+        self.assertIn(relative, self.receiver.TOOL_REQUIRED)
+        self.assertNotIn(relative, self.receiver.BASE_REQUIRED)
+        program = (
+            AUDIT
+            + "\n"
+            + (
+                "import json,sys\n"
+                "from types import SimpleNamespace\n"
+                "sys.path.insert(0,sys.argv[1])\n"
+                "from simple_tools import cli\n"
+                "agent=SimpleNamespace(seat='CODEX',tag_prefix='[CODEX·deadbeef')\n"
+                "body=cli._compose(agent,'[CODEX: EE.1.S 📁AFC, OPS → CODEX EE] status',"
+                "labels=['AG'],mentions=[],no_tag=False)\n"
+                "print(json.dumps({'content':body},ensure_ascii=False))\n"
+            )
+        )
+        result = RUN(
+            [sys.executable, "-I", "-B", "-c", program, str(self.release / "scripts")],
+            env=self.env,
+            cwd=self.home,
+            capture_output=True,
+            timeout=15,
+        )
+        self.assert_exit(result, 0)
+        self.assertEqual(
+            json.loads(result.stdout)["content"],
+            "[CODEX:\u200a\u200a\u200aEE.1.S\u200a\u200a📁\u200aAFC,\u200aOPS"
+            " → CODEX EE,\u200a\u200aAG] status",
+        )
+        module = self.release / relative
+        held = module.with_suffix(".withheld")
+        module.rename(held)
+        try:
+            missing = self.command("scripts/simple-chat", ["--help"])
+        finally:
+            held.rename(module)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn(b"post_header", missing.stderr)
 
     def test_actual_allowlist_installs_and_verifies(self):
         self.assertEqual(self.receipt["status"], "activated")
@@ -271,25 +314,33 @@ class ActualRuntime(unittest.TestCase):
         )
         sender = importlib.util.module_from_spec(sender_spec)
         sender_spec.loader.exec_module(sender)
+        # The real bundle must fit what the sender ships, and the receiver cap must not trail the sender.
+        self.assertLessEqual(len(self.raw), sender.MAX_BYTES)
+        self.assertLessEqual(sender.MAX_BYTES, self.receiver.MAX_BUNDLE_BYTES)
+        # The cap is checked by what it is for:  both sides agree and the real bundle fits.  It is
+        # not pinned to a number, so adding a module under the cap breaks nothing here.
         self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
-        self.assertEqual(self.receiver.MAX_FILES, 153)
+        self.assertIn("scripts/simple_tools/wake_settings.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/wake_service.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/thread_registry.py", self.bundle["files"])
         self.assertIn("scripts/fleet_rag/recall_presentation.py", self.bundle["files"])
-        self.assertIn("scripts/agent_sync/mcp/bearer_gate.py", self.bundle["files"])
-        self.assertIn("scripts/agent_sync/listener_registry.py", self.bundle["files"])
-        self.assertIn("scripts/agent_sync/registry_api.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/mcp/bearer_gate.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/listener_registry.py", self.bundle["files"])
+        self.assertIn("scripts/simple_tools/registry_api.py", self.bundle["files"])
         # The git tools CLI ships in the bundle:  required of new bundles, never of rollback targets.
         for path in ("scripts/simple-git", "scripts/git-tools/git"):
             self.assertIn(path, self.bundle["files"])
             self.assertIn(path, self.receiver.TOOL_REQUIRED)
             self.assertNotIn(path, self.receiver.BASE_REQUIRED)
-        # simple-git is NOT a helper command:  each CLI user supplies their own bearer and the server
-        # decides identity and permissions from it.  Its installed wrapper never reads or runs the
-        # host seat helper;  the other remote commands keep their wiring.
-        self.assertNotIn("scripts/simple-git", self.receiver.HELPER_COMMANDS)
+        # simple-git is a helper command:  a seat that declares itself gets its OWN bearer from the host
+        # helper, and an undeclared caller supplies its own.  The implementation file is never wired.
+        # This fixture home has no helper, so the installed wrapper is the plain one with no credential path.
+        self.assertEqual(self.receiver.HELPER_COMMANDS.get("scripts/simple-git"), "simple-git")
         self.assertNotIn("scripts/git-tools/git", self.receiver.HELPER_COMMANDS)
         installed = (self.home / ".local/bin/simple-git").read_text()
+        self.assertFalse((self.home / ".config/fleet-cli/seat-remote-defaults.py").exists())
         self.assertNotIn("runpy", installed)
-        self.assertNotIn("seat-remote-defaults", installed)
+        self.assertNotIn(".secrets", installed)
 
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")
@@ -494,9 +545,9 @@ print(json.dumps(result))
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "simple-chat")
         # What the real server serves:  tools.json, eavesdropper-tools.json (AFC-330), notes-tools.json and
         # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
-        # fleetlink-tools.json.  Every file must ship, or `simple-chat mcp` fails at startup on the server (it
-        # did, 2026-10-16).
-        mcp = self.release / "scripts/agent_sync/mcp"
+        # peer-actions-tools.json, then fleetlink-tools.json last (the hosted Worker specs).  Every file
+        # must ship, or `simple-chat mcp` fails at startup on the server (it did, 2026-10-16).
+        mcp = self.release / "scripts/simple_tools/mcp"
         served = []
         for name in (
             "tools.json",
@@ -524,8 +575,12 @@ print(json.dumps(result))
             [t["name"] for t in listed[len(served) : len(served) + len(linear)]], linear
         )
         fleetlink = json.loads((mcp / "fleetlink-tools.json").read_bytes())["tools"]
+        peer_actions = json.loads((mcp / "peer-actions-tools.json").read_bytes())["tools"]
         self.assertTrue(fleetlink)
-        self.assertEqual(listed[len(served) + len(linear) :], fleetlink)
+        self.assertTrue(peer_actions)
+        tail = listed[len(served) + len(linear) :]
+        self.assertEqual(tail[: len(peer_actions)], peer_actions)
+        self.assertEqual(tail[len(peer_actions) :], fleetlink)
 
     def test_generated_wrapper_isolation_flags(self):
         for name in (
