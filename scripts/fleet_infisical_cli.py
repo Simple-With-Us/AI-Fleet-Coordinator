@@ -232,7 +232,11 @@ def doctor_report(
     primary_project = core.DEFAULT_PROJECT if project is None else project
     if primary_project not in core.PROJECT_SOURCES:
         raise UsageError("unknown Infisical project")
-    path = core.check_path("/" if path is None else path)
+    if path is None:
+        # A selected non-default project defaults to its own declared folder:  its scoped
+        # token cannot read the primary root (the unqualified probe below uses /fleetlink).
+        path = "/" if primary_project == core.DEFAULT_PROJECT else "/fleetlink"
+    path = core.check_path(path)
     rep: dict[str, object] = {}
     rep["environment_ok"] = core.environment_refusal(env) is None
     cli = core.find_cli(env)
@@ -255,10 +259,10 @@ def doctor_report(
     rep["unresolved_reference_count"] = 0
     rep["failure_reason"] = None
     try:
-        secrets = core.fetch_all(path, env, primary_project)
+        secrets = core.fetch_all(path, env, primary_project, allow_unresolved=True)
         rep["fetch_names_ok"] = True
         rep["names_count"] = len(secrets)
-        rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.match(v))
+        rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.search(v))
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
     # The unqualified legacy doctor also probes the read-only FleetLink folder.
