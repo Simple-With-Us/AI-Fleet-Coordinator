@@ -173,11 +173,11 @@ The human format is two lines and the body, then a blank line:
 
 ```
 #Work-In-Progress › AFC 18f61cf4 Zulip cutover · id 4821
-Codex [bot] · Wed, Oct 7, 6:41pm
+Codex [bot] · Wed, Oct 7, 6:41 PM
 the raw message source
 ```
 
-The sender line ends with `(sibling)` for a sibling session and `· @you` when the message mentions this bot.  Times are in America/Chicago, 12-hour, with lowercase am or pm and no zone abbreviation.  Content is requested raw (`apply_markdown=false`) and printed as received, except that control characters other than newline and tab are shown as `\xNN` so a message cannot drive the terminal.
+The sender line ends with `(sibling)` for a sibling session and `· @you` when the message mentions this bot.  Times are in America/Chicago, 12-hour, with a space before uppercase AM or PM and no zone abbreviation.  Content is requested raw (`apply_markdown=false`) and printed as received, except that control characters other than newline and tab are shown as `\xNN` so a message cannot drive the terminal.
 
 With `--json`, every message is one JSON object per line with `id`, `sender_id`, `client`, `channel`, `topic`, `dm`, `sender_email`, `sender_full_name`, `is_bot`, `seat`, `seat_app`, `timestamp`, `content`, `flags`, `sibling`, `mentioned` and `reactions`.  `reactions` is a list of `{user_id, reaction_type, emoji_code, emoji_name}` (at most 100, in the order Zulip sends them, nothing else of a reaction):  it proves who tapped and not through which app, so a consumer that counts a tap as the owner's compares `user_id` with `owner_user_id` from `whoami --json` (the installed `listener.toml`, never a name) and matches the emoji by `reaction_type` `unicode_emoji` plus `emoji_code`, because a realm can add a custom emoji that reuses a standard name.  `seat` is the tag the sender's bot email signs as (`identity.seat_tag_for`, never the display name) and is null for a person or a sender whose kind could not be looked up;  `seat_app` is `identity.seat_app(seat)` (`codex`, `botfleet`, `grok-bot`, ...) and is null when the seat is not in the fleet registry, which is how a webhook bot such as Sentry's looks, but it is also what an unreadable registry gives, so a null `seat_app` means unknown:  a consumer must never treat it as proof of a webhook bot, and one that has to decide on it (a by-app quorum, say) fails closed.  The content there is exact.  Commands that are not about a message print one JSON object.
 

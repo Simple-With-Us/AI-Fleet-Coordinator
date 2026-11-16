@@ -62,6 +62,7 @@ class LinuxHost:
         self.old_hashes, self.new_hashes = old_hashes, new_hashes
         self.recovery, self.proof = recovery, proof
         self.run_command, self.proc, self.clock, self.sleep = run, proc, clock, sleep
+        self._stray_cache = None
 
     def command(self, *args):
         out = self.run_command(list(args), capture_output=True, text=True, timeout=20, check=False)
@@ -217,13 +218,81 @@ class LinuxHost:
         except (TransactionError, ValueError, KeyError, OSError):
             pass
 
+    def stray_unit_processes(self):
+        cached = self._stray_cache
+        if cached is not None and self.clock() - cached[0] < 0.1:
+            return list(cached[1])
+        marker_prefix = "/system.slice/" + self.UNIT
+        strays = []
+        for p in self.proc.iterdir():
+            if not p.name.isdigit():
+                continue
+            try:
+                lines = (p / "cgroup").read_text().splitlines()
+            except FileNotFoundError:
+                continue  # process vanished mid-scan
+            except OSError as e:
+                # An extant process whose cgroup cannot be read (e.g.
+                # permission denied) is not proof of no strays: fail closed
+                # and keep the guard retained.
+                raise TransactionError(
+                    f"cannot scan /proc/{p.name} cgroup ({e.strerror or e}); cannot prove no strays"
+                )
+            paths = []
+            for line in lines:
+                fields = line.split(":", 2)
+                if len(fields) != 3:
+                    # Unvalidated external data must not silently read as a
+                    # non-unit path and hide a surviving process.  An empty
+                    # path is valid (a v1 hierarchy root) and never matches
+                    # the unit marker; a colon inside the path survives the
+                    # bounded split.
+                    raise TransactionError(
+                        f"malformed cgroup line in /proc/{p.name}/cgroup; cannot prove no strays"
+                    )
+                paths.append(fields[2])
+            if not any(
+                path == marker_prefix or path.startswith(marker_prefix + "/") for path in paths
+            ):
+                continue
+            try:
+                state = (p / "stat").read_text()
+            except FileNotFoundError:
+                continue  # process vanished mid-scan
+            except OSError:
+                # Extant but its state cannot be read: retain it as a stray
+                # so the guard stays fail-closed.
+                strays.append(int(p.name))
+                continue
+            # The state field follows the last ')' of the (possibly spaced)
+            # comm; zombies and dead tasks cannot hold the service runtime.
+            tail = state[state.rfind(")") + 2 :] if ")" in state else ""
+            state = tail.split(" ", 1)[0] if tail else ""
+            if state in ("Z", "X", "x"):
+                continue
+            strays.append(int(p.name))
+        self._stray_cache = (self.clock(), tuple(strays))
+        return sorted(strays)
+
     def confirmed_stopped(self, expected):
         p = self.properties()
-        return (
-            p.get("MainPID") == "0"
-            and p.get("ActiveState") == "inactive"
-            and (expected is None or not (self.proc / str(expected["pid"])).exists())
-        )
+        if p.get("MainPID") != "0":
+            return False
+        if expected is not None and (self.proc / str(expected["pid"])).exists():
+            return False
+        state = p.get("ActiveState")
+        if state == "inactive":
+            return True
+        if state == "failed" and p.get("SubState") == "failed":
+            # A crashed image (e.g. an import failure on a new deployment) is
+            # a stopped service, not a live one: recovery must not demand an
+            # active process to stop.  SubState "failed" exactly: a pending
+            # automatic restart (failed-before-auto-restart) is left to
+            # systemd and the guard, never raced with a restore.  Stopped
+            # only once no stray unit process (such as a spawned child
+            # outliving the crash) remains.
+            return not self.stray_unit_processes()
+        return False
 
     def stop_without_kill(self, expected):
         # Caller has established the frozen process has no handler or child.
@@ -365,6 +434,15 @@ class LinuxHost:
     def stop_for_recovery(self):
         if self.confirmed_stopped(None):
             return
+        state = self.properties()
+        if state.get("MainPID") == "0" and state.get("ActiveState") == "failed":
+            # confirmed_stopped refused: name why instead of "relay not
+            # active", which masked the original failure being recovered from.
+            if state.get("SubState") != "failed":
+                # e.g. failed-before-auto-restart: systemd is about to act;
+                # recovery must not race it with a restore.
+                raise TransactionError("failed unit has a pending systemd action; guard retained")
+            raise TransactionError("failed unit retains live processes; guard retained")
         expected = self.process_identity()
         try:
             self.freeze(expected)

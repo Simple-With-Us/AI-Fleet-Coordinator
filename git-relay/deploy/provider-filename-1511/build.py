@@ -20,7 +20,7 @@ UNIT = "git-relay-provider-1511.service"
 MODULES = {
     "__init__.py": "e9c5519a796eab24d04e416e5bd30598015b5a03c09141d856a39d898d92c423",
     "deploy_guard.py": "3acb883f2163f7acf23d50213c259a17792761003e277157a5193f4e248e0aba",
-    "deploy_host.py": "bbb1d3906e89f9f83f10c0a0f6976aa1e72244bbc9d112a0f841b49bbb89fce5",
+    "deploy_host.py": "23a86bb34689ff4976e7e142689136d8fa4009f3445196d7ab7c1c1d75b37d2c",
     "deploy_journal.py": "bb39bbe7ced794771aa419c357509cf2a30bc719d68cdb5c29557f7cec74a2a0",
     "deploy_recovery.py": "e362ba890b0e19fa8fbd07a23096358bfbc8b29b5a9524da09546b4f4c5619d1",
     "deploy_runner.py": "36a9033e2678ae57b071c391d2dee954b4ec818419433c00d06eb7250954db72",
