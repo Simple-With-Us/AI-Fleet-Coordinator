@@ -234,6 +234,8 @@ print(json.dumps({
         # A real read-only payload needs no compatibility package or writer ledger in either
         # interpreter.  The bounded worker executes only this copied canonical source.
         reader_only = self.root / "read-only-payload"
+        if reader_only.is_symlink():
+            raise OSError("refusing symlinked payload directory")
         reader_only.mkdir(mode=0o700)
         for name in ("fleet-ops-control.py", "fleet_infisical.py"):
             target = reader_only / name

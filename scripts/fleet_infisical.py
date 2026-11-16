@@ -974,8 +974,13 @@ def list_project_names(
     for record in records:
         key = validate_secret_name_record(record, project, path)
         value = record.get("secretValue")
-        hidden_mask = record.get("secretValueHidden") is True and value == HIDDEN_VALUE_MASK
-        if key in found or (value is not None and value != "" and not hidden_mask):
+        hidden_mask = record.get("secretValueHidden") is True and value in (
+            None,
+            "",
+            " ",
+            HIDDEN_VALUE_MASK,
+        )
+        if key in found or (value not in (None, "", " ") and not hidden_mask):
             raise SecretsError("unverified-source")
         found.add(key)
     return tuple(sorted(found))
