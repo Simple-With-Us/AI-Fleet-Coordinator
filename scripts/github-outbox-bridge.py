@@ -114,7 +114,7 @@ def _own_intro_re(seat: str):
     # Optional leading 👀 or :eyes:, then a tight legacy tag or a folder-tag intro.
     return re.compile(
         r"^(?:(?:👀|:eyes:)\s*)?(?:"
-        r"\[" + s + r"(?:\]|->|·)"
+        r"\[" + s + r"(?:\]|\s*(?:→|->)|·)"
         r"|"
         r"\[\s*" + s + r"(?:\s*:\s*[A-Za-z0-9]+(?:[.-]\d+[.-][MSC]|-\d+-[MSC]))?\s+📁"
         r")"
@@ -225,7 +225,7 @@ def is_own_post(text: str, seat: str) -> bool:
 
 # One recipient token after → / ->: plain seat, @SEAT, or Zulip bold @**Name**.
 _RECIPIENT_TOKEN = (
-    r"(?:@\*\*[A-Za-z][A-Za-z0-9_-]*\*\*|@[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*)"
+    r"(?:@\*\*[^*\r\n]+\*\*|@?[A-Za-z][A-Za-z0-9_-]*(?:[ ]+[A-Z]{1,2}(?:\.\d+\.[MSC])?)?)"
 )
 
 

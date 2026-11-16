@@ -1,140 +1,72 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="agent-logos/app-afc-dark.webp">
+  <img src="agent-logos/app-afc.png" alt="Muster app icon" width="96" height="96">
+</picture>
+
 # AI Fleet Coordinator
 
-AI-Fleet-Coordinator (AFC) is a collection of tools, scripts, configuration, protocols, and documentation that support Jay Wedgeworth's multi-agent coding fleet.  It is separate from Muster, the Fleet Admin app.
+AI Fleet Coordinator (AFC) is the shared toolkit behind [Simple With Us](https://simplewithus.com/)'s AI coding fleet.  It brings coordination, repository workflows, configuration checks, and public activity reporting together across coding platforms, the Mac, and Linux servers.
 
-Website: [AI Fleet Coordinator](https://simplewithus.com/ai-fleet-coordinator/)
+This repository also contains **[Muster](muster/README.md)**, the native macOS app for fleet administration.  Muster gives the owner a place to inspect fleet health, services, coding seats, work, and configuration drift, with explicit machine targets for supported actions.
 
-GitHub About should match this file.  Do not invent seats, hosts, or jobs that are not listed here or in `fleet-apps.json`.
+[AFC Overview](https://simplewithus.com/ai-fleet-coordinator/) · [Muster](https://simplewithus.com/muster/) · [Public Activity Feed](https://simple-with-us.github.io/AI-Fleet-Coordinator/)
 
-## How the fleet works now
+## What Lives Here
 
-1. **Linear first** — `https://linear.app/simple-with-us`, one team per app, ids like `BF-123`, used by agents through the `simple-board` CLI (`scripts/linear-board/`).  Identify, claim, resolve, and comment here.  Cloud agents run the same CLI from a checkout.  Canonical: `FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle.
-2. **Zulip `#Work-In-Progress`** — realtime claims and closeouts, realm `https://simplewithus.zulipchat.com`.  Every post is channel + topic, and the topic is the thread.  Post with the `simple-chat` CLI (`~/.local/bin/simple-chat`):  `post` for a new topic, `reply` inside one.  Credentials: Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`, read by the CLI through `fleet-secrets`;  a cloud seat reads the same Fleet-OPS `/zulip` names through `fleet-secrets`).  Slack is retired (owner 2026-10-07).  Canonical: `FLEET-PROTOCOL.md`; mechanics in `docs/protocols/zulip-fleet-guide.md` and at https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1.
-3. **Effort logs: archived.**  The live Mac copies (`~/apps/*-EFFORT-LOG.md`) and each repo's `docs/EFFORT-LOG.md` carry an "Archived" header; every item was imported into Linear.  `mac-collab-sync`, `mac-collab-writeback` and the `effort-issues-sync` workflows are retired.  See `EFFORT-LOG-PROTOCOL.md` (a stub) and `docs/BOARD-WRITEBACK-PROTOCOL.md` (retired).
-4. **Mac always-on** — Shellular (phone → this Mac), `grok-leader` / `grok-acp`, scout, and the rest of the inventory.  Master list: [`docs/MAC-LOCAL-PROCESSES.md`](docs/MAC-LOCAL-PROCESSES.md).  Do not invent LaunchAgents from a cloud session.
-5. **Seat worktrees** — each coding seat works in `~/apps/<prefix>-<suffix>` on its own branch prefix.  Never edit in `~/Code/<App>` (the human integration tree).
-6. **No app-specific Grok Bot seats.**  Grok Bot seats implement through **Cursor cloud agents**.  Their tags are `[GB-<NAME>]` — never `[GROK-BOT]`, `[CURSOR]`, or `[GROK]`, and never `GB-COMPILE`.  The live bot roster is the guide's *Who's Here*; GB bots are owner-managed, hold no fleet Zulip credential, and post through the Grok Bot platform, so do not assume one is listening.  This coordinator/ops system self-id is **`AFC`**.  A fleet-wide wake is a post in `#Work-In-Progress` › `fleet` that @-mentions each bot that must act; it is not Mac Grok (`GROK`), not Grok Build (`GROK-BUILD`), and not a per-app lane in `fleet-apps.json`.  Do not add `~/apps/<app>-grok-bot` seats.
+| Component | Purpose | Start Here |
+| --- | --- | --- |
+| Muster | Native SwiftUI macOS 14+ fleet administration, with Mac and server views | [App, Prerequisites, And Build Instructions](muster/README.md) |
+| Fleet Tools | Shared CLI and MCP tools for coordination, work tracking, notes, recall, and artifacts | [Fleet Tools Manual](FLEET-PROTOCOL.md) · [Tool Guide](docs/protocols/simple-tools-guide.md) |
+| GitHub Relay | Audited repository and pull request operations under each seat's approved identity | [Relay](git-relay/README.md) |
+| Fleet Configuration | App and seat registries, configuration checks, and isolated task lanes | [App Registry](fleet-apps.json) · [Seat Registry](fleet-seats.json) · [Lane Map](docs/protocols/lane-map.md) |
+| Activity Feed And Calendars | Public repository work, grouped by day, project, and coding platform | [Live Feed](https://simple-with-us.github.io/AI-Fleet-Coordinator/) · [Generator](scripts/build-fleet-daily-digest.py) |
+| Onboarding And Skills | Shared procedures for joining the fleet and carrying work through review | [New App](docs/ONBOARDING-NEW-APP.md) · [New Seat](docs/ONBOARDING-NEW-AGENT.md) · [Skills](docs/fleet-skills/README-add-in-app.md) |
 
-## Apps and coding seats
+Muster administers the fleet.  Individual products, including [BotFleet](https://github.com/Simple-With-Us/BotFleet), keep their own product controls and remain separate applications.
 
-Inventory: [`fleet-apps.json`](fleet-apps.json).  After any join, `python3 scripts/check-fleet-registry.py` must exit 0.
+## Coordination Today
 
-| App | Acronym | Kind |
-|-----|---------|------|
-| Socratic.Trade | ST | product |
-| Congress.Trade | CT | product |
-| Usage-Monitor | UM | product |
-| congress-trading-shared | CTS | library |
-| DealDex | DD | product |
-| Personal-Site | PS | product |
-| AI-Fleet-Coordinator | AFC | infra |
+- **Linear tracks work.**  Issues, claims, findings, and closeouts live in the [Simple With Us workspace](https://linear.app/simple-with-us).
+- **Zulip carries conversations.**  Active work uses `#Work-In-Progress` topics in the [fleet realm](https://simplewithus.zulipchat.com/), with one issue and subject per topic.
+- **One shared Operator serves the platforms.**  Session registration, assignment, routing, and sweeping use shared tools; platform differences are confined to the delivery each platform requires.
+- **Task lanes isolate changes.**  Each task uses an owned branch and worktree, then a reviewed pull request.
+- **Infisical owns secrets and shared settings.**  Consumers use scoped service tokens through approved routes; credentials and private deployment inventory stay out of public documentation and artifacts.
 
-Active coding seats in that file: `CLAUDE`, `CODEX`, `AG`, `CURSOR`, `GROK`, `CLUTCH`, `FX`, `MM`, `MA`, `MC`, `OPENCODE`.  It also carries retired entries (`MONET`, `DSH`, `HARNESS`, `RENOIR`, `KIMI`) and the `GROK-BUILD` row, an alias of `GROK` (owner 2026-10-08;  any spelling of it is accepted as a seat name and resolves to `GROK`, owner 2026-10-10).  The live seat list, with each seat's Zulip bot, is `FLEET-PROTOCOL.md` § Seats and Identity and the guide's *Who's Here*.
+The current app and seat inventory lives in [fleet-apps.json](fleet-apps.json) and [fleet-seats.json](fleet-seats.json).  The registries include active entries, aliases, and historical entries; their current fields determine status.
 
-## Core protocols (still binding)
+## Public Activity Feed
 
-1. **Agent lanes:** dedicated persistent git worktrees.  They never overwrite each other's uncommitted work.
-2. **Claim and closeout:** the Linear issue (`simple-board claim`, `simple-board status`) + a Zulip post in the `#Work-In-Progress` work topic at start and end of every real unit, and a PR that says `Fixes <ID>` or `Refs <ID>`.
-3. **Safe landings:** do not push directly to `main`.  Feature branch → verify → PR → merge when CI is green (`scripts/land.sh` where the app uses it).
-4. **Fleet daily digest + calendars:** day-by-day HTML/Markdown of public-repo merged PRs and issue churn, plus two ICS feeds.  Hosted on GitHub Pages (see below).
-5. **Apple Notes for owner review:** plans, designs, reviews, and completion notes go in folder **`Coding`** (local folder on this Mac, intentionally non-iCloud), pinned.  Title `[TEAM_KEY, Agent] Topic`.  Helper: `scripts/apple-notes-coding.sh`.  Full rule in `FLEET-PROTOCOL.md`.
-6. **Prior messages stay in scope:** new owner messages **add** work; they do **not** cancel earlier asks unless the owner explicitly contradicts, cancels, or clearly redirects.
-7. **Secrets:** Infisical is the sole source of truth for **app runtime** secrets.  Fleet keys live in Infisical Fleet-OPS and are read with `fleet-secrets` (nothing reads `~/.secrets`, AFC-359) (`fleet-secrets get NAME`, or `fleet-secrets run --only A,B -- CMD`);  names only are readable with `fleet-secrets names`  (the old `files/key-names` endpoint was retired on 2026-10-19;  cloud seats ask a Mac seat or the owner).  Never mix `COOLIFY_AGENTS` into app Infisical as `COOLIFY_API_TOKEN`.  Never bare `infisical secrets`.
-8. **Fleet UI copy:** Title Case headings/buttons; sentence-case values; lowercase compact money; inline iOS nav titles; nothing truncated without a full-value hover.  See `FLEET-UI-COPY.md`.
-9. **App versioning & TestFlight:** `1.0.N` patch versions.  TestFlight notes use Central Time and **no** internal agent names.
-10. **Fleet Skills:** Per-seat catalog in `skills/` and `docs/fleet-skills/` (`fleet-coordination`, `session-start`, `board-ops`, `secret-handoff`, `sentence-gap`, `apple-notes`, `unstick-pr`, `land-lane`, `closeout`, `deploy-verify`, `codex-triage`, `pickup-seat`, `owner-copy`, `fleet-infra`, `dns-and-registrars`, `mac-cleanup`, `pr-sweep`).  `ios-ship` is omitted from every seat — Compiler / `GB-COMPILER` owns GitHub-hosted `macos-latest` iOS ship; do not teach a local Mac runner.  DealDex's hosted Actions ship stays — do not disable it.  Kimi is not installed to `~/.kimi`.  Renoir is not installed to `~/.renoir/skills` until the seat is active.  Sync via `python3 scripts/install-fleet-skills.py`.
+The [activity feed](https://simple-with-us.github.io/AI-Fleet-Coordinator/) is a public view of repository work, including merged pull requests and issues opened or closed.  The daily digest and per-commit calendar refresh every six hours through the existing GitHub Actions publishing workflow.
 
-## Setup
+The feed uses an explicit public repository allowlist and checks current GitHub visibility before fetching activity.  Private repositories and internal Linear work are excluded from the public output.
 
-1. **Create the Agent Lanes:**
-   Run `./scripts/setup-agent-lanes.sh <base_path>` to create the isolated Git worktrees for your agents.
-2. **Initialize Zulip Chat:**
-   Keep each seat's bot credential in Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), then subscribe the bot once:  `simple-chat subscribe --channel work-in-progress --channel builds --must-exist`.  A cloud seat reads the same credentials from the same Infisical Fleet-OPS `/zulip` path through `fleet-secrets` (`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), so every seat's credential comes from the one approved source.  Slack Sync (`./scripts/setup-slack-sync.sh`) is retired (owner 2026-10-07); do not run it.
-3. **Install Fleet Skills:**
-   Run `python3 scripts/install-fleet-skills.py` to sync the catalog into Cursor, Antigravity, Claude Code, Codex, Grok, Grok Build, Renoir, DeepSeek, Kimi (retired), Desktop Monet, and `docs/fleet-skills/by-seat/` (Claude/Grok Bot upload packs).  Each copy is rewritten to that seat's tag, Notes name, branch prefix, and worktree.  Grok Bot copies use `[GB-<NAME>]` role tags, not `[GROK-BOT]`.  Omit a skill on a seat when it is not appropriate.  Do not leave Monet identity in another seat's folder.
-4. **Apply the Rules:**
-   Copy `TEMPLATE-AGENTS.md` to your own project's `AGENTS.md` and customize it.  Ensure all agents are instructed to read it.
-5. **Setup GitHub Actions:**
-   Copy the contents of `github-workflows-template/workflows` to your project's `.github/workflows` folder to enable automatic PR updating and (optionally) Sentry CI reporting.
-6. **(Optional) Run Fleet Monitor:**
-   Use the `fleet-sentry-monitor` PM2 ecosystem to track the health of your agent background processes.
-7. **Subscribe to the fleet daily digest / calendars** (optional):
-   See the next section.
+| Artifact | Link |
+| --- | --- |
+| Daily Activity | [HTML Feed](https://simple-with-us.github.io/AI-Fleet-Coordinator/) |
+| Markdown Digest | [digest.md](https://simple-with-us.github.io/AI-Fleet-Coordinator/digest.md) |
+| Daily Calendar | [daily-digest.ics](https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics) |
+| Per-Commit Calendar | [agent-activity.ics](https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics) |
 
-## Onboard a new app or a new agent
+To subscribe, copy a calendar link into Apple Calendar's **Add Subscription Calendar**, Google Calendar's **From URL**, or Outlook's calendar subscription feature.  For Google Calendar, add the subscription on the web to have it appear in the mobile app.
 
-Standing procedure (policy + checklist + scripts).  Do not invent a one-off join.  Do not invent a per-app Grok Bot seat.
+Published snapshots live on the `published/fleet-activity` branch.  The generated files on `main` are fixtures or historical snapshots, so use the live feed or published branch for current activity.
 
-| What | Doc | Script |
-|------|-----|--------|
-| New GitHub repo / `~/Code` folder joining the fleet | [`docs/ONBOARDING-NEW-APP.md`](docs/ONBOARDING-NEW-APP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md)) | `scripts/onboard-new-app.sh` |
-| DNS / registrars (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | [`docs/DNS-AND-REGISTRARS.md`](docs/DNS-AND-REGISTRARS.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md)) | — |
-| New coding seat (Claude, Grok, Codex, …) | [`docs/ONBOARDING-NEW-AGENT.md`](docs/ONBOARDING-NEW-AGENT.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md)) | `scripts/onboard-new-agent.sh` |
-| Binding protocol (Linear + Zulip + model economics) | [`FLEET-PROTOCOL.md`](FLEET-PROTOCOL.md) § Linear and the Claim Lifecycle, § Delegation & model economics | — |
-| Cursor chats on desktop + iOS (Grok Bot / Shellular) | [`docs/CURSOR-CHAT-SURFACES.md`](docs/CURSOR-CHAT-SURFACES.md) | `scripts/cursor_chat_surfaces.py` |
-| Universal fleet-ops skills catalog | [`docs/fleet-skills/README-add-in-app.md`](docs/fleet-skills/README-add-in-app.md) | `scripts/install-fleet-skills.py` |
-| Sweep and land the open PRs from any platform (Claude, Codex, Cursor, Grok, ...) | [`docs/PR-SWEEP.md`](docs/PR-SWEEP.md) | `scripts/pr-sweep` |
-| **Fresh cloud sandbox / lost CLI toolchain** | [`docs/CLOUD-AGENT-BOOTSTRAP.md`](docs/CLOUD-AGENT-BOOTSTRAP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/CLOUD-AGENT-BOOTSTRAP.md)) | `bash /workspace/.bootstrap.sh` |
+## Working On This Repository
 
-## Fleet daily digest (HTML + Markdown + ICS)
+Read [AGENTS.md](AGENTS.md) before making changes.  It contains the current working rules; [FLEET-PROTOCOL.md](FLEET-PROTOCOL.md) is the generated Fleet Tools Manual, built from the Fleet-OPS handbook.
 
-Day-by-day outline of public repository work: **merged PRs** and **issues opened/closed**.  Built by
-`scripts/build-fleet-daily-digest.py` and refreshed every 6 hours by
-`.github/workflows/fleet-activity-site.yml`, which also rebuilds the per-commit
-activity ICS and deploys the site to **GitHub Pages**.  The public feeds use an explicit repository allowlist and check current GitHub visibility before fetching activity.  Internal Linear teams remain private inputs to separate operator workflows.
+For Muster development, follow its [prerequisites and build instructions](muster/README.md#prerequisites).  Native macOS builds require a Mac; Linux can run the portable tools and their applicable checks.
 
-### Hosted URLs
+Useful entry points:
 
-| Artifact | URL |
-|----------|-----|
-| **HTML site** | https://simple-with-us.github.io/AI-Fleet-Coordinator/ |
-| **Markdown** | https://simple-with-us.github.io/AI-Fleet-Coordinator/digest.md |
-| **ICS — daily outline** (all-day “what shipped”) | https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/daily-digest.ics |
-| **ICS — per-commit activity** | https://simple-with-us.github.io/AI-Fleet-Coordinator/calendar/agent-activity.ics |
-| **Linear** (auth) | https://linear.app/simple-with-us |
-| **Board short link** | https://board.jays.services (Cloudflare redirect to Linear;  the old THE BOARD archive was retired 2026-10-19) |
+- [Fleet Tooling And Capabilities](docs/protocols/simple-tools-guide.md)
+- [App Onboarding](docs/ONBOARDING-NEW-APP.md)
+- [Seat Onboarding](docs/ONBOARDING-NEW-AGENT.md)
+- [Muster Panels And Action Boundaries](muster/README.md#every-panel)
+- [Activity Feed Generator](scripts/build-fleet-daily-digest.py)
 
-Raw fallbacks on branch `published/fleet-activity` (refreshed by the workflow; `main` copies are no longer updated):
-
-```text
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/daily-digest.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/calendar/agent-activity.ics
-https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/published/fleet-activity/site/digest.md
-```
-
-### Subscribe (Apple / Google / Outlook)
-
-**Recommended:** daily outline ICS (one all-day event per day with public PR/issue summary).
-
-**Apple Calendar (iOS):** Calendar → Calendars → Add Calendar → Add Subscription Calendar → paste HTTPS URL → Find.
-
-**Google Calendar (web):** Other calendars → + → From URL → paste URL.
-
-**Google Calendar (iOS):** Google's mobile "Add Subscription Calendar" is picky; if it says *Validation failed*, add the same URL on [calendar.google.com](https://calendar.google.com) (web) instead — mobile will then show the subscribed calendar.
-
-CDN alternate for the commit feed (sometimes validates more cleanly on mobile):
-
-```text
-https://cdn.jsdelivr.net/gh/Simple-With-Us/AI-Fleet-Coordinator@published/fleet-activity/calendar/agent-activity.ics
-```
-
-### Enable GitHub Pages (one-time)
-
-Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-The workflow uses `actions/deploy-pages`.  First successful run after that publishes
-the site URL above.
-
-### Local rebuild
-
-```bash
-export GITHUB_TOKEN="$(gh auth token)"
-python3 scripts/build-agent-calendar.py
-python3 scripts/build-fleet-daily-digest.py
-# outputs: site/index.html, site/digest.md, calendar/daily-digest.ics
-```
-
-ICS line-folding uses `scripts/ics_utils.py` (RFC 5545 octet folding) so Apple/
-Google accept long DESCRIPTION lines.
+For a local activity rebuild, run `scripts/build-agent-calendar.py` and `scripts/build-fleet-daily-digest.py` using the approved GitHub credential route for your environment.  The outputs are `site/index.html`, `site/digest.md`, and the calendar files; `scripts/ics_utils.py` handles RFC 5545 line folding.
 
 ## License
-Apache-2.0
+
+[Apache-2.0](LICENSE)

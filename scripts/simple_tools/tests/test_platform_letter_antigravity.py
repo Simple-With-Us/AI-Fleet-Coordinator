@@ -231,8 +231,11 @@ class KindTests(Base):
 
     def test_ps_output_is_read_as_a_parent_and_words(self) -> None:
         done = subprocess.CompletedProcess([], 0, stdout="  412 /Users/x/.local/bin/agy -p hello world\n")
-        with mock.patch.object(PA.subprocess, "run", return_value=done):
+        env = {"PATH": "/usr/bin:/bin", "SIMPLE_TOOLS_OPERATOR_REGISTRY_INFISICAL_TOKEN": "fake.bootstrap",
+               "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "fake.signing"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(PA.subprocess, "run", return_value=done) as run:
             self.assertEqual(PA.process_row(5), (412, ["/Users/x/.local/bin/agy", "-p", "hello", "world"]))
+        self.assertEqual(run.call_args.kwargs["env"], {"PATH": "/usr/bin:/bin"})
         for bad in (subprocess.CompletedProcess([], 1, stdout=""), subprocess.CompletedProcess([], 0, stdout="x y\n")):
             with mock.patch.object(PA.subprocess, "run", return_value=bad):
                 self.assertEqual(PA.process_row(5), (0, []))

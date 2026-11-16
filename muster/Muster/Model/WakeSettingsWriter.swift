@@ -458,6 +458,15 @@ extension WakeSettingKey {
     func value(from text: String) -> ListenerConfigValue? {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
+        if isBool {
+            // The panel's switch drafts "true" or takes the setting out;  "false" is accepted so a
+            // file can be given an explicit Off, which the eavesdropper reads like the default.
+            switch trimmed.lowercased() {
+            case "true": return .bool(true)
+            case "false": return .bool(false)
+            default: return nil
+            }
+        }
         if isNumeric {
             guard let number = Double(trimmed) else { return nil }
             // A cap is a count or an amount, so a negative or a non-finite one is not a value this
