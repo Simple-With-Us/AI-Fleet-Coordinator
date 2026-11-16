@@ -2139,7 +2139,7 @@ class ContainerTests(unittest.TestCase):
         lines = [
             l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")
         ]
-        self.assertEqual(lines[0], "FROM python:3.14-slim")
+        self.assertEqual(lines[0], "FROM python:3.15-slim")
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
         self.assertEqual(users, ["simpletools"], "the daemon runs as a non-root user")
         self.assertIn("COPY scripts/simple_tools /app/scripts/simple_tools", lines)
