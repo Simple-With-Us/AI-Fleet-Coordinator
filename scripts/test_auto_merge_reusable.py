@@ -281,6 +281,17 @@ CLASSIFY_STEP_NAME = "Classify PR for auto-merge eligibility"
 # "compare API failed" skip proves the gates passed.
 FAKE_GH_CLASSIFY = """#!/bin/bash
 printf '%s\n' "$*" >> "$GH_CALLS"
+# AFC-812 rearm fixture: answer a bare pulls/<n> fetch before anything else;
+# nested paths (comments, reviews, compare, files) fall through to the lanes.
+if [[ "$*" == *repos/*/pulls/* && "$*" != *comments* && "$*" != *reviews* && "$*" != *compare* && "$*" != *files* ]]; then
+  case "$GH_FAKE_MODE" in
+    rearm_fetch_fails) echo "gh: api down" >&2; exit 1 ;;
+    rearm_closed) printf '%s\n' '{"number":7,"state":"closed","draft":false,"labels":[],"base":{"sha":"1111111111111111111111111111111111111111"},"head":{"sha":"2222222222222222222222222222222222222222","ref":"feature/x","repo":{"full_name":"Simple-With-Us/Example"}}}' ;;
+    rearm_draft) printf '%s\n' '{"number":7,"state":"open","draft":true,"labels":[],"base":{"sha":"1111111111111111111111111111111111111111"},"head":{"sha":"2222222222222222222222222222222222222222","ref":"feature/x","repo":{"full_name":"Simple-With-Us/Example"}}}' ;;
+    *) printf '%s\n' '{"number":7,"state":"open","draft":false,"title":"rearm fixture","labels":[],"base":{"sha":"1111111111111111111111111111111111111111"},"head":{"sha":"2222222222222222222222222222222222222222","ref":"feature/x","repo":{"full_name":"Simple-With-Us/Example"}}}' ;;
+  esac
+  exit 0
+fi
 H="1111111111111111111111111111111111111111"
 case "$*" in
   *check-runs*)
@@ -444,6 +455,7 @@ def run_classify_full(
     require_approval: str = "",
     request_pattern: str = "@kody[ \t]+start-review",
     outputs: dict | None = None,
+    rearm_pr_number: str = "",
 ) -> tuple[int, str, str, list[str]]:
     """Run the classify step with a fake `gh`; return (exit code, output, skip reason, gh calls)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -470,7 +482,12 @@ def run_classify_full(
                 "HEAD_REF": "feature/x",
                 "TITLE": "x",
                 "REPO": "Simple-With-Us/Example",
-                "PR_NUMBER": "1",
+                "PR_NUMBER": rearm_pr_number or "1",
+                "PR_URL": (
+                    "https://github.com/Simple-With-Us/Example/pull/" + rearm_pr_number
+                    if rearm_pr_number
+                    else "https://github.com/Simple-With-Us/Example/pull/1"
+                ),
                 "KODY_CHECK_NAME": "Kody Code Review",
                 "KODY_APP_SLUG": "kody-ai",
                 "KODY_APP_ID": "413034",
@@ -484,6 +501,7 @@ def run_classify_full(
                 "LABELS_JSON": "[]",
                 "REQUIRE_GATE": "false",
                 "GATE_SCRIPT": "",
+                "REARM_PR_NUMBER": rearm_pr_number,
             }
         )
         proc = subprocess.run(
@@ -511,6 +529,36 @@ def run_classify_full(
 def run_classify(mode: str, review_gate: str = "", **kwargs) -> tuple[int, str, str]:
     code, output, reason, _calls = run_classify_full(mode, review_gate, **kwargs)
     return code, output, reason
+
+
+class ClassifyRearmMode(unittest.TestCase):
+    """The opt-in rearm_pr_number path (AFC-812): fetch by number, validate,
+    then run the identical gates.  Defaults keep the event path."""
+
+    def test_empty_rearm_keeps_the_event_path(self):
+        code, output, reason = run_classify("clear", require_approval="false", rearm_pr_number="")
+        self.assertEqual(code, 0, output)
+        self.assertIn("compare API failed", reason)
+
+    def test_rearm_fetch_fails_closed(self):
+        code, output, reason = run_classify("rearm_fetch_fails", require_approval="false", rearm_pr_number="7")
+        self.assertEqual(code, 0, output)
+        self.assertIn("rearm PR fetch failed", reason)
+
+    def test_rearm_rejects_a_closed_pr(self):
+        code, output, reason = run_classify("rearm_closed", require_approval="false", rearm_pr_number="7")
+        self.assertEqual(code, 0, output)
+        self.assertIn("rearm PR is not open", reason)
+
+    def test_rearm_rejects_a_draft_pr(self):
+        code, output, reason = run_classify("rearm_draft", require_approval="false", rearm_pr_number="7")
+        self.assertEqual(code, 0, output)
+        self.assertIn("rearm PR is a draft", reason)
+
+    def test_rearm_pr_url_output(self):
+        outputs: dict = {}
+        run_classify_full("rearm_open", require_approval="false", rearm_pr_number="7", outputs=outputs)
+        self.assertEqual(outputs.get("pr_url"), "https://github.com/Simple-With-Us/Example/pull/7")
 
 
 class ClassifyInFlightGates(unittest.TestCase):
