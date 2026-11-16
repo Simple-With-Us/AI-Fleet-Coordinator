@@ -182,12 +182,26 @@ def repo_from_remote(url: str) -> str | None:
     return match.group(1).casefold() if match else None
 
 
+class GitQueryTimeout(Exception):
+    """One git query ran out of time.
+
+    A folder that cannot be asked is not a folder that is not a repository:  the chat behind it
+    may still be working on the repo the alert names, so it is raised rather than folded into the
+    empty answer, and the caller records the chat as unplaced instead of dropping it quietly.
+    """
+
+
 def git_out(cwd: str, *args: str) -> str:
-    """One short git query in the chat's folder, or '' (not a repo, no git, too slow)."""
+    """One short git query in the chat's folder, or '' (not a repo, no git).
+
+    A query that ran out of time raises `GitQueryTimeout`, because a folder that cannot be asked
+    is not the same as a folder that is not a repository, and the two must not read alike."""
     try:
         done = subprocess.run(
             ["git", "-C", cwd, *args], capture_output=True, text=True, timeout=3, check=False
         )
+    except subprocess.TimeoutExpired:
+        raise GitQueryTimeout(cwd) from None
     except (OSError, subprocess.SubprocessError):
         return ""
     return done.stdout.strip() if done.returncode == 0 else ""
@@ -203,20 +217,44 @@ class ChatPlaces:
         self.git = git
         self.cache: dict[tuple[str, str], str] = {}
         self.deadline = time.monotonic() + budget
+        #: The folders that could not be asked, and why.
+        self.failed: dict[str, str] = {}
+        #: The chats that were dropped because their folder could not be asked.  An owner alert
+        #: that quietly loses a chat looks the same as one that never reached it, so the chat is
+        #: named here and carried into the receipt.
+        self.unplaced: list[dict[str, str]] = []
 
     def _ask(self, cwd: str, what: str) -> str:
         """One git query per folder and question, cached.  Once the alert's shared budget is spent, an unasked folder
         answers '' (no repo, no branch), so a slow or network-mounted folder cannot delay the reminders."""
         if (cwd, what) not in self.cache:
             if time.monotonic() >= self.deadline:
+                self.failed.setdefault(cwd, "git-budget-spent")
                 return ""
             args = (
                 ("config", "--get", "remote.origin.url")
                 if what == "remote"
                 else ("branch", "--show-current")
             )
-            self.cache[(cwd, what)] = self.git(cwd, *args)
+            try:
+                self.cache[(cwd, what)] = self.git(cwd, *args)
+            except GitQueryTimeout:
+                self.failed.setdefault(cwd, "git-timeout")
+                return ""
         return self.cache[(cwd, what)]
+
+    def _unplaced(self, row: Mapping[str, Any], cwd: str, reason: str) -> None:
+        """Record a chat that was left out because its folder could not be asked, once per chat."""
+        session_id = str(row.get("session_id") or "")
+        if not session_id or any(row["session_id"] == session_id for row in self.unplaced):
+            return
+        self.unplaced.append(
+            {
+                "session_id": session_id,
+                "platform": str(row.get("platform") or ""),
+                "reason": reason,
+            }
+        )
 
     def repo(self, row: Mapping[str, Any]) -> str | None:
         """A Cursor cloud chat's repo comes from the catalog's `repo` URL (its cwd is `cursor-cloud://<id>`);  a local
@@ -226,7 +264,11 @@ class ChatPlaces:
         cwd = row.get("cwd")
         if not isinstance(cwd, str) or not cwd.startswith("/"):
             return None
-        return repo_from_remote(self._ask(cwd, "remote"))
+        value = self._ask(cwd, "remote")
+        reason = self.failed.get(cwd, "")
+        if reason:
+            self._unplaced(row, cwd, reason)
+        return repo_from_remote(value)
 
     def on_issue(self, row: Mapping[str, Any], issues: frozenset[str]) -> bool:
         cwd = row.get("cwd") if isinstance(row.get("cwd"), str) else ""
