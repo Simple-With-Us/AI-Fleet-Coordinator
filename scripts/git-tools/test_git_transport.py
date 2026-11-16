@@ -382,6 +382,19 @@ class Publish(unittest.TestCase):
             self.publish_unmocked(specs)
         self.assertEqual(self.sent, [])
 
+    def test_narrow_workflow_release_builder_regressions(self):
+        # CI already executes this module. Keep the release-builder safety suite
+        # on that exact route without requiring a workflow edit to repair itself.
+        path = HERE.parent / "test_workflow_client_release.py"
+        spec = importlib.util.spec_from_file_location("workflow_release_tests", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = unittest.TestResult()
+        unittest.defaultTestLoader.loadTestsFromModule(module).run(result)
+        self.assertEqual(result.testsRun, 6)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+
     def test_workflow_file_uses_the_same_fenced_hosted_batch(self):
         good = self.file("good", 10)
         workflow = self.file("wf", 10)
