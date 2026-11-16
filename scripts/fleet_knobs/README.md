@@ -19,7 +19,7 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
 ## Rules a job gets for free
 
 - **One fetch per folder per process**, on the first read of a knob in that folder, through
-  the low-level scoped REST reader in `fleet_secrets/core.py`, for prod only.  A knob is at the
+  the shared direct REST client in `fleet_infisical.py`, for prod only.  A knob is at the
   root (`/`) unless its `Spec` names a `folder` (the wake router's knobs are in
   `/wake-router`), and a folder no read needs is never fetched, so a token scoped to one folder
   serves a reader whose knobs are all in it.  A failed fetch is not retried;
@@ -106,10 +106,9 @@ planned or done, 1 failed, 2 refused.
 ## Packaging
 
 A stable copy run with `python3 -I` must carry this package (`scripts/fleet_knobs/`, without
-`tests/`) plus the existing low-level verifier files `fleet_secrets/__init__.py` and
-`fleet_secrets/core.py`.  Both packages use only the standard library.  The fleet-facts and
-needs-owner installers copy those two verifier files explicitly and remove stale package
-extras; they do not install a fleet-secrets executable, `cli.py` or `__main__.py`.  Their
+`tests/`) plus `fleet_infisical.py`.  Both use only the standard library.  The fleet-facts and
+needs-owner installers copy the shared client and retain only the compatibility import shim;
+they do not install a fleet-secrets executable, `cli.py` or `__main__.py`.  Their
 installed `python3 -I` tests exercise real metadata and named-value verification through a
 loopback fixture, including successful reads and rejection before values for mismatched grants.
 

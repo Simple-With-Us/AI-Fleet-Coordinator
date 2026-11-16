@@ -610,7 +610,7 @@ def _cmd_runner(rt: Any, args: argparse.Namespace) -> int:
 
 
 def _when(value: Any) -> str:
-    """An ISO time as the fleet writes it:  'Thu, Oct 22, 5:03pm' (America/Chicago)."""
+    """An ISO time as the fleet writes it:  'Thu, Oct 22, 5:03 PM' (America/Chicago)."""
     from .cli import format_time
 
     try:

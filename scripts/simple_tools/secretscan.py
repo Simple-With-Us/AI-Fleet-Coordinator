@@ -172,10 +172,33 @@ _REVIEWED_GENERIC_FIXTURES: frozenset[tuple[str, str, str]] = frozenset(
         (
             "Simple-With-Us/AI-Fleet-Coordinator",
             "git-relay/git_relay/server.py",
-            "320d5958b16102a222434e8513c64c9df1f1758446f1c67b17a422868824cb15",
+            "82b53da38ce0a110a3f25b947fbcabcfcef031a8295795d72f46f48d55d79305",
         ),
     }
 )
+# Exact reviewed match spans, in decoded Unicode character offsets, not bytes.
+# Full-file digest remains mandatory. Values are never stored in this registry.
+# CT offsets come from the source owner's whole-file location-only review.
+_REVIEWED_GENERIC_MATCHES: dict[tuple[str, str, str], frozenset[tuple[str, int, int, int, int]]] = {
+    (
+        "Simple-With-Us/AI-Fleet-Coordinator",
+        "docs/security/reviewed-generic-fixtures.md",
+        "825f87972a207b3ad52a99250f230db13ef55777be78eb566208d674d24419c6",
+    ): frozenset(
+        [
+            ("assigned credential", 5876, 5917, 5893, 5917),
+            ("assigned credential", 5935, 5972, 5952, 5972),
+            ("assigned secret", 6085, 6115, 6093, 6115),
+            ("assigned secret", 6278, 6312, 6286, 6312),
+        ]
+    ),
+    (
+        "Simple-With-Us/Congress.Trade",
+        "app/src/security/__tests__/originLock.test.ts",
+        "cc1f0a0d5565309e9268ecd4e37d15d09c5c2e85f4de3cd54638be87bee555c5",
+    ): frozenset({("assigned secret", 547, 580, 557, 580)}),
+}
+
 _GENERIC_ASSIGNMENTS = frozenset({"assigned credential", "assigned secret"})
 
 # Immutable public package-integrity reviews, not a general SRI exemption.
@@ -200,6 +223,7 @@ _REVIEWED_PUBLIC_INTEGRITIES: frozenset[tuple[str, str, str]] = frozenset(
 def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str | None:
     """Normal scan, except the separately reviewed exact full-file subtypes.
 
+    Match-pinned fixtures require the exact nonempty effective match census.
     Generic fixtures waive generic assignments only.  Public-integrity reviews
     waive only the Zulip-shape result for their two immutable files; all other
     patterns and every loaded value remain absolute, even if short.
@@ -215,14 +239,29 @@ def scan_file(repo: str, path: str, text: str, known: Iterable[str] = ()) -> str
                 return "a loaded credential"
         kind = scan(text, known)
         return None if kind == "a Zulip-shaped API key" else kind
-    if key not in _REVIEWED_GENERIC_FIXTURES:
+    reviewed_matches = _REVIEWED_GENERIC_MATCHES.get(key)
+    if key not in _REVIEWED_GENERIC_FIXTURES and reviewed_matches is None:
         return scan(text, known)
     for value in known:
         if value and value in text:
             return "a loaded credential"
+    observed = set()
     for label, pattern in _PATTERNS:
-        if label not in _GENERIC_ASSIGNMENTS and pattern.search(text):
-            return label
+        if label not in _GENERIC_ASSIGNMENTS:
+            if pattern.search(text):
+                return label
+            continue
+        if reviewed_matches is None:
+            continue  # Legacy exact-file entry, unchanged by the match-pinned route.
+        for match in pattern.finditer(text):
+            if _source_assignment(text, match):
+                continue
+            identity = (label, *match.span(), *match.span("value"))
+            if identity not in reviewed_matches:
+                return label  # A digest update alone cannot admit another match.
+            observed.add(identity)
+    if reviewed_matches is not None and (not reviewed_matches or observed != set(reviewed_matches)):
+        return "assigned secret"  # Missing/stale metadata is unverifiable, so refuse.
     if any(_zulip_shaped(match.group()) for match in _ZULIP_SHAPED.finditer(text)):
         return "a Zulip-shaped API key"
     return None

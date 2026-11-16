@@ -146,6 +146,7 @@ class InstallerTests(unittest.TestCase):
         runtime = self.home / ".local" / "share" / "fleet-cli" / "current" / "scripts"
         runtime.mkdir(parents=True)
         (runtime / "simple_tools").symlink_to(SCRIPTS / "simple_tools")
+        (runtime / "fleet_infisical.py").write_text(SECRETS_STUB)
         for package, files in (("fleet_knobs", {"knobs.py": KNOBS_STUB, "registry.py": REGISTRY_STUB}),
                                ("fleet_secrets", {"core.py": SECRETS_STUB})):
             (runtime / package).mkdir()

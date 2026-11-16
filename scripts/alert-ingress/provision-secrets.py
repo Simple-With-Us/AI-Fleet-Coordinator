@@ -47,7 +47,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-from fleet_secrets import core as scoped_secrets
+import fleet_infisical as scoped_secrets
 
 # Project identifiers, pinned: a copy must read from and write to exactly this
 # project (populate-scoped-folders.py, kody 4365623903).  Neither is a credential.

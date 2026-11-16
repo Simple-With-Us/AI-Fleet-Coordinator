@@ -1158,6 +1158,8 @@ class WorkflowVerbs:
         """
         if action not in SPECS:
             raise Refused("unsupported workflow action")
+        if action == "wf_pr_create":
+            raise Refused("PR creation requires owner-only open_pr")
         if not isinstance(repo, str) or not _REPO.fullmatch(repo):
             raise Refused("invalid repository")
         if not preauthorized and policy.authorize(seat, action, repo):
@@ -1258,16 +1260,21 @@ class WorkflowVerbs:
             ):
                 raise Refused("PR head not matched")
             base_ref = quote(pr["base"]["ref"], safe="/")
-            try:
-                tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
-            except RelayGitHubError as exc:
-                if exc.status == 404:
-                    raise Refused("PR base not matched") from None
-                raise
-            tip_obj = tip.get("object") if isinstance(tip, dict) else None
-            base_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
-            if not isinstance(base_sha, str) or not _SHA.fullmatch(base_sha):
-                raise Refused("PR base not matched")
+
+            def _read_base_tip_sha():
+                try:
+                    tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+                except RelayGitHubError as exc:
+                    if exc.status == 404:
+                        raise Refused("PR base not matched") from None
+                    raise
+                tip_obj = tip.get("object") if isinstance(tip, dict) else None
+                sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
+                if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+                    raise Refused("PR base not matched")
+                return sha
+
+            base_sha = _read_base_tip_sha()
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
             # Freeze the actual named ref tip, since the PR's base snapshot may lag it.
@@ -1297,10 +1304,7 @@ class WorkflowVerbs:
             # recheck stays possible - the endpoint gives no stronger fence - which
             # is exactly why the write below always runs under the workflow ceiling
             # instead of relying on the provider to refuse unaudited changes.
-            tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
-            tip_obj = tip.get("object") if isinstance(tip, dict) else None
-            tip_sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
-            if tip_sha != base_sha:
+            if _read_base_tip_sha() != base_sha:
                 raise Refused("PR base not matched")
         else:
             for page in range(1, 31):
@@ -8373,61 +8377,9 @@ class WorkflowVerbs:
         return pr
 
     def wf_pr_create(self, repo, args):
-        # Open a PR from a same-repo head branch (a colon form is not a _ref).
-        # expected_head_sha is a preflight pin on the head branch's CURRENT commit,
-        # read before the write; it is NOT an atomic compare-and-swap - a head move
-        # between this read and the POST is caught only by the receipt comparison.
-        _only(args, ("repo", "base", "head", "title", "body", "expected_head_sha"))
-        base, head = _ref(args, "base"), _ref(args, "head")
-        expected = _sha(args, "expected_head_sha")
-        title = self._pr_text_field(args, "title", 256)
-        body = self._pr_text_field(args, "body", 65536)
-        try:
-            branch = self._get(f"/repos/{repo}/branches/{quote(head, safe='')}")
-        except RelayGitHubError as exc:
-            if exc.status in (0, 408) or exc.status >= 500:
-                raise PreReadUnavailable(
-                    "head branch pre-read unavailable; no write attempted"
-                ) from None
-            raise
-        if (
-            not isinstance(branch, dict)
-            or not isinstance(branch.get("commit"), dict)
-            or branch["commit"].get("sha") != expected
-        ):
-            raise Refused("head branch not at expected sha")
-        result = self.client._call(
-            "POST",
-            f"/repos/{repo}/pulls",
-            {"title": title, "body": body, "base": base, "head": head},
-            bearer=self.bearer,
-        )
-        if (
-            not isinstance(result, dict)
-            or type(result.get("number")) is not int
-            or result["number"] < 1
-            or result.get("state") != "open"
-            or not isinstance(result.get("head"), dict)
-            or result["head"].get("ref") != head
-            or not isinstance(result["head"].get("sha"), str)
-            or not _SHA.fullmatch(result["head"]["sha"])
-            or result["head"]["sha"] != expected
-            or not isinstance(result.get("base"), dict)
-            or result["base"].get("ref") != base
-            or result.get("title") != title
-            or result.get("body") != body
-        ):
-            raise RelayGitHubError(502, "PR creation receipt unconfirmed; write may have occurred")
-        # A verified receipt confirms only the provider-visible effect at response time: it cannot prevent a later foreign overwrite or close, and it supplies no authority for the action by itself.
-        return {
-            "pull": {
-                "number": result["number"],
-                "state": "open",
-                "head_ref": head,
-                "head_sha": result["head"]["sha"],
-                "base_ref": base,
-            }
-        }
+        # Tombstone for stale/direct handles. Never mint an App or send a PR POST.
+        # The legacy head-pin contract is not silently mapped to open_pr.
+        raise Refused("PR creation requires owner-only open_pr")
 
     def wf_pr_edit(self, repo, args):
         # Edit title/body of an OPEN same-repo PR. expected_head_sha pins the head
