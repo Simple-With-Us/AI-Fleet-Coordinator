@@ -30,6 +30,7 @@ from urllib.parse import quote, unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import remote_git_source
 import repo_catalog
+from fleet_lanes.code_main_sync import CANONICAL_OWNERS
 
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSIONS = {1, 2}
@@ -83,12 +84,15 @@ class Blob:
     size_bytes: int | None = None
 
 
-def _fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
+def _fsync_directory(path: Path, *, fd: int | None = None) -> None:
+    owned = fd is None
+    if owned:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         os.fsync(fd)
     finally:
-        os.close(fd)
+        if owned:
+            os.close(fd)
 
 
 @contextmanager
@@ -147,6 +151,28 @@ def _collection_lock(output_root: Path, *, exclusive: bool):
             os.close(fd)
 
 
+def _git_read_environment() -> dict[str, str]:
+    """Preserve normal host trust while refusing caller source/config injection."""
+    excluded = {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    }
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in excluded and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
+    return env
+
+
 def _run_git(
     repo: Path,
     *args: str,
@@ -161,14 +187,7 @@ def _run_git(
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=60,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "GIT_OPTIONAL_LOCKS": "0",
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_NO_LAZY_FETCH": "1",
-            },
+            env=_git_read_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         raise CollectionError("Git operation timed out after 60 seconds") from exc
@@ -262,6 +281,14 @@ def _private_opt_in_identity(value: Any) -> tuple[str, str] | None:
     return owner.casefold(), repo.casefold()
 
 
+def _is_verified_private_doc_repo(owner: str, repo: str) -> bool:
+    """Match VERIFIED_PRIVATE_DOC_REPOS against both exact and canonical fleet owners."""
+    exact = f"{owner}/{repo}".casefold()
+    canonical_owner = CANONICAL_OWNERS.get(owner.casefold(), owner)
+    canonical = f"{canonical_owner}/{repo}".casefold()
+    return exact in VERIFIED_PRIVATE_DOC_REPOS or canonical in VERIFIED_PRIVATE_DOC_REPOS
+
+
 def _repo_info(path: Path) -> RepoInfo | None:
     if path.is_symlink() or not path.is_dir() or repo_catalog.is_scratch_dir_name(path.name):
         return None
@@ -270,7 +297,7 @@ def _repo_info(path: Path) -> RepoInfo | None:
         resolved = path.resolve()
         if top != resolved:
             return None
-        remote = os.fsdecode(_run_git(path, "remote", "get-url", "origin").strip())
+        remote = os.fsdecode(_run_git(path, "config", "--get", "remote.origin.url").strip())
         parsed = _github_owner_repo(remote)
         if parsed is None:
             return None
@@ -344,9 +371,8 @@ def discover_repositories(
                 raise CollectionError(
                     "Private remote source requires its exact --private-docs-repo identity"
                 )
-            if (
-                identity["visibility"] == "private"
-                and identity["owner_repo"].casefold() not in VERIFIED_PRIVATE_DOC_REPOS
+            if identity["visibility"] == "private" and not _is_verified_private_doc_repo(
+                owner, name
             ):
                 raise CollectionError(
                     "Private remote source is not configured for a verified private repository"
@@ -699,6 +725,11 @@ def _load_previous_manifest(path: Path, repo_name: str) -> dict[str, Any]:
     raw = _read_existing(path)
     if raw is None:
         return {}
+    return parse_existing_manifest(raw, repo_name)
+
+
+def parse_existing_manifest(raw: bytes, repo_name: str) -> dict[str, Any]:
+    """Validate manifest bytes already read through a caller's anchored file descriptor."""
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1726,7 +1757,7 @@ def _collect_unlocked(
             raise CollectionError(
                 "Private-docs opt-in must be an exact GitHub owner/repository name"
             )
-        if f"{private_repo[0]}/{private_repo[1]}".casefold() not in VERIFIED_PRIVATE_DOC_REPOS:
+        if not _is_verified_private_doc_repo(private_repo[0], private_repo[1]):
             raise CollectionError(
                 "Private-docs opt-in is not configured for a verified private repository"
             )
@@ -1899,7 +1930,7 @@ def collect(
         private_identity = _private_opt_in_identity(private_docs_repo)
         if (
             private_identity is None
-            or "/".join(private_identity) not in VERIFIED_PRIVATE_DOC_REPOS
+            or not _is_verified_private_doc_repo(private_identity[0], private_identity[1])
             or not any(
                 (repo.owner.casefold(), repo.name.casefold()) == private_identity
                 for repo in repositories
