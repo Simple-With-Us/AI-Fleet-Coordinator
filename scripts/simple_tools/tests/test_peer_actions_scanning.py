@@ -2,9 +2,9 @@
 
 import contextlib
 import io
+import base64
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +17,17 @@ from simple_tools import peer_actions, peer_actions_cli, secretscan
 
 
 class PeerActionScanTests(unittest.TestCase):
+    def test_credential_shaped_compact_body_is_refused_at_build_time(self):
+        # Assembled at runtime; never a credential.  A bare 32-character
+        # mixed-case alphanumeric run is Zulip-shaped to the scanner, so
+        # build_entry must refuse it before any row exists.
+        shaped = "Ab1" * 10 + "Ab"
+        with self.assertRaises(peer_actions.PeerActionsError) as caught:
+            peer_actions.build_entry(**dict(self.fields, request_source=shaped))
+        self.assertEqual(caught.exception.code, "refused_secret")
+        self.assertNotIn(shaped, caught.exception.message)
+
+
     def setUp(self):
         # Synthetic scanner fixture assembled at runtime; never a credential.
         self.unsafe = "gh" + "p_" + "A" * 40
@@ -138,16 +149,23 @@ class PeerActionScanTests(unittest.TestCase):
         self.assertIn("Tools.known", caught.exception.message)
 
     def test_compact_private_key_body_is_refused_for_local_and_fetched_credentials(self):
-        openssl = shutil.which("openssl")
-        if not openssl:
-            self.skipTest("OpenSSL is required for the synthetic PEM fixture")
-        # Fresh test-only key material stays captured in memory and never authenticates.
-        generated = subprocess.run(
-            [openssl, "genpkey", "-algorithm", "ED25519"],
-            env={"PATH": os.defpath}, capture_output=True, timeout=5, check=True,
-        )
-        key = generated.stdout.decode("ascii")
-        compact = "".join(line for line in key.splitlines() if not line.startswith("-----"))
+        # Deterministic synthetic PEM assembled at runtime; never a credential.
+        # A freshly generated key made this test flaky:  the random base64 body
+        # sometimes held a bare 32-character alphanumeric run matching the
+        # scanner's Zulip-shaped API-key pattern, so build_entry refused before
+        # the log_row rejection under test.  Fixed bytes keep both the fixture
+        # and the covered rejection path deterministic.
+        # Marker lines are assembled at runtime, like self.unsafe:  a literal
+        # PEM block in the repo would trip the scanner on the fixture itself.
+        dashes = "-" * 5
+        begin = dashes + "BEGIN " + "PRIVATE KEY" + dashes
+        end = dashes + "END " + "PRIVATE KEY" + dashes
+        body = base64.b64encode(bytes((i * 7 + 13) % 256 for i in range(48))).decode("ascii")
+        key = begin + "\n" + body + "\n" + end + "\n"
+        compact = "".join(line for line in key.splitlines() if not line.startswith(dashes))
+        # The refusal under test happens at log_row (the fetched SA JSON carries
+        # the full PEM);  the compact body alone must stay below the scanner bar.
+        self.assertIsNone(secretscan.scan(compact))
         raw = json.dumps({"private_key": key})
         entry = peer_actions.build_entry(**dict(self.fields, request_source=compact))
         for dry_run in (True, False):

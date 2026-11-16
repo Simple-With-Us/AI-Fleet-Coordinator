@@ -310,11 +310,11 @@ SINGLE_UNCHANGED = (
 FLEET_DATES = (
     (
         "Landed 2026-10-19, deployed 2026-10-20T02:03:00Z, filed 2025-03-07 at 2026-10-19T09:05:00-05:00.",
-        "Landed Mon, Oct 19, deployed Mon, Oct 19, 9:03pm, filed Fri, Mar 7, 2025 at Mon, Oct 19, 9:05am.",
+        "Landed Mon, Oct 19, deployed Mon, Oct 19, 9:03 PM, filed Fri, Mar 7, 2025 at Mon, Oct 19, 9:05 AM.",
     ),
     (
         "Standup 2026-10-19 10:30-11:00 Central.",
-        "Standup Mon, Oct 19, 10:30am-11:00am Central.",
+        "Standup Mon, Oct 19, 10:30 AM-11:00 AM Central.",
     ),
 )
 FLEET_DATES_KEPT = (
@@ -329,16 +329,16 @@ FLEET_DATES_KEPT = (
 # A -HH:MM on the space form is a range only when the start did not carry seconds alone.
 FLEET_OFFSET_FORMS = (
     # The existing range forms keep working:  a range that shows seconds shows them on both ends.
-    ("Standup 2026-10-19 10:30-11:00 Central.", "Standup Mon, Oct 19, 10:30am-11:00am Central."),
-    ("2026-10-19 10:30-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
-    ("2026-10-19 10:30:00-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
-    # Seconds on the start only:  a UTC offset, converted like the T form, not a 5:00am range end.
-    ("2026-10-19 10:30:00-05:00", "Mon, Oct 19, 10:30am"),
-    ("2026-10-19 10:30:00+05:30", "Mon, Oct 19, 12:00am"),
-    ("2026-10-19 10:30:00Z", "Mon, Oct 19, 5:30am"),
+    ("Standup 2026-10-19 10:30-11:00 Central.", "Standup Mon, Oct 19, 10:30 AM-11:00 AM Central."),
+    ("2026-10-19 10:30-11:00:00", "Mon, Oct 19, 10:30 AM-11:00 AM"),
+    ("2026-10-19 10:30:00-11:00:00", "Mon, Oct 19, 10:30 AM-11:00 AM"),
+    # Seconds on the start only:  a UTC offset, converted like the T form, not a 5:00 AM range end.
+    ("2026-10-19 10:30:00-05:00", "Mon, Oct 19, 10:30 AM"),
+    ("2026-10-19 10:30:00+05:30", "Mon, Oct 19, 12:00 AM"),
+    ("2026-10-19 10:30:00Z", "Mon, Oct 19, 5:30 AM"),
     # A zoned range converts both ends:  the end carries the same zone as the start.
-    ("2026-10-19 10:30-11:00Z", "Mon, Oct 19, 5:30am-6:00am"),
-    ("2026-10-19 22:30-23:30Z", "Mon, Oct 19, 5:30pm-6:30pm"),
+    ("2026-10-19 10:30-11:00Z", "Mon, Oct 19, 5:30 AM-6:00 AM"),
+    ("2026-10-19 22:30-23:30Z", "Mon, Oct 19, 5:30 PM-6:30 PM"),
 )
 
 

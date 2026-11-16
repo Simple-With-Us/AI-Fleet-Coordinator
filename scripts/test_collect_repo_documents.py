@@ -198,6 +198,137 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("DifferentOwnerCopy", skipped)
         self.assertIn("AnotherCollision", skipped)
 
+    def test_owner_transition_uses_previous_owner_for_guards_and_preserves_history(self) -> None:
+        repo = self.make_repo(owner="old-owner")
+        repo.write("README.md", "Old owner source.\n")
+        repo.write("docs/guide.md", "First published revision.\n")
+        old_commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        old_manifest_bytes = (mirror / "manifest.json").read_bytes()
+        old_manifest = json.loads(old_manifest_bytes)
+        old_version_key = collector._manifest_version_key(old_manifest)
+        old_report = mirror / "reports" / old_version_key
+        old_versioned_manifest_bytes = (old_report / "manifest.json").read_bytes()
+        old_versioned_readme_bytes = (old_report / "README.md").read_bytes()
+        old_catalog_bytes = (mirror / "catalog.json").read_bytes()
+        old_versioned_catalog_bytes = (old_report / "catalog.json").read_bytes()
+        old_repo_readme_bytes = (mirror / "README.md").read_bytes()
+
+        git(
+            repo.path,
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/new-owner/ExampleRepo.git",
+        )
+        repo.write("README.md", "New owner source.\n")
+        repo.write("docs/guide.md", "Second published revision.\n")
+        new_commit = repo.commit_published()
+        self.assertNotEqual(old_commit, new_commit)
+
+        plan = collector.collect(self.code, self.output, check_only=True)
+        self.assertTrue(any("ExampleRepo/README.md" in operation for operation in plan))
+        self.assertEqual((mirror / "manifest.json").read_bytes(), old_manifest_bytes)
+        self.assertEqual((mirror / "README.md").read_bytes(), old_repo_readme_bytes)
+        self.assertEqual((mirror / "catalog.json").read_bytes(), old_catalog_bytes)
+        self.assertEqual((old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes)
+        self.assertEqual((old_report / "README.md").read_bytes(), old_versioned_readme_bytes)
+        self.assertEqual((old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes)
+
+        collector.collect(self.code, self.output)
+        new_manifest = json.loads((mirror / "manifest.json").read_bytes())
+        self.assertEqual(new_manifest["owner_repo"], "new-owner/ExampleRepo")
+        self.assertEqual(new_manifest["source_commit"], new_commit)
+        self.assertIn("new-owner/ExampleRepo", (mirror / "README.md").read_text())
+        self.assertEqual((old_report / "manifest.json").read_bytes(), old_versioned_manifest_bytes)
+        self.assertEqual((old_report / "README.md").read_bytes(), old_versioned_readme_bytes)
+        self.assertEqual((old_report / "catalog.json").read_bytes(), old_versioned_catalog_bytes)
+
+        self.assertEqual(collector.collect(self.code, self.output, check_only=True), [])
+        self.assertEqual(collector.collect(self.code, self.output), [])
+
+        (mirror / "README.md").write_bytes(b"tampered generated README\n")
+        with self.assertRaisesRegex(
+            collector.CollectionError,
+            "An existing generated repository README was changed or deleted",
+        ):
+            collector.collect(self.code, self.output, check_only=True)
+
+    def test_same_commit_owner_transition_gets_exact_identity_version_key(self) -> None:
+        repo = self.make_repo(owner="old-owner")
+        repo.write("README.md", "Stable source.\n")
+        repo.write("docs/guide.md", "Stable guide.\n")
+        source_commit = repo.commit_published()
+        collector.collect(self.code, self.output)
+
+        mirror = self.output / "ExampleRepo"
+        old_manifest = json.loads((mirror / "manifest.json").read_bytes())
+        old_key = collector._manifest_version_key(old_manifest)
+        old_immutable = {
+            relative: (mirror / relative).read_bytes()
+            for relative in (
+                f"reports/{old_key}/manifest.json",
+                f"reports/{old_key}/README.md",
+                f"reports/{old_key}/catalog.json",
+            )
+        }
+        old_catalog = (mirror / "catalog.json").read_bytes()
+        old_readme = (mirror / "README.md").read_bytes()
+
+        new_owner_repo = "new-owner/ExampleRepo"
+        git(
+            repo.path,
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/new-owner/ExampleRepo.git",
+        )
+        plan = collector.collect(self.code, self.output, check_only=True)
+        self.assertTrue(any("ExampleRepo/README.md" in operation for operation in plan))
+        self.assertEqual((mirror / "README.md").read_bytes(), old_readme)
+        self.assertEqual((mirror / "catalog.json").read_bytes(), old_catalog)
+        for relative, content in old_immutable.items():
+            self.assertEqual((mirror / relative).read_bytes(), content)
+
+        collector.collect(self.code, self.output)
+        current = json.loads((mirror / "manifest.json").read_bytes())
+        self.assertEqual(current["source_commit"], source_commit)
+        self.assertEqual(current["owner_repo"], new_owner_repo)
+        self.assertEqual(current["collection_identity_version"], 1)
+        new_key = collector._manifest_version_key(current)
+        expected_hash = hashlib.sha256(new_owner_repo.encode("utf-8")).hexdigest()[:12]
+        self.assertTrue(new_key.endswith(f"-identity-{expected_hash}"))
+        self.assertNotEqual(new_key, old_key)
+        case_variant = {
+            **current,
+            "owner_repo": "NEW-OWNER/ExampleRepo",
+        }
+        self.assertNotEqual(new_key, collector._manifest_version_key(case_variant))
+        self.assertEqual(current["catalog_version_path"], f"reports/{new_key}/catalog.json")
+        for relative, content in old_immutable.items():
+            self.assertEqual((mirror / relative).read_bytes(), content)
+
+        self.assertEqual(collector.collect(self.code, self.output, check_only=True), [])
+        self.assertEqual(collector.collect(self.code, self.output), [])
+
+        for invalid in (None, True, 0, 2, "1"):
+            with (
+                self.subTest(identity_version=invalid),
+                self.assertRaisesRegex(
+                    collector.CollectionError, "unsupported collection identity version"
+                ),
+            ):
+                collector._manifest_version_key({**current, "collection_identity_version": invalid})
+
+        (mirror / "README.md").write_bytes(b"tampered generated README\n")
+        with self.assertRaisesRegex(
+            collector.CollectionError,
+            "An existing generated repository README was changed or deleted",
+        ):
+            collector.collect(self.code, self.output, check_only=True)
+
     def test_check_is_read_only_and_second_collection_is_idempotent(self) -> None:
         repo = self.make_repo()
         repo.write("README.md", "# Example\n")
@@ -1152,6 +1283,330 @@ class CollectorTests(unittest.TestCase):
         )
         manifest = json.loads((mirror / "manifest.json").read_text())
         self.assertEqual(manifest["private_docs_opt_in"], "Simple-With-Us/Kodus-Config")
+
+    def test_private_owner_transfer_refuses_new_opt_in_without_mutating_private_history(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Old owner README.\n")
+        repo.write("docs/private-audits/evidence.md", "Old owner private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-transfer-central"
+        verified_identities = {
+            "old-owner/private-repo",
+            "new-owner/private-repo",
+        }
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+
+            mirror = output / "Private-Repo"
+            before = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertTrue(
+                any(path.startswith("documents/docs/private-audits/") for path in before)
+            )
+            self.assertTrue(any(path.startswith("reports/") for path in before))
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/new-owner/Private-Repo.git",
+            )
+            repo.write("README.md", "New owner README.\n")
+            repo.write("docs/private-audits/evidence.md", "New owner private evidence.\n")
+            repo.commit_published()
+
+            with self.assertRaisesRegex(
+                collector.CollectionError,
+                "Private-document consent for old-owner/Private-Repo cannot transfer to "
+                "new-owner/Private-Repo",
+            ):
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="new-owner/Private-Repo",
+                )
+
+            after = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after, before)
+
+            public_repo = self.make_repo(
+                folder="Selected-Public-Repo",
+                name="Selected-Public-Repo",
+                owner="public-owner",
+            )
+            public_repo.write("README.md", "Selected public README.\n")
+            public_repo.write("docs/public-guide.md", "Selected public documentation.\n")
+            public_repo.commit_published()
+
+            with redirect_stdout(StringIO()):
+                status = collector.main(
+                    [
+                        "--code-root",
+                        str(self.code),
+                        "--output-root",
+                        str(output),
+                        "--repo",
+                        "Selected-Public-Repo",
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            public_mirror = output / "Selected-Public-Repo"
+            self.assertEqual(
+                (public_mirror / "documents/docs/public-guide.md").read_text(),
+                "Selected public documentation.\n",
+            )
+            after_public_collection = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after_public_collection, before)
+
+    def test_public_collection_after_private_owner_transfer_uses_generic_opt_in_error(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Old owner README.\n")
+        repo.write("docs/private-audits/evidence.md", "Old owner private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-transfer-public-central"
+        verified_identities = {"old-owner/private-repo", "new-owner/private-repo"}
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+            mirror = output / "Private-Repo"
+            before = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/new-owner/Private-Repo.git",
+            )
+            repo.write("README.md", "New owner README.\n")
+            repo.write("docs/private-audits/evidence.md", "New owner private evidence.\n")
+            repo.commit_published()
+
+            with self.assertRaisesRegex(
+                collector.CollectionError,
+                "An existing private-document collection requires the same explicit opt-in",
+            ):
+                collector.collect(self.code, output, repo_paths=[repo.path])
+
+            after = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(after, before)
+
+    def test_case_only_private_owner_casing_refresh_preserves_private_report_history(self) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Original README.\n")
+        repo.write("docs/private-audits/evidence.md", "Original private evidence.\n")
+        repo.commit_published()
+        output = self.base / "private-case-central"
+        verified_identities = {"old-owner/private-repo"}
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="old-owner/Private-Repo",
+            )
+            mirror = output / "Private-Repo"
+            report_history = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
+            }
+            self.assertTrue(report_history)
+            initial_manifest = json.loads((mirror / "manifest.json").read_text())
+            initial_commit = initial_manifest["source_commit"]
+
+            git(
+                repo.path,
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/OLD-OWNER/Private-Repo.git",
+            )
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="OLD-OWNER/Private-Repo",
+            )
+            case_only_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(case_only_manifest["source_commit"], initial_commit)
+            self.assertEqual(case_only_manifest["private_docs_opt_in"], "OLD-OWNER/Private-Repo")
+
+            repo.write("README.md", "Case-varied README.\n")
+            repo.write("docs/private-audits/evidence.md", "Case-varied private evidence.\n")
+            updated_commit = repo.commit_published()
+            collector.collect(
+                self.code,
+                output,
+                repo_paths=[repo.path],
+                private_docs_repo="OLD-OWNER/Private-Repo",
+            )
+
+            updated_manifest = json.loads((mirror / "manifest.json").read_text())
+            self.assertEqual(updated_manifest["source_commit"], updated_commit)
+            self.assertEqual(
+                (mirror / "documents/docs/private-audits/evidence.md").read_text(),
+                "Case-varied private evidence.\n",
+            )
+            current_report_history = {
+                path.relative_to(mirror).as_posix(): (
+                    path.read_bytes(),
+                    stat.S_IMODE(path.stat().st_mode),
+                )
+                for path in mirror.rglob("*")
+                if path.is_file()
+                and not path.is_symlink()
+                and "reports/" in path.relative_to(mirror).as_posix()
+            }
+            for name, snapshot in report_history.items():
+                self.assertEqual(current_report_history[name], snapshot)
+
+    def test_malformed_persisted_or_current_private_consent_fails_without_mutating_storage(
+        self,
+    ) -> None:
+        repo = self.make_repo(name="Private-Repo", owner="old-owner")
+        repo.write("README.md", "Private README.\n")
+        repo.write("docs/private-audits/evidence.md", "Private evidence.\n")
+        repo.commit_published()
+        verified_identities = {"old-owner/private-repo", "different-owner/private-repo"}
+
+        def snapshot(path: Path) -> dict[str, tuple[str, bytes | int, int]]:
+            entries = [path, *path.rglob("*")]
+            result: dict[str, tuple[str, bytes | int, int]] = {}
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                relative = entry.relative_to(path).as_posix() or "."
+                mode = stat.S_IMODE(entry.stat().st_mode)
+                if entry.is_dir():
+                    result[relative] = ("directory", mode, 0)
+                elif entry.is_file():
+                    result[relative] = ("file", entry.read_bytes(), mode)
+            return result
+
+        with patch.object(collector, "VERIFIED_PRIVATE_DOC_REPOS", verified_identities):
+            malformed_persisted_values = (
+                None,
+                17,
+                "",
+                " ",
+                "old-owner/Private-Repo/extra",
+                "different-owner/Private-Repo",
+            )
+            for index, malformed_value in enumerate(malformed_persisted_values):
+                output = self.base / f"private-bad-persisted-consent-{index}"
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="old-owner/Private-Repo",
+                )
+                mirror = output / "Private-Repo"
+                manifest_path = mirror / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                manifest["private_docs_opt_in"] = malformed_value
+                manifest_path.write_bytes(collector._json_bytes(manifest))
+                before = snapshot(output)
+                repo_info = collector._repo_info(repo.path)
+                self.assertIsNotNone(repo_info)
+
+                with self.subTest(kind="persisted", value=repr(malformed_value)):
+                    with self.assertRaisesRegex(
+                        collector.CollectionError,
+                        "same explicit opt-in",
+                    ):
+                        collector.collect_repository(
+                            repo_info,
+                            output,
+                            private_docs_opt_in="old-owner/Private-Repo",
+                        )
+                    self.assertEqual(snapshot(output), before)
+
+            invalid_current_values = (
+                None,
+                17,
+                "",
+                " ",
+                "old-owner/Private-Repo/extra",
+                "different-owner/Private-Repo",
+            )
+            for index, invalid_value in enumerate(invalid_current_values):
+                output = self.base / f"private-bad-current-consent-{index}"
+                collector.collect(
+                    self.code,
+                    output,
+                    repo_paths=[repo.path],
+                    private_docs_repo="old-owner/Private-Repo",
+                )
+                before = snapshot(output)
+
+                with self.subTest(kind="current", value=repr(invalid_value)):
+                    with self.assertRaises(collector.CollectionError):
+                        collector.collect(
+                            self.code,
+                            output,
+                            repo_paths=[repo.path],
+                            private_docs_repo=invalid_value,
+                        )
+                    self.assertEqual(snapshot(output), before)
 
     def test_indexes_only_cli_writes_only_to_preview_root(self) -> None:
         repo = self.make_repo()
