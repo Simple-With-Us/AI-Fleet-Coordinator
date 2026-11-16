@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """check-ci-runner-policy.py -- flag a live local Mac Actions runner that
-contradicts AGENT-SYNC.md's local-Mac self-hosted runner ban (CI Runners section).
+contradicts the local-Mac self-hosted runner ban in AGENTS.md (CI runners section).
 
 Compares the live process inventory (default ~/apps/MAC-LOCAL-PROCESSES.md,
 which is NOT tracked in this repo) against the ban stated in this repo's
-AGENT-SYNC.md § CI Runner Infrastructure Policy. Exits 1 and prints one line
+AGENTS.md § CI runners.  The ban lived in FLEET-PROTOCOL.md until the Fleet-OPS
+handbook rewrite made that file a tools manual and moved policy to AGENTS.md. Exits 1 and prints one line
 per offender if any inventory row looks like a self-hosted GitHub Actions
 runner (an `actions.runner...` label, or a `mac-xcode*` / `trading-live-mac*`
 process) whose status column says it is live (Always-on / Up / Running /
@@ -31,13 +32,10 @@ import re
 import sys
 
 DEFAULT_INVENTORY = pathlib.Path("~/apps/MAC-LOCAL-PROCESSES.md").expanduser()
-# The protocol document is being renamed;  the mirror holds it under exactly one of the two names (check-generated-mirror.py).
-# Remove the old name when the rename is complete.
+# The ban lives in AGENTS.md:  the Fleet-OPS handbook rewrite (Fleet-OPS #203) made the
+# FLEET-PROTOCOL.md mirror a tools manual and moved policy prose to AGENTS.md.
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-DEFAULT_POLICY = next(
-    (_ROOT / n for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md") if (_ROOT / n).is_file()),
-    _ROOT / "FLEET-PROTOCOL.md",
-)
+DEFAULT_POLICY = _ROOT / "AGENTS.md"
 
 RUNNER_ROW_RE = re.compile(
     r"actions\.runner|self-hosted runner|mac-xcode|trading-live-mac", re.IGNORECASE
@@ -83,12 +81,12 @@ def main(argv: list[str] | None = None) -> int:
     policy_text = args.policy.read_text()
     if not policy_states_ban(policy_text):
         print(
-            "WARNING: AGENT-SYNC.md no longer states the local-Mac-runner ban "
+            "WARNING: AGENTS.md no longer states the local-Mac-runner ban "
             "verbatim; this lint has nothing to check against. Update the "
             "pattern in POLICY_BAN_RE if the wording changed on purpose.",
             file=sys.stderr,
         )
-        return 0
+        return 1
 
     if not args.inventory.exists():
         print(
@@ -103,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     if offenders:
         print(
             "CI runner policy contradiction: row(s) below look like a LIVE "
-            "local Mac Actions runner while AGENT-SYNC.md bans it:\n"
+            "local Mac Actions runner while FLEET-PROTOCOL.md bans it:\n"
         )
         for lineno, line in offenders:
             print(f"  {args.inventory}:{lineno}: {line}")

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "tool": "fleet-worker-health",
+  "generatedAt": "2026-10-28T15:00:00Z",
+  "reachable": true,
+  "worst": "warn",
+  "bundle": "ok",
+  "seats": [
+    {"seat": "CLAUDE", "state": "ok", "minted": true, "minted_age_days": 3.5, "expires_in_days": 26.5, "remint_due_in_days": 24.5, "mint_count": 4, "last_mint_ok_at": "2026-10-25T03:00:00Z", "last_mint_fail_at": null, "last_mint_fail_kind": null},
+    {"seat": "CODEX", "state": "warn", "minted": true, "minted_age_days": 29.0, "expires_in_days": 1.0, "remint_due_in_days": -1.0, "mint_count": 2, "last_mint_ok_at": "2026-09-29T03:00:00Z", "last_mint_fail_at": "2026-10-27T03:00:00Z", "last_mint_fail_kind": "http", "note": "the last mint failed, the cached token still works"}
+  ]
+}

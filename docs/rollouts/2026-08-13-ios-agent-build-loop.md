@@ -6,7 +6,7 @@ Owner asked to wire the iOS agent lessons into the fleet, then ruled: do not sta
 
 ## What landed
 
-- `AGENT-SYNC.md` § iOS agent build loop (also copied to `~/apps/AGENT-SYNC.md`)
+- `FLEET-PROTOCOL.md` § iOS agent build loop (also copied to `~/apps/FLEET-PROTOCOL.md`)
 - `TEMPLATE-AGENTS.md` + `docs/ONBOARDING-NEW-APP.md` checklist
 - `scripts/block-xcode-project-writes.py` + `.claude` hook template
 - Machine copy: `/Users/jay/apps/ios-fleet/block-xcode-project-writes.py` + README pointer

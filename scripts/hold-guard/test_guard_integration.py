@@ -3,7 +3,7 @@
 armer_hold_check.sh) against a fake gh serving canned API responses.
 
 Covers what the canned-state evaluator tests cannot: call ordering
-(disarm before repair before check), jq-built request bodies, label names
+(evaluate before conditional disarm before repair before check), jq-built request bodies, label names
 with spaces (no word-splitting), merge_group PR mapping, multi-page event
 pagination, error fail-closed behavior, and the check-run payload shape.
 """
@@ -113,8 +113,8 @@ class GuardIntegration(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         kinds = [(" ".join(c["argv"][:3])) for c in self.calls()]
-        # order: disarm -> labels GET -> events -> label re-apply -> comment -> check
-        self.assertEqual(kinds[0], "pr merge --disable-auto")
+        # order: evaluate -> disarm -> label re-apply -> comment -> check
+        self.assertEqual(kinds[0], "api repos/Fixture-Org/Fixture-Repo/issues/3/labels")
         label_posts = [
             c
             for c in self.calls()
@@ -175,10 +175,75 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "success")
         self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
 
+    def test_clear_armed_pr_is_never_disarmed(self):
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {"3": [[]]},
+                "armed": True,
+                "fail": {"pr_merge": {"rc": 1}, "pr_view": {"rc": 1}},
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertFalse([c for c in self.calls() if c["argv"][:1] == ["pr"]])
+        posts = [
+            c
+            for c in self.calls()
+            if "POST" in c["argv"] and any(a.endswith("/check-runs") for a in c["argv"])
+        ]
+        self.assertEqual(json.loads(posts[0]["stdin"])["conclusion"], "success")
+
+    def test_visible_hold_disarms_before_paginated_timeline(self):
+        self.scenario({"labels": {"3": [{"name": "do-not-merge"}]}, "events": {"3": [[]]}})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls = self.calls()
+        disarm = next(i for i, c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
+        events = next(
+            i for i, c in enumerate(calls) if any(a.endswith("/events") for a in c["argv"])
+        )
+        self.assertLess(disarm, events)
+
+    def test_clear_publish_failure_does_not_disarm(self):
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {"3": [[]]},
+                "armed": True,
+                "fail": {"check-runs": {"rc": 1}},
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]])
+
+    def test_current_label_signal_error_disarms_and_fails(self):
+        self.scenario({"fail": {"labels/3": {"rc": 1}}})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 3)
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]]), 1)
+
+    def test_hold_arriving_at_fence_disarms_before_red_publish(self):
+        hold = ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")
+        self.scenario({"labels": {"3": []}, "events_seq": {"3": [[[]], [[hold]]]}, "armed": False})
+        p = self.run_guard(PR="3", PR_URL="u")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        calls = self.calls()
+        disarm = next(i for i, c in enumerate(calls) if c["argv"][:2] == ["pr", "merge"])
+        publish = next(
+            i
+            for i, c in enumerate(calls)
+            if "POST" in c["argv"] and any(a.endswith("/check-runs") for a in c["argv"])
+        )
+        self.assertLess(disarm, publish)
+        self.assertEqual(json.loads(calls[publish]["stdin"])["conclusion"], "failure")
+
     def test_events_api_error_fails_closed_and_loud(self):
         self.scenario({"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom 500"}}})
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]]), 1)
         checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
         payload = json.loads(checks[0]["stdin"])
         self.assertEqual(payload["conclusion"], "failure")
@@ -190,10 +255,10 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 3)
 
     def test_disarm_uses_real_gh_contract(self):
-        self.scenario({"labels": {"3": []}, "events": {"3": [[]]}})
+        self._held_scenario()
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr)
-        disarm = self.calls()[0]
+        disarm = next(c for c in self.calls() if c["argv"][:2] == ["pr", "merge"])
         self.assertEqual(disarm["argv"], ["pr", "merge", "--disable-auto", "u"])
 
     def test_do_not_merge_family_enforced(self):
@@ -468,7 +533,7 @@ class GuardIntegration(unittest.TestCase):
     def test_disarm_unconfirmed_state_red_job(self):
         # armed and the disable mutation is refused; state read still says
         # armed -> critical failure (fleet contract: fail closed on state)
-        self._clear_scenario()
+        self._held_scenario()
         self.scenario(
             {
                 **json.load(open(self.scenario_path)),
@@ -485,8 +550,36 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 3)
         self.assertIn("auto-merge state after disarm", p.stdout)
 
+    def test_disarm_unconfirmed_publishes_a_red_gate_not_a_green_one(self):
+        # armed, the disable mutation is refused, and the state read still says
+        # armed: the hold state may be clean, but the guard does not know that
+        # auto-merge is off, so it must not publish a green gate over a pull
+        # request that can still merge itself (AFC-553).
+        self._held_scenario()
+        self.scenario(
+            {
+                **json.load(open(self.scenario_path)),
+                "armed": True,
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        published = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(published), 1, published)
+        body = json.loads(published[0]["stdin"])
+        self.assertEqual(body["name"], "merge-gate")
+        self.assertEqual(body["conclusion"], "failure")
+        self.assertIn("disarm", body["output"]["title"])
+        self.assertIn("disarm", body["output"]["summary"])
+
     def test_disarm_state_unreadable_red_job(self):
-        self._clear_scenario()
+        self._held_scenario()
         self.scenario(
             {
                 **json.load(open(self.scenario_path)),
@@ -504,6 +597,92 @@ class GuardIntegration(unittest.TestCase):
         self.scenario({**json.load(open(self.scenario_path)), "armed": False})
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+
+    def test_disarm_unconfirmed_publishes_failure_not_green(self):
+        # AFC-553: the disarm mutation is refused for the workflow's own
+        # token, so auto-merge may still be armed.  The guard cannot vouch
+        # that a merge will not run past the hold check, so the merge-gate
+        # conclusion must be failure and must say so - a degraded guard
+        # never publishes green.
+        self._held_scenario()
+        self.scenario(
+            {
+                **json.load(open(self.scenario_path)),
+                "armed": True,
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(checks), 1)
+        payload = json.loads(checks[0]["stdin"])
+        self.assertEqual(payload["conclusion"], "failure")
+        self.assertIn("disarm", payload["output"]["title"])
+        self.assertIn("armed", payload["output"]["summary"])
+
+    def test_disarm_not_armed_control_publishes_success(self):
+        # Control for the test above: with the SAME scenario and auto-merge
+        # off, the guard publishes green.  Without this the failure test
+        # could pass for the wrong reason (a broken fixture rather than the
+        # disarm).
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)), "armed": False})
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(checks), 1)
+        payload = json.loads(checks[0]["stdin"])
+        self.assertEqual(payload["conclusion"], "success")
+        self.assertIn("no active merge holds", payload["output"]["title"])
+
+    def test_disarm_unconfirmed_keeps_the_hold_list_in_the_summary(self):
+        # An active hold AND an unconfirmed disarm: the conclusion is
+        # failure, the title names the disarm, and the summary still names
+        # the hold, so neither reason is lost.
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {
+                    "3": [
+                        [
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            ),
+                        ]
+                    ]
+                },
+                "armed": True,
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(checks), 1)
+        payload = json.loads(checks[0]["stdin"])
+        self.assertEqual(payload["conclusion"], "failure")
+        self.assertIn("disarm", payload["output"]["title"])
+        self.assertIn("do-not-automerge", payload["output"]["summary"])
 
     def test_owned_patch_failure_posts_fresh_and_red_job(self):
         sha = "deadbeef" * 5
@@ -616,6 +795,7 @@ class GuardIntegration(unittest.TestCase):
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "merge"]]), 1)
         posts = [
             c
             for c in self.calls()

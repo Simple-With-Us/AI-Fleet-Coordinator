@@ -1,0 +1,15 @@
+[Unit]
+Description=Check fleet CLI tools, credentials and MCP registrations (fleet-tools-doctor.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jay
+Group=jay
+Environment=HOME=/home/jay
+Environment=AGENT_SEAT=CLAUDE
+ExecStart=/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --seats CLAUDE,CODEX --post
+SuccessExitStatus=0 1
+ConditionPathExists=/home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py
+TimeoutStartSec=600

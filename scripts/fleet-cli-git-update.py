@@ -58,7 +58,14 @@ SMOKE_CASES = (
     ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
     ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
     ("simple_board_help", "scripts/simple-board", ["--help"], 0),
-    ("simple_board_missing_credentials", "scripts/simple-board", ["whoami"], 4),
+    # A usage error exits 2 before any credential is read, with or without the host's seat helper (see the same case in
+    # fleet-cli-release.py).  The earlier `whoami` case expected exit 4 and failed on a host that has the helper and a
+    # bearer for the smoke seat.
+    ("simple_board_usage_error", "scripts/simple-board", ["show"], 2),
+    # Same shape as the board cases:  --help prints and exits 0, and a usage error exits 2, with a blank
+    # HOME and no credentials, with or without the host's seat helper.
+    ("simple_git_help", "scripts/simple-git", ["--help"], 0),
+    ("simple_git_usage_error", "scripts/simple-git", ["call"], 2),
     ("recall_help", "scripts/recall", ["--help"], 0),
     ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
     ("fleet_mode_block", "scripts/fleet-mode", [], 0),
@@ -170,7 +177,7 @@ def smoke_settings(
     The running updater's settings are not the right ones:  when a release removes a CLI, the
     installed updater still asks for it, the target checkout no longer ships it, and the smoke
     fails on a file that is meant to be gone.  That deadlock held a host on an old commit for
-    hours (the Oct 22, 2026 cutover from agent-sync to simple-chat).  The target's own settings
+    hours.  The target's own settings
     are what must work, so read them from the target;  fall back to the running ones when the
     target has no updater to read.
     """
@@ -234,6 +241,21 @@ def write_new_wrappers(home: Path, repo: Path) -> list[str]:
     return written
 
 
+def refresh_wrappers(home: Path, repo: Path) -> list[str]:
+    """Rewrite the managed wrappers a release changes under a host that has the older form (the release module's
+    REFRESHED_WRAPPERS:  platform-letter, whose wrapper now carries the registry settings of a session-letter hook).  A
+    link, a file without the marker and every other wrapper are never touched."""
+    release = release_module(repo)
+    plan = getattr(release, "refreshed_wrapper_plan", None)
+    if plan is None:  # a checkout from before the release module knew how:  nothing to refresh
+        return []
+    done = []
+    for path, (data, mode) in plan(home).items():
+        release.atomic_write(path, data, mode)
+        done.append(path.name)
+    return done
+
+
 def point_current(base: Path) -> None:
     temporary = base / (".pointer-" + uuid.uuid4().hex)
     temporary.symlink_to("repo")
@@ -288,6 +310,10 @@ def wrappers(home: Path, repo: Path, result: dict) -> dict:
     if written:
         result["wrappers_written"] = written
         log("WRAPPERS  " + ", ".join(written))
+    refreshed = refresh_wrappers(home, repo)
+    if refreshed:
+        result["wrappers_refreshed"] = refreshed
+        log("WRAPPERS REFRESHED  " + ", ".join(refreshed))
     return result
 
 
@@ -403,6 +429,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["setup", "update", "rollback", "status"])
     parser.add_argument("--home", type=Path, default=Path.home())
     args = parser.parse_args(argv)
+    if args.command == "update":
+        # Unlettered-repair tick:  replay the start of this host's chats still showing "??: " - an app-driven
+        # chat's hook never runs, so only the scheduled update reaches it.  platform-letter's own stamp
+        # throttles the pass;  a failure here never fails the update, but names itself on stderr for the
+        # unit's journal (the command's own exit code stays the update's).
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(args.home / ".local" / "bin" / "platform-letter"),
+                    "repair",
+                    "--location",
+                    "server",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _, ticked_err = proc.communicate(timeout=90)
+            if (
+                ticked_err
+            ):  # the verb's own failures reach the unit's journal, stdout stays the command's
+                sys.stderr.write(ticked_err.decode(errors="replace")[:2000])
+        except subprocess.TimeoutExpired:
+            if proc is not None:
+                proc.kill()
+                proc.wait()
+            print(json.dumps({"repair_tick": "timeout"}), file=sys.stderr)
+        except FileNotFoundError:
+            print(json.dumps({"repair_tick": "platform-letter missing"}), file=sys.stderr)
+        except Exception:  # noqa: BLE001 - the tick is best-effort
+            pass
+        except BaseException:
+            # An interrupted updater must not leave the repair child running (concurrent
+            # repairs, stale state): terminate and reap it before re-raising.
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            raise
     try:
         result = {"setup": setup, "update": update, "rollback": rollback, "status": status}[
             args.command

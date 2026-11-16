@@ -73,8 +73,8 @@ name: Claude Code Autofix (Reusable)
 #           <repo-specific fixer policy>
 #
 # Org-level alternative (preferred):
-#   Move this file to jaywedgeworth22/.github/workflows/codex-autofix-reusable.yml
-#   and call it as jaywedgeworth22/.github/workflows/codex-autofix-reusable.yml@main.
+#   Move this file to Simple-With-Us/.github/workflows/codex-autofix-reusable.yml
+#   and call it as Simple-With-Us/.github/workflows/codex-autofix-reusable.yml@main.
 #   See docs/how-to-setup-org-dot-github.md for setup steps.
 
 on:
@@ -180,6 +180,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           NOTIFY_URL: ${{ vars.SWU_AUTOFIX_NOTIFY_URL }}
+          ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         run: |
           set -euo pipefail
           # Owner rule 2026-10-20:  one autofix run per bot per PR;  the owner
@@ -264,9 +265,49 @@ jobs:
               > /dev/null
             exit 0
           fi
+          # Allowlist before any marker work (Kody on cts #394):  the action
+          # filters disallowed actors downstream,  but without a gate-side check
+          # their request still writes a marker and leaves a misleading
+          # "run started" comment.  Normalised as the action normalises:
+          # lowercased,  [bot] stripped.  Only the normalised allowlisted
+          # requester reaches the marker below.
+          #
+          # The allowlist gates bot reviewers.  A workflow_dispatch run is
+          # requested by a human,  whose login is not a bot login;  requiring it
+          # to be on a bot list would silently skip every manual dispatch,  which
+          # the event handling above deliberately supports.  The dispatch itself
+          # already needs write access to the repository,  so the bot list has
+          # nothing to add there.
+          allowed=true
+          if [ "$GITHUB_EVENT_NAME" = "pull_request_review" ]; then
+            allowed=false
+            IFS=',' read -ra swu_bots <<< "$ALLOWED_BOTS"
+            for swu_bot in "${swu_bots[@]}"; do
+              swu_bot=$(printf '%s' "$swu_bot" | tr -d '[:space:]' | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+              if [ "$swu_bot" = "$requester" ]; then allowed=true; break; fi
+            done
+          fi
+          if [ "$allowed" != "true" ]; then
+            echo "::notice::$author is not in allowed_bots, skipping before any marker write"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Anchored exact marker text, github-actions[bot] comments only: an
+          # unanchored contains() lets bot=swu-cursor match bot=swu-cursor-cloud's
+          # marker, and without an author filter any commenter could forge a
+          # marker to block a bot's one run (Sentry on cts #395).
           marker="swu-autofix-run: bot=$requester"
-          prior=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
-            --jq ".[].body | select(contains(\"$marker\"))" 2> /dev/null | head -1 || true)
+          # Fail closed:  without the lookup result the one-run-per-bot record is
+          # unknown,  and a swallowed gh api error would let a bot run twice (Kody
+          # on cts #394).  The result goes through a file so pipefail cannot turn
+          # head's early close into a fake gh failure.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body | select(contains(\"<!-- $marker -->\"))" \
+            > "$RUNNER_TEMP/prior_markers.txt"; then
+            echo "::error::marker lookup failed (gh api error) - refusing to run without the one-run-per-bot record;  retry the run"
+            exit 1
+          fi
+          prior=$(head -1 "$RUNNER_TEMP/prior_markers.txt")
           accepted=true
           if [ -n "$prior" ]; then accepted=false; fi
           if [ -n "${NOTIFY_URL:-}" ]; then
@@ -284,9 +325,15 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+          # The marker must land before the model starts,  so a write failure
+          # stops the run here with an actionable error instead of a raw gh
+          # abort (Kody on cts #394) - before any model spend.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
             -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
-            > /dev/null
+            > /dev/null; then
+            echo "::error::could not record the one-run marker comment - the calling job must grant issues: write and the issues API must be reachable;  the run stops before billing the model"
+            exit 1
+          fi
 
       # The handbook sync job owns handbook-sync/mirror and refuses a pull request whose head it did not push
       # (AFC-402).  A review event is filtered in the caller;  a workflow_dispatch run names its pull request
@@ -313,6 +360,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure Autofix Model Route
+        id: model_route
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-model-route@2070a456e1558ee14f3329297666f8c64ad1e147
+        with:
+          var_base: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
+          var_model: ${{ vars.SWU_AUTOFIX_MODEL }}
+          default_model: ${{ inputs.model }}
+
       - name: Run Claude Autofix
         id: claude
         if: ${{ steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}
@@ -324,14 +380,11 @@ jobs:
         # id comes from the `model` input (MiniMax-M3.1-Flash, the id the
         # fleet's Harness route already uses over api anthropic-messages).
         env:
-          # Owner switch 2026-10-21:  org/repo Actions variables retarget every caller at
-          # once;  unset,  the MiniMax pins below are exactly what ran before.
-          ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
-          ANTHROPIC_AUTH_TOKEN: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
-          ANTHROPIC_SMALL_FAST_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
+          # Bearer auth for Meta (ANTHROPIC_AUTH_TOKEN);  MiniMax uses the same token env.
+          # Do not set ANTHROPIC_API_KEY on the Meta route — Model API rejects x-api-key.
+          ANTHROPIC_AUTH_TOKEN: ${{ steps.model_route.outputs.route == 'meta' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
         with:
-          anthropic_api_key: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
+          anthropic_api_key: ${{ steps.model_route.outputs.anthropic_api_key_mode == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: ${{ inputs.allowed_bots }}
           prompt: ${{ inputs.prompt }}
@@ -344,6 +397,15 @@ jobs:
           # fall back to posting every buffered comment unfiltered. Disable the
           # feature rather than rely on a classifier that can't authenticate.
           classify_inline_comments: "false"
+
+      - name: Report Autofix Model Failure
+        if: ${{ always() && steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' && steps.claude.conclusion == 'failure' }}
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-report-failure@2070a456e1558ee14f3329297666f8c64ad1e147
+        with:
+          claude_step_outcome: ${{ steps.claude.outcome }}
+          route: ${{ steps.model_route.outputs.route }}
+          effective_model: ${{ steps.model_route.outputs.effective_model }}
+          base_url: ${{ steps.model_route.outputs.route == 'meta' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
 
       - name: Summarize Autofix Diagnostics
         if: ${{ always() && steps.guard.outputs.skip != 'true' && steps.request_gate.outputs.skip != 'true' }}

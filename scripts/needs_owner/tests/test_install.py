@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from fleet_knobs.tests._fake import ScopedReadAPI
 
 from .world import SCRIPTS, World
 
@@ -26,10 +27,25 @@ class InstallTests(unittest.TestCase):
         env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % Path(sys.executable).parent}
         return subprocess.run(["bash", str(INSTALL), *args], capture_output=True, text=True, env=env, timeout=120)
 
-    def isolated(self, *args: str, env: dict | None = None, cwd: str | None = None) -> subprocess.CompletedProcess:
-        base = {"HOME": str(self.home), "PATH": "/usr/bin:/bin"}
+    def isolated(self, *args: str, env: dict | None = None, cwd: str | None = None, managed: str | None = None) -> subprocess.CompletedProcess:
+        # a stand-in `simple-board whoami`:  the seat is proven by bearer verification, never by a variable
+        stub = self.home.parent / ("stubbin-" + self.home.name)
+        stub.mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, stub, True)
+        (stub / "simple-board").write_text('#!/bin/sh\necho "seat:        CLAUDE (bearer-verified)"\n')
+        (stub / "simple-board").chmod(0o755)
+        base = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % stub,
+                "SIMPLE_BOARD_BEARER_FILE": "/run/seat-bearers/claude"}
         base.update(env or {})
-        return subprocess.run([sys.executable, "-I", str(self.dest / "needs-owner"), *args], capture_output=True, text=True,
+        base.pop("AGENT_SEAT", None)
+        # the managed-board seam is import-only, so the isolated run sets it in-process before the entry runs
+        entry = [sys.executable, "-I", str(self.dest / "needs-owner"), *args]
+        if args and not args[0].startswith("--"):  # a verb reaches the seat probe;  --help/--version never do
+            entry = None
+        boot = ("import sys, runpy; sys.path.insert(0, %r); import needs_owner.seat as S; S.MANAGED_BIN_DIR = %r; "
+                "sys.argv = [%r] + sys.argv[1:]; runpy.run_path(%r, run_name='__main__')"
+                % (str(self.dest), str(managed or stub), str(self.dest / "needs-owner"), str(self.dest / "needs-owner")))
+        return subprocess.run(entry or [sys.executable, "-I", "-c", boot, *args], capture_output=True, text=True,
                               env=base, cwd=cwd or str(self.home), timeout=120)
 
     def test_the_plan_changes_nothing(self) -> None:
@@ -46,7 +62,7 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(self.link.is_symlink())
         self.assertEqual(os.readlink(self.link), str(self.dest / "needs-owner"))
         self.assertTrue(os.access(self.dest / "needs-owner", os.X_OK))
-        self.assertEqual(sorted(p.name for p in (self.dest / "agent_sync").iterdir() if p.suffix == ".py"),
+        self.assertEqual(sorted(p.name for p in (self.dest / "simple_tools").iterdir() if p.suffix == ".py"),
                          ["identity.py", "secretscan.py", "textsafe.py"])
         self.assertFalse((self.dest / "needs_owner" / "tests").exists())
         self.assertTrue((self.dest / "needs_owner" / "cli.py").exists())
@@ -62,19 +78,42 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.dest / "fleet_knobs").iterdir() if p.suffix == ".py"), source)
         self.assertFalse((self.dest / "fleet_knobs" / "tests").exists())
         self.assertIn("knobs.py", source)
+        self.assertEqual(sorted(p.name for p in (self.dest / "fleet_secrets").iterdir()), ["__init__.py", "core.py"])
+        self.assertFalse((self.dest / "fleet-secrets").exists())
         # Under python3 -I, with nothing of the checkout on the path, `notify` finds fleet_knobs next to the package.
         # A refused Infisical environment stops it before any fetch, so no real CLI runs:  exit 1 and the reason.
-        ran = self.isolated("notify", "--dry-run", env={"INFISICAL_ENV": "staging", "AGENT_SEAT": "CLAUDE"})
+        ran = self.isolated("notify", "--dry-run", env={"INFISICAL_ENV": "staging"})
         self.assertEqual(ran.returncode, 1, ran.stdout + ran.stderr)
         self.assertIn("the knobs cannot be read", ran.stderr)
         self.assertNotIn("fleet_knobs is missing", ran.stderr)
         self.assertNotIn("Traceback", ran.stderr)
 
+    def test_installed_real_scoped_reader_accepts_only_its_grant_under_python_dash_I(self) -> None:
+        self.assertEqual(self.install("--apply").returncode, 0)
+        boot = ("import json, sys; sys.path.insert(0, %r); from fleet_knobs import source; "
+                "print(json.dumps(source.fetch({'FLEET_FACTS_PUBLISH_FULL_COPY'})))" % str(self.dest))
+        with ScopedReadAPI({"FLEET_FACTS_PUBLISH_FULL_COPY": "false"}) as api:
+            env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", **api.env}
+            ran = subprocess.run([sys.executable, "-I", "-c", boot], env=env, cwd=self.home,
+                                 capture_output=True, text=True, timeout=60)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+            self.assertEqual(json.loads(ran.stdout), {"FLEET_FACTS_PUBLISH_FULL_COPY": "false"})
+            self.assertEqual(len(api.requests), 2)
+            self.assertEqual(api.requests[0], "/api/v2/service-token")
+            self.assertTrue(api.requests[1].startswith("/api/v3/secrets/raw/FLEET_FACTS_PUBLISH_FULL_COPY?"))
+            api.requests.clear()
+            api.metadata_override["permissions"] = ["read", "write"]
+            denied = subprocess.run([sys.executable, "-I", "-c", boot], env=env, cwd=self.home,
+                                    capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("scoped-read-failed", denied.stderr)
+        self.assertEqual(api.requests, ["/api/v2/service-token"])
+
     def test_a_copy_without_the_knob_reader_still_files_but_cannot_notify(self) -> None:
         self.assertEqual(self.install("--apply").returncode, 0)
         shutil.rmtree(self.dest / "fleet_knobs")
         self.assertEqual(self.isolated("--version").returncode, 0)
-        ran = self.isolated("notify", "--dry-run", env={"AGENT_SEAT": "CLAUDE"})
+        ran = self.isolated("notify", "--dry-run", env={})
         self.assertEqual(ran.returncode, 1)
         self.assertIn("fleet_knobs is missing", ran.stderr)
         self.assertIn("install.sh --apply", ran.stderr)
@@ -84,19 +123,19 @@ class InstallTests(unittest.TestCase):
         fails them (it used to exit inside argparse, before the package reached its helpers)."""
         self.assertEqual(self.install("--apply").returncode, 0)
         for name in ("textsafe.py", "secretscan.py", "identity.py"):
-            moved = self.dest / "agent_sync" / (name + ".gone")
-            (self.dest / "agent_sync" / name).rename(moved)
+            moved = self.dest / "simple_tools" / (name + ".gone")
+            (self.dest / "simple_tools" / name).rename(moved)
             for argv in (["--help"], ["--version"], ["list", "--help"]):
                 ran = self.isolated(*argv)
                 self.assertEqual(ran.returncode, 1, (name, argv, ran.stdout))
                 self.assertIn("incomplete", ran.stderr, (name, argv))
                 self.assertIn(name, ran.stderr, (name, argv))
-            moved.rename(self.dest / "agent_sync" / name)
+            moved.rename(self.dest / "simple_tools" / name)
         self.assertEqual(self.isolated("--help").returncode, 0)
 
     def test_a_damaged_f3_file_is_reported_not_a_traceback(self) -> None:
         self.assertEqual(self.install("--apply").returncode, 0)
-        (self.dest / "agent_sync" / "secretscan.py").write_text("def broken(:\n")
+        (self.dest / "simple_tools" / "secretscan.py").write_text("def broken(:\n")
         ran = self.isolated("--version")
         self.assertEqual(ran.returncode, 1)
         self.assertNotIn("Traceback", ran.stderr)
@@ -105,17 +144,15 @@ class InstallTests(unittest.TestCase):
     def test_the_stable_copy_does_real_work(self) -> None:
         """A dry run through the stable copy reaches the F3 helpers it loaded by path (identity, secretscan, textsafe)."""
         self.assertEqual(self.install("--apply").returncode, 0)
-        probe = unittest.TestCase()
-        world = World(probe)
-        self.addCleanup(shutil.rmtree, world.root, True)
+        world = World(self)
         env = world.env()
         env["HOME"] = str(self.home)
         ran = self.isolated("file", "--by", "CLAUDE", "--app", "AFC", "--question", "Is the copy complete?", "--option", "Yes",
-                            "--option", "No", "--dry-run", "--json", env=env)
+                            "--option", "No", "--dry-run", "--json", env=env, managed=str(world.bin))
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertTrue(json.loads(ran.stdout)["dry_run"])
         refused = self.isolated("file", "--by", "CLAUDE", "--app", "AFC", "--question", "Key lin_api_" + "Zx9Yw8Vv7U" * 3 + "?",
-                                "--option", "Yes", "--option", "No", env=env)
+                                "--option", "Yes", "--option", "No", env=env, managed=str(world.bin))
         self.assertEqual(refused.returncode, 2)
         self.assertIn("secret", refused.stderr)
 
@@ -131,6 +168,7 @@ class InstallTests(unittest.TestCase):
     def test_an_update_replaces_a_changed_file_and_removes_a_stale_one(self) -> None:
         self.assertEqual(self.install("--apply").returncode, 0)
         (self.dest / "needs_owner" / "old_module.py").write_text("# gone from the source\n")
+        (self.dest / "fleet_secrets" / "cli.py").write_text("# must not ship\n")
         (self.dest / "needs_owner" / "text.py").write_text("# an old version\n")
         (self.dest / "state").mkdir()
         plan = self.install()
@@ -140,6 +178,7 @@ class InstallTests(unittest.TestCase):
         applied = self.install("--apply")
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         self.assertFalse((self.dest / "needs_owner" / "old_module.py").exists())
+        self.assertFalse((self.dest / "fleet_secrets" / "cli.py").exists())
         self.assertGreater((self.dest / "needs_owner" / "text.py").stat().st_size, 100)
         self.assertTrue((self.dest / "state").is_dir())
         self.assertEqual(self.isolated("--version").returncode, 0)

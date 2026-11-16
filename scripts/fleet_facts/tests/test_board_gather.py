@@ -55,7 +55,7 @@ class ReadOnly(unittest.TestCase):
         verbs = {argv[1] for argv in fake.runner.argvs}
         self.assertEqual(verbs, {"list", "show"})
         for call in fake.runner.calls:
-            self.assertEqual(call["env"].get("LINEAR_BOARD_WRITES"), "0")
+            self.assertNotIn("LINEAR_BOARD_WRITES", call["env"])
         lists = [a for a in fake.runner.argvs if a[1] == "list"]
         self.assertTrue(all("--json" in a for a in lists))
         self.assertIn(["board", "show", "FFX-1", "--json"], fake.runner.argvs)

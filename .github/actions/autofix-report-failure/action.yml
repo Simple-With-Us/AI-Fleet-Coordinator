@@ -1,0 +1,34 @@
+name: Autofix Report Failure
+description: Log a sanitized provider/config error from claude-execution-output.json.
+inputs:
+  execution_json:
+    description: Path to Claude Code execution json
+    required: false
+    default: ""
+  claude_step_outcome:
+    description: Outcome of the Run Claude Autofix step
+    required: false
+    default: ""
+  route:
+    description: minimax or meta from autofix-model-route
+    required: false
+    default: unknown
+  effective_model:
+    description: Model id used for the run
+    required: false
+    default: unknown
+  base_url:
+    description: ANTHROPIC_BASE_URL used for the run
+    required: false
+    default: unknown
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        AUTOFIX_EXECUTION_JSON: ${{ inputs.execution_json != '' && inputs.execution_json || format('{0}/claude-execution-output.json', runner.temp) }}
+        CLAUDE_STEP_OUTCOME: ${{ inputs.claude_step_outcome }}
+        AUTOFIX_ROUTE: ${{ inputs.route }}
+        AUTOFIX_EFFECTIVE_MODEL: ${{ inputs.effective_model }}
+        AUTOFIX_BASE_URL: ${{ inputs.base_url }}
+      run: bash "$GITHUB_ACTION_PATH/report-autofix-failure.sh"

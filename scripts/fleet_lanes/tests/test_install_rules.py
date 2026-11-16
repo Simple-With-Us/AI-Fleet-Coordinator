@@ -175,10 +175,13 @@ class TemplateTests(unittest.TestCase):
         out.update({ph: (IR.RULES_DIR / f).read_text(encoding="utf-8") for ph, f in IR.PART_FILES.items()})
         return out
 
-    def test_templates_exist_and_are_plain_ascii(self) -> None:
+    def test_templates_allow_only_the_gap_and_required_header_characters(self) -> None:
+        # Owner headers use hair spaces, a folder, an arrow and optional quiet-post eyes.
         for variant, text in self.texts().items():
             with self.subTest(variant=variant):
                 self.assertTrue(text.strip())
+                for char in ("\u00a0", "\u200a", "\U0001f4c1", "\u2192", "\U0001f440"):
+                    text = text.replace(char, "")
                 text.encode("ascii")
 
     def test_block_is_wrapped_in_the_markers(self) -> None:
@@ -205,10 +208,13 @@ class TemplateTests(unittest.TestCase):
         self.assertTrue(IR.compose(None, "cursor").new_text.startswith("---\n"))
         self.assertIsNone(IR.frontmatter_problem(IR.compose(None, "cursor").new_text))
 
-    def test_two_spaces_between_sentences(self) -> None:
+    def test_a_sentence_end_carries_the_gap(self) -> None:
+        # The house gap is a real U+00A0 plus a normal space (owner 2026-10-23).  A
+        # sentence end here carries neither a plain space nor two ASCII spaces.
         for variant, text in self.texts().items():
             with self.subTest(variant=variant):
                 self.assertIsNone(re.search(r"[.!?] [A-Za-z]", text), re.findall(r".{12}[.!?] [A-Za-z].{8}", text))
+                self.assertIsNone(re.search(r"[.!?]  [A-Za-z]", text), re.findall(r".{12}[.!?]  [A-Za-z].{8}", text))
 
     def test_every_variant_carries_the_rule(self) -> None:
         for variant in ("full", "minimal"):
@@ -411,7 +417,7 @@ class ContradictionTests(unittest.TestCase):
             "~/apps/lanes/_codex/fix/BotFleet and ~/apps/lanes/BotFleet/active-engines-display-e380b8",
             "/Users/jay/apps/lanes/AI-Fleet-Coordinator/claude-x and ~/apps/lanes/congress-trading-shared/cursor-y",
             "~/apps/lanes/homebrew-tap/codex-x",
-            "Printer: ~/apps/fleet-mode and ~/apps/agent-sync/consumer.mjs",
+            "Printer: ~/apps/fleet-mode and ~/apps/FLEET-PROTOCOL.md",
             "run ~/apps/lane new fleet my-slug",
             "~/apps/scratch/claude/topic",
             "~/Code/Socratic-Trade is the integration tree",
@@ -1145,8 +1151,8 @@ def _load_seat_block_checker():
 class FleetBasicsTests(HomeCase):
     """Clutch, Kimi and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
 
-    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+    NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "kimi"),
+           "zcode": (".zcode/AGENTS.md", "zcode"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():
@@ -1174,7 +1180,7 @@ class FleetBasicsTests(HomeCase):
         body = IR.body_text("clutch")
         self.assertIn("Your default seat is CLUTCH", body)
         self.assertIn("then a seat a launcher assigned", body)
-        self.assertIn("which beats this file whatever model you are", body)
+        self.assertIn("which overrides this file", body)
         self.assertIn("clutch/<slug>", body)
         self.assertNotIn("no default seat", body.lower())
 
@@ -1205,7 +1211,8 @@ class FleetBasicsTests(HomeCase):
                 code, out, err = self.run_cli("apply", name, "--create")
                 self.assertEqual(code, IR.EXIT_OK, out + err)
                 self.assertIn(f"{name}: CREATED", out)
-                self.assertTrue(self.read(rel).startswith(IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->\n## Fleet Basics\n"))
+                self.assertTrue(self.read(rel).startswith(IR.BEGIN_PREFIX + f"{IR.BLOCK_VERSION} -->\n"))
+                self.assertIn("## Fleet Basics\n", self.read(rel))
                 self.assertEqual(self.run_cli("verify", name)[0], IR.EXIT_OK)
                 before = snapshot(self.home)
                 code, out, _ = self.run_cli("apply", name, "--create")

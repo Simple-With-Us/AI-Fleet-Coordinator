@@ -1,0 +1,52 @@
+[
+  {
+    "id": "1",
+    "name": "app health",
+    "status": "active",
+    "url": "https://APP.example/api/health/",
+    "projectSlug": "app"
+  },
+  {
+    "id": "2",
+    "name": "app ready",
+    "status": "disabled",
+    "url": "https://app.example/api/ready?strict=1",
+    "projectSlug": "app"
+  },
+  {
+    "id": "3",
+    "name": "app other",
+    "status": "active",
+    "url": "https://app.example/other",
+    "projectSlug": "app"
+  },
+  {
+    "id": "4",
+    "name": "maybe",
+    "status": "active",
+    "url": "https://maybe.example",
+    "projectSlug": "maybe"
+  },
+  {
+    "id": "5",
+    "name": "dash",
+    "status": "active",
+    "url": "https://dash.example/api/health",
+    "projectSlug": "ops"
+  },
+  {
+    "id": "6",
+    "name": "old",
+    "status": "active",
+    "url": "https://old.example/",
+    "projectSlug": "old"
+  },
+  {
+    "id": "7",
+    "name": "gone",
+    "status": "active",
+    "muted": true,
+    "url": "https://gone.example/",
+    "projectSlug": "gone"
+  }
+]

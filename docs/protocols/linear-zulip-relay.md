@@ -3,7 +3,7 @@
 The relay mirrors a Zulip conversation onto the Linear issue it is about.  It is one way only:
 nothing in the relay ever posts to Zulip, and Linear stays the record.
 
-Implementation: `scripts/agent_sync/linear_relay.py`, tests: `scripts/agent_sync/tests/test_linear_relay.py`.
+Implementation: `scripts/simple_tools/linear_relay.py`, tests: `scripts/simple_tools/tests/test_linear_relay.py`.
 Owner decisions are Jay's, from Oct 21 and Oct 23, 2026.
 
 ## What it does
@@ -70,15 +70,17 @@ a comment, never as a substring, so the marker of message 100 cannot match the c
 
 Copied Zulip text is untrusted.  Every field (the topic, the message, the sender's name, the stream
 name) is scanned for credential-shaped text before it is stored, logged or relayed: the fleet's own
-scanner (`scripts/agent_sync/secretscan.py`, which knows the Linear, Sentry, Infisical, Cloudflare
+scanner (`scripts/simple_tools/secretscan.py`, which knows the Linear, Sentry, Infisical, Cloudflare
 and other service prefixes, and Zulip-shaped API keys of 32 mixed-case letters and digits) and the
 relay's wider rows (long hex and base64 runs, and a keyword such as `password` or `token` followed
 by `:` or `=` and a value).  The Zulip-shaped row also withholds an opaque 32-character id, a cost
 accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A keyword in
 plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
-looked like it carried a credential)", and the log names only the message id and the field.  It is
-never partly redacted, because a pattern can find where a credential starts but not always where it
-ends.  The message itself is still mirrored as a link, which carries no Zulip text.  A clean field is
+looked like it carried a credential)", and the log names only the message id and the field.  Neither
+the comment nor the log says which row matched, so a reader cannot tell from Linear why one id was
+withheld and another was not; the rows above are the whole list.  It is never partly
+redacted, because a pattern can find where a credential starts but not always where it ends.  The
+message itself is still mirrored as a link, which carries no Zulip text.  A clean field is
 trimmed and escaped so it cannot open a link, start a code span or close the quoted string.  An @ is
 kept but followed by a zero-width space, so a mention never becomes a live mention.  The relay's log
 names an entry by its issue and its first message id, never by its topic.  A message that came in
@@ -97,9 +99,9 @@ rendered, from the message id, so no text that came out of Zulip can reach it.
 | `ZULIP_RELAY_EMAIL` | the relay bot's Zulip address |
 | `ZULIP_RELAY_API_KEY` | its API key |
 | `ZULIP_SITE` | the site of the bot's credentials; it must name the same host as the realm |
-| `AGENT_SYNC_REALM` | the realm the relay talks to and links to (default: the fleet realm) |
+| `SIMPLE_TOOLS_REALM` | the realm the relay talks to and links to (default: the fleet realm) |
 | `LINEAR_RELAY_TOKEN` | the OAuth app token of the dedicated Linear relay app |
-| `LINEAR_RELAY_STATE` | ledger path (default `~/.agent-sync/linear-relay.json`) |
+| `LINEAR_RELAY_STATE` | ledger path (default `~/.simple-tools/linear-relay.json`) |
 | `LINEAR_RELAY_TEAMS` | override for the team keys |
 | `LINEAR_RELAY_DRY_RUN` | `1` logs what it would write, writes nothing to Linear, and keeps its own `.dry-run.json` ledger |
 | `LINEAR_RELAY_CHECK_ISSUE` | an issue id for `check` to look up |
@@ -109,12 +111,14 @@ both variables.
 
 Commands:
 
-    python3 -m agent_sync.linear_relay run        # the long-running loop
-    python3 -m agent_sync.linear_relay check      # credentials and Linear auth, no writes
+    python3 -m simple_tools.linear_relay run        # the long-running loop
+    python3 -m simple_tools.linear_relay check      # credentials, public streams, Linear auth; no writes
 
-`check` proves the Zulip bot is a member and not an admin, and that the Linear token works.  A
-missing issue, or an id Linear refuses as malformed, is reported as an issue problem, not as an
-auth failure: those are different problems and the operator needs to know which one it is.
+`check` proves the Zulip bot is a member and not an admin, that the public-stream set loads, and
+that the Linear token works.  A set that cannot load fails `check`, because `run` relays nothing
+until it loads.  A missing issue, or an id Linear refuses as malformed, is reported as an issue
+problem, not as an auth failure: those are different problems and the operator needs to know which
+one it is.
 
 ## Talking to Linear
 
@@ -131,7 +135,7 @@ Zulip poll loop keeps polling.
 Errors carry only allow-listed fields: an HTTP status, Linear's error codes, and a fixed
 description.  The response body never reaches an exception or the log, and neither does the token.
 A refused token names only the variable to check, for example
-"linear refused LINEAR_RELAY_TOKEN (http 401)".  No key value, prefix, suffix or masked
+"linear refused LINEAR_RELAY_TOKEN (http 401)".  No key value, prefix, suffix or masked
 preview is included in the error, log or stop message.
 
 Failures are sorted by what waiting can change:
@@ -143,7 +147,9 @@ Failures are sorted by what waiting can change:
   not retried until a new message in the topic gives it new content.  An issue id Linear does not
   have is looked up again after an hour, so an id named before its issue exists is not lost.  The
   log says which it was, a missing issue or a refused lookup, so a scope problem never looks like a
-  quiet relay.
+  quiet relay.  A refused lookup waits the same hour before it is asked again, because waiting
+  cannot fix a refusal; the topic's messages are still recorded meanwhile, so the comment made once
+  a later lookup succeeds lists them.
 - A rate limit is a definite "not done": reads, edits and creates are all retried later.
 - A 5xx, a timeout or a network error is transient for a read or an edit, which retry with backoff
   inside the call's deadline before the worker backs the entry off.  For a create it is an unknown
@@ -186,7 +192,9 @@ comment for one topic:
 
 A fourth leaves an old comment behind without adding one: when a topic is renamed onto a topic that
 already has its own comment, the two conversations merge into the surviving comment, and the moved
-topic's older comment is left as it was, because the app cannot delete comments.
+topic's older comment is left as it was and is no longer updated, because the app cannot delete
+comments.  Retiring it with an edit that points at the surviving comment waits for the sandbox run
+to show that an edit works under `read` and `comments:create`.
 
 The relay narrows the third one, and it tracks the outcome of every create explicitly in the
 file-backed ledger:
@@ -224,34 +232,50 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
 2. **Zulip**: a new bot, role Member, not admin and not owner.
 3. **Infisical**: `ZULIP_RELAY_EMAIL` and `ZULIP_RELAY_API_KEY` in prod `/zulip`, where the
    fleet keeps every Zulip bot's credentials, and `LINEAR_RELAY_TOKEN` in a path of Jay's choice.
-4. **Coolify**: after the PR merges, a second process or service from the same image, with the
-   environment above, a persistent volume for the ledger with `LINEAR_RELAY_STATE` pointing at a
-   file on it, and restart always.  Without that variable the ledger sits in the container's home
-   directory, which a redeploy empties, and the relay would then start a second comment for every
-   topic.  First run with `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.  A dry run keeps
-   its own ledger next to the configured one (`linear-relay.dry-run.json` beside
-   `linear-relay.json`), so it never marks a topic written in the file the live run will use.
+4. **Coolify**: after the PR merges, a second service built with Coolify's Docker Compose build
+   pack from the same Dockerfile (not a Dockerfile application; the healthcheck paragraph below
+   says why), with the environment above, a persistent volume for the ledger with
+   `LINEAR_RELAY_STATE` pointing at a file on it, and restart always.  Without that variable the
+   ledger sits in the container's home directory, which a redeploy empties, and the relay would
+   then start a second comment for every topic.  First run with `LINEAR_RELAY_DRY_RUN=1`, watch
+   the log, then unset it.  A dry run keeps its own ledger next to the configured one
+   (`linear-relay.dry-run.json` beside `linear-relay.json`), so it never marks a topic written in
+   the file the live run will use.
 
    The image is built for the daemon, so the relay service changes three things.  The image's
-   Infisical loader (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its
+   Infisical loader (`scripts/simple_tools/server/infisical_env.py`) copies only the names on its
    allow-list, and the relay's three are not on it, so the service gets them as its own runtime
    environment; adding them to the shared loader would hand the relay's keys to the daemon as well.
    The image's entrypoint always runs `simple-chat` and its command is `daemon run --wait-lock`, so
    the service replaces both: the entrypoint becomes `python3` and the command
-   `-m agent_sync.linear_relay run`, with `PYTHONPATH` set to the image's `scripts` folder.  And the
-   image's healthcheck watches the daemon's status file, which the relay never writes, so the service
-   turns that healthcheck off; restart always still brings the relay back if it exits.
+   `-m simple_tools.linear_relay run`, with `PYTHONPATH` set to the image's `scripts` folder.  And the
+   image's healthcheck watches the daemon's status file, which the relay never writes, so the relay
+   service must have that healthcheck disabled, which the compose file described below does;
+   restart always still brings the relay back if it exits.
+
+   Coolify's health-check setting cannot turn it off for a Dockerfile application, which is how the
+   daemon is deployed.  In Coolify 4.5, the version on the server, such an application always ends
+   up with a check: with Coolify's own check off, Coolify reads the Dockerfile's `HEALTHCHECK` and
+   waits for it during a rolling deploy, so a relay deploy would be marked unhealthy and rolled
+   back; with it on, Coolify runs its own probe instead, an HTTP request by default that the relay
+   cannot answer (a command that always passes works only until one deploy runs with the check off,
+   after which Coolify keeps the image's check); and its custom Docker options drop
+   `--no-healthcheck`.  So the relay service uses Coolify's Docker Compose build pack: a compose
+   file that builds the same Dockerfile from the repo root and gives the relay service
+   `healthcheck: { disable: true }` beside its entrypoint, command, volume and `restart: always`.  A
+   Compose deploy does not wait for a health status.  Coolify reads that file from the repo, so it
+   is committed with the service when Jay approves this gate.
 
 The relay runs on the Coolify server instance, the same image as the simple-chat daemon.  No new
 Cloudflare Worker is involved.
 
 ## Why there is no RELAY row in the seat partition
 
-The handoff suggested a `RELAY = "server"` row in `docs/protocols/agent-sync-partition.toml`.  That
+The handoff suggested a `RELAY = "server"` row in `docs/protocols/simple-tools-partition.toml`.  That
 row is deliberately absent.  `config.py`'s `fleet_tags` treats every seat named in the partition as
 an eligible sender, so a RELAY row would make the relay a wake target and a tag it could wake, and
 the relay holds no agent.  The relay is a service, not a seat, so it takes no row.  Echo's reviewer
-confirmed this twice from the source, and `scripts/agent_sync/config.py` was read again for this
+confirmed this twice from the source, and `scripts/simple_tools/config.py` was read again for this
 build.
 
 ## Live verification

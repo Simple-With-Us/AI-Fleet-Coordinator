@@ -12,10 +12,10 @@ program does what it says:  the code comes out untouched (every inline span, eve
 block, and an indented block that really is one), the gaps are made, the prose runs
 collapse, a hard break survives, a numbered marker stays a numbered marker, and the
 whole thing is idempotent, which is the check that sees a prose double space that no
-grep over the body can see.  Third, that the two gap forms are the two the owner ruling
-of 2026-10-22 names:  a real U+00A0 plus a space with no flag, and the `&nbsp;` entity
-plus a normal space with `--entity`, which is the form a GitHub body, comment or review
-comment takes.
+grep over the body can see.  Third, that the two gap forms the program produces are the
+two the owner ruling of 2026-10-23 names:  a real U+00A0 plus a space with no flag, on
+every surface, and the `&nbsp;` entity plus a normal space with `--entity`, which is the
+form the two chat panes take.
 """
 
 from __future__ import annotations
@@ -32,10 +32,11 @@ PROGRAM = ROOT / "scripts" / "sentence_gap_convert.pl"
 
 #  The surfaces that document the recipe.  Each one embeds the program, so each one can
 #  be read by a seat that has no checkout of its own.
+#  `.cursor/rules/sentence-gap.mdc` is omitted: the always-on rule points to the skill
+#  instead of embedding the program, to keep ~11k tokens off every Cursor turn.
 SURFACES = (
     "docs/fleet-skills/sentence-gap/SKILL.md",
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
-    ".cursor/rules/sentence-gap.mdc",
     "scripts/pr_sweep/rules.md",
 )
 
@@ -55,11 +56,11 @@ _CANONICAL = (
 )
 
 #  The canonical pattern with the entity in place of the byte pair:  the same
-#  substitution, for the text a GitHub body takes (owner ruling 2026-10-22).  The `&` is
+#  substitution, for the text the two chat panes take (owner ruling 2026-10-23).  The `&` is
 #  escaped, because in a perl replacement it would otherwise stand for the matched text.
 _ENTITY_CANONICAL = _CANONICAL.replace(r"\x{a0} ", r"\&nbsp; ")
 
-#  The entity a GitHub body takes, and the space that follows it.
+#  The entity the two chat panes take, and the space that follows it.
 ENTITY = "&nbsp; "
 
 NBSP = "\u00a0"
@@ -95,6 +96,17 @@ NESTED_LIST_BODY = "- A list item.\n\n    Nested prose.  Another sentence.\n"
 LIST_CODE_BODY = "- A list item.\n\n      Code line.  Another line.\n"
 
 HARD_BREAK = "A hard break at the end of this line follows.  \n"
+
+# AFC-510 (owner Nov 1 2026):  no gap at a line break, blank line, or end of text.
+LINE_END_UNCHANGED_PREFIX = (
+    "First sentence.\nNext sentence.\n\nEnd of paragraph.\n\nNew paragraph.\n"
+)
+LINE_END_SAME_LINE_PAIR = "Same line.  Gapped here.\n"
+LINE_END_BODY = LINE_END_UNCHANGED_PREFIX + LINE_END_SAME_LINE_PAIR
+EOF_LINE_END_BODIES = (
+    ("no_trailing_newline", "Ends at text."),
+    ("trailing_newline", "Ends at text.\n"),
+)
 
 BODY = """repo:  Fixture-Repo  |  DONE
 
@@ -203,7 +215,7 @@ class SurfaceTests(unittest.TestCase):
 
         The surfaces are the pack's own copies of the program.  The copy in the
         checkout is one release ahead of them:  it carries the `--entity` mode (owner
-        ruling 2026-10-22), which the pack's copy does not have yet, because the pack is
+        ruling 2026-10-23), which the pack's copy does not have yet, because the pack is
         rewritten by its own pull request.  So the pin that still holds between the
         checkout and the pack's copy is the behaviour, and it is pinned in
         `test_the_checkout_program_agrees_with_the_pack_copy`.
@@ -412,6 +424,16 @@ class ProgramBehaviourTests(unittest.TestCase):
             "the program and the canonical one-liner disagree on a body with no code",
         )
 
+    def test_the_entity_mode_holds_every_inline_span(self) -> None:
+        """Every inline span is held before the gap, not only the first one."""
+        out = run_program(self.program, INLINE_SPANS_BODY, "--entity")
+        self.assertIn("&nbsp; Next.", out)
+        self.assertNotIn("&nbsp; Bar", out.split("`", 1)[0])
+        for region in ("`span one with  two spaces`", "`span two with  two spaces`"):
+            self.assertIn(region, out)
+        for span in re.findall(r"`[^`\n]*`", out):
+            self.assertNotIn("&nbsp;", span, "the entity landed inside a span")
+
     def test_the_entity_mode_holds_a_fenced_block_byte_for_byte(self) -> None:
         """The entity mode holds the code aside exactly as the default mode does.
 
@@ -460,8 +482,8 @@ class ProgramBehaviourTests(unittest.TestCase):
         )
 
     def test_the_no_flag_mode_still_writes_the_real_nbsp(self) -> None:
-        """The no-flag behaviour must not move:  a GitHub title and a Zulip post take a
-        real U+00A0 plus a space."""
+        """The no-flag behaviour must not move:  a GitHub title, body and comment and a
+        Zulip post take a real U+00A0 plus a space."""
         out = run_program(self.program, "Plain sentence.  Next sentence.\n")
         self.assertIn("Plain sentence." + NBSP + " Next sentence.", out)
         self.assertNotIn("&nbsp;", out)
@@ -493,6 +515,17 @@ class ProgramBehaviourTests(unittest.TestCase):
             "the checkout's program and the pack's copy no longer agree",
         )
 
+    def test_the_checkout_program_agrees_with_the_pack_copy_in_entity_mode(self) -> None:
+        """The pack's embedded program must match the checkout in entity mode too."""
+        match = _HEREDOC_RE.search((ROOT / SURFACES[0]).read_text(encoding="utf-8"))
+        self.assertIsNotNone(match, "%s embeds no program" % SURFACES[0])
+        body = "Plain sentence.  Next sentence.\n"
+        self.assertEqual(
+            run_program(program_text(), body, "--entity"),
+            run_program(match.group("program"), body, "--entity"),
+            "the checkout's program and the pack's copy disagree in entity mode",
+        )
+
     def test_the_program_holds_a_fence_that_is_never_closed(self) -> None:
         """An unclosed fence holds the rest of the body, so the rest is not converted.
 
@@ -504,6 +537,45 @@ class ProgramBehaviourTests(unittest.TestCase):
         self.assertIn("```js\nconst x = 1.  More\n", out)
         after = out.split("```js\n", 1)[1]
         self.assertNotIn(NBSP, after)
+
+    def _assert_line_end_fixture(self, out: str, gap: str) -> None:
+        """Shared AFC-510 shape:  prefix untouched, one same-line gap, no gap elsewhere."""
+        self.assertEqual(
+            out[: len(LINE_END_UNCHANGED_PREFIX)],
+            LINE_END_UNCHANGED_PREFIX,
+            "line-break and paragraph-end closes must stay byte for byte",
+        )
+        self.assertEqual(out.count(gap), 1, "only the same-line pair may gain a gap")
+        self.assertIn("Same line." + gap + "Gapped here.", out)
+
+    def test_line_end_closes_stay_byte_for_byte_in_default_mode(self) -> None:
+        """AFC-510:  the program must not gap newline, blank-line, or EOF closes."""
+        out = run_program(self.program, LINE_END_BODY)
+        self._assert_line_end_fixture(out, NBSP + " ")
+        for name, body in EOF_LINE_END_BODIES:
+            with self.subTest(case=name):
+                converted = run_program(self.program, body)
+                self.assertEqual(converted, body)
+                self.assertNotIn(NBSP, converted)
+
+    def test_line_end_closes_stay_byte_for_byte_in_entity_mode(self) -> None:
+        """AFC-510:  entity mode follows the same line-end rule as default mode."""
+        out = run_program(self.program, LINE_END_BODY, "--entity")
+        self._assert_line_end_fixture(out, ENTITY)
+        for name, body in EOF_LINE_END_BODIES:
+            with self.subTest(case=name):
+                converted = run_program(self.program, body, "--entity")
+                self.assertEqual(converted, body)
+                self.assertNotIn(ENTITY, converted)
+
+    def test_the_line_end_fixture_is_idempotent_in_both_modes(self) -> None:
+        """AFC-510:  a second run must not add a gap at a line end that stayed plain."""
+        for entity in (False, True):
+            with self.subTest(entity=entity):
+                args = ("--entity",) if entity else ()
+                out = run_program(self.program, LINE_END_BODY, *args)
+                again = run_program(self.program, out, *args)
+                self.assertEqual(again, out, "the line-end fixture must stay idempotent")
 
 
 if __name__ == "__main__":

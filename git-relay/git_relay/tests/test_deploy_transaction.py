@@ -1,0 +1,223 @@
+import copy
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from git_relay.deploy_transaction import Transaction, TransactionError, sha
+
+
+class TransactionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.code = self.root / "code"
+        self.code.mkdir()
+        self.policy = self.root / "policy"
+        self.policy.mkdir()
+        (self.code / "old.py").write_bytes(b"old code")
+        (self.policy / "seats.json").write_bytes(b"old policy")
+        self.stopped = True
+        self.t = Transaction(
+            {"code": self.code, "policy": self.policy}, self.root / "backup", lambda: self.stopped
+        )
+        meta = {"uid": os.getuid(), "gid": os.getgid(), "mode": 0o644}
+        self.changes = [
+            {
+                "root": "code",
+                "name": "old.py",
+                "before": sha(b"old code"),
+                "after": sha(b"new code"),
+                "meta": meta,
+                "data": b"new code",
+            },
+            {
+                "root": "code",
+                "name": "new.py",
+                "before": None,
+                "after": sha(b"new module"),
+                "meta": meta,
+                "data": b"new module",
+            },
+            {
+                "root": "policy",
+                "name": "seats.json",
+                "before": sha(b"old policy"),
+                "after": sha(b"new policy"),
+                "meta": meta,
+                "data": b"new policy",
+            },
+        ]
+
+    def prepare(self):
+        return self.t.prepare(self.changes)["rows"]
+
+    def assert_original(self):
+        self.assertEqual((self.code / "old.py").read_bytes(), b"old code")
+        self.assertFalse((self.code / "new.py").exists())
+        self.assertEqual((self.policy / "seats.json").read_bytes(), b"old policy")
+
+    def test_crash_after_each_file_and_repeated_recovery(self):
+        for fail_at in range(3):
+            with self.subTest(fail_at=fail_at):
+                rows = self.prepare()
+
+                def crash(index, fail_at=fail_at):
+                    if index == fail_at:
+                        raise SystemExit("executor lost")
+
+                with self.assertRaises(SystemExit):
+                    self.t.apply(rows, crash)
+                # A fresh executor reads durable state, without namespace fds.
+                fresh = Transaction(self.t.roots, self.t.backup, lambda: True)
+                self.assertEqual(fresh.recover(rows), "restored")
+                self.assertEqual(fresh.recover(rows), "restored")
+                self.assert_original()
+                import shutil
+
+                shutil.rmtree(self.t.backup)
+
+    def test_prepared_applied_and_qualified_commit(self):
+        rows = self.prepare()
+        self.t.recover(rows)
+        self.assert_original()
+        import shutil
+
+        shutil.rmtree(self.t.backup)
+        rows = self.prepare()
+        self.t.apply(rows)
+        with self.assertRaises(TransactionError):
+            self.t.commit(rows, lambda: False)
+        self.t.commit(rows, lambda: True)
+        self.assertEqual(self.t.recover(rows), "committed")
+        self.assertEqual((self.code / "new.py").read_bytes(), b"new module")
+
+    def test_fail_closed_active_drift_symlink_and_unanchored_manifest(self):
+        self.stopped = False
+        with self.assertRaises(TransactionError):
+            self.prepare()
+        self.stopped = True
+        rows = self.prepare()
+        changed = copy.deepcopy(rows)
+        changed[0]["name"] = "../outside"
+        with self.assertRaises(TransactionError):
+            self.t.load(changed)
+        self.t.apply(rows)
+        (self.code / "new.py").write_bytes(b"another writer")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        # No partial restore or deletion on conflicting target.
+        self.assertEqual((self.code / "old.py").read_bytes(), b"new code")
+        self.assertEqual((self.code / "new.py").read_bytes(), b"another writer")
+
+    def test_rejects_baseline_and_backup_drift(self):
+        self.changes[0]["before"] = "wrong"
+        with self.assertRaises(TransactionError):
+            self.prepare()
+        self.changes[0]["before"] = sha(b"old code")
+        rows = self.prepare()
+        self.t.apply(rows)
+        (self.t.backup / "0.before").write_bytes(b"corrupt")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        self.assertEqual((self.code / "old.py").read_bytes(), b"new code")
+
+    def test_recover_without_journal_verifies_intact_old_image(self):
+        # Failure before prepare() wrote the journal: nothing staged, nothing
+        # applied; recovery is a pure source-bound verification of the old
+        # image's bytes and metadata, and creates no state.
+        rows = [
+            {k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes
+        ]
+        self.assertFalse(self.t.backup.exists())
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        self.assertFalse(self.t.backup.exists())
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+
+    def test_recover_without_journal_aborts_on_exact_staged_remnants(self):
+        # prepare() mkdirs the backup and stages the before/after images
+        # before writing the journal; a crash in that window leaves remnants
+        # whose content is verifiable against the pinned manifest rows.
+        rows = [
+            {k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes
+        ]
+        # Crash right after mkdir: an empty backup is a clean no-write abort.
+        self.t.backup.mkdir()
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        # Crash mid-staging: the images written so far all match the manifest.
+        (self.t.backup / "0.before").write_bytes(b"old code")
+        (self.t.backup / "0.after").write_bytes(b"new code")
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        # Crash after full staging, before the journal: still nothing applied.
+        (self.t.backup / "1.after").write_bytes(b"new module")
+        (self.t.backup / "2.before").write_bytes(b"old policy")
+        (self.t.backup / "2.after").write_bytes(b"new policy")
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()
+        # Recovery created no journal and left the verified remnants in place.
+        self.assertFalse((self.t.backup / "journal.json").exists())
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+
+    def test_recover_without_journal_refuses_drift_tamper_and_remnants(self):
+        rows = [
+            {k: c[k] for k in ["root", "name", "before", "after", "meta"]} for c in self.changes
+        ]
+        # A target carrying the after bytes is a partial write; never blessed.
+        (self.code / "old.py").write_bytes(b"new code")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        # Any other content is a foreign write.
+        (self.code / "old.py").write_bytes(b"foreign")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.code / "old.py").write_bytes(b"old code")
+        # Metadata drift is drift.
+        os.chmod(self.code / "old.py", 0o600)
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        os.chmod(self.code / "old.py", 0o644)
+        # A manifest-created file appearing early is drift for a before=None row.
+        (self.code / "new.py").write_bytes(b"new module")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.code / "new.py").unlink()
+        # A staged file whose content differs from the manifest is tamper.
+        self.t.backup.mkdir()
+        (self.t.backup / "0.before").write_bytes(b"corrupt")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.t.backup / "0.before").unlink()
+        # An unexpected staged name is tamper.
+        (self.t.backup / "unexpected").write_bytes(b"old code")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.t.backup / "unexpected").unlink()
+        # A before-image for a manifest-created row is tamper.
+        (self.t.backup / "1.before").write_bytes(b"old code")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        (self.t.backup / "1.before").unlink()
+        # A symlinked staged file is tamper.
+        (self.t.backup / "0.before").symlink_to(self.code / "old.py")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        import shutil
+
+        shutil.rmtree(self.t.backup)
+        # A dangling symlink at the backup path is tamper, not absence.
+        self.t.backup.symlink_to(self.root / "nonexistent")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        self.t.backup.unlink()
+        # A regular file at the backup path is tamper, not absence.
+        self.t.backup.write_bytes(b"x")
+        with self.assertRaises(TransactionError):
+            self.t.recover(rows)
+        self.t.backup.unlink()
+        self.assertEqual(self.t.recover(rows), "aborted-no-write")
+        self.assert_original()

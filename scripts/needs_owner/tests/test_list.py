@@ -127,7 +127,7 @@ class ListTests(unittest.TestCase):
         self.w.set_zulip(no_credential=["BF-PLUMBER"])
         self.assertEqual(self.w.file("Revive PR 761 or close it?", "Revive it", "Close it", extra=(
             "--low-stakes", "1", "--recommend", "1", "--context", "PR 761 has been stale for a month")).code, 0)
-        plumber = self.w.env(AGENT_SEAT=None, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER")
+        plumber = self.w.env(AGENT_SEAT="BF-PLUMBER", AGENT_LAUNCHER="botfleet")
         self.assertEqual(self.w.file("Rotate the backup key now?", "Rotate", "Wait", seat="BF-PLUMBER", env=plumber, extra=("--urgent",)).code, 0)
         self.assertEqual(self.w.run("file", "--by", "CODEX", "--app", "AFC", "--question", "Which logo?", "--option", "Round",
                                     "--option", "Square", "--low-stakes", "1,2", "--json", env=self.w.env(AGENT_SEAT="CODEX")).code, 0)

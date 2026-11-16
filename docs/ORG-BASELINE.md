@@ -82,7 +82,7 @@ is an **identifier**, not a credential.  The Infisical data confirms the
 misclassification has spread: `Autorotate` and `ContactLogo` each store four DSN
 keys (`SENTRY_DSN`, `SENTRY_DSN_MACOS`, `SENTRY_DSN_WEB`, `VITE_SENTRY_DSN`) as
 Infisical *secrets*, and `shared-at-ct` holds two more as
-`PERSONAL_SITE_SENTRY_DSN`.
+`BOTL_SITE_SENTRY_DSN`.
 
 So the bootstrap dependency is not real.  It exists **only because DSNs were
 filed as secrets**.  Store a DSN as a GitHub **variable** and the problem
@@ -170,13 +170,13 @@ confirm each mapping points at a real project; values were never read.
 | Personal-Site | `personal-site-miyr` | **0** | **empty** |
 | Clutch | `clutch` | **0** | **empty** |
 | AI-Fleet-Coordinator | `ai-fleet-coordinator-ox-z2` | **0** | **empty** |
-| Fleet-OPS | `fleet-ops` (`8dae6d03-8f12-48b2-adf3-e5c1b881c8c5`) | **0** | empty |
+| Fleet-OPS | `fleet-ops` (`INFISICAL_FLEET_OPS_PROJECT_ID`, not committed) | **0** | empty |
 | Certificate Manager | `cert-manager-w-ppb` | **0** | empty |
 
 As of 2026-10-11, Infisical projects **Fleet Secrets** (`fleet-secrets-ek1-v`)
 and the old **Fleet-OPS** slug (`fleet-ops-mwb-6`) were merged into one
-**Fleet-OPS** project (`fleet-ops`, id unchanged at
-`8dae6d03-8f12-48b2-adf3-e5c1b881c8c5`).
+**Fleet-OPS** project (`fleet-ops`;  the id lives in `INFISICAL_FLEET_OPS_PROJECT_ID` and is never
+committed here).
 
 An empty project means the repo's GitHub secrets are still the only copy, so
 those repos cannot be migrated to Infisical-sourced CI until the project is

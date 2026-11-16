@@ -187,6 +187,11 @@ The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) 
 init or install:  it has no prefix.  With `FLEET_WORK_BACKUP_ALLOW_MASTER=1` the restore commands (`restic`,
 `snapshots`) may fall back to it for names the scoped key leaves empty.
 
+The fetch is least-privilege:  `fleet-secrets run --only` injects just the four job names (the two master names are
+added only when `FLEET_WORK_BACKUP_ALLOW_MASTER=1`).  If `--only` exits non-zero, because one name is absent or
+the fetch failed, the job falls back to one `fleet-secrets get` per name, so the names that exist still load and the
+missing ones are reported.
+
 All four names live in Infisical Fleet-OPS (`prod`, root `/`), and the job reads them with `fleet-secrets` (AFC-359:
 nothing is read from `~/.secrets`).  They were seeded from the `AI Fleet Coordinator` project by the one-way
 `com.jay.infisical-secrets-sync` job, which is being retired.  The password must be a
@@ -248,7 +253,7 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   and a note that says the first Plumber to reply "taking it" in the topic owns the fix and the other reviews it.
   The job posts as the CLAUDE bot, which is a different seat from both Plumbers, so its mention can wake them.
   BF-Plumber is woken by BotFleet's own Zulip listener and GB-Plumber through the Grok Bot routine webhook on the
-  agent-sync server (live and connected as of Oct 10, 2026 10:34pm by `simple-chat status` on the server).  Neither
+  Operator server (live and connected as of Oct 10, 2026 10:34pm by `simple-chat status` on the server).  Neither
   has posted yet, so the wake path is unproven end to end.  BotFleet caps peer wakes (6 per bot per hour, 2 per
   topic per hour, and after 4 peer wakes in one topic with no message from Jay the topic stops waking that bot
   until Jay speaks there), so a failure that lasts for days can stop waking BF-Plumber in this topic.  **The owner
@@ -256,7 +261,7 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   a day while runs stay not ok (the mention and the note go with each).  When a complete run follows, the
   all-clear goes out to the owner by DM and to the topic as a post with **no** mention and no note, so good news
   spends no one's wake budget.  The CLI is `~/.local/bin/simple-chat` (launchd's `PATH` lacks it;
-  `FLEET_WORK_BACKUP_AGENT_SYNC` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
+  `FLEET_WORK_BACKUP_SIMPLE_CHAT` overrides).  `FLEET_WORK_BACKUP_ALERT_TOPIC` and `FLEET_WORK_BACKUP_ALERT_SEAT`
   change the topic and the seat.  When neither send is delivered the detail log says `alert-not-posted` (naming
   `post`, `dm` or both);  when only one is, it says `alert-partly-posted` and names the other, and the alert
   counts as sent for that day, so a DM that failed beside a post that landed is not retried until tomorrow.

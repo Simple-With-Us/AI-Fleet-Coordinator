@@ -10,7 +10,8 @@ import json
 import re
 import time
 
-from .bridge import StopBridge, digest, normalize, request_json
+from .bridge import digest, normalize, request_json
+from .errors import StopBridge
 
 
 def verify_candidate(
@@ -178,7 +179,8 @@ if __name__ == "__main__":
     import os
     import sys
 
-    from .bridge import BridgeError, State
+    from .bridge import State
+    from .errors import BridgeError
 
     try:
         names = ("WHATSAPP_API_KEY", "WA_BRIDGE_HMAC_KEY_JET", "WA_STATE_DIRECTORY")

@@ -1,10 +1,16 @@
 name: Sentry CI Report
 
-# Fleet-wide CI observability: receives completion events from the observed
-# workflows, but only reserves a runner for failures or scheduled check-ins.
-# It reports those actionable events to the shared `fleet-infra` Sentry project
-# (org simple-with-us).  ADDITIVE ONLY — this file must never modify the behavior
+# Fleet-wide CI observability for this repository.  The reporter itself is the
+# shared workflow_call in .github/workflows/sentry-ci-report-reusable.yml;  this
+# file is the thin listener that names this repository's own workflows and
+# hands the shared reporter the per-caller data it cannot know for itself.
+# It reports actionable events to the shared `fleet-infra` Sentry project (org
+# simple-with-us).  ADDITIVE ONLY — this file must never modify the behavior
 # of the workflows it observes.
+#
+# It listens on BOTH activity types:  "requested" opens the Sentry Crons
+# check-in before the observed run finishes,  and "completed" closes it with
+# the run's outcome.
 #
 # Two independent signals per completed run:
 #   1. On conclusion == failure / timed_out / startup_failure: a Sentry error
@@ -18,7 +24,7 @@ name: Sentry CI Report
 #      across repos, and this repo shares workflow names ("CI", "Security",
 #      "Effort Issues Sync") with peer apps, so without `app` a "CI" failure
 #      here would dedup into the same Sentry issue as a "CI" failure there.
-#      See AGENT-SYNC.md "Observability".
+#      See FLEET-PROTOCOL.md "Observability".
 #   2. On event == schedule (i.e. the completed run was a cron-triggered
 #      run of a workflow that defines `schedule:`): a Sentry Crons check-in
 #      (ok on success, error on failure) with an upsert monitor_config whose
@@ -26,9 +32,6 @@ name: Sentry CI Report
 #      `ci-AI-Fleet-Coordinator-<workflow-slug>`.  This means a nightly/weekly job that
 #      silently STOPS firing (not "runs and fails" but "never runs again")
 #      raises a missed-check-in alert instead of going unnoticed.
-#
-# Raw Sentry envelope HTTP via python3 — no action marketplace dependency, no
-# new job permissions beyond what's needed to read the triggering run.
 #
 # workflows observed (from `ls .github/workflows/` at authoring time — see
 # the `name:` header of each file):
@@ -38,10 +41,11 @@ name: Sentry CI Report
 #
 # DELIBERATELY NOT observed:
 #   - Sentry CI Report (this file) — would recurse.
+#   - Sentry CI Report (Reusable) — the shared reporter,  for the same reason.
 #
 # Cron schedules mirrored for the check-in step (must match the source
 # workflow's `schedule:` block AND its `name:`; keep in sync if those change).
-# The reporter validates these keys against the real workflow names on every
+# The reporter validates these keys against the observed names on every
 # run and raises a Sentry issue on drift, so a rename cannot silently kill a
 # monitor:
 #   Backup fleet GitHub repositories        -> "0 7 * * *"  (backup-repos.yml, daily)
@@ -63,56 +67,47 @@ on:
       - Agent Activity Calendar (manual only)
       - Backup fleet GitHub repositories
       - Fleet daily digest + calendars
+    # Both activity types,  not just "completed".  The shared reporter has two
+    # phases:  the requested phase sends the in_progress check-in that OPENS the
+    # Sentry Crons monitor before the observed run finishes,  and the completed
+    # phase sends the terminal check-in that closes it with the run's outcome.
+    # With "completed" alone the monitor only ever sees the terminal check-in,
+    # so its checkin_margin has to cover the whole observed runtime and a slow
+    # but healthy run can still page as a missed check-in.
     types: [requested, completed]
 
 permissions:
   contents: read
+  # The reporter asks the Actions API whether the observed run already
+  # finished,  and the called workflow can only narrow the caller's grants.
+  actions: read
 
 concurrency:
   group: sentry-ci-report-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
-  # The script has no side effect for an ordinary successful push/PR/manual
-  # run.  Gate those events before runner scheduling so observability cannot
-  # starve CI with guaranteed no-op jobs.  Keep this list in lockstep with
-  # ALERT_CONCLUSIONS in scripts/sentry-ci-report.py.  Every scheduled run
-  # remains eligible because Sentry Crons needs both success and error
-  # check-ins.
   report:
-    if: >-
-      (github.event.action == 'requested' && github.event.workflow_run.event == 'schedule') ||
-      (github.event.action == 'completed' && (github.event.workflow_run.conclusion == 'failure' ||
-      github.event.workflow_run.conclusion == 'timed_out' ||
-      github.event.workflow_run.conclusion == 'startup_failure' ||
-      github.event.workflow_run.event == 'schedule'))
     permissions:
       contents: read
       actions: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout (for the reporter script only; does not touch observed workflows)
-        # Deliberately no `ref:` override: actions/checkout defaults workflow_run events to the
-        # repo's default branch (main), NOT the head ref of the triggering run.  That's intentional
-        # here — it means this step always executes the trusted, merged copy of the reporter
-        # script rather than whatever version lives on an arbitrary (possibly fork/PR) branch that
-        # triggered the observed workflow.  Do not add `ref: ${{ github.event.workflow_run.head_sha }}`
-        # without re-reviewing the security implications.
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Report failure + cron check-in to Sentry fleet-infra
-        shell: bash
-        env:
-          SENTRY_FLEET_DSN: ${{ secrets.SENTRY_FLEET_DSN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          WORKFLOW_RUN_ACTION: ${{ github.event.action }}
-          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
-          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
-          WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          WORKFLOW_ACTOR: ${{ github.event.workflow_run.actor.login }}
-          WORKFLOW_RUN_URL: ${{ github.event.workflow_run.html_url }}
-          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
-          WORKFLOW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-        run: python3 scripts/sentry-ci-report.py
+    # The `uses:` ref and the `reusable_ref` input MUST be the same SHA:  the
+    # shared workflow checks its own script out of this repository at
+    # `reusable_ref` and refuses to run when the checked-out commit differs.
+    # The reusable additionally pins the reporter script by BLOB SHA,  and that
+    # blob survives a squash,  a rebase and a merge,  so re-pinning the commit
+    # below to the merge SHA does not invalidate it.
+    #
+    # TODO(OWNER):  this pins the branch commit that carries the reusable,  so
+    # the workflow loads and runs as soon as the branch is pushed.  Re-pin both
+    # values to the merge SHA of .github/workflows/sentry-ci-report-reusable.yml
+    # once that merge exists,  so the reporter runs the merged copy rather
+    # than this branch's copy.
+    uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/sentry-ci-report-reusable.yml@b59d85c173ae8a52acf0cab93643ca6d35d84c3e
+    with:
+      observed_workflows: '["Agent Activity Calendar (manual only)", "Backup fleet GitHub repositories", "Fleet daily digest + calendars"]'
+      cron_schedules: '{"Backup fleet GitHub repositories": "0 7 * * *", "Fleet daily digest + calendars": "25 1,7,13,19 * * *"}'
+      reusable_ref: b59d85c173ae8a52acf0cab93643ca6d35d84c3e
+      app: AI-Fleet-Coordinator
+    secrets:
+      SENTRY_FLEET_DSN: ${{ secrets.SENTRY_FLEET_DSN }}

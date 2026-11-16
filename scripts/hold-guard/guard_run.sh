@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hold-guard orchestration: disarm-first, evaluate, repair, report, publish
+# hold-guard orchestration: evaluate, conditionally disarm, repair, report, publish
 # the merge-gate check.  Executed by hold-guard.yml AND by the integration
 # tests (test_guard_integration.py runs THIS script against a fake gh), so
 # the tested code is the shipped code.
@@ -9,9 +9,12 @@
 #
 # Error contract: every critical READ error (evaluation, fresh-state fence,
 # check-run listing) is settled BEFORE the check payload is built and forces
-# a FAILURE conclusion - a degraded guard never publishes green.  Every
-# critical failure of any kind (read errors, disarm unconfirmed, label
-# repair, comment, check patch/create) also makes the JOB red (exit 3).
+# a FAILURE conclusion - a degraded guard never publishes green.  An
+# unconfirmed disarm settles the conclusion the same way: the guard does not
+# know that auto-merge is off, so it cannot vouch for a pull request that may
+# still merge itself, whatever the hold state says.  Every critical failure
+# of any kind (read errors, disarm unconfirmed, label repair, comment, check
+# patch/create) also makes the JOB red (exit 3).
 # What we cannot do (documented, not claimed): if GitHub API writes
 # themselves fail, no red check can be forced onto the PR - a previously
 # green merge-gate may persist; the red job + notices are the signal, and
@@ -74,22 +77,36 @@ if [ -z "$PR" ]; then
 fi
 prs=("$PR")
 
-# 1. Disarm any armed auto-merge FIRST (disarming never merges).
-#    Fleet contract (ST scripts/disable-pr-automerge.sh, ported inline into
-#    AFC auto-merge-reusable.yml disarm job): success is defined by the
-#    STATE READ (`gh pr view --json autoMergeRequest`), not by the mutation
-#    exit code.  off = benign (disarmed or never armed); armed or
-#    unreadable after the attempt = critical failure (red job; the check
-#    still publishes the evaluated hold state below).
-gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
-state="$(gh pr view "$PR_URL" --json autoMergeRequest \
-  --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true)"
-[ -n "$state" ] || state=unreadable
-case "$state" in
-  off) : ;;
-  *) echo "::error::auto-merge state after disarm attempt: $state ($PR_URL)"
-     any_error=1 ;;
-esac
+# Disarm only when a hold or critical error requires it. A clear PR may
+# keep legitimate auto-merge armed; the guard must not create a hold itself.
+# State readback remains authoritative when disarming is required.
+disarm_error=""
+disarm_attempted=0
+ensure_disarmed() {
+  [ "$disarm_attempted" -eq 1 ] && return
+  disarm_attempted=1
+  gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
+  state="$(gh pr view "$PR_URL" --json autoMergeRequest \
+    --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true)"
+  [ -n "$state" ] || state=unreadable
+  case "$state" in
+    off) : ;;
+    *) echo "::error::auto-merge state after disarm attempt: $state ($PR_URL)"
+       any_error=1
+       disarm_error="auto-merge is $state after the disarm attempt" ;;
+  esac
+}
+
+# Fast current-label signal: disarm visible holds before expensive paginated
+# timeline ownership evaluation. Errors also disarm, never a false-clear.
+# Removed-but-unreleased historical holds still require timeline recovery.
+if signal="$(python3 "$DIR/hold_guard.py" "$REPO" "$PR" --hold-signal)" &&
+   signal_state="$(printf '%s' "$signal" | jq -er '.held | if type == "boolean" then tostring else error("invalid hold signal") end')"; then
+  [ "$signal_state" = true ] && ensure_disarmed
+else
+  any_error=1; read_error="current hold signal error"
+  ensure_disarmed
+fi
 
 # 2. Evaluate holds (fail closed per PR).
 combined='[]'
@@ -111,6 +128,15 @@ for pr in "${prs[@]}"; do
   echo "$out" > "$SCRATCH/hold-guard-$pr.json"
   combined="$(jq -s --arg pr "$pr" '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' <(echo "$combined") <(echo "$out"))"
 done
+
+# Evaluate before mutation: active holds and evaluation errors disarm
+# before repair. A later hold/read failure is caught again before publish.
+if ! hold_count="$(printf '%s' "$combined" | jq -er 'if type == "array" then length else error("invalid hold list") end')"; then
+  any_error=1; read_error="invalid hold evaluation"; hold_count=0
+fi
+if [ "$any_error" -eq 1 ] || [ "$hold_count" -gt 0 ]; then
+  ensure_disarmed
+fi
 
 # 3. Repairs + reports (labels via jq-built JSON, never word-split).
 #    Pipelines run in subshells; failures are recorded via marker file and
@@ -228,9 +254,26 @@ else
   [ -n "$read_error" ] || read_error="check-run listing error"
 fi
 
+# The fence can discover a newly placed hold, and the final check listing
+# can fail after an initially clear evaluation. Both still require disarm.
+if ! hold_count="$(printf '%s' "$fresh" | jq -er 'if type == "array" then length else error("invalid hold list") end')"; then
+  any_error=1; read_error="invalid fresh hold evaluation"; hold_count=0
+fi
+if [ "$any_error" -eq 1 ] || [ "$hold_count" -gt 0 ]; then
+  ensure_disarmed
+fi
+
 if [ -n "$read_error" ]; then
   conclusion=failure; title="merge-gate: $read_error"
   summary="A guard read step failed (see workflow log). Failing closed - no green check from a degraded guard."
+elif [ -n "$disarm_error" ]; then
+  # The hold state may be clean, but the guard does not know that auto-merge
+  # is off, so it cannot say the pull request is safe to merge.  A green gate
+  # over a pull request that may still merge itself is the one answer this
+  # gate must never publish.
+  conclusion=failure; title="merge-gate: the disarm failed"
+  holds="$(printf '%s' "$fresh" | jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")')"
+  summary="The guard could not disarm auto-merge on PR #$PR: $disarm_error.  The hold state was evaluated, but a green gate over a pull request that may still merge itself is not a safe answer, so this check stays red.  Holds evaluated: ${holds:-none}."
 elif [ "$(printf '%s' "$fresh" | jq 'length')" -eq 0 ]; then
   conclusion=success; title="merge-gate: no active merge holds"
   summary="All holds were released by their setters."

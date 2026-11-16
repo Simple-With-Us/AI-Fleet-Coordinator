@@ -1,0 +1,142 @@
+{
+  "observed_at": "2026-10-26T18:16:00-05:00",
+  "source": "GitHub GET /orgs/Simple-With-Us/repos?type=all&per_page=100, paginated authenticated read",
+  "repositories": [
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Socratic-Trade",
+      "html_url": "https://github.com/Simple-With-Us/Socratic-Trade",
+      "id": 1270451796,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Congress.Trade",
+      "html_url": "https://github.com/Simple-With-Us/Congress.Trade",
+      "id": 1275616664,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/congress-trading-shared",
+      "html_url": "https://github.com/Simple-With-Us/congress-trading-shared",
+      "id": 1284078548,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Usage-Monitor",
+      "html_url": "https://github.com/Simple-With-Us/Usage-Monitor",
+      "id": 1284098482,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/AI-Fleet-Coordinator",
+      "html_url": "https://github.com/Simple-With-Us/AI-Fleet-Coordinator",
+      "id": 1315501725,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Personal-Site",
+      "html_url": "https://github.com/Simple-With-Us/Personal-Site",
+      "id": 1331389993,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/DealDex",
+      "html_url": "https://github.com/Simple-With-Us/DealDex",
+      "id": 1332557936,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/ContactLogo",
+      "html_url": "https://github.com/Simple-With-Us/ContactLogo",
+      "id": 1335323144,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": true,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Autorotate",
+      "html_url": "https://github.com/Simple-With-Us/Autorotate",
+      "id": 1341373235,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/BotFleet",
+      "html_url": "https://github.com/Simple-With-Us/BotFleet",
+      "id": 1349857130,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/HogHunter",
+      "html_url": "https://github.com/Simple-With-Us/HogHunter",
+      "id": 1360606939,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/CodeCaps",
+      "html_url": "https://github.com/Simple-With-Us/CodeCaps",
+      "id": 1370549454,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/homebrew-tap",
+      "html_url": "https://github.com/Simple-With-Us/homebrew-tap",
+      "id": 1374020032,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Clutch",
+      "html_url": "https://github.com/Simple-With-Us/Clutch",
+      "id": 1376713872,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Simple-With-Us",
+      "html_url": "https://github.com/Simple-With-Us/Simple-With-Us",
+      "id": 1384087033,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/FleetLink",
+      "html_url": "https://github.com/Simple-With-Us/FleetLink",
+      "id": 1394249143,
+      "owner": "Simple-With-Us"
+    },
+    {
+      "archived": false,
+      "disabled": false,
+      "full_name": "Simple-With-Us/Kodus-Config",
+      "html_url": "https://github.com/Simple-With-Us/Kodus-Config",
+      "id": 1404554752,
+      "owner": "Simple-With-Us"
+    }
+  ]
+}

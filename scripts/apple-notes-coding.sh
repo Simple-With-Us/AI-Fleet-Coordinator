@@ -5,7 +5,7 @@
 #
 #   Title:  "[TEAM_KEY, Agent] Topic"  e.g. "[UM, Claude] TestFlight first ship"
 #           Multi-app: "[ST, CT, MM] …"  Acronyms: UM ST CT CTS AFC (TEAM_KEY is the team key)
-#   Row 2:  "Sun, Aug 9, 3:52pm"         local create/update stamp (auto-injected)
+#   Row 2:  "Sun, Aug 9, 3:52 PM"        America/Chicago create/update stamp (auto-injected)
 #
 # Usage:
 #   apple-notes-coding.sh "Title" "Plain body text or Markdown"
@@ -19,6 +19,7 @@
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
 #   apple-notes-coding.sh --read "Exact Note Title"                 # or --read --title "Exact Note Title"
 #   apple-notes-coding.sh --list [--query TEXT] [--limit N]         # N from 1 to 500, 100 when not given
+#   apple-notes-coding.sh --delete --note-id "x-coredata://..."     # only notes the fleet writer created (AFC-728)
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
 #   APPLE_NOTES_PIN_RETRY=0 apple-notes-coding.sh "Title" ...  # pin Shortcut: one attempt, no retry
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
@@ -67,7 +68,7 @@
 # The action log (AFC-486):  every run that gets past argument parsing appends one JSON line to
 # $APPLE_NOTES_ACTION_LOG (default ~/Library/Logs/fleet/apple-notes-actions.jsonl, "off" turns it off):  what was
 # asked, how it ended and how long it took, never a note's text.  AGENT_NOTES_CALLER (default script),
-# AGENT_NOTES_REQUEST_ID and AGENT_NOTES_REQUESTER name who asked;  the callers in scripts/agent_sync/notes.py set
+# AGENT_NOTES_REQUEST_ID and AGENT_NOTES_REQUESTER name who asked;  the callers in scripts/simple_tools/notes.py set
 # them.  A preview (APPLE_NOTES_PRINT_HTML=1 on a create or update) writes nothing to Notes and logs nothing.
 #
 # Exit codes:  0 done (a create/update whose pin was skipped is still 0), 2 usage or session error,
@@ -79,6 +80,7 @@
 set -euo pipefail
 
 MODE=create
+DELETE_NOTE_ID=""
 WANT_ACTIVATE=0
 WANT_NOTIFY=0
 NEEDS_OWNER=0
@@ -106,7 +108,7 @@ NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
 NOTES_SHORTCUT_TIMEOUT_S="${NOTES_SHORTCUT_TIMEOUT_S:-30}"
 [[ "$NOTES_SHORTCUT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_SHORTCUT_TIMEOUT_S=30
 # One pin or unpin Shortcut at a time across processes.  Every create and update ends in a pin, and
-# several seats call this helper at once from separate processes (the agent-sync relay serializes only
+# several seats call this helper at once from separate processes (the chat relay serializes only
 # its own calls).  Two overlapping runs of the Shortcut fight over the same Find Notes picker on the
 # owner's screen and make each other fail, so a run takes this lock first.  macOS has no flock(1), so the
 # lock is a directory made with mkdir, which is atomic, holding the owner's pid.  A lock whose pid is gone,
@@ -287,11 +289,18 @@ if writes and E("_NL_CHANGES_FILE"):
 if writes and E("_NL_LINKS_FILE"):
     try:
         with open(E("_NL_LINKS_FILE")) as fh:
-            issues, prs = fh.read().split()
+            counts = fh.read().split()
         if not entry.get("reformatted"):
             entry["reformatted"] = {}
-        entry["reformatted"]["links"] = {"issues": int(issues), "prs": int(prs)}
-    except (OSError, ValueError, TypeError, AttributeError):
+        #  The counts are the issues, the pull requests, the projects and the six newer kinds that
+        #  became links.  A file written before a kind was counted carries fewer numbers, so a missing
+        #  one past the first two is read as none rather than as a lost count.
+        kinds = ("projects", "fleetlink", "swu", "repos", "pagerduty", "sentry", "cursor")
+        links = {"issues": int(counts[0]), "prs": int(counts[1])}
+        for i, kind in enumerate(kinds, start=2):
+            links[kind] = int(counts[i]) if len(counts) > i else 0
+        entry["reformatted"]["links"] = links
+    except (OSError, ValueError, TypeError, AttributeError, IndexError):
         pass
 if mode in ("read", "list"):
     key = "bytes" if mode == "read" else "count"
@@ -402,6 +411,15 @@ while [[ $# -gt 0 ]]; do
       MODE=list
       shift || true
       ;;
+    --delete)
+      MODE=delete
+      shift || true
+      ;;
+    --note-id)
+      shift || true
+      DELETE_NOTE_ID="${1:-}"
+      shift || true
+      ;;
     --existing-only)
       EXISTING_ONLY=1
       shift || true
@@ -489,6 +507,20 @@ if [[ "$MODE" != "list" ]] && [[ -n "$LIST_QUERY" || "$_LIST_LIMIT_SET" == "1" ]
   echo "--query and --limit go with --list" >&2
   exit 2
 fi
+if [[ "$MODE" == "delete" ]]; then
+  if [[ -z "$DELETE_NOTE_ID" ]]; then
+    echo "--delete needs --note-id with the note's exact x-coredata id (from notes_list or notes_read)" >&2
+    exit 2
+  fi
+  if [[ "$DELETE_NOTE_ID" == *"*"* || "$DELETE_NOTE_ID" == *"?"* || "$DELETE_NOTE_ID" == *"%"* ]]; then
+    echo "note id must be exact:  wildcards are not allowed" >&2
+    exit 2
+  fi
+  if [[ -n "$TITLE" || $# -gt 0 ]]; then
+    echo "--delete takes only --note-id, not a title or body" >&2
+    exit 2
+  fi
+fi
 if [[ "$MODE" == "list" ]]; then
   _limit_re='^[1-9][0-9]{0,2}$'
   if [[ "$_LIST_LIMIT_SET" != "1" ]]; then
@@ -507,7 +539,7 @@ if [[ "$MODE" == "read" && $# -gt 0 ]]; then
   exit 2
 fi
 
-if [[ -z "$TITLE" && "$MODE" != "list" ]]; then
+if [[ -z "$TITLE" && "$MODE" != "list" && "$MODE" != "delete" ]]; then
   echo "usage: $0 [--update [--existing-only]] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path|--session id] \"Title\" [body]  |  $0 --read [--title] \"Title\"  |  $0 --list [--query text] [--limit 1-500]" >&2
   exit 2
 fi
@@ -534,7 +566,7 @@ fi
 # Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
 SESSION_ID_PATTERN='^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$'
 SESSION_GENERIC_ENV="AGENT_SESSION"
-SESSION_FALLBACK_ENV="CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID GROK_SESSION_ID OPENCODE_SESSION_ID __MAVIS_RUNTIME_SESSION_ID"
+SESSION_FALLBACK_ENV="ANTIGRAVITY_CONVERSATION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID GROK_SESSION_ID OPENCODE_SESSION_ID __MAVIS_RUNTIME_SESSION_ID"
 
 _session_seat_token() {  # $1 = a seat or Notes name -> the canonical seat tag, upper case ("" when nothing usable)
   local t
@@ -572,6 +604,7 @@ _session_exempt() {  # $1 = seat tag:  one thread with the owner, so no session 
 
 _session_envs() {  # $1 = seat tag -> the platform variables to try, in order
   case "$1" in
+    AG) echo ANTIGRAVITY_CONVERSATION_ID ;;
     CLAUDE) echo CLAUDE_CODE_SESSION_ID ;;
     CODEX) echo CODEX_THREAD_ID ;;
     CURSOR) echo CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID ;;
@@ -584,6 +617,7 @@ _session_envs() {  # $1 = seat tag -> the platform variables to try, in order
 
 _session_own_var() {  # $1 = seat tag -> its own variable, for the refusal text
   case "$1" in
+    AG) echo ANTIGRAVITY_CONVERSATION_ID ;;
     CLAUDE) echo CLAUDE_CODE_SESSION_ID ;; CODEX) echo CODEX_THREAD_ID ;; CURSOR) echo CURSOR_CONVERSATION_ID ;;
     GROK) echo GROK_SESSION_ID ;; MM) echo __MAVIS_RUNTIME_SESSION_ID ;; OPENCODE) echo OPENCODE_SESSION_ID ;;
   esac
@@ -648,6 +682,31 @@ function iso(when) {
 function run() {
   var notFound = '__APPLE_NOTES_NOT_FOUND__';
   var folder = Application('Notes').accounts.byName('iCloud').folders.byName('Coding');
+  if (env('APPLE_NOTES_JXA_MODE') === 'delete_fetch' || env('APPLE_NOTES_JXA_MODE') === 'delete_do') {
+    if (!folder.exists()) {
+      return notFound;
+    }
+    var wantId = env('APPLE_NOTES_NOTE_ID');
+  var notes = folder.notes;
+  var ids = notes.id();
+  var idx = ids.indexOf(wantId);
+    if (idx < 0) {
+      return notFound;
+    }
+    var target = notes[idx];
+    if (env('APPLE_NOTES_JXA_MODE') === 'delete_do') {
+      Application('Notes').delete(target);
+      return wantId;
+    }
+    return ascii(JSON.stringify({
+      title: target.name(),
+      id: target.id(),
+      created: iso(target.creationDate()),
+      modified: iso(target.modificationDate()),
+      body: target.body(),
+      plaintext: target.plaintext()
+    }));
+  }
   if (env('APPLE_NOTES_JXA_MODE') === 'list') {
     if (!folder.exists()) {
       return '{"names":[],"ids":[],"created":[],"modified":[]}';
@@ -684,6 +743,45 @@ function run() {
 }
 JXA
 }
+
+if [[ "$MODE" == "delete" ]]; then
+  _SCRIPTS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  _NOTES_OUT=$(mktemp /tmp/apple-note-delete.XXXXXX)
+  _jxa_rc=0
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_fetch >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  if grep -qxF "$_NOTES_NOT_FOUND" "$_NOTES_OUT"; then
+    echo "no note with that id in the Coding folder" >&2
+    exit 3
+  fi
+  _delete_guard="${_SCRIPTS_ROOT}/notes_delete_guard.py"
+  if [[ ! -f "$_delete_guard" ]]; then
+    echo "notes: delete guard script missing at $_delete_guard" >&2
+    exit 1
+  fi
+  _guard_rc=0
+  python3 "$_delete_guard" <"$_NOTES_OUT" || _guard_rc=$?
+  if [[ "$_guard_rc" == "5" ]]; then
+    exit 5
+  fi
+  if [[ "$_guard_rc" != "0" ]]; then
+    echo "notes: delete guard did not complete (python exit $_guard_rc)" >&2
+    exit 1
+  fi
+  TITLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("title") or "")' "$_NOTES_OUT")
+  _jxa_rc=0
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_do >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  NOTE_ID="$DELETE_NOTE_ID"
+  echo "deleted note id=$DELETE_NOTE_ID"
+  exit 0
+fi
 
 if [[ "$MODE" == "read" ]]; then
   _NOTES_OUT=$(mktemp /tmp/apple-note-read.XXXXXX)
@@ -773,7 +871,7 @@ _pin_retry_on() {
   if [[ -z "${_PIN_RETRY:-}" ]]; then
     local knob="" here candidate
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-    for candidate in "$here" "$HOME/apps/needs-owner" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
+    for candidate in "$here" "$HOME/apps/needs-owner" "${SIMPLE_TOOLS_RUNTIME:-$HOME/apps/lanes/_managed/fleet/simple-tools-runtime}/scripts"; do
       if [[ -n "$candidate" && -d "$candidate/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
         knob="$(cd "$candidate" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
         [[ -n "$knob" ]] && break
@@ -1096,9 +1194,15 @@ def inline(s: str) -> str:
         return "\x00code" + str(len(code_spans) - 1) + "\x00"
     s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Sentence gap in HTML is the numeric reference `&#160; ` + space.
-    # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders
-    # as a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
+    # Sentence gap in HTML is the numeric reference `&#160; ` + space, the same U+00A0 plus a
+    # normal space as every other surface.
+    # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
+    # raw non-ASCII byte to the note HTML.
+    # Oct 29, 2026, measured through this writer:  Apple Notes stores the no-break space as an
+    # ordinary space on import, so the note holds two ordinary spaces after a sentence end, and
+    # Notes.app shows two ordinary spaces as a wide gap (the owner's screenshot of the gap
+    # sample note).  A one-space gap is the thing that reads as no gap.  The AFC-552 premise that
+    # the renderer collapses a run of ordinary spaces was never checked on screen.
     s = re.sub(r"([.!?]) {2,}", r"\1&#160; ", s)
     s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
@@ -1317,8 +1421,10 @@ PY
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
 # into `&#160; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
-# Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders as
-# a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
+# Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
+# raw non-ASCII byte to the note HTML.
+# Notes stores the no-break space as an ordinary space on import and still shows the pair as a
+# wide gap, so U+00A0 plus a normal space is the gap here too (measured Oct 29, 2026).
 # A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
 # and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
 # punctuation and the gap was lost.  The optional tag group carries the closing tag
@@ -1353,9 +1459,22 @@ sys.stdout.write("".join(out))
 #
 #   * A Linear issue identifier, OPS-1000 or AFC-547, becomes a link to that issue in the fleet workspace.  The team
 #     key list is the Linear teams, so an identifier that is not a Linear issue (SRV-S07, MAC-P09) is left alone.
+#   * A Linear project reference, P-BF-6, becomes a link to that project.  A project has no URL schema that can be
+#     derived from its reference, so every project is coded here by hand, one line each, and a project reference that
+#     is not in the table is left as plain text.  A project reference is never treated as an issue.
 #   * A pull request reference, PR #957 or PR 957, becomes a link to the pull request, and the text is normalised to
 #     the house form, PR #957.  A list of them, PRs #380, #386 and #389, becomes one link per number.
 #   * A qualified reference, AFC#957 or BotFleet#1282, names its own repository and becomes a link to it.
+#   * A fleet shortcut, fl/fleet-tools or fleetlink/zulip/zulip-fleet-guide.md, becomes a link to that page.  A path
+#     never ends on punctuation, so the dot ending a sentence stays outside the link, and a shortcut inside a URL or
+#     a longer path (foo/fl/x) is left alone.
+#   * A site page, SWU/docs, becomes a link to that page.
+#   * A repository reference, GH@user/repo, becomes a link to that repository.
+#   * An incident reference, PagerDuty#384, becomes a link to that incident.  It wins over the qualified pull request
+#     rule, which would otherwise read the pound sign as a pull request.
+#   * A Sentry short id, BOTFLEET-16, becomes a link to that issue.  It is claimed before the issue rule runs, so the
+#     number in it can never be read as a Linear issue number.
+#   * A Cursor agent id, bc-a1b2c3d4-e5f6, becomes a link to that agent.
 #
 # Which repository a pull request links to.  The numbers collide across the fleet repositories:  PR #95 exists in a
 # dozen of them, so a bare number is resolved from the block it sits in.  A paragraph and a table row are a block
@@ -1385,6 +1504,10 @@ sys.stdout.write("".join(out))
 #   NOTES_LINEAR_WORKSPACE=... the Linear workspace slug, simple-with-us by default
 #   NOTES_LINEAR_TEAM_KEYS=...  the team keys that count, the sixteen Linear teams by default
 #   NOTES_LINKIFY_CONTEXT_CHARS=...  how near a repository name must be to count, 60 by default
+#
+# The fleet shortcut host, the site host, the PagerDuty host, the Sentry host, the Cursor host and the gh lookup
+# budget are constants and not overrides:  the owner rule is no environment overrides, so they are the same on every
+# seat and in every run, and a caller cannot point the helper at another host or lift the cap on the lookups.
 _html_autolink() {
   /usr/bin/python3 -c '
 import html as _html
@@ -1394,6 +1517,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def _env(name, default):
@@ -1417,8 +1541,18 @@ except ValueError:
     ctx_chars = 60
 debug = _env("NOTES_LINKIFY_DEBUG", "")
 
+#  The hosts of the five services the linkifier links to, and the gh lookup budget of one run.  They
+#  are constants on purpose:  the owner rule is no environment overrides, so these names and this cap
+#  are the same on every seat and in every run.
+FLEETLINK_HOST = "fleetlink.online"
+SWU_HOST = "simplewithus.com"
+PAGERDUTY_HOST = "jays-services.pagerduty.com"
+SENTRY_HOST = "simple-with-us.sentry.io"
+CURSOR_HOST = "cursor.com"
+GH_BUDGET_S = 8.0
+
 #  A repository that is not under the default owner.
-REPO_OWNER = {"Fleet-OPS": "jaywedgeworth22"}
+REPO_OWNER = {}
 
 TEAM_TO_REPO = {
     #  One Linear team per repository:  the team key names the repository that team works in.
@@ -1441,6 +1575,46 @@ TEAM_TO_REPO = {
     "CK": "Clutch",
     "CAPS": "CodeCaps",
     "CLUTCH": "Clutch",
+}
+
+#  The Linear projects a note may name, each coded by hand.
+#
+#  A Linear project has no URL that can be derived from its reference.  An issue is TEAM-NUMBER and
+#  every issue of a team lives under /issue/, so a team key and a number are enough to build the link.
+#  A project is neither:  its path carries a slug and a hash, so nothing about the reference says what
+#  the slug is.  The owner ruled on Oct 26, 2026 that a project reference must therefore be coded
+#  individually, and the Zulip linkifier team found no schema either.
+#
+#  So each project is one line here:  the reference a writer types, and the path of that project
+#  under the workspace.  A reference that is not in this table is left as plain text.  It is never
+#  guessed at, because a project reference that links to the wrong thing is worse than one that does
+#  not link, and it is never treated as an issue, because the number in it is a project number and
+#  not an issue number.  The entries between the BEGIN and END lines are generated from Linear
+#  (Project.identifier and slugId) by scripts/linear_project_linkifiers.py, which the Operator runs
+#  on the Linear project webhook (AFC-565);  each path is the project id alone, which Linear opens
+#  even after a rename.  The same run updates scripts/zulip_linkifiers.py TARGET, and the parity
+#  test fails until both sides name the same projects.
+PROJECT_PATHS = {
+    # BEGIN linear-projects:  generated by scripts/linear_project_linkifiers.py;  do not edit by hand
+    #  Muster: Fleet Admin Mac App, which the fleet calls P-AFC-7.
+    "P-AFC-7": "9c28cf61dcc8",
+    #  Fleet GitOps, which the fleet calls P-AFC-8.
+    "P-AFC-8": "272cdd72e951",
+    #  System Prompt Receipt Port (BF-1411), which the fleet calls P-BF-1.
+    "P-BF-1": "cc08b4cf163b",
+    #  BotFleet Native macOS Rewrite, which the fleet calls P-BF-6.
+    "P-BF-6": "5afcbc055535",
+    #  CTS Shared Dependency, which the fleet calls P-CTS-5.
+    "P-CTS-5": "a04bf2274b2d",
+    #  Mac Resource Mgmt, which the fleet calls P-OPS-2.
+    "P-OPS-2": "22f992634f02",
+    #  Fleet hygiene (cross-team), which the fleet calls P-OPS-4.
+    "P-OPS-4": "32fd751b0b36",
+    #  Public Websites, which the fleet calls P-SWU-3.
+    "P-SWU-3": "6e26b4c70c72",
+    #  Telemetry for AI Platforms, which the fleet calls P-UM-9.
+    "P-UM-9": "dd28b9b2ee11",
+    # END linear-projects
 }
 
 #  A team that owns more than one repository.  A CTS issue is implemented in the shared congress
@@ -1501,6 +1675,17 @@ def _pairs(text):
     return out
 
 
+
+#  A caller may code more projects without editing this file:  REF=URL,REF=URL.  A value there is a
+#  whole URL, so a caller can name a project on another workspace or another host, while a project
+#  in the table above keeps following the host and the workspace the note is written for.
+_project_overrides = _pairs(_env("NOTES_LINEAR_PROJECTS", ""))
+PROJECT_URLS = {
+    ref: "https://" + linear_host + "/" + workspace + "/project/" + path
+    for ref, path in PROJECT_PATHS.items()
+}
+PROJECT_URLS.update(_project_overrides)
+
 #  The maps can be overridden, so a test does not have to carry the names of the repositories of
 #  the fleet to prove that the resolution works.
 #    NOTES_LINKIFY_TEAM_REPOS=KEY=repo,KEY=repo+other
@@ -1532,7 +1717,17 @@ if _owner_overrides:
     REPO_OWNER = dict(REPO_OWNER)
     REPO_OWNER.update(_owner_overrides)
 
-_counts = {"issues": 0, "prs": 0}
+_counts = {
+    "issues": 0,
+    "prs": 0,
+    "projects": 0,
+    "fleetlink": 0,
+    "swu": 0,
+    "repos": 0,
+    "pagerduty": 0,
+    "sentry": 0,
+    "cursor": 0,
+}
 _unresolved = []
 
 
@@ -1582,16 +1777,37 @@ def _mentions(text):
 
 
 _gh_cache = {}
+_gh_spent = 0.0
+_gh_bin = False
+
+
+def _gh_path():
+    """The gh CLI to ask, found once per run:  the override, PATH, then the usual places."""
+    global _gh_bin
+    if _gh_bin is False:
+        _gh_bin = None
+        for cand in (
+            _env("NOTES_LINKIFY_GH", ""),
+            shutil.which("gh") or "",
+            "/opt/homebrew/bin/gh",
+            "/usr/local/bin/gh",
+            "/usr/bin/gh",
+        ):
+            if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+                _gh_bin = cand
+                break
+    return _gh_bin
 
 
 def _gh_has_pr(repo, num):
     """Does this pull request exist in this repository?
 
     True when it does, False when the repository says it does not, and None when it could not be
-    asked:  a missing gh, a machine without a session, a network that is not there.  The three are
-    kept apart because a pull request that is not there is a reason to leave the reference alone,
-    while a failed question is not.
+    asked:  a missing gh, a machine without a session, a network that is not there, or a run whose
+    lookup budget is spent.  The two answers are kept apart because a pull request that is not
+    there is a reason to leave the reference alone, while a failed question is not.
     """
+    global _gh_spent
     if not num:
         return None
     if _env("NOTES_LINKIFY_LOOKUP", "1") == "0":
@@ -1601,28 +1817,28 @@ def _gh_has_pr(repo, num):
         return _gh_cache[key]
     result = None
     gh = None
-    for cand in (
-        _env("NOTES_LINKIFY_GH", ""),
-        shutil.which("gh") or "",
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-        "/usr/bin/gh",
-    ):
-        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
-            gh = cand
-            break
+    _remaining = GH_BUDGET_S - _gh_spent
+    if _remaining > 0:
+        gh = _gh_path()
     if gh:
         url = "repos/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pulls/" + num
         try:
             _timeout = float(_env("NOTES_LINKIFY_GH_TIMEOUT_S", "10") or 10)
         except ValueError:
             _timeout = 10.0
+        #  The budget caps the call itself, not just the decision to call it.  A call that starts
+        #  with little budget left must not block the full timeout, so it waits at most what is left.
+        _timeout = min(_timeout, _remaining)
         try:
             with tempfile.TemporaryFile() as err:
                 with open(os.devnull, "w") as devnull:
-                    rc = subprocess.call(
-                        [gh, "api", "--silent", url], stdout=devnull, stderr=err, timeout=_timeout
-                    )
+                    _start = time.monotonic()
+                    try:
+                        rc = subprocess.call(
+                            [gh, "api", "--silent", url], stdout=devnull, stderr=err, timeout=_timeout
+                        )
+                    finally:
+                        _gh_spent += time.monotonic() - _start
                 err.seek(0)
                 said = err.read().decode("utf-8", "replace")
             if rc == 0:
@@ -1634,6 +1850,8 @@ def _gh_has_pr(repo, num):
         except (OSError, subprocess.TimeoutExpired):
             #  A gh that hangs must not hang the note save:  the timeout above ends it, and a gh
             #  that cannot be run at all is the same answer, that the question was not answered.
+            #  Either way the lookup budget of the run pays for the wait, so a hung network
+            #  stalls one run by one budget, not by one timeout per reference.
             result = None
     _gh_cache[key] = result
     return result
@@ -1745,6 +1963,50 @@ LINEAR_RE = re.compile(
     r"(?<![A-Za-z0-9_/-])(?P<key>[A-Za-z0-9]{1,6})-(?P<num>\d+)(?![A-Za-z0-9_-])"
 )
 
+#  A project reference:  P-BF-6, or P-6 where the team is named elsewhere.  The P is the marker and
+#  the rest is the reference, so the whole thing is matched here and never offered to the issue rule.
+#  The team segment is optional because a writer may leave it out, and because a project reference
+#  that is left out of the team segment is still a project reference.  Matching it here is what
+#  keeps it out of the issue rule, so it is matched whether or not it is one of the coded projects.
+PROJECT_RE = re.compile(
+    r"(?<![A-Za-z0-9_/-])(?P<ref>P-(?:[A-Za-z0-9]{1,6}-)?\d+)(?![A-Za-z0-9_-])"
+)
+
+#  The live Zulip set, same shapes (AFC-562).  Each rule carries the house lookbehind, so it never
+#  matches inside a URL or a longer path, and each claims its span before the pull request and the
+#  issue rules run, so PagerDuty#384 is an incident and not a pull request, and a Sentry short id
+#  is never read as a Linear issue.
+FL_PATH_RE = r"[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*"
+FL_RE = re.compile(r"(?<![A-Za-z0-9_/-])(?:fl|fleetlink)/(?P<path>" + FL_PATH_RE + r")")
+SWU_RE = re.compile(r"(?<![A-Za-z0-9_/-])SWU/(?P<slug>[A-Za-z0-9_-]+)")
+GH_RE = re.compile(
+    r"(?<![A-Za-z0-9_/-])GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]*[A-Za-z0-9_-])"
+)
+PAGERDUTY_RE = re.compile(r"(?<![A-Za-z0-9_/-])PagerDuty#(?P<id>[A-Z0-9]+)(?![A-Za-z0-9_-])")
+CURSOR_RE = re.compile(r"(?<![A-Za-z0-9_/-])bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)")
+
+#  Sentry projects in org simple-with-us, the thirteen slugs of the live rule.  A short id is the
+#  upper-cased slug, a dash and a base-32 counter.
+SENTRY_PROJECTS = (
+    "AGENT-SESSIONS",
+    "AUTOROTATE",
+    "BOTFLEET",
+    "CODECAPS",
+    "CONGRESS-TRADE",
+    "CONTACTLOGO",
+    "DEALDEX",
+    "FLEET-INFRA",
+    "FLEETLINK",
+    "HOGHUNTER",
+    "BOTL-SITE",
+    "SOCRATIC-TRADE",
+    "USAGE-MONITOR",
+)
+SENTRY_RE = re.compile(
+    r"(?<![A-Za-z0-9_/-])(?P<id>(?:" + "|".join(SENTRY_PROJECTS) + r")-[0-9A-Z]+)"
+    r"(?![A-Za-z0-9_-])"
+)
+
 
 LIST_RE = re.compile(r"(#\s*)?(\d+)|\band\b|([/,])")
 
@@ -1847,7 +2109,45 @@ def _process_unit(unit_html, is_row, title_repo):
             if r % 2 == 1 or not run:
                 continue
             run_plain_start, run_len = offsets[r]
+            #  The live Zulip set first, each span claimed:  a PagerDuty incident is never offered
+            #  to the qualified pull request rule, and a Sentry short id is never offered to the
+            #  issue rule.
+            claimed = []
+            for rx, kind, url_of in (
+                (FL_RE, "fleetlink", lambda m: "https://" + FLEETLINK_HOST + "/" + m.group("path")),
+                (SWU_RE, "swu", lambda m: "https://" + SWU_HOST + "/" + m.group("slug")),
+                (
+                    GH_RE,
+                    "repos",
+                    lambda m: "https://" + github_host + "/" + m.group("user") + "/" + m.group("repo"),
+                ),
+                (
+                    PAGERDUTY_RE,
+                    "pagerduty",
+                    lambda m: "https://" + PAGERDUTY_HOST + "/incidents/" + m.group("id"),
+                ),
+                (
+                    SENTRY_RE,
+                    "sentry",
+                    lambda m: "https://" + SENTRY_HOST + "/issues/?query=" + m.group("id"),
+                ),
+                (
+                    CURSOR_RE,
+                    "cursor",
+                    lambda m: "https://" + CURSOR_HOST + "/agents/bc-" + m.group("id"),
+                ),
+            ):
+                for m in rx.finditer(run):
+                    #  The first rule wins a span:  a path may carry a dot (fl/a.SWU/x), and without
+                    #  this the rule inside it would write a second, overlapping link.
+                    if any(m.start() < b and m.end() > a for a, b in claimed):
+                        continue
+                    claimed.append((m.start(), m.end()))
+                    _counts[kind] += 1
+                    edits.append((r, m.start(), m.end(), _a(url_of(m), m.group(0))))
             for m in PR_RE.finditer(run):
+                if any(m.start() < b and m.end() > a for a, b in claimed):
+                    continue
                 qual = m.group("qual")
                 if qual:
                     repo = TOKEN_TO_REPO.get(qual.lower())
@@ -1890,7 +2190,30 @@ def _process_unit(unit_html, is_row, title_repo):
                     _counts["prs"] += count
                     #  replace the list alone:  what follows it, such as ", 22 files", stays put
                     edits.append((r, m.start(), m.start("nums") + end, repl))
+            #  A project reference is claimed here, before the issue rule runs, so the number in it
+            #  can never be read as an issue number.  A project that is not coded stays plain text.
+            project_spans = []
+            for m in PROJECT_RE.finditer(run):
+                #  A project shape inside a claimed span (fl/a.P-1) belongs to that rule.
+                if any(m.start() < b and m.end() > a for a, b in claimed):
+                    continue
+                ref = m.group("ref")
+                #  The span is claimed whether the project is coded or not:  a project reference
+                #  that names no known project stays plain text, and the number inside it is a
+                #  project number that no issue rule may ever read.
+                project_spans.append((m.start(), m.end()))
+                url = PROJECT_URLS.get(ref)
+                if url is None:
+                    _unresolved.append(ref)
+                    continue
+                _counts["projects"] += 1
+                edits.append((r, m.start(), m.end(), _a(url, ref)))
             for m in LINEAR_RE.finditer(run):
+                #  A reference inside a project reference is the project number and not an issue number.
+                #  A reference inside a claimed span (a Sentry short id, a Cursor agent id, a fleet
+                #  shortcut) belongs to that rule and is never read as an issue either.
+                if any(m.start() >= a and m.end() <= b for a, b in project_spans + claimed):
+                    continue
                 key = m.group("key")
                 if key not in keyset:
                     continue
@@ -1930,6 +2253,10 @@ def linkify(s, title=""):
     return "".join(out)
 
 
+def _n(word, count):
+    return str(count) + " " + word + ("" if count == 1 else "s")
+
+
 def main():
     s = sys.stdin.read()
     if _env("NOTES_LINKIFY", "1") == "0":
@@ -1937,11 +2264,18 @@ def main():
         return
     result = linkify(s, _env("NOTE_TITLE", ""))
     sys.stdout.write(result)
-    if _counts["issues"] or _counts["prs"]:
+    if any(_counts.values()):
         sys.stderr.write(
             "notes: linkified:  "
-            + str(_counts["issues"]) + " project reference" + ("" if _counts["issues"] == 1 else "s")
-            + " and " + str(_counts["prs"]) + " pull request reference" + ("" if _counts["prs"] == 1 else "s")
+            + _n("issue reference", _counts["issues"])
+            + ", " + _n("project reference", _counts["projects"])
+            + ", " + _n("fleetlink reference", _counts["fleetlink"])
+            + ", " + _n("SWU reference", _counts["swu"])
+            + ", " + _n("repository reference", _counts["repos"])
+            + ", " + _n("PagerDuty reference", _counts["pagerduty"])
+            + ", " + _n("Sentry reference", _counts["sentry"])
+            + ", " + _n("Cursor agent reference", _counts["cursor"])
+            + " and " + _n("pull request reference", _counts["prs"])
             + " became links\n"
         )
     if _unresolved:
@@ -1951,7 +2285,23 @@ def main():
     if os.environ.get("NOTES_LINK_COUNTS_FILE"):
         try:
             with open(os.environ["NOTES_LINK_COUNTS_FILE"], "w") as _fh:
-                _fh.write(str(_counts["issues"]) + " " + str(_counts["prs"]) + chr(10))
+                _fh.write(
+                    " ".join(
+                        str(_counts[kind])
+                        for kind in (
+                            "issues",
+                            "prs",
+                            "projects",
+                            "fleetlink",
+                            "swu",
+                            "repos",
+                            "pagerduty",
+                            "sentry",
+                            "cursor",
+                        )
+                    )
+                    + chr(10)
+                )
         except OSError:
             pass
 
@@ -1987,7 +2337,7 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52 PM".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
   echo "warning: title should start with [TEAM_KEY, Agent] e.g. \"[UM, Claude] Topic\"" >&2
@@ -2041,14 +2391,16 @@ _LOG_CHANGES_FILE=$(mktemp /tmp/apple-notes-changes.XXXXXX 2>/dev/null) || _LOG_
 BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" NOTE_SESSION="$NOTE_SESSION" NOTES_CHANGES_FILE="$_LOG_CHANGES_FILE" /usr/bin/python3 -c "
 import sys, re, html, os
 from datetime import datetime
+from zoneinfo import ZoneInfo
+_CENTRAL = ZoneInfo('America/Chicago')
 body = sys.stdin.read()
 title = os.environ.get('NOTE_TITLE', '').strip()
 needs_owner = os.environ.get('NEEDS_OWNER') == '1'
 summary_text = os.environ.get('SUMMARY_TEXT', '').strip()
 pr_numbers = os.environ.get('PR_NUMBERS', '').strip()
 note_session = os.environ.get('NOTE_SESSION', '').strip()
-now = datetime.now()
-# Sun, Aug 9, 3:52pm — no leading zero on day/hour (portable; avoid %-I)
+now = datetime.now(_CENTRAL)
+# Sun, Aug 9, 3:52 PM — no leading zero on day/hour (portable; avoid %-I)
 _h = now.hour % 12 or 12
 stamp = (
     now.strftime('%a, %b ')
@@ -2057,7 +2409,8 @@ stamp = (
     + str(_h)
     + ':'
     + now.strftime('%M')
-    + now.strftime('%p').lower()
+    + ' '
+    + now.strftime('%p')
 )
 
 def strip_outer_div(s):
@@ -2079,7 +2432,7 @@ m = re.match(
     r'^(?:<p>)?\s*'
     r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), '
     r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) '
-    r'\d{1,2}, \d{1,2}:\d{2}[ap]m'
+    r'\d{1,2}, \d{1,2}:\d{2}[ ]?[ap]m'
     r'(?:\s*[·|—|-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?'
     r'\s*(?:</p>)?\s*',
     inner,
@@ -2109,7 +2462,7 @@ if m:
 # AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
 # An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
 # wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
-# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
+# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts \"Session:\" is not a row
 # and stays.  A spacer after the row belongs to it, so a stale row at the end goes with every spacer it left behind
 # (an old note can end on more than one of them, so the row must not have to be the last characters of the body).
 _SESSION_ROW = (
@@ -2117,7 +2470,7 @@ _SESSION_ROW = (
     r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
     # A row from before Oct 19 carried a second date after the id (' - Mon, Oct 19, 9:40pm').  Only that exact
     # shape is taken, so prose that merely begins with 'Session:' ('Session: claude-code resumed') stays.
-    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ap]m)?)?'
+    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ ]?[ap]m)?)?'
     r'\s*(?:</span>\s*)?</p>'
 )
 _SPACER = r'(?:<div><br\s*/?></div>\s*)*'
@@ -2130,10 +2483,8 @@ stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 
 # Fleet dates (owner 2026-10-19):  an ISO date in the prose (2026-10-19, or 2026-10-20T02:03:00Z) becomes the fleet
-# form, Mon, Oct 19 (or Mon, Oct 19, 9:03pm), in Central, with the year only when it is not this year.  Code, link
+# form, Mon, Oct 19 (or Mon, Oct 19, 9:03 PM), in Central, with the year only when it is not this year.  Code, link
 # targets and names that merely contain a date (backup-2026-10-19.tar) keep theirs.
-from zoneinfo import ZoneInfo
-_CENTRAL = ZoneInfo('America/Chicago')
 _ISO = re.compile(
     #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,
     #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
@@ -2153,7 +2504,7 @@ def _fleet_day(d):
     return out + (', ' + str(d.year) if d.year != now.year else '')
 
 def _fleet_clock(when):
-    return str(when.hour % 12 or 12) + when.strftime(':%M') + when.strftime('%p').lower()
+    return str(when.hour % 12 or 12) + when.strftime(':%M') + ' ' + when.strftime('%p')
 
 _changes = {'dates': [], 'gaps': 0}
 
@@ -2184,7 +2535,7 @@ def _fleet_date_text(m):
     except ValueError:
         return m.group(0)
 
-def fleet_dates(markup):
+def fleet_dates(markup, gap_entity=False):
     parts = re.split(r'(<[^>]+>)', markup)
     depth = 0
     for i, part in enumerate(parts):
@@ -2194,16 +2545,17 @@ def fleet_dates(markup):
                 depth += -1 if part.startswith('</') else 1
                 depth = max(depth, 0)
         elif depth == 0:
-            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
+            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part), gap_entity)
     return ''.join(parts)
 
-# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as scripts/simple_tools/textfmt.py
+# single_gaps), so
 # a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
 _ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
 _GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
 _WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
 
-def _one_space_gaps(segment):
+def _one_space_gaps(segment, gap_entity=False):
     def repl(m):
         if m.group(1).startswith('.'):
             before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
@@ -2213,12 +2565,69 @@ def _one_space_gaps(segment):
             if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
                 return m.group(0)
         _changes['gaps'] += 1
-        return m.group(1) + '  '
+        #  The note body is HTML, so the gap is the numeric reference for a no-break space,
+        #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
+        #  The summary block is plain text that is embedded with html.escape, so
+        #  a reference there would reach the owner as the literal five characters.
+        #  It carries the no-break space itself.
+        return m.group(1) + ('&#160; ' if gap_entity else '\xa0 ')
     return _GAP1.sub(repl, segment)
 
-inner = fleet_dates(inner)
+inner = fleet_dates(inner, gap_entity=True)
 if summary_text:
     summary_text = fleet_dates(summary_text)
+
+#  Summary rules (owner direction 2026-11-12): the block is a readable 'Summary:' paragraph for
+#  long notes only, and the note still writes when a summary breaks one of the rules - the block
+#  is left off and the reason goes to stderr.  A summary is skipped when it would mostly restate
+#  the title, run past five sentences, or exceed APPLE_NOTES_SUMMARY_MAX_PCT percent of the note
+#  body (default 20).  The share is measured in characters of plain text on both sides - an
+#  implementation choice; the owner gave the percentage, not the unit.  The restatement check
+#  looks at the summary's own words: a summary that mentions the title's terms while adding real
+#  context stays; one whose content words are mostly the title's (60% threshold, common English
+#  stopwords aside) is a restatement.  The block is for long notes only, so a note under
+#  APPLE_NOTES_SUMMARY_MIN_BODY_CHARS of body text (default 800 characters, about a screenful)
+#  gets none no matter how small the share; all three thresholds are documented implementation
+#  choices, and each knob is adjustable.
+_SUMMARY_STOPWORDS = frozenset(
+    'the and for are was were with this that from have has had not but all can its our your their '
+    'they them then than when will would about into over under per via out any each his her she him '
+    'you your yours mine ours note notes cover covers covered covering'.split()
+)
+if summary_text:
+    try:
+        _sum_pct = int(os.environ.get('APPLE_NOTES_SUMMARY_MAX_PCT', '20'))
+    except ValueError:
+        _sum_pct = 20
+    try:
+        _sum_min = int(os.environ.get('APPLE_NOTES_SUMMARY_MIN_BODY_CHARS', '800'))
+    except ValueError:
+        _sum_min = 800
+    _sum_body = ' '.join(html.unescape(re.sub(r'<[^>]+>', ' ', inner)).split())
+    _sum_title = re.sub(r'^[\[\(][^\]\)]+[\]\)]', '', title)
+    _sum_title_words = set(
+        w for w in re.findall(r'[a-z0-9]+', _sum_title.lower())
+        if len(w) > 2 and w not in _SUMMARY_STOPWORDS
+    )
+    _sum_words = set(
+        w for w in re.findall(r'[a-z0-9]+', summary_text.lower())
+        if len(w) > 2 and w not in _SUMMARY_STOPWORDS
+    )
+    _sum_sentences = len([s for s in re.split(r'[.!?]+\s+', summary_text.strip()) if s.strip()])
+    _sum_skip = ''
+    if not _sum_body:
+        _sum_skip = 'the note has no body text to summarize'
+    elif len(_sum_body) < _sum_min:
+        _sum_skip = 'at ' + str(len(_sum_body)) + ' characters of text the note is too short for a summary block (summaries are for long notes; APPLE_NOTES_SUMMARY_MIN_BODY_CHARS adjusts the ' + str(_sum_min) + '-character floor)'
+    elif _sum_sentences > 5:
+        _sum_skip = str(_sum_sentences) + ' sentences is over the five-sentence limit'
+    elif len(summary_text) * 100 > _sum_pct * len(_sum_body):
+        _sum_skip = 'at ' + str(len(summary_text)) + ' characters it is over ' + str(_sum_pct) + '% of the note body (' + str(len(_sum_body)) + ' characters of text)'
+    elif _sum_words and _sum_title_words and len(_sum_title_words & _sum_words) * 100 >= 60 * len(_sum_words):
+        _sum_skip = 'it mostly restates the title'
+    if _sum_skip:
+        sys.stderr.write('notes: summary skipped:  ' + _sum_skip + ';  the note was written without it - shorten it, add context beyond the title, or drop --summary' + chr(10))
+        summary_text = ''
 
 # Tell the writer what was reformatted, on stderr, so the agent learns the fleet format (owner 2026-10-19).
 if _changes['dates']:
@@ -2240,22 +2649,32 @@ extra_blocks = ''
 if needs_owner:
     extra_blocks += '<div style=\"background-color: #FFF3CD; border-left: 5px solid #FFC107; color: #856404; padding: 10px 14px; margin-bottom: 12px; border-radius: 4px; font-family: -apple-system, sans-serif;\"><b>⚠️ NEEDS OWNER REVIEW / ACTION</b></div>'
 if summary_text:
-    extra_blocks += '<div style=\"background-color: #F8F9FA; border-left: 4px solid #0D6EFD; color: #212529; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-family: -apple-system, sans-serif;\"><b>📌 Mobile Quick View:</b> ' + html.escape(summary_text) + '</div>'
+    extra_blocks += '<div style=\"background-color: #F8F9FA; border-left: 4px solid #0D6EFD; color: #212529; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-family: -apple-system, sans-serif; font-size: 16px;\"><b>Summary:</b> ' + html.escape(summary_text) + '</div>'
 
 sys.stdout.write('<div>' + stamp_p + extra_blocks + inner + '</div>')
 ")
 
-FULL_HTML=$(/usr/bin/python3 -c '
-import html, sys
-title = sys.argv[1]
-body = sys.argv[2]
-print("<h1>" + html.escape(title) + "</h1>" + body)
-' "$TITLE" "$BODY_HTML")
+#  The body goes in on stdin and only the title travels as an argument.  macOS gives a process
+#  1048576 bytes for the whole command line, the arguments and the environment together, and the
+#  Background Jobs Master List is about 1 MB of HTML, so an argument body did not fit:  it died
+#  with "Argument list too long" (exit 126) before the linkifier ran and before the note was
+#  written, so the pinned master list silently went stale.  The Notes write itself was never at
+#  risk, because osascript reads the HTML from a file.
+FULL_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" /usr/bin/python3 -c '
+import html, os, sys
+title = os.environ.get("NOTE_TITLE", "")
+body = sys.stdin.read()
+sys.stdout.write("<h1>" + html.escape(title) + "</h1>" + body)
+')
 
 #  The linkifier runs on the whole note, so the date row and its pull request suffix are covered as well as the body.
 if [[ "$SKIP_BODY" == "0" ]]; then
   _LOG_LINKS_FILE=$(mktemp /tmp/apple-notes-links.XXXXXX 2>/dev/null) || _LOG_LINKS_FILE=""
   FULL_HTML=$(printf '%s' "$FULL_HTML" | NOTE_TITLE="$TITLE" NOTES_LINK_COUNTS_FILE="$_LOG_LINKS_FILE" _html_autolink)
+fi
+
+if [[ "$MODE" == "create" ]]; then
+  FULL_HTML="${FULL_HTML}<!-- fleet-notes-tool:v1 -->"
 fi
 
 if [[ "${APPLE_NOTES_PRINT_HTML:-0}" == "1" ]]; then
@@ -2395,7 +2814,7 @@ if [[ "$MODE" == "pin" ]]; then
 else
   _pin_outcome="note saved unpinned"
 fi
-#  The "pin skipped:" line is read back by agent_sync.notes, which keeps the first 200 characters of the
+#  The "pin skipped:" line is read back by simple_tools.notes, which keeps the first 200 characters of the
 #  reason.  Each reason ends with $_pin_outcome, which tells a caller the note was saved, so every reason
 #  has to fit in 200 characters with a long lock path or that tail is cut off
 #  (scripts/test_apple_notes_pin.py checks the length of each one).

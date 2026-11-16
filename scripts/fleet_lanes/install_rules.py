@@ -41,7 +41,7 @@ kind and the matched text only (the path, the temp directory and checkout words,
 Whatever is printed still goes through a credential redactor, as a second layer.
 
 Fleet Basics.  Three platforms have no other fleet instruction file (Clutch, Kimi, Copilot CLI), so their block
-also carries the Fleet Basics (AGENT-SYNC pointer, seat identity, coordination, secrets, writing) ahead of the Lane Map.
+also carries the Fleet Basics (FLEET-PROTOCOL pointer, seat identity, coordination, secrets, writing) ahead of the Lane Map.
 Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other two are engine-only CLIs with NO default
 seat and say so.  The marker family is the same `fleet-lane-map` block.  OpenCode (the row is the owner's, #438) is the
 OPENCODE seat since #440, so its block carries a fixed-seat Seat Identity (default OPENCODE for a session Jay opens in a
@@ -123,6 +123,8 @@ TEMPLATE_FILES = {
     "clutch": "fleet-basics.clutch.md",          # Fleet Basics, fixed default seat CLUTCH, then the Lane Map
     "nodefault": "fleet-basics.nodefault.md",    # Fleet Basics, no default seat, then the Lane Map
     "opencode": "seat-identity.opencode.md",     # Seat Identity with the fixed default seat OPENCODE, then the Lane Map
+    "kimi": "seat-identity.kimi.md",             # Fleet Basics, fixed default seat KIMI, then the Lane Map
+    "zcode": "seat-identity.zcode.md",           # Fleet Basics, fixed default seat ZC, then the Lane Map
 }
 # Pieces a template pulls in by placeholder.  The Lane Map body is the `full` variant's text.
 BODY_PLACEHOLDER = "{{LANE_MAP_BODY}}"
@@ -186,8 +188,9 @@ PLATFORMS: tuple[Platform, ...] = (
     # at the nearest .git root, and $DSH_HOME is forced to ~/.clutch/dsh by Clutch's own launcher.
     Platform("clutch", ".clutch/dsh/AGENTS.md", "clutch", "Clutch (DSH engine, $DSH_HOME/AGENTS.md)",
              size_cap=CLUTCH_CAP),
+    Platform("kimi", ".kimi-code/AGENTS.md", "kimi", "Kimi Code ($KIMI_CODE_HOME/AGENTS.md)"),
+    Platform("zcode", ".zcode/AGENTS.md", "zcode", "Z Code (Z.ai desktop IDE, ~/.zcode/AGENTS.md)"),
     # Engine-only CLIs: no default seat, so the block says to take a launcher's seat or ask Jay.  (OpenCode is not one: see below.)
-    Platform("kimi", ".kimi-code/AGENTS.md", "nodefault", "Kimi Code ($KIMI_CODE_HOME/AGENTS.md)"),
     Platform("copilot", ".copilot/copilot-instructions.md", "nodefault", "GitHub Copilot CLI (user-level instructions)",
              caveat="UNVERIFIED on this Mac: the file name comes from GitHub's documentation, and the 1.0.68 "
                     "binary was not exercised with a model; start a Copilot session and ask what it loaded"),
@@ -213,7 +216,7 @@ PLATFORMS: tuple[Platform, ...] = (
 PLATFORM_BY_NAME = {p.name: p for p in PLATFORMS}
 PLATFORM_ALIASES = {"ag": "antigravity", "gemini": "antigravity", "mm": "minimax", "grok-build": "grok",
                     "mc": "muse-code", "muse": "muse-code", "kimi-code": "kimi",
-                    "copilot-cli": "copilot", "dsh": "clutch"}
+                    "copilot-cli": "copilot", "dsh": "clutch", "z-code": "zcode", "zc": "zcode"}
 
 
 def resolve_platform_names(names: Iterable[str]) -> list[Platform]:
