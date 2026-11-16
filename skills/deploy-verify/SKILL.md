@@ -132,7 +132,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 **Rules that matter** (FLEET-PROTOCOL.md § Releases, Versioning, and Brand Assets):
 
 - What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
-- The marketing version and the build number are both the repo's commit count, `1.0.<commit_count>` and `<commit_count>`, so the pair always describes one commit and no version string is ever reused.  UTC `YYYYMMDDHHmm` build stamps are retired.
+- The build number is the main-merge timestamp in `YYYYMMDDHHmm` Central Time (owner ruling 2026-10-29), strictly increasing per app, so no build number is ever reused.  The marketing version follows the app's standing version rule (default `0.1.0`, CT `1.1.2`, or the app's current App Store rule), not the commit count.  Commit-count and UTC build stamps are retired.
 - The owner authorized TestFlight uploads.  App Store review submission and public release are not authorized; they stay an owner action.  Do not change external TestFlight groups or testers.
 
 ## 6. After verify
