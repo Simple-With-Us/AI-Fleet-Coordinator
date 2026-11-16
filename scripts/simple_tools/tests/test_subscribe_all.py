@@ -80,7 +80,7 @@ class SubscribeAllTests(unittest.TestCase):
                     "projectId": S.INFISICAL_PROJECT,
                     "permissions": ["read"],
                     "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
-                    "expiresAt": None,
+                    "expiresAt": "2099-01-01T00:00:00Z",
                 }
             return 200, {"secrets": []}
         original = scoped_secrets._api_json
@@ -112,7 +112,7 @@ class SubscribeAllTests(unittest.TestCase):
                 "projectId": S.INFISICAL_PROJECT,
                 "permissions": ["read"],
                 "scopes": [{"environment": "prod", "secretPath": "/other"}],
-                "expiresAt": None,
+                "expiresAt": "2099-01-01T00:00:00Z",
             }
         with mock.patch.dict(os.environ, {S.INFISICAL_TOKEN_ENV: scoped_token}):
             with mock.patch.object(scoped_secrets, "_api_json", request):
@@ -150,6 +150,7 @@ class SubscribeAllTests(unittest.TestCase):
                 ignore=shutil.ignore_patterns("tests", "__pycache__"),
             )
             shutil.copy2(repo / "scripts" / "simple-chat", scripts / "simple-chat")
+            shutil.copy2(repo / "scripts" / "fleet_infisical.py", scripts / "fleet_infisical.py")
             env = {
                 "PATH": os.environ.get("PATH", ""),
                 "PYTHONPATH": str(scripts),

@@ -146,6 +146,7 @@ def install(source_directory):
             # The `--from-muster` entry's approval engine, loaded by the helper from beside itself
             # under the same owner and mode rule as the reducer.
             'muster_approval.py',
+            'fleet_infisical.py',
         ):
             payload[name] = read_source(source, name)
         # The shared /etc/muster reader has one source file in the repository,
