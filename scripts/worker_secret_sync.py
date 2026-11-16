@@ -142,7 +142,7 @@ def render_report(diff):
     return "\n".join(lines) + "\n"
 
 
-def load_folder_map(path=FOLDERS_PATH, env=None):
+def load_folder_map(path=FOLDERS_PATH):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -166,18 +166,27 @@ def load_folder_map(path=FOLDERS_PATH, env=None):
             or not TOKEN_ENV_RE.fullmatch(token_env)
         ):
             raise SyncError("folder-map-unreadable " + str(path))
-        # The repo is public: the project id is never committed.  It is
-        # resolved from the environment variable the map names.
-        project = (os.environ if env is None else env).get(project_env) or ""
-        if not PROJECT_RE.fullmatch(project):
-            raise SyncError("project-id-env-missing " + worker)
         parsed[worker] = {
-            "project_id": project,
+            "project_env": project_env,
             "environment": "prod",
             "folder": folder,
             "token_env": token_env,
         }
     return parsed
+
+
+def resolve_project_id(row, worker, env=None):
+    """Resolve one Worker's project id, naming the variable that must supply it.
+
+    The repo is public: the project id is never committed.  Only the requested
+    Worker's variable is read, after the caller has checked the Worker is in
+    the map, so another row's missing variable cannot abort this sync and an
+    unknown Worker is always reported as ``unknown-worker``.
+    """
+    project = (os.environ if env is None else env).get(row["project_env"]) or ""
+    if not PROJECT_RE.fullmatch(project):
+        raise SyncError("project-id-env-missing " + row["project_env"] + " " + worker)
+    return project
 
 
 def load_allowlist(worker, directory=ALLOWLIST_DIR):
@@ -657,13 +666,14 @@ def sync_worker(
     site=INFISICAL_SITE,
 ):
     """Returns ``(report, exit_code)``.  Values stay in this process."""
-    folders = load_folder_map(FOLDERS_PATH, env)
+    folders = load_folder_map(FOLDERS_PATH)
     if worker not in folders:
         raise SyncError("unknown-worker")
     spec = folders[worker]
+    project_id = resolve_project_id(spec, worker, env)
     allowlist = load_allowlist(worker)
     token = require_service_token(env.get(spec["token_env"]))
-    values = read_infisical(transport, token, spec["project_id"], spec["folder"], site, now)
+    values = read_infisical(transport, token, project_id, spec["folder"], site, now)
     if DIGEST_KEY_NAME not in values:
         raise SyncError("digest-key-missing")
     digest_key = values[DIGEST_KEY_NAME]
@@ -776,7 +786,7 @@ def cli(argv, *, account, guard, env=None, transport=None, now=None, stdout=None
         # interpolates one, using whatever credentials this process was given.
         secret_values = [env.get("CLOUDFLARE_API_TOKEN") or ""]
         try:
-            token_env = load_folder_map(FOLDERS_PATH, env)[worker]["token_env"]
+            token_env = load_folder_map(FOLDERS_PATH)[worker]["token_env"]
             secret_values.append(env.get(token_env) or "")
         except (SyncError, KeyError):
             pass
