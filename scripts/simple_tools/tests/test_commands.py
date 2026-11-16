@@ -10,7 +10,7 @@ import unittest
 from simple_tools.tests.fake_zulip import BOT_EMAIL, EPOCH
 from simple_tools.tests.harness import TAG, Harness
 
-# 2026-10-07 23:41 UTC is 6:41pm Central (daylight time), a Wednesday.
+# 2026-10-07 23:41 UTC is 6:41 PM Central (daylight time), a Wednesday.
 OCT_7_2026_2341_UTC = 1_791_416_460
 
 
@@ -642,7 +642,7 @@ class ReadTests(Harness):
         message_id = self.fake.add_message("Codex", "simple-tools", "my topic", "the body\nsecond line",
                                            timestamp=OCT_7_2026_2341_UTC)
         result = self.run_cli("read", "--topic", "my topic")
-        self.assertEqual(result.out, "#simple-tools › my topic · id %d\nCodex [bot] · Wed, Oct 7, 6:41pm\n"
+        self.assertEqual(result.out, "#simple-tools › my topic · id %d\nCodex [bot] · Wed, Oct 7, 6:41 PM\n"
                                      "the body\nsecond line\n\n" % message_id)
         for abbreviation in ("CDT", "CST", " CT"):
             self.assertNotIn(abbreviation, result.out)
@@ -650,7 +650,7 @@ class ReadTests(Harness):
     def test_human_sender_and_mention_marker(self) -> None:
         self.fake.add_message("Jay Wedgeworth", "simple-tools", "t", "hey @**Claude** look", timestamp=OCT_7_2026_2341_UTC)
         out = self.run_cli("read", "--topic", "t").out
-        self.assertIn("Jay Wedgeworth [human] · Wed, Oct 7, 6:41pm · @you", out)
+        self.assertIn("Jay Wedgeworth [human] · Wed, Oct 7, 6:41 PM · @you", out)
 
     def test_control_characters_are_shown_not_sent_to_the_terminal(self) -> None:
         self.fake.add_message("Codex", "simple-tools", "t", "before \x1b[31mred\x1b[0m after\tkeep")

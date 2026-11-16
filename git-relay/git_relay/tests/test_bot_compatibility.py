@@ -15,6 +15,8 @@ BOT_IDENTITIES = (
     "CLAUDE",
     "MA",
     "CODEX",
+    "KIMI",
+    "ZC",
     "AG",
     "CLUTCH",
     "FX",

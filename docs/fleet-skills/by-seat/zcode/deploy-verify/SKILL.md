@@ -6,9 +6,9 @@ description: >-
 
 # Deploy verification (ZC)
 
-> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zcode/`.  Lanes `~/apps/lanes/<Repo>/zcode-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `ZC`.**  Chat tag `[ZC·session8]`.  Notes `ZCode`.  Branches `zc/`.  Lanes `~/apps/lanes/<Repo>/zc-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `ZC`, credential in Infisical Fleet-OPS `/zulip` (`ZC_ZULIP_EMAIL`, `ZC_ZULIP_KEY`, `ZC_ZULIP_SITE`).  Session tag `[ZC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zcode-<slug>`).  A seat a launcher assigned beats the ZC default.
+> **Runtime (Z Code).**  Z Code desktop IDE (`/Applications/ZCode.app`) with config in `~/.zcode`.  Skills installed here (`~/.zcode/skills`) are loaded by Z Code.  Start Z Code inside a lane (`~/apps/lanes/<Repo>/zc-<slug>` for new lanes or `~/apps/lanes/<Repo>/zcode-<slug>` for legacy lanes).  A seat a launcher assigned beats the ZC default.
 
 
 Read `~/apps/COOLIFY.md` before poking the API.  Prefer **public health + `docker ps` on the box** over Coolify UI/API `status` (that field goes stale).
@@ -24,7 +24,7 @@ Operator host (live 2026-08-07+): Hetzner NBG1 **`<PROD_ORIGIN_IP>`** (the host 
 | `COOLIFY_SERVER_STATS` | Read-only.  App server-stats panels.  Infisical metrics token. |
 | `COOLIFY_AGENTS` | Full deploy/admin.  Agent ops only.  **Never** store this in Infisical as the app's `COOLIFY_API_TOKEN`. |
 
-Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader authenticates only with `INFISICAL_TOKEN` and fails closed naming that variable when it is missing.  See `secret-handoff`.
+Load via env, not argv.  Names and one value come from the consumer's own scoped Infisical service token (the `service-tokens` pack); the shared `fleet-secrets` reader authenticates only with `INFISICAL_TOKEN` and a noninteractive read fails closed naming that variable when it is missing (an interactive operator shell may use the explicit read-only Infisical CLI-session route for `get` and `names`, and `set` requires the separate writer service token bound as `INFISICAL_WRITE_TOKEN`).  See `secret-handoff`.
 
 If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_SERVER_STATS`.
 
@@ -136,7 +136,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 
 **Rules that matter** (FLEET-PROTOCOL.md § Releases, Versioning, and Brand Assets):
 
-- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
+- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with a normal space before uppercase AM or PM and no zone abbreviation.  No seat, agent, or tool names, ever.
 - The marketing version and the build number are both the repo's commit count, `1.0.<commit_count>` and `<commit_count>`, so the pair always describes one commit and no version string is ever reused.  UTC `YYYYMMDDHHmm` build stamps are retired.
 - The owner authorized TestFlight uploads.  App Store review submission and public release are not authorized; they stay an owner action.  Do not change external TestFlight groups or testers.
 
