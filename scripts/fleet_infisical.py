@@ -938,6 +938,16 @@ def resolve_token(
     return check_service_token(token)
 
 
+def write_failure_kind(status: int) -> str:
+    """Retry class for a failed secret write:  a 0, 408 or 5xx answer may still have landed, so the
+    outcome is unknown and a blind retry is unsafe;  a definite 429 is retryable later;  the rest is refused."""
+    if status == 0 or status == 408 or status >= 500:
+        return "outcome-unknown"
+    if status == 429:
+        return "write-retryable"
+    return "write-refused"
+
+
 def put_secret(
     name: str, path: str, value: str, env: Mapping[str, str], token: str | None = None
 ) -> str:
@@ -988,7 +998,7 @@ def put_secret(
             status = _api("POST", "/v3/secrets/raw/" + quoted, token, body, env)
             if status in (200, 201):
                 return "created"
-        raise SecretsError(f"write-failed:  http-{status}")
+        raise SecretsError(f"{write_failure_kind(status)}:  http-{status}")
     finally:
         body = {}
         token = ""
