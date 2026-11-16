@@ -170,8 +170,11 @@ def build(baseline, inputs, destination):
         "files": RESULTS,
         "state": "UNREVIEWED_NOT_INSTALLED",
     }
-    atomic_write(destination / "push-release-manifest.json",
-                 (json.dumps(manifest, indent=2) + "\n").encode(), 0o644)
+    atomic_write(
+        destination / "push-release-manifest.json",
+        (json.dumps(manifest, indent=2) + "\n").encode(),
+        0o644,
+    )
     fsync_directory(destination.parent)
     return manifest
 
