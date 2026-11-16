@@ -23,7 +23,7 @@ Group=jay
 Environment=HOME=/home/jay
 # The shared registry env file is sourced first, exactly as the letter hooks source it:  the
 # bridge signs its registry reads as the OPERATOR principal with the URL and key it exports.
-ExecStart=/bin/sh -c '. "$HOME/.local/bin/mm-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/zc-wake-bridge serve --bind "${ZC_WAKE_BIND:-127.0.0.1}" --port 8791'
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/zc-wake-bridge serve --bind "${ZC_WAKE_BIND:-127.0.0.1}" --port 8791'
 EnvironmentFile=-/etc/zc-wake-bridge.env
 Restart=always
 RestartSec=10

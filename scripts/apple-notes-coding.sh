@@ -5,7 +5,7 @@
 #
 #   Title:  "[TEAM_KEY, Agent] Topic"  e.g. "[UM, Claude] TestFlight first ship"
 #           Multi-app: "[ST, CT, MM] …"  Acronyms: UM ST CT CTS AFC (TEAM_KEY is the team key)
-#   Row 2:  "Sun, Aug 9, 3:52pm"         local create/update stamp (auto-injected)
+#   Row 2:  "Sun, Aug 9, 3:52 PM"        America/Chicago create/update stamp (auto-injected)
 #
 # Usage:
 #   apple-notes-coding.sh "Title" "Plain body text or Markdown"
@@ -19,6 +19,7 @@
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
 #   apple-notes-coding.sh --read "Exact Note Title"                 # or --read --title "Exact Note Title"
 #   apple-notes-coding.sh --list [--query TEXT] [--limit N]         # N from 1 to 500, 100 when not given
+#   apple-notes-coding.sh --delete --note-id "x-coredata://..."     # only notes the fleet writer created (AFC-728)
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
 #   APPLE_NOTES_PIN_RETRY=0 apple-notes-coding.sh "Title" ...  # pin Shortcut: one attempt, no retry
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
@@ -79,6 +80,7 @@
 set -euo pipefail
 
 MODE=create
+DELETE_NOTE_ID=""
 WANT_ACTIVATE=0
 WANT_NOTIFY=0
 NEEDS_OWNER=0
@@ -409,6 +411,15 @@ while [[ $# -gt 0 ]]; do
       MODE=list
       shift || true
       ;;
+    --delete)
+      MODE=delete
+      shift || true
+      ;;
+    --note-id)
+      shift || true
+      DELETE_NOTE_ID="${1:-}"
+      shift || true
+      ;;
     --existing-only)
       EXISTING_ONLY=1
       shift || true
@@ -496,6 +507,20 @@ if [[ "$MODE" != "list" ]] && [[ -n "$LIST_QUERY" || "$_LIST_LIMIT_SET" == "1" ]
   echo "--query and --limit go with --list" >&2
   exit 2
 fi
+if [[ "$MODE" == "delete" ]]; then
+  if [[ -z "$DELETE_NOTE_ID" ]]; then
+    echo "--delete needs --note-id with the note's exact x-coredata id (from notes_list or notes_read)" >&2
+    exit 2
+  fi
+  if [[ "$DELETE_NOTE_ID" == *"*"* || "$DELETE_NOTE_ID" == *"?"* || "$DELETE_NOTE_ID" == *"%"* ]]; then
+    echo "note id must be exact:  wildcards are not allowed" >&2
+    exit 2
+  fi
+  if [[ -n "$TITLE" || $# -gt 0 ]]; then
+    echo "--delete takes only --note-id, not a title or body" >&2
+    exit 2
+  fi
+fi
 if [[ "$MODE" == "list" ]]; then
   _limit_re='^[1-9][0-9]{0,2}$'
   if [[ "$_LIST_LIMIT_SET" != "1" ]]; then
@@ -514,7 +539,7 @@ if [[ "$MODE" == "read" && $# -gt 0 ]]; then
   exit 2
 fi
 
-if [[ -z "$TITLE" && "$MODE" != "list" ]]; then
+if [[ -z "$TITLE" && "$MODE" != "list" && "$MODE" != "delete" ]]; then
   echo "usage: $0 [--update [--existing-only]] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path|--session id] \"Title\" [body]  |  $0 --read [--title] \"Title\"  |  $0 --list [--query text] [--limit 1-500]" >&2
   exit 2
 fi
@@ -657,6 +682,31 @@ function iso(when) {
 function run() {
   var notFound = '__APPLE_NOTES_NOT_FOUND__';
   var folder = Application('Notes').accounts.byName('iCloud').folders.byName('Coding');
+  if (env('APPLE_NOTES_JXA_MODE') === 'delete_fetch' || env('APPLE_NOTES_JXA_MODE') === 'delete_do') {
+    if (!folder.exists()) {
+      return notFound;
+    }
+    var wantId = env('APPLE_NOTES_NOTE_ID');
+  var notes = folder.notes;
+  var ids = notes.id();
+  var idx = ids.indexOf(wantId);
+    if (idx < 0) {
+      return notFound;
+    }
+    var target = notes[idx];
+    if (env('APPLE_NOTES_JXA_MODE') === 'delete_do') {
+      Application('Notes').delete(target);
+      return wantId;
+    }
+    return ascii(JSON.stringify({
+      title: target.name(),
+      id: target.id(),
+      created: iso(target.creationDate()),
+      modified: iso(target.modificationDate()),
+      body: target.body(),
+      plaintext: target.plaintext()
+    }));
+  }
   if (env('APPLE_NOTES_JXA_MODE') === 'list') {
     if (!folder.exists()) {
       return '{"names":[],"ids":[],"created":[],"modified":[]}';
@@ -693,6 +743,45 @@ function run() {
 }
 JXA
 }
+
+if [[ "$MODE" == "delete" ]]; then
+  _SCRIPTS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  _NOTES_OUT=$(mktemp /tmp/apple-note-delete.XXXXXX)
+  _jxa_rc=0
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_fetch >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  if grep -qxF "$_NOTES_NOT_FOUND" "$_NOTES_OUT"; then
+    echo "no note with that id in the Coding folder" >&2
+    exit 3
+  fi
+  _delete_guard="${_SCRIPTS_ROOT}/notes_delete_guard.py"
+  if [[ ! -f "$_delete_guard" ]]; then
+    echo "notes: delete guard script missing at $_delete_guard" >&2
+    exit 1
+  fi
+  _guard_rc=0
+  python3 "$_delete_guard" <"$_NOTES_OUT" || _guard_rc=$?
+  if [[ "$_guard_rc" == "5" ]]; then
+    exit 5
+  fi
+  if [[ "$_guard_rc" != "0" ]]; then
+    echo "notes: delete guard did not complete (python exit $_guard_rc)" >&2
+    exit 1
+  fi
+  TITLE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("title") or "")' "$_NOTES_OUT")
+  _jxa_rc=0
+  APPLE_NOTES_NOTE_ID="$DELETE_NOTE_ID" _notes_jxa delete_do >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: delete did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  NOTE_ID="$DELETE_NOTE_ID"
+  echo "deleted note id=$DELETE_NOTE_ID"
+  exit 0
+fi
 
 if [[ "$MODE" == "read" ]]; then
   _NOTES_OUT=$(mktemp /tmp/apple-note-read.XXXXXX)
@@ -1463,7 +1552,7 @@ CURSOR_HOST = "cursor.com"
 GH_BUDGET_S = 8.0
 
 #  A repository that is not under the default owner.
-REPO_OWNER = {"Fleet-OPS": "jaywedgeworth22"}
+REPO_OWNER = {}
 
 TEAM_TO_REPO = {
     #  One Linear team per repository:  the team key names the repository that team works in.
@@ -2248,7 +2337,7 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52 PM".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
   echo "warning: title should start with [TEAM_KEY, Agent] e.g. \"[UM, Claude] Topic\"" >&2
@@ -2302,14 +2391,16 @@ _LOG_CHANGES_FILE=$(mktemp /tmp/apple-notes-changes.XXXXXX 2>/dev/null) || _LOG_
 BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" NOTE_SESSION="$NOTE_SESSION" NOTES_CHANGES_FILE="$_LOG_CHANGES_FILE" /usr/bin/python3 -c "
 import sys, re, html, os
 from datetime import datetime
+from zoneinfo import ZoneInfo
+_CENTRAL = ZoneInfo('America/Chicago')
 body = sys.stdin.read()
 title = os.environ.get('NOTE_TITLE', '').strip()
 needs_owner = os.environ.get('NEEDS_OWNER') == '1'
 summary_text = os.environ.get('SUMMARY_TEXT', '').strip()
 pr_numbers = os.environ.get('PR_NUMBERS', '').strip()
 note_session = os.environ.get('NOTE_SESSION', '').strip()
-now = datetime.now()
-# Sun, Aug 9, 3:52pm — no leading zero on day/hour (portable; avoid %-I)
+now = datetime.now(_CENTRAL)
+# Sun, Aug 9, 3:52 PM — no leading zero on day/hour (portable; avoid %-I)
 _h = now.hour % 12 or 12
 stamp = (
     now.strftime('%a, %b ')
@@ -2318,7 +2409,8 @@ stamp = (
     + str(_h)
     + ':'
     + now.strftime('%M')
-    + now.strftime('%p').lower()
+    + ' '
+    + now.strftime('%p')
 )
 
 def strip_outer_div(s):
@@ -2340,7 +2432,7 @@ m = re.match(
     r'^(?:<p>)?\s*'
     r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), '
     r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) '
-    r'\d{1,2}, \d{1,2}:\d{2}[ap]m'
+    r'\d{1,2}, \d{1,2}:\d{2}[ ]?[ap]m'
     r'(?:\s*[·|—|-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?'
     r'\s*(?:</p>)?\s*',
     inner,
@@ -2378,7 +2470,7 @@ _SESSION_ROW = (
     r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
     # A row from before Oct 19 carried a second date after the id (' - Mon, Oct 19, 9:40pm').  Only that exact
     # shape is taken, so prose that merely begins with 'Session:' ('Session: claude-code resumed') stays.
-    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ap]m)?)?'
+    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ ]?[ap]m)?)?'
     r'\s*(?:</span>\s*)?</p>'
 )
 _SPACER = r'(?:<div><br\s*/?></div>\s*)*'
@@ -2391,10 +2483,8 @@ stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 
 # Fleet dates (owner 2026-10-19):  an ISO date in the prose (2026-10-19, or 2026-10-20T02:03:00Z) becomes the fleet
-# form, Mon, Oct 19 (or Mon, Oct 19, 9:03pm), in Central, with the year only when it is not this year.  Code, link
+# form, Mon, Oct 19 (or Mon, Oct 19, 9:03 PM), in Central, with the year only when it is not this year.  Code, link
 # targets and names that merely contain a date (backup-2026-10-19.tar) keep theirs.
-from zoneinfo import ZoneInfo
-_CENTRAL = ZoneInfo('America/Chicago')
 _ISO = re.compile(
     #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,
     #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
@@ -2414,7 +2504,7 @@ def _fleet_day(d):
     return out + (', ' + str(d.year) if d.year != now.year else '')
 
 def _fleet_clock(when):
-    return str(when.hour % 12 or 12) + when.strftime(':%M') + when.strftime('%p').lower()
+    return str(when.hour % 12 or 12) + when.strftime(':%M') + ' ' + when.strftime('%p')
 
 _changes = {'dates': [], 'gaps': 0}
 
@@ -2477,7 +2567,7 @@ def _one_space_gaps(segment, gap_entity=False):
         _changes['gaps'] += 1
         #  The note body is HTML, so the gap is the numeric reference for a no-break space,
         #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
-        #  The mobile quick view is plain text that is embedded with html.escape, so
+        #  The summary block is plain text that is embedded with html.escape, so
         #  a reference there would reach the owner as the literal five characters.
         #  It carries the no-break space itself.
         return m.group(1) + ('&#160; ' if gap_entity else '\xa0 ')
@@ -2486,6 +2576,58 @@ def _one_space_gaps(segment, gap_entity=False):
 inner = fleet_dates(inner, gap_entity=True)
 if summary_text:
     summary_text = fleet_dates(summary_text)
+
+#  Summary rules (owner direction 2026-11-12): the block is a readable 'Summary:' paragraph for
+#  long notes only, and the note still writes when a summary breaks one of the rules - the block
+#  is left off and the reason goes to stderr.  A summary is skipped when it would mostly restate
+#  the title, run past five sentences, or exceed APPLE_NOTES_SUMMARY_MAX_PCT percent of the note
+#  body (default 20).  The share is measured in characters of plain text on both sides - an
+#  implementation choice; the owner gave the percentage, not the unit.  The restatement check
+#  looks at the summary's own words: a summary that mentions the title's terms while adding real
+#  context stays; one whose content words are mostly the title's (60% threshold, common English
+#  stopwords aside) is a restatement.  The block is for long notes only, so a note under
+#  APPLE_NOTES_SUMMARY_MIN_BODY_CHARS of body text (default 800 characters, about a screenful)
+#  gets none no matter how small the share; all three thresholds are documented implementation
+#  choices, and each knob is adjustable.
+_SUMMARY_STOPWORDS = frozenset(
+    'the and for are was were with this that from have has had not but all can its our your their '
+    'they them then than when will would about into over under per via out any each his her she him '
+    'you your yours mine ours note notes cover covers covered covering'.split()
+)
+if summary_text:
+    try:
+        _sum_pct = int(os.environ.get('APPLE_NOTES_SUMMARY_MAX_PCT', '20'))
+    except ValueError:
+        _sum_pct = 20
+    try:
+        _sum_min = int(os.environ.get('APPLE_NOTES_SUMMARY_MIN_BODY_CHARS', '800'))
+    except ValueError:
+        _sum_min = 800
+    _sum_body = ' '.join(html.unescape(re.sub(r'<[^>]+>', ' ', inner)).split())
+    _sum_title = re.sub(r'^[\[\(][^\]\)]+[\]\)]', '', title)
+    _sum_title_words = set(
+        w for w in re.findall(r'[a-z0-9]+', _sum_title.lower())
+        if len(w) > 2 and w not in _SUMMARY_STOPWORDS
+    )
+    _sum_words = set(
+        w for w in re.findall(r'[a-z0-9]+', summary_text.lower())
+        if len(w) > 2 and w not in _SUMMARY_STOPWORDS
+    )
+    _sum_sentences = len([s for s in re.split(r'[.!?]+\s+', summary_text.strip()) if s.strip()])
+    _sum_skip = ''
+    if not _sum_body:
+        _sum_skip = 'the note has no body text to summarize'
+    elif len(_sum_body) < _sum_min:
+        _sum_skip = 'at ' + str(len(_sum_body)) + ' characters of text the note is too short for a summary block (summaries are for long notes; APPLE_NOTES_SUMMARY_MIN_BODY_CHARS adjusts the ' + str(_sum_min) + '-character floor)'
+    elif _sum_sentences > 5:
+        _sum_skip = str(_sum_sentences) + ' sentences is over the five-sentence limit'
+    elif len(summary_text) * 100 > _sum_pct * len(_sum_body):
+        _sum_skip = 'at ' + str(len(summary_text)) + ' characters it is over ' + str(_sum_pct) + '% of the note body (' + str(len(_sum_body)) + ' characters of text)'
+    elif _sum_words and _sum_title_words and len(_sum_title_words & _sum_words) * 100 >= 60 * len(_sum_words):
+        _sum_skip = 'it mostly restates the title'
+    if _sum_skip:
+        sys.stderr.write('notes: summary skipped:  ' + _sum_skip + ';  the note was written without it - shorten it, add context beyond the title, or drop --summary' + chr(10))
+        summary_text = ''
 
 # Tell the writer what was reformatted, on stderr, so the agent learns the fleet format (owner 2026-10-19).
 if _changes['dates']:
@@ -2507,7 +2649,7 @@ extra_blocks = ''
 if needs_owner:
     extra_blocks += '<div style=\"background-color: #FFF3CD; border-left: 5px solid #FFC107; color: #856404; padding: 10px 14px; margin-bottom: 12px; border-radius: 4px; font-family: -apple-system, sans-serif;\"><b>⚠️ NEEDS OWNER REVIEW / ACTION</b></div>'
 if summary_text:
-    extra_blocks += '<div style=\"background-color: #F8F9FA; border-left: 4px solid #0D6EFD; color: #212529; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-family: -apple-system, sans-serif;\"><b>📌 Mobile Quick View:</b> ' + html.escape(summary_text) + '</div>'
+    extra_blocks += '<div style=\"background-color: #F8F9FA; border-left: 4px solid #0D6EFD; color: #212529; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-family: -apple-system, sans-serif; font-size: 16px;\"><b>Summary:</b> ' + html.escape(summary_text) + '</div>'
 
 sys.stdout.write('<div>' + stamp_p + extra_blocks + inner + '</div>')
 ")
@@ -2529,6 +2671,10 @@ sys.stdout.write("<h1>" + html.escape(title) + "</h1>" + body)
 if [[ "$SKIP_BODY" == "0" ]]; then
   _LOG_LINKS_FILE=$(mktemp /tmp/apple-notes-links.XXXXXX 2>/dev/null) || _LOG_LINKS_FILE=""
   FULL_HTML=$(printf '%s' "$FULL_HTML" | NOTE_TITLE="$TITLE" NOTES_LINK_COUNTS_FILE="$_LOG_LINKS_FILE" _html_autolink)
+fi
+
+if [[ "$MODE" == "create" ]]; then
+  FULL_HTML="${FULL_HTML}<!-- fleet-notes-tool:v1 -->"
 fi
 
 if [[ "${APPLE_NOTES_PRINT_HTML:-0}" == "1" ]]; then

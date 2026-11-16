@@ -739,7 +739,7 @@ class AuditTests(unittest.TestCase):
         for actor in (
             {"__typename": "Bot", "login": "swu-claude"},
             {"__typename": "Bot", "login": "swu-claude[bot]"},
-            {"__typename": "Bot", "login": "swu-zc"},
+            {"__typename": "Bot", "login": "swu-codex"},
         ):
             tl = {"nodes": [self.dismissal(actor, kody)]}
             self.assertEqual(A.check_pr(self.pr(timelineItems=tl), [])["violations"], [], actor)
@@ -767,7 +767,12 @@ class AuditTests(unittest.TestCase):
     def test_the_app_list_comes_from_the_seat_registry(self) -> None:
         slugs = A.seat_app_slugs()
         self.assertIn("swu-claude", slugs)
+        # swu-zc and swu-kimi completed their proven first-seat admissions on
+        # 2026-11-15 (the executed run's relay audit open_pr correlation is in the
+        # relay host's root-only audit log;  the admission PR was authored by the owner account):  the registry now names
+        # both seats, so this pin requires them.
         self.assertIn("swu-zc", slugs)
+        self.assertIn("swu-kimi", slugs)
         self.assertEqual(A.DEFAULT_ALLOWED_APP_DISMISSERS, slugs)
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "nope.json"

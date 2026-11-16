@@ -372,6 +372,30 @@ class RunnerTests(QueueHarness):
             with self.subTest(bad=(bad["seat"], bad["request_id"])):
                 self.assert_answer(self.report(bad, result={"status": "done"}), 400, "invalid_argument")
 
+    def test_a_skipped_pin_is_stored_once_and_a_replay_keeps_that_one_reason(self) -> None:
+        """AFC-455:  notes_status reads pin_skipped off the record.  A second report of the same claim does not add another."""
+        reason = "Pin Coding Note Shortcut failed; note saved unpinned"
+        self.assert_answer(self.enqueue(request(rid="pin-skipped-001")), 202)
+        claimed = self.assert_answer(self.claim(), 200)
+        first = self.assert_answer(
+            self.report(claimed, result={"status": "done", "note_id": "n1", "pin_skipped": reason, "extra": "dropped"}),
+            200,
+        )
+        stored = self.assert_answer(self.status("CLAUDE", "pin-skipped-001"), 200)
+        self.assertEqual(stored["result"], {"status": "done", "note_id": "n1", "pin_skipped": reason})
+        again = self.assert_answer(
+            self.report(claimed, result={"status": "done", "note_id": "n1", "pin_skipped": reason + " again"}),
+            200,
+        )
+        self.assertEqual(again, first)
+        stored = self.assert_answer(self.status("CLAUDE", "pin-skipped-001"), 200)
+        self.assertEqual(stored["result"]["pin_skipped"], reason)
+        # A pin that ran, and a blank reason, leave the field off the record.
+        self.assert_answer(self.enqueue(request(rid="pin-ok-request1")), 202)
+        clean = self.assert_answer(self.claim(), 200)
+        self.assert_answer(self.report(clean, result={"status": "done", "note_id": "n2", "pin_skipped": ""}), 200)
+        self.assertNotIn("pin_skipped", self.assert_answer(self.status("CLAUDE", "pin-ok-request1"), 200)["result"])
+
     def test_an_expired_lease_makes_a_write_unknown_and_puts_a_read_back(self) -> None:
         self.assert_answer(self.enqueue(request(rid="lease-write-1")), 202)
         self.clock.advance(1)

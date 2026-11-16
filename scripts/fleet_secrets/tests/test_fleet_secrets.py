@@ -47,6 +47,7 @@ class World:
         self.login_rc = login_rc
         self.calls = []
         self.fetches = []
+        self.export_cwds = []
 
     def fetch_project(
         self, project, path, env, *, token=None, writer=False, names=None, timeout=None
@@ -97,6 +98,7 @@ class World:
                 )
             return subprocess.CompletedProcess(argv, 0, (ACCESS_TOKEN + "\n").encode(), b"")
         if argv[1] == "export":
+            self.export_cwds.append(kw.get("cwd"))
             if self.export_rc:
                 leak = ("denied " + VAL_A).encode()
                 return subprocess.CompletedProcess(argv, self.export_rc, leak, leak)
@@ -323,6 +325,279 @@ class RunTests(Base):
             code, out, err = self.call("get", "ALPHA", env=env)
         self.assertEqual((code, out, err), (0, VAL_A, ""))
 
+    def test_interactive_export_runs_in_an_owned_workdir(self):
+        world = self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        self.assertTrue(world.export_cwds)
+        self.assertNotIn("/", world.export_cwds)
+        for cwd in world.export_cwds:
+            self.assertEqual(cwd, str(workdir))
+        self.assertEqual(oct(workdir.stat().st_mode & 0o777), "0o700")
+        # The intermediate base must be owner-only too: mkdir's mode applies
+        # only to the leaf, so without an explicit base chmod the per-project
+        # directory names (Infisical project ids) are enumerable by local users.
+        base = self.home / ".config" / "fleet-secrets" / "cli-session"
+        self.assertEqual(oct(base.stat().st_mode & 0o777), "0o700")
+        config = workdir / ".infisical.json"
+        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
+        payload = json.loads(config.read_text())
+        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
+
+    def test_cli_session_refuses_a_symlinked_workdir(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        elsewhere = self.home / "elsewhere"
+        elsewhere.mkdir()
+        link_parent = self.home / ".config" / "fleet-secrets"
+        link_parent.mkdir(parents=True)
+        (link_parent / "cli-session").symlink_to(elsewhere, target_is_directory=True)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual(out, "")
+        self.assertNotEqual(code, 0)
+        self.assertIn("cli-session-workdir-symlink", err)
+        self.assertEqual(oct(elsewhere.stat().st_mode & 0o777), "0o755")
+
+    def test_cli_session_replaces_a_symlinked_project_file_without_touching_target(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        workdir.mkdir(parents=True)
+        target = self.home / "sensitive.txt"
+        target.write_text("keep-me")
+        (workdir / ".infisical.json").symlink_to(target)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(target.read_text(), "keep-me")
+        config = workdir / ".infisical.json"
+        self.assertFalse(config.is_symlink())
+        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
+        payload = json.loads(config.read_text())
+        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
+
+    def test_cli_session_enforces_0600_on_a_preexisting_project_file(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        workdir.mkdir(parents=True)
+        config = workdir / ".infisical.json"
+        config.write_text("{}")
+        config.chmod(0o644)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
+
+    def test_cli_session_maps_oserror_to_a_clean_secrets_error(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        parent = self.home / ".config" / "fleet-secrets"
+        parent.mkdir(parents=True)
+        (parent / "cli-session").write_text("not a directory")
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual(out, "")
+        self.assertNotEqual(code, 0)
+        self.assertIn("fleet-secrets: cli-session-workdir-unavailable", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_cli_session_uses_unique_temp_names_and_leaves_none(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        seen = []
+        real_mkstemp = core.tempfile.mkstemp
+
+        def spy(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            seen.append(name)
+            return fd, name
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+            mock.patch.object(core.tempfile, "mkstemp", side_effect=spy),
+        ):
+            code1, out1, _ = self.call("get", "ALPHA", env=env)
+            code2, out2, _ = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code1, out1, code2, out2), (0, VAL_A, 0, VAL_A))
+        self.assertEqual(len(seen), 2)
+        self.assertNotEqual(seen[0], seen[1])
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        leftovers = [p.name for p in workdir.iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_cli_session_tolerates_dir_fsync_einval(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        real_fsync = core.os.fsync
+        import errno as _errno
+        import stat as _stat
+
+        def picky(fd):
+            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
+                raise OSError(_errno.EINVAL, "fsync not supported on directory")
+            return real_fsync(fd)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+            mock.patch.object(core.os, "fsync", side_effect=picky),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        self.assertTrue((workdir / ".infisical.json").exists())
+
+    def test_cli_session_uses_a_separate_workdir_per_project(self):
+        world = self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, _ = self.call("get", "ALPHA", env=env)
+            self.assertEqual((code, out), (0, VAL_A))
+            code, out, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator", env=env)
+            self.assertEqual((code, out), (0, VAL_A))
+        ops_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        afc_dir = self.home / ".config" / "fleet-secrets" / "cli-session" / OTHER_PROJECT
+        self.assertTrue((afc_dir / ".infisical.json").exists())
+        self.assertTrue((ops_dir / ".infisical.json").exists())
+        self.assertNotEqual(str(afc_dir), str(ops_dir))
+        # Each directory holds only its own project file: a concurrent export
+        # for one project can never overwrite the other's resolved config.
+        self.assertEqual(
+            json.loads((afc_dir / ".infisical.json").read_text())["workspaceId"], OTHER_PROJECT
+        )
+        self.assertEqual(
+            json.loads((ops_dir / ".infisical.json").read_text())["workspaceId"], PROJECT
+        )
+
+    def test_cli_session_propagates_non_einval_dir_fsync_errors(self):
+        self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        real_fsync = core.os.fsync
+        import errno as _errno
+        import stat as _stat
+
+        def picky(fd):
+            if _stat.S_ISDIR(core.os.fstat(fd).st_mode):
+                raise OSError(_errno.EIO, "simulated durability failure")
+            return real_fsync(fd)
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+            mock.patch.object(core.os, "fsync", side_effect=picky),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual(out, "")
+        self.assertNotEqual(code, 0)
+        self.assertIn("cli-session-workdir-unavailable", err)
+
+    def test_interactive_export_refreshes_a_stale_project_file(self):
+        world = self.use(World())
+        env = dict(self.env)
+        env.pop(core.ENV_TOKEN)
+        env.pop(core.ENV_AI_FLEET_COORDINATOR_TOKEN)
+        workdir = self.home / ".config" / "fleet-secrets" / "cli-session" / PROJECT
+        workdir.mkdir(parents=True)
+        config = workdir / ".infisical.json"
+        config.write_text('{"workspaceId": "stale", "defaultEnvironment": "dev", "extra": 1}')
+
+        class TTY:
+            def isatty(self):
+                return True
+
+        with (
+            mock.patch.object(cli.sys, "stdin", TTY()),
+            mock.patch.object(cli.sys, "stderr", TTY()),
+        ):
+            code, out, err = self.call("get", "ALPHA", env=env)
+        self.assertEqual((code, out, err), (0, VAL_A, ""))
+        payload = json.loads(config.read_text())
+        self.assertEqual(payload, {"workspaceId": PROJECT, "defaultEnvironment": core.ENVIRONMENT})
+
     def test_only_filters_to_the_named_keys(self):
         self.use(World())
         self.call("run", "--only", "ALPHA", "--", "mycmd")
@@ -475,259 +750,6 @@ class ScopedServiceTokenTests(Base):
         code, _, _ = self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")
         self.assertEqual(code, 0)
         self.assertEqual(world.fetches[0][3], self.env[core.ENV_AI_FLEET_COORDINATOR_TOKEN])
-
-
-# Historical assertion examples for the retired Universal Auth/Keychain selection matrix.
-# Active service-token behavior is covered by ScopedServiceTokenTests above.
-class LegacyAuthSelectionExamples:
-    def test_session_is_used_without_a_keychain_item(self):
-        w = self.use(World())
-        self.call("get", "ALPHA")
-        self.assertEqual(w.logins(), [])
-        self.assertNotIn(core.ENV_TOKEN, w.exports()[0][1])
-
-    def test_keychain_identity_logs_in_and_exports_with_the_token_in_env(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL))
-        code, out, _ = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (0, VAL_A))
-        ((largv, lenv),) = w.logins()
-        self.assertIn("--method=universal-auth", largv)
-        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        _eargv, eenv = w.exports()[0]
-        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
-        self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
-
-    def test_system_keychain_identity_is_used_when_the_login_keychain_is_empty(self):
-        w = self.use(World(system_keychain=KEYCHAIN_FULL))
-        code, out, _ = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (0, VAL_A))
-        ((largv, lenv),) = w.logins()
-        self.assertIn("--method=universal-auth", largv)
-        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
-        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        _eargv, eenv = w.exports()[0]
-        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
-        self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
-        lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
-        self.assertIn(
-            [
-                core.SECURITY_BIN,
-                "find-generic-password",
-                "-s",
-                "fleet-secrets",
-                "-a",
-                core.KEYCHAIN_CLIENT_SECRET,
-                "-w",
-                core.SYSTEM_KEYCHAIN,
-            ],
-            lookups,
-        )
-
-    def test_only_system_has_the_items_so_the_mode_is_system_keychain_not_keychain(self):
-        # Every lookup names its keychain, so System items are never found through the login lookup.
-        w = self.use(World(system_keychain=KEYCHAIN_FULL))
-        self.assertEqual(core.auth_mode(self.env), "system-keychain")
-        lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
-        self.assertTrue(lookups)
-        self.assertTrue(all(a[-1] in (FAKE_LOGIN_KEYCHAIN, core.SYSTEM_KEYCHAIN) for a in lookups))
-
-    def test_no_usable_login_keychain_falls_cleanly_to_system(self):
-        self.use(World(system_keychain=KEYCHAIN_FULL))
-        with mock.patch.object(core, "login_keychain", lambda: None):
-            self.assertEqual(core.auth_mode(self.env), "system-keychain")
-            code, out, _ = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (0, VAL_A))
-
-    def test_one_item_in_each_keychain_is_not_mixed(self):
-        w = self.use(
-            World(
-                keychain={core.KEYCHAIN_CLIENT_ID: CLIENT_ID},
-                system_keychain={core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET},
-            )
-        )
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("keychain-incomplete", err)
-        self.assertEqual(w.logins(), [])
-
-    def _automation_env(self, linux=True):
-        self.env[core.ENV_AUTOMATION_ID] = CLIENT_ID
-        self.env[core.ENV_AUTOMATION_SECRET] = CLIENT_SECRET
-        p = mock.patch.object(core, "is_linux", lambda: linux)
-        p.start()
-        self.addCleanup(p.stop)
-
-    def test_linux_automation_env_identity_logs_in_and_exports_with_the_token_in_env(self):
-        w = self.use(World())
-        self._automation_env()
-        self.assertEqual(core.auth_mode(self.env), "automation-env")
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (0, VAL_A))
-        ((largv, lenv),) = w.logins()
-        self.assertIn("--method=universal-auth", largv)
-        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
-        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        self.assertNotIn(core.ENV_AUTOMATION_SECRET, lenv)
-        _eargv, eenv = w.exports()[0]
-        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
-        self.assertNotIn(core.ENV_AUTOMATION_SECRET, eenv)
-        self.assertNoSentinel(out.replace(VAL_A, ""), err)
-
-    def test_token_mode_and_readonly_probes_never_forward_automation_pair(self):
-        w = self.use(World())
-        self._automation_env()
-        self.env[core.ENV_TOKEN] = ACCESS_TOKEN
-        self.assertEqual(self.call("get", "ALPHA")[0], 0)
-        self.assertEqual(core.cli_version(FAKE_CLI, self.env), "0.43.141")
-        self.assertTrue(core.session_valid(FAKE_CLI, self.env))
-        for argv, child in w.calls:
-            if argv[0] == FAKE_CLI:
-                self.assertNotIn(core.ENV_AUTOMATION_ID, child)
-                self.assertNotIn(core.ENV_AUTOMATION_SECRET, child)
-        self.assertEqual(self.env[core.ENV_AUTOMATION_SECRET], CLIENT_SECRET)
-
-    def test_automation_env_is_ignored_off_linux(self):
-        self.use(World())
-        self._automation_env(linux=False)
-        self.assertEqual(core.auth_mode(self.env), "session")
-
-    def test_the_automation_env_beats_a_keychain_identity_on_linux(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL))
-        self._automation_env()
-        self.assertEqual(core.auth_mode(self.env), "automation-env")
-        self.assertEqual(self.call("get", "ALPHA")[:2], (0, VAL_A))
-        ((_, lenv),) = w.logins()
-        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
-
-    def test_a_keychain_identity_is_used_when_no_automation_env_is_set(self):
-        self.use(World(keychain=KEYCHAIN_FULL))
-        p = mock.patch.object(core, "is_linux", lambda: True)
-        p.start()
-        self.addCleanup(p.stop)
-        self.assertEqual(core.auth_mode(self.env), "keychain")
-
-    def test_half_set_automation_env_refuses_rather_than_downgrade(self):
-        self.use(World())
-        self._automation_env()
-        del self.env[core.ENV_AUTOMATION_SECRET]
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("automation-env-incomplete", err)
-
-    def test_run_never_hands_the_automation_pair_to_the_command(self):
-        self.use(World())
-        self._automation_env()
-        self.call("run", "--only", "ALPHA", "--", "true")
-        ((_, _, child_env),) = self.exec_calls
-        self.assertNotIn(core.ENV_AUTOMATION_ID, child_env)
-        self.assertNotIn(core.ENV_AUTOMATION_SECRET, child_env)
-
-    def test_login_keychain_beats_the_system_keychain(self):
-        w = self.use(
-            World(
-                keychain=KEYCHAIN_FULL,
-                system_keychain={
-                    core.KEYCHAIN_CLIENT_ID: "OTHER_ID",
-                    core.KEYCHAIN_CLIENT_SECRET: "OTHER_SECRET",
-                },
-            )
-        )
-        self.call("get", "ALPHA")
-        ((_, lenv),) = w.logins()
-        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
-
-    def test_env_token_beats_both_keychains(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL, system_keychain=KEYCHAIN_FULL))
-        self.env[core.ENV_TOKEN] = "ENV_TOKEN_SENTINEL"
-        self.call("get", "ALPHA")
-        self.assertEqual(w.logins(), [])
-        self.assertEqual(w.exports()[0][1][core.ENV_TOKEN], "ENV_TOKEN_SENTINEL")
-
-    def test_half_filled_system_keychain_fails_instead_of_downgrading(self):
-        w = self.use(World(system_keychain={core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET}))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("keychain-incomplete", err)
-        self.assertIn("System keychain", err)
-        self.assertEqual(w.exports(), [])
-        self.assertNoSentinel(err)
-
-    def test_system_keychain_secret_and_token_never_appear_in_argv_or_the_run_child(self):
-        w = self.use(World(system_keychain=KEYCHAIN_FULL))
-        self.call("get", "ALPHA")
-        self.call("run", "--", "mycmd")
-        for argv, _ in w.calls:
-            joined = "\x00".join(argv)
-            for s in (CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN):
-                self.assertNotIn(s, joined)
-        env = self.exec_calls[0][2]
-        for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
-            self.assertNotIn(var, env)
-
-    def test_failed_system_keychain_login_error_holds_no_secret(self):
-        self.use(World(system_keychain=KEYCHAIN_FULL, login_rc=1))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("login-failed", err)
-        self.assertNoSentinel(err)
-
-    def test_get_returns_the_automation_identity_keys_that_run_refuses_to_inject(self):
-        # `get` is how the seeding script reads the pair;  only `run` withholds INFISICAL_* names.
-        self.use(
-            World(
-                secrets={
-                    "INFISICAL_AUTOMATION_CLIENT_ID": VAL_A,
-                    "INFISICAL_AUTOMATION_CLIENT_SECRET": VAL_B,
-                }
-            )
-        )
-        code, out, _ = self.call("get", "INFISICAL_AUTOMATION_CLIENT_ID")
-        self.assertEqual((code, out), (0, VAL_A))
-        code, out, _ = self.call("get", "INFISICAL_AUTOMATION_CLIENT_SECRET")
-        self.assertEqual((code, out), (0, VAL_B))
-        self.assertEqual(self.call("run", "--", "mycmd")[0], 0)
-        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_ID", self.exec_calls[0][2])
-
-    def test_client_secret_and_token_never_appear_in_any_argv(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL))
-        self.call("get", "ALPHA")
-        self.call("run", "--", "mycmd")
-        self.assertTrue(w.calls)
-        for argv, _ in w.calls:
-            joined = "\x00".join(argv)
-            for s in (CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN):
-                self.assertNotIn(s, joined)
-            self.assertNotIn("--client-secret", joined)
-            self.assertNotIn("--token", joined)
-
-    def test_the_machine_token_does_not_reach_the_command_run_by_run(self):
-        self.use(World(keychain=KEYCHAIN_FULL))
-        self.call("run", "--", "mycmd")
-        env = self.exec_calls[0][2]
-        for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
-            self.assertNotIn(var, env)
-
-    def test_half_filled_keychain_fails_instead_of_downgrading(self):
-        w = self.use(World(keychain={core.KEYCHAIN_CLIENT_ID: CLIENT_ID}))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("keychain-incomplete", err)
-        self.assertEqual(w.exports(), [])
-        self.assertNoSentinel(err)
-
-    def test_token_in_env_is_used_as_is(self):
-        w = self.use(World(keychain=KEYCHAIN_FULL))
-        self.env[core.ENV_TOKEN] = "ENV_TOKEN_SENTINEL"
-        self.call("get", "ALPHA")
-        self.assertEqual(w.exports()[0][1][core.ENV_TOKEN], "ENV_TOKEN_SENTINEL")
-        self.assertEqual(w.logins(), [])
-
-    def test_failed_login_error_holds_no_secret(self):
-        self.use(World(keychain=KEYCHAIN_FULL, login_rc=1))
-        code, out, err = self.call("get", "ALPHA")
-        self.assertEqual((code, out), (4, ""))
-        self.assertIn("login-failed", err)
-        self.assertNoSentinel(err)
 
 
 class NoValueInErrorsTests(Base):

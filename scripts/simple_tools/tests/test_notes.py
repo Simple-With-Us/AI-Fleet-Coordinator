@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -236,7 +237,7 @@ class FlagTests(unittest.TestCase):
             {"pin": "yes"},
             {"html": 1},
             {"summary": 'a "b"'},
-            {"summary": "x" * 300},
+            {"summary": "x" * 1100},
             {"summary": "two\nlines"},
             {"pr": "46; rm -rf"},
             {"pr": 46},
@@ -258,6 +259,13 @@ class FlagTests(unittest.TestCase):
         for bad in ("short", "has space 1234", "x" * 70, "-leading-dash", 12345678, None):
             with self.subTest(bad), self.assertRaises(N.NotesError):
                 N.check_request_id(bad)
+
+    def test_note_ids_for_delete_are_exact_x_coredata_urls(self):
+        nid = "x-coredata://ABC/ICNote/p1"
+        self.assertEqual(N.check_note_id(nid), nid)
+        for bad in ("", "x-coredata://bad*id", "not-an-id", None):
+            with self.subTest(bad), self.assertRaises(N.NotesError):
+                N.check_note_id(bad)
 
     def test_text_fields_cover_the_title_the_body_and_the_text_flags(self):
         req = request(markdown="body", flags={"summary": "sum", "pr": "46", "notify": True})
@@ -293,6 +301,16 @@ class RequestTests(unittest.TestCase):
             {"v": 2, "action": "list", "request_id": RID, "identity": "CLAUDE", "query": "", "limit": 100},
         )
         self.assertEqual(request("list", query=" Plan ", limit=5)["query"], "Plan")
+        self.assertEqual(
+            N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/1"),
+            {
+                "v": 2,
+                "action": "delete",
+                "request_id": RID,
+                "identity": "CLAUDE",
+                "note_id": "x-coredata://stub/note/1",
+            },
+        )
 
     def test_make_request_refuses_a_field_the_action_does_not_use(self):
         for kwargs in (
@@ -341,7 +359,10 @@ class RequestTests(unittest.TestCase):
             ("old upload field", dict(good, markdown_url="/user_uploads/x")),
             ("version 1", dict(good, v=1)),
             ("no version", {k: v for k, v in good.items() if k != "v"}),
-            ("unknown action", dict(good, action="delete")),
+            (
+                "delete missing note_id",
+                {"v": 2, "action": "delete", "request_id": RID, "identity": "CLAUDE"},
+            ),
             ("pin with a body", dict(good, markdown="")),
             ("pin with a session", dict(good, session=SESSION)),
             ("read with flags", dict(request("read"), flags={})),
@@ -508,6 +529,54 @@ class DirectRunnerTests(unittest.TestCase):
         with mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
             N._fleet_rag_upsert(request(markdown="x" * 40), "note-id", self.ENV)
 
+    @mock.patch.object(N, "_fleet_rag_delete", return_value={"ok": True})
+    def test_delete_runs_script_and_calls_rag_delete(self, rag_delete):
+        run = FakeRun(stdout="deleted note id=x-coredata://stub/note/9\n")
+        req = N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/9")
+        result = self.run_direct(req, run)
+        self.assertTrue(result["apple_note_deleted"])
+        self.assertTrue(result["rag_deleted"])
+        self.assertNotIn("partial", result)
+        rag_delete.assert_called_once_with("x-coredata://stub/note/9", self.ENV)
+        self.assertEqual(run.calls[0]["argv"][1:3], ["--delete", "--note-id"])
+
+    @mock.patch.object(N, "_fleet_rag_delete", return_value={"ok": False, "error": "down"})
+    def test_delete_partial_when_rag_fails(self, rag_delete):
+        run = FakeRun(stdout="deleted note id=x-coredata://stub/note/9\n")
+        req = N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/9")
+        result = self.run_direct(req, run)
+        self.assertTrue(result["partial"])
+        self.assertTrue(result["apple_note_deleted"])
+        self.assertFalse(result["rag_deleted"])
+
+    @mock.patch.object(N, "_fleet_rag_delete", return_value={"ok": True})
+    def test_delete_retry_when_apple_note_already_gone(self, rag_delete):
+        run = FakeRun(code=N.EXIT_NOT_FOUND)
+        req = N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/9")
+        result = self.run_direct(req, run)
+        self.assertFalse(result["apple_note_deleted"])
+        self.assertTrue(result["rag_deleted"])
+
+    def test_fleet_rag_delete_runs_note_delete_after_outbox_lock_contention(self):
+        clock = [0.0]
+
+        def fake_sleep(seconds):
+            clock[0] += max(float(seconds or 0), 0.05)
+
+        def fake_monotonic():
+            return clock[0]
+
+        with (
+            mock.patch("fleet_rag.note_outbox.cancel", side_effect=BlockingIOError("locked")),
+            mock.patch.object(N.time, "sleep", side_effect=fake_sleep),
+            mock.patch.object(N.time, "monotonic", side_effect=fake_monotonic),
+            mock.patch.object(N.subprocess, "run", return_value=mock.Mock(returncode=0, stderr=b"")) as sub_run,
+        ):
+            result = N._fleet_rag_delete("x-coredata://stub/note/9", self.ENV)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "rag-outbox-cancellation-unavailable")
+        sub_run.assert_called_once()
+
     def test_successful_write_triggers_fleet_rag_upsert(self):
         run = FakeRun()
         body = "Fleet RAG upsert integration body with enough text to index."
@@ -587,6 +656,18 @@ class DirectRunnerTests(unittest.TestCase):
             },
         )  # AGENT_SEAT is the verified identity;  no Zulip or Operator key
         self.assertEqual((env["AGENT_SEAT"], env["AGENT_NOTES_CALLER"], env["AGENT_NOTES_REQUEST_ID"]), ("CLAUDE", "cli", RID))
+
+    def test_the_summary_tuning_knobs_reach_the_script(self) -> None:
+        run = FakeRun()
+        env = dict(
+            self.ENV,
+            APPLE_NOTES_SUMMARY_MIN_BODY_CHARS="1200",
+            APPLE_NOTES_SUMMARY_MAX_PCT="15",
+        )
+        N.run_direct(request(flags={"pin": False}), self.SCRIPT, env=env, runner=run)
+        child = run.calls[0]["env"]
+        self.assertEqual(child["APPLE_NOTES_SUMMARY_MIN_BODY_CHARS"], "1200")
+        self.assertEqual(child["APPLE_NOTES_SUMMARY_MAX_PCT"], "15")
 
     def test_a_runner_write_names_the_requester_and_carries_one_provenance_line(self):
         run = FakeRun()
@@ -963,7 +1044,7 @@ class DirectOnceTests(unittest.TestCase):
 
 
 class ProvenanceTests(unittest.TestCase):
-    NOW = datetime(2026, 10, 22, 22, 3, tzinfo=timezone.utc)  # Thu, Oct 22, 5:03pm in Chicago
+    NOW = datetime(2026, 10, 22, 22, 3, tzinfo=timezone.utc)  # Thu, Oct 22, 5:03 PM in Chicago
     LINE = "Written for MM through the Operator on Thu, Oct 22, 2026 (request requestid-0001)."
 
     def update(self, markdown, html=False):
@@ -1016,6 +1097,32 @@ class ProvenanceTests(unittest.TestCase):
 
 
 class ContentTests(unittest.TestCase):
+    def test_legacy_and_current_stamps_strip_identical_header_rows(self):
+        for stamp in ("3:05am", "3:05 AM", "3:05pm", "3:05 PM"):
+            with self.subTest(stamp=stamp):
+                body = STORED_HTML.replace("3:05am", stamp)
+                text = STORED_TEXT.replace("3:05am", stamp)
+                self.assertEqual(N.content_html(body, STORED_TITLE), STORED_CONTENT_HTML)
+                self.assertEqual(N.content_text(text, STORED_TITLE), STORED_CONTENT_TEXT)
+
+    def test_delete_guard_recognizes_both_stamp_shapes_and_refuses_lookalikes(self):
+        guard = Path(__file__).resolve().parents[2] / "notes_delete_guard.py"
+        for stamp, title, expected in (
+            ("3:52pm", STORED_TITLE, 0),
+            ("3:52 PM", STORED_TITLE, 0),
+            ("3:52 pm", STORED_TITLE, 5),
+            ("3:52 pM", STORED_TITLE, 5),
+            ("3:52 PM", "Hand Made", 5),
+            ("3:52 XM", STORED_TITLE, 5),
+        ):
+            with self.subTest(stamp=stamp, title=title):
+                result = subprocess.run(
+                    [sys.executable, str(guard)],
+                    input=json.dumps({"title": title, "body": f"<div>Sun, Aug 9, {stamp}</div>"}),
+                    text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_the_stored_note_reads_back_as_its_content_only(self):
         html_content = N.content_html(STORED_HTML, STORED_TITLE)
         self.assertEqual(html_content, STORED_CONTENT_HTML)
@@ -1034,13 +1141,14 @@ class ContentTests(unittest.TestCase):
         banners = (
             '<div style="background-color: #FFF3CD"><b>⚠️ NEEDS OWNER REVIEW / ACTION</b></div>\n'
             '<div style="background-color: #F8F9FA"><b>📌 Mobile Quick View:</b> the short summary</div>\n'
+            '<div style="background-color: #F8F9FA"><b>Summary:</b> the longer readable summary</div>\n'
         )
         head, rest = STORED_HTML.split("<div>Live end-to-end", 1)
         body = head + banners + "<div>Live end-to-end" + rest
         self.assertEqual(N.content_html(body, STORED_TITLE), STORED_CONTENT_HTML)
         text = STORED_TEXT.replace(
             "\nLive end-to-end",
-            "\n⚠️ NEEDS OWNER REVIEW / ACTION\n📌 Mobile Quick View: the short summary\nLive end-to-end",
+            "\n⚠️ NEEDS OWNER REVIEW / ACTION\n📌 Mobile Quick View: the short summary\nSummary: the longer readable summary\nLive end-to-end",
         )
         self.assertEqual(N.content_text(text, STORED_TITLE), STORED_CONTENT_TEXT)
 
@@ -1048,6 +1156,18 @@ class ContentTests(unittest.TestCase):
         body = "<div>First line of a hand-made note.</div>\n<div>Second.</div>"
         self.assertEqual(N.content_html(body, "Hand Made"), body)
         self.assertEqual(N.content_text("First line.\nSecond.", "Hand Made"), "First line.\nSecond.")
+
+    def test_a_body_block_that_only_starts_with_the_label_is_kept(self):
+        """Only the generated banner strips:  a body block opening with the same words is content."""
+        head, rest = STORED_HTML.split("<div>Live end-to-end", 1)
+        lookalike = "<div>Summary: the plan we agreed still stands.</div>\n"
+        out = N.content_html(head + lookalike + "<div>Live end-to-end" + rest, STORED_TITLE)
+        self.assertIn("Summary: the plan we agreed still stands.", out)
+        self.assertTrue(out.startswith("<div>Summary: the plan"), out[:120])
+
+    def test_a_text_note_without_the_writer_header_keeps_a_lookalike_first_line(self):
+        text = "Summary: my own heading.\nThe body of a hand-made note."
+        self.assertEqual(N.content_text(text, "Hand Made"), text)
 
     def test_a_note_written_through_the_operator_reads_back_without_its_line(self):
         stored = STORED_HTML.split("<div><i>Relayed")[0] + (

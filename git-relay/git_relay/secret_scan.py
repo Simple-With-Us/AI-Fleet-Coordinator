@@ -69,6 +69,19 @@ def find_secret(text: object) -> str | None:
     return None
 
 
+def first_secret_start(text: object) -> int | None:
+    """Index where the earliest credential shape in text begins, or None.
+
+    For a caller that returns only the head of a long text:  a shape that
+    begins inside the returned head must be withheld even when the cut would
+    break it, and one that begins after the head is never returned at all.
+    """
+    if not isinstance(text, str):
+        return None
+    starts = [m.start() for m in (pattern.search(text) for _, pattern in _PATTERNS) if m]
+    return min(starts) if starts else None
+
+
 def reject_secrets(field: str, value: object) -> None:
     """Raise ValueError if a seat-supplied field carries a credential shape."""
     name = find_secret(value)

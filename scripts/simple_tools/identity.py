@@ -565,6 +565,84 @@ def seat_app(seat: Any, *, registry: SeatRegistry | None = None) -> str:
 
 
 # --------------------------------------------------------------------------------------------
+# The seats of a session-registry platform (AFC-772)
+# --------------------------------------------------------------------------------------------
+#
+# The Operator's session registry files every chat under a platform namespace ("claude", "codex",
+# "zcode") and a seat.  Which seats a platform's chats belong to is `seatApps` read the other way,
+# app -> seats, so it is not a second table:  a platform contributes its row to fleet-apps.json and
+# the registry, the letter clients and the wake router can all ask here.  A platform with one seat
+# (claude is CLAUDE, zcode is ZC) answers that seat;  a launcher whose bots each have a seat
+# (botfleet, grok-bot) answers its `seatApps.patterns` row (BF-*, GB-*), so a bot is checked against
+# the pattern, never against one fixed seat.
+
+#: The registry namespaces whose name is not their app's name in `seatApps`.  Only names:  the seats
+#: stay in fleet-apps.json.  A namespace that is not listed is its own app name (codex, cursor,
+#: zcode, botfleet).  The registry folds an adapter name onto its namespace before it asks
+#: (operator_registry.normalize_platform:  cursor-cloud is cursor, grok-build is grok-leader).
+PLATFORM_APPS = {
+    "claude": "claude-code",
+    "grok-leader": "grok-terminal",
+    "minimax": "minimax-code",
+    "muse": "muse-code",
+}
+
+
+class PlatformSeats(NamedTuple):
+    """The seats one session-registry platform's chats register under (platform_seats)."""
+
+    platform: str  # the registry namespace asked about (claude)
+    app: str  # its app in seatApps (claude-code)
+    seats: tuple[str, ...]  # the fixed seat tags of that app, sorted (CLAUDE)
+    patterns: tuple[SeatPattern, ...]  # the role families of that app (BF-* for botfleet)
+
+    @property
+    def expected(self) -> tuple[str, ...]:
+        """What a seat has to be, for a refusal to name:  the tags, then each pattern as written."""
+        return self.seats + tuple(pattern.match for pattern in self.patterns)
+
+    @property
+    def sole_seat(self) -> str:
+        """The one seat tag every chat of this platform belongs to, or "" when there is no single one.
+
+        A launcher whose bots each have a seat (a role pattern) and an app with several tags
+        (instinct is ECHO and WISE) have no one right seat, so a caller that wants to correct a seat
+        to the platform's own (the registry's reseat) gets "" there and leaves the row alone."""
+        return self.seats[0] if len(self.seats) == 1 and not self.patterns else ""
+
+    def allows(self, seat: Any) -> bool:
+        """True when `seat` (any spelling canonical_seat accepts) is one of this platform's."""
+        tag = canonical_seat(seat)
+        if tag in self.seats:
+            return True
+        return bool(_SEAT_RE.fullmatch(tag)) and any(
+            pattern.regex.fullmatch(tag) for pattern in self.patterns
+        )
+
+
+def platform_seats(platform: Any, *, registry: SeatRegistry | None = None) -> PlatformSeats | None:
+    """The seats the registry platform `platform` belongs to, or None when `seatApps` names none.
+
+    None is "not a platform this table knows", never a refusal:  a new platform registers freely
+    until it has a row.  Raises SeatRegistryError when fleet-apps.json cannot be read, which is not
+    the same thing, so a caller decides for itself what an unreadable table means."""
+    name = _clean(platform).lower()
+    if not name:
+        return None
+    reg = registry if registry is not None else load_seat_registry()
+    app = PLATFORM_APPS.get(name, name)
+    seats = sorted(
+        seat
+        for seat, seat_app_name in {**reg.extra, **reg.by_seat}.items()
+        if seat_app_name == app and seat not in reg.retired
+    )
+    patterns = tuple(pattern for pattern in reg.patterns if pattern.app == app)
+    if not seats and not patterns:
+        return None
+    return PlatformSeats(name, app, tuple(seats), patterns)
+
+
+# --------------------------------------------------------------------------------------------
 # The bot check
 # --------------------------------------------------------------------------------------------
 

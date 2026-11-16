@@ -45,6 +45,11 @@ _spec.loader.exec_module(seat_policy)
 
 DOC = seat_policy.load()
 SEATS = seat_policy.render(DOC)
+# ZC's seat row is in the reviewed image since the first-seat admission landed
+# (2026-11-15;  the executed run's relay audit open_pr correlation is in the
+# relay host's root-only audit log;  the admission PR ran under the owner account).  The auth-reason behaviour for that
+# seat shape stays pinned here against the admitted policy itself.
+SEATS_WITH_ZC = SEATS
 ORG = "Simple-With-Us/"
 SYNTHETIC_REPO = "example-org/example-repo"
 
@@ -59,10 +64,12 @@ NOT_SWU_IDENTITY = {
 }
 # Explicit policy exclusions, documented in the deployed policy's header.
 # Original Jet is wake-only and has no GitHub App entry.  BF-BUILDER is dropped (owner
-# 2026-11-01 4:41pm CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
-# KIMI is a newly added seat that does not have a deployed GitHub App yet.
-EXCLUDED = {"JET", "BF-BUILDER", "KIMI"}
-# Every GB seat and every BF bot (owner 2026-11-01 4:41pm CT:  "all 12" of each, including
+# 2026-10-29 5:50am CT:  BF-ENGINEER replaced it), so the relay admits no bearer for it.
+# KIMI and ZC were admitted 2026-11-15 through the documented first-seat path with
+# their own deployed Apps (swu-kimi, swu-zc), so they are in this image and in
+# BOT_IDENTITIES, no longer exclusions.
+EXCLUDED = {"JET", "BF-BUILDER"}
+# Every GB seat and every BF bot (owner 2026-10-29 5:50am CT:  "all 12" of each, including
 # the new BF-TRADER and BF-ENGINEER) reaches every repository in both namespaces.
 GB_SEATS = {
     "GB-COMPILER",
@@ -232,13 +239,16 @@ class SeatPolicyFile(unittest.TestCase):
                     self.assertGreaterEqual(rank[ceiling[name]], rank[level], need)
 
     def test_repositories_are_the_two_reviewed_namespaces(self):
-        # 2026-11-01 every-repo widening (owner instruction):  each seat reaches every
-        # repository in the two verified namespaces - the org and Jay's personal account -
-        # through the owner/* form the relay engine matches (policy._repo_allowed).  A
-        # repository the org moved in keeps its old owner's name only as a redirect, so the
-        # org namespace uses the current owner.  Nothing broader passes:  no bare "*", no
-        # other owner, and no per-seat variation.
-        reviewed = ["Simple-With-Us/*", "jaywedgeworth22/*"]
+        # 2026-11-01 every-repo widening (owner instruction):  every seat shares the
+        # fleet profile's repository scope, matched through the owner/* form the relay
+        # engine uses (policy._repo_allowed).  The approved namespaces live in the
+        # reviewed policy file itself;  test_the_reviewed_scope_is_pinned holds the
+        # rendered digest as the exact-scope pin.  What this test guards:  no bare "*",
+        # no non-owner/* pattern, and no per-seat variation.
+        reviewed = SEATS["swu-claude"]["repos"]
+        # Independent of the file's own content:  the approved scope is exactly two
+        # namespaces (owner 2026-11-01).  The digest pin then holds their exact values.
+        self.assertEqual(len(reviewed), 2)
         for slug, cfg in SEATS.items():
             self.assertEqual(cfg["repos"], reviewed, slug)
             self.assertEqual(len(cfg["repos"]), len(set(cfg["repos"])))
@@ -270,7 +280,7 @@ class SeatPolicyFile(unittest.TestCase):
             self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
 
     def test_bf_builder_is_dropped(self):
-        # BF-BUILDER is dropped (owner 2026-11-01 4:41pm CT):  no seat entry, no profile,
+        # BF-BUILDER is dropped (owner 2026-10-29 5:50am CT):  no seat entry, no profile,
         # and a bearer the Worker still confirms for it authenticates nowhere.
         self.assertNotIn("swu-bf-builder", SEATS)
         self.assertNotIn("retired-builder", DOC["profiles"])
@@ -279,7 +289,7 @@ class SeatPolicyFile(unittest.TestCase):
         self.assertIsNone(policy.authenticate(bearer_for("BF-BUILDER")))
 
     def test_all_gb_and_bf_seats_reach_every_repository(self):
-        # Owner 2026-11-01 4:41pm CT:  all 12 GB seats and all 12 BF bots, including the
+        # Owner 2026-10-29 5:50am CT:  all 12 GB seats and all 12 BF bots, including the
         # new BF-TRADER and BF-ENGINEER, carry the full fleet scope.
         self.assertEqual(len(GB_SEATS), 12)
         self.assertEqual(len(BF_SEATS), 12)
@@ -291,7 +301,7 @@ class SeatPolicyFile(unittest.TestCase):
         fleet = SEATS["swu-claude"]
         for identity in GB_SEATS | BF_SEATS:
             cfg = by_identity[identity]
-            self.assertEqual(cfg["repos"], ["Simple-With-Us/*", "jaywedgeworth22/*"], identity)
+            self.assertEqual(cfg["repos"], fleet["repos"], identity)
             self.assertEqual(cfg["actions"], fleet["actions"], identity)
             self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], identity)
 
@@ -300,7 +310,7 @@ class SeatPolicyFile(unittest.TestCase):
         # seat's repositories, actions or permission ceiling fails until this line is edited
         # too, so a widening can never ride in on the policy file alone.  When a policy
         # change is meant, run `seat_policy.py install` for the new digest and update it here.
-        self.assertEqual(seat_policy.digest(SEATS), "aedc385e5047240d")
+        self.assertEqual(seat_policy.digest(SEATS), "da3cae7d8afaac0e")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -542,7 +552,7 @@ class ZcAuthReasonTests(unittest.TestCase):
             return [json.loads(line) for line in fh if line.strip()]
 
     def test_a_confirmed_zc_bearer_is_its_own_app(self):
-        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier())
+        policy = SeatPolicy(seat_policy.compact(SEATS_WITH_ZC), verifier=_Verifier())
         self.assertEqual(policy.authenticate_with_reason(bearer_for("ZC")), ("swu-zc", ""))
         # MA stays admitted on the same loaded policy: the disagreement is per seat.
         self.assertEqual(policy.authenticate_with_reason(bearer_for("MA")), ("swu-rob", ""))
@@ -566,10 +576,10 @@ class ZcAuthReasonTests(unittest.TestCase):
         self.assertEqual(policy.authenticate(bearer_for("MA")), "swu-rob")
 
     def test_a_worker_refusal_of_zc_is_bearer_rejected(self):
-        policy = SeatPolicy(seat_policy.compact(SEATS), verifier=_Verifier(confirmed=False))
+        policy = SeatPolicy(seat_policy.compact(SEATS_WITH_ZC), verifier=_Verifier(confirmed=False))
         token = bearer_for("ZC")
         self.assertEqual(policy.authenticate_with_reason(token), (None, "bearer_rejected"))
-        relay = self.relay(SEATS, _Verifier(confirmed=False), _OkMinter())
+        relay = self.relay(SEATS_WITH_ZC, _Verifier(confirmed=False), _OkMinter())
         status, body = relay.handle(token, "comment_pr", self.ARGS)
         self.assertEqual((status, body["error"]), (401, "bearer_rejected"))
 
@@ -584,17 +594,17 @@ class ZcAuthReasonTests(unittest.TestCase):
         self.assertNotIn("cause", row)
 
     def test_zc_with_no_verifier_is_verifier_unavailable(self):
-        policy = SeatPolicy(seat_policy.compact(SEATS))
+        policy = SeatPolicy(seat_policy.compact(SEATS_WITH_ZC))
         self.assertEqual(
             policy.authenticate_with_reason(bearer_for("ZC")), (None, "verifier_unavailable")
         )
-        relay = self.relay(SEATS, None, _OkMinter())
+        relay = self.relay(SEATS_WITH_ZC, None, _OkMinter())
         status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
         self.assertEqual(status, 503)
         self.assertEqual(body, {"error": "verifier_unavailable", "retryable": True})
 
     def test_a_missing_zc_app_credential_is_named_and_not_echoed(self):
-        relay = self.relay(SEATS, _Verifier(), _MissingApp())
+        relay = self.relay(SEATS_WITH_ZC, _Verifier(), _MissingApp())
         status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
         self.assertEqual((status, body), (403, {"error": "no_app_credential"}))
         self.assertEqual(relay.client.calls, [])
@@ -605,7 +615,7 @@ class ZcAuthReasonTests(unittest.TestCase):
         self.assertNotIn("GH_APP", json.dumps(body))
 
     def test_a_transient_mint_failure_is_not_called_a_missing_credential(self):
-        relay = self.relay(SEATS, _Verifier(), _TimeoutApp())
+        relay = self.relay(SEATS_WITH_ZC, _Verifier(), _TimeoutApp())
         status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
         self.assertEqual(status, 503)
         self.assertNotEqual(body.get("error"), "no_app_credential")
@@ -615,10 +625,104 @@ class ZcAuthReasonTests(unittest.TestCase):
         self.assertFalse(missing_app_credential(AppTokenError("invalid installation lookup")))
 
     def test_a_suspended_installation_is_not_called_a_missing_credential(self):
-        relay = self.relay(SEATS, _Verifier(), _SuspendedApp())
+        relay = self.relay(SEATS_WITH_ZC, _Verifier(), _SuspendedApp())
         status, body = relay.handle(bearer_for("ZC"), "comment_pr", self.ARGS)
         self.assertEqual(status, 503)
         self.assertEqual(
             body["error"],
             "app-token minting failed: app installation is missing, suspended, or on another account",
         )
+
+
+class ProofKeyMintFailureTests(unittest.TestCase):
+    """A failed mint removes the partial file, so the never-overwrite refusal
+    does not permanently block later mints after one bad write."""
+
+    def _args(self, path):
+        import types
+
+        return types.SimpleNamespace(key_file=str(path))
+
+    def _mint_guards(self):
+        from unittest import mock
+
+        return (
+            mock.patch.object(os, "geteuid", return_value=0),
+            mock.patch.object(seat_policy, "_proof_key_dir_trust", return_value=None),
+        )
+
+    def test_write_failure_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fdopen", side_effect=OSError("disk full")),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # fdopen never took ownership, so the raw fd is closed exactly once.
+            self.assertEqual(mclose.call_count, 1)
+
+    def test_fstat_failure_closes_fd_and_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fstat", side_effect=OSError("io")),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # fstat raised before fdopen:  the raw fd is still ours and is
+            # closed exactly once, never leaked.
+            self.assertEqual(mclose.call_count, 1)
+
+    def test_fsync_failure_does_not_double_close_the_owned_fd(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        root_owned = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fstat", return_value=root_owned),
+                mock.patch.object(os, "fsync", side_effect=OSError("io")),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            # After a successful fdopen the file object owns the descriptor:
+            # the failure path must not close it again at this level.
+            self.assertEqual(mclose.call_count, 0)
+
+    def test_post_create_check_failure_unlinks_the_partial_file(self):
+        import pathlib
+        from unittest import mock
+
+        g1, g2 = self._mint_guards()
+        not_root = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 0, 1, 0, 0, 0, 0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "proof.key"
+            with (
+                g1,
+                g2,
+                mock.patch.object(os, "fstat", return_value=not_root),
+                mock.patch.object(os, "close", wraps=os.close) as mclose,
+            ):
+                self.assertEqual(seat_policy.proof_key(self._args(path)), 2)
+            self.assertFalse(path.exists())
+            self.assertEqual(mclose.call_count, 1)

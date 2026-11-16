@@ -17,6 +17,12 @@
  * Exit codes:  0 every checked app is current;  1 something is behind (or a
  * catch-up ship is still running or processing);  2 the check itself failed.
  *
+ * INTERNAL LANDING (AFC-753).  A VALID build missing from an internal beta
+ * group, or assigned to one with zero internal testers, is behind with
+ * behindReason "internalLanding".  That finding does not dispatch
+ * --ship-behind.  An unreadable internal tester count is lookupUnknown and
+ * does not flip a code-current app.  External groups (AFC-434) are unchanged.
+ *
  * HOW "SHIPPED" IS DECIDED.  App Store Connect never records a git sha.  The
  * build number is the repo commit count, so a current build carries no cut
  * time and the ship workflow run whose start-to-end window contains the
@@ -558,6 +564,58 @@ export function annotateExternalGroups(validBuild, groups) {
   return { groups: out, reason: parts.length ? parts.join(";  ") : null };
 }
 
+/**
+ * Mark each internal group with findings for the current VALID build.
+ * Read-only.  A group is a proven miss when assignment is known and the build
+ * is absent, or the tester count is known and zero, even if the other lookup
+ * failed.  installable is false only when every group is a proven miss.  A
+ * group that is neither a proven hit nor a proven miss stays unknown, and one
+ * unknown group leaves installable null.
+ */
+export function annotateInternalLanding(validBuild, groups) {
+  const out = [];
+  const parts = [];
+  let anyInstallable = false;
+  let anyKnownFailure = false;
+  let anyUnknown = false;
+  const label = `${validBuild?.marketingVersion || validBuild?.build || "?"} (${validBuild?.build || "?"})`;
+  if (!validBuild) {
+    return {
+      groups: (groups || []).map((g) => ({ ...g })),
+      reason: null,
+      installable: null,
+    };
+  }
+  for (const g of groups || []) {
+    const row = { ...g };
+    const findings = [];
+    const assignedKnown = row.assignedKnown === true;
+    const testersKnown = row.testerCountKnown === true;
+    const provenMiss = (assignedKnown && !row.assigned) || (testersKnown && row.testerCount === 0);
+    const provenHit = assignedKnown && testersKnown && row.assigned && row.testerCount > 0;
+    if (!assignedKnown || !testersKnown) findings.push("lookupUnknown");
+    if (assignedKnown && !row.assigned) {
+      findings.push("notAssigned");
+      parts.push(`internal group "${row.name}" does not include valid build ${label}`);
+    }
+    if (testersKnown && row.testerCount === 0) {
+      findings.push("noTesters");
+      parts.push(`internal group "${row.name}" has zero internal testers`);
+    }
+    if (provenHit) anyInstallable = true;
+    else if (provenMiss) anyKnownFailure = true;
+    else anyUnknown = true;
+    if (findings.length) row.findings = findings;
+    if (findings.includes("lookupUnknown")) row.lookupUnknown = true;
+    out.push(row);
+  }
+  let installable = null;
+  if (anyInstallable) installable = true;
+  else if (anyKnownFailure && !anyUnknown) installable = false;
+  const reason = installable === false && parts.length ? parts.join(";  ") : null;
+  return { groups: out, reason, installable };
+}
+
 const ASC_BUILD_FILTER_FIELDS =
   "&fields[builds]=version,uploadedDate,processingState,expired" +
   "&include=preReleaseVersion&fields[preReleaseVersions]=version,platform";
@@ -649,25 +707,31 @@ export async function attachPreReleaseVersions(ctx, json, {
   }
 }
 
-/** Newest build assigned to a beta group; prefers /v1/builds?filter[betaGroups]= for sort support. */
-async function newestBuildInBetaGroup(ctx, groupId, platform) {
+/** Builds assigned to a beta group; prefers /v1/builds?filter[betaGroups]= for sort support. */
+async function listBuildsInBetaGroup(ctx, groupId, platform) {
   let filterOk = false;
   try {
     const byFilter = await ctx.asc(buildsFilterForBetaGroupPath(groupId));
     filterOk = true;
-    if (!(byFilter.data || []).length) return null;
+    if (!(byFilter.data || []).length) return [];
     let normalized = normalizeBuilds(byFilter, platform);
     if (!normalized.length) normalized = normalizeBuilds(byFilter, null);
-    if (normalized.length) return normalized[0];
+    return normalized;
   } catch {
     /* fall through to the relationship list */
   }
-  if (filterOk) return null;
+  if (filterOk) return [];
   const byRel = await ctx.asc(buildsRelationshipForBetaGroupPath(groupId));
   const enriched = await attachPreReleaseVersions(ctx, byRel);
   let normalized = normalizeBuilds(enriched, platform);
   if (!normalized.length) normalized = normalizeBuilds(enriched, null);
-  return normalized[0] || null;
+  return normalized;
+}
+
+/** Newest build assigned to a beta group. */
+async function newestBuildInBetaGroup(ctx, groupId, platform) {
+  const builds = await listBuildsInBetaGroup(ctx, groupId, platform);
+  return builds[0] || null;
 }
 
 async function loadExternalBetaGroups(ctx, appleId, platform) {
@@ -707,10 +771,48 @@ async function loadExternalBetaGroups(ctx, appleId, platform) {
   return rows;
 }
 
+/** Internal beta groups only.  External rows stay in loadExternalBetaGroups. */
+async function loadInternalBetaGroups(ctx, appleId, platform, validBuild) {
+  const list = await ctx.asc(externalBetaGroupsListPath(appleId));
+  const rows = [];
+  for (const g of list.data || []) {
+    const attrs = g.attributes || {};
+    if (!attrs.isInternalGroup) continue;
+    const base = {
+      name: attrs.name || g.id,
+      id: g.id,
+      assigned: false,
+      assignedKnown: false,
+      testerCount: null,
+      testerCountKnown: false,
+    };
+    const warnings = [];
+    try {
+      const builds = await listBuildsInBetaGroup(ctx, g.id, platform);
+      base.assignedKnown = true;
+      base.assigned = Boolean(validBuild) && builds.some((b) => b.build === validBuild.build);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+    }
+    try {
+      const testersJson = await ctx.asc(`/v1/betaGroups/${g.id}/betaTesters?limit=1`);
+      base.testerCountKnown = true;
+      base.testerCount = betaTesterCountFromJson(testersJson);
+    } catch (err) {
+      warnings.push(String(err.message || err).slice(0, 200));
+      base.testerCount = null;
+    }
+    if (warnings.length) base.lookupWarning = warnings.join(";  ");
+    rows.push(base);
+  }
+  return rows;
+}
+
 /** True when `--ship-behind` may dispatch a workflow for this result. */
 export function shouldRemedyApp(r) {
   if (!REMEDIABLE.has(r.status)) return false;
   if (r.externalGroupsOnly) return false;
+  if (r.internalLandingOnly) return false;
   return true;
 }
 
@@ -723,6 +825,21 @@ function applyExternalGroupStaleness(r, validNorm, externalRows) {
     r.status = "behind";
     r.externalGroupsOnly = true;
     r.behindReason = "externalGroups";
+    r.reason = reason;
+  } else if (r.status && r.status !== "skipped" && r.status !== "error") {
+    r.reason = r.reason ? `${r.reason};  ${reason}` : reason;
+  }
+}
+
+/** Raise BEHIND when the VALID build is not installable by internal testers. */
+function applyInternalLanding(r, validBuild, internalRows) {
+  const { groups, reason, installable } = annotateInternalLanding(validBuild, internalRows);
+  r.internalLanding = { installable, groups };
+  if (!reason || installable !== false) return;
+  if (r.status === "current") {
+    r.status = "behind";
+    r.internalLandingOnly = true;
+    r.behindReason = "internalLanding";
     r.reason = reason;
   } else if (r.status && r.status !== "skipped" && r.status !== "error") {
     r.reason = r.reason ? `${r.reason};  ${reason}` : reason;
@@ -981,6 +1098,13 @@ export async function evaluateApp(ctx, key, app, now) {
       r.externalGroups = [];
       r.externalGroupsWarning = String(err.message || err).slice(0, 300);
     }
+    try {
+      const internalRows = await loadInternalBetaGroups(ctx, app.appleId, app.platform, valid);
+      applyInternalLanding(r, valid, internalRows);
+    } catch (err) {
+      r.internalLanding = { installable: null, groups: [] };
+      r.internalLandingWarning = String(err.message || err).slice(0, 300);
+    }
   } catch (err) {
     r.status = "error";
     r.reason = String(err.message || err).slice(0, 300);
@@ -1009,9 +1133,13 @@ export async function runRemedies(results, state, deps, registry, { dryRun = fal
   let dispatched = 0;
   const GROUP_ONLY_BLOCK =
     "behind only from external beta groups; a ship workflow cannot fix group membership or testers";
+  const INTERNAL_ONLY_BLOCK =
+    "behind only from internal tester access; a ship workflow cannot fix group membership or testers";
   for (const r of results) {
     if (REMEDIABLE.has(r.status) && r.externalGroupsOnly) {
       r.remedy = { action: "blocked", reason: GROUP_ONLY_BLOCK };
+    } else if (REMEDIABLE.has(r.status) && r.internalLandingOnly) {
+      r.remedy = { action: "blocked", reason: INTERNAL_ONLY_BLOCK };
     }
   }
   const candidates = results.filter((r) => shouldRemedyApp(r)).sort((a, b) => (b.gapHours || 0) - (a.gapHours || 0));
@@ -1235,6 +1363,29 @@ export function loadRegistry(file) {
     .map(([k]) => `${k}: autoRemedy is on but compileCheck is empty`);
   if (bad.length) throw new Error(`${file}: ${bad.join(";  ")}`);
   return reg;
+}
+
+/**
+ * Every non-skipped app's `paths` must exist on that repo's default branch (main).
+ * Stale directory names (for example a retired `native/ios` tree) make the freshness
+ * check think no commit ever touches the app.
+ */
+export async function assertRegistryPathsExist(registry, gh) {
+  const missing = [];
+  for (const [key, app] of Object.entries(registry.apps)) {
+    if (app.skip) continue;
+    const repo = `${registry.owner}/${app.repo}`;
+    for (const p of app.paths || []) {
+      const enc = p.split("/").map(encodeURIComponent).join("/");
+      try {
+        await gh(`repos/${repo}/contents/${enc}?ref=main`);
+      } catch (err) {
+        const detail = err.notFound ? "not found on main" : String(err.message || err);
+        missing.push(`${key}: ${repo}/${p} (${detail})`);
+      }
+    }
+  }
+  if (missing.length) throw new Error(`testflight-apps.json paths:  ${missing.join(";  ")}`);
 }
 
 export async function runCheck(opts, deps, registry) {

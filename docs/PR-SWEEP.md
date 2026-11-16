@@ -27,7 +27,7 @@ PS="$PWD/scripts/pr-sweep"
 
 | Command | What it prints |
 |---|---|
-| `$PS inventory [--fleet-only] [--repos A,B] [--owner O]` | Every open PR of Simple-With-Us, jaywedgeworth22 and the registry owner (one GraphQL search per owner), as JSON records: repo, number, head, base, author, labels, draft, mergeStateStatus, reviewDecision, unresolved threads, CI rollup, auto-merge, `fleet` (registered in `fleet-apps.json`). |
+| `$PS inventory [--fleet-only] [--repos A,B] [--owner O]` | Every open PR of Simple-With-Us and the registry owner (one GraphQL search per owner), as JSON records: repo, number, head, base, author, labels, draft, mergeStateStatus, reviewDecision, unresolved threads, CI rollup, auto-merge, `fleet` (registered in `fleet-apps.json`). |
 | `$PS plan [--chains REPO=N]` | `skip` (draft, `deferred` label, fork head) or `merge`; a model tier per PR (small for Renovate, Dependabot and Actions; frontier for changes requested, five or more threads, or a conflict with red CI); the chains, with a stack (a PR based on another open PR's head) kept together parent first, and the chain count per repo (default 1; Socratic-Trade 3, BotFleet and AI-Fleet-Coordinator 2). |
 | `$PS status [O/R#N ...]` | CURRENT facts per PR from GraphQL, one batched call per repo: state, mergeStateStatus, reviewDecision, unresolved thread count, CI rollup, auto-merge, base, human CHANGES_REQUESTED, pending review requests, minutes since the last activity and `fresh`.  `missing` lists any PR without an answer (exit 69). |
 | `$PS needs-work [O/R#N ...]` | The repair decision per PR, with the reason.  A stacked PR waits while its parent is open and is retargeted after it merges. |

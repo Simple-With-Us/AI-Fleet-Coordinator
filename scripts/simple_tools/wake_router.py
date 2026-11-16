@@ -1,9 +1,32 @@
-"""The wake router every multithreaded platform shares (OPS-1048;  owner design, Nov 10, 2026).
+"""The wake router every platform shares (OPS-1048;  owner design, Nov 10, 2026;  owner ruling,
+Nov 11, 2026:  "the router is supposed to be for every platform").
 
 The chain.  The listener captures a tagged message to the seat inbox and POSTs one signed
-simple-tools-wake/1 body to the platform's router.  The router picks the chat deterministically,
-then delivers and wakes it.  A platform supplies only how to wake one of its chats:  a `Platform`
-that names its seat, its mention and its `deliver` function.
+simple-tools-wake/1 body to `/wake/<SEAT>` on the one router service (`wake_service`:  one
+process, one loopback port, every platform).  That seat's `Router` picks the chat
+deterministically, then delivers and wakes it.  A platform supplies only how to wake one of its
+chats:  a `Platform` that names its seat, its mention and its `deliver` function, registered by
+one line in `wake_service.BUILDERS`.
+
+One process, a router per seat.  Each seat served has its own `Router`, with its own state
+folder, pending queue, workers, delivery cap and receipts, so a fault, an outage or a busy chat
+in one seat cannot reach another seat's wakes.  Each Router asks its own `KeySource` for the
+bearer;  the service gives every seat the one key WAKE_ROUTER_KEY.  `Seats` holds them and routes
+by path:
+
+    POST /wake/<SEAT>             a wake for that seat, checked against that seat's KeySource
+    GET  /receipt/<SEAT>/<id>     that seat's record of a wake, with the same bearer
+    GET  /receipt/<id>            the CLAUDE seat's record, the form from before
+    GET  /health                  every seat, no bearer:  200 only when every installed seat is
+                                  healthy
+    GET  /health/<SEAT>           one seat
+
+A seat that is registered and not served answers 503 with a reason token, and `/health` names
+it.  One whose module is not installed yet shows `not-installed` and leaves the overall health
+alone;  one whose module is there but broken (its builder missing or failing) counts against it.
+A seat nobody registered is 404.  A served seat is unhealthy while it has no routine key or no
+registry address.  The body's `seat` must equal the path's, so a wake for one seat can never
+land in another's queue.
 
 The pick.  An addressed letter;  then a fragment of a session id, at least 8 hex characters, that
 identifies exactly one live chat;  then a Linear issue id from the topic or the excerpt, found in a
@@ -15,6 +38,28 @@ and an unreadable registry do not deliver, and both are bounded retries, because
 or the registry come back before `max_attempts` or `max_age_seconds` runs out.  The receiving chat
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
 wake is meant for it.
+
+The letter.  A chat is written as its platform's name and a letter of exactly two capitals,
+"Claude AA".  `letter_of` reads which one a message addresses, the same way for every platform:
+the body's `letter`;  else a real mention followed by the letter (`@**Claude** AA`);  else the
+recipient list of the post's leading header (`[GROK: BB.2.M → CLAUDE AA, CODEX BB]`), the fleet's
+own way to address a chat;  else `@Claude AA` anywhere;  else `Claude AA` at the start of a line or
+of the body, after the header and its mentions;  else `Claude AA,` or `Claude AA:` later in a line,
+when the text names no other chat of the seat.  The three plain forms do not read code, an inline
+span or a fenced block, which shows how a chat is written and addresses nobody.  A letter no live
+chat holds falls through the pick as no letter does, but the wake still carries it, and a wake that
+carries a letter is not picked again when its chat is released before delivery (`_released`).
+
+Another seat's rows.  A chat registered on this platform under another seat's tag is no target
+here (AFC-772:  three Claude chats were registered as seat ZC and their letters went unanswered).
+Who is picked does not change;  the router only says what it left out, in two places.  When the
+addressed letter is open on such a row, the receipt names that seat in `letter_other_seat`, and
+stderr gets the code `letter-other-seat:<SEAT>`.  Each read of the platform's history counts the
+open chats it left out for that reason alone (`other_seat`), and `/health/<SEAT>` gives the latest
+count as `other_seat_rows`.  Health needs no key, so it does not say when that read happened:  that
+would show when a seat was last woken.  The count is absent until a history has been read in this
+process, health asks the registry nothing, and the count never changes `healthy`.  A row with no
+seat or a malformed one is not counted:  it names nobody.
 
 A reply link.  The listener may add `"linked_by": "reply"` when the message answers one a chat
 posted, with the letter of that chat.  Any other value is ignored.  It changes no step of the pick:
@@ -28,6 +73,14 @@ The sender is never the target.  A fleet post header carries the sender's own fr
 `[SEAT·4984a346: AA.4.S → OTHER]`.  So a leading header is not searched for a fragment, except the
 text after its arrow, which is an addressee, and no step picks a chat whose session id starts with
 the fragment in that header.
+
+What is searched.  The listener wraps the message in one marker pair, `BEGIN_UNTRUSTED_… nonce=N`
+first and `END_UNTRUSTED_… nonce=N` last (adapters.routine_excerpt), and that frame is unwrapped:
+it counts only when its END is the last line.  Any other marked block, nested in the frame or not, is
+dropped whole, from its BEGIN line to the END line with the same kind and nonce, or to the end of
+the text when it never closes:  nothing inside one is a header, a letter, a fragment or an issue.
+Quoted text addresses nobody:  a ```` ```quote ```` (or `~~~quote`) block and a line starting with
+`>` are left out of the letter and fragment search, though an issue id there still counts.
 
 A platform whose delivery is just one command needs no `deliver` of its own:  `command_platform`
 builds the whole `Platform` from a short spec.  Otherwise, a `deliver` is one plain function:
@@ -50,7 +103,10 @@ It returns a `Delivery` whose `outcome` is one of:
 
 Any exception counts as `failed`, so a `deliver` that may already have started the turn must catch
 its own errors from that point on and return `refused`.  `route`, `code` and `note` are short fixed
-codes for the receipt, never message text and never a credential.
+codes for the receipt, never message text and never a credential.  A receipt says `delivered: false`
+for a refusal only when its code is in `NEVER_RAN` or in the seat's own module's `NEVER_RAN` (the
+Router's `never_ran`):  any other refusal may follow a turn that started, so it says
+`delivered: null`, because nobody knows.
 
 The answer and the durability.  The listener waits at most its routine timeout, resends with the
 same id, and treats any 2xx as accepted, so it never retries after one.  So the POST only checks
@@ -73,12 +129,21 @@ delivery, ahead of the in-flight mark.  If the letter no longer names that sessi
 picked, nothing is delivered:  a wake addressed to a letter ends in a `dead` receipt with the code
 `target-released`, because the letter's new holder is not who the sender meant, and any other wake
 goes back through the pick.  A registry that cannot be read is a bounded retry, never a blind
-delivery.  Receipts name the selected generation as `picked_generation`.
+delivery, and so is a live row that does not name a well-formed chat of this seat:  a row with no
+seat, or a malformed one, is no target and no proof of release either.  Receipts name the selected
+generation as `picked_generation`.
+
+Settings not yet confirmed.  A router whose settings have not come from a successful read in this
+process does not know whether delivery is on, and "off" would close every pending wake as `held`.
+So until the config says `confirmed`, workers leave wakes pending, use up no attempt and look again;
+`max_age_seconds` still bounds the wait, and only a plain dict of settings is confirmed from the
+start.
 
 One chat's wakes run in the order they came.  A later wake waits behind an earlier one for the same
 chat until that one is settled;  it is not failed as busy.  A wake that still cannot be delivered,
 or is older than `max_age_seconds` when its turn comes, ends in a `dead` receipt, visible in the
-state directory and at GET /receipt/<id>, and its message is in the seat inbox regardless.
+seat's state directory and at GET /receipt/<SEAT>/<id>, and its message is in the seat inbox
+regardless.
 
 A delivery can run for many minutes, so it does not keep a place in the worker pool:  a worker that
 starts one hands its place to a fresh thread and ends once that wake is settled, and a chat that
@@ -114,7 +179,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from bisect import bisect_right
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -145,7 +211,25 @@ FRAGMENT_RE = re.compile(
 )
 # A fleet post header's inside:  a seat tag, then its own fragment or one of the marks below.
 HEADER_RE = re.compile(r"[A-Z][A-Z0-9_-]*(·(?:%s)?[0-9a-f-]{8,})?(.*)" % SESSION_PREFIX, re.DOTALL)
-HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}\.[0-9]+\.[A-Z]\b")
+HEADER_SESSION_RE = re.compile(r":\s*[A-Z]{1,2}[.-][0-9]+[.-][A-Z]\b")
+# A chat written plainly, as the fleet writes one:  the name (filled in where it is used), a gap,
+# and the letter, which is exactly two capitals.  `Claude cc`, `Claude C`, `Claude CCC`,
+# `Claude Code` and `CLAUDE-CC` are not one.
+PLAIN_LETTER = r"%s[ \t]+([A-Z]{2})\b"
+# What a plain name may not follow:  a word character, or the `@`, `*`, `/` or `.` of an address, a
+# mention's stars or a path.  So `jay@Claude CC` and the silent `@_**Claude** CC` name nobody.
+NOT_A_TAIL = r"(?<![\w@*/.])"
+# Code shows how a chat is written and addresses nobody:  the opening line of a fenced block, and an
+# inline span on one line (`blank_code_spans` pairs the backtick runs;  a pattern for it
+# backtracks without bound on a long run of backticks).
+CODE_FENCE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})[^`\n]*")
+BACKTICK_RUN_RE = re.compile(r"`+")
+# The mentions a post opens with, real or silent, as the posting tools write them after the header.
+LEADING_MENTIONS_RE = re.compile(r"\A(?:\s*@_?\*\*[^*\n]+\*\*[,;]?)+")
+# An untrusted-text marker line:  BEGIN or END, then the kind (`_ZULIP`, or nothing).
+MARKER_LINE_RE = re.compile(r"(BEGIN|END)_UNTRUSTED([A-Z0-9_]*)\b")
+# The opening fence of a Zulip quote block.
+QUOTE_FENCE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})[ \t]*quote[ \t]*")
 FRAGMENT_MIN_HEX = 8
 FRAGMENT_MAX_CHARS = 36
 # A longer unbroken run of hex is a commit or a key, not a stated session id, and is not kept.
@@ -160,10 +244,51 @@ REGISTRY_TIMEOUT = 15
 DONE_KEEP_SECONDS = 30 * 86400
 # Longer than the listener's routine timeout, so only a client that has stalled is cut off.
 REQUEST_TIMEOUT = 30
+# What `Seats.stop` allows past a seat's own shutdown wait before it stops waiting for that seat.
+STOP_MARGIN_SECONDS = 5.0
 OUTCOMES = ("sent", "completed", "busy", "unreachable", "failed", "refused")
 INTERRUPTED = "interrupted-during-delivery"
 EXPIRED = "wake-expired"
 RELEASED = "target-released"
+# A live registry row the check before delivery cannot read as a chat of this seat.
+UNREADABLE_ROW = "registry-row-unreadable"
+# The registry has no address or no key on this host:  a bounded retry, as an outage is.
+NOT_CONFIGURED = "registry-not-configured"
+# A registered seat whose platform module is not on this host yet.
+NOT_INSTALLED = "not-installed"
+# A platform module with no handler of the name its table entry gives:  nothing ran.  It is one
+# code for every platform, not one per platform, so it sits in NEVER_RAN here.
+HANDLER_MISSING = "platform-handler-missing"
+# A seat tag as the fleet writes one (identity._SEAT_RE).  A registry row must name its seat:  a
+# missing one is never read as this platform's.
+SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+# The paths the one service answers.  A seat in a path is a seat tag and a wake id is what
+# WAKE_ID_RE allows, so no path can name a folder.  `/receipt/<id>` with no seat is CLAUDE's, the
+# form from before the service served every platform.
+WAKE_PATH_RE = re.compile(r"/wake/(%s)" % SEAT_RE.pattern)
+RECEIPT_PATH_RE = re.compile(
+    r"/receipt/(?:(%s)/)?([A-Za-z0-9][A-Za-z0-9._-]{0,127})" % SEAT_RE.pattern
+)
+HEALTH_PATH_RE = re.compile(r"/health/(%s)" % SEAT_RE.pattern)
+LEGACY_RECEIPT_SEAT = "CLAUDE"
+UNCONFIRMED = "settings-unconfirmed"
+# The `refused` codes that can only come before anything ran.  It is a list of what is known safe,
+# so a new code reads as unknown until someone adds it here.
+NEVER_RAN = frozenset(
+    {
+        RELEASED,
+        "bad-request",
+        "bad-session-id",
+        "command-option-shaped-value",
+        "no-ssh-destination",
+        "no-transcript",
+        "platform-handler-missing",
+        "platform-not-installed",
+        "session-cwd-gone",
+        "unknown-host",
+        "unknown-platform",
+    }
+)
 # What the receiving chat is told, by pick reason.  Fixed sentences on purpose:  the only thing that
 # can vary is {issue}, and that has matched ISSUE_ID, so no Zulip text reaches a chat's prompt.
 UNSURE = "and the router is not sure this wake is meant for this chat."
@@ -195,6 +320,9 @@ COMMAND_TEXT = (
     "seat's rules."
 )
 
+# The settings a router reads and what each one is if nothing sets it.  Their values come from
+# Infisical through wake_settings;  fleet_knobs/registry.py holds the same defaults, and a test keeps
+# the two equal.
 ROUTER_DEFAULTS: dict[str, Any] = {
     # Off until someone arms it:  with this false the router picks and receipts, and delivers nothing.
     "delivery_enabled": False,
@@ -288,6 +416,8 @@ class Pick:
     retry: bool = False
     candidates: tuple[str, ...] = ()
     link_note: str = ""
+    # The seat tag on the addressed letter's open row when it is another seat's, else "".
+    letter_other_seat: str = ""
 
 
 def clean(value: object, limit: int = NAME_CHARS) -> str:
@@ -297,26 +427,175 @@ def clean(value: object, limit: int = NAME_CHARS) -> str:
 
 
 def letter_of(payload: Mapping[str, Any], mention: str) -> str:
-    """The letter the sender addressed, or "".  An explicit field wins, then a real mention anywhere
-    in the excerpt (@**Name** AA, with or without Zulip's |id, the letter on its line or the next).
-    The plain "Name AA" form counts only at the start of a line:  later in a line it is usually a
-    reference to that chat, not an address.  The seat's own tag is not a letter, though a post often
-    opens with it under the mention ("ZC, can you").  A silent mention (@_**Name**) addresses
-    nobody."""
+    """The letter the sender addressed, or "".  A letter is exactly two capitals:  a main chat's
+    doubled pair (AA) or a child thread's pair (DE).  An explicit field wins.  Otherwise the
+    excerpt is read with its quotes left out, and the first of these forms that names a letter
+    gives it, in this order and the same way for every platform:
+
+    1. a real mention anywhere (@**Name** AA, with or without Zulip's |id, the letter on its line
+       or the next, the name said again or not:  @**Name** Name AA);
+    2. the recipient list of the post's leading header, the fleet's own way to address a chat
+       (`[GROK: BB.2.M → CLAUDE AA, CODEX BB]`;  see `header_letters`);
+    3. the plain at-form anywhere (@Name AA or @Name Name AA, the name after the @ in any ASCII
+       case), unless it is the tail of a word, an address or a path (`jay@Name AA`);
+    4. the plain form at the start of a line (Name AA), or of the body after the leading header
+       and the mentions that follow it (`opening_lines`);
+    5. the plain form later in a line with a comma or a colon after the letter (", Name AA,
+       please"), only when the text names no other chat by that mention name
+       (`sole_plain_letter`).
+
+    In 2 to 4, and where the name is said again, it is the platform's mention name or its seat
+    tag, except that 3 and 4 leave out a seat tag of two capitals (ZC, MC), which is itself
+    letter-shaped ("ZC PR is merged" names no chat);  the mention in 1 and the name in 5 are the
+    mention name alone.  3 to 5 do not read code
+    (`uncoded`).  Within a form the first letter wins.  The seat's own tag is not a letter, though
+    a post often opens with it under the mention ("ZC, can you").  A silent mention (@_**Name**)
+    in the body addresses nobody by itself;  the name said again after one that opens the body is the plain form of 4
+    ("@_**Name** Name AA")."""
     explicit = str(payload.get("letter") or "").strip()
     if re.fullmatch(r"[A-Z]{1,2}", explicit):
         return explicit
     excerpt = str(payload.get("excerpt") or "")
-    name = re.escape(mention)
+    text = unquoted(trusted_text(excerpt))
     seat = str(payload.get("seat") or "")
-    for form in (
-        r"@\*\*%s(?:\|\d+)?\*\*\s*([A-Z]{2})\b" % name,
-        r"(?m)^[ \t]*%s[ \t]+([A-Z]{2})\b" % name,
-    ):
-        for found in re.finditer(form, excerpt):
-            if found.group(1) != seat:
-                return found.group(1)
-    return ""
+    known = [re.escape(name) for name in dict.fromkeys((mention, seat)) if name]
+    if not known:
+        return ""
+    names = "(?:" + "|".join(known) + ")"
+    again = r"(?:%s[ \t]+)?" % names  # the name said again after a mention of it
+    # A seat tag of two capitals (ZC, MC) is itself letter-shaped, so in the plain forms "ZC PR is
+    # merged" would read PR as a letter.  Those forms take such a tag out;  the header's recipient
+    # list, where the tag is explicit, keeps it.
+    plain_known = [
+        re.escape(name)
+        for name in dict.fromkeys((mention, "" if re.fullmatch(r"[A-Z]{2}", seat) else seat))
+        if name
+    ]
+    plain = "(?:" + "|".join(plain_known) + ")" if plain_known else ""
+    prose = uncoded(text)
+
+    def first(letters: Iterable[str]) -> str:
+        return next((letter for letter in letters if letter != seat), "")
+
+    mentioned = r"@\*\*%s(?:\|\d+)?\*\*\s*%s([A-Z]{2})\b" % (re.escape(mention), again)
+    at_form = NOT_A_TAIL + r"@(?ai:%s)[ \t]+%s([A-Z]{2})\b" % (plain, again) if plain else ""
+    line_start = r"(?m)^[ \t]*" + PLAIN_LETTER % plain if plain else ""
+    return (
+        first(re.findall(mentioned, text))
+        or first(header_letters(excerpt, names))
+        or (first(re.findall(at_form, prose)) if at_form else "")
+        or (
+            first(re.findall(line_start, uncoded(opening_lines(excerpt, text))))
+            if line_start
+            else ""
+        )
+        # The router's own last resort, on its own line so it can go alone:  without it a plain
+        # name later in a line is a reference and addresses nobody.
+        or sole_plain_letter(prose, mention, seat)
+    )
+
+
+def header_letters(excerpt: str, names: str) -> list[str]:
+    """The letters a leading post header's recipient list gives one of these names, in the list's
+    order.  The list is the text after the header's arrow (`→`, or `->` as some write it), split
+    on commas.  An item counts when it is exactly the name and the letter:  `Name AA` or `@Name
+    AA`, the name in any ASCII case, because a header writes the seat tag (`CLAUDE AA`) and a
+    person the name (`Claude AA`);  or the name as a mention, `@**Name** AA`, which the fleet's
+    posting tools make silent in a bot's post (`@_**Name** AA`), so in this list alone a silent
+    mention is the address.  The letter may carry its session token (`CODEX BB.1.M`).  An item
+    that is the name alone names the seat and no chat.  `split_excerpt` finds the header, so the
+    listener's frame, a marked block and a cut header are read here as everywhere else."""
+    sender, addressing = split_excerpt(excerpt)
+    if not sender:
+        return []
+    listed = addressing.partition("\n")[0] or sender.partition("->")[2]
+    name = "(?ai:%s)" % names
+    item = re.compile(
+        r"[ \t\u200a]*(?:@_?\*\*%s(?:\|\d+)?\*\*|@?%s)[ \t]+([A-Z]{2})(?:\.[0-9]+\.[A-Z])?[ \t\u200a]*"
+        % (name, name)
+    )
+    return [found.group(1) for found in map(item.fullmatch, listed.split(",")) if found]
+
+
+def uncoded(text: str) -> str:
+    """The text with its code left blank:  fenced blocks (to their closing fence, or to the end
+    when there is none) and inline `spans`.  Code shows how a chat is written, as a post about the
+    router does, and addresses nobody.  Every line keeps its place."""
+    kept: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.split("\n"):
+        if fence is not None:
+            mark, length = fence
+            if re.fullmatch(r"[ \t]*%s{%d,}[ \t]*" % (re.escape(mark), length), line):
+                fence = None
+            kept.append("")
+            continue
+        opening = CODE_FENCE_RE.fullmatch(line)
+        if opening is not None:
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            kept.append("")
+            continue
+        kept.append(blank_code_spans(line))
+    return "\n".join(kept)
+
+
+def blank_code_spans(line: str) -> str:
+    """The line with its inline code spans replaced by a space each, paired as Markdown pairs
+    them:  a run of backticks opens a span that the next run of the same length closes, and a run
+    with no such partner is plain text.  One pass over the runs, so a long run of backticks (the
+    listener keeps 2,000 characters, a direct post up to 64 KB) costs no more than its length."""
+    runs = [(found.start(), found.end()) for found in BACKTICK_RUN_RE.finditer(line)]
+    if len(runs) < 2:
+        return line
+    by_length: dict[int, list[int]] = {}
+    for index, (start, end) in enumerate(runs):
+        by_length.setdefault(end - start, []).append(index)
+    pieces: list[str] = []
+    kept_from = 0
+    index = 0
+    while index < len(runs):
+        start, end = runs[index]
+        same = by_length[end - start]
+        at = bisect_right(same, index)
+        if at == len(same):
+            index += 1
+            continue
+        closing = same[at]
+        pieces.append(line[kept_from:start] + " ")
+        kept_from = runs[closing][1]
+        index = closing + 1
+    pieces.append(line[kept_from:])
+    return "".join(pieces)
+
+
+def opening_lines(excerpt: str, text: str) -> str:
+    """`text` (the excerpt, unquoted) with what a post opens with taken off:  its leading header,
+    when `split_excerpt` finds one, and the mentions that follow.  A fleet post puts its body on
+    the header's line, so this is what makes the body's first words the start of a line, as they
+    are in a post with no header."""
+    if split_excerpt(excerpt)[0]:
+        text = text.partition("]")[2]  # the header opens the text and holds no `]` of its own
+    return LEADING_MENTIONS_RE.sub("", text, count=1)
+
+
+def sole_plain_letter(text: str, mention: str, seat: str) -> str:
+    """The last resort, and the router's own choice (AFC-694), made under the owner's liberal-wake
+    ruling (Nov 10, 2026) and not his wording:  a plain "Name AA" later in a line addresses that
+    chat when it is written as an address, with a comma or a colon after the letter ("thanks,
+    Claude CC, that works"), and the text names no other chat by that mention name (a seat tag
+    or a silent mention elsewhere is not counted).  Anything else is a
+    reference and names nobody, so the pick falls back:  a name with no comma or colon after it
+    ("ask Claude AA about it") and two different letters ("so, Claude CC, see what Claude DD
+    said").  A possessive ("Claude CC's result") is a reference that does not count as a second
+    chat.  Only the mention name is read, because a seat tag of two capitals looks like a letter
+    in a list of seats ("cc ZC MM, AG").  It can be removed alone:  delete its line in
+    `letter_of`."""
+    if not mention:
+        return ""
+    plain = NOT_A_TAIL + PLAIN_LETTER % re.escape(mention)
+    named = set(re.findall(plain + r"(?!['’]s\b)", text)) - {seat}
+    addressed = set(re.findall(plain + r"(?=[,:])", text))
+    return named.pop() if len(named) == 1 and named <= addressed else ""
 
 
 def link_note_ok(text: object) -> bool:
@@ -343,17 +622,70 @@ def _is_post_header(inner: str) -> bool:
     )
 
 
+def _marker(line: str) -> tuple[str, str, str] | None:
+    """(BEGIN or END, the marker's kind, its nonce) for an untrusted-text marker line, else None."""
+    found = MARKER_LINE_RE.match(line)
+    if found is None:
+        return None
+    nonce = re.search(r"\bnonce=(\S*)", line)
+    return found.group(1), found.group(2), nonce.group(1) if nonce else ""
+
+
+def trusted_text(excerpt: str) -> str:
+    """The excerpt without its listener frame and without any other marked block, whole.  A block
+    that is opened and never closed runs to the end, so it cannot leak either."""
+    lines = excerpt.split("\n")
+    first, last = _marker(lines[0]), _marker(lines[-1])
+    if (
+        len(lines) >= 2
+        and first is not None
+        and last is not None
+        and (first[0], last[0]) == ("BEGIN", "END")
+        and first[1:] == last[1:]
+    ):
+        lines = lines[1:-1]
+    kept: list[str] = []
+    opened: tuple[str, str] | None = None
+    for line in lines:
+        mark = _marker(line)
+        if opened is not None:
+            if mark is not None and mark[0] == "END" and mark[1:] == opened:
+                opened = None
+            continue
+        if mark is not None:
+            if mark[0] == "BEGIN":
+                opened = mark[1:]
+            continue  # a stray END line is dropped too
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def unquoted(text: str) -> str:
+    """The text without Zulip quotes:  ```` ```quote ```` and `~~~quote` blocks (to their closing
+    fence, or to the end when there is none) and lines starting with `>`."""
+    kept: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.split("\n"):
+        if fence is not None:
+            mark, length = fence
+            if re.fullmatch(r"[ \t]*%s{%d,}[ \t]*" % (re.escape(mark), length), line):
+                fence = None
+            continue
+        opening = QUOTE_FENCE_RE.fullmatch(line)
+        if opening is not None:
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            continue
+        if not line.lstrip().startswith(">"):
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def split_excerpt(excerpt: str) -> tuple[str, str]:
-    """(the sender's part of a leading post header, the text that may address a chat).  The
-    untrusted-text marker lines carry a nonce, so they are dropped.  Text after the header's arrow
-    names an addressee, so it stays with the body;  the rest of the header is the sender's."""
-    lines = [
-        line
-        for line in excerpt.split("\n")
-        if not line.startswith(("BEGIN_UNTRUSTED", "END_UNTRUSTED"))
-    ]
-    body = "\n".join(lines).lstrip()
-    header = re.match(r"(?:\U0001F440\s*)?\[([^\]\n]*)\]", body)
+    """(the sender's part of a leading post header, the text that may address a chat).  Only
+    trusted text is read (`trusted_text`).  Text after the header's arrow names an addressee, so it
+    stays with the body;  the rest of the header is the sender's."""
+    body = trusted_text(excerpt).lstrip()
+    header = re.match(r"(?:(?:\U0001F440|:eyes:)\s*)?\[([^\]\n]*)\]", body)
     if header is None or not _is_post_header(header.group(1)):
         return "", body
     sender, _, addressee = header.group(1).partition("→")
@@ -389,8 +721,8 @@ def wake_from_payload(payload: Mapping[str, Any], mention: str) -> Wake:
         sender=clean(payload.get("sender_full_name")),
         dm=payload.get("dm") is True,
         letter=letter_of(payload, mention),
-        issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(excerpt)))[:MAX_WAKE_ISSUES],
-        session_fragments=fragments_in(addressing),
+        issue_ids=tuple(dict.fromkeys(ISSUE_RE.findall(trusted_text(excerpt))))[:MAX_WAKE_ISSUES],
+        session_fragments=fragments_in(unquoted(addressing)),
         sender_fragment=next(iter(fragments_in(sender_part)), ""),
         linked_by="reply" if payload.get("linked_by") == "reply" else "",
     )
@@ -443,10 +775,23 @@ def _read_json(path: Path) -> Any:
 def load_config(
     path: Path, defaults: Mapping[str, Any], *, required: bool = False
 ) -> dict[str, Any]:
-    """The defaults overlaid with a JSON file.  A file named explicitly must exist.  A file that is
-    there must parse, name only known keys and match each default's type:  an unreadable or mistyped
-    config is a refusal that names the path, never a quiet run on defaults."""
-    config = dict(defaults)
+    """The defaults overlaid with a JSON file.  It widens as freely as it narrows, so nothing that
+    runs a router reads its settings this way:  wake_settings lets a local file only narrow."""
+    return {**defaults, **read_local_config(path, defaults, required=required)}
+
+
+def read_local_config(
+    path: Path,
+    defaults: Mapping[str, Any],
+    *,
+    required: bool = False,
+    seat_lists: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Only what a JSON file sets.  A file named explicitly must exist.  A file that is there must
+    parse, name only known keys and match each default's type:  an unreadable or mistyped config is
+    a refusal that names the path, never a quiet run on defaults.  A key in `seat_lists` is known
+    too, and its value must be a list of seat tags."""
+    config: dict[str, Any] = {}
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -464,6 +809,13 @@ def load_config(
     if not isinstance(loaded, dict):
         raise SystemExit("wake-router: the config file %s is not a JSON object" % path)
     for key, value in loaded.items():
+        if key in seat_lists:
+            if not isinstance(value, list) or not all(
+                isinstance(seat, str) and SEAT_RE.fullmatch(seat) for seat in value
+            ):
+                raise SystemExit("wake-router: %s: %s has the wrong type" % (path, key))
+            config[key] = value
+            continue
         if key not in defaults:
             raise SystemExit("wake-router: %s: unknown setting %s" % (path, key))
         if not _same_shape(value, defaults[key]):
@@ -484,15 +836,13 @@ def _same_shape(value: object, default: object) -> bool:
     return isinstance(value, str)
 
 
-def read_key(path: Path) -> str:
-    """The routine key, from a 0600 file, on every request.  "" when it is missing, short or open
-    to anyone else."""
-    try:
-        key = path.read_text(encoding="utf-8").strip()
-        mode = os.stat(path).st_mode & 0o777
-    except OSError:
-        return ""
-    return "" if mode & 0o077 or len(key) < 16 else key
+# The shortest routine key the router accepts, as the old key file check enforced.
+KEY_MIN_LENGTH = 16
+# Where the router gets its routine key:  a callable answering (key, why), with the key empty and
+# `why` a short reason token when there is none.  The router asks on every request and never
+# keeps the answer.  The service passes the settings' secret knob (wake_settings.routine_key);
+# a test passes a fixed key.
+KeySource = Callable[[], tuple[str, str]]
 
 
 def command_platform(
@@ -567,7 +917,8 @@ def command_platform(
 
 
 class Router:
-    """The pick, the durable queue, the workers and the receipts for one platform."""
+    """The pick, the durable queue, the workers and the receipts for one seat.  The service runs
+    one per seat (`Seats`), and none shares a folder, a queue, a worker or a key with another."""
 
     def __init__(
         self,
@@ -575,15 +926,19 @@ class Router:
         env: Mapping[str, str],
         config: Mapping[str, Any],
         state: Path,
-        key_file: Path,
+        key: KeySource,
         consult: Consult | None = None,
         clock: Callable[[], float] = time.time,
+        never_ran: Iterable[str] = (),
     ) -> None:
         self.platform = platform
+        # The refusals known to come before anything ran:  this module's, and the platform's own
+        # (its module's NEVER_RAN), so the pinned set here does not grow with each platform.
+        self.never_ran = NEVER_RAN | frozenset(never_ran)
         self.env = env
         self.config = config
         self.state = state
-        self.key_file = key_file
+        self._key = key
         self.consult = consult
         self.clock = clock
         self._entries: dict[str, dict[str, Any]] = {}
@@ -592,27 +947,37 @@ class Router:
         self._stopping = False
         self._threads: list[threading.Thread] = []
         self._retiring: set[threading.Thread] = set()
+        # The latest read of the platform's history:  (open chats left out only because their row
+        # names another seat, when it was read).  None until one has been read in this process.
+        self.other_seat_scan: tuple[int, float] | None = None
+
+    def routine_key(self) -> tuple[str, str]:
+        """(key, why) for this request:  the key, or "" and a reason token.  A source that fails
+        or answers a short key gives no key, so nothing is ever let through unchecked."""
+        try:
+            key, why = self._key()
+        except Exception as exc:  # noqa: BLE001 - no key is the answer, never a crash
+            return "", "key-error-%s" % type(exc).__name__
+        if not isinstance(key, str) or len(key) < KEY_MIN_LENGTH:
+            return "", (why if isinstance(why, str) and why else "key-short")
+        return key, ""
 
     # ---- the pick ---------------------------------------------------------------------------
 
     def _valid(self, row: Mapping[str, Any]) -> Target | None:
-        sid = str(row.get("native_session_id") or "")
-        if not self.platform.target_re.fullmatch(sid):
-            return None  # a crafted row can never steer an argv token a child reads as a flag
-        if str(row.get("seat") or self.platform.seat).upper() != self.platform.seat:
-            return None
-        letter = str(row.get("label") or row.get("letter") or "")
-        generation = row.get("generation")
-        if not letter or type(generation) is not int or generation < 1:
-            return None  # the check before delivery needs both, so it could never pass
-        return Target(
-            session_id=sid,
-            letter=letter,
-            host=str(row.get("verified_host") or ""),
-            title=str(row.get("title") or ""),
-            thread_link=str(row.get("thread_link") or ""),
-            generation=generation,
-        )
+        return target_from_row(row, self.platform.seat, self.platform.target_re)
+
+    def _other_seat(self, row: Mapping[str, Any]) -> str:
+        return other_seat(row, self.platform.seat, self.platform.target_re)
+
+    def other_seat_health(self) -> dict[str, Any]:
+        """What this seat's health says about the latest history read:  a count, never an id, a
+        title or the time of the read (health needs no key, and the time would show when the seat
+        was last woken), and {} before any read.  It reads only what a pick left here."""
+        scan = self.other_seat_scan
+        if scan is None:
+            return {}
+        return {"other_seat_rows": scan[0]}
 
     def _excluded(self, targets: list[Target]) -> set[str]:
         return self.platform.exclude(targets) if self.platform.exclude and targets else set()
@@ -626,8 +991,11 @@ class Router:
         chat whose title best shares the topic's words;  the optional decider;  recency.  A tie goes
         to the most recent of the tied, and no step picks the sender's own chat.  A registry that
         cannot be read asks for a retry:  it is not "no live chat".  No live chat asks for one too,
-        because a chat may register in time."""
+        because a chat may register in time.  A chat whose row names another seat is never picked;
+        the pick only records that the addressed letter is on one (`letter_other_seat`) and how
+        many the history held (`other_seat_scan`)."""
         letter_live = False
+        letter_other_seat = ""
 
         def chosen(
             target: Target, picked: str, reason: str, among: Any = (), issue: str = ""
@@ -639,6 +1007,7 @@ class Router:
                 letter_live=letter_live,
                 candidates=tuple(t.letter for t in among),
                 link_note=LINK_NOTES[reason].format(issue=issue),
+                letter_other_seat=letter_other_seat,
             )
 
         if wake.letter:
@@ -648,9 +1017,11 @@ class Router:
                 {"platform": self.platform.platform, "letter": wake.letter},
                 timeout=timeout,
             )
-            if "error" in answer:
-                return Pick(reason="registry-unavailable", retry=True)
-            live = answer.get("found") and not _closed(answer)
+            found = answer.get("found") if isinstance(answer, Mapping) else None
+            if type(found) is not bool or "error" in answer:
+                # Unreadable, so not a dead letter:  falling back would wake a chat not addressed.
+                return Pick(reason=registry_trouble(answer), retry=True)
+            live = found and not _closed(answer)
             target = self._valid(answer) if live else None
             if target is not None:
                 letter_live = True
@@ -660,33 +1031,53 @@ class Router:
                 ):
                     how = "reply" if wake.linked_by == "reply" else "letter"
                     return chosen(target, how, how)
+            elif live:
+                # The letter is open on a chat of another seat:  no target here, and said so.
+                letter_other_seat = self._other_seat(answer)
+                if letter_other_seat:
+                    self._log("letter-other-seat:" + letter_other_seat, wake.wake_id)
         answer = registry_api.call(
             self.env,
             "history",
             {"platform": self.platform.platform, "limit": HISTORY_LIMIT},
             timeout=timeout,
         )
-        if "error" in answer:
-            return Pick(reason="registry-unavailable", retry=True)
+        if not isinstance(answer, Mapping) or "error" in answer:
+            # The letter was read before the outage, so what it said still goes on the receipt.
+            return Pick(
+                reason=registry_trouble(answer), retry=True, letter_other_seat=letter_other_seat
+            )
         live: dict[str, Target] = {}
         seen: dict[str, float | None] = {}
         row_issues: dict[str, list[tuple[str, float | None]]] = {}
+        others: set[str] = set()  # open chats left out only because their row names another seat
         for row in answer.get("items") or []:
             if not isinstance(row, dict):
                 continue
             if _closed(row):
                 continue
             target = self._valid(row)
-            if target is not None and target.session_id not in live:
+            if target is None:
+                if self._other_seat(row):
+                    others.add(str(row.get("native_session_id")))
+                continue
+            if target.session_id not in live:
                 live[target.session_id] = target
                 seen[target.session_id] = _row_time(row)
                 row_issues[target.session_id] = _issues_of(row)
+        # One assignment, so a health read on another thread sees a whole pair.
+        self.other_seat_scan = (len(others - live.keys()), self.clock())
         excluded = self._excluded(list(live.values()))
         candidates = [
             t for sid, t in live.items() if sid not in excluded and not _is_sender(t, wake)
         ]
         if not candidates:
-            return Pick(reason="no-live-session", letter_live=letter_live, retry=True)
+            return Pick(
+                reason="no-live-session",
+                letter_live=letter_live,
+                retry=True,
+                letter_other_seat=letter_other_seat,
+            )
 
         named = _named_session(wake, live)
         target = next((t for t in candidates if t.session_id == named), None)
@@ -808,8 +1199,8 @@ class Router:
 
     def test_answer(self, wake: Wake) -> dict[str, Any]:
         """A test wake's answer:  `test`, `wake_id`, `receipt_id`, `picked`, `picked_letter`,
-        `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`.  It
-        delivers nothing and reserves nothing."""
+        `picked_generation`, `session_id`, `reason`, `candidates`, `link_note`, `delivered`,
+        `letter_other_seat`.  It delivers nothing and reserves nothing."""
         pick = self.pick(wake, consult=False, timeout=TEST_REGISTRY_TIMEOUT)
         answer = self._receipt(
             {"wake": asdict(wake), "receipt_id": secrets.token_hex(8), "attempts": 0},
@@ -1009,6 +1400,12 @@ class Router:
             result = Delivery("failed", code=EXPIRED)
             self._finish(entry, old, status="dead", delivered=False, result=result)
             return
+        if not getattr(self.config, "confirmed", True):
+            # Before the pick, so a pick is never kept across an outage and delivered stale.
+            kept = _pick_from(entry["pick"]) if entry["pick"] else None
+            waiting = Delivery("busy", code=UNCONFIRMED)
+            self._retry(entry, counted=False, code=UNCONFIRMED, pick=kept, result=waiting)
+            return
         wake = Wake(**entry["wake"])
         if entry["pick"] is None:
             pick = self.pick(wake)
@@ -1042,12 +1439,12 @@ class Router:
         # The chat stays held until the outcome is settled, so a later wake cannot start between
         # this delivery ending and its result being recorded.
         try:
-            still_held = self._still_held(pick.target)
-            if still_held is None:
-                self._retry(entry, counted=True, code="registry-unavailable", pick=pick)
-                return
-            if not still_held:
+            stale = self._stale(pick.target)
+            if stale == RELEASED:
                 self._released(entry, pick, wake)
+                return
+            if stale:
+                self._retry(entry, counted=True, code=stale, pick=pick)
                 return
             entry["attempts"] += 1
             entry["in_flight"] = True
@@ -1070,23 +1467,22 @@ class Router:
                 self._active.discard(session)
                 self._cond.notify_all()
 
-    def _still_held(self, target: Target) -> bool | None:
-        """Whether the registry still has this letter on this session at the generation picked.
-        None when it cannot be read:  that is not a yes, and not a no."""
+    def _stale(self, target: Target) -> str:
+        """Empty when the registry still has this letter on this session at the generation picked,
+        else why not:  `RELEASED` when it says so, or the code of a bounded retry when it cannot be
+        read or its row cannot be read as a chat of this seat.  Neither of those is a yes or a no."""
         answer = registry_api.call(
             self.env,
             "resolve",
             {"platform": self.platform.platform, "letter": target.letter},
             timeout=REGISTRY_TIMEOUT,
         )
-        if "error" in answer:
-            return None
-        current = self._valid(answer) if answer.get("found") and not _closed(answer) else None
-        return (
-            current is not None
-            and current.session_id == target.session_id
-            and current.generation == target.generation
-        )
+        if not isinstance(answer, Mapping) or "error" in answer:
+            return registry_trouble(answer)
+        held = holds(answer, target, self.platform.seat, self.platform.target_re)
+        if held is None:
+            return UNREADABLE_ROW
+        return "" if held else RELEASED
 
     def _released(self, entry: dict[str, Any], pick: Pick, wake: Wake) -> None:
         """The picked chat is gone or re-registered, and nothing was delivered.  A wake addressed
@@ -1110,7 +1506,8 @@ class Router:
             delivered = True if outcome == "completed" or result.ack == "confirmed" else None
             self._finish(entry, pick, status="delivered", delivered=delivered, result=result)
         elif outcome == "refused":
-            self._finish(entry, pick, status="dead", delivered=False, result=result)
+            delivered = False if result.code in self.never_ran else None
+            self._finish(entry, pick, status="dead", delivered=delivered, result=result)
         elif outcome == "failed":
             self._retry(entry, counted=True, code=result.code or "failed", pick=pick, result=result)
         else:
@@ -1187,6 +1584,8 @@ class Router:
             "status": status,
             "letter": wake["letter"],
             "letter_live": pick.letter_live,
+            # A seat tag (`row_seat`) or "":  the addressed letter is open under that other seat.
+            "letter_other_seat": pick.letter_other_seat,
             "picked": pick.picked,
             "picked_letter": target.letter if target else "",
             "picked_generation": target.generation if target else 0,
@@ -1259,14 +1658,99 @@ class Router:
         except OSError as exc:
             self._log("log-write-failed-%s" % type(exc).__name__, str(receipt.get("wake_id")))
 
-    @staticmethod
-    def _log(code: str, wake_id: str) -> None:
-        """Codes and wake ids only:  no payload, no names, no key."""
-        sys.stderr.write("wake-router: %s %s\n" % (wake_id, code))
+    def _log(self, code: str, wake_id: str) -> None:
+        """The seat, codes and wake ids only:  no payload, no names, no key."""
+        sys.stderr.write("wake-router: %s %s %s\n" % (self.platform.seat, wake_id, code))
+
+
+def registry_configured(env: Mapping[str, str]) -> bool:
+    """Whether this env lets registry_api sign a call:  an address and a key, read with
+    registry_api's own readers (SIMPLE_TOOLS_OPERATOR_REGISTRY_URL and _KEY).  A router's env is
+    an explicit mapping, so they read only that mapping and never reach Infisical here."""
+    return bool(registry_api.base_url(env)) and bool(registry_api.signing_key(env))
+
+
+def registry_trouble(answer: object) -> str:
+    """The retry code for a registry answer that is not a reading:  `registry-not-configured`
+    when this host has no registry address or key (registry_api's `not_configured`), else
+    `registry-unavailable`.  Either way nothing is delivered on it."""
+    if isinstance(answer, Mapping) and answer.get("code") == "not_configured":
+        return NOT_CONFIGURED
+    return "registry-unavailable"
 
 
 def _closed(row: Mapping[str, Any]) -> bool:
     return bool(row.get("retired_at") or row.get("closed_at") or row.get("state") == "closed")
+
+
+def row_seat(row: Mapping[str, Any]) -> str:
+    """The seat a registry row names, upper-cased, or "" when it names none or a malformed one."""
+    raw = row.get("seat")
+    if not isinstance(raw, str) or not raw.isascii():
+        return ""
+    tag = raw.upper()
+    return tag if SEAT_RE.fullmatch(tag) else ""
+
+
+def target_from_row(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) -> Target | None:
+    """The chat a registry row describes, or None if it is not one a wake can go to.  The row has
+    to name this seat itself:  a row with no seat is not taken to be this platform's."""
+    sid = str(row.get("native_session_id") or "")
+    if not target_re.fullmatch(sid):
+        return None  # a crafted row can never steer an argv token a child reads as a flag
+    if not seat or row_seat(row) != seat:
+        return None
+    letter = str(row.get("label") or row.get("letter") or "")
+    generation = row.get("generation")
+    if not letter or type(generation) is not int or generation < 1:
+        return None  # the check before delivery needs both, so it could never pass
+    return Target(
+        session_id=sid,
+        letter=letter,
+        host=str(row.get("verified_host") or ""),
+        title=str(row.get("title") or ""),
+        thread_link=str(row.get("thread_link") or ""),
+        generation=generation,
+    )
+
+
+def other_seat(row: Mapping[str, Any], seat: str, target_re: Pattern[str]) -> str:
+    """The seat tag an open registry row names when that is the only thing keeping it from being
+    a chat of `seat`, else "".  The tag is `row_seat`'s, so it is shaped as a seat tag and nothing
+    else of the row is kept.  A row with no seat or a malformed one answers "":  it names nobody,
+    which is a row that cannot be read, not another seat's chat.  So does one whose session id,
+    letter or generation would not make a target under its own seat either.  The caller has
+    already ruled out a closed row, and the registry was asked for this platform's rows."""
+    theirs = row_seat(row)
+    if not seat or not theirs or theirs == seat:
+        return ""
+    return theirs if target_from_row(row, theirs, target_re) is not None else ""
+
+
+def holds(
+    answer: Mapping[str, Any], target: Target, seat: str, target_re: Pattern[str]
+) -> bool | None:
+    """Whether a registry `resolve` answer still has this letter open on this session at this
+    generation.  False only when the registry says it does not:  the letter has no live holder, its
+    chat is closed, or a well-formed chat of this seat holds it at another session or generation.
+    None when a live answer is not a well-formed chat of this seat (no seat, a malformed one,
+    another seat's, or a bad id or generation), because a row that cannot be read proves no
+    release.  An answer that is not a mapping at all is None too, and so is one whose `found` is not
+    exactly True or False (missing, None, 0, 1, a string).  The caller has already ruled out an
+    answer that is an error."""
+    if not isinstance(answer, Mapping):
+        return None
+    found = answer.get("found")
+    if found is False:
+        return False  # only the boolean itself is the registry saying no;  a 0 or a None is not
+    if found is not True:
+        return None
+    if _closed(answer):
+        return False
+    current = target_from_row(answer, seat, target_re)
+    if current is None:
+        return None
+    return current.session_id == target.session_id and current.generation == target.generation
 
 
 def _session_of(entry: Mapping[str, Any]) -> str:
@@ -1390,9 +1874,131 @@ def _most_recent(targets: list[Target], seen: Mapping[str, float | None]) -> Tar
     return min(targets, key=key)
 
 
-def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
-    seat = router.platform.seat
-    wake_path = "/wake/%s" % seat
+class Seats:
+    """Every seat one service serves:  a `Router` for each seat that was built, a reason token for
+    each registered seat that was not, and the registered seats whose module is not installed
+    yet.  Nothing here is shared between seats but the port:  each Router keeps its own folder,
+    queue, workers and receipts."""
+
+    def __init__(
+        self,
+        routers: Sequence[Router] = (),
+        down: Mapping[str, str] | None = None,
+        not_installed: Iterable[str] = (),
+    ) -> None:
+        self.routers: dict[str, Router] = {}
+        for router in routers:
+            seat = router.platform.seat
+            if not SEAT_RE.fullmatch(seat) or seat in self.routers:
+                raise ValueError("Seats:  each router needs a seat tag of its own")
+            self.routers[seat] = router
+        self.down: dict[str, str] = {}
+        for seat, reason in (down or {}).items():
+            if not SEAT_RE.fullmatch(seat) or seat in self.routers:
+                raise ValueError("Seats:  a seat is served or down, never both")
+            self.down[seat] = str(reason) or "unknown"
+        # A seat whose module is not there yet is not served and is not a fault:  it shows as
+        # not installed and leaves the service's health alone (wake_service, Which seats).
+        self.not_installed: set[str] = set()
+        for seat in not_installed:
+            if not SEAT_RE.fullmatch(seat) or seat in self.routers or seat in self.down:
+                raise ValueError("Seats:  a seat is served, down or not installed, only one")
+            self.not_installed.add(seat)
+
+    def names(self) -> list[str]:
+        return sorted({*self.routers, *self.down, *self.not_installed})
+
+    def unserved(self, seat: str) -> str | None:
+        """Why a known seat is not served, or None when it is served or unknown."""
+        if seat in self.not_installed:
+            return NOT_INSTALLED
+        return self.down.get(seat)
+
+    def seat_health(self, seat: str) -> tuple[int, dict[str, Any]]:
+        """One seat's state:  reason tokens, and for a served seat only the other-seat count
+        (`Router.other_seat_health`), never a value and never the time of the read:  health
+        needs no key, and that time would show when the seat was last woken."""
+        router = self.routers.get(seat)
+        if router is None:
+            if seat in self.not_installed:
+                return 503, {"seat": seat, "healthy": False, "reason": NOT_INSTALLED}
+            reason = "seat-not-served:" + self.down.get(seat, "unknown")
+            return 503, {"seat": seat, "healthy": False, "reason": reason}
+        delivery = router.config.get("delivery_enabled") is True
+        # The other-seat count is a warning beside the answer:  it never changes `healthy`.
+        answer: dict[str, Any] = {"seat": seat, "delivery": delivery, **router.other_seat_health()}
+        key, why = router.routine_key()
+        if not key:
+            reason = "routine-key-unavailable:" + why
+            return 503, {**answer, "healthy": False, "reason": reason}
+        if not registry_configured(router.env):
+            # A router with no registry address or key can pick nothing, so it must not look
+            # healthy.
+            return 503, {**answer, "healthy": False, "reason": NOT_CONFIGURED}
+        return 200, {**answer, "healthy": True}
+
+    def health(self) -> tuple[int, dict[str, Any]]:
+        """Every seat.  Healthy only when each seat that is installed is healthy and at least one
+        is:  a seat not installed yet is listed and does not count against it."""
+        every = {}
+        for seat in self.names():
+            state = dict(self.seat_health(seat)[1])
+            state.pop("seat")
+            every[seat] = state
+        counted = [state for seat, state in every.items() if seat not in self.not_installed]
+        healthy = bool(counted) and all(state["healthy"] for state in counted)
+        return (200 if healthy else 503), {"healthy": healthy, "seats": every}
+
+    def start(self) -> None:
+        """Start each seat's router.  One that cannot start (its folder cannot be read, say) is
+        stopped and reported down;  the others start regardless."""
+        for seat, router in sorted(self.routers.items()):
+            try:
+                router.start()
+            except Exception as exc:  # noqa: BLE001 - one seat's fault stays that seat's
+                router.stop(0.0)
+                del self.routers[seat]
+                self.down[seat] = "start-error-%s" % type(exc).__name__
+                router._log(self.down[seat], "-")
+
+    def stop(self) -> bool:
+        """Stop every seat at once, each waiting up to its own `shutdown_wait_seconds` for its
+        running deliveries, and answer whether all of them finished.  Each seat's wait is bounded
+        from one shared start, so the whole stop takes at most the longest seat's wait plus
+        STOP_MARGIN_SECONDS.  A seat whose stop has not returned by then counts as not finished:
+        its deliveries are left to the replay, which closes them as interrupted."""
+        finished: dict[str, bool] = {}
+        default = ROUTER_DEFAULTS["shutdown_wait_seconds"]
+        waits = {
+            seat: float(router.config.get("shutdown_wait_seconds", default))
+            for seat, router in self.routers.items()
+        }
+
+        def one(seat: str, router: Router) -> None:
+            finished[seat] = router.stop(waits[seat])
+
+        threads = {
+            seat: threading.Thread(target=one, args=(seat, router), daemon=True)
+            for seat, router in self.routers.items()
+        }
+        began = time.monotonic()
+        for thread in threads.values():
+            thread.start()
+        for seat, thread in threads.items():
+            deadline = began + waits[seat] + STOP_MARGIN_SECONDS
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        done = {
+            seat: finished.get(seat, False) and not threads[seat].is_alive() for seat in threads
+        }
+        for seat in sorted(seat for seat, ok in done.items() if not ok):
+            self.routers[seat]._log("shutdown-left-deliveries-running", "-")
+        return all(done.values())
+
+
+def make_handler(target: Router | Seats) -> type[BaseHTTPRequestHandler]:
+    """The HTTP handler for one service:  each path goes to the seat it names (module docstring,
+    One process, a router per seat).  A single Router is served as the only seat."""
+    seats = target if isinstance(target, Seats) else Seats([target])
     limit = REQUEST_TIMEOUT
 
     class Handler(BaseHTTPRequestHandler):
@@ -1431,10 +2037,25 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
             except OSError:
                 self.close_connection = True  # the client left, or the deadline cut it off
 
-        def _authorized(self) -> bool:
-            key = read_key(router.key_file)
+        def _router_for(self, seat: str) -> Router | None:
+            """The seat's router, or None once a 404 (nobody registered it) or a 503 (it is
+            registered and not served, with why) has been answered."""
+            router = seats.routers.get(seat)
+            if router is not None:
+                return router
+            reason = seats.unserved(seat)
+            if reason is None:
+                self._answer(404, {"error": "not found"})
+            else:
+                self._answer(503, {"error": "the seat %s is not served (%s)" % (seat, reason)})
+            return None
+
+        def _authorized(self, router: Router) -> bool:
+            """Checked against the bearer this seat's router asks its own KeySource for."""
+            key, why = router.routine_key()
             if not key:
-                self._answer(503, {"error": "the routine key is missing or unreadable"})
+                # Without the key nothing can be checked, so nothing is let in.
+                self._answer(503, {"error": "the routine key is unavailable (%s)" % why})
                 return False
             given = (self.headers.get("Authorization") or "").encode("utf-8")
             # Constant time:  the bearer is the only thing between the network and a wake.
@@ -1444,26 +2065,38 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
             return True
 
         def do_GET(self) -> None:
-            if self.path == "/health":
-                self._answer(200, {"seat": seat, "healthy": True})
+            path = self.path or ""
+            if path == "/health":
+                self._answer(*seats.health())
                 return
-            found = re.fullmatch(r"/receipt/([A-Za-z0-9][A-Za-z0-9._-]{0,127})", self.path or "")
+            found = HEALTH_PATH_RE.fullmatch(path)
+            if found:
+                if found.group(1) in seats.names():
+                    self._answer(*seats.seat_health(found.group(1)))
+                else:
+                    self._answer(404, {"error": "not found"})
+                return
+            found = RECEIPT_PATH_RE.fullmatch(path)
             if not found:
                 self._answer(404, {"error": "not found"})
                 return
-            if not self._authorized():
+            router = self._router_for(found.group(1) or LEGACY_RECEIPT_SEAT)
+            if router is None or not self._authorized(router):
                 return
-            record = router.receipt(found.group(1))
+            record = router.receipt(found.group(2))
             if record is None:
                 self._answer(404, {"error": "no such wake"})
             else:
                 self._answer(200, record)
 
         def do_POST(self) -> None:
-            if not self._authorized():
-                return
-            if self.path != wake_path:
+            found = WAKE_PATH_RE.fullmatch(self.path or "")
+            if not found:
                 self._answer(404, {"error": "not found"})
+                return
+            seat = found.group(1)
+            router = self._router_for(seat)
+            if router is None or not self._authorized(router):
                 return
             raw_length = (self.headers.get("Content-Length") or "").strip()
             if not raw_length.isdigit() or len(raw_length) > 9:
@@ -1501,17 +2134,18 @@ def make_handler(router: Router) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(router: Router, bind: str, port: int) -> int:
-    """Run the router.  It refuses to start without its registry configuration or its key:  a
-    router missing either would answer every wake and look healthy doing it.  The port is bound
-    before anything is replayed, so a second instance stops there and touches no pending wake.
-    SIGTERM closes the port, stops new work and waits for running deliveries."""
-    if not registry_api.base_url(router.env):
-        raise SystemExit("wake-router: the registry API URL is not set")
-    if not read_key(router.key_file):
-        raise SystemExit("wake-router: the routine key file is missing, short or group-readable")
+def serve(target: Router | Seats, bind: str, port: int) -> int:
+    """Run every seat's router on one port.  A seat starts without its routine key or its
+    registry address, since both come from Infisical, which may be down at start.  Without the
+    key it refuses its requests with 503;  without the registry it picks nothing (each wake is a
+    bounded `registry-not-configured` retry);  either way /health answers 503 with the reason, so
+    the router never looks healthy while it cannot work, and it takes the values once a refresh
+    reads them.  The port is bound before anything is replayed, so a second instance stops there
+    and touches no pending wake.  SIGTERM closes the port, stops new work and waits for running
+    deliveries, in every seat at once."""
+    seats = target if isinstance(target, Seats) else Seats([target])
     try:
-        server = ThreadingHTTPServer((bind, port), make_handler(router))
+        server = ThreadingHTTPServer((bind, port), make_handler(seats))
     except OSError as exc:
         raise SystemExit(
             "wake-router: cannot bind %s:%d (%s)" % (bind, port, type(exc).__name__)
@@ -1524,9 +2158,13 @@ def serve(router: Router, bind: str, port: int) -> int:
 
     previous = signal.signal(signal.SIGTERM, on_term)
     try:
-        router.start()
+        seats.start()
+        served = ", ".join(sorted(seats.routers)) or "none"
+        unserved = {**seats.down, **{seat: NOT_INSTALLED for seat in seats.not_installed}}
+        down = ", ".join("%s (%s)" % item for item in sorted(unserved.items())) or "none"
         print(
-            "wake-router listening on %s:%d for seat %s" % (bind, port, router.platform.seat),
+            "wake-router listening on %s:%d for seats %s;  not served:  %s"
+            % (bind, port, served, down),
             flush=True,
         )
         server.serve_forever()
@@ -1534,8 +2172,6 @@ def serve(router: Router, bind: str, port: int) -> int:
         pass
     finally:
         server.server_close()
-        wait = router.config.get("shutdown_wait_seconds", ROUTER_DEFAULTS["shutdown_wait_seconds"])
-        if not router.stop(float(wait)):
-            router._log("shutdown-left-deliveries-running", "-")
+        seats.stop()
         signal.signal(signal.SIGTERM, previous)
     return 0

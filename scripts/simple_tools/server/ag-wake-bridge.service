@@ -20,7 +20,7 @@ Group=jay
 Environment=HOME=/home/jay
 # The shared registry env file is sourced first, and ag-wake-bridge also loads it directly when
 # invoked standalone on either the server or the Mac.
-ExecStart=/bin/sh -c '. "$HOME/.local/bin/mm-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/ag-wake-bridge serve --bind "${AG_WAKE_BIND:-127.0.0.1}" --port 8792'
+ExecStart=/bin/sh -c '. "$HOME/.local/bin/operator-registry-env" 2>/dev/null; exec /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/current/scripts/ag-wake-bridge serve --bind "${AG_WAKE_BIND:-127.0.0.1}" --port 8792'
 EnvironmentFile=-/etc/ag-wake-bridge.env
 Restart=always
 RestartSec=10

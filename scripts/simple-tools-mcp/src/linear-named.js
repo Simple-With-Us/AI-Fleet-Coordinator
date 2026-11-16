@@ -2,18 +2,40 @@ import { assertPublicInputs } from "./linear-public-inputs.js";
 import { parse, Kind } from 'graphql';
 import { ToolError, scanSecret } from './contract.js';
 import { apiQuery, apiMutation } from './linear-api.js';
-import { linearClean } from './linear.js';
+import { linearClean, linearFieldErrors } from './linear.js';
 import { LINEAR_NAMED_BY_NAME } from './linear-named-specs.js';
+import {
+  COMPACT_DEFAULT_LIMIT,
+  LINEAR_LIST_SEARCH_PREFIX,
+  splitFullArg,
+} from './list-presentation.js';
+
+function selectionDocument(value) {
+  return parse(`fragment NamedSelection on NamedResource { ${value} }`, { maxTokens: 4000 });
+}
+
+function acceptSelection(document) {
+  return document.definitions.length === 1 && document.definitions[0].kind === Kind.FRAGMENT_DEFINITION && document.definitions[0].name.value === 'NamedSelection';
+}
 
 function selectedFields(value) {
   // A field selection cannot escape its wrapper and append operations/roots.
-  let document;
-  try { document = parse(`fragment NamedSelection on NamedResource { ${value} }`, { maxTokens: 4000 }); }
-  catch { throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.'); }
-  if (document.definitions.length !== 1 || document.definitions[0].kind !== Kind.FRAGMENT_DEFINITION || document.definitions[0].name.value !== 'NamedSelection') {
-    throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.');
+  // One pair of wrapping braces is the selection set itself.
+  const source = String(value).trim();
+  let chosen = source;
+  if (source.startsWith('{') && source.endsWith('}')) {
+    const inner = source.slice(1, -1).trim();
+    if (inner) {
+      try {
+        if (acceptSelection(selectionDocument(inner))) chosen = inner;
+      } catch { /* the caller's text is checked below */ }
+    }
   }
-  return value;
+  let document;
+  try { document = selectionDocument(chosen); }
+  catch { throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.'); }
+  if (!acceptSelection(document)) throw new ToolError('invalid_argument', 'selection must contain only GraphQL response fields.');
+  return chosen;
 }
 
 export function buildNamedOperation(name, args) {
@@ -73,7 +95,10 @@ function sliceDocumentContent(tools, offset, length) {
             const full = scanSecret(scrubbed, target.known) ? "[redacted secret]" : linearClean(scrubbed)[0];
             const total = full.length;
             const slice = length === undefined ? full.slice(offset) : full.slice(offset, offset + length);
-            return { ...data, document: { ...doc, content: slice, content_total: total, content_offset: offset } };
+            const next = { ...data, document: { ...doc, content: slice, content_total: total, content_offset: offset } };
+            const partial = data?.[linearFieldErrors];
+            if (partial) Object.defineProperty(next, linearFieldErrors, { value: partial, enumerable: false });
+            return next;
           }
           return data;
         };
@@ -85,20 +110,24 @@ function sliceDocumentContent(tools, offset, length) {
 }
 
 export function callNamedLinear(tools, name, args, audit) {
-  const { entry, document, variables } = buildNamedOperation(name, args);
-  const shared = { variables, max_chars: args.max_chars ?? NAMED_DEFAULT_MAX_CHARS[name] };
+  const { args: workArgs, full } = splitFullArg(args);
+  if (!full && workArgs.first === undefined && name.startsWith(LINEAR_LIST_SEARCH_PREFIX)) {
+    workArgs.first = COMPACT_DEFAULT_LIMIT;
+  }
+  const { entry, document, variables } = buildNamedOperation(name, workArgs);
+  const shared = { variables, max_chars: workArgs.max_chars ?? NAMED_DEFAULT_MAX_CHARS[name], full };
   if (entry.write) {
     return apiMutation(tools, { ...shared, mutation: document, idempotency_key: args.idempotency_key, session: args.session }, audit);
   }
-  if (name === "linear_get_document" && (args.content_offset !== undefined || args.content_length !== undefined)) {
-    const offset = args.content_offset ?? 0;
+  if (name === "linear_get_document" && (workArgs.content_offset !== undefined || workArgs.content_length !== undefined)) {
+    const offset = workArgs.content_offset ?? 0;
     if (!Number.isInteger(offset) || offset < 0) {
       throw new ToolError("invalid_argument", "content_offset must be a non-negative integer.");
     }
-    if (args.content_length !== undefined && (!Number.isInteger(args.content_length) || args.content_length < 1 || args.content_length > 1000000)) {
+    if (workArgs.content_length !== undefined && (!Number.isInteger(workArgs.content_length) || workArgs.content_length < 1 || workArgs.content_length > 1000000)) {
       throw new ToolError("invalid_argument", "content_length must be an integer between 1 and 1,000,000.");
     }
-    return apiQuery(sliceDocumentContent(tools, offset, args.content_length), { ...shared, query: document });
+    return apiQuery(sliceDocumentContent(tools, offset, workArgs.content_length), { ...shared, query: document, full: true }, { compactName: name });
   }
-  return apiQuery(tools, { ...shared, query: document });
+  return apiQuery(tools, { ...shared, query: document }, { compactName: name });
 }

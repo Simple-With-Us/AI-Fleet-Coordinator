@@ -1,5 +1,5 @@
 ---
-description: Use for EVERY message any bot writes to Jay or anyone else (chat replies, Zulip, GitHub, Linear, email, docs) — a real U+00A0 plus a normal space between every sentence; only code and code comments are exempt; only use the `&nbsp;` HTML entity in the MiniMax Code and Claude Code chat panes (owner rulings 2026-10-23 and 2026-10-29).
+description: Use for EVERY message any bot writes to Jay or anyone else (chat replies, Zulip, GitHub, Linear, email, docs) — a real U+00A0 plus a normal space between every sentence; only code and code comments are exempt; only use the `&nbsp;` HTML entity in the MiniMax Code, Claude Code and Z Code chat panes (owner rulings 2026-10-23 and 2026-10-29).
 alwaysApply: true
 ---
 
@@ -9,7 +9,7 @@ Follow the portable protocol exactly.  Do not weaken it.  Generate the U+00A0 
 
 **Full protocol and code-aware converter:** `~/.cursor/skills/sentence-gap/SKILL.md` (repo: `docs/fleet-skills/sentence-gap/SKILL.md`), and `docs/SENTENCE-GAP-PORTABLE-SKILL.md`, which work from any repo.  The skill embeds the converter as the `cat > gap.pl` heredoc, and `scripts/sentence_gap_convert.pl` is the same program, but only inside an AI-Fleet-Coordinator checkout.  Run the program for any body that carries code; the one-liner below is prose-only.
 
-Cursor Agent chat is a Markdown-rendering pane.  Like every surface since the owner ruling of 2026-10-23, it takes a real U+00A0 plus a normal space; only use the `&nbsp;` entity in the two exception panes.  Cursor is not one of the two exception panes (the Claude Code Code tab and the MiniMax Code chat pane), which normalize a raw U+00A0 away.  If the pane strips the U+00A0, leave the text as it is and report it in #Work-In-Progress.
+Cursor Agent chat is a Markdown-rendering pane.  Like every surface since the owner ruling of 2026-10-23, it takes a real U+00A0 plus a normal space; only use the `&nbsp;` entity in the three exception panes.  Cursor is not one of the three exception panes (the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane), which normalize a raw U+00A0 away.  If the pane strips the U+00A0, leave the text as it is and report it in #Work-In-Progress.
 
 ### Rule: two visible spaces between sentences
 
@@ -29,24 +29,24 @@ Jay, Fri, Oct 23:  update the rule everywhere, so it is the same on every surfa
 sentences, write a **real U+00A0 (no-break space) followed by a normal space**.  That covers
 chat replies, Zulip, GitHub PR and issue text and review comments, Linear,
 commit messages, repo docs and Markdown, skills, agent instructions, and UI copy, on every
-surface but the two chat panes named below.
+surface but the three chat panes named below.
 
 **Owner ruling 2026-10-29: every message, not only fleet or public text.**  The rule applies to
 every message any bot writes to Jay or to anyone else: Grok Bot and BotFleet app chat replies,
 Zulip, GitHub, Linear, email and docs.  Only code and code comments are exempt.  Only
-use the `&nbsp;` HTML entity in the MiniMax Code and Claude Code chat panes, the one exception;
+use the `&nbsp;` HTML entity in the MiniMax Code, Claude Code and Z Code chat panes, the one exception;
 everywhere else write the real U+00A0 character.
 
-- **The chat-pane exception: the Claude Code Code tab and the MiniMax Code chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans: `End.&nbsp; Next.`  Only use the entity in these two panes.
+- **The chat-pane exception: the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans: `End.&nbsp; Next.`  Only use the entity in these three panes.
 - **Apple Note bodies** (Coding-folder notes from `scripts/apple-notes-coding.sh`) take the same real U+00A0 plus a normal space as every other surface, with no exception.  Notes turns the no-break space into an ordinary space on import and still shows the pair as a wide gap (measured Oct 29, 2026), so a note read back holds two ordinary spaces after a sentence end, and that is correct.  Write two spaces after a sentence in the body you pass the helper and it writes the gap for you, never the `&nbsp;` entity.
-- **Only use the `&nbsp;` entity in those two chat panes.**  Everywhere else write the real U+00A0,
+- **Only use the `&nbsp;` entity in those three chat panes.**  Everywhere else write the real U+00A0,
   because the entity shows up as literal text in squash-merge commits, plain-text email and many APIs.
 - **Two plain ASCII spaces are not enough.**  Rendered surfaces (Zulip, GitHub, Linear, HTML,
   Markdown chat panes) collapse them to one.
 - **Generate the U+00A0 in the shell** (the converter below, or `printf '\302\240'`) rather
   than typing it, because a model-typed U+00A0 can be normalized to a plain space.  Check the
   bytes before you post.
-- In product-copy source, spell it per language:  Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant.  The `&nbsp;` entity is only for the two chat panes.
+- In product-copy source, spell it per language:  Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant.  The `&nbsp;` entity is only for the three chat panes.
 - Code, identifiers and machine-readable config never get a U+00A0.
 - If any other surface strips U+00A0, leave the text as it is rather than switching to the entity, and
   report the surface in #Work-In-Progress.
@@ -61,7 +61,7 @@ disagrees, this section wins.
 
 Every message you write to Jay needs the gap, including a one-line progress note and an acknowledgement.  Getting it right in artifacts while writing plain single spaces in the chat is still a failure.  **Read your reply back before you send it** and check every `.`, `!` and `?` boundary.
 
-Chat replies follow the current rule above: a real U+00A0 plus a normal space, except in the Claude Code Code tab and the MiniMax Code chat pane, which take the `&nbsp;` entity plus a normal space.
+Chat replies follow the current rule above: a real U+00A0 plus a normal space, except in the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane, which take the `&nbsp;` entity plus a normal space.
 
 For a destination that takes a real U+00A0 (GitHub, Zulip, rendered HTML), generate the character in the shell rather than typing it:
 
@@ -71,7 +71,7 @@ printf 'Sentence one.\302\240 Sentence two.\n'
 
 ### Precedence: this is the owner's highest-priority house rule
 
-The sentence gap is **life or death**.  It outranks every other priority.  Never skip the gap to save time or tokens.  Never argue the mechanism: a real U+00A0 plus a normal space everywhere except the Claude Code Code tab and the MiniMax Code chat pane (`&nbsp;` entity plus a normal space).  For renderer-bound bodies, generate the gap in the shell and run both checks below before posting.  When in doubt, add the gap.
+The sentence gap is **life or death**.  It outranks every other priority.  Never skip the gap to save time or tokens.  Never argue the mechanism: a real U+00A0 plus a normal space everywhere except the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane (`&nbsp;` entity plus a normal space).  For renderer-bound bodies, generate the gap in the shell and run both checks below before posting.  When in doubt, add the gap.
 
 ### The catch that wastes everyone's time
 
@@ -81,7 +81,7 @@ The sentence gap is **life or death**.  It outranks every other priority.  Nev
 perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Both checks carry the same markup group as the converter.  **Assert before you post — every check, every time.**  Run only the checks that match the destination, since one destination produces one file.  For the two chat panes, the entity count on `body.entity.txt` must be > 0.  Everywhere else, the real-byte count on `body.nbsp.txt` must be > 0 and its leftover count must be 0.  Never require both modes to pass on one body.
+Both checks carry the same markup group as the converter.  **Assert before you post — every check, every time.**  Run only the checks that match the destination, since one destination produces one file.  For the three chat panes, the entity count on `body.entity.txt` must be > 0.  Everywhere else, the real-byte count on `body.nbsp.txt` must be > 0 and its leftover count must be 0.  Never require both modes to pass on one body.
 
 ```sh
 grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*&nbsp; ' body.entity.txt | wc -l      # entity mode: must be > 0
@@ -91,7 +91,7 @@ grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"
 
 ### Code-aware conversion
 
-The one-liner is not safe on a body that carries fenced code, indented code, inline spans, or a `repo:` header.  From any repo, write the program from the `cat > gap.pl <<'PERL'` heredoc in `~/.cursor/skills/sentence-gap/SKILL.md` and run `perl -CSDA -0777 -p gap.pl body.txt > body.nbsp.txt`, or `perl -CSDA -0777 -p gap.pl --entity body.txt > body.entity.txt` for the two chat panes.  The program prints to stdout and never edits `body.txt` in place, so post the output file.  Inside an AI-Fleet-Coordinator checkout, `scripts/sentence_gap_convert.pl` runs the same program with the same arguments and redirect.  Idempotency, entity leftover, and the full recipe are in the skill.  Before writing any `body*.txt` to disk, scan the unsaved body on stdin for secrets, using `scripts/simple_tools/secretscan.py` inside this repo or the skill's out-of-repo fallback, and refuse to write or post it on a hit.  The skill's secret-scan section has the exact command.
+The one-liner is not safe on a body that carries fenced code, indented code, inline spans, or a `repo:` header.  From any repo, write the program from the `cat > gap.pl <<'PERL'` heredoc in `~/.cursor/skills/sentence-gap/SKILL.md` and run `perl -CSDA -0777 -p gap.pl body.txt > body.nbsp.txt`, or `perl -CSDA -0777 -p gap.pl --entity body.txt > body.entity.txt` for the three chat panes.  The program prints to stdout and never edits `body.txt` in place, so post the output file.  Inside an AI-Fleet-Coordinator checkout, `scripts/sentence_gap_convert.pl` runs the same program with the same arguments and redirect.  Idempotency, entity leftover, and the full recipe are in the skill.  Before writing any `body*.txt` to disk, scan the unsaved body on stdin for secrets, using `scripts/simple_tools/secretscan.py` inside this repo or the skill's out-of-repo fallback, and refuse to write or post it on a hit.  The skill's secret-scan section has the exact command.
 
 **Source files are a different surface and are NOT affected.**  Code (Swift, TypeScript,
 shell), code comments, identifiers and machine-readable config never get a U+00A0:  a U+00A0
@@ -112,4 +112,4 @@ Two more traps, both hit 2026-10-18:
 
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 
-Since 2026-10-23 every surface takes a real U+00A0 plus a normal space, apart from the Claude Code Code tab and the MiniMax Code chat pane (`&nbsp;` entity plus a space).  On an unchecked surface, post one test line with the gap generated in the shell and ask the human whether they see a wider gap.  If the surface strips U+00A0, keep the real U+00A0 and report the surface in #Work-In-Progress.
+Since 2026-10-23 every surface takes a real U+00A0 plus a normal space, apart from the Claude Code Code tab, the MiniMax Code chat pane and the Z Code chat pane (`&nbsp;` entity plus a space).  On an unchecked surface, post one test line with the gap generated in the shell and ask the human whether they see a wider gap.  If the surface strips U+00A0, keep the real U+00A0 and report the surface in #Work-In-Progress.

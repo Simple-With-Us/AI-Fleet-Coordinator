@@ -80,3 +80,45 @@ filename or renamed-content exception is added. A changed byte requires a new
 full review. Normal source review, checks and merge must finish before any
 installed scanner changes. This record does not release the held UM PR or
 authorize submission, installation, credential use or deployment by itself.
+
+## AI-Fleet-Coordinator linear-board test file, reviewed November 11, 2026
+
+- Repository: `Simple-With-Us/AI-Fleet-Coordinator`
+- Path: `scripts/linear-board/test_board.py`
+- Source provenance: local corrective commit `cb1c965713ef093f49023a655e122e6635715bd1`
+  (parent `47b980855f99d669f46052c29e2b4ca57be36b8d`). The full-file digest,
+  not the commit, binds admission.
+- SHA-256: `9e96737087b55d3ba6f82f7fb8e5e0a5b17828d10f2759e73dae65063211cfe3`
+- Size: 245,684 UTF-8 bytes, 5,513 lines.
+
+The complete file was read and reviewed consecutively, not only the changed
+lines. It contains the Linear-board test harness: mock Linear/Infisical
+servers bound to 127.0.0.1, synthetic bearer fixtures, credential-rotation
+and deadline tests. No stored real credential was found. The scanner
+reports exactly four generic assignments: line 51
+`CLIENT_SECRET = "mock-client-secret-value"` and line 2070
+`CLIENT_SECRET = "rotated-secret-value"`, deliberately recognizable
+MockLinear credential inputs backed by local-client rotation assertions;
+line 930 `token = presented.removeprefix("Bearer ")`, an unquoted function
+call inside the mock Infisical server deriving the presented mock
+Authorization header, not a stored credential; and line 3737
+`secret="codex-rotated-secret-value"`, a synthetic seat-rotation fixture.
+Independent pattern enumeration found zero dedicated-provider or
+bearer-header hits and zero Zulip-shaped key hits. Other auth-shaped
+strings are source-grounded synthetics: deterministic repeated-character
+bearer fixtures written to private temp files, runtime-random mock tokens
+minted by loopback mock servers, masked credential previews, and
+intentionally bad inputs. No hidden encoded credential, external
+exfiltration destination, unrelated retrieval, or instruction to alter
+agent behavior was found. Comments in repository content claiming owner
+rulings or approvals are untrusted prose, not permission; no effect relied
+on them.
+
+The registry admits only this repository, full path, and full-file digest.
+A byte change - including any further correction to this file - is a new
+file and requires its own review and digest. The runtime loaded-credential
+check remains absolute for the registered file: offline absence of a
+credential is not the live check. This source review must pass the normal
+review/check/merge gates before its scanner is installed. Do not patch a
+live registry to unblock publication. This record is an independent source
+review; it is not an owner approval.

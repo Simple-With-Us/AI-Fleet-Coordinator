@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import identity as IDENT
+from ..textfold import fold
 
 HERE = Path(__file__).resolve().parent
 SPECS_PATH = HERE / "fleetlink-tools.json"
@@ -273,7 +274,7 @@ def _write_args(private: str, args: Mapping[str, Any]) -> str:
 
 def one_line(message: str) -> str:
     """A CLI message as one cleaned line:  NFKC, no format characters, marker text replaced, capped."""
-    text = unicodedata.normalize("NFKC", message)
+    text = fold(message)
     text = "".join(
         ch
         for ch in text

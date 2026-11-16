@@ -433,9 +433,7 @@ class FactSituationTests(GateLog, DaemonHarness):
                 with mock.patch.object(
                     self.daemon_, "operator_candidates", return_value=found
                 ) as asked:
-                    answer = self.daemon_.ask_operator_for_candidates(
-                        self.runner, pending, "Z", "", 11
-                    )
+                    answer = self.daemon_.note_letter_candidates(self.runner, pending, "Z")
                 self.assertIsNone(answer)
                 self.assertEqual(asked.call_count, 1, "one registry open for the whole wake")
                 self.assertEqual((pending.letter_candidates, pending.letter_holder_on_seat), expected)

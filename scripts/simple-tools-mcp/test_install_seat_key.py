@@ -40,9 +40,7 @@ class ScopedSeatKeyTests(unittest.TestCase):
             }
 
         with (
-            mock.patch.dict(
-                os.environ, {seat_key.INFISICAL_TOKEN_ENVS[seat_key.INFISICAL_PROJECT]: token}
-            ),
+            mock.patch.dict(os.environ, {seat_key.AFC_TOKEN_ENV: token}),
             mock.patch.object(seat_key.scoped_secrets, "_api_json", api),
         ):
             self.assertEqual(
@@ -61,14 +59,14 @@ class ScopedSeatKeyTests(unittest.TestCase):
         def api(method, path, request_token, body, env, **kwargs):
             calls.append(path)
             return 200, {
-                "workspace": seat_key.FLEET_OPS_PROJECT,
-                "projectId": seat_key.FLEET_OPS_PROJECT,
+                "workspace": "00000000-0000-4000-8000-000000000001",
+                "projectId": "00000000-0000-4000-8000-000000000001",
                 "permissions": ["read"],
                 "scopes": [{"environment": "prod", "secretPath": "/zulip"}],
                 "expiresAt": None,
             }
 
-        token_name = seat_key.INFISICAL_TOKEN_ENVS[seat_key.INFISICAL_PROJECT]
+        token_name = seat_key.AFC_TOKEN_ENV
         with mock.patch.dict(os.environ, {token_name: "st." + "synthetic-seat-key-reader-token"}):
             with mock.patch.object(seat_key.scoped_secrets, "_api_json", api):
                 with self.assertRaises(SystemExit):

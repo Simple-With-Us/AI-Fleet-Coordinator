@@ -1,10 +1,13 @@
 # Kody first-review prompter
 
 Owner request 2026-11-07 (iMessage): make Kody's *initial* review automatic across
-every fleet repo by prompting it, rather than trying to stop later reviews. Kodus'
-global review cadence is already Manual, so follow-up reviews only happen when
-someone comments `@kody start-review`. This automation posts that comment once for
-each open PR that has never had a Kody review, and then never again.
+every fleet repo by prompting it, rather than trying to stop later reviews. This
+automation posts that comment once for each open PR that has never had a Kody
+review, and then never again.
+
+The November 7 note that global review cadence was already Manual is not what
+Kodus does.  Follow-up reviews run on push.  The hosted setting that stops them is
+in `docs/KODY-ONCE-PER-PR.md` ([AFC-735](https://linear.app/simple-with-us/issue/AFC-735)).
 
 ## How it works
 
@@ -56,3 +59,18 @@ The posted comment is the dedup record; no separate marker or state branch exist
 
 Caller template: `docs/kody-first-review.caller.yml`, copied per repo; this repo's own
 caller is `.github/workflows/kody-first-review.yml`.
+
+## Manual requests
+
+The current owner format puts the literal `@kody start-review` on line 1,
+the actual writing session's compact PR header on line 2, for example
+`[CODEX:   EE.1.S]`, and the full reviewed head SHA and context afterward.  The PR
+header has no folder symbol or repository list.  Legacy readers still
+recognize own-line requests elsewhere for compatibility; this does not authorize
+new outgoing requests in that older format.
+
+Inspect the existing request and all review surfaces before posting a new one.
+An unacknowledged request or a skip that predates it does not establish a failed
+attempt or permit a duplicate.  The historical November 11 traces showed absent
+receipts after header-first requests and a completed command-first review; those
+timestamps alone do not establish webhook causation or cancellation.

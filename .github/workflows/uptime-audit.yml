@@ -1,0 +1,36 @@
+name: Uptime coverage audit
+
+# Read-only. Compares scripts/uptime-audit/expected-hosts.yaml with Sentry
+# uptime monitors. Does not create, edit, or delete monitors, and does not
+# add a secret. If SENTRY_AUTH_TOKEN is not already configured, the job
+# exits 0 and posts a notice.
+
+on:
+  schedule:
+    # Monday 14:17 UTC. During standard time that is 8:17am on the owner clock.
+    - cron: "17 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Compare public hosts with Sentry uptime
+        working-directory: scripts/uptime-audit
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! python3 -c 'import os,sys; sys.exit(0 if os.environ.get("SENTRY_AUTH_TOKEN","").strip() else 1)'; then
+            echo "::notice::SENTRY_AUTH_TOKEN is not configured for this repository. Skipping the uptime coverage audit."
+            exit 0
+          fi
+          python3 -m uptime_audit --fail-on-uncovered --markdown "$GITHUB_STEP_SUMMARY"

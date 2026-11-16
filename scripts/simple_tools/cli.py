@@ -50,6 +50,7 @@ from . import (
     bodyfile,
     listener_cli,
     notes_cli,
+    post_header,
     secretscan,
     textfmt,
     zulip_cli,
@@ -126,10 +127,10 @@ def _central_wall_clock(utc: dt.datetime) -> dt.datetime:
 
 
 def format_time(timestamp: float) -> str:
-    """'Wed, Oct 7, 6:41pm': America/Chicago, 12-hour, lowercase am/pm, no zone abbreviation."""
+    """'Wed, Oct 7, 6:41 PM': America/Chicago, 12-hour, spaced AM/PM, no zone abbreviation."""
     local = _central_wall_clock(dt.datetime.fromtimestamp(timestamp, dt.UTC))
     hour = local.hour % 12 or 12
-    suffix = "pm" if local.hour >= 12 else "am"
+    suffix = " PM" if local.hour >= 12 else " AM"
     return "%s, %s %d, %d:%02d%s" % (
         _WEEKDAYS[local.weekday()],
         _MONTHS[local.month - 1],
@@ -1047,14 +1048,6 @@ def build_parser(
         "The default when no --to is given;  with --to it adds the owner to the group",
     )
     p.add_argument(
-        "--clarifying-question",
-        dest="clarifying_question",
-        action="store_true",
-        help="Operator only:  true when this DM is the one clarifying question it may open about a message "
-        "whose addressee could not be resolved to a single seat (owner decision, Oct 22 2026).  Every other "
-        "seat is refused when it opens a new DM;  a reply inside a DM Operator opened needs no flag.",
-    )
-    p.add_argument(
         "--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192TO] tag"
     )
     p.add_argument(
@@ -1249,7 +1242,7 @@ def build_parser(
         help="CODEX-only: attribute calls from native MCP _meta.threadId; no automatic nosession fallback",
     )
 
-    zulip_cli.add_parsers(sub, common, channel_default)
+    zulip_cli.add_parsers(sub, common, channel_default, skip_verbs=notes_verbs)
     listener_cli.add_parsers(sub, common, verbs=listener_verbs)
     notes_cli.add_parsers(sub, common, verbs=notes_verbs)
     return parser
@@ -1662,7 +1655,9 @@ def _compose_intro_lead(
         if label not in peers:
             peers.append(label)
     arrow = (" \u2192" + ",".join(peers)) if peers else ""
-    bracket = "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    bracket = post_header.normalize_header(
+        "[%s%s 📁%s%s]" % (intro["seat"], intro["thread"], intro["repos"], arrow)
+    )
     marker = intro["marker"]
     if quiet and not marker:
         marker = ROUTER.NO_WAKE_MARKER + " "
@@ -1700,7 +1695,7 @@ def _compose(
                 )
             return led
     # Same complete-own-intro rule as the hosted composeBody transport.
-    leading = re.match(r"^(?:👀\s*)?\s*", text).group(0)
+    leading = re.match(r"^\s*(?:(?:👀|:eyes:)\s*)?", text).group(0)
     start = len(leading)
     seat_end = start + 1 + len(agent.seat)
     end = text.find("]", start)
@@ -1716,23 +1711,20 @@ def _compose(
     )
     if own:
         intro = text[:end]
-        if folder:
-            # Exactly one ASCII space before 📁, the Policy shape the router parses.
-            intro = intro[:seat_end] + " " + intro[seat_end:].lstrip()
         if "·" in agent.tag_prefix:
-            suffix = re.sub(r"^·[^\s:→\]]*", "", intro[seat_end:])
+            suffix = re.sub(r"^·(?:(?!->)[^\s:→\]])*", "", intro[seat_end:])
             intro = intro[:seat_end] + agent.tag_prefix[agent.tag_prefix.index("·") :] + suffix
-        arrow = intro.find("→")
-        existing = [] if arrow < 0 else [v.strip() for v in intro[arrow + 1 :].split(",")]
+        arrow = re.search(r"→|->", intro)
+        existing = [] if arrow is None else [v.strip() for v in intro[arrow.end() :].split(",")]
         added = list(dict.fromkeys(label for label in labels if label not in existing))
         if added:
-            intro += (" →" if arrow < 0 else ",") + ",".join(added)
+            intro += (" →" if arrow is None else ",") + ",".join(added)
         tail = text[end + 1 :]
         if tail and not tail[0].isspace():
             tail = " " + tail
         added = _mentions_missing_from(tail, mentions)
         body = intro + "]" + (" " + " ".join(added) if added else "") + tail
-        if quiet and not leading.startswith(ROUTER.NO_WAKE_MARKER):
+        if quiet and not leading.lstrip().startswith(ROUTER.NO_WAKE_MARKERS):
             body = ROUTER.NO_WAKE_MARKER + " " + body
     else:
         parts: list[str] = []
@@ -1743,6 +1735,8 @@ def _compose(
         parts.extend(_mentions_missing_from(text, mentions))
         parts.append(text)
         body = " ".join(parts)
+    if not no_tag:
+        body = post_header.normalize_header(body)
     if len(body) > MAX_CONTENT_LENGTH:
         raise UsageError(
             "the message is %d characters; Zulip allows at most %d"
@@ -2119,12 +2113,6 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     # outage into a retryable failure for a send the rule does not govern.
     if not DMP.rule_enabled(env):
         return
-    clarifying = bool(getattr(args, "clarifying_question", None))
-    if DMP.clarifying_exempt(agent.seat, clarifying=clarifying):
-        # Operator's own clarifying question is the one message the rule permits without knowing
-        # who the Operator is, so the id is never resolved and the conversation is never read:  a
-        # host whose listener config is damaged can still send it (Kody review on AFC-473).
-        return
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
     recipients = [
         {"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users
@@ -2174,7 +2162,6 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
                 operator_user_id=DMP.operator_user_id(env, lambda: pinned_operator_id(agent)),
                 self_id=_int_or_none(agent.me().get("user_id")),
             ),
-            clarifying=clarifying,
             owner_user_id=_owner_id_pinned(agent) or None,
         )
     except DMP.DmRefused as refused:
@@ -2934,16 +2921,31 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
 # `simple-notes` verbs (AFC-486:  one per notes_* tool, plus the Mac runner).  They are top-level commands, so they
 # land in LOCAL_COMMANDS beside the listener verbs, except `read`, which `simple-chat` owns too (a topic's history)
 # and which only the simple-notes override below sends here.
-NOTES_VERBS = ("create", "update", "pin", "unpin", "read", "list", "status", "log", "runner")
+NOTES_VERBS = (
+    "create",
+    "update",
+    "pin",
+    "unpin",
+    "delete",
+    "read",
+    "list",
+    "status",
+    "log",
+    "runner",
+)
 for _action in NOTES_VERBS:
-    if _action != "read":
+    if _action not in ("read", "delete"):
         LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
 
 # `status` and `read` are verbs of two commands:  `simple-chat status` is the listener's and `simple-chat read` a
 # topic's history, `simple-notes status` and `simple-notes read` are the notes ones.  A bare name cannot pick one,
 # so each command overrides them for its own verbs.
 DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
-    "simple-notes": {"status": notes_cli.cmd_notes, "read": notes_cli.cmd_notes},
+    "simple-notes": {
+        "status": notes_cli.cmd_notes,
+        "read": notes_cli.cmd_notes,
+        "delete": notes_cli.cmd_notes,
+    },
     "simple-chat": {"status": listener_cli.cmd_status},
 }
 
@@ -3071,6 +3073,9 @@ _REMOTE_CODES = frozenset(
         "fleetlink_expired",
         "dm_not_allowed",
         "budget_exhausted",
+        "invalid_secret",
+        "sheets_auth_failed",
+        "sheets_write_failed",
     )
 )
 _REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
@@ -3435,8 +3440,6 @@ def _remote_write_args(
         targs["user_ids"] = [int(i) for i in ids]
     if emails:
         targs["emails"] = emails
-    if getattr(args, "clarifying_question", False):
-        targs["clarifying_question"] = True
     return "zulip_dm_send", targs
 
 

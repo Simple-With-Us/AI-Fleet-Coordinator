@@ -27,6 +27,7 @@ from simple_tools import heldback as HELD
 from simple_tools import live as L
 from simple_tools import wakes as W
 from simple_tools.daemon import clear_pause
+from simple_tools.tests.listener_harness import SYNTHETIC_STREAM_ID
 from simple_tools.tests.test_daemon import MENTION as CLAUDE_MENTION
 from simple_tools.tests.test_daemon import DaemonHarness
 from simple_tools.tests.test_server import CLOUD_SEATS, SEAT, CloudSeatHarness, ServerHarness
@@ -375,7 +376,7 @@ class WorkerRuleTests(unittest.TestCase):
             "dm": False,
             "channel": "work-in-progress",
             "topic": "budget",
-            "stream_id": 642232,
+            "stream_id": SYNTHETIC_STREAM_ID,
             "sender_full_name": "Codex",
             "zulip_link": "https://z/near/4100",
             "reason": "wakes_per_hour",
@@ -852,6 +853,8 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         self.assert_no_routine_secret()
 
     def test_refusals_other_than_the_budget_stay_plain_drops(self) -> None:
+        # The loop guard is off unless the config turns it on.
+        self.write_server_config(daemon_extra="wake_loop_prevention = true")
         daemon = self.started()
         daemon.pause(seat=SEAT, wakes_only=True, by="test")
         self.mention(daemon, "p")
@@ -1090,7 +1093,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         pending = W.Pending(
             wake_id,
             SEAT,
-            {"channel": "work-in-progress", "topic": "batch", "stream_id": 642232},
+            {"channel": "work-in-progress", "topic": "batch", "stream_id": SYNTHETIC_STREAM_ID},
             owner=False,
             now=1.0,
             due=1.0,
@@ -1188,7 +1191,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         pending = W.Pending(
             "w-long",
             SEAT,
-            {"channel": "work-in-progress", "topic": long, "stream_id": 642232},
+            {"channel": "work-in-progress", "topic": long, "stream_id": SYNTHETIC_STREAM_ID},
             owner=False,
             now=1.0,
             due=1.0,
@@ -1233,7 +1236,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
             "type": "stream",
             "channel": "work-in-progress",
             "topic": long,
-            "stream_id": 642232,
+            "stream_id": SYNTHETIC_STREAM_ID,
             "sender_id": 11,
             "sender": long,
             "content": "\U0001f525" * 5000,
@@ -1252,11 +1255,27 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
 
 
 class HeldBackJetTests(HeldMixin, CloudSeatHarness):
-    """JET:  an `http` routine that is the hosted MCP Worker, with the shipped sample's budget, and the
+    """JET:  an `http` routine that is the hosted MCP Worker, with a capped budget of its own, and the
     inbox cloud seats, which never wake and so never hold anything back."""
 
     seat = "JET"
     text = "@**%s** please look" % CLOUD_SEATS["JET"][1]
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The shipped sample sets no wake-count limit on JET (owner ruling, Nov 10), so this class
+        # gives its own JET the capped budget the held-back path needs.  The sample is not changed.
+        text = self.config_file.read_text()
+        jet = re.search(r"(?ms)^\[seat\.JET\]\n(.*?)(?=^\[|\Z)", text)
+        self.assertIsNotNone(jet)
+        body, n = re.subn(
+            r"(?m)^budget = .*$",
+            "budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, "
+            "owner_per_day = 30, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }",
+            jet.group(1),
+        )
+        self.assertEqual(n, 1, "the sample's JET section carries one budget line to replace")
+        self.config_file.write_text(text[: jet.start(1)] + body + text[jet.end(1):])
 
     def test_jet_holds_a_wake_back_and_the_next_signed_wake_carries_it(self) -> None:
         jet_key = secrets.token_hex(32)
@@ -1269,7 +1288,7 @@ class HeldBackJetTests(HeldMixin, CloudSeatHarness):
         )
         self.assertTrue(daemon.connect_seat("JET"), daemon.seats["JET"].error)
         ids = []
-        for _ in range(3):  # the sample's per-topic budget:  2 an hour
+        for _ in range(3):  # this class's per-topic budget for JET:  2 an hour
             ids.append(self.mention(daemon, "jet topic"))
             self.step(daemon, 25)
         self.assertEqual(
@@ -1500,6 +1519,8 @@ class HeldBackClaudeTests(HeldMixin, DaemonHarness):
         self.assertEqual(self.held(), [])
 
     def test_a_loop_guarded_topic_is_still_a_plain_drop(self) -> None:
+        # The loop guard is off unless the config turns it on.
+        self.write_config(extra_daemon="wake_loop_prevention = true")
         daemon = self.started()
         self.mention(daemon, "lg")
         for _ in range(3):

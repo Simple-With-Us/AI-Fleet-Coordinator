@@ -166,12 +166,14 @@ everything up to that seam — the tab, the projection, the plan — is built an
    the registry API at operator.simplewithus.com) is a follow-up once the tab has
    live data.
 
-## Rebase Note
+## Paths
 
-PR #1258 renames `scripts/agent_sync` → `scripts/simple_tools`.  Everything in this
-lane lives under `scripts/agent_sync/` (`session_registry.py`,
-`session_registry_export.mjs`, `tests/test_session_registry.py`) and moves with that
-rename;  no path outside the package is touched.
+The rename of `scripts/agent_sync` to `scripts/simple_tools` left this lane's three files where
+they were:  `scripts/agent_sync/session_registry.py`, `scripts/agent_sync/session_registry_export.mjs`
+and `scripts/agent_sync/tests/test_session_registry.py` are still on main under
+`scripts/agent_sync/`, so the paths in this note stay as written.  The registry the Operator serves
+on the server is the newer `scripts/simple_tools/operator_registry.py` (see
+[operator-role.md](protocols/operator-role.md)).
 
 ## Tests
 
@@ -185,4 +187,5 @@ duplicate Record ID rows reported and left alone, header mismatch writing nothin
 a failed write stopping the sync partial and the next run reconciling), and the CLI
 export-rows/stats payloads.  The exporter's header list is verified byte-equal to
 the Python HEADERS.  Neighbouring suites re-run clean (112 tests:
-test_operator_service, test_operator_registration, test_operator_registration_ask).
+test_operator_service, test_operator_registration, test_operator_registration_ask;  the last two
+have since been removed with the registration question).

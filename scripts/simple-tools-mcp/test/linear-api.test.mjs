@@ -55,7 +55,7 @@ test("general query preserves variables and fences arbitrary API resources", asy
   const result = await tools.call("linear_query", { query, variables: { after: "cursor" } });
   assert.equal(payload(result).projects.nodes[0].id, "p1");
   assert.deepEqual(requests[0].variables, { after: "cursor" });
-  assert.deepEqual(result.structuredContent, {});
+  assert.equal(result.structuredContent, undefined);
 });
 
 test("read tool rejects mutations before any API call", async () => {
@@ -99,11 +99,11 @@ test("wrong app identity blocks mutations", async () => {
   assert.equal(requests.length, 0);
 });
 
-test("mutation text is tagged without mutating caller variables and exact retries do not repeat it", async () => {
+test("mutation text is not seat-tagged and exact retries do not repeat it", async () => {
   const { tools, requests } = harness();
   const args = input();
   payload(await tools.call("linear_mutation", args));
-  assert.match(requests[0].variables.input.description, /^\[GROK-WEB/);
+  assert.equal(requests[0].variables.input.description, "Details");
   assert.equal(args.variables.input.description, "Details");
   payload(await tools.call("linear_mutation", args));
   assert.equal(requests.length, 1);
@@ -112,7 +112,7 @@ test("mutation text is tagged without mutating caller variables and exact retrie
   assert.equal(requests.length, 1);
 });
 
-test("inline and default input descriptions are seat tagged", async () => {
+test("inline and default input descriptions pass through untagged", async () => {
   for (const document of [
     'mutation { projectUpdate(id: "p1", input: {description: "hello"}) { success } }',
     'mutation M($input: ProjectUpdateInput! = {description: "hello"}) { projectUpdate(id: "p1", input: $input) { success } }',
@@ -121,14 +121,14 @@ test("inline and default input descriptions are seat tagged", async () => {
     payload(await tools.call("linear_mutation", input({ mutation: document, variables: {} })));
     const operation = parse(requests[0].query).definitions[0];
     const argument = operation.selectionSet.selections[0].arguments.find((a) => a.name.value === "input");
-    assert.match(valueFromASTUntyped(argument.value, requests[0].variables).description, /^\[GROK-WEB/);
+    assert.equal(valueFromASTUntyped(argument.value, requests[0].variables).description, "hello");
   }
 });
 
 test("a description that already opens with the seat's own intro is not tagged twice (AFC-692)", async () => {
   const { tools, requests } = harness();
   payload(await tools.call("linear_mutation", input({ variables: { id: "p1", input: { name: "Fleet", description: "[GROK-WEB 📁AFC] Details" } } })));
-  assert.equal(requests[0].variables.input.description, "[GROK-WEB 📁AFC] Details");
+  assert.equal(requests[0].variables.input.description, "[GROK-WEB\u200a\u200a📁\u200aAFC] Details");
 });
 
 test("claim label IDs, author overrides and protected label renames are refused", async () => {

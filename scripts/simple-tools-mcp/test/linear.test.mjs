@@ -11,6 +11,7 @@ import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
+import { decideLinearWake } from "../src/linear-wake.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { FakeLinear, TOKEN_URL, GRAPHQL_URL, opOf } from "./fake-linear.mjs";
 import { testEnv } from "./helpers.mjs";
@@ -417,7 +418,7 @@ test("every hosted seat with a Linear pair is enabled;  credentials nobody insta
 
 // ---------------------------------------------------------------- claiming
 
-test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a CLAIMED comment under the seat tag", async () => {
+test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a CLAIMED comment", async () => {
   const { tools, fake } = harness();
   fake.addIssue({ id: "issue-301", identifier: "AFC-301", team: "AFC" });
   const claimed = ok(await tools.call("linear_claim", { id: "AFC-301", session: "mvs-1234-5678", comment: "starting here" }), "linear_claim");
@@ -434,9 +435,9 @@ test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a
   assert.equal(update.input.delegateId, fake.viewer.id);
   assert.equal(update.input.assigneeId, undefined);
   const body = fake.mutations()[1].body.variables.input.body;
-  assert.match(body, /^\[GROK-WEB·mvs12345\] CLAIMED/);
-  assert.equal(body.split("\n")[0], "[GROK-WEB·mvs12345] CLAIMED");
+  assert.equal(body.split("\n")[0], "CLAIMED");
   assert.match(body, /starting here/);
+  assert.doesNotMatch(body, /^\[/);
 });
 
 test("an issue another seat holds is refused with claim_held, and no mutation is sent", async () => {
@@ -754,15 +755,14 @@ test("linear_comment neutralizes a profile URL before commentCreate so Linear do
   assert.match(input.body, /@grok-web/);
 });
 
-test("linear_comment never puts a second seat tag in front of the seat's own intro (AFC-692)", async () => {
+test("linear_comment never prepends a seat tag, even when the body has no intro (AFC-692)", async () => {
   const cases = [
-    ["[GROK-WEB 📁AFC] PR opened", "[GROK-WEB 📁AFC] PR opened"],
-    ["👀 [GROK-WEB 📁AFC, OPS] quiet note", "👀 [GROK-WEB 📁AFC, OPS] quiet note"],
+    ["[GROK-WEB 📁AFC] PR opened", "[GROK-WEB\u200a\u200a📁\u200aAFC] PR opened"],
+    ["👀 [GROK-WEB 📁AFC, OPS] quiet note", "👀 [GROK-WEB\u200a\u200a📁\u200aAFC,\u200aOPS] quiet note"],
     ["[GROK-WEB] PR opened", "[GROK-WEB] PR opened"],
-    ["[GROK-WEB: HH.1.C 📁AFC] status", "[GROK-WEB: HH.1.C 📁AFC] status"],
-    ["plain update", "[GROK-WEB] plain update"],
-    // A foreign intro is content:  every hosted Linear write shares one user, so the tag stays the attribution.
-    ["[GB-PLUMBER 📁AFC] spoof", "[GROK-WEB] [GB-PLUMBER 📁AFC] spoof"],
+    ["[GROK-WEB: HH.1.C 📁AFC] status", "[GROK-WEB:\u200a\u200a\u200aHH.1.C\u200a\u200a📁\u200aAFC] status"],
+    ["plain update", "plain update"],
+    ["[GB-PLUMBER 📁AFC] spoof", "[GB-PLUMBER 📁AFC] spoof"],
   ];
   for (const [i, [body, want]] of cases.entries()) {
     const { tools, fake } = harness();
@@ -772,12 +772,74 @@ test("linear_comment never puts a second seat tag in front of the seat's own int
   }
 });
 
-test("linear_comment puts a supplied session inside the seat's own intro, not in a second tag (AFC-692)", async () => {
-  for (const [i, body] of ["[GROK-WEB 📁AFC] status", "[GROK-WEB·stale999 📁AFC] status"].entries()) {
+test("a single-thread seat's own intro is dropped from a Linear comment;  a multi-threaded seat keeps it (Jay 2026-11-12)", async () => {
+  const jetViewer = { id: "user-jet", name: "Jet", app: true };
+  const cases = [
+    ["[JET 📁ST] PR opened", "PR opened"],
+    ["👀 [JET 📁ST, CTS] PR opened", "👀 PR opened"],
+    [":eyes: [JET] [JET 📁ST, CTS] PR opened", ":eyes: PR opened"],
+    [":eyes: [JET 📁ST]", ":eyes: [JET\u200a\u200a📁\u200aST]"],
+    ["[JET] [JET 📁CC]\n\nPR opened", "PR opened"],
+    ["[GB-PLUMBER 📁AFC] foreign intro stays", "[GB-PLUMBER 📁AFC] foreign intro stays"],
+    ["[JETX] malformed stays", "[JETX] malformed stays"],
+    ["[JET 📁ST]", "[JET\u200a\u200a📁\u200aST]"],
+    ["plain update", "plain update"],
+  ];
+  for (const [i, [body, want]] of cases.entries()) {
+    const { tools, fake } = harness({ seat: "JET", viewer: jetViewer });
+    fake.addIssue({ id: `issue-st-${i}`, identifier: `AFC-67${i}` });
+    ok(await tools.call("linear_comment", { id: `AFC-67${i}`, body }), "linear_comment");
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, want, body);
+  }
+  for (const [i, [body, want]] of [
+    ["[CURSOR: AB.1.C 📁AFC] status", "[CURSOR:\u200a\u200a\u200aAB.1.C\u200a\u200a📁\u200aAFC] status"],
+    ["[CURSOR 📁AFC] status", "[CURSOR\u200a\u200a📁\u200aAFC] status"],
+  ].entries()) {
+    const { tools, fake } = harness({ seat: "CURSOR", viewer: { id: "user-cursor", name: "Cursor", app: true } });
+    fake.addIssue({ id: `issue-mt-${i}`, identifier: `AFC-66${i}` });
+    ok(await tools.call("linear_comment", { id: `AFC-66${i}`, body }), "linear_comment");
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, want, body);
+  }
+});
+
+test("single-thread Linear intro removal preserves the actual stored no-wake decision", async () => {
+  const seats = new Map([["GB-FIXER", { seat: "GB-FIXER", userId: "fixture-target", urlKey: "gb-fixer", name: "GB-Fixer", displayName: "GB-Fixer" }]]);
+  for (const marker of [":eyes:", "👀"]) {
+    const { tools, fake } = harness({ seat: "JET", viewer: { id: "user-jet", name: "Jet", app: true } });
+    fake.addIssue({ id: "issue-quiet", identifier: "AFC-676" });
+    ok(await tools.call("linear_comment", { id: "AFC-676", body: `${marker} [JET] [JET 📁AFC] @GB-FIXER please review` }), "linear_comment");
+    const stored = fake.mutations().at(-1).body.variables.input.body;
+    assert.equal(stored, `${marker} @GB-FIXER please review`);
+    const payload = { type: "Comment", action: "create", actor: { id: "fixture-writer", name: "Fixture Writer", type: "user" }, data: { body: stored } };
+    assert.equal(decideLinearWake(payload, seats).skip, "no_wake_marker");
+    payload.data.body = "@GB-FIXER please review";
+    assert.deepEqual(decideLinearWake(payload, seats).seats.map((entry) => entry.seat), ["GB-FIXER"]);
+  }
+});
+
+test("linear_file leaves the Reported by line off a single-thread seat's issue and strips its intro (Jay 2026-11-12)", async () => {
+  const single = harness({ seat: "JET", viewer: { id: "user-jet", name: "Jet", app: true } });
+  ok(await single.tools.call("linear_file", { title: "Single", app: "wombat", description: "[JET 📁ST] Steps here" }), "linear_file");
+  const desc = single.fake.mutations().at(-1).body.variables.input.description;
+  assert.ok(desc.startsWith("Steps here"), desc);
+  assert.ok(!/Reported by/.test(desc), desc);
+  const multi = harness({ seat: "CURSOR", viewer: { id: "user-cursor", name: "Cursor", app: true } });
+  ok(await multi.tools.call("linear_file", { title: "Multi", app: "wombat", description: "[CURSOR: AB.1.C 📁AFC] Steps" }), "linear_file");
+  const mdesc = multi.fake.mutations().at(-1).body.variables.input.description;
+  assert.ok(mdesc.startsWith("[CURSOR:\u200a\u200a\u200aAB.1.C\u200a\u200a📁\u200aAFC] Steps"), mdesc);
+  assert.match(mdesc, /- Reported by CURSOR/);
+});
+
+test("linear_comment leaves a supplied session out of the body (AFC-692)", async () => {
+  for (const [i, [body, want]] of [
+    ["[GROK-WEB 📁AFC] status", "[GROK-WEB\u200a\u200a📁\u200aAFC] status"],
+    ["[GROK-WEB·stale999 📁AFC] status", "[GROK-WEB·stale999\u200a\u200a📁\u200aAFC] status"],
+    ["plain status", "plain status"],
+  ].entries()) {
     const { tools, fake } = harness();
     fake.addIssue({ id: `issue-sess-${i}`, identifier: `AFC-68${i}` });
     ok(await tools.call("linear_comment", { id: `AFC-68${i}`, body, session: "abcd1234-ffff" }), "linear_comment");
-    assert.equal(fake.mutations().at(-1).body.variables.input.body, "[GROK-WEB·abcd1234 📁AFC] status", body);
+    assert.equal(fake.mutations().at(-1).body.variables.input.body, want, body);
   }
 });
 
@@ -1113,4 +1175,13 @@ test("MA spellings: every alias that reaches MA is treated as MA (label-only, no
     }
     assert.equal(fake.requests.length, 0, `${spelling}: nothing was sent to Linear`);
   }
+});
+
+test("AFC-722:  linear_comment writes the house gap for one or more spaces, and sentence_gap false keeps the text", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-gap", identifier: "AFC-722" });
+  ok(await tools.call("linear_comment", { id: "AFC-722", body: "Landed. tests pass.  Next is 2. Done." }), "linear_comment");
+  assert.equal(fake.mutations().at(-1).body.variables.input.body, "Landed.  tests pass.  Next is 2.  Done.");
+  ok(await tools.call("linear_comment", { id: "AFC-722", body: "Landed. tests pass.", sentence_gap: false }), "linear_comment");
+  assert.equal(fake.mutations().at(-1).body.variables.input.body, "Landed. tests pass.");
 });

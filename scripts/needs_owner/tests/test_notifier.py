@@ -101,7 +101,7 @@ class FallbackTests(NotifierCase):
         row = self.state_of(ident)
         self.assertEqual((row["state"], row["notified_msg_id"] is not None), ("notified", True))
         comments = self.w.comments(ident)
-        self.assertTrue(any(c.startswith("[CLAUDE") and "[needs-owner] notified msg" in c for c in comments), comments)
+        self.assertTrue(any("[needs-owner] notified msg" in c for c in comments), comments)
         # nothing was closed, restated or edited
         self.assertEqual(self.issue_status(ident), "Todo")
 

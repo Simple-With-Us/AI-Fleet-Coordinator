@@ -90,6 +90,22 @@ _SEEN_LOCK = threading.Lock()
 #: seen check and start a second ZCode turn.
 _INFLIGHT: set[str] = set()
 
+#: Failure classification scans only a bounded tail of the child's combined output, parsed
+#: in memory and never persisted:  raw process output can quote private prompt or session
+#: content or tokens, and the receipt is a durable record.  Only the allowlisted typed
+#: metadata the classifier returns may reach one.
+OUTPUT_SCAN_CAP = 8192
+
+#: Documented runtime failure signatures -> (typed failure code, stage).  Each needle is a
+#: literal the runtime itself documents for one exact failure at one exact stage (the ZCode
+#: runtime logs model.request.failed with statusMessage "project_token_login_failed" when a
+#: turn fails at the provider login stage, before any model response).  Classification is
+#: fail-closed:  no signature match, no typed code.  It records;  it never decides a retry -
+#: retry activation is a separate change that needs its own idempotency and money authority.
+FAILURE_SIGNATURES = (
+    ("project_token_login_failed", "model-auth-login-failed", "model-auth"),
+)
+
 ENV_URL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_URL"
 ENV_PRINCIPAL = "SIMPLE_TOOLS_OPERATOR_REGISTRY_PRINCIPAL"
 ENV_KEY = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY"
@@ -494,6 +510,23 @@ def _append_receipt(env, receipt, log_path) -> None:
         pass
 
 
+def classify_command_failure(exit_code: int, output: str) -> dict[str, Any]:
+    """Allowlisted typed metadata for one failed delivery command.  The child's raw output
+    never leaves this function:  a bounded tail is scanned in memory for documented literal
+    signatures, and only the typed code, the stage, and the exit code reach the receipt.
+    An unmatched failure is 'unknown', never guessed, and the result never decides a
+    retry - it records, so an operator can tell a pre-accept auth failure from a turn
+    that failed after the model accepted it without reading raw process output."""
+    code = "unknown"
+    stage = "unknown"
+    window = (output or "")[-OUTPUT_SCAN_CAP:]
+    for needle, fcode, fstage in FAILURE_SIGNATURES:
+        if needle in window:
+            code, stage = fcode, fstage
+            break
+    return {"failure_code": code, "failure_stage": stage, "exit_code": int(exit_code)}
+
+
 def deliver_receipt(env, config, receipt, log_path=None):
     """The worker side of accept-then-deliver (BB's shape): the POST answers 202 once the
     wake is deduped, in-flight-checked and routed; this runs the resume off the handler
@@ -540,6 +573,16 @@ def deliver_receipt(env, config, receipt, log_path=None):
                         )
                         delivered = proc.returncode == 0
                         delivery_reason = "ok" if delivered else "command-failed-%d" % proc.returncode
+                        if not delivered:
+                            # In-memory only:  the typed fields ride the receipt, the raw
+                            # output is discarded when this frame returns.
+                            raw = (proc.stdout or b"") + b"\n" + (proc.stderr or b"")
+                            receipt = dict(
+                                receipt,
+                                **classify_command_failure(
+                                    proc.returncode, raw.decode("utf-8", "replace")
+                                ),
+                            )
                     except subprocess.TimeoutExpired:
                         delivered, delivery_reason = False, "command-timeout"
                     except OSError as exc:

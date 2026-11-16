@@ -11,7 +11,7 @@ Verbs (action names carry the wf_ prefix so they cannot collide with registered 
   reads   wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches wf_commits wf_code_search
           wf_runs wf_run_jobs wf_checks (needs checks:read, refused unless the ceiling carries it)
   writes  wf_update_branch (atomic expected_head_sha), wf_run_rerun, wf_run_cancel,
-          wf_run_approve, wf_file_put and wf_files_put (non-default branch only; the multi-file one is one commit through git-data, atomic on expected_head_sha), wf_merge_guarded
+          wf_run_approve, wf_file_put and wf_files_put (non-default branch only, except an exact path in the seat's default_branch_paths for wf_file_put and wf_file_delete; the multi-file one is one commit through git-data, atomic on expected_head_sha), wf_merge_guarded
           (atomic expected_head_sha)
 Check-run reads (wf_checks) need the checks permission, which is outside the shared
 ceiling, so that verb is refused until a seat's ceiling carries checks:read; without it
@@ -33,13 +33,14 @@ import threading
 import time
 import zipfile
 import zlib
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit
 
 from .app_tokens import AppTokenError
 from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .provider_scan import PROVIDER_PATTERN, provider_token_text
 from .reviewed_fixtures import unreviewed_file_secret
-from .secret_scan import find_secret
+from .secret_scan import find_secret, first_secret_start
 from .server import PreReadUnavailable, _perm_within_ceiling
 
 
@@ -84,7 +85,78 @@ MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
 MAX_REF_BLOB_RAW = 700 * 1024
 MAX_PAGE = 50
 COMPARE_FILES_CAP = 300  # GitHub returns at most 300 files from the compare endpoint
+# Fixed public refusal for an unverifiable workflow-touch pre-read.  The hosted
+# front maps exactly this fixed string to a caller-visible reason, so keep it
+# byte-stable:  rewording it silently returns callers to a bare relay_refused.
+TOO_LARGE_TO_VERIFY = "PR changes too large to verify for workflow files; no write attempted"
 MAX_PROJECT = 100
+# wf_checks returns a check run's output title and summary cut to these many
+# characters, with a flag on the row when a cut happened.
+CHECK_TITLE_MAX = 255
+CHECK_SUMMARY_MAX = 500
+# The hosted front refuses a relay answer over 1 MiB, and the relay writes JSON
+# with every non-ASCII character escaped (6 or 12 bytes each), so 500 rows of
+# full-length text can pass it several times over.  wf_checks adds up each
+# row's size as it is written and, once this many bytes are spent, returns
+# the remaining rows without their title and summary (null, flag true).
+CHECK_ANSWER_BUDGET = 900_000
+CHECK_WITHHELD = "<withheld: credential-shaped text>"
+_CHECK_INSTANT = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})",
+    re.ASCII,
+)
+_CHECK_PROVIDER_SHAPES = re.compile(
+    PROVIDER_PATTERN + "|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}"
+)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _check_text(value, limit):
+    """(text, truncated, withheld) for one check-run output field.
+
+    A value that is not a string is null.  The text is cut to limit characters
+    first, and it is withheld only when a credential shape begins inside the
+    part that would be returned:  a shape that begins there is withheld even
+    if the cut breaks it, and one that begins after the cut is never returned,
+    so it does not blank the clean text before it."""
+    if not isinstance(value, str):
+        return None, False, False
+    starts = [first_secret_start(value)]
+    provider = _CHECK_PROVIDER_SHAPES.search(value)
+    starts.append(provider.start() if provider else None)
+    if any(start is not None and start < limit for start in starts):
+        return CHECK_WITHHELD, False, True
+    return value[:limit], len(value) > limit, False
+
+
+def _check_instant(value):
+    """(text, instant) for a provider ISO 8601 timestamp, or (None, None).
+
+    The text is returned exactly as the provider sent it;  the instant is what
+    two timestamps are compared by, so an offset or a fraction cannot reorder
+    them.  Anything that is not a string naming a real instant is null."""
+    if not isinstance(value, str):
+        return None, None
+    m = _CHECK_INSTANT.fullmatch(value)
+    if not m:
+        return None, None
+    zone = m.group(8)
+    try:
+        offset = timedelta(0)
+        if zone != "Z":
+            offset = timedelta(hours=int(zone[1:3]), minutes=int(zone[4:6]))
+            if zone[0] == "-":
+                offset = -offset
+        instant = datetime(
+            *(int(m.group(i)) for i in range(1, 7)),
+            int((m.group(7) or "")[:6].ljust(6, "0")),
+            tzinfo=timezone(offset),
+        )
+        return value, instant.astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None, None
+
+
 MAX_WORKFLOW_TEXT = 40000
 # Opt-in bounded larger-text class (covers the 83854-byte mirror document class);
 # still UTF-8 validated and secret-scanned, refused not cropped.
@@ -318,9 +390,54 @@ def _ref(args, key, required=True):
         or ".." in value
         or value.startswith(("/", "-"))
         or value.endswith(("/", ".lock"))
+        # git check-ref-format: no empty, dot-leading or dot-ending segment, no ".lock"
+        # segment end.  GitHub drops "." segments from a URL path, so "./main" would
+        # otherwise reach the default branch past a literal-name compare.
+        or any(
+            not part or part.startswith(".") or part.endswith((".", ".lock"))
+            for part in value.split("/")
+        )
     ):
         raise Refused(f"invalid {key}")
     return value
+
+
+def _branch_key(name):
+    """Comparison form of a branch name: no empty or "." segments, no refs/heads/ or heads/ prefix, case-folded."""
+    if not isinstance(name, str):
+        return None
+    key = "/".join(part for part in name.split("/") if part not in ("", "."))
+    changed = True
+    while changed:
+        changed = False
+        for prefix in ("refs/heads/", "heads/"):
+            if key.casefold().startswith(prefix):
+                key = key[len(prefix) :]
+                changed = True
+    return key.casefold()
+
+
+def _is_default_branch(name, default):
+    """True when name is, or cannot be shown not to be, the repository's default branch.
+
+    Fails closed: a missing or non-string name or default counts as the default branch.
+    Compares the normalised, case-folded forms, so "Main", "refs/heads/main" and any
+    dot-segment spelling all match "main".
+    """
+    if not isinstance(default, str) or not default:
+        return True
+    key = _branch_key(name)
+    if not key:
+        return True
+    return key == _branch_key(default)
+
+
+def _provider_ref_branch(data, key="ref"):
+    """The branch a provider ref answer names (refs/heads/<name>), or None when it is not one."""
+    value = data.get(key) if isinstance(data, dict) else None
+    if not isinstance(value, str) or not value.startswith("refs/heads/") or len(value) == 11:
+        return None
+    return value[11:]
 
 
 def _path(args, key="path"):
@@ -334,6 +451,19 @@ def _path(args, key="path"):
     ):
         raise Refused(f"invalid {key}")
     return value
+
+
+# Forced onto a default-branch contents commit so the history shows why it landed there.
+_DEFAULT_BRANCH_PREFIX = "default-branch-path: "
+DEFAULT_BRANCH_SHA_MISMATCH = "default-branch blob sha does not match"
+
+
+def _prefixed_default_message(message, *, encoded=False):
+    prefixed = _DEFAULT_BRANCH_PREFIX + message
+    size = len(prefixed.encode("utf-8")) if encoded else len(prefixed)
+    if size > 500 or "\x00" in prefixed or find_secret(prefixed):
+        raise Refused("invalid message")
+    return prefixed
 
 
 def _workflow_path(path):
@@ -962,6 +1092,10 @@ class WorkflowVerbs:
         # The handle is minted for exactly one authorized action and repository.
         self.action, self.repo = action, repo
         self.workflow_write_allowed = False
+        # Real loaded-credential population for the file-publication scan: the
+        # installation token this handle sends, plus the caller-presented
+        # credential when for_action threads it.  The syntax probe sets ().
+        self.loaded_known = (bearer,) if bearer else ()
 
     @classmethod
     def check_shape(cls, action, args, repo):
@@ -998,13 +1132,25 @@ class WorkflowVerbs:
         )
         handle.action, handle.repo = action, repo
         handle.workflow_write_allowed = True  # syntax probe only, no bearer or I/O
+        handle.loaded_known = ()  # a syntax probe carries no real credential
         try:
             handle.run(action, args)
         except _Reached:
             return
 
     @classmethod
-    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False, args=None):
+    def for_action(
+        cls,
+        client,
+        policy,
+        minter,
+        seat,
+        action,
+        repo,
+        preauthorized=False,
+        args=None,
+        caller_token=None,
+    ):
         """Seat is already authenticated by the broker; authorize once, mint least permission.
 
         preauthorized is for Relay.handle only: it has just run policy.authorize for this
@@ -1012,6 +1158,8 @@ class WorkflowVerbs:
         """
         if action not in SPECS:
             raise Refused("unsupported workflow action")
+        if action == "wf_pr_create":
+            raise Refused("PR creation requires owner-only open_pr")
         if not isinstance(repo, str) or not _REPO.fullmatch(repo):
             raise Refused("invalid repository")
         if not preauthorized and policy.authorize(seat, action, repo):
@@ -1041,6 +1189,9 @@ class WorkflowVerbs:
         except Exception:
             raise Unknown("own App credential unavailable") from None
         handle = cls(client, policy, seat, token, app_slug, action, repo)
+        # Thread the caller-presented credential for the loaded-credential
+        # scan only; it is never logged or returned.
+        handle.loaded_known = tuple(v for v in (caller_token, token) if v)
         handle.workflow_write_allowed = needs_workflows
         # Kept so merge/update-branch can elevate for a PR that edits workflow files.
         handle._elevation = (minter, app_slug, ceiling)
@@ -1053,7 +1204,13 @@ class WorkflowVerbs:
         changes .github/workflows/* unless the token also holds workflows:write, so read what
         the write will change first and mint the extra scope only when that touches the
         directory. Merge: the PR file list. Update-branch: the base changes it pulls in
-        (compare head...base), after checking the PR head is still the expected sha.
+        (compare head...base, with a complete two-tree diff when the compare itself is
+        unverifiable), after checking the PR head is still the expected sha.  The
+        update-branch write itself always runs under the workflow ceiling:  the
+        provider endpoint fences only the head, so the base tip cannot be fenced
+        atomically and a base that advances after the proof could pull unaudited
+        workflow changes into the merged tree.  A seat whose ceiling lacks
+        workflows:write refuses the update rather than writing unproven.
         Still bounded by the seat ceiling. A handle with no minter keeps its own bearer.
         """
         elevation = getattr(self, "_elevation", None)
@@ -1068,9 +1225,7 @@ class WorkflowVerbs:
                 if exc.code == "response_too_large":
                     # Size will not shrink on retry: a definite, non-retryable refusal,
                     # unlike a transient pre-read failure. Fails closed, nothing written.
-                    raise Refused(
-                        "PR changes too large to verify for workflow files; no write attempted"
-                    ) from None
+                    raise Refused(TOO_LARGE_TO_VERIFY) from None
                 if exc.status in (0, 408) or exc.status >= 500:
                     raise PreReadUnavailable(
                         "PR file pre-read unavailable; no write attempted"
@@ -1100,16 +1255,57 @@ class WorkflowVerbs:
                 or not isinstance(pr.get("base"), dict)
                 or not isinstance(pr["base"].get("ref"), str)
                 or not pr["base"]["ref"]
+                or not isinstance(pr["base"].get("sha"), str)
+                or not _SHA.fullmatch(pr["base"]["sha"])
             ):
                 raise Refused("PR head not matched")
+            base_ref = quote(pr["base"]["ref"], safe="/")
+
+            def _read_base_tip_sha():
+                try:
+                    tip = read(f"/repos/{repo}/git/ref/heads/{base_ref}")
+                except RelayGitHubError as exc:
+                    if exc.status == 404:
+                        raise Refused("PR base not matched") from None
+                    raise
+                tip_obj = tip.get("object") if isinstance(tip, dict) else None
+                sha = tip_obj.get("sha") if isinstance(tip_obj, dict) else None
+                if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+                    raise Refused("PR base not matched")
+                return sha
+
+            base_sha = _read_base_tip_sha()
             # The compare files array is one response capped at 300 files, not paginated:
             # one read, and a full-size array may be truncated so it is unverifiable.
-            base_ref = quote(pr["base"]["ref"], safe="/")
-            data = read(f"/repos/{repo}/compare/{head_sha}...{base_ref}")
+            # Freeze the actual named ref tip, since the PR's base snapshot may lag it.
+            # When the compare cannot prove the workflow-touch answer -
+            # too large to read, no files array, or a possibly-truncated full page
+            # without a touch - fall back to a complete two-tree diff.
+            try:
+                data = read(f"/repos/{repo}/compare/{head_sha}...{base_sha}")
+            except Refused as exc:
+                if str(exc) != TOO_LARGE_TO_VERIFY:
+                    raise
+                data = None
             files = data.get("files") if isinstance(data, dict) else None
-            scan(files)
-            if not touches and len(files) >= COMPARE_FILES_CAP:
-                raise PreReadUnavailable("base changes too large to verify; no write attempted")
+            if not isinstance(files, list):
+                touches = self._base_changes_touch_workflows_via_trees(
+                    read, repo, head_sha, base_sha
+                )
+            else:
+                scan(files)
+                if not touches and len(files) >= COMPARE_FILES_CAP:
+                    touches = self._base_changes_touch_workflows_via_trees(
+                        read, repo, head_sha, base_sha
+                    )
+            # The provider update-branch endpoint fences only the head, so the base
+            # tip is re-read immediately before the write:  a base that moved after
+            # the proof invalidates it and the caller can retry.  A move after this
+            # recheck stays possible - the endpoint gives no stronger fence - which
+            # is exactly why the write below always runs under the workflow ceiling
+            # instead of relying on the provider to refuse unaudited changes.
+            if _read_base_tip_sha() != base_sha:
+                raise Refused("PR base not matched")
         else:
             for page in range(1, 31):
                 rows = read(f"/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
@@ -1120,7 +1316,9 @@ class WorkflowVerbs:
                     break
             else:
                 raise PreReadUnavailable("PR file list too long to verify; no write attempted")
-        if not touches:
+        # Update-branch never takes the least-permission path (see above); merge
+        # does when its file list proves no workflow change.
+        if not touches and action != "wf_update_branch":
             return self.bearer
         required = dict(SPECS[action][0])
         required["workflows"] = "write"
@@ -1139,10 +1337,132 @@ class WorkflowVerbs:
             raise Unknown("own App credential unavailable") from None
         return token
 
+    @staticmethod
+    def _tree_rows(read, repo, ref_sha):
+        """{path: (sha, mode, type)} for every row of one whole-tree read.
+
+        The commit response must itself be the requested commit (matching sha)
+        and its root tree sha is read first;  the tree response must return
+        exactly that sha:  the proof is bound to the requested commit, not to
+        any syntactically valid object.  recursive=1 is a single response
+        with an explicit truncation flag, so a truncated or oversized tree is
+        as unverifiable as an oversized compare:  same refusal, nothing
+        written.  Every row must be well formed, its mode must match its type,
+        and every path unique:  a skipped malformed row could silently drop a
+        workflow path from the diff, which would fail open, and a non-blob
+        change (gitlink, directory) is a real change too.  Paths are bounded
+        Git paths, not the publication allowlist:  spaces and non-ASCII are
+        valid here.
+        """
+        if not isinstance(ref_sha, str) or not _SHA.fullmatch(ref_sha):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        commit = read(f"/repos/{repo}/git/commits/{ref_sha}")
+        if not isinstance(commit, dict) or commit.get("sha") != ref_sha:
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        tree = commit.get("tree")
+        tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+        if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        data = read(f"/repos/{repo}/git/trees/{tree_sha}?recursive=1")
+        if (
+            not isinstance(data, dict)
+            or data.get("truncated") is not False
+            or data.get("sha") != tree_sha
+            or not isinstance(data.get("tree"), list)
+        ):
+            raise Refused(TOO_LARGE_TO_VERIFY)
+        allowed = {
+            "blob": ("100644", "100755", "120000"),
+            "tree": ("040000",),
+            "commit": ("160000",),
+        }
+        out = {}
+        for row in data["tree"]:
+            path = row.get("path") if isinstance(row, dict) else None
+            rtype = row.get("type") if isinstance(row, dict) else None
+            if not (
+                isinstance(row, dict)
+                and isinstance(path, str)
+                and 1 <= len(path) <= 1024
+                and "\x00" not in path
+                and not path.startswith("/")
+                and isinstance(row.get("sha"), str)
+                and _SHA.fullmatch(row["sha"])
+                and isinstance(row.get("mode"), str)
+                and row.get("mode") in allowed.get(rtype, ())
+            ):
+                raise Refused(TOO_LARGE_TO_VERIFY)
+            if path in out:
+                raise Refused(TOO_LARGE_TO_VERIFY)
+            out[path] = (row["sha"], row["mode"], rtype)
+        return out
+
+    def _base_changes_touch_workflows_via_trees(self, read, repo, head_sha, base_sha):
+        """Workflow-touch proof from the two trees when the compare cannot answer.
+
+        The base changes an update pulls in are exactly the entries whose
+        (sha, mode, type) differs between the head tree and the base tip tree,
+        plus the paths present on only one side, so a rename, a mode-only or
+        type-only change, and a gitlink or directory change in either direction
+        are covered.  Complete enumeration, fail closed on any gap.
+        """
+        head = self._tree_rows(read, repo, head_sha)
+        base = self._tree_rows(read, repo, base_sha)
+        changed = {path for path, row in head.items() if base.get(path) != row}
+        changed |= {path for path in base if path not in head}
+        return any(
+            name == ".github/workflows" or name.startswith(".github/workflows/") for name in changed
+        )
+
     def _write_path_denied(self, path):
         if path in (".github", ".github/workflows"):
             return True
         return _workflow_path(path) and not getattr(self, "workflow_write_allowed", False)
+
+    def _default_branch_path_allowed(self, repo, path):
+        """Exact grant only. A policy that cannot answer, or any error, stays refused."""
+        allowed = getattr(self.policy, "default_branch_path_allowed", None)
+        if not callable(allowed):
+            return False
+        try:
+            return allowed(self.seat, repo, path) is True
+        except Exception:
+            return False
+
+    def _default_branch_blob(self, repo, path, branch):
+        """Blob sha of the file on this branch, or None when GitHub says it is absent."""
+        try:
+            data = self._get(
+                f"/repos/{repo}/contents/{quote(path, safe='/')}?ref={quote(branch, safe='')}"
+            )
+        except RelayGitHubError as exc:
+            if exc.status == 404:
+                return None
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "default-branch pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            not isinstance(data, dict)
+            or data.get("type") != "file"
+            or data.get("path") != path
+            or not isinstance(data.get("sha"), str)
+            or not _SHA.fullmatch(data["sha"])
+        ):
+            raise RelayGitHubError(502, "default-branch blob pre-read unverifiable")
+        return data["sha"]
+
+    def _require_default_branch_cas(self, args, remote):
+        """The caller's blob sha must be the file that is there, or absent for a create."""
+        if "prior_sha" not in args:
+            if remote is not None:
+                raise Refused(DEFAULT_BRANCH_SHA_MISMATCH)
+            return None
+        prior = _sha(args, "prior_sha")
+        if prior != remote:
+            raise Refused(DEFAULT_BRANCH_SHA_MISMATCH)
+        return prior
 
     def _get(self, path):
         return self.client._call("GET", path, None, bearer=self.bearer)
@@ -3977,7 +4297,7 @@ class WorkflowVerbs:
                 ) from None
             raise
         default_branch = repository.get("default_branch")
-        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+        if _is_default_branch(name, default_branch):
             raise Refused("default branch mutation refused")
         path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
         try:
@@ -3986,6 +4306,12 @@ class WorkflowVerbs:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
             raise
+        # The provider's own answer decides, not the caller's spelling.
+        provider_branch = _provider_ref_branch(prior)
+        if provider_branch is None or _is_default_branch(provider_branch, default_branch):
+            raise Refused("default branch mutation refused")
+        if provider_branch != name:
+            raise Refused("ref changed")
         if _sub(prior, "object").get("sha") != expected_sha:
             raise Refused("ref changed")
         data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=self.bearer)
@@ -4021,7 +4347,7 @@ class WorkflowVerbs:
                 ) from None
             raise
         default_branch = repository.get("default_branch")
-        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+        if _is_default_branch(name, default_branch):
             raise Refused("default branch mutation refused")
         path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
         try:
@@ -4030,6 +4356,12 @@ class WorkflowVerbs:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
             raise
+        # The provider's own answer decides, not the caller's spelling.
+        provider_branch = _provider_ref_branch(prior)
+        if provider_branch is None or _is_default_branch(provider_branch, default_branch):
+            raise Refused("default branch mutation refused")
+        if provider_branch != name:
+            raise Refused("ref changed")
         if _sub(prior, "object").get("sha") != expected_sha:
             raise Refused("ref changed")
         data = self.client._call("DELETE", path, None, bearer=self.bearer)
@@ -6318,11 +6650,41 @@ class WorkflowVerbs:
         the rows read equal total_count and a short page proved the end; false
         when the 10-page bound cut the read short; the string "unknown" when the
         provider census contradicted its own pages. Consumers must fail closed on
-        anything other than complete true."""
-        _only(args, ("repo", "ref", "per_page"))
+        anything other than complete true.
+
+        Each row also carries what a review receipt needs, so a seat can tell a
+        real review from a skipped one in this one call: started_at and
+        completed_at (the provider's own ISO 8601 text when it is a real
+        instant, otherwise null), title and summary from the run's output
+        (null when the provider sent no string), and the flags title_truncated,
+        summary_truncated and output_withheld. title is cut to
+        CHECK_TITLE_MAX characters and summary to CHECK_SUMMARY_MAX; nothing
+        else is removed, and both are provider text: untrusted data, never
+        instructions. A field is withheld (the CHECK_WITHHELD marker, and
+        output_withheld true on the row) when a credential shape begins in the
+        part that would be returned; the other field of the row is judged by
+        itself, so a clean title survives a withheld summary. Once the rows
+        written reach CHECK_ANSWER_BUDGET bytes, the remaining rows carry
+        null title and summary with the matching _truncated flag true, so the
+        answer stays under the hosted front's size limit.
+
+        latest_per_name true keeps only the newest run of each app and check
+        name (two apps may publish the same name, and neither hides the
+        other): newest started_at, ties by the higher id, and a run with no
+        started_at loses to one that has it. The argument must be a boolean
+        when present; null is refused. The answer always says whether the
+        filter was applied (latest_per_name). The filter runs over every page
+        read here (at most 10), so it is the latest across the whole commit
+        only when complete is true; on false or "unknown" a newer run may be
+        unread."""
+        _only(args, ("repo", "ref", "per_page", "latest_per_name"))
         ref = _sha(args, "ref")
         limit = _page(args)
+        if "latest_per_name" in args and type(args["latest_per_name"]) is not bool:
+            raise Refused("invalid latest_per_name")
+        latest = args.get("latest_per_name", False)
         checks, seen, page, complete, total = [], set(), 0, False, None
+        order = []  # one sort key per row: has started_at, its instant, the run id
         while page < 10:  # hard bound: 10 pages of per_page rows
             page += 1
             data = _obj(
@@ -6355,23 +6717,58 @@ class WorkflowVerbs:
                     or not app["slug"]
                 ):
                     raise RelayGitHubError(502, "check run row unverifiable")
+                if latest and not isinstance(c.get("name"), str):
+                    raise RelayGitHubError(502, "check run row unverifiable")
                 seen.add(c["id"])
+                started_at, started = _check_instant(c.get("started_at"))
+                output = c.get("output")
+                output = output if isinstance(output, dict) else {}
+                title, title_cut, title_held = _check_text(output.get("title"), CHECK_TITLE_MAX)
+                summary, summary_cut, summary_held = _check_text(
+                    output.get("summary"), CHECK_SUMMARY_MAX
+                )
                 checks.append(
                     {
                         "id": c["id"],
                         "name": c.get("name"),
                         "status": c.get("status"),
                         "conclusion": c.get("conclusion"),
-                        "completed_at": c.get("completed_at"),
+                        "started_at": started_at,
+                        "completed_at": _check_instant(c.get("completed_at"))[0],
                         "head_sha": c["head_sha"],
                         "app_id": app["id"],
                         "app_slug": app["slug"],
+                        "title": title,
+                        "title_truncated": title_cut,
+                        "summary": summary,
+                        "summary_truncated": summary_cut,
+                        "output_withheld": title_held or summary_held,
                     }
                 )
+                order.append((started is not None, started or _EPOCH, c["id"]))
             if len(runs) < limit:
                 complete = True if len(checks) == total else "unknown"
                 break
-        return {"checks": checks, "complete": complete}
+        if latest:
+            newest = {}
+            for index, row in enumerate(checks):
+                key = (row["app_id"], row["name"])
+                held = newest.get(key)
+                if held is None or order[index] > order[held]:
+                    newest[key] = index
+            keep = set(newest.values())
+            checks = [row for index, row in enumerate(checks) if index in keep]
+        spent = 0  # bytes as the relay writes them: json.dumps, non-ASCII escaped
+        for row in checks:
+            size = len(json.dumps(row))
+            if spent + size > CHECK_ANSWER_BUDGET:
+                for field in ("title", "summary"):
+                    if row[field] is not None:
+                        row[field] = None
+                        row[field + "_truncated"] = True
+                size = len(json.dumps(row))
+            spent += size
+        return {"checks": checks, "complete": complete, "latest_per_name": bool(latest)}
 
     # ---- writes (each uses an atomic or idempotent upstream guard) ----
     def wf_update_branch(self, repo, args):
@@ -6941,7 +7338,7 @@ class WorkflowVerbs:
                     validated_blobs[sha] = decoded_raw
                 decoded_raw = validated_blobs[sha]
                 # Cache verified bytes only, not path-dependent scan approvals.
-                if unreviewed_file_secret(repo, path, decoded_raw):
+                if unreviewed_file_secret(repo, path, decoded_raw, known=self.loaded_known):
                     raise Refused("credential-shaped content refused")
                 try:
                     decoded = decoded_raw.decode("utf-8")
@@ -7269,9 +7666,14 @@ class WorkflowVerbs:
                 or not info["default_branch"]
             ):
                 raise RelayGitHubError(502, "rename repository pre-read unverifiable")
-            if branch == info["default_branch"]:
+            if _is_default_branch(branch, info["default_branch"]):
                 raise Refused("default branch is not writable")
             ref = self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}")
+            provider_branch = _provider_ref_branch(ref)
+            if provider_branch is None or _is_default_branch(
+                provider_branch, info["default_branch"]
+            ):
+                raise Refused("default branch is not writable")
             if (
                 not isinstance(ref, dict)
                 or ref.get("ref") != "refs/heads/" + branch
@@ -7448,8 +7850,15 @@ class WorkflowVerbs:
                     "repository pre-read unavailable; no write attempted"
                 ) from None
             raise
-        if branch == info["default_branch"]:
-            raise Refused("default branch is not writable")
+        on_default = _is_default_branch(branch, info["default_branch"])
+        if on_default:
+            # Branch names are case-sensitive at the provider, so only the exact default name
+            # takes the grant and CAS route; any other spelling of it is refused unread.
+            if branch != info["default_branch"] or not self._default_branch_path_allowed(
+                repo, path
+            ):
+                raise Refused("default branch is not writable")
+            message = _prefixed_default_message(message, encoded=True)
         try:
             target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
             if (
@@ -7466,6 +7875,8 @@ class WorkflowVerbs:
                     "branch pre-read unavailable; no write attempted"
                 ) from None
             raise
+        if on_default and self._default_branch_blob(repo, path, branch) != sha:
+            raise Refused(DEFAULT_BRANCH_SHA_MISMATCH)
         result = self.client._call(
             "DELETE",
             f"/repos/{repo}/contents/{quote(path, safe='/')}",
@@ -7505,15 +7916,54 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if len(raw) > MAX_FILE_RAW:
             raise Refused("file too large")
-        if find_secret(message) or unreviewed_file_secret(repo, path, raw):
+        if (
+            find_secret(message)
+            or any(v and v in message for v in self.loaded_known)
+            or unreviewed_file_secret(repo, path, raw, known=self.loaded_known)
+        ):
             raise Refused("credential-shaped content refused")
-        payload = {"message": message, "content": content, "branch": branch}
+        # Shape is checked before any upstream read. The default-branch path still
+        # compares this sha with the blob it reads, or refuses a create over a file.
         if "prior_sha" in args:
-            payload["sha"] = _sha(args, "prior_sha")
+            _sha(args, "prior_sha")
+        payload = {"message": message, "content": content, "branch": branch}
         repo_info = _obj(self._get(f"/repos/{repo}"))
         default = repo_info.get("default_branch")
-        if not isinstance(default, str) or not default or branch == default:
+        if not isinstance(default, str) or not default:
             raise Refused("default branch is not writable")
+        if _is_default_branch(branch, default):
+            # Branch names are case-sensitive at the provider, so only the exact default name
+            # takes the grant and CAS route; any other spelling of it is refused unread.
+            if branch != default or not self._default_branch_path_allowed(repo, path):
+                raise Refused("default branch is not writable")
+            payload["message"] = _prefixed_default_message(message)
+            # The contents read below proves the branch exists, so no branch read is made.
+            prior = self._require_default_branch_cas(
+                args, self._default_branch_blob(repo, path, branch)
+            )
+            if prior is not None:
+                payload["sha"] = prior
+        else:
+            if "prior_sha" in args:
+                payload["sha"] = _sha(args, "prior_sha")
+            # The provider's own name for the branch decides, not the caller's spelling.  A name
+            # it does not know (HEAD, a tag, a typo) is refused before any write.  Every
+            # pre-read failure here is a retryable no-write failure, never an unknown outcome.
+            try:
+                target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
+            except RelayGitHubError as exc:
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise PreReadUnavailable(
+                        "branch pre-read unavailable; no write attempted"
+                    ) from None
+                raise
+            provider_name = target.get("name") if isinstance(target, dict) else None
+            if not isinstance(provider_name, str) or not provider_name:
+                raise PreReadUnavailable("branch pre-read unverifiable; no write attempted")
+            if _is_default_branch(provider_name, default):
+                raise Refused("default branch is not writable")
+            if provider_name != branch:
+                raise PreReadUnavailable("branch pre-read unverifiable; no write attempted")
         data = self.client._call(
             "PUT",
             f"/repos/{repo}/contents/{quote(path, safe='/')}",
@@ -7675,10 +8125,16 @@ class WorkflowVerbs:
             raise Refused("invalid patch message")
         repo_info = _obj(self._get(f"/repos/{repo}"))
         default = repo_info.get("default_branch")
-        if not isinstance(default, str) or not default or branch == default:
+        if _is_default_branch(branch, default):
             raise Refused("default branch is not writable")
         ref_path = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"
-        if _sub(_obj(self._get(ref_path)), "object").get("sha") != head:
+        prior_ref = _obj(self._get(ref_path))
+        provider_branch = _provider_ref_branch(prior_ref)
+        if provider_branch is None or _is_default_branch(provider_branch, default):
+            raise Refused("default branch is not writable")
+        if provider_branch != branch:
+            raise Refused("provider branch does not match the requested branch")
+        if _sub(prior_ref, "object").get("sha") != head:
             raise Refused("branch head moved")
         base_commit = _obj(self._get(f"/repos/{repo}/git/commits/{head}"))
         tree = _sub(base_commit, "tree").get("sha")
@@ -7811,15 +8267,20 @@ class WorkflowVerbs:
             total_raw += len(raw)
             if len(raw) > MAX_FILE_RAW or total_raw > MAX_FILES_RAW:
                 raise Refused("files too large")
-            if unreviewed_file_secret(repo, path, raw):
+            if unreviewed_file_secret(repo, path, raw, known=self.loaded_known):
                 raise Refused("credential-shaped content refused")
             plan.append((path, content))
-        if find_secret(message):
+        if find_secret(message) or any(v and v in message for v in self.loaded_known):
             raise Refused("credential-shaped content refused")
         default = _obj(self._get(f"/repos/{repo}")).get("default_branch")
-        if not isinstance(default, str) or not default or branch == default:
+        if _is_default_branch(branch, default):
             raise Refused("default branch is not writable")
         ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
+        provider_branch = _provider_ref_branch(ref)
+        if provider_branch is None or _is_default_branch(provider_branch, default):
+            raise Refused("default branch is not writable")
+        if provider_branch != branch:
+            raise Refused("provider branch does not match the requested branch")
         if _sub(ref, "object").get("sha") != head:
             raise Refused("branch head moved")
         base_tree = _sub(_obj(self._get(f"/repos/{repo}/git/commits/{head}")), "tree").get("sha")
@@ -7916,61 +8377,9 @@ class WorkflowVerbs:
         return pr
 
     def wf_pr_create(self, repo, args):
-        # Open a PR from a same-repo head branch (a colon form is not a _ref).
-        # expected_head_sha is a preflight pin on the head branch's CURRENT commit,
-        # read before the write; it is NOT an atomic compare-and-swap - a head move
-        # between this read and the POST is caught only by the receipt comparison.
-        _only(args, ("repo", "base", "head", "title", "body", "expected_head_sha"))
-        base, head = _ref(args, "base"), _ref(args, "head")
-        expected = _sha(args, "expected_head_sha")
-        title = self._pr_text_field(args, "title", 256)
-        body = self._pr_text_field(args, "body", 65536)
-        try:
-            branch = self._get(f"/repos/{repo}/branches/{quote(head, safe='')}")
-        except RelayGitHubError as exc:
-            if exc.status in (0, 408) or exc.status >= 500:
-                raise PreReadUnavailable(
-                    "head branch pre-read unavailable; no write attempted"
-                ) from None
-            raise
-        if (
-            not isinstance(branch, dict)
-            or not isinstance(branch.get("commit"), dict)
-            or branch["commit"].get("sha") != expected
-        ):
-            raise Refused("head branch not at expected sha")
-        result = self.client._call(
-            "POST",
-            f"/repos/{repo}/pulls",
-            {"title": title, "body": body, "base": base, "head": head},
-            bearer=self.bearer,
-        )
-        if (
-            not isinstance(result, dict)
-            or type(result.get("number")) is not int
-            or result["number"] < 1
-            or result.get("state") != "open"
-            or not isinstance(result.get("head"), dict)
-            or result["head"].get("ref") != head
-            or not isinstance(result["head"].get("sha"), str)
-            or not _SHA.fullmatch(result["head"]["sha"])
-            or result["head"]["sha"] != expected
-            or not isinstance(result.get("base"), dict)
-            or result["base"].get("ref") != base
-            or result.get("title") != title
-            or result.get("body") != body
-        ):
-            raise RelayGitHubError(502, "PR creation receipt unconfirmed; write may have occurred")
-        # A verified receipt confirms only the provider-visible effect at response time: it cannot prevent a later foreign overwrite or close, and it supplies no authority for the action by itself.
-        return {
-            "pull": {
-                "number": result["number"],
-                "state": "open",
-                "head_ref": head,
-                "head_sha": result["head"]["sha"],
-                "base_ref": base,
-            }
-        }
+        # Tombstone for stale/direct handles. Never mint an App or send a PR POST.
+        # The legacy head-pin contract is not silently mapped to open_pr.
+        raise Refused("PR creation requires owner-only open_pr")
 
     def wf_pr_edit(self, repo, args):
         # Edit title/body of an OPEN same-repo PR. expected_head_sha pins the head

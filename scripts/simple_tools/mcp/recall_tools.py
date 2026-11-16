@@ -19,11 +19,12 @@ import re
 import subprocess
 import sys
 import threading
-import unicodedata
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+from ..textfold import fold
 
 HERE = Path(__file__).resolve().parent
 RECALL_PATH = HERE.parent.parent / "recall"
@@ -194,8 +195,7 @@ def failure(code: int, err: str, *, write: bool = False) -> RecallUnavailable:
 
 
 def clean(value: Any, limit: int | None = None) -> tuple[str, bool]:
-    text = unicodedata.normalize("NFKC", "" if value is None else str(value))
-    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    text = fold("" if value is None else str(value))
     text = _MARKER_RE.sub("[marker removed]", text)
     text = "".join(
         ("\\x%02x" % ord(ch)) if ord(ch) < 32 and ch not in "\n" or ord(ch) == 127 else ch

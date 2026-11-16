@@ -503,6 +503,101 @@ class SeatAppTests(RealRegistryCase):
                 self.assertEqual(self.app(got), "instinct")
 
 
+class PlatformSeatsTests(RealRegistryCase):
+    """AFC-772:  the seats a session-registry platform's chats register under are `seatApps` read the
+    other way (app -> seats), so the registry's seat check has no table of its own to drift."""
+
+    def seats(self, platform: str):
+        return I.platform_seats(platform, registry=self.reg)
+
+    def test_every_pair_the_live_registry_holds_is_its_platforms_own(self) -> None:
+        # The (platform, seat) pairs the Operator's registry held on Nov 12, 2026 (read with its
+        # history op), apart from the three claude chats under ZC that the check exists to refuse,
+        # and the letter clients that had registered nothing yet (opencode, clutch).
+        want = {
+            "antigravity": "AG",
+            "claude": "CLAUDE",
+            "clutch": "CLUTCH",
+            "codex": "CODEX",
+            "cursor": "CURSOR",
+            "fx": "FX",
+            "grok-leader": "GROK",
+            "minimax": "MM",
+            "muse": "MC",
+            "opencode": "OPENCODE",
+            "zcode": "ZC",
+        }
+        for platform, seat in want.items():
+            with self.subTest(platform=platform):
+                owners = self.seats(platform)
+                self.assertEqual((owners.seats, owners.patterns), ((seat,), ()))
+                self.assertEqual(owners.expected, (seat,))
+                self.assertTrue(owners.allows(seat))
+
+    def test_the_bug_that_made_the_check_is_refused(self) -> None:
+        self.assertFalse(self.seats("claude").allows("ZC"))
+        self.assertTrue(self.seats("zcode").allows("ZC"))
+
+    def test_a_launchers_bots_are_checked_against_a_pattern_not_one_seat(self) -> None:
+        bots = self.seats("botfleet")
+        self.assertEqual((bots.seats, bots.expected), ((), ("BF-*",)))
+        for seat in ("BF-FIXER", "bf-oracle", " BF-BUILDER "):
+            self.assertTrue(bots.allows(seat), seat)
+        for seat in ("CLAUDE", "GB-FIXER", "BF-", "BF", "", "BF-FIXER/../x"):
+            self.assertFalse(bots.allows(seat), seat)
+        grok = self.seats("grok-bot")
+        self.assertEqual(grok.expected, ("GROK-BOT", "GB-*"))
+        for seat in ("GB-COMPILER", "gb-oracle", "GROK-BOT"):
+            self.assertTrue(grok.allows(seat), seat)
+        for seat in ("CURSOR", "GROK", "BF-COMPILER"):
+            self.assertFalse(grok.allows(seat), seat)
+
+    def test_the_seat_is_read_as_canonical_seat_reads_it(self) -> None:
+        self.assertTrue(self.seats("claude").allows(" claude "))
+        for raw in GROK_BUILD_SPELLINGS:  # the Grok leader is Grok Build, so its seat is GROK
+            self.assertTrue(self.seats("grok-leader").allows(raw), raw)
+        self.assertTrue(self.seats(" Claude ").allows("CLAUDE"))  # and the platform is trimmed and folded
+        self.assertFalse(self.seats("minimax").allows("MINIMAX"))  # the tag is MM;  identity has no such alias
+
+    def test_an_app_with_two_seats_takes_either(self) -> None:
+        self.assertEqual(self.seats("instinct").seats, ("ECHO", "WISE"))
+        self.assertTrue(self.seats("instinct").allows("INSTINCT"))  # the retired spelling of WISE
+
+    def test_a_platform_the_table_does_not_name_has_no_seats(self) -> None:
+        # None, never a refusal:  a new platform registers freely until fleet-apps.json has its row.
+        for platform in ("testbed", "zulip", "newplatform", "", None, "grok", "cursor-cloud"):
+            self.assertIsNone(self.seats(platform), platform)
+
+    def test_a_namespace_is_named_only_where_it_is_not_its_apps_name(self) -> None:
+        apps = set(self.reg.by_seat.values()) | set(self.reg.extra.values())
+        apps |= {pattern.app for pattern in self.reg.patterns}
+        for namespace, app in I.PLATFORM_APPS.items():
+            with self.subTest(namespace=namespace):
+                self.assertIn(app, apps, "the alias names an app seatApps does not have")
+                self.assertNotEqual(namespace, app)
+                self.assertNotIn(namespace, apps, "a namespace that is an app name needs no alias")
+
+    def test_a_retired_seat_is_not_a_platforms_seat(self) -> None:
+        data = copy.deepcopy(registry_data())
+        for row in data["seats"]:
+            if row["tag"] == "ZC":
+                row["retired"] = True
+        reg = I.parse_seat_registry(data)
+        self.assertIsNone(I.platform_seats("zcode", registry=reg))
+
+    def test_an_unreadable_table_is_an_error_and_not_an_empty_answer(self) -> None:
+        old = os.environ.get(I.ENV_APPS_JSON)
+        os.environ[I.ENV_APPS_JSON] = "/nonexistent/fleet-apps.json"
+        try:
+            with self.assertRaises(I.SeatRegistryError):
+                I.platform_seats("claude")
+        finally:
+            if old is None:
+                os.environ.pop(I.ENV_APPS_JSON, None)
+            else:
+                os.environ[I.ENV_APPS_JSON] = old
+
+
 class RegistryDataTests(unittest.TestCase):
     """What F2 did to fleet-apps.json, and what it must not have done."""
 

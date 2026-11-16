@@ -85,8 +85,8 @@ class Item:
 
     @property
     def seat_verified(self) -> bool:
-        """The block's 'Filed by' equals the seat that signed the text carrying it:  the issue's own tag line
-        for a filed item, the block comment's tag for an adopted one."""
+        """The block's 'Filed by' equals the seat that signed it:  the issue's reported_by
+        for a filed item, or the block comment's Linear app (author_seat) for an adopted one."""
         if not self.block:
             return False
         signer = self.block_author if self.block_in_comment else self.reported_by
@@ -106,11 +106,19 @@ class Item:
 NOTIFIER_SEAT = "CLAUDE"  # the seat that runs the fallback notifier:  it posts notices for any seat and writes every reply record
 
 
+def comment_seat(comment: dict) -> str | None:
+    """The verified seat that signed this comment:  `author_seat` from a known Linear app
+    (a seat app, or a legacy `[SEAT]` tag posted by a known app).  None when `author_seat`
+    is missing;  the display `author` and body text are not consulted."""
+    seat = comment.get("author_seat")
+    return seat if isinstance(seat, str) and seat else None
+
+
 def _newest(comments: list[dict], parse, authors: frozenset[str] | None = None):
-    """(parsed value, comment) of the newest comment `parse` accepts.  With `authors`, only a comment signed
-    by one of those seats counts (`author` is the tag line the board writes for the seat that wrote it)."""
+    """(parsed value, comment) of the newest comment `parse` accepts.  With `authors`, only a comment
+    whose verified `author_seat` is one of those seats counts;  a comment with no `author_seat` is ignored."""
     for comment in reversed(comments):
-        if authors is not None and comment.get("author") not in authors:
+        if authors is not None and comment_seat(comment) not in authors:
             continue
         value = parse(comment.get("text") or "")
         if value is not None:
@@ -147,7 +155,7 @@ def build_item(show: dict) -> Item:
                 continue
             try:
                 item.block = parse_block(comment.get("text") or "")
-                item.block_author = comment.get("author")
+                item.block_author = comment_seat(comment)
                 item.block_in_comment = True
                 item.problem = None
                 break
@@ -163,7 +171,7 @@ def build_item(show: dict) -> Item:
     item.pending, _ = _newest(comments, records.parse_pending, notice_authors)
     item.replied, reply_comment = _newest(comments, records.parse_reply, frozenset({NOTIFIER_SEAT}))
     if reply_comment is not None:
-        item.replied_by = reply_comment.get("author")
+        item.replied_by = comment_seat(reply_comment)
     return item
 
 

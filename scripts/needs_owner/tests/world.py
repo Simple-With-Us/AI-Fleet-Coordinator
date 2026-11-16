@@ -259,6 +259,9 @@ class World:
         who = {"name": user_name}
         if user_id is not None:
             who["id"] = user_id
+        # Default Fleet comments are the retired shared app (legacy [SEAT] tags stay trusted).
+        if app is None and user_name.casefold() == "fleet":
+            app = True
         if app is not None:
             who["app"] = app
         cid = "seed-%d" % world["tick"]

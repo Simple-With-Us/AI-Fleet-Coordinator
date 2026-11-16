@@ -119,6 +119,8 @@ INPUT_LIMITS = {
     "gr_wf_release_asset_upload_binary": 253952,
     "gr_wf_file_put": 6 * 1024 * 1024,
     "gr_wf_files_put": 6 * 1024 * 1024,
+    "gr_wf_git_blob_create": 212992,
+    "gr_wf_git_tree_create": 245760,
 }
 DEFAULT_INPUT_LIMIT = 65536
 
@@ -150,6 +152,8 @@ def main(argv):
     catalog = []
     for tool in sorted(tools, key=lambda t: t["name"]):
         name = tool["name"]
+        if name == "gr_wf_pr_create":
+            continue  # Retired bot-author creation must not reappear from a stale capture.
         if not re.fullmatch(r"gr_[a-z0-9_]{1,80}", name):
             continue
         entry = {

@@ -61,6 +61,19 @@ clarify and an ambiguous wake is never held.
          sees it either way.
 
 ## The Router Contract (What Every Platform's Router Implements)
+## Addressing a chat
+
+A chat is written as its platform's name and its letter, and a letter is exactly two capitals:  "Claude AA" for a main chat, "Claude DE" for a child thread.  The one router reads which chat a message addresses in one function for every platform (`letter_of` in `scripts/simple_tools/wake_router.py`), with no rule of its own for any seat.  The body's `letter` field wins.  Otherwise the first of these that names a letter for the seat gives it, in this order:
+
+1. **A real mention and the letter**, anywhere:  `@**Claude** AA`, the letter on the mention's line or the next.  The name may be said again after the mention (`@**Claude** Claude AA`).  A real mention is the platform's mention name as Zulip writes it, so `@**CLAUDE** AA` is not one.
+2. **The recipient list of the post's header**, the text after its arrow (`→`, or `->` as some type it) up to the closing bracket:  `[GROK: BB.2.M 📁AFC → CLAUDE AA, CODEX BB]` is AA for Claude and BB for Codex.  This is the canonical way to address a chat, because every fleet post begins with that header.  An item counts when it is exactly the name and the letter:  `CLAUDE AA`, `Claude AA` or `@Claude AA`, the mention name or the seat tag in any case.  The name may also be a mention (`@**Claude** AA`), which the fleet's posting tools make silent in a bot's post (`@_**Claude** AA`), and the letter may carry its session token (`CODEX BB.1.M`).  The first such item for the seat wins.  An item that is only `CLAUDE` names the seat and no chat.  Only the header that opens the message is read this way.
+3. **The plain at-form**, anywhere:  `@Claude AA`, with the mention name or the seat tag after the `@` in any case (`@claude AA`), said again or not (`@Claude Claude AA`).  It does not count as the tail of a word, an address or a path (`jay@Claude AA`).  A seat tag of two capitals (`ZC`, `MC`) is left out of this form and of the next, because it is itself letter-shaped ("ZC PR is merged" names no chat);  the mention name and the header's recipient list still address.
+4. **The plain form at the start of a line**, with the mention name or the seat tag as written:  `Claude AA, can you check`, or `CLAUDE AA please`.  The body's first words count as the start of a line, after the header and the mentions that follow it:  `[ECHO 📁AFC → CLAUDE] @**Claude** Claude AA, can you check`.
+5. **The plain form later in a line, written as an address**:  the mention name and the letter with a comma or a colon straight after ("thanks, Claude CC, that works"), and only when the text names no other chat by that mention name (a seat tag or a silent mention elsewhere is not counted).  A name with no comma or colon after it is a reference ("ask Claude AA about it"), and so are two different letters ("so, Claude CC, see what Claude DD said");  a possessive ("Claude CC's result") is a reference that does not count as a second chat.  This last form is the router's own choice (AFC-694), made under the owner's liberal-wake ruling (Nov 10, 2026) and not his wording, and it can be removed alone (`sole_plain_letter`).
+
+These never address a chat:  a silent mention in the body (`@_**Claude** AA`, though the name said again after one that opens the body, `@_**Claude** Claude AA`, is the plain form of 4);  quoted text (a line starting with `>`, or a quote block);  text inside another untrusted-text marker pair;  a lower-case, one-letter or three-letter form (`Claude cc`, `Claude C`, `Claude CCC`, `Claude Code`, `CLAUDE-CC`);  another platform's letter;  and the seat's own tag, which a post often opens with under the mention ("ZC, can you").  Forms 3 to 5 do not read code either, an inline span or a fenced block, because a post about the router shows these forms as examples.  A letter no live chat holds falls through to the next rule of the pick, as a wake with no letter does.  The wake still carries that letter, though, and a wake that carries a letter is not picked again when its chat is released before delivery:  it ends dead with the code `target-released`.
+
+## The router contract (what every platform's router implements)
 
 - Transport:  HTTPS POST, bearer auth, the listener's existing routine line
   (`routine = { url_env, key_env, method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`).
@@ -89,6 +102,16 @@ clarify and an ambiguous wake is never held.
   wake is not delivered — with `delivered` false on every such row and `attempts`
   and `replayed` belonging to the retry loop;  `link_note` is the fixed
   sentence the receiving chat is told about the link.
+- Response:  one JSON object, HTTP 200 once the wake id has been seen (the listener does
+  not retry a 200);  the receipt fields are the router's own record:
+  `{wake_id, letter, session_id, thread_link, picked: letter|topic-match|most-recent|"", reason}`.
+  A delivered receipt adds `{delivered, reason}`;  a FAILED delivery command also adds the
+  classifier's allowlisted typed metadata `{failure_code, failure_stage, exit_code}` - e.g.
+  `failure_code: model-auth-login-failed` for the runtime's documented pre-accept provider
+  login failure (`project_token_login_failed`).  The classifier parses a bounded tail of the
+  child's output in memory for documented literal signatures;  raw process output is never
+  persisted (it can quote private prompt/session content), an unmatched failure records
+  `unknown`, and classification never activates a retry by itself.
 - Dedupe:  one receipt per wake id, under a lock;  a repeated id answers the record.
 - Determinism first:  the rules above, in order.  ONE headless decider for every platform
   (the Operator's preset, via OpenRouter - the owner's words:  not "a bunch of different

@@ -66,7 +66,8 @@ SECURITY_BIN = "/usr/bin/security"
 SECURITY_ITEM_NOT_FOUND = 44
 SECURITY_INTERACTION_NOT_ALLOWED = 36
 INFISICAL_API = "https://app.infisical.com/api"
-INFISICAL_PROJECT_ID = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+ENV_FLEET_OPS_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
+FLEET_OPS_PROJECT_FILE = ".simple-tools/fleet-ops-project-id"
 INFISICAL_ENVIRONMENT = "prod"
 INFISICAL_TIMEOUT = 15
 # One retry, and only for a timeout:  that is the one failure that is the
@@ -318,6 +319,28 @@ def _service_token() -> str:
     return _service_token_status()[0]
 
 
+def _fleet_ops_project_id() -> str:
+    """Fleet-OPS project id from INFISICAL_FLEET_OPS_PROJECT_ID or ~/.simple-tools/fleet-ops-project-id."""
+    value = os.environ.get(ENV_FLEET_OPS_PROJECT, "").strip()
+    if not value:
+        try:
+            value = (
+                (HOME / FLEET_OPS_PROJECT_FILE)
+                .read_text(encoding="utf-8")
+                .strip()
+                .splitlines()[0]
+                .strip()
+            )
+        except (OSError, UnicodeDecodeError, IndexError):
+            value = ""
+    pattern = re.compile(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
+    if not value or not pattern.match(value):
+        return ""
+    return value
+
+
 def _infisical_get_status(name: str, folder: str, token: str) -> tuple[str, str]:
     """One Infisical value read with the scoped service token, and the reason.
 
@@ -347,9 +370,12 @@ def _infisical_get_status(name: str, folder: str, token: str) -> tuple[str, str]
     """
     if not token:
         return "", "no-token"
+    project_id = _fleet_ops_project_id()
+    if not project_id:
+        return "", "no-project-id"
     query = urllib.parse.urlencode(
         {
-            "projectId": INFISICAL_PROJECT_ID,
+            "projectId": project_id,
             "environment": INFISICAL_ENVIRONMENT,
             "secretPath": folder,
         }

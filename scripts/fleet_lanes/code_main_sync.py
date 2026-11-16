@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fast-forward clean clones in the Code root to origin's main branch.  Never touches dirty work.
 
-The tracked source of the server's `code-main-sync` job, which until AFC-618 lived only on the host.  The Mac's equivalent
-is the pm2 job `code-main-keeper` (`~/apps/code-main-keeper.sh`), which is left as it is.
+The shared implementation of the server's `code-main-sync` job and the Mac's existing `code-main-keeper` schedule.  The
+Mac's compatibility shell entrypoint delegates here; synchronization behavior is implemented only once.
 
     python3 code_main_sync.py [--dry-run]
 
@@ -14,8 +14,8 @@ Two faults kept the old job failing on every run for days:
     as failed.  Removing the lock file loses nothing: git writes the new index there and renames it only on success.
   * git's stderr was thrown away, so `fast-forward exit=1` was all the log said.  It now carries git's first line.
 
-When FLEET_SYNC_RELAY_URL is set, every fetch goes through the relay's read-only `/git/` route as the seat that the bearer names,
-and a route that cannot be used fails the clone.  This job then holds and uses no GitHub credential.
+Every fetch requires FLEET_SYNC_RELAY_URL and goes through the relay's read-only `/git/` route as the seat that the bearer names.
+A missing or unusable route fails the eligible clone without a direct fetch.  This job never discovers or exports a GitHub credential.
 
 A folder that is not a repo (such as `Docs`) is passed over without a skip count, and a clone with a row in
 placement-exceptions.json (such as a service-pinned clone) is left alone with its reason logged.  Those rows use class
@@ -27,14 +27,24 @@ clone that should have moved did not.  Python 3.9 safe.  Tests: fleet_lanes/test
 """
 from __future__ import annotations
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import argparse
 import fcntl
+import json
 import os
 import re
+import shutil
+import signal
+import stat
 import subprocess
-import sys
+import threading
 import time
+import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -43,7 +53,7 @@ GIT = os.environ.get("FLEET_GIT_SHIM_REAL") or "/usr/bin/git"
 TIMEOUT = 120
 STALE_LOCK_S = 3600
 FLEET_OWNERS = {"simple-with-us", "jaywedgeworth22"}
-CANONICAL_OWNERS = {"simple-with-us": "Simple-With-Us", "jaywedgeworth22": "jaywedgeworth22"}
+CANONICAL_OWNERS = {"simple-with-us": "Simple-With-Us", "jaywedgeworth22": "Simple-With-Us"}
 
 
 def log(message: str) -> None:
@@ -90,7 +100,7 @@ def relay_fetch_url(env: Mapping[str, str], repo: str) -> str:
     return f"{(env.get('FLEET_SYNC_RELAY_URL') or '').strip().rstrip('/')}/git/{repo}.git"
 
 
-def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
+def relay_git_env(env: Mapping[str, str], remote: str | None = None) -> dict[str, str] | None:
     """The git environment that sends this clone's fetches through the relay as this job's seat, or None when it cannot.
 
     The clone's exact origin string is what gets rewritten, so an embedded login, a case-variant host or an explicit port
@@ -103,8 +113,9 @@ def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
     path = (env.get("FLEET_SYNC_BEARER_FILE") or "").strip()
     if not url or not (bearer or path):
         return None
-    repo = origin_repo(remote)
-    if repo is None:
+    # A job-level preflight uses the same validator without a clone-specific rewrite.
+    repo = origin_repo(remote) if remote is not None else None
+    if remote is not None and repo is None:
         log("relay route: refused, the origin cannot be read as owner/name on GitHub")
         return None
     parsed = urlsplit(url)
@@ -128,8 +139,9 @@ def relay_git_env(env: Mapping[str, str], remote: str) -> dict[str, str] | None:
     if not bearer or any(ch.isspace() for ch in bearer):
         log("relay route: refused, the bearer file has no usable value")
         return None
-    config = [
+    config = ([
         (f"url.{relay_fetch_url(env, repo)}.insteadOf", remote),
+    ] if remote is not None else []) + [
         (f"http.{url}/.extraHeader", f"Authorization: Bearer {bearer}"),
         ("http.followRedirects", "false"),
         ("http.postBuffer", str(8 * 1024 * 1024)),
@@ -146,7 +158,8 @@ def git_full(repo: Path, *args: str, timeout: int = TIMEOUT, extra_env: Mapping[
     try:
         result = subprocess.run([GIT, "-C", str(repo), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, errors="replace", timeout=timeout, check=False,
-                                env={**os.environ, **extra_env} if extra_env else None)
+                                # Background reads must not refresh the index; required write locks still apply.
+                                env={**os.environ, **(extra_env or {}), "GIT_OPTIONAL_LOCKS": "0"})
         return result.returncode, result.stdout.strip(), result.stderr
     except subprocess.TimeoutExpired:
         return 124, "", "timed out"
@@ -175,33 +188,8 @@ def remote_is_fleet_github(remote: str) -> bool:
 
 
 def resolve_github_token(env: Mapping[str, str], home: Path) -> str:
-    """Name the token git's credential helper will use, fetching one through fleet-secrets if none is set.  Never logged.
-
-    `gh auth git-credential` reads GH_TOKEN and GITHUB_TOKEN and nothing else, so a token found under another name is exported
-    as GH_TOKEN, or git would never receive it.  A lookup that fails leaves the run to the public repos, and the log says why.
-    """
-    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if env.get(name):
-            return name
-    token = (env.get("GITHUB_ADMIN_PAT") or "").strip()
-    if not token:
-        tool = home / ".local" / "bin" / "fleet-secrets"
-        if not tool.is_file():
-            return ""
-        try:
-            result = subprocess.run([str(tool), "get", "GITHUB_ADMIN_PAT"], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, text=True, errors="replace", timeout=60, check=False)
-        except subprocess.TimeoutExpired:
-            log("github token: lookup timed out")
-            return ""
-        except OSError:
-            log("github token: lookup could not start")
-            return ""
-        token = result.stdout.strip() if result.returncode == 0 else ""
-    if not token:
-        return ""
-    os.environ["GH_TOKEN"] = token
-    return "GH_TOKEN"
+    """Retired compatibility hook; credential discovery and environment mutation are disabled."""
+    return ""
 
 
 def lock_is_held(lock: Path) -> bool | None:
@@ -342,7 +330,11 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         return
     fetch_args = ("fetch", "--quiet", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main")
     relay_env = None
-    if (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+    if not (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+        counters["failed"] += 1
+        log(f"fail {repo.name}: FLEET_SYNC_RELAY_URL is required (the required own-seat relay route is not configured)")
+        return
+    else:
         # The configured route is the only route:  every fetch runs as this job's seat, so nothing on this host (a login in
         # git's helper, an SSH key, a URL credential) can serve one.  If the route cannot be set up, the clone fails.
         relay_env = relay_git_env(env, remote)
@@ -356,7 +348,7 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
             counters["failed"] += 1
             log(f"fail {repo.name}: origin does not resolve to the relay route")
             return
-    code, _, err = git_full(repo, *fetch_args, extra_env=relay_env or {"GIT_TERMINAL_PROMPT": "0"})
+    code, _, err = git_full(repo, *fetch_args, extra_env=relay_env)
     if code != 0:
         counters["failed"] += 1
         log(f"fail {repo.name}: fetch exit={code}: {_first_line(err)}")
@@ -382,7 +374,7 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
         return
     clear_stale_index_lock(repo, time.time(), False)
     # The merge may fetch missing blobs of a partial clone, so it takes the same route as the fetch.
-    code, _, err = git_full(repo, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--no-overwrite-ignore",
+    code, _, err = git_full(repo, "merge", "--ff-only", "--no-overwrite-ignore",
                               "--quiet", "origin/main", extra_env=relay_env)
     if code != 0:
         counters["failed"] += 1
@@ -405,6 +397,8 @@ def process_repo(repo: Path, dry_run: bool, counters: dict[str, int], *, env: Ma
 # message when the set of problem clones changes, and again once a day while any remain.  Nothing is posted when all
 # clones are clean, and a failed post is only logged:  alerting never changes the sync's own exit code.
 ALERT_STATE = "code-main-sync-alert.json"
+# Optional JSON stamp the nightly can read.  Unset writes nothing.  See docs/RAG-NIGHTLY-INGEST.md.
+ENV_CODE_SYNC_STATE = "FLEET_CODE_SYNC_STATE"
 ALERT_REPEAT_S = 24 * 3600
 ALERT_DEFAULT_TAG = "[GB-ORACLE \U0001f4c1OPS]"
 ALERT_DEFAULT_STREAM = "Alerts"
@@ -509,11 +503,354 @@ def _zulip_post(site: str, email: str, api_key: str, fields: Mapping[str, str]) 
         if resp.status != 200:
             raise RuntimeError(f"HTTP {resp.status}")
 
+def write_sync_stamp(env: Mapping[str, str], exit_code: int, now: float | None = None) -> None:
+    """Record this run for the nightly.  A missing path or a failed write does not fail the sync."""
+    raw = (env.get(ENV_CODE_SYNC_STATE) or "").strip()
+    if not raw:
+        return
+    path = Path(raw)
+    payload = {"at": time.time() if now is None else now, "exit": exit_code, "ok": exit_code == 0}
+    try:
+        parent = path.parent
+        created = not parent.exists()
+        parent.mkdir(parents=True, mode=0o755, exist_ok=True)
+        if created:
+            os.chmod(parent, 0o755)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError as exc:  # the sync result stands either way
+        log(f"stamp: state write failed ({type(exc).__name__})")
+
+
+def read_interval() -> int:
+    """Read the shared interval from Infisical or its verified last-known-good copy."""
+    from fleet_knobs import knobs
+
+    from fleet_lanes.code_mirror_credentials import settings_read_binding
+    with settings_read_binding():
+        knobs.refresh()
+        answer = knobs.resolve("CODE_MIRROR_INTERVAL_SECONDS")
+    source = answer.source if answer.source in ("infisical", "lkg", "default") else "unknown"
+    if source not in ("infisical", "lkg") or type(answer.value) is not int or not 30 <= answer.value <= 86400:
+        print(f"CODE_MIRROR_INTERVAL_SECONDS source={source} reason=trusted-value-unavailable", file=sys.stderr)
+        raise ValueError("trusted-interval-unavailable")
+    print(f"CODE_MIRROR_INTERVAL_SECONDS source={source} reason=accepted", file=sys.stderr)
+    return answer.value
+
+
+def run_loop(run, read=read_interval, sleep=time.sleep) -> int:
+    """One sweep and one settings refresh per loop; outages retain the accepted interval."""
+    interval = None
+    try:
+        while True:
+            try:
+                candidate = read()
+                if type(candidate) is not int or not 30 <= candidate <= 86400:
+                    raise ValueError("invalid-interval")
+                interval = candidate
+            except Exception:
+                source = "memory" if interval is not None else "unavailable"
+                log(f"CODE_MIRROR_INTERVAL_SECONDS source={source} reason=refresh-unavailable")
+                if interval is None:
+                    return 1
+            run()
+            sleep(interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+SCHEDULER_LOCK_STALE_S = 3600
+_CHILD_LOCK = threading.Lock()
+_ACTIVE_CHILDREN: set[subprocess.Popen] = set()
+_SHUTTING_DOWN = False
+
+
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Terminate a child and its entire process group, escalating to SIGKILL if needed."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (OSError, TypeError):
+        try:
+            proc.terminate()
+        except OSError:
+            return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (OSError, TypeError):
+            try:
+                proc.kill()
+            except OSError:
+                return
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def shutdown_children() -> None:
+    """Terminate all active sweep child process groups during scheduler shutdown."""
+    with _CHILD_LOCK:
+        global _SHUTTING_DOWN
+        _SHUTTING_DOWN = True
+        children = list(_ACTIVE_CHILDREN)
+    for proc in children:
+        _terminate_process_group(proc)
+
+
+@contextmanager
+def state_directory(path, *, private=False):
+    """Create missing directories and pin every component without following symlinks."""
+    path = Path(os.path.abspath(path))
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            created = False
+            try:
+                os.mkdir(component, 0o700, dir_fd=fd)
+                created = True
+            except FileExistsError:
+                pass
+            following = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            if created:
+                os.fchmod(following, 0o700)
+            os.close(fd)
+            fd = following
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022 or (private and stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError("state-directory-not-private")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def run_child(command, *, timeout, capture_output=False, input=None, **options):
+    """Bound a child session and reap it and its process group on interruption."""
+    process = None
+    previous = None
+
+    def interrupted(signum, frame):
+        raise SystemExit(128 + signum)
+
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        if capture_output:
+            options.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if input is not None:
+            options["stdin"] = subprocess.PIPE
+        options.pop("check", None)
+        options["start_new_session"] = True
+        process = subprocess.Popen(command, **options)
+        with _CHILD_LOCK:
+            if _SHUTTING_DOWN:
+                _terminate_process_group(process)
+                raise SystemExit(130)
+            _ACTIVE_CHILDREN.add(process)
+        output, error = process.communicate(input=input, timeout=timeout)
+        return subprocess.CompletedProcess(command, process.returncode, output, error)
+    except BaseException:
+        if process is not None:
+            saved_handlers = {}
+            if threading.current_thread() is threading.main_thread():
+                saved_handlers = {
+                    value: signal.signal(value, signal.SIG_IGN)
+                    for value in (signal.SIGINT, signal.SIGTERM)
+                }
+            try:
+                for signum in (signal.SIGTERM, signal.SIGKILL):
+                    try:
+                        os.killpg(process.pid, signum)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                for value, handler in saved_handlers.items():
+                    signal.signal(value, handler)
+        raise
+    finally:
+        if process is not None:
+            with _CHILD_LOCK:
+                _ACTIVE_CHILDREN.discard(process)
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+
+
+def run_sweep_command(command: list[str]) -> int:
+    """Keep the host's existing authorization bootstrap inside every sweep."""
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError:
+        print("Code mirror sweep command exit=127", file=sys.stderr)
+        return 127
+    with _CHILD_LOCK:
+        if _SHUTTING_DOWN:
+            _terminate_process_group(proc)
+            return 130
+        _ACTIVE_CHILDREN.add(proc)
+    try:
+        stdout, _stderr = proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        print("Code mirror sweep command exit=124", file=sys.stderr)
+        return 124
+    except BaseException:
+        _terminate_process_group(proc)
+        raise
+    finally:
+        with _CHILD_LOCK:
+            _ACTIVE_CHILDREN.discard(proc)
+    # Only the fixed counter receipt crosses the bootstrap boundary; never relay child diagnostics.
+    summary_pattern = re.compile(
+        r"(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2}) )?"
+        r"(summary: updated=[0-9]{1,6} current=[0-9]{1,6} would_update=[0-9]{1,6} skipped=[0-9]{1,6} failed=[0-9]{1,6})"
+    )
+    for line in (stdout or b"").decode("utf-8", errors="replace").splitlines():
+        match = summary_pattern.fullmatch(line)
+        if match:
+            log(match.group(1))
+    if proc.returncode:
+        print(f"Code mirror sweep command exit={int(proc.returncode)}", file=sys.stderr)
+    return proc.returncode
+
+
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description="Fetch and fast-forward clean clones in the Code root to origin/main.")
     parser.add_argument("--dry-run", action="store_true", help="Inspect local refs only; fetch and change nothing.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--loop", action="store_true", help="Run the existing mirror job on its shared Infisical interval.")
+    mode.add_argument("--print-interval", action="store_true", help="Print the trusted shared interval and exit.")
+    parser.add_argument("--sweep-command", nargs=argparse.REMAINDER, default=None,
+                        help="With --loop, run the existing host bootstrap once per sweep.")
     args = parser.parse_args(argv)
+    if args.sweep_command is not None:
+        if not args.loop or args.dry_run or args.print_interval:
+            parser.error("--sweep-command requires --loop and excludes --dry-run and --print-interval")
+        if not args.sweep_command or not os.path.isabs(args.sweep_command[0]) or not os.path.isfile(args.sweep_command[0]) or not os.access(args.sweep_command[0], os.X_OK):
+            parser.error("--sweep-command requires a nonempty absolute executable")
+    if args.print_interval:
+        try:
+            print(read_interval())
+            return 0
+        except Exception:
+            print("CODE_MIRROR_INTERVAL_SECONDS source=unavailable reason=read-failed", file=sys.stderr)
+            return 1
+    if args.loop:
+        home = Path(env.get("HOME") or os.path.expanduser("~"))
+        state = Path(env.get("FLEET_LANE_GUARD_STATE_DIR") or home / ".local" / "state")
+        state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_dir = state / "code-main-sync-scheduler.lock"
+        owner_file = lock_dir / "owner.json"
+        guard_path = state / "code-main-sync-scheduler-takeover.lock"
+        acquired = False
+        for _ in range(2):
+            if lock_dir.is_symlink():
+                raise PermissionError(f"refusing symlinked lock directory: {lock_dir}")
+            try:
+                os.mkdir(lock_dir, 0o700)
+                acquired = True
+                break
+            except FileExistsError:
+                guard_fd = os.open(guard_path, os.O_CREAT | os.O_RDWR, 0o600)
+                try:
+                    fcntl.flock(guard_fd, fcntl.LOCK_EX)
+                    stale = False
+                    try:
+                        owner = json.loads(owner_file.read_text(encoding="utf-8"))
+                        pid = owner.get("pid")
+                        started_at = owner.get("started_at")
+                        owner_age = (
+                            time.time() - started_at
+                            if isinstance(started_at, (int, float)) and not isinstance(started_at, bool)
+                            else None
+                        )
+                        if isinstance(pid, int) and pid > 0:
+                            process_started_at = None
+                            try:
+                                stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+                                stat_fields = stat_text[stat_text.rfind(")") + 2 :].split()
+                                start_ticks = int(stat_fields[19])
+                                boot_time = next(
+                                    line.split()[1]
+                                    for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines()
+                                    if line.startswith("btime ")
+                                )
+                                process_started_at = int(boot_time) + start_ticks / os.sysconf("SC_CLK_TCK")
+                            except (OSError, ValueError, IndexError, StopIteration):
+                                pass
+                            if (
+                                owner_age is not None
+                                and process_started_at is not None
+                                and process_started_at > started_at + 1
+                            ) or (
+                                process_started_at is None
+                                and owner_age is not None
+                                and owner_age >= SCHEDULER_LOCK_STALE_S
+                            ):
+                                stale = True
+                            else:
+                                try:
+                                    os.kill(pid, 0)
+                                except ProcessLookupError:
+                                    stale = True
+                                except PermissionError:
+                                    stale = False
+                        else:
+                            stale = True
+                    except (OSError, ValueError, TypeError):
+                        try:
+                            stale = (time.time() - lock_dir.stat().st_mtime) >= SCHEDULER_LOCK_STALE_S
+                        except OSError:
+                            stale = False
+                    if stale:
+                        aside = lock_dir.with_name(lock_dir.name + ".stale-" + uuid.uuid4().hex)
+                        try:
+                            os.rename(lock_dir, aside)
+                        except FileNotFoundError:
+                            continue
+                        except OSError:
+                            print("Code mirror scheduler is already running", file=sys.stderr)
+                            return 0
+                        shutil.rmtree(aside, ignore_errors=True)
+                        continue
+                finally:
+                    fcntl.flock(guard_fd, fcntl.LOCK_UN)
+                    os.close(guard_fd)
+                print("Code mirror scheduler is already running", file=sys.stderr)
+                return 0
+        if not acquired:
+            print("Code mirror scheduler is already running", file=sys.stderr)
+            return 0
+        try:
+            with _CHILD_LOCK:
+                global _SHUTTING_DOWN
+                _SHUTTING_DOWN = False
+            fd = os.open(owner_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid(), "started_at": time.time()}, handle)
+            sweep = (lambda: run_sweep_command(args.sweep_command)) if args.sweep_command is not None else (lambda: main(["--dry-run"] if args.dry_run else [], env=env))
+            return run_loop(sweep)
+        finally:
+            shutdown_children()
+            with _CHILD_LOCK:
+                _SHUTTING_DOWN = False
+            shutil.rmtree(lock_dir, ignore_errors=True)
     home = Path(env.get("HOME") or os.path.expanduser("~"))
     root = Path(env.get("FLEET_CODE_ROOT") or home / "Code")
     if not root.is_dir():
@@ -531,11 +868,20 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     try:
         counters = {"updated": 0, "current": 0, "would_update": 0, "skipped": 0, "failed": 0}
         problems: list[tuple[str, str]] = []
-        # With the relay route set, this job acts as its seat's own App, so it never looks up an owner token.
-        relay_route = bool((env.get("FLEET_SYNC_RELAY_URL") or "").strip())
-        token_source = "" if args.dry_run or relay_route else resolve_github_token(env, home)
         log(f"start: {'dry-run local refs only' if args.dry_run else 'fetch and fast-forward'}")
-        log(f"github token: {token_source or ('none (relay route)' if relay_route else 'none (public repos only)')}")
+        if args.dry_run:
+            log("github route: unused (dry-run local refs only)")
+        else:
+            if not (env.get("FLEET_SYNC_RELAY_URL") or "").strip():
+                log("fail job: FLEET_SYNC_RELAY_URL is required (the required own-seat relay route is not configured)")
+                write_sync_stamp(env, 1)
+                return 1
+            if relay_git_env(env) is None:
+                log("github route: configured but not usable")
+                log("fail job: fix the host relay configuration before syncing Code clones")
+                write_sync_stamp(env, 1)
+                return 1
+            log("github route: own-seat relay configured; each clone verifies its URL rewrite")
         for repo in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
             if repo.name.startswith(".") or not repo.is_dir():
                 continue
@@ -550,7 +896,10 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         log("summary: " + " ".join(f"{key}={value}" for key, value in counters.items()))
         if not args.dry_run:
             alert_problems(problems, env, state)
-        return 1 if counters["failed"] else 0
+        code = 1 if counters["failed"] else 0
+        if not args.dry_run:
+            write_sync_stamp(env, code)
+        return code
     finally:
         os.close(lock_fd)
 
