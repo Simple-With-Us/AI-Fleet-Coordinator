@@ -1,5 +1,6 @@
 """Release only reviewed alert Workers after successful exact-main CI."""
 
+import datetime
 import glob
 import importlib.util
 import json
@@ -58,6 +59,9 @@ RELEASE_REVIEW_PATHS = [
 
 KODY_CHECK_NAME = "Kody Code Review"
 KODY_APP_SLUG = "kody-ai"
+# Stable numeric id behind the slug (slugs can be renamed, ids cannot), matching
+# the auto-merge receipt contract's kody_app_id default.
+KODY_APP_ID = 413034
 KODY_CHECK_TITLE = "Code Review Complete"
 KODY_CHECK_SUMMARY_PREFIX = "Review finished successfully"
 
@@ -103,10 +107,16 @@ def request_json(url, token, data=None, timeout=30):
             "User-Agent": m.USER_AGENT,
         },
     )
-    with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
-        if 300 <= response.status < 400:
-            raise RuntimeError("Redirect not allowed")
-        return json.load(response)
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
+            if 300 <= response.status < 400:
+                raise RuntimeError("Redirect not allowed")
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        # Shared by GitHub and Cloudflare calls; name the URL, not a provider.
+        raise RuntimeError("HTTP " + str(exc.code) + " for " + url) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("Request failed for " + url + ": " + str(exc.reason)) from exc
 
 
 def github(path, timeout=30):
@@ -168,24 +178,181 @@ def guard_tripped(name):
     return m.guard_tripped(name, cloudflare)
 
 
-def kody_check_receipt(head_sha):
-    """A completed Kody check on the PR head, when manual mode leaves no PR review object."""
-    runs = github("/commits/" + head_sha + "/check-runs?per_page=100")["check_runs"]
-    if len(runs) >= 100:
-        raise RuntimeError("Incomplete Kody check-run evidence")
+# Canonical trigger shape, mirrored from .github/workflows/auto-merge-reusable.yml:
+# tabs and repeated spaces between the mention and the verb still count as requests.
+REVIEW_REQUEST_PATTERN = r"^[ \t]*@kody[ \t]+start-review([ \t\r\n]|$)"
+
+# One check-run fetch per head per gate run: reviewed() can ask for the same
+# head through several candidate PRs, and each fetch is an authenticated call.
+_check_run_cache = {}
+
+# Same for review-request history: reviewed() consults it for the
+# review-object branch and kody_check_receipt() for the check-run receipt.
+_review_request_cache = {}
+
+
+def _epoch(value):
+    """Parse a GitHub timestamp to epoch seconds, or None for a missing or invalid value.
+
+    Lexical string comparison misorders fractional seconds ("...:00.5Z" sorts
+    before "...:00Z"), so every freshness and ordering comparison parses first.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed.timestamp()
+
+
+def _kody_run_pending(runs, head_sha):
+    """Any Kody-owned run still queued or in progress on the head.
+
+    The mirrored auto-merge contract blocks qualification while any such run
+    exists, regardless of when it started, so both acceptance routes consult
+    this before qualifying.
+    """
+    return any(
+        isinstance(run, dict)
+        and run.get("name") == KODY_CHECK_NAME
+        and isinstance(run.get("app"), dict)
+        and run["app"].get("id") == KODY_APP_ID
+        and run.get("head_sha") == head_sha
+        and run.get("status") in ("queued", "in_progress")
+        for run in runs
+    )
+
+
+def _check_runs_for(head_sha):
+    """Kody-named check runs on the head, or None when evidence is unavailable.
+
+    The mirrored auto-merge contract filters server-side by check name and
+    paginates: an unfiltered first page can truncate the Kody runs out of a
+    busy commit's listing.  Any lookup or evidence failure for one head is no
+    evidence for that head - it fails the head closed on both acceptance
+    routes, without aborting qualification of the commit's other candidate
+    PRs.
+    """
+    if head_sha in _check_run_cache:
+        return _check_run_cache[head_sha]
+    runs = []
+    page = 1
+    # One absolute deadline for the whole walk, matching github_paginated:
+    # every page shares the remaining budget, so a slow or endless stream
+    # fails closed instead of getting a fresh timeout per request.
+    deadline = time.monotonic() + 60
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Kody check-run evidence exceeds bounded page limit")
+            body = github(
+                "/commits/"
+                + head_sha
+                + "/check-runs?per_page=100&check_name="
+                + urllib.parse.quote(KODY_CHECK_NAME)
+                + "&page="
+                + str(page),
+                timeout=remaining,
+            )
+            if not isinstance(body, dict):
+                raise RuntimeError("check-runs evidence is not an object")
+            batch = body.get("check_runs")
+            if not isinstance(batch, list) or not all(
+                isinstance(run, dict) for run in batch
+            ):
+                raise RuntimeError("check-runs evidence is not shaped entries")
+            runs.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+            if page > 10:
+                raise RuntimeError("Kody check-run evidence exceeds bounded page limit")
+    except (RuntimeError, OSError, ValueError):
+        # A failed, malformed, non-JSON or oversized lookup proves nothing
+        # about pending runs: the head cannot qualify on either route, but
+        # the release gate's other candidate PRs are unaffected.
+        _check_run_cache[head_sha] = None
+        return None
+    _check_run_cache[head_sha] = runs
+    return runs
+
+
+def _newest_review_request(number):
+    """Newest manual review-request timestamp on the PR, or None in auto mode."""
+    if number in _review_request_cache:
+        return _review_request_cache[number]
+    comments = github_paginated(
+        "/issues/" + str(number) + "/comments",
+        "Review-request history exceeds bounded page limit",
+    )
+    newest = None
+    for comment in comments:
+        if not isinstance(comment, dict):
+            raise RuntimeError("Invalid review-request evidence")
+        # Canonical parity: the auto-merge receipt contract counts EVERY issue
+        # comment carrying the invocation on its own line, with no author
+        # filter (.github/workflows/auto-merge-reusable.yml request flag), so
+        # this script applies none either. A spurious match only resets
+        # freshness and delays qualification - the fail-safe direction.
+        body = comment.get("body")
+        created = comment.get("created_at")
+        # Only a line whose stripped form STARTS with the invocation counts as
+        # a request: quoted or mid-sentence mentions must not reset freshness,
+        # while a legitimate invocation on its own line still matches
+        # case-insensitively.
+        if isinstance(body, str) and any(
+            re.match(REVIEW_REQUEST_PATTERN, line.strip(), re.IGNORECASE)
+            for line in body.split("\n")
+        ):
+            epoch = _epoch(created)
+            if epoch is None:
+                raise RuntimeError("Invalid review-request evidence")
+            if newest is None or epoch > newest:
+                newest = epoch
+    _review_request_cache[number] = newest
+    return newest
+
+
+def kody_check_receipt(head_sha, number=None):
+    """A completed Kody check on the PR head, when manual mode leaves no PR review object.
+
+    Freshness follows the auto-merge receipt contract: the numeric app id (not
+    only the renamable slug) must own the check, and after a manual review
+    request the check must have started at or after the newest request, so a
+    stale success cannot qualify a head whose re-review is queued or failed.
+    """
+    runs = _check_runs_for(head_sha)
+    if runs is None:
+        return False
+    # A Kody-owned run still queued or in progress on this head supersedes any
+    # completed success, whenever it started; qualification waits for it.
+    if _kody_run_pending(runs, head_sha):
+        return False
+    requested = _newest_review_request(number) if number is not None else None
     for run in runs:
         app = run.get("app") if isinstance(run.get("app"), dict) else {}
         output = run.get("output") if isinstance(run.get("output"), dict) else {}
         title = output.get("title") or ""
         summary = output.get("summary") or ""
+        started = _epoch(run.get("started_at"))
+        completed = _epoch(run.get("completed_at"))
         if (
             run.get("name") == KODY_CHECK_NAME
             and app.get("slug") == KODY_APP_SLUG
+            and app.get("id") == KODY_APP_ID
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
             and title == KODY_CHECK_TITLE
             and summary.startswith(KODY_CHECK_SUMMARY_PREFIX)
             and run.get("head_sha") == head_sha
+            and started is not None
+            and completed is not None
+            and completed >= started
+            and (requested is None or started >= requested)
         ):
             return True
     return False
@@ -195,7 +362,11 @@ def outstanding_requests(reviews):
     # COMMENTED does not clear a formal request. Only a later decisive review
     # by that same reviewer supersedes its prior decision; never mutate history.
     decisions = {}
-    decisive = [r for r in reviews if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+    decisive = [
+        r
+        for r in reviews
+        if isinstance(r, dict) and r.get("state") in ("APPROVED", "CHANGES_REQUESTED")
+    ]
     if any(type(r.get("id")) is not int for r in decisive):
         raise RuntimeError("Missing formal review sequence")
     for review in sorted(decisive, key=lambda r: r["id"]):
@@ -226,18 +397,44 @@ def reviewed(sha):
         head = pr.get("head", {}).get("sha")
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
             continue
-        qualified = [
+        # Only fully shaped review objects are evidence: a malformed entry is
+        # not a candidate (and never crashes the gate), while well-formed
+        # candidates are unaffected.
+        candidates = [
             r
             for r in reviews
-            if isinstance(r.get("user"), dict)
-            and r["user"].get("login") == "kody-ai[bot]"
+            if isinstance(r, dict)
+            and type(r.get("id")) is int
+            and isinstance(r.get("user"), dict)
+            and type(r["user"].get("id")) is int
+            and r["user"].get("login") == KODY_APP_SLUG + "[bot]"
             and r.get("state") in ("APPROVED", "COMMENTED")
+            and isinstance(r.get("commit_id"), str)
         ]
-        # COMMENTED is a completed substantive Kody review, not an issue comment.
-        # Manual Kody mode can leave only the check run; that receipt matches auto-merge.
-        kody_qualified = any(r.get("commit_id") == head for r in qualified) or kody_check_receipt(
-            head
-        )
+        matching = [r for r in candidates if r["commit_id"] == head]
+        if matching:
+            # A review predating the newest review request is stale: only
+            # reviews submitted at or after it qualify, matching the
+            # freshness rule in the check-run receipt branch.
+            requested = _newest_review_request(number)
+            fresh = [
+                r
+                for r in matching
+                if requested is None
+                or (
+                    _epoch(r.get("submitted_at")) is not None
+                    and _epoch(r.get("submitted_at")) >= requested
+                )
+            ]
+            # The review-object path is blocked by a pending Kody run exactly
+            # like the receipt path; an unavailable check-run list proves
+            # nothing, so it cannot qualify either.
+            runs = _check_runs_for(head)
+            kody_qualified = (
+                bool(fresh) and runs is not None and not _kody_run_pending(runs, head)
+            ) or kody_check_receipt(head, number)
+        else:
+            kody_qualified = kody_check_receipt(head, number)
         if not kody_qualified:
             continue
         # GraphQL includes actual thread resolution, unlike review state.
