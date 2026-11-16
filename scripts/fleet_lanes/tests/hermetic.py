@@ -46,6 +46,7 @@ FLEET_ROOT_VARS: tuple[str, ...] = (
     "FLEET_LAYOUT",
     # state, logs and configuration the tools read or write
     "FLEET_LANE_GUARD_STATE_DIR",
+    "FLEET_CODE_SYNC_STATE",
     "FLEET_LANE_GUARD_MODE_FILE",
     "FLEET_PLACEMENT_EXCEPTIONS",
     "FLEET_SYSTEMD_DIR",

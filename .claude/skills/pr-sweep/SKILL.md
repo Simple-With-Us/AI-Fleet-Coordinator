@@ -18,7 +18,7 @@ description: Sweep the open PRs across the fleet repos and land them — invento
 ## 1. Look first (read-only)
 
 ```bash
-$PS inventory --fleet-only      # every open PR of Simple-With-Us and jaywedgeworth22 (JSON)
+$PS inventory --fleet-only      # every open PR of Simple-With-Us (JSON)
 $PS plan                        # skip drafts, deferred and fork PRs; stacks kept together; chains per repo
 $PS needs-work                  # which PRs need a worker now and why; `fresh` = someone touched it in the last 15 min
 $PS status Simple-With-Us/BotFleet#1219   # current facts for named PRs

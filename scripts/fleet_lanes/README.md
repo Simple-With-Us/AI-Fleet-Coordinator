@@ -535,7 +535,7 @@ For every shape the shim misses, the watcher is the backstop.  It finds the che
 
 ### code_main_sync
 
-The tracked source of the server's `code-main-sync`.  A clean clone with a stale `index.lock` failed its fast-forward on every run, and the job threw away the stderr that said so.  It now clears a lock over an hour old that no process holds, logs git's first error line, and passes over a folder that is no repo and a clone with an exception row.  The Mac keeps `code-main-keeper`, tracked as `scripts/code-main-keeper.sh` (see Mirror Rule below).
+The tracked source of the server's `code-main-sync`.  A clean clone with a stale `index.lock` failed its fast-forward on every run, and the job threw away the stderr that said so.  It now clears a lock over an hour old that no process holds, logs git's first error line, and passes over a folder that is no repo and a clone with an exception row.  When `FLEET_CODE_SYNC_STATE` is set, a finished run (not a dry run) writes that JSON stamp so the nightly can read it.  The Mac keeps `code-main-keeper`, tracked as `scripts/code-main-keeper.sh` (see Mirror Rule below).
 
 ### Mirror Rule
 

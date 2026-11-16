@@ -91,6 +91,17 @@ BUDGET_DEFAULTS: dict[str, float] = {
     "routes_per_day": 10,
     "route_topic_minutes": 30,
 }
+# [registry] (AFC-721):  one stale window for every platform (36 hours), one sweep every 15 minutes,
+# and one sweep pass may end at most half of a (platform, host)'s open rows.  Host gone reports may
+# close at most half of a host's live rows for a platform within any 60 minute window.
+REGISTRY_DEFAULTS: dict[str, Any] = {
+    "sweep_enabled": True,
+    "sweep_interval_minutes": 15,
+    "stale_after_hours": 36.0,
+    "sweep_max_share": 0.5,
+    "gone_report_max_share": 0.5,
+    "gone_report_window_minutes": 60,
+}
 # The `[seat.X]` keys (step 1 of the one wake path, owner Nov 10, 2026:  a seat either has a `routine`,
 # an HTTP POST to a router that decides, delivers and wakes, or it only captures into its inbox).
 # SEAT_KEYS is the schema going forward.  `email_env`, `key_env` and `site_env` belong with `creds`:
@@ -679,6 +690,15 @@ class Config:
         # does not bind OPERATOR_LINEAR_INFISICAL_TOKEN.  "" means operator_linear's
         # default.
         self.linear_comments_infisical_token_file = ""
+        # [registry] (AFC-721):  the Eavesdropper's one stale sweeper and its gone-report guard.
+        # They apply only where the registry lives (the server instance);  the defaults live here,
+        # so a listener.toml with no [registry] table runs the sweeper as below.
+        self.registry_sweep_enabled = REGISTRY_DEFAULTS["sweep_enabled"]
+        self.registry_sweep_interval_minutes = REGISTRY_DEFAULTS["sweep_interval_minutes"]
+        self.registry_stale_after_hours = REGISTRY_DEFAULTS["stale_after_hours"]
+        self.registry_sweep_max_share = REGISTRY_DEFAULTS["sweep_max_share"]
+        self.registry_gone_report_max_share = REGISTRY_DEFAULTS["gone_report_max_share"]
+        self.registry_gone_report_window_minutes = REGISTRY_DEFAULTS["gone_report_window_minutes"]
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
@@ -936,6 +956,59 @@ def _decider_from_dict(cfg: Config, raw: Mapping[str, Any]) -> None:
                 else "muse_bridge.consult_backup"
             )
         )
+
+
+def _parse_registry(raw: Mapping[str, Any], cfg: Config, errors: list[str]) -> None:
+    """[registry]:  sweep_enabled, sweep_interval_minutes, stale_after_hours, gone_report_max_share.
+
+    A missing table keeps the defaults (REGISTRY_DEFAULTS).  A bad value is an error and keeps that
+    setting's default;  an unknown setting is an error, like the other tables.  The settings are read
+    on every instance and used only where the registry lives (the server)."""
+    section = raw.get("registry", {})
+    if not isinstance(section, dict):
+        errors.append("[registry] must be a table")
+        return
+    unknown = set(section) - set(REGISTRY_DEFAULTS)
+    if unknown:
+        errors.append("[registry] has unknown setting(s): %s" % ", ".join(sorted(unknown)))
+    enabled = section.get("sweep_enabled", REGISTRY_DEFAULTS["sweep_enabled"])
+    if not isinstance(enabled, bool):
+        errors.append("registry.sweep_enabled must be true or false")
+    else:
+        cfg.registry_sweep_enabled = enabled
+    interval = section.get("sweep_interval_minutes", REGISTRY_DEFAULTS["sweep_interval_minutes"])
+    if isinstance(interval, bool) or not isinstance(interval, int) or not 1 <= interval <= 1440:
+        errors.append("registry.sweep_interval_minutes must be a whole number from 1 to 1440")
+    else:
+        cfg.registry_sweep_interval_minutes = interval
+    stale = section.get("stale_after_hours", REGISTRY_DEFAULTS["stale_after_hours"])
+    if (
+        isinstance(stale, bool)
+        or not isinstance(stale, (int, float))
+        or not math.isfinite(stale)
+        or not 1 <= stale <= 24 * 30
+    ):
+        errors.append("registry.stale_after_hours must be a number of hours from 1 to 720")
+    else:
+        cfg.registry_stale_after_hours = float(stale)
+    for name in ("sweep_max_share", "gone_report_max_share"):
+        share = section.get(name, REGISTRY_DEFAULTS[name])
+        if (
+            isinstance(share, bool)
+            or not isinstance(share, (int, float))
+            or not math.isfinite(share)
+            or not 0 < share <= 1
+        ):
+            errors.append("registry.%s must be a number above 0 and at most 1" % name)
+        else:
+            setattr(cfg, "registry_" + name, float(share))
+    window = section.get(
+        "gone_report_window_minutes", REGISTRY_DEFAULTS["gone_report_window_minutes"]
+    )
+    if isinstance(window, bool) or not isinstance(window, int) or not 1 <= window <= 1440:
+        errors.append("registry.gone_report_window_minutes must be a whole number from 1 to 1440")
+    else:
+        cfg.registry_gone_report_window_minutes = window
 
 
 def from_dict(raw: Mapping[str, Any]) -> Config:
@@ -1244,6 +1317,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             "writes the topics' Linear comments, so they can never be stacked"
         )
         cfg.linear_comments_enabled = False
+    _parse_registry(raw, cfg, errors)
     cfg.presence = L.presence_topics(raw)
     platform = (
         ((raw.get("platform") or {}).get("claude-code") or {})

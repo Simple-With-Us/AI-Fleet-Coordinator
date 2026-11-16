@@ -22,7 +22,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLEET_APPS="${REPO_ROOT}/fleet-apps.json"
-OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
+OWNER="${GITHUB_OWNER:-Simple-With-Us}"
 LOG_DIR="${HOME}/Library/Logs/mac-seat-claim"
 GROK_BIN="${GROK_BIN:-/Users/jay/.grok/bin/grok}"
 CURSOR_AGENT="${CURSOR_AGENT:-cursor-agent}"

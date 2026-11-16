@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -82,6 +84,20 @@ class Basics(SyncCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(self.head(), self.origin())
         self.assertIn("updated Example", out)
+
+    def test_a_finished_run_writes_the_optional_stamp_and_a_dry_run_does_not(self) -> None:
+        stamp = self.home / "state" / "code-main-sync.json"
+        self.vars[S.ENV_CODE_SYNC_STATE] = str(stamp)
+        code, out = self.sync()
+        self.assertEqual(code, 0, out)
+        body = json.loads(stamp.read_text(encoding="utf-8"))
+        self.assertEqual(body["ok"], True)
+        self.assertEqual(body["exit"], 0)
+        self.assertEqual(stat.S_IMODE(stamp.stat().st_mode), 0o644)
+        stamp.unlink()
+        code, out = self.sync("--dry-run")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(stamp.exists())
 
     def test_dirty_work_is_never_touched(self) -> None:
         (self.repo / "mine.txt").write_text("keep\n", encoding="utf-8")
@@ -216,7 +232,7 @@ class OneBadClone(SyncCase):
 class Errors(unittest.TestCase):
     def test_only_fleet_github_origins_count(self) -> None:
         self.assertTrue(S.remote_is_fleet_github("https://github.com/Simple-With-Us/X.git"))
-        self.assertTrue(S.remote_is_fleet_github("git@github.com:jaywedgeworth22/Fleet-OPS.git"))
+        self.assertTrue(S.remote_is_fleet_github("git@github.com:Simple-With-Us/Fleet-OPS.git"))
         self.assertFalse(S.remote_is_fleet_github("https://github.com/someone/X.git"))
         self.assertFalse(S.remote_is_fleet_github("/local/path.git"))
 
