@@ -58,6 +58,20 @@ main() {
   fi
   trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
+  # Mac GitOps G7 (AFC-375): optional check-only drift report against deploy/mac/manifest.toml.
+  # Never loads or unloads LaunchAgents; apply is only via mac_gitops reconcile --apply by hand.
+  if [ -e "$STATE_DIR/mac-gitops-check.enabled" ]; then
+    if [ -f "$RUNTIME/deploy/mac/manifest.toml" ] && [ -f "$RUNTIME/scripts/mac-gitops-reconcile.py" ]; then
+      if ! perl -e 'alarm 60; exec @ARGV' /opt/homebrew/bin/python3 -I \
+          "$RUNTIME/scripts/mac-gitops-reconcile.py" \
+          --manifest "$RUNTIME/deploy/mac/manifest.toml" \
+          --repo-root "$RUNTIME" \
+          --skip-excluded-report >/dev/null 2>&1; then
+        log "MAC-GITOPS-DRIFT  deploy/mac/manifest.toml differs from this Mac; run mac_gitops reconcile (check-only) for detail"
+      fi
+    fi
+  fi
+
   # Code-only Coolify CLI sync uses this same tick, lock and pause.  Run before the
   # local fetch/no-change exits so failed sends retry and a changed Mac revision
   # reaches Coolify on the next tick.  Updates never register wrappers or MCP.

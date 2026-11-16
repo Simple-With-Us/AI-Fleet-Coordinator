@@ -20,6 +20,7 @@ import re
 import subprocess
 import threading
 import time
+from urllib.parse import quote
 
 TIMEOUT_SECONDS = 30
 REFRESH_MARGIN_SECONDS = 300
@@ -45,6 +46,16 @@ MINT_READ_ONLY_PERMISSIONS = (
     "repository_hooks",
     "organization_administration",
 )
+
+
+# Exact permission objects for create_repo.  Equality-checked.  These writes are
+# outside the seat mint ceiling on purpose: token_for rejects them, and only
+# token_for_namespace may request them.  No repository list is sent, so the
+# token can see and create under that one account.  It is not cached.
+_NAMESPACE_CREATE_PERMISSIONS = {
+    "org": {"metadata": "read", "organization_administration": "write"},
+    "user": {"metadata": "read", "administration": "write"},
+}
 
 
 def mint_permission_allowed(key, level):
@@ -589,3 +600,78 @@ class AppTokenMinter:
                 raise AppTokenError("minted-token expiry was malformed") from None
             self._tokens[cache_key] = (expiry, token)
             return token, expiry
+
+    def token_for_namespace(self, slug: str, owner: str, kind: str) -> str:
+        """Mint one uncached installation token for creating a repository.
+
+        The permission object is the fixed pair for `kind`.  A caller cannot
+        pass its own permissions.  The token is not stored on this minter.
+        """
+        permissions = _NAMESPACE_CREATE_PERMISSIONS.get(kind)
+        if (
+            permissions is None
+            or not re.fullmatch(r"swu-[a-z0-9-]{1,90}", slug)
+            or not isinstance(owner, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", owner)
+        ):
+            raise AppTokenError("invalid namespace mint")
+        app_id, pem = self._app_credentials(slug)
+        bearer = self._signer(app_id, pem, int(self._clock()))
+        del pem
+        token = None
+        try:
+            app = self._api("GET", "/app", bearer)
+            if not isinstance(app, dict) or app.get("id") != app_id:
+                raise AppTokenError("app key belongs to a different app")
+            if kind == "org":
+                path = f"/orgs/{quote(owner, safe='')}/installation"
+                expected_type = "Organization"
+            else:
+                path = f"/users/{quote(owner, safe='')}/installation"
+                expected_type = "User"
+            install = self._api("GET", path, bearer)
+            if not isinstance(install, dict):
+                raise AppTokenError("namespace mint failed")
+            account = install.get("account") if isinstance(install.get("account"), dict) else {}
+            iid = install.get("id")
+            if (
+                type(iid) is not int
+                or iid <= 0
+                or install.get("app_id") != app_id
+                or install.get("suspended_at")
+                or account.get("type") != expected_type
+                or str(account.get("login", "")).casefold() != owner.casefold()
+            ):
+                raise AppTokenError("app installation is missing, suspended, or on another account")
+            data = self._api(
+                "POST",
+                f"/app/installations/{iid}/access_tokens",
+                bearer,
+                {"permissions": dict(permissions)},
+            )
+            if not isinstance(data, dict):
+                raise AppTokenError("namespace mint failed")
+            minted = data.get("token")
+            if not isinstance(minted, str) or not minted:
+                raise AppTokenError("namespace mint failed")
+            token = minted
+            issued = token
+            token = None
+            return issued
+        except AppTokenError:
+            raise
+        except Exception:
+            raise AppTokenError("namespace mint failed") from None
+        finally:
+            del bearer
+            if token:
+                self.revoke_installation_token(token)
+
+    def revoke_installation_token(self, token: str) -> None:
+        """Revoke one installation token.  A failure does not change the call result."""
+        if not isinstance(token, str) or not token:
+            return
+        try:
+            self._api("DELETE", "/installation/token", token)
+        except Exception:
+            return

@@ -1,4 +1,4 @@
-"""`simple-notes create|update|pin|unpin|read|list|status|log|runner` and `simple-chat guide` (AFC-331, AFC-486).
+"""`simple-notes create|update|pin|unpin|delete|read|list|status|log|runner` and `simple-chat guide` (AFC-331, AFC-486).
 
 The CLI twin of the notes_* tools:  one verb per tool and one option per argument (mcp/notes-tools.json is the
 contract;  tests/test_notes_parity.py keeps them equal).  It runs the same code as the tools (notes_client.call), so
@@ -35,10 +35,27 @@ from . import notes_client as NC
 from . import session_ids as SID
 from . import zulip as Z
 from .idem import IdemStore
+from .mcp import list_presentation as LP
 from .secretscan import scan as scan_text
 from .state import state_root
 
 CLI_WAIT_DEFAULT = 300
+
+
+def _list_lossless(args: argparse.Namespace, use_json: bool) -> bool:
+    """`--full` or `--json` keep the runner's payload;  text list is compact by default."""
+    return bool(getattr(args, "full", False) or use_json)
+
+
+def _list_limit(args: argparse.Namespace, use_json: bool) -> int:
+    limit_explicit = getattr(args, "limit", None) is not None
+    work = {"limit": args.limit} if limit_explicit else {}
+    return LP.effective_limit(
+        work,
+        schema_default=N.LIST_DEFAULT,
+        full=_list_lossless(args, use_json),
+        limit_explicit=limit_explicit,
+    )
 
 
 def add_parsers(
@@ -57,6 +74,18 @@ def add_parsers(
     shared = frozenset({"status", "read"})
 
     def add(parent: Any, name: str, summary: str) -> argparse.ArgumentParser:
+        if name == "delete" and (verbs is None or "delete" not in verbs):
+            from .cli import _NullParser
+
+            return _NullParser()
+        if (
+            verbs is not None
+            and name not in verbs
+            and not (name == "guide" and (len(verbs) == 0 or "runner" in verbs))
+        ):
+            from .cli import _NullParser
+
+            return _NullParser()
         if name in shared and (verbs is None or name not in verbs):
             from .cli import _NullParser
 
@@ -164,6 +193,13 @@ def add_parsers(
         request_opts(q)
     q = add(
         sub,
+        "delete",
+        "delete one fleet-written note by exact id (from list or read) and its Fleet RAG doc",
+    )
+    q.add_argument("note_id", metavar="NOTE_ID")
+    request_opts(q)
+    q = add(
+        sub,
         "read",
         "print a note, any note in Coding (html is its content, ready for update --html)",
     )
@@ -181,7 +217,13 @@ def add_parsers(
         type=int,
         metavar="N",
         default=None,
-        help="at most this many (1 to %d, default %d)" % (N.LIST_MAX, N.LIST_DEFAULT),
+        help="at most this many (1 to %d, default %d;  compact default is %d)"
+        % (N.LIST_MAX, N.LIST_DEFAULT, LP.COMPACT_DEFAULT_LIMIT),
+    )
+    q.add_argument(
+        "--full",
+        action="store_true",
+        help="return the full lossless payload;  the default is compact (at most ten rows)",
     )
     request_opts(q)
     q = add(sub, "log", "the action log of apple-notes-coding.sh, newest first (never note text)")
@@ -203,7 +245,7 @@ def add_parsers(
         default=None,
         help="only the entries this seat made",
     )
-    q.add_argument("--action", choices=N.ACTIONS, default=None, help="only this mode")
+    q.add_argument("--action", choices=N.LOG_FILTER_ACTIONS, default=None, help="only this mode")
     q.add_argument(
         "--title", metavar="TEXT", default=None, help="only entries whose title contains this text"
     )
@@ -495,13 +537,14 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             action,
             identity,
             request_id=args.request_id or N.new_request_id(),
-            title=getattr(args, "title", None) if action != "list" else None,
+            title=getattr(args, "title", None) if action not in ("list", "delete") else None,
             markdown=markdown,
             flags=flags,
             session=session,
             fmt=getattr(args, "format", None) if action == "read" else None,
             query=getattr(args, "query", None) if action == "list" else None,
-            limit=getattr(args, "limit", None) if action == "list" else None,
+            limit=_list_limit(args, use_json) if action == "list" else None,
+            note_id=getattr(args, "note_id", None) if action == "delete" else None,
         )
         if action in N.WRITE_ACTIONS:
             audit["started"] = True
@@ -515,6 +558,8 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
     if action == "read":
         _print_read(rt, info, use_json)
     elif action == "list":
+        if info.get("status") == "done" and not _list_lossless(args, use_json):
+            info = LP.compact_notes_list_result(info, top_n=_list_limit(args, use_json))
         _print_list(rt, info, use_json)
     else:
         _print(rt, info, use_json)
@@ -614,7 +659,7 @@ def _print_list(rt: Any, info: dict[str, Any], use_json: bool) -> None:
     for row in info.get("notes") or []:
         rt.out("%s  %s\n" % (_when(row.get("modified")), row.get("title")))
     shown, total = len(info.get("notes") or []), info.get("total", 0)
-    if info.get("truncated"):
+    if info.get("truncated") or info.get("compact_truncated"):
         rt.out("(%d of %d shown;  raise --limit or narrow --query)\n" % (shown, total))
 
 

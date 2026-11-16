@@ -273,8 +273,8 @@ test("gr tools answer not_configured when the front is absent, and a relay 4xx s
   assert.match(denied.content[0].text, /seat ceiling/);
 });
 
-test("the seven gr tools are registered and mint_token is not among them", () => {
-  assert.deepEqual(GR_TOOLS.map((t) => t.name), ["gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread"]);
+test("the gr tools are registered and mint_token is not among them", () => {
+  assert.deepEqual(GR_TOOLS.map((t) => t.name), ["gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread", "gr_create_repo"]);
   assert.ok(!GR_TOOLS.some((t) => t.name.includes("mint")));
   assert.equal(Object.keys(GR_SECRETS).length, 2);
 });

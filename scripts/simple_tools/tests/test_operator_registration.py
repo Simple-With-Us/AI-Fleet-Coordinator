@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from simple_tools import operator_registration as OREG
 from simple_tools import session_ids as SI
@@ -129,6 +132,34 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(out["reason"], "seat_mismatch")
         self.assertEqual(len(OREG.pending_entries(self.db)), 1)
 
+    def test_answer_refuses_when_every_pair_is_live(self):
+        # The registry raises LabelExhausted when all 26 of the seat's doubled pairs are live (owner, Nov 11 2026:
+        # "ok just refuse actually is fine").  The answer is a readable refusal, never a traceback, and the question
+        # stays answerable for when a pair is freed.
+        from simple_tools import operator_registry as OR
+
+        entry = self.begin()["entry"]
+
+        def full_register(**identity):
+            raise OR.LabelExhausted("all 26 letters are active on platform 'muse'")
+
+        out = self.answer(entry["entry_id"], "mac", register=full_register)
+        self.assertEqual((out["status"], out["reason"]), ("refused", OREG.LABELS_EXHAUSTED))
+        pending = OREG.pending_entries(self.db)
+        self.assertEqual([p["state"] for p in pending], [OREG.STATE_ASKED])
+        text = OREG.answer_reply(out)
+        self.assertIn("all 26 of this seat's main-chat pairs (AA to ZZ) are live", text)
+        self.assertIn(entry["entry_id"], text)
+
+    def test_answer_lets_any_other_registry_error_through(self):
+        entry = self.begin()["entry"]
+
+        def broken_register(**identity):
+            raise RuntimeError("disk on fire")
+
+        with self.assertRaises(RuntimeError):
+            self.answer(entry["entry_id"], "mac", register=broken_register)
+
     def test_answer_reply_words_a_refusal(self):
         text = OREG.answer_reply(
             {"status": "refused", "reason": "resumed_closed", "entry_id": "reg-aaaaaaaaaaaa"}
@@ -137,7 +168,7 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertIn("reg-aaaaaaaaaaaa", text)
 
     def test_cli_registrations_read_a_missing_file_as_empty(self):
-        registrations, _ = OREG._registry_functions(os.path.join(self.tmp.name, "no-such.db"))
+        registrations = OREG._registrations_reader(os.path.join(self.tmp.name, "no-such.db"))
         self.assertEqual(registrations("minimax", _session_id()), [])
 
     def test_mark_refused_drops_a_live_asked_entry_terminally(self):
@@ -760,6 +791,45 @@ class QueueValidationAndPruningTests(unittest.TestCase):
         self.assertEqual(OREG.answerable_entries(self.db), [])
         # Not live twice:  a second drop is a no-op.
         self.assertFalse(OREG.mark_dropped(self.db, "reg-0123456789ab", "route_lost", now=now + 1))
+
+
+class AnswerVerbOneWriterTests(unittest.TestCase):
+    """AFC-721:  the CLI issues no letter.  Its old `answer` verb, a second process that could
+    register one, is gone;  only the Eavesdropper takes a location answer, in the chat's topic."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = os.path.join(self.tmp.name, "operator", "registry.sqlite3")
+
+    def test_the_answer_verb_is_gone(self) -> None:
+        for instance in (None, "mac", "server"):
+            env = {"SIMPLE_TOOLS_INSTANCE": instance} if instance is not None else {}
+            with mock.patch.dict(os.environ, env, clear=False):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                    OREG.main(
+                        ["--db", self.db, "answer", "--entry", "reg-0123456789ab", "--location", "mac"]
+                    )
+            self.assertEqual(cm.exception.code, 2, instance)
+        self.assertFalse(os.path.exists(self.db))
+
+    def test_ask_still_records_a_question_and_writes_no_registry(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = OREG.main(
+                [
+                    "--db", self.db,
+                    "ask",
+                    "--platform", "minimax",
+                    "--scope", "default",
+                    "--session-id", _session_id(),
+                    "--seat", "MM",
+                    "--requester", "jay",
+                ]
+            )
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("entry", json.loads(out.getvalue()))
+        self.assertFalse(os.path.exists(self.db))
 
 
 if __name__ == "__main__":

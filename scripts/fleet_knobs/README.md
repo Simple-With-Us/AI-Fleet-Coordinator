@@ -18,8 +18,11 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
 
 ## Rules a job gets for free
 
-- **One fetch per process**, on the first read, through the low-level scoped REST reader in
-  `fleet_secrets/core.py`, for prod only.  A failed fetch is not retried;
+- **One fetch per folder per process**, on the first read of a knob in that folder, through
+  the low-level scoped REST reader in `fleet_secrets/core.py`, for prod only.  A knob is at the
+  root (`/`) unless its `Spec` names a `folder` (the wake router's knobs are in
+  `/wake-router`), and a folder no read needs is never fetched, so a token scoped to one folder
+  serves a reader whose knobs are all in it.  A failed fetch is not retried;
   `knobs.refresh()` forgets it for a long-running process.
 - **Scoped service token.**  Every automated reader requires the per-use-case
   `FLEET_KNOBS_INFISICAL_TOKEN`, passed explicitly to the verifier.  Metadata must prove the
@@ -30,9 +33,12 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
   token) beside the copy, except reasons `service-token-required` and
   `scoped-reader-unavailable`, which belong to this one process (no usable reader token, or no
   reader code) and write no marker, so a sibling that holds the token can still fetch;  for 60 seconds other processes skip the fetch and read the copy
-  (`fetch_reason` `recent-<token>`).  A good fetch clears it;  `refresh()` ignores it.
+  (`fetch_reason` `recent-<token>`).  A good fetch clears it;  `refresh()` ignores it.  Each
+  folder has its own marker (`fetch-failed-wake-router.json` for `/wake-router`).
 - **Last-known-good.**  A good fetch refreshes `~/.local/state/fleet-knobs/lkg.json`
-  (dir 0700, file 0600) with the registered non-secret knobs.  If Infisical cannot be reached
+  (dir 0700, file 0600) with the registered non-secret knobs.  Each folder has its own copy,
+  aged by its own fetch:  the root's is `lkg.json`, unchanged, and another folder's is named
+  for it (`lkg-wake-router.json`) and records the folder.  If Infisical cannot be reached
   the job reads it, `knobs.report()["stale"]` is true, and a copy older than 48 hours (or any
   untrusted file) is ignored.  With no usable copy the registry default is returned.  A read of
   a non-secret knob never raises.  The copy matches what a live read answers:  an unset knob
@@ -89,9 +95,9 @@ unknown name, any secret and any value the knob's `Spec` rejects, through the sa
 value and the CLI argv and writes nothing, and it refuses (exit 2) when the write could not run
 in this process, such as when no write token is present, so a plan that succeeds is one a
 `--yes` here could carry out; `--yes` runs `infisical secrets set NAME=VALUE
---env=prod --path=/ --projectId=<id>` with a write-capable service token in the child's
-`INFISICAL_TOKEN` only.  The token comes only from `FLEET_KNOBS_WRITE_TOKEN`, with its exact
-project, prod root folder and read/write grant verified first; without one the answer is `no write token`. 
+--env=prod --path=<the knob's folder> --projectId=<id>` with a write-capable service token in
+the child's `INFISICAL_TOKEN` only.  The token comes only from `FLEET_KNOBS_WRITE_TOKEN`, with
+its exact project, the knob's prod folder and read/write grant verified first; without one the answer is `no write token`. 
 After a write the last-known-good copy is refreshed (or, when the re-read fails, patched for
 that key with its age kept), and every `--yes` appends a row to
 `~/.simple-tools/listener/knobs.jsonl` (0600): time, seat, key, old and new value, result.  Exit 0

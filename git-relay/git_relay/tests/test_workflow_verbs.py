@@ -19,11 +19,15 @@ CEILING = {
 
 
 class Policy:
-    def __init__(self, ceiling=CEILING, allowed=True, repos=(REPO,)):
+    def __init__(self, ceiling=CEILING, allowed=True, repos=(REPO,), paths=None):
         self.ceiling, self.allowed, self.repos = ceiling, allowed, tuple(repos)
+        self.paths = paths or {}
 
     def app_identity(self, seat):
         return "swu-wise", dict(self.ceiling)
+
+    def default_branch_path_allowed(self, seat, repo, path):
+        return path in self.paths.get(seat, {}).get(repo, ())
 
     def authorize(self, seat, action, repo):
         return None if self.allowed and repo == REPO else "denied"

@@ -10,6 +10,12 @@
   python3 scripts/fleet-ops-control.py server unit-status UNIT            --plan [--json]
   python3 scripts/fleet-ops-control.py server redeploy RESOURCE_UUID      (--plan | --yes) [--json]
   python3 scripts/fleet-ops-control.py server eavesdropper-status server --plan [--json]
+  python3 scripts/fleet-ops-control.py server eavesdropper-settings server    (--plan | --yes) [--json]
+  python3 scripts/fleet-ops-control.py eavesdropper-settings get|plan|apply [--set KEY=VALUE ...]
+                                       [--remove KEY.SUBKEY ...] [--file PATH]
+                                       [--expect SHA256] [--yes] [--json]
+  python3 scripts/fleet-ops-control.py server operator-sessions server --plan [--json]
+  python3 scripts/fleet-ops-control.py server operator-wakes server    --plan [--json]
   python3 scripts/fleet-ops-control.py --from-ssh                         (the forced command)
   python3 scripts/fleet-ops-control.py --from-muster                      (the forced command of muster-exec)
   python3 scripts/fleet-ops-control.py --check-token                      (install check, not over ssh)
@@ -56,6 +62,44 @@ What it promises:
     takes no lock, writes no audit row for a plan and refuses `--yes`.  When the status cannot be
     read the result is `unavailable` with an `errorCode` word (never a path or docker's own
     text) and the exit status is 1, although no command failed.
+  * `eavesdropper-settings` changes allowlisted settings of the Eavesdropper's live config
+    (`/data/listener.toml` in the `eavesdropper` container) and nothing else.  The work is
+    `scripts/simple_tools/server/eavesdropper_settings_edit.py`, and `scripts/fleet-ops-eavesdropper-settings.json`
+    is its one allowlist, read from beside this helper with the same owner and mode rule as the
+    reducer module.  `get` answers the allowlisted settings (never the file), `plan` the settings
+    and lines that would change with the Eavesdropper's own check-config verdict, and `apply` backs
+    up, writes atomically, reloads and reads back, putting the old file back when the Eavesdropper
+    refuses.  `apply` is refused (`apply_disabled`) until the allowlist says `"applyEnabled": true`,
+    which is the owner's switch.  With `--file PATH` the editor runs in this process on that file
+    (a copy, a fixture);  without it, on the server only, it runs inside the container with one
+    fixed `docker exec -i --user simpletools eavesdropper` argv and the request on its standard
+    input, so no word of a request reaches an argv.  Over ssh the verb is
+    `server eavesdropper-settings server` with `--plan` (a get, or a plan when standard input holds
+    `{"set": {...}}`) or `--yes` (the apply, which may carry the plan's hash as
+    `expectPlanSHA256`);  `--file` and `--set` are not offered there.  A get is "standard input
+    ended with nothing on it", so the caller must close it (the `-n` option of ssh, or `</dev/null`):  a
+    plain `ssh` from a terminal keeps it open, and the request is then refused (`usage`) after
+    the bounded read's five seconds.  A table such as a
+    seat's `budget` is set whole, and a value that would drop a sub-key the file has is refused
+    unless the request names it (`--remove`, or `remove` on standard input).  An apply holds the one
+    action lock and writes one audit row with the target `eavesdropper settings` and no setting or
+    value.  The `--from-muster` route does not offer it.
+  * `server operator-sessions server --plan` and `server operator-wakes server --plan` read the
+    server Operator's session registry and its wake records, each with one fixed `docker exec
+    --user simpletools eavesdropper /usr/local/bin/python3 -I -c PROGRAM PLACE...`, where PROGRAM
+    and every PLACE are constants of this file (no shell, no sudo, no word from the request, the
+    same pinned docker environment, at most 1 MiB, 20 seconds, and the program stops itself
+    after 15, so a slow read is not left running in the container).  The program opens the registry
+    read-only and reads the listener's records through the container's own read-only views, and
+    prints only the columns named here;  this helper then checks every value against a fixed
+    shape and drops what does not fit.  The sessions answer holds letters, seats, platforms,
+    hosts, states, times and Linear issue ids;  the wakes answer holds counts, wake ids, Zulip
+    message ids, state and reason codes and times.  Neither holds a title, a message body, a
+    topic or channel name, a sender, a link, a native session id, a record id or a path.  Like
+    `eavesdropper-status` they take no lock, write no audit row for a plan, refuse `--yes` and
+    any target but `server`, need no allowlist entry, and answer `unavailable` with an
+    `errorCode` word and exit status 1 when the store cannot be read.  The `--from-muster`
+    route does not offer them.
   * `server unit-status UNIT --plan` reads one listed unit (an entry of the allowlist's server `units`
     or its `watch` list, in the scope the entry names) with one fixed `systemctl [--user] show`, no
     sudo, and answers its ActiveState, SubState, Result, last exit time and (for a timer) last
@@ -91,8 +135,8 @@ the one request that stores the trust list, so the route stays inert (every appr
 `no_trust_list`) until a chain has been accepted.
 
 Exit status: 0 planned, submitted or done, 1 a command failed (or, for `server
-eavesdropper-status` alone, the status could not be read: result `unavailable`, with no
-command failed), 2 refused.
+eavesdropper-status`, `server operator-sessions` and `server operator-wakes` alone, the store
+could not be read: result `unavailable`, with no command failed), 2 refused.
 """
 
 from __future__ import annotations
@@ -197,6 +241,25 @@ TRUSTED_MODULE_UID = 0
 REDUCED_STATUS_NAME = "reduced_status.py"
 REDUCED_STATUS_MAX_BYTES = 256 * 1024
 # The reason words an unavailable answer may carry, each with the plain sentence for `detail`.
+# `eavesdropper-settings`:  the editor module and its allowlist sit beside this helper;  inside the
+# container the module is at its image path.  Every word of the docker argv is a constant here.
+EAVESDROPPER_SETTINGS_VERB = "eavesdropper-settings"
+EAVESDROPPER_SETTINGS_TARGET = "server"
+EAVESDROPPER_SETTINGS_ACTIONS = ("get", "plan", "apply")
+EAVESDROPPER_SETTINGS_ALLOWLIST_NAME = "fleet-ops-eavesdropper-settings.json"
+EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES = 64 * 1024
+EAVESDROPPER_SETTINGS_EDITOR_PARTS = ("simple_tools", "server", "eavesdropper_settings_edit.py")
+EAVESDROPPER_SETTINGS_EDITOR_MAX_BYTES = 256 * 1024
+EAVESDROPPER_SETTINGS_EDITOR_PYTHON = "/usr/local/bin/python3"
+EAVESDROPPER_SETTINGS_EDITOR_PATH = "/app/scripts/simple_tools/server/eavesdropper_settings_edit.py"
+EAVESDROPPER_SETTINGS_REQUEST_MAX_BYTES = 32 * 1024
+EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES = 512 * 1024
+EAVESDROPPER_SETTINGS_EDIT_TIMEOUT = 180
+EAVESDROPPER_SETTINGS_STDIN_TIMEOUT = 5
+EAVESDROPPER_SETTINGS_AUDIT_TARGET = "eavesdropper settings"
+EAVESDROPPER_SETTINGS_CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+EAVESDROPPER_SETTINGS_RESULTS = ("read", "planned", "unchanged", "applied", "refused", "failed")
+
 EAVESDROPPER_UNAVAILABLE = {
     "docker_unavailable": "docker could not be run",
     "timeout": "reading the status took too long",
@@ -206,6 +269,279 @@ EAVESDROPPER_UNAVAILABLE = {
     "not_json": "the status file is not a JSON object",
     "module_unavailable": "the status reduction module is not installed beside the helper",
 }
+# `server operator-sessions` and `server operator-wakes` read the server Operator's own stores
+# out of the same container.  The registry is a SQLite database and the wake records are a
+# folder per seat, so neither can be read with `cat`:  each verb runs one constant Python
+# program inside the container, as the container's own unprivileged account, with `-I` (no
+# environment variable, no user site folder and no current folder reaches the interpreter).
+# The program and the places it is given are constants of this file;  no word of a request
+# reaches the argv.  The interpreter is named in full, so no PATH inside the container is used.
+OPERATOR_TARGET = "server"
+OPERATOR_PYTHON = "/usr/local/bin/python3"
+OPERATOR_REGISTRY_PATH = "/data/operator/registry.sqlite3"
+# The daemon's state root (its SIMPLE_TOOLS_STATE_DIR):  one folder per seat sits directly under
+# it (`<SEAT>/wakes.jsonl` and the rest), beside `listener/`, `logs/` and `operator/`.
+OPERATOR_STATE_ROOT = "/data"
+OPERATOR_SCRIPTS_DIR = "/app/scripts"
+OPERATOR_READ_MAX_BYTES = 1024 * 1024
+OPERATOR_READ_TIMEOUT = 20
+# Each program stops itself after this long and answers `timeout`.  It is shorter than the read's
+# own limit on purpose:  when that limit kills the local `docker exec`, the process it started
+# inside the container is not killed with it, so a slow read would otherwise run on beside the
+# daemon after its answer was given up.  The stop does not depend on the answer being written:
+# with nobody left to read it, the program still exits.
+OPERATOR_PROGRAM_SECONDS = 15
+OPERATOR_SCHEMA = 1
+# The caps the programs apply inside the container and the reducers apply again here.
+OPERATOR_MAX_SESSIONS = 300
+OPERATOR_MAX_ISSUES = 8
+OPERATOR_MAX_SEATS = 64
+OPERATOR_MAX_ROWS = 10
+OPERATOR_MAX_KEYS = 32
+OPERATOR_MAX_MESSAGE_IDS = 16
+OPERATOR_WAKE_WINDOW_HOURS = 24
+OPERATOR_COUNT_MAX = 1_000_000_000
+# The sessions program:  argv[1] is the registry file.  It opens the database read-only and
+# selects the columns the answer needs and no others.  The native session id, the title, the
+# project, the links and the profile scope are never selected;  the record id is used for the
+# join inside the query and is never printed.  A registry from before the issues table has no
+# issues, and that is decided by asking the database whether the table is there, never by a
+# failed query, so a locked database is not answered as sessions without issues.  Anything that
+# goes wrong is one fixed word:  `store_busy` when a writer held the lock past the five-second
+# wait, and `store_recovering` when a writer died mid-write and left a journal that a read-only
+# handle may not roll back (the next read-write open of the registry, which the Operator itself
+# makes, clears it).  The handle stays `mode=ro`:  a read-write handle would recover that journal,
+# and it would also give this route write access to the registry.
+OPERATOR_SESSIONS_PROGRAM = r"""
+import json
+import os
+import sqlite3
+import sys
+import threading
+import urllib.parse
+
+LIMIT = __LIMIT__
+SECONDS = __SECONDS__
+COLUMNS = (
+    "s.seat, s.platform, s.verified_host, s.state, s.wake_capability, s.registered_at,"
+    " s.last_seen_at, a.letter, a.generation"
+)
+JOIN = (
+    " FROM sessions s LEFT JOIN alias_assignments a"
+    " ON a.record_id = s.record_id AND a.retired_at IS NULL"
+)
+TAIL = " WHERE s.state = 'active' ORDER BY s.last_seen_at DESC, s.record_id LIMIT ?"
+
+
+def read(path):
+    if not os.path.isfile(path):
+        return {"error": "store_missing"}
+    conn = sqlite3.connect("file:" + urllib.parse.quote(path) + "?mode=ro", uri=True, timeout=5)
+    try:
+        counts = [list(row) for row in conn.execute("SELECT state, COUNT(*) FROM sessions GROUP BY state")]
+        issues = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_issues'"
+        ).fetchone()
+        if issues:
+            rows = conn.execute(
+                "SELECT " + COLUMNS + ", i.issues" + JOIN
+                + " LEFT JOIN session_issues i ON i.record_id = s.record_id" + TAIL,
+                (LIMIT,),
+            ).fetchall()
+        else:
+            rows = [
+                tuple(row) + (None,)
+                for row in conn.execute("SELECT " + COLUMNS + JOIN + TAIL, (LIMIT,))
+            ]
+    finally:
+        conn.close()
+    return {"counts": counts, "rows": [list(row) for row in rows]}
+
+
+def word(error):
+    name = getattr(error, "sqlite_errorname", None) or ""
+    if name in ("SQLITE_READONLY_ROLLBACK", "SQLITE_READONLY_RECOVERY"):
+        return "store_recovering"
+    if name.startswith(("SQLITE_BUSY", "SQLITE_LOCKED")):
+        return "store_busy"
+    return "reader_failed"
+
+
+def late():
+    if once.acquire(False):
+        try:
+            os.write(1, b'{"error": "timeout"}')
+        finally:
+            os._exit(0)
+
+
+once = threading.Lock()
+timer = threading.Timer(SECONDS, late)
+timer.daemon = True
+timer.start()
+try:
+    answer = read(sys.argv[1])
+except sqlite3.Error as error:
+    answer = {"error": word(error)}
+except Exception:
+    answer = {"error": "reader_failed"}
+once.acquire()
+sys.stdout.write(json.dumps(answer))
+""".replace("__LIMIT__", str(OPERATOR_MAX_SESSIONS)).replace(
+    "__SECONDS__", str(OPERATOR_PROGRAM_SECONDS)
+)
+# The wakes program:  argv[1] is the daemon's state root (one folder per seat, named in capitals,
+# so `listener`, `logs` and `operator` are never taken for one) and argv[2] the folder that holds the container's own `simple_tools` package, whose read-only views
+# (`listener_records`, the ones the listener's signed read API answers with) do the reading, so
+# the file formats stay the daemon's.  Those views carry Zulip-authored text;  this program
+# copies out only counts, ids, state and reason words and times, so no body, title, topic,
+# channel, sender or link is ever printed.  A seat whose records cannot be read is named and
+# skipped, and a root with no seat folder at all is `store_missing`, never a count of zero.
+OPERATOR_WAKES_PROGRAM = (
+    r"""
+import json
+import os
+import re
+import sys
+import threading
+
+ROOT, SCRIPTS = sys.argv[1], sys.argv[2]
+SEATS, ROWS, HOURS, SECONDS = __SEATS__, __ROWS__, __HOURS__, __SECONDS__
+SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+
+
+def read():
+    if not os.path.isdir(ROOT):
+        return {"error": "store_missing"}
+    sys.path.insert(0, SCRIPTS)
+    from simple_tools import listener_records as records
+
+    names = sorted(
+        name
+        for name in os.listdir(ROOT)
+        if SEAT_RE.fullmatch(name) and os.path.isdir(os.path.join(ROOT, name))
+    )
+    if not names:
+        return {"error": "store_missing"}
+    answer = {"seat_count": len(names), "seats": [], "unreadable": []}
+    for seat in names[:SEATS]:
+        try:
+            wakes = records.wakes_view(ROOT, seat, since_hours=HOURS, limit=ROWS)
+            held = records.held_back_view(ROOT, seat, limit=ROWS)
+            owner = records.owner_queue_view(ROOT, seat, limit=ROWS)
+            answer["seats"].append(
+                {
+                    "seat": seat,
+                    "recent": {
+                        "total": wakes.get("total"),
+                        "by_state": wakes.get("by_state"),
+                        "rows": [
+                            {
+                                key: item.get(key)
+                                for key in (
+                                    "wake_id", "state", "ts", "dm", "owner", "catch_up",
+                                    "reason", "trigger_ids",
+                                )
+                            }
+                            for item in wakes.get("items") or []
+                        ],
+                    },
+                    "held_back": {
+                        "count": held.get("count"),
+                        "lost": held.get("lost"),
+                        "reasons": held.get("reasons"),
+                        "rows": [
+                            {key: item.get(key) for key in ("message_id", "at", "reason", "dm")}
+                            for item in held.get("items") or []
+                        ],
+                    },
+                    "owner_queue": {
+                        "pending": owner.get("pending"),
+                        "rows": [
+                            {key: item.get(key) for key in ("seq", "ts", "kind", "risk")}
+                            for item in owner.get("items") or []
+                        ],
+                    },
+                }
+            )
+        except Exception:
+            answer["unreadable"].append(seat)
+    return answer
+
+
+def late():
+    if once.acquire(False):
+        try:
+            os.write(1, b'{"error": "timeout"}')
+        finally:
+            os._exit(0)
+
+
+once = threading.Lock()
+timer = threading.Timer(SECONDS, late)
+timer.daemon = True
+timer.start()
+try:
+    answer = read()
+except Exception:
+    answer = {"error": "reader_failed"}
+once.acquire()
+sys.stdout.write(json.dumps(answer))
+""".replace("__SEATS__", str(OPERATOR_MAX_SEATS))
+    .replace("__ROWS__", str(OPERATOR_MAX_ROWS))
+    .replace("__HOURS__", str(OPERATOR_WAKE_WINDOW_HOURS))
+    .replace("__SECONDS__", str(OPERATOR_PROGRAM_SECONDS))
+)
+# verb -> (the program, the constant places it is given, the key of the answer, the detail).
+OPERATOR_READS = {
+    "operator-sessions": (
+        OPERATOR_SESSIONS_PROGRAM,
+        (OPERATOR_REGISTRY_PATH,),
+        "sessions",
+        "read-only list of the server Operator's live sessions",
+    ),
+    "operator-wakes": (
+        OPERATOR_WAKES_PROGRAM,
+        (OPERATOR_STATE_ROOT, OPERATOR_SCRIPTS_DIR),
+        "wakes",
+        "read-only summary of the server Operator's wakes",
+    ),
+}
+# The reason words an unavailable answer of those two verbs may carry.
+OPERATOR_UNAVAILABLE = {
+    "docker_unavailable": "docker could not be run",
+    "timeout": "reading the Operator's store took too long",
+    "container_not_running": "the eavesdropper container is not running",
+    "read_failed": "the eavesdropper container could not be read",
+    "too_large": "the answer is larger than the allowed size",
+    "not_json": "the answer is not a JSON object",
+    "store_missing": "the Operator's store is not in the container",
+    "store_busy": "the Operator's store was locked by a writer",
+    "store_recovering": "the Operator's store is waiting for a writer to recover it",
+    "reader_failed": "the Operator's store could not be read",
+}
+# The words a program may answer for itself;  any other word it prints is `reader_failed`.
+OPERATOR_PROGRAM_WORDS = ("store_missing", "store_busy", "store_recovering", "timeout")
+# The shapes a value must have to reach an answer of those two verbs (always `fullmatch`).  A
+# value that does not fit is dropped to null or its row is left out;  it is never repaired.
+OPERATOR_SEAT_RE = re.compile(r"[A-Z0-9][A-Z0-9_-]{0,31}")
+OPERATOR_PLATFORM_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+OPERATOR_LETTER_RE = re.compile(r"[A-Z]{1,2}")
+OPERATOR_ISSUE_RE = re.compile(r"[A-Z][A-Z0-9]{0,7}-[0-9]{1,7}")
+OPERATOR_WORD_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+OPERATOR_WAKE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")
+OPERATOR_ISO_RE = re.compile(
+    r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]{1,6})?(?:Z|\+00:00)"
+)
+OPERATOR_HOSTS = {"mac": "M", "server": "S", "cloud": "C"}
+OPERATOR_SESSION_STATES = ("active", "closed")
+OPERATOR_WAKE_CAPABILITIES = ("code-supported", "none", "unknown")
+# The ledger states of a wake that never went to an adapter:  only then is the row's `reason` a
+# fixed code.  A failed wake's reason is free text and is never read.
+OPERATOR_STOP_STATES = ("skipped", "dropped", "held_back", "surfaced", "expired", "evicted")
+# Seconds since 1970 that can be a time the daemon wrote:  2000 to 2100.
+OPERATOR_EPOCH_MIN = 946684800.0
+OPERATOR_EPOCH_MAX = 4102444800.0
 # The `--from-muster` entry (`muster-exec`'s forced command).  The approval engine is the sibling
 # file `muster_approval.py`, loaded by its fixed place (beside this file, in the installed layout and
 # in a checkout alike) and never through sys.path.  The environment of this branch is fixed: nothing
@@ -673,8 +1009,13 @@ def _kill_and_reap(proc):
         pass
 
 
-def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX):
-    """(exit status, stdout, stderr, over).  An argv list, never a shell, stdin closed.
+def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX, data=None):
+    """(exit status, stdout, stderr, over).  An argv list, never a shell, stdin closed, or, with
+    `data`, a pipe that is fed those bytes and then closed.  The input is written from the same
+    loop that reads the output, a piece at a time and never waiting on the child alone, so a
+    short write is carried on, a child that fills its output before it has read its input cannot
+    stall the two of them, and a child that never reads ends at the timeout like any other.  A
+    child that closes its input early is left to say why by its exit status.
 
     Stdout is never held beyond `max_bytes`: the first byte past the limit kills the child at
     once and answers `over` (True) with no stdout, so a huge file costs neither memory nor the
@@ -687,7 +1028,7 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
     try:
         proc = subprocess.Popen(
             argv,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -701,10 +1042,17 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
     over = False
     timed_out = False
     selector = selectors.DefaultSelector()
+    pending = memoryview(data) if data is not None else None
     try:
         deadline = time.monotonic() + timeout
         selector.register(proc.stdout, selectors.EVENT_READ, "out")
         selector.register(proc.stderr, selectors.EVENT_READ, "err")
+        if pending is not None:
+            if len(pending):
+                os.set_blocking(proc.stdin.fileno(), False)
+                selector.register(proc.stdin, selectors.EVENT_WRITE, "in")
+            else:
+                proc.stdin.close()
         while selector.get_map() and not over:
             remaining = deadline - time.monotonic()
             events = selector.select(remaining) if remaining > 0 else []
@@ -712,6 +1060,19 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
                 timed_out = True
                 break
             for key, _ in events:
+                if key.data == "in":
+                    try:
+                        sent = os.write(key.fd, pending[:65536])
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        # The child closed its end:  nothing more can be given to it.
+                        sent = len(pending)
+                    pending = pending[sent:]
+                    if not len(pending):
+                        selector.unregister(key.fileobj)
+                        proc.stdin.close()
+                    continue
                 chunk = os.read(key.fd, 65536)
                 if not chunk:
                     selector.unregister(key.fileobj)
@@ -747,9 +1108,11 @@ def run_bounded_read(argv, timeout, env, max_bytes, stderr_max=DOCKER_STDERR_MAX
             selector.close()
         except BaseException:  # noqa: BLE001, S110 - Best-effort cleanup must preserve the result.
             pass
-        for stream in (proc.stdout, proc.stderr):
+        # `stdin` is only there when the child was given input.
+        for stream in (proc.stdout, proc.stderr, getattr(proc, "stdin", None)):
             try:
-                stream.close()
+                if stream is not None:
+                    stream.close()
             except BaseException:  # noqa: BLE001, S110 - Preserve the original interruption.
                 pass
 
@@ -823,6 +1186,7 @@ class Context:
         sleep=None,
         monotonic=None,
         reader=None,
+        stdin=None,
     ):
         self.platform = platform or sys.platform
         self.uid = os.getuid() if uid is None else uid
@@ -848,6 +1212,8 @@ class Context:
         self.monotonic = monotonic or time.monotonic
         # The bounded reader of `server eavesdropper-status` (see run_bounded_read).
         self.reader = reader or run_bounded_read
+        # The bounded read of this process's own standard input (`server eavesdropper-settings`).
+        self.stdin = stdin or read_bounded_stdin
 
     def child_env(self):
         env = {k: v for k, v in self.environ.items() if k in CHILD_ENV_KEEP}
@@ -1100,15 +1466,23 @@ def read_eavesdropper_status(ctx):
     `--user simpletools` runs `cat` as the container's own unprivileged account, which owns the
     0600 file, so the read is no wider than that account's.  The container, the user and the
     path are constants here, so no word from a request can reach docker."""
-    argv = [
-        _docker(),
-        "exec",
-        "--user",
-        EAVESDROPPER_USER,
-        EAVESDROPPER_CONTAINER,
-        EAVESDROPPER_CAT,
-        EAVESDROPPER_STATUS_PATH,
-    ]
+    return _read_container_json(
+        ctx,
+        [EAVESDROPPER_CAT, EAVESDROPPER_STATUS_PATH],
+        EAVESDROPPER_READ_TIMEOUT,
+        EAVESDROPPER_STATUS_MAX_BYTES,
+    )
+
+
+def _read_container_json(ctx, words, timeout, max_bytes):
+    """(the JSON object one fixed command in the eavesdropper container printed, None) or (None, a
+    reason word).  `words` is the command, and every caller passes constants of this file.
+
+    The argv is `docker exec --user simpletools eavesdropper` and then `words`, run without a
+    shell and without sudo, with the pinned environment of `_docker_env` and an empty private
+    temporary directory as the docker config.  The read stops at the first byte past `max_bytes`
+    (`too_large`), and docker's own words are only compared with known phrases, never kept."""
+    argv = [_docker(), "exec", "--user", EAVESDROPPER_USER, EAVESDROPPER_CONTAINER] + list(words)
     try:
         scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
     except OSError:
@@ -1116,9 +1490,9 @@ def read_eavesdropper_status(ctx):
     with scratch as config_dir:
         status, out, err, over = ctx.reader(
             argv,
-            timeout=EAVESDROPPER_READ_TIMEOUT,
+            timeout=timeout,
             env=_docker_env(config_dir),
-            max_bytes=EAVESDROPPER_STATUS_MAX_BYTES,
+            max_bytes=max_bytes,
         )
     if over:
         return None, "too_large"
@@ -1135,6 +1509,611 @@ def read_eavesdropper_status(ctx):
     if not isinstance(document, dict):
         return None, "not_json"
     return document, None
+
+
+def read_bounded_stdin(
+    max_bytes=EAVESDROPPER_SETTINGS_REQUEST_MAX_BYTES, timeout=EAVESDROPPER_SETTINGS_STDIN_TIMEOUT
+):
+    """The bytes on standard input, or None when there are more than `max_bytes` or they do not
+    end inside `timeout` seconds.  Nothing to read (closed, a terminal, /dev/null) is b""."""
+    try:
+        fd = sys.stdin.fileno()
+        if os.isatty(fd):
+            return b""
+    except (AttributeError, OSError, ValueError):
+        return b""
+    chunks = []
+    total = 0
+    deadline = time.monotonic() + timeout
+    selector = selectors.DefaultSelector()
+    try:
+        try:
+            selector.register(fd, selectors.EVENT_READ)
+        except (OSError, ValueError):
+            return b""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                return None
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return None
+            if not chunk:
+                return b"".join(chunks)
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            chunks.append(chunk)
+    finally:
+        selector.close()
+
+
+def load_eavesdropper_settings_allowlist(ctx):
+    """The eavesdropper settings allowlist document, or Refused.
+
+    It is read from beside this helper by `_read_module_source`, so the same owner and mode rule
+    holds as for a module:  a file another account could write is not an allowlist.  Only its
+    outer shape is judged here;  the editor judges every entry, and refuses the whole file for a
+    key that can never be listed."""
+    raw = _read_module_source(
+        ctx, (EAVESDROPPER_SETTINGS_ALLOWLIST_NAME,), EAVESDROPPER_SETTINGS_ALLOWLIST_MAX_BYTES
+    )
+    if raw is None:
+        raise Refused(
+            "the eavesdropper settings allowlist is missing or not trusted",
+            error_code="allowlist_unavailable",
+        )
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        doc = None
+    if not isinstance(doc, dict) or not isinstance(doc.get("applyEnabled"), bool):
+        raise Refused(
+            "the eavesdropper settings allowlist cannot be read", error_code="allowlist_invalid"
+        )
+    return doc
+
+
+def _load_eavesdropper_settings_editor(ctx):
+    """The editor module, loaded from its judged bytes like the reducer, or Refused.
+
+    It needs Python 3.11 (`tomllib`):  an older interpreter is refused here, by name, and the
+    container route, which runs the module inside the image, does not come this way."""
+    source = _read_module_source(
+        ctx, EAVESDROPPER_SETTINGS_EDITOR_PARTS, EAVESDROPPER_SETTINGS_EDITOR_MAX_BYTES
+    )
+    module = None
+    if source is not None:
+        try:
+            code = compile(
+                source, EAVESDROPPER_SETTINGS_EDITOR_PARTS[-1], "exec", dont_inherit=True
+            )
+            module = types.ModuleType("eavesdropper_settings_edit")
+            # The module finds this checkout's `simple_tools` from its own place.
+            module.__file__ = str(HELPER_DIR.joinpath(*EAVESDROPPER_SETTINGS_EDITOR_PARTS))
+            exec(code, module.__dict__)  # noqa: S102 - the bytes were just judged trusted
+        except (Exception, SystemExit):  # noqa: BLE001 - any load failure is the same answer
+            module = None
+    if module is None or not callable(getattr(module, "run_request", None)):
+        raise Refused(
+            "the eavesdropper settings editor is missing, not trusted or needs Python 3.11",
+            error_code="editor_unavailable",
+        )
+    return module
+
+
+def run_eavesdropper_settings_editor_in_container(ctx, request):
+    """(the editor's answer document, its exit status) for `request`, run inside the eavesdropper
+    container, or Failed.
+
+    One argv, no shell, no sudo:  `docker exec -i --user simpletools eavesdropper
+    /usr/local/bin/python3 -I <the image's editor> --request-stdin`.  The request goes in on
+    standard input, so no setting, value or path from a caller is ever a word of the argv, and the
+    file it edits is the one the container's own SIMPLE_TOOLS_CONFIG names.  The environment is
+    the pinned docker one.  Docker's own words are only classified, never kept."""
+    try:
+        payload = json.dumps(
+            request, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        # A `--set` value is read as TOML, which has dates, times, `inf` and `nan`;  JSON has
+        # none of them.  The editor refuses those at the source;  this is the same refusal at the
+        # boundary, so a value that cannot travel is never a fault.
+        raise Refused(
+            "the request holds a value that cannot be sent:  a date, a time or a number that is "
+            "not finite",
+            error_code="value_not_allowed",
+        ) from None
+    if len(payload) > EAVESDROPPER_SETTINGS_REQUEST_MAX_BYTES:
+        raise Refused("the request is too large", error_code="request_too_large")
+    argv = [
+        _docker(),
+        "exec",
+        "-i",
+        "--user",
+        EAVESDROPPER_USER,
+        EAVESDROPPER_CONTAINER,
+        EAVESDROPPER_SETTINGS_EDITOR_PYTHON,
+        "-I",
+        EAVESDROPPER_SETTINGS_EDITOR_PATH,
+        "--request-stdin",
+    ]
+    try:
+        scratch = tempfile.TemporaryDirectory(prefix="fleet-ops-docker-")
+    except OSError:
+        raise Failed("docker cannot be run", error_code="docker_unavailable") from None
+    with scratch as config_dir:
+        status, out, err, over = ctx.reader(
+            argv,
+            timeout=EAVESDROPPER_SETTINGS_EDIT_TIMEOUT,
+            env=_docker_env(config_dir),
+            max_bytes=EAVESDROPPER_SETTINGS_ANSWER_MAX_BYTES,
+            data=payload,
+        )
+    if over:
+        raise Failed("the editor's answer is too large", error_code="too_large")
+    if status == 127:
+        raise Failed("docker cannot be run", error_code="docker_unavailable")
+    if status == 124:
+        # The edit may have been made:  the caller reads the settings back before trying again.
+        raise Failed("the editor did not finish in time", error_code="timeout", timed_out=True)
+    try:
+        document = json.loads((out or b"").decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        document = None
+    if not isinstance(document, dict) or document.get("tool") != EAVESDROPPER_SETTINGS_VERB:
+        if status != 0 and _docker_failure(err) == "container_not_running":
+            raise Failed(
+                "the eavesdropper container is not running", error_code="container_not_running"
+            )
+        raise Failed(
+            "the image has no eavesdropper settings editor, or it gave no answer",
+            error_code="editor_unavailable",
+        )
+    return document, (status if status in (0, 1, 2) else 1)
+
+
+def eavesdropper_settings(ctx, action, changes, expect=None, file=None, remove=None):
+    """(answer fields, exit status) of one eavesdropper-settings request, or Refused / Failed.
+
+    `file` runs the editor in this process on that file;  without it the editor runs in the
+    server's container.  The fields are the usual `ok`, `result`, `detail` (and `errorCode`), the
+    editor's whole answer as `eavesdropperSettings`, and a plain-text `output` for a terminal."""
+    if action not in EAVESDROPPER_SETTINGS_ACTIONS:
+        raise Refused("the eavesdropper settings action is get, plan or apply")
+    request = {"action": action, "allowlist": load_eavesdropper_settings_allowlist(ctx)}
+    if action != "get":
+        if not isinstance(changes, dict) or not changes:
+            raise Refused("name at least one setting to change", error_code="usage")
+        request["set"] = changes
+        if remove:
+            request["remove"] = list(remove)
+    if action == "apply" and expect is not None:
+        request["expectPlanSHA256"] = expect
+    if file is not None:
+        module = _load_eavesdropper_settings_editor(ctx)
+        try:
+            document, code = module.run_request(request, path=file)
+        except Exception:  # noqa: BLE001 - the editor answers its own refusals;  this is a fault
+            raise Failed(
+                "the eavesdropper settings editor failed", error_code="editor_failed"
+            ) from None
+    else:
+        _server_only(ctx)
+        document, code = run_eavesdropper_settings_editor_in_container(ctx, request)
+    result = document.get("result")
+    if result not in EAVESDROPPER_SETTINGS_RESULTS or not isinstance(document.get("ok"), bool):
+        raise Failed("the editor's answer is not one this helper knows", error_code="editor_failed")
+    fields = {"ok": document["ok"], "result": result, "eavesdropperSettings": document}
+    error = document.get("errorCode")
+    if isinstance(error, str) and EAVESDROPPER_SETTINGS_CODE_RE.fullmatch(error):
+        fields["errorCode"] = error
+    check = document.get("check") if isinstance(document.get("check"), dict) else {}
+    lines = []
+    if result == "read":
+        settings = document.get("settings") if isinstance(document.get("settings"), dict) else {}
+        fields["detail"] = "%d allowlisted settings" % len(settings)
+        lines = [
+            "%s = %s" % (key, json.dumps(settings[key], sort_keys=True)) for key in sorted(settings)
+        ]
+    elif document["ok"]:
+        changed = document.get("changes") if isinstance(document.get("changes"), list) else []
+        if result == "unchanged":
+            fields["detail"] = "every setting is already as asked"
+        elif result == "planned":
+            fields["detail"] = (
+                "%d setting(s) would change; the Eavesdropper would %s the result"
+                % (
+                    len(changed),
+                    "take" if check.get("ok") else "NOT take",
+                )
+            )
+        else:
+            reload = document.get("reload") if isinstance(document.get("reload"), dict) else {}
+            fields["detail"] = "%d setting(s) changed; %s" % (
+                len(changed),
+                str(reload.get("code") or "reload_skipped").replace("_", " "),
+            )
+        lines = [str(line) for line in document.get("diff") or []]
+        for change in changed:
+            # A sub-key a whole-table value drops is said in words, not left to the diff.
+            removes = change.get("removes") if isinstance(change, dict) else None
+            if isinstance(removes, list) and removes:
+                lines.append("removes: " + ", ".join(str(name) for name in removes))
+    else:
+        fields["detail"] = str(document.get("detail") or result)[:400]
+    lines += ["check: " + str(problem) for problem in check.get("problems") or []]
+    if lines:
+        fields["output"] = "\n".join(lines) + "\n"
+    return fields, code
+
+
+def eavesdropper_settings_request_from_stdin(ctx, mode):
+    """(action, changes, removals, expected plan hash) of a `server eavesdropper-settings` request.
+
+    Standard input is empty (a get, with `--plan` only) or one JSON object with `set`, an
+    optional `remove` list (the sub-keys a whole-table value is meant to drop) and, for an
+    apply, an optional `expectPlanSHA256`.  Anything else is refused.  Empty means it ended:
+    an input the caller leaves open (a plain `ssh` from a terminal, without `-n` or
+    `</dev/null`) is refused when the bounded read gives up, never taken for a get."""
+    raw = ctx.stdin()
+    if raw is None:
+        raise Refused(
+            "the request on standard input is too large or did not end;  for a get, close it "
+            "(the -n option of ssh, or </dev/null)",
+            error_code="usage",
+        )
+    if not raw.strip():
+        if mode != "plan":
+            raise Refused("an apply needs the changes on standard input", error_code="usage")
+        return "get", None, None, None
+    try:
+        request = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        request = None
+    if (
+        not isinstance(request, dict)
+        or set(request) - {"set", "remove", "expectPlanSHA256"}
+        or not isinstance(request.get("set"), dict)
+        or not request["set"]
+        or not isinstance(request.get("remove", []), list)
+    ):
+        raise Refused(
+            "standard input must be one JSON object with a non-empty set", error_code="usage"
+        )
+    expect = request.get("expectPlanSHA256")
+    if expect is not None and (mode != "yes" or not isinstance(expect, str)):
+        raise Refused("expectPlanSHA256 belongs to an apply", error_code="usage")
+    action = "plan" if mode == "plan" else "apply"
+    return action, request["set"], request.get("remove"), expect
+
+
+# MARK: - The server Operator's sessions and wakes (read only)
+
+
+def _operator_stamp(epoch):
+    return datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def _operator_text(value, shape):
+    """`value` when it is a string of exactly that shape, else None."""
+    return value if isinstance(value, str) and shape.fullmatch(value) else None
+
+
+def _operator_choice(value, allowed):
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _operator_int(value, low=0, high=OPERATOR_COUNT_MAX):
+    """`value` when it is an int in range (never a bool, a float or a string), else None."""
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        return None
+    return value
+
+
+def _operator_flag(value):
+    return value if isinstance(value, bool) else None
+
+
+def _operator_iso(value):
+    """A UTC instant as the registry writes it, cut to whole seconds, else None."""
+    match = OPERATOR_ISO_RE.fullmatch(value) if isinstance(value, str) else None
+    return match.group(1) + "Z" if match else None
+
+
+def _operator_epoch(value):
+    """Seconds since 1970 as a UTC instant, else None (a bool, a string, NaN, infinity and a time
+    outside 2000 to 2100 are all None)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    if not OPERATOR_EPOCH_MIN <= number <= OPERATOR_EPOCH_MAX:
+        return None
+    return _operator_stamp(number)
+
+
+def _operator_list(value):
+    return value if isinstance(value, list) else []
+
+
+def _operator_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _operator_counts(value):
+    """{code word: count} from a counts object: only keys shaped like a code and counts in range,
+    at most OPERATOR_MAX_KEYS of them, in the order of the words."""
+    kept = {}
+    for key in sorted(k for k in _operator_dict(value) if _operator_text(k, OPERATOR_WORD_RE)):
+        count = _operator_int(value[key])
+        if count is not None and len(kept) < OPERATOR_MAX_KEYS:
+            kept[key] = count
+    return kept
+
+
+def _operator_message_id(value):
+    return _operator_int(value, 1, 10**15)
+
+
+def _operator_issues(value):
+    """The Linear issue ids of a session, newest first, from the registry's JSON list of
+    {"id", "seen_at"}.  Anything else is no issues."""
+    if not isinstance(value, str) or len(value) > 8192:
+        return []
+    try:
+        entries = json.loads(value)
+    except (ValueError, RecursionError):
+        return []
+    kept = []
+    for entry in _operator_list(entries):
+        found = _operator_text(_operator_dict(entry).get("id"), OPERATOR_ISSUE_RE)
+        if found and found not in kept and len(kept) < OPERATOR_MAX_ISSUES:
+            kept.append(found)
+    return kept
+
+
+def reduce_operator_sessions(document, now):
+    """The `sessions` object of `server operator-sessions`, from what the sessions program printed.
+
+        {"schema": 1, "generated_at": ISO, "instance": "server",
+         "counts": {"active": int | null, "closed": int | null},
+         "truncated": bool, "dropped": int,
+         "sessions": [{"letter": "A".."ZZ" | null, "generation": int | null, "seat": name,
+                       "platform": token | null, "host": "mac" | "server" | "cloud" | null,
+                       "host_code": "M" | "S" | "C" | null, "status": "active" | "closed" | null,
+                       "wake": "code-supported" | "none" | "unknown" | null,
+                       "registered_at": ISO | null, "last_seen_at": ISO | null,
+                       "issues": [issue id]}]}
+
+    `sessions` lists the live (active) sessions, the one seen last first, at most
+    OPERATOR_MAX_SESSIONS.  `last_seen_at` is the session's last turn as the registry knows it.
+    `truncated` says the registry holds more live sessions than are listed, and `dropped` how
+    many rows were left out because their seat was not a seat name.  Every value is matched
+    against a fixed shape and is null when it does not fit, so a reader decodes each scalar as
+    an optional.  Nothing here raises on a document of the wrong shape."""
+    counts = {"active": None, "closed": None}
+    for pair in _operator_list(document.get("counts")):
+        if isinstance(pair, list) and len(pair) == 2 and pair[0] in counts:
+            counts[pair[0]] = _operator_int(pair[1])
+    rows = _operator_list(document.get("rows"))[:OPERATOR_MAX_SESSIONS]
+    sessions = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 10:
+            continue
+        seat = _operator_text(row[0], OPERATOR_SEAT_RE)
+        if seat is None:
+            continue
+        host = _operator_choice(row[2], OPERATOR_HOSTS)
+        sessions.append(
+            {
+                "letter": _operator_text(row[7], OPERATOR_LETTER_RE),
+                "generation": _operator_int(row[8], 1, 1_000_000),
+                "seat": seat,
+                "platform": _operator_text(row[1], OPERATOR_PLATFORM_RE),
+                "host": host,
+                "host_code": OPERATOR_HOSTS.get(host),
+                "status": _operator_choice(row[3], OPERATOR_SESSION_STATES),
+                "wake": _operator_choice(row[4], OPERATOR_WAKE_CAPABILITIES),
+                "registered_at": _operator_iso(row[5]),
+                "last_seen_at": _operator_iso(row[6]),
+                "issues": _operator_issues(row[9]),
+            }
+        )
+    return {
+        "schema": OPERATOR_SCHEMA,
+        "generated_at": _operator_stamp(now),
+        "instance": OPERATOR_TARGET,
+        "counts": counts,
+        "truncated": counts["active"] is not None and counts["active"] > len(rows),
+        "dropped": len(rows) - len(sessions),
+        "sessions": sessions,
+    }
+
+
+def _operator_wake_row(item):
+    item = _operator_dict(item)
+    wake_id = _operator_text(item.get("wake_id"), OPERATOR_WAKE_ID_RE)
+    if wake_id is None:
+        return None
+    state = _operator_text(item.get("state"), OPERATOR_WORD_RE)
+    ids = [_operator_message_id(i) for i in _operator_list(item.get("trigger_ids"))]
+    return {
+        "wake_id": wake_id,
+        "state": state,
+        "at": _operator_epoch(item.get("ts")),
+        # Only a wake that stopped before it ran has a fixed code as its reason.
+        "reason": _operator_text(item.get("reason"), OPERATOR_WORD_RE)
+        if state in OPERATOR_STOP_STATES
+        else None,
+        "dm": _operator_flag(item.get("dm")),
+        "owner": _operator_flag(item.get("owner")),
+        "catch_up": _operator_flag(item.get("catch_up")),
+        "message_ids": [i for i in ids if i is not None][:OPERATOR_MAX_MESSAGE_IDS],
+    }
+
+
+def _operator_held_row(item):
+    item = _operator_dict(item)
+    message_id = _operator_message_id(item.get("message_id"))
+    if message_id is None:
+        return None
+    return {
+        "message_id": message_id,
+        "at": _operator_epoch(item.get("at")),
+        "reason": _operator_text(item.get("reason"), OPERATOR_WORD_RE),
+        "dm": _operator_flag(item.get("dm")),
+    }
+
+
+def _operator_owner_row(item):
+    item = _operator_dict(item)
+    seq = _operator_int(item.get("seq"))
+    if seq is None:
+        return None
+    return {
+        "seq": seq,
+        "at": _operator_epoch(item.get("ts")),
+        "kind": _operator_text(item.get("kind"), OPERATOR_WORD_RE),
+        "risk": _operator_text(item.get("risk"), OPERATOR_WORD_RE),
+    }
+
+
+def _operator_rows(items, reduce_row):
+    rows = (reduce_row(item) for item in _operator_list(items)[:OPERATOR_MAX_ROWS])
+    return [row for row in rows if row is not None]
+
+
+def reduce_operator_wakes(document, now):
+    """The `wakes` object of `server operator-wakes`, from what the wakes program printed.
+
+        {"schema": 1, "generated_at": ISO, "instance": "server", "window_hours": 24,
+         "totals": {"recent": int, "held_back": int, "held_back_lost": int, "owner_queue": int},
+         "truncated": bool,
+         "seats": [{"seat": name,
+                    "recent": {"total": int | null, "by_state": {state: int},
+                               "rows": [{"wake_id": id, "state": word | null, "at": ISO | null,
+                                         "reason": code | null, "dm": bool | null,
+                                         "owner": bool | null, "catch_up": bool | null,
+                                         "message_ids": [int]}]},
+                    "held_back": {"count": int | null, "lost": int | null,
+                                  "reasons": {code: int},
+                                  "rows": [{"message_id": int, "at": ISO | null,
+                                            "reason": code | null, "dm": bool | null}]},
+                    "owner_queue": {"pending": int | null,
+                                    "rows": [{"seq": int, "at": ISO | null, "kind": code | null,
+                                              "risk": code | null}]}}],
+         "unreadable": [name]}
+
+    `recent` is the seat's wakes of the last `window_hours` hours (its newest rows last),
+    `held_back` the wakes held back now and `owner_queue` the notes waiting for the owner.  Each
+    list of rows holds at most OPERATOR_MAX_ROWS;  the counts beside it are of everything.
+    `totals` adds up the seats listed, so with a seat in `unreadable`, or with `truncated` (more
+    seats than OPERATOR_MAX_SEATS), it is a floor and not the whole.  A row carries ids, code
+    words and times only:  there is no key for a body, a title, a topic, a channel, a sender or
+    a link, and a failed wake's free-text reason is never read.  Nothing here raises."""
+    seats = []
+    totals = {"recent": 0, "held_back": 0, "held_back_lost": 0, "owner_queue": 0}
+    for entry in _operator_list(document.get("seats"))[:OPERATOR_MAX_SEATS]:
+        entry = _operator_dict(entry)
+        seat = _operator_text(entry.get("seat"), OPERATOR_SEAT_RE)
+        if seat is None:
+            continue
+        recent = _operator_dict(entry.get("recent"))
+        held = _operator_dict(entry.get("held_back"))
+        owner = _operator_dict(entry.get("owner_queue"))
+        row = {
+            "seat": seat,
+            "recent": {
+                "total": _operator_int(recent.get("total")),
+                "by_state": _operator_counts(recent.get("by_state")),
+                "rows": _operator_rows(recent.get("rows"), _operator_wake_row),
+            },
+            "held_back": {
+                "count": _operator_int(held.get("count")),
+                "lost": _operator_int(held.get("lost")),
+                "reasons": _operator_counts(held.get("reasons")),
+                "rows": _operator_rows(held.get("rows"), _operator_held_row),
+            },
+            "owner_queue": {
+                "pending": _operator_int(owner.get("pending")),
+                "rows": _operator_rows(owner.get("rows"), _operator_owner_row),
+            },
+        }
+        totals["recent"] += row["recent"]["total"] or 0
+        totals["held_back"] += row["held_back"]["count"] or 0
+        totals["held_back_lost"] += row["held_back"]["lost"] or 0
+        totals["owner_queue"] += row["owner_queue"]["pending"] or 0
+        seats.append(row)
+    unreadable = []
+    for name in _operator_list(document.get("unreadable"))[:OPERATOR_MAX_SEATS]:
+        name = _operator_text(name, OPERATOR_SEAT_RE)
+        if name and name not in unreadable:
+            unreadable.append(name)
+    seat_count = _operator_int(document.get("seat_count"))
+    return {
+        "schema": OPERATOR_SCHEMA,
+        "generated_at": _operator_stamp(now),
+        "instance": OPERATOR_TARGET,
+        "window_hours": OPERATOR_WAKE_WINDOW_HOURS,
+        "totals": totals,
+        "truncated": seat_count is not None and seat_count > OPERATOR_MAX_SEATS,
+        "seats": seats,
+        "unreadable": unreadable,
+    }
+
+
+OPERATOR_REDUCERS = {
+    "operator-sessions": reduce_operator_sessions,
+    "operator-wakes": reduce_operator_wakes,
+}
+
+
+def operator_read(ctx, action, target, mode):
+    """(the fields a `server operator-sessions` or `server operator-wakes` answer adds, the exit
+    status), or Refused.
+
+    A read:  no lock, no sudo and no audit row for a plan.  Only `--plan` and only the target
+    `server` are accepted, on the server.  The container is asked once, with one constant
+    program and constant places (`OPERATOR_READS`), and what it prints is reduced here before
+    any of it is answered.  A store that cannot be read is `unavailable` with a reason word and
+    exit status 1:  never a path, docker's text or a byte of the store."""
+    _server_only(ctx)
+    if mode != "plan":
+        raise Refused(f"{action} only reads: pass --plan")
+    if target != OPERATOR_TARGET:
+        raise Refused("only the server's Operator can be read here")
+    program, places, key, detail = OPERATOR_READS[action]
+    document, reason = _read_container_json(
+        ctx,
+        [OPERATOR_PYTHON, "-I", "-c", program] + list(places),
+        OPERATOR_READ_TIMEOUT,
+        OPERATOR_READ_MAX_BYTES,
+    )
+    reduced = None
+    if document is not None and "error" in document:
+        # The program's own word for a store it could not read;  any other word is one answer.
+        word = document.get("error")
+        reason = word if word in OPERATOR_PROGRAM_WORDS else "reader_failed"
+        document = None
+    if document is not None:
+        try:
+            reduced = OPERATOR_REDUCERS[action](document, ctx.now())
+        except Exception:  # noqa: BLE001 - an answer that cannot be reduced is not shown
+            document, reason = None, "reader_failed"
+    if document is None:
+        return {
+            "ok": False,
+            "result": "unavailable",
+            "detail": OPERATOR_UNAVAILABLE[reason],
+            "errorCode": reason,
+        }, 1
+    return {"ok": True, "result": "planned", "detail": detail, key: reduced}, 0
 
 
 def _pm2_prefix(ctx):
@@ -2298,6 +3277,39 @@ def handle(
                 status=reduced,
             )
             return answer, 0
+        if scope == "server" and action == EAVESDROPPER_SETTINGS_VERB:
+            # Allowlisted settings of the Eavesdropper's live config.  `--plan` reads or plans
+            # and takes no lock and writes no audit row;  `--yes` is the apply, under the one
+            # action lock, with one audit row that names no setting and no value.  The request
+            # itself is on standard input, never in the command.  The `--from-muster` route has no
+            # approval form for this verb, so it is refused there outright.
+            audit_target = EAVESDROPPER_SETTINGS_AUDIT_TARGET
+            if require_approval:
+                raise Refused("eavesdropper-settings is not offered on this route")
+            _server_only(ctx)
+            if target != EAVESDROPPER_SETTINGS_TARGET:
+                raise Refused("only the server's Eavesdropper has settings here")
+            edit_action, changes, remove, expect = eavesdropper_settings_request_from_stdin(
+                ctx, mode
+            )
+            with contextlib.ExitStack() as held:
+                if mode == "yes" and not lock_held:
+                    held.enter_context(action_lock(ctx))
+                fields, code = eavesdropper_settings(
+                    ctx, edit_action, changes, expect, remove=remove
+                )
+            answer.update(fields)
+            if mode == "yes":
+                audit_run(ctx, scope, action, target, audit_target, answer, None, extra)
+            return answer, code
+        if scope == "server" and action in OPERATOR_READS:
+            # A read of the server Operator's session registry or wake records, reduced to
+            # letters, names, counts, ids, code words and times.  Like eavesdropper-status it
+            # takes no lock, asks for no sudo, writes no audit row for a plan and refuses
+            # `--yes` (audited, like every refused `--yes`).
+            fields, code = operator_read(ctx, action, target, mode)
+            answer.update(fields)
+            return answer, code
         if scope == "server" and action in ("resource-status", "resource-policy"):
             if not config["resourcePolicy"]:
                 raise Refused(
@@ -2850,6 +3862,9 @@ def parse_ssh_command(text):
         "resource-policy",
         "seat-inventory",
         "eavesdropper-status",
+        EAVESDROPPER_SETTINGS_VERB,
+        "operator-sessions",
+        "operator-wakes",
     ):
         raise Refused("unknown server verb")
     if words[:3] != plain:
@@ -2859,6 +3874,95 @@ def parse_ssh_command(text):
     if ("--plan" in flags) == ("--yes" in flags):
         raise Refused("pass exactly one of --plan or --yes")
     return words
+
+
+def run_eavesdropper_settings(argv, ctx, out):
+    """`eavesdropper-settings get|plan|apply ...` from a command line (never from ssh):  the exit status.
+
+    `--set KEY=VALUE` (repeatable) names a change, its value read as TOML.  `--remove
+    KEY.SUBKEY` (repeatable) names a sub-key a whole-table value is meant to drop.  `--file PATH` is the
+    file to act on, edited by the module in this process;  without it the server's container is
+    used, on the server only.  `apply` needs `--yes`, holds the one action lock and writes one
+    audit row.  `--expect` is a plan's `planSHA256`."""
+    as_json = "--json" in argv
+    answer = {
+        "ok": False,
+        "verb": EAVESDROPPER_SETTINGS_VERB,
+        "target": EAVESDROPPER_SETTINGS_AUDIT_TARGET,
+        "commands": [],
+        "result": "refused",
+        "detail": "",
+    }
+    action = None
+    code = 2
+    try:
+        parser = _QuietParser(prog=TOOL, add_help=False)
+        parser.add_argument("action", choices=EAVESDROPPER_SETTINGS_ACTIONS)
+        parser.add_argument("--set", action="append", default=[], dest="changes")
+        parser.add_argument("--remove", action="append", default=[])
+        parser.add_argument("--file")
+        parser.add_argument("--expect")
+        parser.add_argument("--yes", action="store_true")
+        parser.add_argument("--json", action="store_true")
+        try:
+            args = parser.parse_args(argv)
+        except Refused:
+            raise Refused(
+                "usage: eavesdropper-settings get|plan|apply [--set KEY=VALUE ...] "
+                "[--remove KEY.SUBKEY ...] [--file PATH] [--expect SHA256] [--yes] [--json]"
+            ) from None
+        action = args.action
+        answer["verb"] = "%s %s" % (EAVESDROPPER_SETTINGS_VERB, action)
+        if action == "get" and (args.changes or args.remove or args.expect or args.yes):
+            raise Refused("get takes no --set, --remove, --expect or --yes")
+        if action == "plan" and (args.expect or args.yes):
+            raise Refused("plan takes no --expect or --yes")
+        if action == "apply" and not args.yes:
+            raise Refused("pass --yes to apply, or use plan to see the changes")
+        if args.file is None and not ctx.platform.startswith("linux"):
+            raise Refused("pass --file PATH:  the live file is in the server's container")
+        changes = None
+        if action != "get":
+            module = _load_eavesdropper_settings_editor(ctx)
+            changes = {}
+            for text in args.changes:
+                try:
+                    key, value = module.parse_assignment(text)
+                except module.Refusal as exc:
+                    raise Refused(exc.detail, error_code=exc.code) from None
+                if key in changes:
+                    raise Refused("a setting is named twice", error_code="usage")
+                changes[key] = value
+        with contextlib.ExitStack() as held:
+            if action == "apply":
+                held.enter_context(action_lock(ctx))
+            fields, code = eavesdropper_settings(
+                ctx, action, changes, args.expect, file=args.file, remove=args.remove
+            )
+        answer.update(fields)
+    except Refused as exc:
+        answer.update(ok=False, result="refused", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
+        code = 2
+    except Failed as exc:
+        answer.update(ok=False, result="failed", detail=str(exc))
+        if exc.error_code:
+            answer["errorCode"] = exc.error_code
+        code = 1
+    if action == "apply":
+        audit_run(
+            ctx,
+            EAVESDROPPER_SETTINGS_VERB,
+            action,
+            "",
+            EAVESDROPPER_SETTINGS_AUDIT_TARGET,
+            answer,
+            None,
+            None,
+        )
+    emit(answer, as_json, out)
+    return code
 
 
 def sanitize_for_terminal(text):
@@ -2910,6 +4014,10 @@ def main(argv=None, ctx=None, out=None, muster=None):
         return run_from_muster(argv, ctx, out, muster)
     ctx = ctx or Context()
     out = out or sys.stdout
+    if argv and argv[0] == EAVESDROPPER_SETTINGS_VERB:
+        # A command-line verb of its own shape.  The ssh gate below never comes here:  its words
+        # replace `argv` after this line and must begin with `server`.
+        return run_eavesdropper_settings(argv[1:], ctx, out)
     if "--from-ssh" in argv:
         # The forced command: nothing but --from-ssh may come from the command line, and
         # the answer is always JSON.

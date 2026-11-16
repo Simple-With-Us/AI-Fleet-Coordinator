@@ -5,6 +5,7 @@ bge-m3 accepts 4096 tokens but retrieval quality is best with focused chunks, so
 then paragraphs, then sentences.  A heading trail is prepended to every chunk so a fragment of
 "§ Secret handoff → Handoff-file grep trap" still carries its context when retrieved alone.
 """
+
 from __future__ import annotations
 
 import re
@@ -64,50 +65,65 @@ def _paragraphs(body: str) -> list[str]:
     return [p for p in out if p]
 
 
-def _split_long(par: str) -> list[str]:
+def _split_long(par: str, *, target: int, overlap: int, hard_max: int) -> list[str]:
     """Split a single over-long paragraph on sentence boundaries, then hard-wrap."""
-    if len(par) <= HARD_MAX:
+    if len(par) <= hard_max:
         return [par]
     pieces: list[str] = []
     cur = ""
     for sent in _SENTENCE.split(par):
-        if len(cur) + len(sent) + 1 > TARGET and cur:
+        if len(cur) + len(sent) + 1 > target and cur:
             pieces.append(cur.strip())
-            cur = cur[-OVERLAP:] + " " + sent if OVERLAP else sent
+            cur = cur[-overlap:] + " " + sent if overlap else sent
         else:
             cur = (cur + " " + sent).strip()
     if cur.strip():
         pieces.append(cur.strip())
     final: list[str] = []
     for p in pieces:
-        while len(p) > HARD_MAX:
-            final.append(p[:HARD_MAX])
-            p = p[HARD_MAX - OVERLAP:]
+        while len(p) > hard_max:
+            final.append(p[:hard_max])
+            p = p[hard_max - overlap :]
         final.append(p)
     return final
 
 
-def chunk_markdown(md: str, prefix: str = "") -> list[Chunk]:
-    """Chunk a markdown document.  `prefix` (e.g. a document title) leads every chunk's trail."""
+def chunk_markdown(
+    md: str,
+    prefix: str = "",
+    *,
+    target: int = TARGET,
+    overlap: int = OVERLAP,
+    hard_max: int = HARD_MAX,
+) -> list[Chunk]:
+    """Chunk a markdown document.  `prefix` (e.g. a document title) leads every chunk's trail.
+
+    `target`, `overlap` and `hard_max` default to the ingest settings.  The retrieval
+    eval passes other values when it measures a chunking change on the offline fixture.
+    """
     chunks: list[Chunk] = []
     idx = 0
     for trail, body in _sections(md):
         heading = " › ".join(([prefix] if prefix else []) + trail)
         units: list[str] = []
         for par in _paragraphs(body):
-            units.extend(_split_long(par))
+            units.extend(_split_long(par, target=target, overlap=overlap, hard_max=hard_max))
         cur = ""
         for unit in units:
-            if cur and len(cur) + len(unit) + 2 > TARGET:
+            if cur and len(cur) + len(unit) + 2 > target:
                 chunks.append(Chunk(_with_heading(heading, cur), idx, heading))
                 idx += 1
-                cur = (cur[-OVERLAP:].split("\n", 1)[-1] + "\n\n" + unit) if OVERLAP else unit
+                cur = (cur[-overlap:].split("\n", 1)[-1] + "\n\n" + unit) if overlap else unit
             else:
                 cur = (cur + "\n\n" + unit).strip() if cur else unit
         if cur.strip():
             # Merge a tiny tail into the previous chunk of the same section when possible.
-            if chunks and chunks[-1].heading == heading and len(cur) < MIN_CHUNK \
-                    and len(chunks[-1].text) + len(cur) < HARD_MAX:
+            if (
+                chunks
+                and chunks[-1].heading == heading
+                and len(cur) < MIN_CHUNK
+                and len(chunks[-1].text) + len(cur) < hard_max
+            ):
                 chunks[-1] = Chunk(chunks[-1].text + "\n\n" + cur, chunks[-1].index, heading)
             else:
                 chunks.append(Chunk(_with_heading(heading, cur), idx, heading))
@@ -115,9 +131,16 @@ def chunk_markdown(md: str, prefix: str = "") -> list[Chunk]:
     return chunks
 
 
-def chunk_plain(text: str, prefix: str = "") -> list[Chunk]:
+def chunk_plain(
+    text: str,
+    prefix: str = "",
+    *,
+    target: int = TARGET,
+    overlap: int = OVERLAP,
+    hard_max: int = HARD_MAX,
+) -> list[Chunk]:
     """Chunk plain text (no headings) by paragraphs and sentences."""
-    return chunk_markdown(text, prefix)
+    return chunk_markdown(text, prefix, target=target, overlap=overlap, hard_max=hard_max)
 
 
 def _with_heading(heading: str, body: str) -> str:

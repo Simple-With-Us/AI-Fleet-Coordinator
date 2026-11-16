@@ -40,8 +40,7 @@ policy file's digest before the restart and after the health gate and restores i
 Before anything changes a root-only journal records, fsynced, the exact bytes and owner/mode of
 the EnvironmentFile, the policy bytes, the drop-in state and the `systemctl cat` text, each
 with its sha256, and the phase reached.  recover needs only that journal, which it checks field by field before it writes anything
-(see _validate_journal for what that does and does not prove).  The journal is never deleted.  Not covered here:  the proof key and replay store the install-seat proof gate needs
-are a separate prerequisite, and the reboot test is a separate released run on the real host.
+(see _validate_journal for what that does and does not prove).  The journal is never deleted.  The proof key this gate needs is minted by `seat_policy.py proof-key` into the root-owned 0600 file named by GIT_RELAY_PROOF_KEY_FILE;  root, the relay host operator, owns that file (SEAT-POLICY-FILE.md).  install-seat creates the replay store.  The reboot test remains a separate released run on the real host.
 """
 
 from __future__ import annotations

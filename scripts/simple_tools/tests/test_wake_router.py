@@ -5,6 +5,8 @@ chat, the live registry or a real `claude`."""
 from __future__ import annotations
 
 import contextlib
+import importlib
+import importlib.util
 import io
 import json
 import os
@@ -27,13 +29,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from fleet_knobs import knobs
 from simple_tools import claude_wake as CW
+from simple_tools import platform_letter as PL
 from simple_tools import wake_router as WR
+from simple_tools import wake_service as SVC
 
 SID_A = "aaaaaaaa-0000-4000-8000-000000000001"
 SID_B = "bbbbbbbb-0000-4000-8000-000000000002"
 SID_C = "cccccccc-0000-4000-8000-000000000003"
 BODY_MARK = "THE-MESSAGE-BODY-MUST-NOT-TRAVEL"
+REGISTRY_URL = "http://127.0.0.1:9"  # never dialled:  registry_api.call is the fake
+CODEX_MODULE = SVC.BUILDERS["CODEX"].module
 OLDER = "2026-11-01T00:00:00Z"
 NEWER = "2026-11-05T00:00:00Z"
 NEWEST = "2026-11-09T00:00:00Z"
@@ -110,9 +117,8 @@ class Base(unittest.TestCase):
         self.state = Path(self.tmp) / "state"
         self.state.mkdir(mode=0o700)
         self.key = secrets.token_hex(24)
-        self.key_file = self.state / "routine-key"
-        self.key_file.write_text(self.key + "\n", encoding="utf-8")
-        os.chmod(self.key_file, 0o600)
+        # The routine key is injected, as the service injects its settings' secret knob.
+        self.key_answer = (self.key, "")
         self.registry = FakeRegistry()
         patcher = mock.patch.object(WR.registry_api, "call", self.registry)
         patcher.start()
@@ -126,6 +132,10 @@ class Base(unittest.TestCase):
 
     def config(self, **over) -> dict:
         return {**WR.ROUTER_DEFAULTS, "delivery_enabled": True, **over}
+
+    def key_source(self) -> tuple[str, str]:
+        """The router's KeySource:  whatever the test holds now, asked on every request."""
+        return self.key_answer
 
     def fake_deliver(self, target: WR.Target, wake: WR.Wake) -> WR.Delivery:
         self.delivered.append((target.session_id, wake.wake_id))
@@ -143,13 +153,22 @@ class Base(unittest.TestCase):
         )
         return WR.Router(
             platform,
-            {"HOME": self.tmp},
+            self.router_env(),
             self.config(**config),
             self.state,
-            self.key_file,
+            self.key_source,
             consult=consult,
             clock=self.clock,
         )
+
+    def router_env(self) -> dict:
+        """A router's env:  a registry address, as the service's RegistryEnv gives one (the
+        registry itself is the fake, so it is never dialled)."""
+        return {
+            "HOME": self.tmp,
+            WR.registry_api.URL_ENV: REGISTRY_URL,
+            WR.registry_api.KEY_VAR: "registry-" + "0" * 16,
+        }
 
     def wake(self, wake_id: str = "w-1", **over) -> WR.Wake:
         base = {"wake_id": wake_id, "seat": "CLAUDE", "topic": "unrelated", "channel": "wip"}
@@ -1480,8 +1499,11 @@ class Shutdown(Base):
         self.assertEqual(self.delivered, [])
         self.assertTrue(self.pending().exists())
 
+    def unit(self) -> str:
+        return (Path(CW.__file__).parent / "server" / "afc-wake-router.service").read_text()
+
     def test_the_unit_gives_the_wait_room_and_spares_the_children(self) -> None:
-        unit = (Path(CW.__file__).parent / "server" / "claude-wake-router.service").read_text()
+        unit = self.unit()
         stop = int(re.search(r"^TimeoutStopSec=(\d+)$", unit, re.M).group(1))
         wait = CW.DEFAULTS["shutdown_wait_seconds"]
         longest = CW.DEFAULTS["resume_timeout_seconds"] + CW.SSH_MARGIN_SECONDS
@@ -1489,12 +1511,38 @@ class Shutdown(Base):
         self.assertGreater(stop, wait)
         self.assertRegex(unit, r"(?m)^KillMode=mixed$")
 
-    def test_the_unit_keeps_off_the_port_zc_already_uses(self) -> None:
-        unit = (Path(CW.__file__).parent / "server" / "claude-wake-router.service").read_text()
-        start = re.search(r"(?m)^ExecStart=(.*)$", unit).group(1)
-        self.assertIn('--port "${CLAUDE_WAKE_PORT:-8794}"', start)
+    def test_the_unit_serves_loopback_8794_and_keeps_off_the_port_zc_uses(self) -> None:
+        start = re.search(r"(?m)^ExecStart=(.*)$", self.unit()).group(1)
+        self.assertTrue(start.endswith("simple-chat wake-router serve --bind 127.0.0.1 --port 8794"))
         self.assertNotIn("8793", start)
-        self.assertIn('. "$HOME/.local/bin/operator-registry-env"', start)
+        self.assertEqual((SVC.DEFAULT_BIND, SVC.DEFAULT_PORT), ("127.0.0.1", 8794))
+
+    def test_the_unit_reads_no_registry_env_file(self) -> None:
+        # The registry's address and key are /wake-router knobs, never an env file.
+        settings = [line for line in self.unit().splitlines() if not line.startswith("#")]
+        self.assertNotIn("operator-registry-env", "\n".join(settings))
+        self.assertNotIn("CLAUDE_LETTER_REMOTE", self.unit())
+        self.assertNotIn("/bin/sh", "\n".join(settings))
+        self.assertIn("SIMPLE_TOOLS_OPERATOR_REGISTRY_URL", self.unit())
+        self.assertIn("WAKE_ROUTER_KEY", self.unit())
+
+    def test_the_old_claude_only_unit_is_gone(self) -> None:
+        old = Path(CW.__file__).parent / "server" / "claude-wake-router.service"
+        self.assertFalse(old.exists())
+        self.assertFalse(hasattr(CW, "main"), "the CLI verb is the one service's")
+
+    def test_the_unit_is_a_user_unit_whose_env_file_holds_only_the_token(self) -> None:
+        unit = self.unit()
+        settings = [line for line in unit.splitlines() if line and not line.startswith("#")]
+        self.assertFalse([line for line in settings if line.startswith(("User=", "Group="))])
+        self.assertIn("WantedBy=default.target", settings)
+        self.assertIn("EnvironmentFile=-%h/.config/afc-wake-router/env", settings)
+        self.assertIn("ExecReload=/bin/kill -HUP $MAINPID", settings)
+        self.assertNotIn("/etc/", "\n".join(settings))
+        self.assertIn("systemctl --user", unit)
+        self.assertIn("holds only\n# FLEET_KNOBS_INFISICAL_TOKEN", unit)
+        self.assertIn("afc-wake-router-ro", unit)
+        self.assertIn("prod:/wake-router", unit)
 
 
 class Generations(Base):
@@ -2047,6 +2095,7 @@ class Receipts(Base):
                 "command-option-shaped-value",
                 "no-ssh-destination",
                 "no-transcript",
+                "platform-handler-missing",
                 "platform-not-installed",
                 "session-cwd-gone",
                 "unknown-host",
@@ -2398,7 +2447,13 @@ class Http(Base):
     def test_health_needs_no_key_and_says_nothing(self) -> None:
         port = self.serve(self.router())
         status, answer = self.request(port, "/health", method="GET")
-        self.assertEqual((status, answer), (200, {"seat": "CLAUDE", "healthy": True}))
+        every = {"CLAUDE": {"healthy": True, "delivery": True}}
+        self.assertEqual((status, answer), (200, {"healthy": True, "seats": every}))
+        status, answer = self.request(port, "/health/CLAUDE", method="GET")
+        self.assertEqual(
+            (status, answer), (200, {"seat": "CLAUDE", "healthy": True, "delivery": True})
+        )
+        self.assertEqual(self.request(port, "/health/ZC", method="GET")[0], 404)
 
     def test_refusals(self) -> None:
         port = self.serve(self.router())
@@ -2411,9 +2466,69 @@ class Http(Base):
         self.assertEqual(self.request(port, body=b"not json", key=self.key)[0], 400)
         self.assertEqual(self.request(port, body=b"x" * (WR.MAX_BODY + 1), key=self.key)[0], 413)
 
-    def test_a_loose_key_file_is_503(self) -> None:
+    def test_with_no_key_every_request_is_refused_and_health_says_why(self) -> None:
+        router = self.router()
+        port = self.serve(router)
+        self.key_answer = ("", "unreachable:scoped-read-failed")
+        # The old key, the empty bearer and no header at all:  nothing is let through unchecked.
+        for key in (self.key, "", None):
+            status, answer = self.request(port, body=self.body(), key=key)
+            self.assertEqual(status, 503, key)
+            self.assertIn("unreachable:scoped-read-failed", answer["error"])
+        status, _ = self.request(port, "/receipt/w-1", key=self.key, method="GET")
+        self.assertEqual(status, 503)
+        status, answer = self.request(port, "/health", method="GET")
+        reason = "routine-key-unavailable:unreachable:scoped-read-failed"
+        self.assertEqual(
+            (status, answer),
+            (
+                503,
+                {
+                    "healthy": False,
+                    "seats": {"CLAUDE": {"healthy": False, "delivery": True, "reason": reason}},
+                },
+            ),
+        )
+        self.assertEqual(router._entries, {}, "no wake was taken in")
+        self.assertFalse(self.pending().exists())
+        # The key comes back on a later read, and the same router takes requests again.
+        self.key_answer = (self.key, "")
+        self.assertEqual(self.request(port, "/health", method="GET")[0], 200)
+        self.assertEqual(self.request(port, body=self.body(test=True), key=self.key)[0], 200)
+
+    def test_a_key_shorter_than_16_is_no_key(self) -> None:
         port = self.serve(self.router())
-        os.chmod(self.key_file, 0o644)
+        short = "k" * (WR.KEY_MIN_LENGTH - 1)
+        self.key_answer = (short, "")
+        self.assertEqual(self.request(port, body=self.body(), key=short)[0], 503)
+        _, answer = self.request(port, "/health/CLAUDE", method="GET")
+        self.assertEqual(answer["reason"], "routine-key-unavailable:key-short")
+        self.key_answer = ("k" * WR.KEY_MIN_LENGTH, "")
+        status, _ = self.request(port, body=self.body(test=True), key="k" * WR.KEY_MIN_LENGTH)
+        self.assertEqual(status, 200)
+
+    def test_a_key_source_that_fails_is_no_key(self) -> None:
+        def broken() -> tuple[str, str]:
+            raise RuntimeError("the store went away")
+
+        router = self.router()
+        router._key = broken
+        port = self.serve(router)
+        status, answer = self.request(port, body=self.body(), key=self.key)
+        self.assertEqual((status, answer["error"]), (503, "the routine key is unavailable (key-error-RuntimeError)"))
+
+    def test_the_bearer_is_compared_in_constant_time(self) -> None:
+        port = self.serve(self.router())
+        with mock.patch.object(WR.hmac, "compare_digest", wraps=WR.hmac.compare_digest) as compare:
+            self.assertEqual(self.request(port, body=self.body(), key="wrong")[0], 401)
+        compare.assert_called_once_with(b"Bearer wrong", ("Bearer %s" % self.key).encode())
+
+    def test_the_router_reads_no_key_file(self) -> None:
+        self.assertFalse(hasattr(WR, "read_key"))
+        self.assertNotIn("key_file", WR.Router.__init__.__code__.co_varnames)
+        (self.state / "routine-key").write_text(secrets.token_hex(24), encoding="utf-8")
+        self.key_answer = ("", "unset")
+        port = self.serve(self.router())
         self.assertEqual(self.request(port, body=self.body(), key=self.key)[0], 503)
 
     def test_the_linked_by_field_reaches_the_pick(self) -> None:
@@ -2600,12 +2715,303 @@ class Http(Base):
         self.drain(router)
         kept = self.stderr.getvalue()
         for path in self.state.rglob("*"):
-            if path.is_file() and path != self.key_file:
+            if path.is_file():  # there is no key file, so no file may hold the key
                 kept += path.read_text(encoding="utf-8")
         self.assertNotIn(self.key, kept)
         self.assertNotIn(BODY_MARK, kept)
         self.assertNotIn(secret_topic, kept)
         self.assertIn(WR.secretscan.WITHHELD, kept)
+
+
+ZC_SID = "sess_zc0000bbbb"
+ZC_RE = re.compile(r"sess_[A-Za-z0-9._-]{1,123}")
+
+
+class ManySeats(Base):
+    """One process and one port for every platform, with a router per seat (owner ruling, Nov 11,
+    2026).  The fake registry answers every seat's rows to every router, as a shared registry
+    could, so each router must keep to its own seat."""
+
+    serve = Http.serve
+    request = Http.request
+    body = Http.body
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.registry.rows = [
+            row(SID_A, "AA", "Claude chat"),
+            row(ZC_SID, "BB", "ZCode chat", seat="ZC"),
+        ]
+        self.zc_key = secrets.token_hex(24)
+        self.zc_key_answer = (self.zc_key, "")
+        self.zc_delivered: list[tuple[str, str]] = []
+        self.zc_release: threading.Event | None = None
+        self.zc_state = Path(self.tmp) / "zc-state"
+        self.zc_state.mkdir(mode=0o700)
+
+    def zc_router(self, **config) -> WR.Router:
+        def deliver(target: WR.Target, wake: WR.Wake) -> WR.Delivery:
+            self.zc_delivered.append((target.session_id, wake.wake_id))
+            if self.zc_release is not None:
+                self.zc_release.wait(timeout=20)
+            return WR.Delivery("completed", "fake", ack="confirmed")
+
+        platform = WR.Platform(
+            seat="ZC", platform="zcode", mention="ZCode", target_re=ZC_RE, deliver=deliver
+        )
+        return WR.Router(
+            platform,
+            self.router_env(),
+            self.config(**config),
+            self.zc_state,
+            lambda: self.zc_key_answer,
+            clock=self.clock,
+        )
+
+    def zc_body(self, **over) -> dict:
+        return self.body(seat="ZC", **over)
+
+    def get(self, port: int, path: str, key: str | None = None):
+        return self.request(port, path, key=key, method="GET")
+
+    def test_two_seats_on_one_port_keep_their_own_bearers_queues_and_receipts(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        port = self.serve(WR.Seats([claude, zc]))
+        # Each seat's bearer opens that seat's path only.
+        self.assertEqual(self.request(port, "/wake/ZC", self.zc_body(), self.key)[0], 401)
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.zc_key)[0], 401)
+        status, mine = self.request(port, "/wake/CLAUDE", self.body(), self.key)
+        self.assertEqual(status, 202)
+        status, theirs = self.request(port, "/wake/ZC", self.zc_body(), self.zc_key)
+        self.assertEqual(status, 202)
+        # The same wake id is two wakes, one in each seat's own queue.
+        self.assertNotEqual(mine["receipt_id"], theirs["receipt_id"])
+        self.assertTrue((self.state / "pending" / "w-1.json").exists())
+        self.assertTrue((self.zc_state / "pending" / "w-1.json").exists())
+        self.drain(claude)
+        self.drain(zc)
+        self.assertEqual(self.delivered, [(SID_A, "w-1")])
+        self.assertEqual(self.zc_delivered, [(ZC_SID, "w-1")])
+        status, record = self.get(port, "/receipt/CLAUDE/w-1", self.key)
+        self.assertEqual((status, record["seat"], record["session_id"]), (200, "CLAUDE", SID_A))
+        status, record = self.get(port, "/receipt/ZC/w-1", self.zc_key)
+        self.assertEqual((status, record["seat"], record["session_id"]), (200, "ZC", ZC_SID))
+        self.assertEqual(record["receipt_id"], theirs["receipt_id"])
+        self.assertEqual(self.get(port, "/receipt/ZC/w-1", self.key)[0], 401)
+        self.assertEqual(self.get(port, "/receipt/CLAUDE/w-1", self.zc_key)[0], 401)
+        # The form from before a seat was in the path is CLAUDE's.
+        self.assertEqual(self.get(port, "/receipt/w-1", self.key), (200, self.done()))
+        self.assertEqual(self.get(port, "/receipt/w-1", self.zc_key)[0], 401)
+
+    def test_a_body_for_another_seat_is_refused(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        port = self.serve(WR.Seats([claude, zc]))
+        self.assertEqual(self.request(port, "/wake/ZC", self.body(), self.zc_key)[0], 403)
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.zc_body(), self.key)[0], 403)
+        self.assertEqual((claude._entries, zc._entries), ({}, {}))
+
+    def test_routing_is_by_path(self) -> None:
+        port = self.serve(WR.Seats([self.router(), self.zc_router()]))
+        for path in ("/wake/GROK", "/wake/claude", "/wake/", "/wake/CLAUDE/x", "/wake", "/"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(port, path, self.body(), self.key)[0], 404)
+        for path in ("/receipt/GROK/w-1", "/health/GROK", "/receipt/", "/receipt/ZC/"):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(port, path, self.key)[0], 404)
+        status, answer = self.request(port, "/wake/ZC", self.zc_body(test=True), self.zc_key)
+        self.assertEqual((status, answer["seat"], answer["session_id"]), (200, "ZC", ZC_SID))
+        status, answer = self.request(port, "/wake/CLAUDE", self.body(test=True), self.key)
+        self.assertEqual((status, answer["seat"], answer["session_id"]), (200, "CLAUDE", SID_A))
+
+    def test_a_seat_without_its_key_refuses_and_the_other_takes_wakes(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        port = self.serve(WR.Seats([claude, zc]))
+        self.zc_key_answer = ("", "unset")
+        status, answer = self.request(port, "/wake/ZC", self.zc_body(), self.zc_key)
+        self.assertEqual((status, answer["error"]), (503, "the routine key is unavailable (unset)"))
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.key)[0], 202)
+        self.assertEqual(zc._entries, {})
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            answer,
+            {
+                "healthy": False,
+                "seats": {
+                    "CLAUDE": {"healthy": True, "delivery": True},
+                    "ZC": {
+                        "healthy": False,
+                        "delivery": True,
+                        "reason": "routine-key-unavailable:unset",
+                    },
+                },
+            },
+        )
+        self.assertEqual(self.get(port, "/health/CLAUDE")[0], 200)
+        self.assertEqual(self.get(port, "/health/ZC")[0], 503)
+
+    def test_a_seat_that_was_not_built_answers_503_and_the_other_is_served(self) -> None:
+        claude = self.router()
+        port = self.serve(WR.Seats([claude], {"ZC": "builder-error-RuntimeError"}))
+        status, answer = self.request(port, "/wake/ZC", self.zc_body(), self.zc_key)
+        self.assertEqual(status, 503)
+        self.assertIn("builder-error-RuntimeError", answer["error"])
+        self.assertEqual(self.get(port, "/receipt/ZC/w-1", self.zc_key)[0], 503)
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.key)[0], 202)
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 503)
+        self.assertEqual(
+            answer["seats"]["ZC"],
+            {"healthy": False, "reason": "seat-not-served:builder-error-RuntimeError"},
+        )
+        self.assertIs(answer["seats"]["CLAUDE"]["healthy"], True)
+        self.assertEqual(self.get(port, "/health/ZC")[0], 503)
+
+    def test_health_is_healthy_only_when_every_seat_is(self) -> None:
+        port = self.serve(WR.Seats([self.router(), self.zc_router(delivery_enabled=False)]))
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            answer,
+            {
+                "healthy": True,
+                "seats": {
+                    "CLAUDE": {"healthy": True, "delivery": True},
+                    "ZC": {"healthy": True, "delivery": False},
+                },
+            },
+        )
+        self.assertEqual(WR.Seats().health(), (503, {"healthy": False, "seats": {}}))
+
+    def test_a_busy_seat_does_not_hold_up_another(self) -> None:
+        claude, zc = self.router(workers=1), self.zc_router(workers=1)
+        seats = WR.Seats([claude, zc])
+        self.zc_release = threading.Event()
+        seats.start()
+        self.addCleanup(seats.stop)
+        self.addCleanup(self.zc_release.set)  # runs first, so the stop never waits on it
+        zc.accept(self.wake("w-zc", seat="ZC"))
+        deadline = time.time() + 15
+        while time.time() < deadline and not self.zc_delivered:
+            time.sleep(0.02)
+        self.assertEqual(self.zc_delivered, [(ZC_SID, "w-zc")])  # and it hangs there
+        claude.accept(self.wake("w-claude"))
+        deadline = time.time() + 15
+        while time.time() < deadline and not (self.state / "done" / "w-claude.json").exists():
+            time.sleep(0.02)
+        self.assertEqual(self.done("w-claude")["status"], "delivered")
+        self.assertFalse((self.zc_state / "done" / "w-zc.json").exists())
+        self.zc_release.set()
+
+    def test_a_seat_that_cannot_start_is_down_and_the_other_runs(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        seats = WR.Seats([claude, zc])
+        with mock.patch.object(zc, "start", side_effect=OSError("unreadable folder")):
+            seats.start()
+        self.addCleanup(seats.stop)
+        self.assertEqual(seats.down, {"ZC": "start-error-OSError"})
+        self.assertEqual(list(seats.routers), ["CLAUDE"])
+        self.assertTrue(claude._threads)
+        self.assertTrue(zc._stopping)
+        self.assertIn("ZC - start-error-OSError", self.stderr.getvalue())
+
+    def test_a_seat_whose_stop_never_returns_is_not_finished(self) -> None:
+        claude = self.router(shutdown_wait_seconds=1)
+        zc = self.zc_router(shutdown_wait_seconds=1)
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck(wait: float) -> bool:
+            release.wait(timeout=30)  # a stop that hangs far past its own wait
+            return True
+
+        seats = WR.Seats([claude, zc])
+        with (
+            mock.patch.object(WR, "STOP_MARGIN_SECONDS", 0.2),
+            mock.patch.object(zc, "stop", side_effect=stuck),
+        ):
+            began = time.monotonic()
+            self.assertIs(seats.stop(), False)
+            elapsed = time.monotonic() - began
+        self.assertLess(elapsed, 1 + 0.2 + 1.0, "bounded by the seat's wait and the margin")
+        self.assertTrue(claude._stopping, "the other seat still stops")
+        log = self.stderr.getvalue()
+        self.assertIn("ZC - shutdown-left-deliveries-running", log)
+        self.assertNotIn("CLAUDE - shutdown-left-deliveries-running", log)
+
+    def test_a_seat_whose_stop_says_not_finished_counts(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        with mock.patch.object(zc, "stop", return_value=False):
+            self.assertIs(WR.Seats([claude, zc]).stop(), False)
+        self.assertIn("ZC - shutdown-left-deliveries-running", self.stderr.getvalue())
+
+    def test_stop_stops_every_seat(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        seats = WR.Seats([claude, zc])
+        seats.start()
+        self.assertTrue(seats.stop())
+        self.assertTrue(claude._stopping and zc._stopping)
+
+    def test_a_second_instance_touches_no_seat(self) -> None:
+        claude, zc = self.router(), self.zc_router()
+        claude.accept(self.wake())
+        zc.accept(self.wake(seat="ZC"))
+        fresh = WR.Seats([self.router(), self.zc_router()])
+        with (
+            mock.patch.object(WR.registry_api, "base_url", return_value="http://r.invalid"),
+            socket.socket() as taken,
+        ):
+            taken.bind(("127.0.0.1", 0))
+            taken.listen(1)
+            with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+                WR.serve(fresh, "127.0.0.1", taken.getsockname()[1])
+        for router in fresh.routers.values():
+            self.assertEqual((router._threads, router._entries), ([], {}))
+        self.assertTrue((self.state / "pending" / "w-1.json").exists())
+        self.assertTrue((self.zc_state / "pending" / "w-1.json").exists())
+
+    def test_one_router_per_seat(self) -> None:
+        with self.assertRaises(ValueError):
+            WR.Seats([self.router(), self.router()])
+        with self.assertRaises(ValueError):
+            WR.Seats([self.router()], {"CLAUDE": "builder-error-RuntimeError"})
+        with self.assertRaises(ValueError):
+            WR.Seats([], {"not a seat": "x"})
+
+    def test_a_seat_not_installed_shows_so_and_leaves_health_alone(self) -> None:
+        port = self.serve(WR.Seats([self.router()], not_installed=["MC"]))
+        status, answer = self.get(port, "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            answer["seats"]["MC"], {"healthy": False, "reason": WR.NOT_INSTALLED}
+        )
+        self.assertIs(answer["seats"]["CLAUDE"]["healthy"], True)
+        status, answer = self.get(port, "/health/MC")
+        self.assertEqual((status, answer["reason"]), (503, "not-installed"))
+        status, answer = self.request(port, "/wake/MC", self.body(seat="MC"), self.key)
+        self.assertEqual(status, 503)
+        self.assertIn("not-installed", answer["error"])
+        self.assertEqual(self.request(port, "/wake/CLAUDE", self.body(), self.key)[0], 202)
+
+    def test_a_broken_seat_still_fails_health_beside_one_not_installed(self) -> None:
+        seats = WR.Seats(
+            [self.router()], {"ZC": "builder-error-RuntimeError"}, not_installed=["MC"]
+        )
+        status, answer = seats.health()
+        self.assertEqual(status, 503)
+        self.assertEqual(sorted(answer["seats"]), ["CLAUDE", "MC", "ZC"])
+        self.assertEqual(WR.Seats([], not_installed=["MC"]).health()[0], 503, "nothing served")
+
+    def test_a_seat_is_served_down_or_not_installed_only_once(self) -> None:
+        with self.assertRaises(ValueError):
+            WR.Seats([self.router()], not_installed=["CLAUDE"])
+        with self.assertRaises(ValueError):
+            WR.Seats([], {"MC": "x"}, not_installed=["MC"])
+
+    def test_each_seat_logs_under_its_own_name(self) -> None:
+        zc = self.zc_router()
+        zc._log("pending-unreadable", "w-bad")
+        self.assertIn("wake-router: ZC w-bad pending-unreadable", self.stderr.getvalue())
 
 
 class WorkerPool(Base):
@@ -2729,7 +3135,7 @@ class CommandPlatform(Base):
         self.registry.rows = [row(SID_A, "AA", "Only chat", seat="ZC")]
         platform = self.platform([sys.executable, "-c", "pass", "{session_id}"])
         router = WR.Router(
-            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_file, clock=self.clock
+            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_source, clock=self.clock
         )
         router.accept(self.wake(seat="ZC"))
         self.drain(router)
@@ -2866,7 +3272,7 @@ class CommandPlatform(Base):
     def test_it_runs_through_the_router(self) -> None:
         platform = self.platform([sys.executable, "-c", "raise SystemExit(4)", "{session_id}"])
         router = WR.Router(
-            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_file, clock=self.clock
+            platform, {"HOME": self.tmp}, self.config(), self.state, self.key_source, clock=self.clock
         )
         self.registry.rows = [row(SID_A, "AA", "Only chat", seat="ZC")]
         router.accept(self.wake(seat="ZC"))
@@ -3261,7 +3667,7 @@ class Resume(ClaudeBase):
         self.transcript()
         self.exit_code = 1
         platform = CW.make_platform(self.env, self.cfg, runner=self.runner, sleep=lambda s: None)
-        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_file, clock=self.clock)
+        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_source, clock=self.clock)
         router.accept(self.w)
         for _ in range(8):
             self.drain(router)
@@ -3425,9 +3831,14 @@ class RemoteBase(ClaudeBase):
         self.target = WR.Target(SID_A, letter="AA", host="mac", generation=3)
         self.registry.rows = [row(SID_A, "AA", "letters", host="mac", generation=3)]
         self.answer = SimpleNamespace(returncode=0, stdout=self.reply() + "\n")
-        patcher = mock.patch.object(CW, "_remote_config", return_value=self.cfg)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(CW, "_remote_config", return_value=self.cfg),
+            # The registry is the fake, so the Mac's registry env is the env as it is:  no knob is
+            # read here (WakeSettings.registry_env_once has its own tests).
+            mock.patch.object(CW, "_registry_env", side_effect=dict),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def reply(self, outcome: str = "sent", **over) -> str:
         """The Mac's answer to this test's wake;  `over` replaces or, as None, removes an id."""
@@ -3705,7 +4116,7 @@ class Remote(RemoteBase):
 
     def test_codex_is_refused_clearly_until_its_module_is_there(self) -> None:
         with (
-            mock.patch.dict(sys.modules, {CW.CODEX_MODULE: None}),
+            mock.patch.dict(sys.modules, {CODEX_MODULE: None}),
             mock.patch.object(CW, "deliver_local") as spy,
         ):
             code, answer = self.run_main(self.envelope(platform="codex"))
@@ -3731,7 +4142,7 @@ class Remote(RemoteBase):
 
         request = self.envelope(platform="codex")
         with (
-            mock.patch.dict(sys.modules, {CW.CODEX_MODULE: self.codex_module(deliver_request)}),
+            mock.patch.dict(sys.modules, {CODEX_MODULE: self.codex_module(deliver_request)}),
             mock.patch.object(CW, "deliver_local") as spy,
         ):
             code, answer = self.run_main(request)
@@ -3744,7 +4155,7 @@ class Remote(RemoteBase):
         def broken(request, *, env):
             raise RuntimeError("after it may have started")
 
-        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: self.codex_module(broken)}):
+        with mock.patch.dict(sys.modules, {CODEX_MODULE: self.codex_module(broken)}):
             _, answer = self.run_main(self.envelope(platform="codex"))
         self.assertEqual(
             (answer["delivery"]["outcome"], answer["delivery"]["code"]),
@@ -3762,7 +4173,7 @@ class Remote(RemoteBase):
 
     def codex_answer(self, reply) -> dict:
         module = self.codex_module(lambda request, *, env: reply)
-        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
+        with mock.patch.dict(sys.modules, {CODEX_MODULE: module}):
             return self.run_main(self.envelope(platform="codex"))[1]
 
     def test_a_codex_answer_about_anything_else_is_final(self) -> None:
@@ -3796,7 +4207,7 @@ class Remote(RemoteBase):
         reply = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": True,
                  "delivery": {"outcome": "failed"}}
         module = self.codex_module(lambda request, *, env: reply)
-        with mock.patch.dict(sys.modules, {CW.CODEX_MODULE: module}):
+        with mock.patch.dict(sys.modules, {CODEX_MODULE: module}):
             _, answer = self.run_main(request)
         self.assertEqual(answer["delivery"]["code"], "platform-mismatch")
 
@@ -4026,18 +4437,19 @@ SESS_MODULE = "simple_tools.tests.no_such_sess_wake"  # only ever the fake put i
 
 
 class PlatformSessionPatterns(RemoteBase):
-    """Each `PLATFORMS` entry carries its own session-id pattern, and both hosts read the ids with
-    it:  an id that is not Claude's shape is neither blanked nor refused when it is its platform's."""
+    """Each `wake_service.BUILDERS` entry carries its own session-id pattern, and both hosts read
+    the ids with it:  an id that is not Claude's shape is neither blanked nor refused when it is
+    its platform's."""
 
     def setUp(self) -> None:
         super().setUp()
         self.target = WR.Target(SESS_SID, letter="AA", host="mac", generation=3)
         self.seen: list[dict] = []
         self.delivery = {"outcome": "sent", "route": "sess-desktop", "ack": "unknown", "code": "", "note": ""}
-        entry = CW.DeliveryPlatform(CW._module_delivery(SESS_MODULE), SESS_RE)
+        entry = SVC.Builder("sessplat", SESS_MODULE, session_re=SESS_RE.pattern)
         module = SimpleNamespace(deliver_request=self.platform_delivers)
         for patcher in (
-            mock.patch.dict(CW.PLATFORMS, {"sessplat": entry}),
+            mock.patch.dict(SVC.BUILDERS, {"SESS": entry}),
             mock.patch.dict(sys.modules, {SESS_MODULE: module}),
         ):
             patcher.start()
@@ -4298,7 +4710,7 @@ class EndToEnd(ClaudeBase):
         self.holder_file(sock=inbox.path)
         self.transcript()
         platform = CW.make_platform(self.env, self.cfg, runner=self.runner, sleep=lambda s: None)
-        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_file, clock=self.clock)
+        router = WR.Router(platform, self.env, self.cfg, self.state, self.key_source, clock=self.clock)
         payload = {
             "wake_id": "w-e2e",
             "seat": "CLAUDE",
@@ -4314,6 +4726,326 @@ class EndToEnd(ClaudeBase):
         receipt = self.done("w-e2e")
         self.assertEqual((receipt["route"], receipt["delivered"]), ("socket", None))
         self.assertIsNotNone(re.search("w-e2e", inbox.received.decode("utf-8")))
+
+
+NOT_CONFIGURED = {"error": "no registry API URL is configured", "code": "not_configured"}
+
+
+class RegistryNotConfigured(Base):
+    """With no registry address or key every registry call answers `not_configured`:  a clean,
+    bounded retry with its own code, never a fallback and never a delivery."""
+
+    def test_a_pick_is_a_retry_named_not_configured(self) -> None:
+        with mock.patch.object(WR.registry_api, "call", return_value=NOT_CONFIGURED):
+            pick = self.router().pick(self.wake())
+            self.assertEqual((pick.retry, pick.reason), (True, WR.NOT_CONFIGURED))
+            pick = self.router().pick(self.wake(letter="AA"))
+            self.assertEqual((pick.retry, pick.reason), (True, WR.NOT_CONFIGURED))
+
+    def test_the_check_before_delivery_is_a_retry_named_not_configured(self) -> None:
+        router = self.router()
+        with mock.patch.object(WR.registry_api, "call", return_value=NOT_CONFIGURED):
+            self.assertEqual(router._stale(WR.Target(SID_A, "AA", generation=1)), WR.NOT_CONFIGURED)
+
+    def test_an_outage_is_still_unavailable(self) -> None:
+        self.assertEqual(WR.registry_trouble({"error": "x", "code": "timeout"}), "registry-unavailable")
+        self.assertEqual(WR.registry_trouble(None), "registry-unavailable")
+
+    def test_health_says_so(self) -> None:
+        router = self.router()
+        router.env = {"HOME": self.tmp}
+        status, answer = WR.Seats([router]).seat_health("CLAUDE")
+        self.assertEqual((status, answer["reason"]), (503, WR.NOT_CONFIGURED))
+
+    def test_health_needs_the_key_as_well_as_the_address(self) -> None:
+        router = self.router()
+        url, key = WR.registry_api.URL_ENV, WR.registry_api.KEY_VAR
+        cases = {
+            "address only": ({"HOME": self.tmp, url: REGISTRY_URL}, 503),
+            "key only": ({"HOME": self.tmp, key: "k" * 32}, 503),
+            "blank key": ({url: REGISTRY_URL, key: "  "}, 503),
+            "both": (self.router_env(), 200),
+        }
+        for label, (env, status) in cases.items():
+            with self.subTest(label):
+                router.env = env
+                self.assertEqual(WR.Seats([router]).seat_health("CLAUDE")[0], status)
+
+    def test_health_reads_only_the_routers_own_mapping(self) -> None:
+        # An explicit mapping:  registry_api never fills it from Infisical, so a router env that
+        # lacks the values is not configured, whatever the knobs hold.
+        router = self.router()
+        router.env = {"HOME": self.tmp}
+        with mock.patch.object(WR.registry_api, "_knob_value", side_effect=AssertionError("knob")):
+            self.assertEqual(WR.Seats([router]).seat_health("CLAUDE")[0], 503)
+
+    def test_serve_starts_without_it(self) -> None:
+        # Infisical may be down at start:  the router starts and says so on /health instead.
+        self.assertNotIn("registry API URL is not set", Path(WR.__file__).read_text())
+
+
+class SeatNeverRan(Base):
+    """A platform's own codes that can only come before anything ran, added per seat."""
+
+    def test_a_seats_own_code_is_known_not_to_have_run(self) -> None:
+        self.assertNotIn("workspace-mismatch", WR.NEVER_RAN)
+        self.registry.rows = [row(SID_A, "AA", "Only chat")]
+        for never_ran, delivered in (((), None), (("workspace-mismatch",), False)):
+            with self.subTest(never_ran=never_ran):
+                self.results = [WR.Delivery("refused", code="workspace-mismatch")]
+                router = self.router()
+                router.never_ran = WR.NEVER_RAN | frozenset(never_ran)
+                wake_id = "w-%d" % len(never_ran)
+                router.accept(self.wake(wake_id))
+                self.drain(router)
+                self.assertIs(self.done(wake_id)["delivered"], delivered)
+
+    def test_the_router_takes_them_at_construction(self) -> None:
+        platform = WR.Platform("ZC", "zcode", "ZCode", ZC_RE, self.fake_deliver)
+        router = WR.Router(
+            platform, {}, self.config(), self.state, self.key_source, never_ran={"subagent-child"}
+        )
+        self.assertEqual(router.never_ran, WR.NEVER_RAN | {"subagent-child"})
+
+    def test_claude_exports_its_own(self) -> None:
+        self.assertLessEqual({"no-transcript", "session-cwd-gone", "unknown-host"}, CW.NEVER_RAN)
+
+
+class OneLocalFile(Base):
+    """The service's one narrowing file may name `delivery_seats`, a list of seat tags."""
+
+    def write(self, text: str) -> Path:
+        path = self.state / "config.json"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_seat_list_is_read(self) -> None:
+        local = WR.read_local_config(
+            self.write('{"delivery_seats": ["CLAUDE"], "workers": 2}'),
+            WR.ROUTER_DEFAULTS,
+            seat_lists=("delivery_seats",),
+        )
+        self.assertEqual(local, {"delivery_seats": ["CLAUDE"], "workers": 2})
+
+    def test_a_bad_seat_list_refuses_the_file(self) -> None:
+        for bad in ('"CLAUDE"', '["claude"]', "[7]", '{"CLAUDE": 1}'):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                WR.read_local_config(
+                    self.write('{"delivery_seats": %s}' % bad),
+                    WR.ROUTER_DEFAULTS,
+                    seat_lists=("delivery_seats",),
+                )
+
+    def test_without_the_seat_list_the_key_is_unknown(self) -> None:
+        with self.assertRaises(SystemExit):
+            WR.read_local_config(self.write('{"delivery_seats": []}'), WR.ROUTER_DEFAULTS)
+
+
+class OnePlatformTable(RemoteBase):
+    """`wake_service.BUILDERS` is the only platform table, on the Mac as on the server."""
+
+    def test_the_old_table_is_gone(self) -> None:
+        for name in ("PLATFORMS", "DeliveryPlatform", "CODEX_MODULE", "CODEX_SESSION_RE", "ENV_REMOTE"):
+            self.assertFalse(hasattr(CW, name), name)
+
+    def test_a_request_names_a_platform_never_a_seat_or_a_module(self) -> None:
+        for platform in ("claude", "codex", "muse", "zcode"):
+            self.assertEqual(SVC.by_platform(platform).platform, platform)
+        for name in ("CLAUDE", "MC", "simple_tools.muse_wake", "Claude", "", None, 1):
+            self.assertIsNone(SVC.by_platform(name), name)
+
+    def muse_request(self) -> dict:
+        return self.envelope(platform="muse")
+
+    def test_muse_is_refused_clearly_until_its_module_is_there(self) -> None:
+        with (
+            mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: None}),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            code, answer = self.run_main(self.muse_request())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("refused", "platform-not-installed"),
+        )
+        self.assertEqual(answer["session_id"], SID_A)
+        spy.assert_not_called()
+
+    def test_the_handler_named_in_the_table_runs(self) -> None:
+        ids = {"wake_id": self.w.wake_id, "session_id": SID_A, "generation": 3}
+        module = SimpleNamespace(deliver_request=lambda request, *, env: {**ids, "delivery": {"outcome": "sent"}})
+        with mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: module}):
+            _, answer = self.run_main(self.muse_request())
+        self.assertEqual(answer["delivery"]["outcome"], "sent")
+
+    def test_a_zcode_request_with_a_uuid_is_refused_before_its_module_loads(self) -> None:
+        with mock.patch.object(CW.importlib, "import_module") as importing:
+            code, answer = self.run_main(self.envelope(platform="zcode"))
+        self.assertEqual((code, answer["delivery"]["code"]), (2, "bad-request"))
+        importing.assert_not_called()
+
+    def test_the_mac_recheck_without_a_registry_is_failed_not_configured(self) -> None:
+        with (
+            mock.patch.object(WR.registry_api, "call", return_value=NOT_CONFIGURED),
+            mock.patch.object(CW, "deliver_local") as spy,
+        ):
+            _, answer = self.run_main(self.envelope())
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("failed", WR.NOT_CONFIGURED),
+        )
+        spy.assert_not_called()
+
+    def test_the_old_remote_variable_is_not_a_destination(self) -> None:
+        self.cfg["mac_ssh"] = ""
+        env = {**self.env, "CLAUDE_LETTER_REMOTE": "mac-host"}
+        result = CW.deliver_remote(env, self.cfg, self.target, self.w, runner=self.remote)
+        self.assertEqual((result.outcome, result.code), ("refused", "no-ssh-destination"))
+        self.assertEqual(self.runs, [])
+
+    def test_the_mac_reads_no_old_remote_variable(self) -> None:
+        self.assertNotIn("CLAUDE_LETTER_REMOTE", Path(CW.__file__).read_text(encoding="utf-8"))
+
+    def test_a_module_without_its_handler_has_run_nothing(self) -> None:
+        module = SimpleNamespace(not_the_handler=lambda request, *, env: {})
+        with mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: module}):
+            code, answer = self.run_main(self.muse_request())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("refused", WR.HANDLER_MISSING),
+        )
+        self.assertEqual(answer["session_id"], SID_A, "correlated, so the sender reads it")
+        self.assertIn(WR.HANDLER_MISSING, WR.NEVER_RAN, "a receipt says delivered: false")
+
+    def test_a_handler_that_is_not_callable_has_run_nothing(self) -> None:
+        module = SimpleNamespace(deliver_request="not a function")
+        with mock.patch.dict(sys.modules, {SVC.BUILDERS["MC"].module: module}):
+            _, answer = self.run_main(self.muse_request())
+        self.assertEqual(answer["delivery"]["code"], WR.HANDLER_MISSING)
+
+
+class MacRegistryEnv(Base):
+    """On the Mac the registry env comes from the shared loader every Mac registry client uses,
+    never from the /wake-router knobs:  a Mac able to read that folder would hold the bearer."""
+
+    def test_the_mac_path_uses_the_shared_loader_and_never_the_knobs(self) -> None:
+        loaded ={"HOME": self.tmp, WR.registry_api.URL_ENV: REGISTRY_URL}
+        with (
+            mock.patch.object(PL, "with_registry_env", return_value=loaded) as loader,
+            mock.patch.object(knobs, "resolve", side_effect=AssertionError("a knob was read")),
+            mock.patch.object(knobs, "get", side_effect=AssertionError("a knob was read")),
+        ):
+            env = CW._registry_env({"HOME": self.tmp})
+        loader.assert_called_once_with({"HOME": self.tmp})
+        self.assertEqual(env, loaded)
+
+    def test_a_platform_handler_gets_the_shared_loaders_env(self) -> None:
+        seen = {}
+        ids = {"wake_id": "w-1", "session_id": SID_A, "generation": 3}
+
+        def deliver_request(request, *, env):
+            seen["env"] = env
+            return {**ids, "delivery": {"outcome": "sent"}}
+
+        request = {
+            "platform": "muse",
+            "target": {"session_id": SID_A, "letter": "AA", "host": "mac", "generation": 3},
+            "wake": WR.asdict(self.wake()),
+        }
+        marked = {"HOME": self.tmp, "LOADED": "yes"}
+        with (
+            mock.patch.object(PL, "with_registry_env", return_value=marked),
+            mock.patch.dict(
+                sys.modules,
+                {SVC.BUILDERS["MC"].module: SimpleNamespace(deliver_request=deliver_request)},
+            ),
+        ):
+            out = io.StringIO()
+            CW.wake_deliver_main(io.StringIO(json.dumps(request)), out, {"HOME": self.tmp})
+        self.assertEqual(seen["env"], marked)
+        self.assertEqual(json.loads(out.getvalue())["delivery"]["outcome"], "sent")
+
+
+def isolated_claude_wake():
+    """A fresh copy of claude_wake, loaded by the caller while BLOCKED cannot be imported, as on a
+    Mac where fleet_knobs (and so the platform table) will not import.  The copy has its own name,
+    so the module every other test uses is untouched."""
+    name = "simple_tools.claude_wake_isolated"
+    spec = importlib.util.spec_from_file_location(name, CW.__file__)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module  # dataclasses look the module up;  the caller's patch removes it
+    spec.loader.exec_module(module)
+    return module
+
+
+BLOCKED = ("fleet_knobs", "fleet_knobs.knobs", "simple_tools.wake_service", "simple_tools.wake_settings")
+
+
+class GateWithoutTheTable(Base):
+    """The gate's preflight and refusals never need fleet_knobs, and a delivery that cannot import
+    the platform table answers JSON with a never-ran `failed`, never nothing."""
+
+    @contextlib.contextmanager
+    def blocked(self):
+        """BLOCKED cannot be imported, and the package holds none of them as an attribute, as on a
+        Mac where those imports never succeeded (`from . import x` reads the attribute first)."""
+        package = sys.modules["simple_tools"]
+        with (
+            mock.patch.dict(sys.modules, {name: None for name in BLOCKED}),
+            mock.patch.dict(package.__dict__),
+        ):
+            for name in BLOCKED:
+                if name.startswith("simple_tools."):
+                    package.__dict__.pop(name.split(".", 1)[1], None)
+            yield
+
+    def test_the_preflight_and_a_refusal_need_nothing_more(self) -> None:
+        with self.blocked():
+            gate = isolated_claude_wake()
+            out, err = io.StringIO(), io.StringIO()
+            self.assertEqual(
+                gate.wake_ssh_gate_main(io.StringIO(""), out, err, {gate.ENV_SSH_COMMAND: "true"}), 0
+            )
+            refused = gate.wake_ssh_gate_main(
+                io.StringIO(""), out, err, {gate.ENV_SSH_COMMAND: "rm -rf /"}
+            )
+            self.assertEqual(refused, gate.GATE_REFUSED)
+            with self.assertRaises(ImportError):
+                importlib.import_module("fleet_knobs")
+
+    def test_a_delivery_without_the_table_answers_failed(self) -> None:
+        request = {
+            "platform": "claude",
+            "target": {"session_id": SID_A, "letter": "AA", "host": "mac", "generation": 3},
+            "wake": WR.asdict(self.wake()),
+        }
+        with self.blocked():
+            gate = isolated_claude_wake()
+            out = io.StringIO()
+            code = gate.wake_ssh_gate_main(
+                io.StringIO(json.dumps(request)),
+                out,
+                io.StringIO(),
+                {gate.ENV_SSH_COMMAND: gate.REMOTE_COMMAND},
+            )
+        answer = json.loads(out.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (answer["delivery"]["outcome"], answer["delivery"]["code"]),
+            ("failed", "platform-table-unavailable"),
+        )
+        # Correlated, so the sender takes it as a bounded retry and not as a mismatch.
+        self.assertEqual(
+            (answer["wake_id"], answer["session_id"], answer["generation"]),
+            ("w-1", SID_A, 3),
+        )
+
+    def test_the_module_does_not_import_the_table_at_the_top(self) -> None:
+        source = Path(CW.__file__).read_text(encoding="utf-8")
+        top = source.split("\ndef ", 1)[0]
+        self.assertNotIn("\nfrom . import wake_service", top)
+        self.assertIn("if TYPE_CHECKING:", top)
 
 
 if __name__ == "__main__":

@@ -125,8 +125,10 @@ STDIN_LIMIT = 1 << 20
 # or never saw the chat), and what the hook reads as "register again".
 NO_REGISTRATION = "this chat has no registration"
 
-#: The events the library knows, whatever a platform calls them.
-EVENTS = ("start", "prompt", "rename", "end")
+#: The events the library knows, whatever a platform calls them.  `turn` is the end of one turn (Claude Code's and
+#: ZCode's Stop):  it reports what the turn touched (AFC-702) and never closes anything.  A spec maps its own event to
+#: it;  none does by default.
+EVENTS = ("start", "prompt", "rename", "end", "turn")
 #: The event names Claude Code and Codex style hooks use, and the default for a spec.
 DEFAULT_EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "SessionEnd": "end"}
 #: Timeouts in seconds for those hook entries.  The ssh hop takes up to REMOTE_TIMEOUT, and a SessionEnd budget is
@@ -754,13 +756,30 @@ def _with_room(
 ) -> tuple[Any, int]:
     """Run one allocation; when every letter of the space is live, close the least recently seen chat of this
     adapter and try once more.  A second LabelExhausted is the caller's to report."""
+    # Owner, Nov 11 2026:  "ok just refuse actually is fine".  When all 26 doubled pairs are live the refusal is the
+    # caller's to report, and no live chat is closed to make room.  Only a space other than the pairs (none is issued
+    # now) would still close the least recently seen chat of this adapter that holds a letter of it.
     try:
         return allocate(), 0
     except OR.LabelExhausted as exc:
-        space = getattr(exc, "space", args.letter_space)
+        space = getattr(exc, "space", "double")
+        if space == "double":
+            raise
         if not evict_oldest(OR, db, args.platform, args.source, keep, space):
             raise
         return allocate(), 1
+
+
+def refused_text(OR: Any, platform: str, limit: int = 0) -> str:
+    """What a chat reads when every main-chat pair is live:  the limit is the 26 doubled pairs, not every pair."""
+    limit = limit or len(getattr(OR, "PRIMARY_ORDER", ())) or 26
+    return (
+        "all %d %s main-chat pairs (AA to ZZ) are live:  the Operator refused this chat a letter"
+        % (
+            limit,
+            platform,
+        )
+    )
 
 
 def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, Any]:
@@ -830,8 +849,8 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                     )  # register keeps an existing record's old title
             finally:
                 reg.close_db()
-    except OR.LabelExhausted:
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": swept}
+    except OR.LabelExhausted as exc:
+        return {"error": refused_text(OR, args.platform, getattr(exc, "limit", 0)), "swept": swept}
     except SpaceLost:
         return {
             "error": "this registry cannot give a closed chat a pair letter again yet",
@@ -894,6 +913,12 @@ _API_TIMEOUT = 6
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
+#: The retired pointer variable (it named the variable holding the key).  registry_api
+#: no longer reads it;  this reader still forwards it from the host's env file until P6 of
+#: the AFC-694 consolidation deletes with_registry_env, and then this name goes with it.
+_RETIRED_KEY_POINTER = "SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY_ENV"
+
+
 def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     """Return `env` enriched from `$HOME/.local/bin/operator-registry-env` when no registry API URL or SSH remote is set.
 
@@ -911,7 +936,7 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
     path = os.path.join(home, REGISTRY_ENV_SUBPATH)
     if not os.path.isfile(path):
         return env
-    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_ENV, RA.KEY_REF_ENV)
+    names = (RA.URL_ENV, RA.PRINCIPAL_ENV, RA.KEY_VAR, _RETIRED_KEY_POINTER)
     script = (
         '. "$1" >/dev/null 2>&1 || true\n'
         "for k in %s; do\n"
@@ -924,7 +949,7 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
         '  [ -n "$rv" ] && printf "%%s=%%s\\0" "$ref" "$rv"\n'
         "fi\n"
         "exit 0\n"
-    ) % (" ".join(names), RA.KEY_REF_ENV)
+    ) % (" ".join(names), _RETIRED_KEY_POINTER)
     try:
         proc = subprocess.run(
             ["/bin/sh", "-c", script, "operator-registry-env", path],
@@ -1013,7 +1038,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
         params["parent_session_id"] = parent
     out = _call_api(env, "register", params)
     if out.get("code") == "labels_exhausted":
-        return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+        return {"error": refused_text(OR, args.platform), "swept": 0}
     error = _api_error(out)
     if error is not None:
         return error
@@ -1028,7 +1053,7 @@ def _register_api(OR: Any, env: Mapping[str, str], args: Any, sid: str) -> dict[
             reopen_params["parent_session_id"] = parent
         reopened = _call_api(env, "reopen", reopen_params)
         if reopened.get("code") == "labels_exhausted":
-            return {"error": "all %s letters are in use" % args.letter_space, "swept": 0}
+            return {"error": refused_text(OR, args.platform), "swept": 0}
         if reopened.get("code") == "space_lost":
             return {
                 "error": "this registry cannot give a closed chat a pair letter again yet",
@@ -1755,15 +1780,27 @@ def _transcript_strings(
             _transcript_strings(item, own, quoted, inside, depth + 1)
 
 
-def issue_ids_in_lines(lines: list[str]) -> set[str]:
+_NOT_JSON = object()
+
+
+def parsed_lines(lines: list[str]) -> list[tuple[str, Any]]:
+    """Each transcript line with its JSON (or _NOT_JSON), parsed once for every reader of the same lines."""
+    out: list[tuple[str, Any]] = []
+    for line in lines:
+        try:
+            out.append((line, json.loads(line)))
+        except ValueError:
+            out.append((line, _NOT_JSON))
+    return out
+
+
+def issue_ids_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> set[str]:
     """The issue ids a stretch of transcript names: any id in the chat's own words (its prompts, its
     replies, the commands and tool inputs it wrote), and the topic of any Zulip post, even one a tool's
     output shows.  A line that is not JSON is read as the chat's own words."""
     found: set[str] = set()
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except ValueError:
+    for line, entry in parsed_lines(lines) if parsed is None else parsed:
+        if entry is _NOT_JSON:
             found |= issue_ids_in(line) | _topic_issue_ids(line)
             continue
         own: list[str] = []
@@ -1837,20 +1874,254 @@ def branch_issue_ids(cwd: object, run: Callable[..., Any] = subprocess.run) -> s
     return issue_ids_in(branch, any_case=True) if branch and branch != "HEAD" else set()
 
 
+#: The most Zulip topics a note keeps for its chat (the newest), and the longest topic it keeps (Zulip's own limit).
+TOPIC_KEEP = 20
+TOPIC_CHARS = 60
+# The hosted Zulip tools a chat posts with (`zulip_post`, `zulip_reply`, under any MCP server prefix).
+_POST_TOOLS = re.compile(r"(?:^|__)zulip_(?:post|reply)$")
+# The programs and verbs that post, the flags they take before the verb with a value, and the line `simple-chat post`
+# prints for each post it made (cli.py `cmd_post`), read only from the output of that same command.
+_POST_PROGRAMS = frozenset({"simple-chat", "agent-sync"})
+_POST_VERBS = frozenset({"post", "reply"})
+_GLOBAL_VALUE_FLAGS = frozenset({"--as", "--default-seat", "--rc", "--session"})
+_POSTED_LINE = re.compile("^posted id [0-9]+ to #[^\\n]*? › ([^\\n]+)$", re.MULTILINE)
+_SHELL_PUNCTUATION = ";&|()\n"
+# The words that may stand before the program in the command that runs it:  a wrapper (and its flags and their
+# values) or a shell keyword.  `echo simple-chat post ...` only names the program, so it is not a post.
+_PREFIX_WORDS = frozenset(
+    {
+        "sudo",
+        "env",
+        "command",
+        "nohup",
+        "time",
+        "exec",
+        "timeout",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "then",
+        "do",
+        "else",
+        "if",
+        "while",
+        "!",
+    }
+)
+_ASSIGNMENT = re.compile("^[A-Za-z_][A-Za-z0-9_]*=")
+_DURATION = re.compile("^[0-9]+(?:[.][0-9]+)?[smhd]?$")  # `timeout 10 simple-chat ...`
+
+
+def _clean_topic(text: object) -> str:
+    if not isinstance(text, str):
+        return ""
+    return " ".join(text.split())[:TOPIC_CHARS].strip()
+
+
+def _runs_program(before: list[str]) -> bool:
+    """True when the words before a program name only wrap it (`sudo`, `env A=b`, a shell keyword), so it is run."""
+    for i, word in enumerate(before):
+        if (
+            os.path.basename(word) in _PREFIX_WORDS
+            or _ASSIGNMENT.match(word)
+            or word.startswith("-")
+            or _DURATION.match(word)
+        ):
+            continue
+        if i > 0 and before[i - 1].startswith("-") and "=" not in before[i - 1]:
+            continue  # the value of a wrapper's flag, such as `sudo -u jay`
+        return False
+    return True
+
+
+def _shell_tokens(command: str, posix: bool) -> list[str]:
+    lexer = shlex.shlex(command, posix=posix, punctuation_chars=_SHELL_PUNCTUATION)
+    lexer.whitespace = " \t\r"  # a newline ends a command, as `;` does
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _command_posts(command: object) -> list[str] | None:
+    """The literal `--topic` of each `simple-chat` (or `agent-sync`) `post` or `reply` in one shell command, or None
+    when the command posts nothing.  A topic that is not literal (a `$VAR`) is kept as "" so the printed line can
+    name it.  `read --topic`, another program's `--topic` and a command that does not parse are not posts."""
+    if not isinstance(command, str):
+        return None
+    try:
+        tokens = _shell_tokens(command, True)
+        raw_tokens = _shell_tokens(command, False)  # the same words with their quotes kept
+    except ValueError:
+        return None
+    if len(raw_tokens) != len(tokens):
+        raw_tokens = [""] * len(
+            tokens
+        )  # no quoting to go by:  a `$` topic then needs the printed line
+    segments: list[list[str]] = [[]]
+    raw_segments: list[list[str]] = [[]]
+    for token, raw in zip(tokens, raw_tokens):
+        if token and all(ch in _SHELL_PUNCTUATION for ch in token):
+            segments.append([])
+            raw_segments.append([])
+        else:
+            segments[-1].append(token)
+            raw_segments[-1].append(raw)
+    posts: list[str] = []
+    for words, raws in zip(segments, raw_segments):
+        for at, word in enumerate(words):
+            if os.path.basename(word) not in _POST_PROGRAMS or not _runs_program(words[:at]):
+                continue
+            rest = words[at + 1 :]
+            i = 0
+            while i < len(rest) and rest[i].startswith("-"):
+                i += 2 if rest[i] in _GLOBAL_VALUE_FLAGS else 1
+            if i >= len(rest) or rest[i] not in _POST_VERBS:
+                break
+            topic = ""
+            args = rest[i + 1 :]
+            raw_args = raws[at + 1 :][i + 1 :]
+            raw_topic = ""
+            for j, arg in enumerate(args):
+                if arg == "--topic" and j + 1 < len(args):
+                    topic, raw_topic = args[j + 1], raw_args[j + 1]
+                elif arg.startswith("--topic="):
+                    topic, raw_topic = arg[len("--topic=") :], raw_args[j][len("--topic=") :]
+            # A shell variable or a substitution is not the topic the command posted to:  only the printed line says
+            # that.  (A hosted call's topic and a printed line's never went through a shell, so `$` is just text.)
+            # A topic in single quotes is literal, so it is kept:  judged from this argument's own quoting.
+            expands = any(mark in topic for mark in ("$", "`")) and raw_topic != f"'{topic}'"
+            posts.append("" if expands else _clean_topic(topic))
+            break
+    return posts or None
+
+
+def _result_text(value: Any, depth: int = 0) -> str:
+    """The text of a tool result's content (a string, or a list of text parts)."""
+    if depth > 8:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(_result_text(item, depth + 1) for item in value)
+    if isinstance(value, Mapping):
+        return _result_text(
+            value.get("text") if "text" in value else value.get("content"), depth + 1
+        )
+    return ""
+
+
+def _walk_topics(
+    value: Any, pending: dict[str, tuple[str, list[str]]], found: list[str], depth: int = 0
+) -> None:
+    """One transcript entry's part in the topic count:  a post call (a Bash `simple-chat post` or `reply`, or a hosted
+    `zulip_post` or `zulip_reply`) waits in `pending` under its tool_use id, and counts only when its own tool_result
+    comes back without an error."""
+    if depth > 40:
+        return
+    if isinstance(value, list):
+        for item in value:
+            _walk_topics(item, pending, found, depth + 1)
+        return
+    if not isinstance(value, Mapping):
+        return
+    kind = value.get("type")
+    if kind == "tool_use":
+        call_id, name, args = value.get("id"), value.get("name"), value.get("input")
+        if not (
+            isinstance(call_id, str)
+            and call_id
+            and isinstance(name, str)
+            and isinstance(args, Mapping)
+        ):
+            return
+        if _POST_TOOLS.search(name):
+            pending[call_id] = ("hosted", [_clean_topic(args.get("topic"))])
+        else:
+            posts = _command_posts(args.get("command"))
+            if posts is not None:
+                pending[call_id] = ("command", posts)
+        return
+    if kind == "tool_result":
+        call = (
+            pending.pop(value.get("tool_use_id"), None)
+            if isinstance(value.get("tool_use_id"), str)
+            else None
+        )
+        if call is None or value.get("is_error") is True:
+            return
+        how, topics = call
+        if how == "command":
+            printed = [
+                m.group(1) for m in _POSTED_LINE.finditer(_result_text(value.get("content")))
+            ]
+            topics = [_clean_topic(t) for t in printed] if printed else topics
+        found.extend(topics)
+        return
+    for item in value.values():
+        if isinstance(item, (list, Mapping)):
+            _walk_topics(item, pending, found, depth + 1)
+
+
+def topics_in_lines(lines: list[str], parsed: list[tuple[str, Any]] | None = None) -> list[str]:
+    """The Zulip topics a stretch of a Claude Code transcript posted to, in the order the posts came back, each once:
+    a Bash `simple-chat post` or `reply` command the chat ran (the topic its printed `posted id N to #channel › topic`
+    line names, else its literal `--topic`), and a hosted `zulip_post` or `zulip_reply` call.  Either counts only when
+    its own tool result comes back without an error.  Nothing else is a post:  not a `--topic` in a prompt, a reply or
+    another command (`simple-chat read --topic`), and not a `posted id` line in some other tool's output (a log the
+    turn read).  A call whose result is not in these lines is not counted.  Other platforms' transcripts give none."""
+    found: list[str] = []
+    pending: dict[str, tuple[str, list[str]]] = {}
+    for _, entry in parsed_lines(lines) if parsed is None else parsed:
+        if entry is not _NOT_JSON:
+            _walk_topics(entry, pending, found)
+    seen: set[str] = set()
+    out: list[str] = []
+    for topic in found:
+        if topic and topic not in seen:
+            seen.add(topic)
+            out.append(topic)
+    return out
+
+
+def merge_topics(old: object, seen: list[str], now: float) -> list[dict[str, Any]]:
+    """The note's `topics` list with `seen` folded in:  each topic once, stamped with the last time a turn posted to
+    it, newest last, at most TOPIC_KEEP."""
+    kept: dict[str, float] = {}
+    for item in old if isinstance(old, list) else []:
+        if isinstance(item, Mapping):
+            topic = _clean_topic(item.get("topic"))
+            at = item.get("at")
+            if topic and isinstance(at, (int, float)) and not isinstance(at, bool):
+                kept.pop(topic, None)
+                kept[topic] = float(at)
+    for topic in (_clean_topic(item) for item in seen):
+        if topic:
+            kept.pop(topic, None)
+            kept[topic] = now
+    ordered = sorted(kept.items(), key=lambda kv: kv[1])[-TOPIC_KEEP:]
+    return [{"topic": topic, "at": at} for topic, at in ordered]
+
+
 def collect_issue_ids(
     note: dict[str, Any],
     data: Mapping[str, Any],
     root: str,
     run: Callable[..., Any] = subprocess.run,
+    now: float | None = None,
 ) -> set[str]:
-    """The ids this turn's start finds, from the hook data's `transcript_path` (only the lines since
-    the scan point the note keeps) and `cwd` (its branch).  A source that fails gives nothing."""
+    """The ids this turn finds, from the hook data's `transcript_path` (only the lines since the scan
+    point the note keeps) and `cwd` (its branch).  A source that fails gives nothing.  Given `now`, the
+    Zulip topics those lines posted to are folded into the note's `topics` as well (AFC-702)."""
     found: set[str] = set()
     path = data.get("transcript_path")
     if isinstance(path, str) and path:
         try:
             lines, note["issues_scan"] = read_new_lines(path, root, note.get("issues_scan"))
-            found |= issue_ids_in_lines(lines)
+            parsed = parsed_lines(lines)  # one parse for both readers
+            found |= issue_ids_in_lines(lines, parsed)
+            if now is not None:
+                topics = topics_in_lines(lines, parsed)
+                if topics:
+                    note["topics"] = merge_topics(note.get("topics"), topics, now)
         except (OSError, ValueError, TypeError):
             pass
     try:
@@ -1879,7 +2150,7 @@ def sync_issues(
     try:
         from . import operator_registry as OR
 
-        seen = collect_issue_ids(note, data, root, run)
+        seen = collect_issue_ids(note, data, root, run, now)
         old = note.get("issues")
         issues = OR.merge_issues(old, seen, now) if seen else OR.normalize_issues(old or [])
         if issues:
@@ -1898,6 +2169,69 @@ def sync_issues(
         note.pop("issues_failed_at", None)
     except Exception:  # noqa: BLE001 - a hook never stops for this
         return
+
+
+def end_of_turn(
+    note: dict[str, Any],
+    data: Mapping[str, Any],
+    root: str,
+    now: float,
+    send: Callable[[str], Mapping[str, Any]],
+    *,
+    run: Callable[..., Any] = subprocess.run,
+) -> None:
+    """The end-of-turn report a platform's turn-end hook calls (AFC-702):  the Linear issues and Zulip topics the turn
+    that just ended touched, so the last turn of a chat is recorded without waiting for a next prompt.
+
+    It is the same scan the prompt hook runs (`sync_issues`), from the same scan point, so a turn is read once:  the
+    prompt hook stays the fallback for a turn whose end hook never ran (a platform with no turn-end event, a hook that
+    timed out), and finds nothing new after one that did.  The issues reach the registry;  the topics stay in the
+    chat's own note until the registry has a field for them.  Only an open chat with a letter reports.  Nothing here
+    raises, and a registry that does not answer costs at most one call per RETRY_SECONDS."""
+    if note.get("state") != "open" or not note.get("label"):
+        return
+    sync_issues(note, data, root, now, send, run=run)
+
+
+#: The note keys the end-of-turn report owns.  Only these go back into the note after the registry call.
+TURN_KEYS = ("issues", "issues_scan", "issues_sent", "issues_failed_at", "topics")
+
+
+def turn_note(
+    before: Mapping[str, Any], after: Mapping[str, Any], fresh: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """The note to save after an end-of-turn report:  the note as it is on disk now (`fresh`, read again after the
+    registry call, which can take seconds), with only TURN_KEYS taken from the report's copy (`after`;  a key the
+    report removed from `before` is removed).  So a SessionEnd or a prompt hook that wrote the note meanwhile (a
+    close, a new title) is never undone by a stale copy.  None when the note is gone:  nothing is saved."""
+    if not fresh:
+        return None
+    out = dict(fresh)
+    for key in TURN_KEYS:
+        if key in after:
+            out[key] = after[key]
+        elif key in before:
+            out.pop(key, None)
+    return out
+
+
+def on_turn(chat: Chat, data: Mapping[str, Any]) -> int:
+    """A turn ended (a spec that maps its turn-end event to `turn`):  report it, print nothing, close nothing."""
+    note = chat.read()
+    if not note:
+        return 0
+    before = copy.deepcopy(note)
+    end_of_turn(
+        note,
+        data,
+        _text(chat.env.get("HOME")) or os.path.expanduser("~"),
+        chat.now,
+        lambda text: chat.registry("issues", issues=text),
+    )
+    merged = turn_note(before, note, chat.read())
+    if merged is not None:
+        chat.write(merged)
+    return 0
 
 
 def _issues_answer(out: Mapping[str, Any]) -> dict[str, Any]:
@@ -2466,6 +2800,8 @@ def _run_hook(
         return on_prompt(chat, data, out)
     if event == "rename":
         return on_rename(chat, data, out)
+    if event == "turn":
+        return on_turn(chat, data)
     return on_end(chat, data)
 
 

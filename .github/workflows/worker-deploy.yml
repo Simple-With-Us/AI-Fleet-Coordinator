@@ -13,6 +13,10 @@ on:
       - 'fleet-apps.json'
       - 'scripts/deploy-mapped-worker.py'
       - 'scripts/test-deploy-mapped-worker.py'
+      - 'scripts/worker_secret_sync.py'
+      - 'scripts/test_worker_secret_sync.py'
+      - 'scripts/worker-secret-folders.json'
+      - 'scripts/worker-secret-allowlists/**'
       - 'scripts/worker-targets.json'
       - 'scripts/infisical-fetch.mjs'
       - '.github/workflows/worker-deploy.yml'
@@ -53,15 +57,29 @@ jobs:
       - run: npm test
         working-directory: scripts/simple-tools-mcp
       - run: python3 scripts/test-deploy-mapped-worker.py
+      - run: python3 scripts/test_worker_secret_sync.py
       - name: Load scoped deploy credential from Fleet-OPS
         env:
-          INFISICAL_PROJECT_ID: 8dae6d03-8f12-48b2-adf3-e5c1b881c8c5
+          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
           INFISICAL_ENVIRONMENT: prod
           INFISICAL_SECRET_PATH: /
           INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
           INFISICAL_REQUIRED: CLOUDFLARE_FLEET_API_TOKEN
           INFISICAL_TOKEN: ${{ secrets.AFC_WORKER_DEPLOY_INFISICAL_TOKEN }}
         run: node scripts/infisical-fetch.mjs
+      - name: Check Worker secrets against Infisical
+        env:
+          WORKER_SECRET_SYNC_INFISICAL_TOKEN: ${{ secrets.WORKER_SECRET_SYNC_INFISICAL_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
+          # Unset in the repository.  Exactly "true" plus --apply is the only apply path.
+          WORKER_SECRET_SYNC_APPLY: ${{ vars.WORKER_SECRET_SYNC_APPLY }}
+          TARGET: ${{ matrix.worker }}
+        run: |
+          extra=()
+          if [ "${WORKER_SECRET_SYNC_APPLY:-}" = "true" ]; then
+            extra+=(--apply)
+          fi
+          python3 scripts/deploy-mapped-worker.py --secrets "$TARGET" "${extra[@]}"
       - name: Deploy exact main and verify receipt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,3 +91,36 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: 3a9368057468d0909cafaa85df12d1b7
           TARGET: ${{ matrix.worker }}
         run: python3 scripts/deploy-mapped-worker.py "$TARGET"
+  secret-check:
+    # Off until the owner creates the folder token.  Check only: the run script has no apply flag.
+    if: vars.WORKER_SECRET_CHECK_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        worker: ["simple-tools-mcp"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - name: Load scoped deploy credential from Fleet-OPS
+        env:
+          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_FLEET_OPS_PROJECT_ID }}
+          INFISICAL_ENVIRONMENT: prod
+          INFISICAL_SECRET_PATH: /
+          INFISICAL_NAMES: CLOUDFLARE_FLEET_API_TOKEN
+          INFISICAL_REQUIRED: CLOUDFLARE_FLEET_API_TOKEN
+          INFISICAL_TOKEN: ${{ secrets.AFC_WORKER_DEPLOY_INFISICAL_TOKEN }}
+        run: node scripts/infisical-fetch.mjs
+      - name: Dry-run Worker secret diff
+        env:
+          WORKER_SECRET_SYNC_INFISICAL_TOKEN: ${{ secrets.WORKER_SECRET_SYNC_INFISICAL_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_FLEET_API_TOKEN }}
+          TARGET: ${{ matrix.worker }}
+        run: python3 scripts/deploy-mapped-worker.py --secrets "$TARGET" --strict

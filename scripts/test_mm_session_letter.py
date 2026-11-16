@@ -1435,9 +1435,19 @@ class MmLetterReopenTest(unittest.TestCase):
         first = self._register(SESSION_ID)
         reg = self._registry()
         reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
-        # Another chat takes AA while the first one is away.
+        # Another chat holds AA while the first one is away.  A new chat takes BB (keep advancing), so the history a
+        # whole lap leaves (AA.2 issued to another chat) is written here directly.
         second = self._register(self.OTHER_SESSION_ID)
-        self.assertEqual(second["label"], "AA")
+        self.assertEqual(second["label"], "BB")
+        with reg._conn:
+            reg._conn.execute(
+                "DELETE FROM alias_assignments WHERE record_id = ?", (second["record_id"],)
+            )
+            reg._conn.execute(
+                "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                " VALUES ('minimax', 'AA', 2, ?, '2026-11-11T00:00:00.000Z')",
+                (second["record_id"],),
+            )
         self._write_cache(SESSION_ID, "AA")
         letter = self._letter_for(SESSION_ID)
         # The chat comes back with a pair, never with a single letter.
@@ -1452,9 +1462,19 @@ class MmLetterReopenTest(unittest.TestCase):
         first = self._register(SESSION_ID)
         reg = self._registry()
         reg.close(first["record_id"], actor="MM", source="the test", reason="stale")
-        # Another chat takes AA while the first one is away.
+        # Another chat holds AA while the first one is away.  A new chat takes BB (keep advancing), so the history a
+        # whole lap leaves (AA.2 issued to another chat) is written here directly.
         second = self._register(self.OTHER_SESSION_ID)
-        self.assertEqual(second["label"], "AA")
+        self.assertEqual(second["label"], "BB")
+        with reg._conn:
+            reg._conn.execute(
+                "DELETE FROM alias_assignments WHERE record_id = ?", (second["record_id"],)
+            )
+            reg._conn.execute(
+                "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                " VALUES ('minimax', 'AA', 2, ?, '2026-11-11T00:00:00.000Z')",
+                (second["record_id"],),
+            )
         self._write_cache(SESSION_ID, "AA", "The topic this thread holds")
         letter = self._letter_for(SESSION_ID)
         self.assertNotEqual(letter, "AA")

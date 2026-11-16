@@ -732,7 +732,7 @@ class SentenceGapMarkupTests(unittest.TestCase):
             "<p>Plain sentence one.&#160; Plain sentence two.&#160; Plain sentence three.</p>"
             "<div><br></div>"
             "<p>A second paragraph here.&#160; And its end.</p>"
-            "<div><br></div></div>\n",
+            "<div><br></div></div><!-- fleet-notes-tool:v1 -->\n",
         )
 
     def test_the_named_nbsp_entity_is_never_emitted(self):

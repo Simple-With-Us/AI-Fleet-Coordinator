@@ -1,0 +1,85 @@
+{
+  "monitors": [
+    {
+      "id": "7747225",
+      "name": "socratictrade.com /api/health",
+      "projectSlug": "socratic-trade",
+      "status": "active",
+      "url": "https://socratictrade.com/api/health",
+      "method": "GET",
+      "intervalSeconds": 60
+    },
+    {
+      "id": "9697773",
+      "name": "congress.trade /api/health",
+      "projectSlug": "congress-trade",
+      "status": "active",
+      "url": "https://congress.trade/api/health",
+      "method": "GET",
+      "intervalSeconds": 60
+    },
+    {
+      "id": "9700497",
+      "name": "dealdex.online",
+      "projectSlug": "dealdex",
+      "status": "active",
+      "url": "https://dealdex.online/",
+      "method": "GET",
+      "intervalSeconds": 60
+    },
+    {
+      "id": "9700498",
+      "name": "usage.jays.services /api/ready strict",
+      "projectSlug": "usage-monitor",
+      "status": "active",
+      "url": "https://usage.jays.services/api/ready?strict=1",
+      "method": "GET",
+      "intervalSeconds": 300
+    },
+    {
+      "id": "9700500",
+      "name": "botfleet.app",
+      "projectSlug": "botfleet",
+      "status": "active",
+      "url": "https://botfleet.app/",
+      "method": "GET",
+      "intervalSeconds": 60
+    },
+    {
+      "id": "9700501",
+      "name": "contactlogo.com",
+      "projectSlug": "contactlogo",
+      "status": "active",
+      "url": "https://contactlogo.com/",
+      "method": "GET",
+      "intervalSeconds": 60
+    },
+    {
+      "id": "9700568",
+      "name": "autorotate.vercel.app (until autorotate.codes DNS)",
+      "projectSlug": "autorotate",
+      "status": "active",
+      "url": "https://autorotate.vercel.app/",
+      "method": "GET",
+      "intervalSeconds": 300
+    },
+    {
+      "id": "10261359",
+      "name": "host.jays.services /api/health",
+      "projectSlug": "fleet-infra",
+      "status": "active",
+      "url": "https://host.jays.services/api/health",
+      "method": "GET",
+      "intervalSeconds": 60
+    },
+    {
+      "id": "10345365",
+      "name": "Fleet Health Aggregator",
+      "projectSlug": "fleet-infra",
+      "status": "active",
+      "url": "https://usage.jays.services/api/health/fleet",
+      "method": "GET",
+      "intervalSeconds": 300
+    }
+  ]
+}

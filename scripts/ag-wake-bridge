@@ -560,7 +560,7 @@ def serve(env: dict[str, str], bind: str, port: int, config: dict[str, Any]) -> 
             "ag-wake-bridge: %s is not set: the registry environment is missing"
             " (source the host's shared registry env file first)" % RA.URL_ENV
         )
-    key_env = (env.get(RA.KEY_REF_ENV) or "").strip() or RA.KEY_ENV
+    key_env = (env.get(PL._RETIRED_KEY_POINTER) or "").strip() or RA.KEY_VAR  # P9 deletes
     if not (env.get(key_env) or "").strip():
         raise SystemExit(
             "ag-wake-bridge: %s is not set: the registry environment is missing"

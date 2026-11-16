@@ -246,13 +246,16 @@ class FakeInfisical:
                 + "\n"
             )
         cfg = json.loads(self.config.read_text())
-        if cfg["mode"] == "hang":
+        mode = cfg.get("folder_modes", {}).get(path, cfg["mode"])
+        if mode == "hang":
             raise TimeoutError("fake bounded helper timeout")
-        if cfg["mode"] == "fail":
+        if mode == "fail":
             raise RuntimeError("fake provider failure " + cfg.get("leak", ""))
-        if cfg["mode"] == "garbage":
+        if mode == "garbage":
             return object()
-        secrets = cfg["secrets"]
+        # Infisical answers only what a folder holds:  `folders` maps a path to its secrets, and
+        # without it every folder holds `secrets` (the tests written before folders existed).
+        secrets = cfg.get("folders", {}).get(path, cfg["secrets"])
         if cfg.get("shape") == "list":
             return [{"key": k, "value": v} for k, v in secrets.items()]
         if cfg.get("shape") == "api":
@@ -318,5 +321,6 @@ class KnobTestCase(unittest.TestCase):
         The negative-cache marker is cleared too unless asked to keep it, as if the 60 second
         window had passed, so a test of a later fetch is not skipped by an earlier failure."""
         knobs.reset_for_tests()
-        if not keep_failure_marker:
-            (self.state_dir / "fetch-failed.json").unlink(missing_ok=True)
+        if not keep_failure_marker and self.state_dir.is_dir():
+            for marker in self.state_dir.glob("fetch-failed*.json"):  # one per folder
+                marker.unlink(missing_ok=True)

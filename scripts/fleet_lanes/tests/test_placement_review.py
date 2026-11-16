@@ -741,7 +741,7 @@ class DoctorRows(TD.Case):
             return co.placement_violation
 
         self.assertTrue(verdict("Simple-With-Us/BotFleet"))
-        self.assertFalse(verdict("jaywedgeworth22/old-thing"))
+        self.assertFalse(verdict("Simple-With-Us/old-thing"))
 
     def test_a_row_near_its_expiry_is_a_warning_and_not_a_strict_failure(self) -> None:
         soon = (dt.date.today() + dt.timedelta(days=10)).isoformat()

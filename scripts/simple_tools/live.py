@@ -30,11 +30,11 @@ import os
 import re
 import threading
 import time
-import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any
 
 from . import identity as I
+from .textfold import fold as _fold_text
 
 try:
     import tomllib
@@ -459,19 +459,12 @@ def paused(root: str, seat: str, *, wakes: bool = False) -> bool:
 # --------------------------------------------------------------------------------------------
 
 
-def _fold(text: str) -> str:
-    """NFKC, then drop format characters (zero-width, bidi controls), so look-alike marker text
-    cannot slip past the marker check."""
-    text = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
-
-
 def escape_body(text: str, limit: int | None = None) -> str:
     """Marker text becomes [marker removed]; control characters other than newline and tab
     become \\xNN, and the Unicode line and paragraph separators become \\uXXXX.  Cut to `limit`
     characters with a note."""
     text = _CONTROL_RE.sub(
-        lambda m: "\\x%02x" % ord(m.group()), _MARKER_RE.sub("[marker removed]", _fold(text))
+        lambda m: "\\x%02x" % ord(m.group()), _MARKER_RE.sub("[marker removed]", _fold_text(text))
     )
     text = _SEPARATOR_RE.sub(lambda m: "\\u%04x" % ord(m.group()), text)
     if limit is not None and len(text) > limit:

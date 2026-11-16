@@ -33,6 +33,7 @@ VOICE_TOKEN = "st.operator-voice-service-token-fixture"
 OPERATOR_ID = 4242
 OPERATOR_EMAIL = "operator-bot@realm.example.test"
 OPERATOR_KEY = "operator-key-" + "x" * 24
+WAKE_TOKEN = "st.wake-router-token-fixture-value"
 
 
 def voice_env(**overrides: str) -> dict[str, str]:
@@ -41,6 +42,7 @@ def voice_env(**overrides: str) -> dict[str, str]:
         "INFISICAL_PROJECT_ID": PRIMARY_PROJECT,
         MODULE.OPERATOR_VOICE_PROJECT: FLEET_OPS_PROJECT,
         MODULE.OPERATOR_VOICE_TOKEN: VOICE_TOKEN,
+        MODULE.WAKE_ROUTER_TOKEN: WAKE_TOKEN,
         "SIMPLE_TOOLS_INSTANCE": "server",
         "OPERATOR_ZULIP_USER_ID": str(OPERATOR_ID),
         "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL,
@@ -83,7 +85,7 @@ class OperatorVoiceKeysTests(unittest.TestCase):
         self.assertEqual(kwargs["path"], "/zulip_operator")
         self.assertEqual(kwargs["expected_paths"], ("/zulip_operator",))
         self.assertEqual(source["INFISICAL_PROJECT_ID"], FLEET_OPS_PROJECT)
-        self.assertEqual(source["INFISICAL_ENVIRONMENT"], "prod")
+        self.assertEqual(kwargs["token_name"], MODULE.OPERATOR_VOICE_TOKEN)
 
     def test_without_its_token_nothing_is_read_and_the_primary_token_is_never_reused(self) -> None:
         env = voice_env()
@@ -92,31 +94,31 @@ class OperatorVoiceKeysTests(unittest.TestCase):
         self.assertEqual((keys, calls), ({}, []))
         self.assertIn("no dedicated token", note)
 
-    def test_a_bad_project_or_token_never_fetches(self) -> None:
+    def test_a_bad_project_or_token_never_fetches_and_stops_startup(self) -> None:
         for label, env, words in (
-            ("project", voice_env(**{MODULE.OPERATOR_VOICE_PROJECT: "bad"}), "invalid project id"),
-            ("token", voice_env(**{MODULE.OPERATOR_VOICE_TOKEN: "not-a-token"}), "token is invalid"),
+            ("project", voice_env(**{MODULE.OPERATOR_VOICE_PROJECT: "bad"}), "INFISICAL_FLEET_OPS_PROJECT_ID is invalid"),
+            ("token", voice_env(**{MODULE.OPERATOR_VOICE_TOKEN: "not-a-token"}), "INFISICAL_OPERATOR_VOICE_TOKEN is invalid"),
         ):
             with self.subTest(label):
-                keys, note, calls = self.read({}, env)
-                self.assertEqual((keys, calls), ({}, []))
-                self.assertIn(words, note)
+                with self.assertRaisesRegex(MODULE.LoadError, words):
+                    self.read({}, env)
 
-    def test_a_failed_read_is_not_fatal_and_names_only_the_stage(self) -> None:
-        keys, note, _ = self.read(MODULE.LoadError("read operator voice: HTTP 403"))
-        self.assertEqual(keys, {})
-        self.assertIn("not loaded (read operator voice: HTTP 403)", note)
+    def test_a_failed_read_of_a_bound_token_stops_startup_and_names_only_the_stage(self) -> None:
+        with self.assertRaisesRegex(MODULE.LoadError, r"^read operator voice: HTTP 403$"):
+            self.read(MODULE.LoadError("read operator voice: HTTP 403"))
 
-    def test_half_a_pair_or_a_reference_is_not_loaded(self) -> None:
+    def test_half_a_pair_or_a_reference_stops_startup_and_names_the_missing_name(self) -> None:
         for label, secrets in (
             ("one name", {"ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL}),
             ("reference", {"ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL, "ZULIP_OPERATOR_API_KEY": "${a.b}"}),
             ("empty", {"ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL, "ZULIP_OPERATOR_API_KEY": "  "}),
         ):
             with self.subTest(label):
-                keys, note, _ = self.read(secrets)
-                self.assertEqual(keys, {})
-                self.assertIn("not loaded", note)
+                with self.assertRaisesRegex(
+                    MODULE.LoadError, r"Infisical is missing ZULIP_OPERATOR_API_KEY \(/zulip_operator\)"
+                ) as caught:
+                    self.read(secrets)
+                self.assertNotIn(OPERATOR_EMAIL, str(caught.exception))
 
 
 class BuildEnvVoiceTests(unittest.TestCase):
@@ -126,6 +128,11 @@ class BuildEnvVoiceTests(unittest.TestCase):
                 if isinstance(voice, Exception):
                     raise voice
                 return voice
+            if kwargs.get("path") == MODULE.OPERATOR_PATH:
+                # The Operator's identity comes from /operator, never from the container copy.
+                return {"OPERATOR_ZULIP_USER_ID": str(OPERATOR_ID), "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL}
+            if kwargs.get("path") == MODULE.WAKE_ROUTER_PATH:
+                return {"SIMPLE_TOOLS_OPERATOR_REGISTRY_KEY": "r" * 40, "WAKE_ROUTER_KEY": "w" * 40}
             return {}
 
         with (
@@ -149,10 +156,9 @@ class BuildEnvVoiceTests(unittest.TestCase):
         self.assertIn("operator voice keys from /zulip_operator: 2 of 2", line)
         self.assertNotIn(OPERATOR_KEY, line)
 
-    def test_a_failed_voice_read_does_not_stop_the_listener_and_the_line_says_so(self) -> None:
-        out, line = self.build(MODULE.LoadError("read operator voice: HTTP 401"))
-        self.assertNotIn("ZULIP_OPERATOR_API_KEY", out)
-        self.assertIn("operator voice keys not loaded", line)
+    def test_a_failed_voice_read_stops_startup(self) -> None:
+        with self.assertRaisesRegex(MODULE.LoadError, "read operator voice: HTTP 401"):
+            self.build(MODULE.LoadError("read operator voice: HTTP 401"))
 
     def test_what_the_server_loader_hands_over_is_enough_for_the_operator_credential(self) -> None:
         """The regression behind the 370 `operator-voice-unavailable` rows:  on the server instance

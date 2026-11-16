@@ -196,14 +196,14 @@ function fence(text, tool) {
 
 // ---------------------------------------------------------------- the contract
 
-test("the hosted notes tools are notes-tools.json unchanged:  eight tools, four writes and four reads", () => {
+test("the hosted notes tools are notes-tools.json unchanged:  nine tools, five writes and four reads", () => {
   assert.deepEqual(NOTES_TOOLS, SPECS);
-  assert.deepEqual(NOTES_TOOLS.map((t) => t.name), ["notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"]);
+  assert.deepEqual(NOTES_TOOLS.map((t) => t.name), ["notes_create", "notes_update", "notes_pin", "notes_delete", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"]);
   for (const tool of NOTES_TOOLS) {
     assert.ok(HOSTED_TOOLS_BY_NAME[tool.name], tool.name);
     assert.equal(typeof HostedTools.prototype[`tool_${tool.name}`], "function", tool.name);
     const write = NOTES_WRITE_TOOLS.has(tool.name);
-    assert.equal(write, ["notes_create", "notes_update", "notes_pin", "notes_unpin"].includes(tool.name));
+    assert.equal(write, ["notes_create", "notes_update", "notes_pin", "notes_delete", "notes_unpin"].includes(tool.name));
     assert.equal(HOSTED_WRITE_TOOLS.has(tool.name), write, tool.name);
     assert.equal(HOSTED_READ_TOOLS.has(tool.name), !write, tool.name);
     assert.equal(tool.annotations.readOnlyHint, !write, tool.name);

@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""simple-peer-actions: log peer-request actions to the Peer-Actions Registry sheet."""
+import os
+import sys
+
+if sys.version_info < (3, 11):
+    for candidate in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+        if os.access(candidate, os.X_OK) and os.path.realpath(candidate) != os.path.realpath(sys.executable):
+            os.execv(candidate, [candidate, os.path.realpath(__file__)] + sys.argv[1:])
+    sys.stderr.write("simple-peer-actions: Python 3.11 or newer is required (found %d.%d)\n" % sys.version_info[:2])
+    sys.exit(1)
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from simple_tools.peer_actions_cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

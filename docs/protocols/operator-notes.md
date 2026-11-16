@@ -11,6 +11,7 @@ Owner direction (quoted):  "I don't want notes going from Zulip to Apple notes."
 | create | `simple-notes create TITLE` | `notes_create` | A new note.  The title must be `[TEAM_KEY, Agent] Topic` with the caller's own agent name. |
 | update | `simple-notes update TITLE` | `notes_update` | Replace a note's body.  Any Coding note.  A note whose title does not carry the caller's name is never created by an update. |
 | pin, unpin | `simple-notes pin TITLE` | `notes_pin`, `notes_unpin` | Any Coding note. |
+| delete | `simple-notes delete NOTE_ID` | `notes_delete` | Delete one fleet-written note by exact `x-coredata` id (`notes_list` / `notes_read`) and its Fleet RAG doc (`note/<id>`).  Static notes and owner notes are refused.  No bulk delete.  If Apple Notes is already gone but RAG removal failed, retry the same request. |
 | read | `simple-notes read TITLE` | `notes_read` | One note's content, as `html` (ready to send back with `update --html`), `text` or `raw` (exactly what Notes stores).  A line that looks like a credential reads as `[withheld: secret-shaped]`. |
 | list | `simple-notes list` | `notes_list` | The Coding folder's notes, newest first:  title, id, created, modified.  `query` filters titles. |
 | status | `simple-notes status ID` | `notes_status` | Where a queued request stands. |
@@ -67,7 +68,7 @@ good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON
  "session": "<session-id>"}
 ```
 
-`action` is one of create, update, pin, unpin, read, list.  `title` is required except for list;  `markdown` and `flags` (pin, notify, needs_owner, summary, pr, html) only for create and update;  `format` (html, text, raw) only for read;  `query` (at most 100 characters) and `limit` (1 to 500, default 100) only for list.
+`action` is one of create, update, pin, unpin, read, list, delete.  `title` is required except for list and delete;  `note_id` (exact `x-coredata` id) only for delete;  `markdown` and `flags` (pin, notify, needs_owner, summary, pr, html) only for create and update;  `format` (html, text, raw) only for read;  `query` (at most 100 characters) and `limit` (1 to 500, default 100) only for list.
 
 **Endpoints.**
 

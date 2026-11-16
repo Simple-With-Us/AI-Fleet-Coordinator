@@ -7,7 +7,7 @@ invisible to `git worktree list` and the disk cleaners, they hold dropped work, 
 stale entries in the integration tree's .git/worktrees.
 
 A fleet repo is any repo in the registry (fleet-apps.json plus layout.EXTRA_APPS), any GitHub URL
-or OWNER/REPO whose owner is Simple-With-Us or jaywedgeworth22, and any local source path under
+or OWNER/REPO whose owner is Simple-With-Us (legacy jaywedgeworth22 remotes still match), and any local source path under
 ~/Code, ~/apps (lanes included) or a harness worktree location.  Temp means /tmp, /private/tmp,
 /var/tmp, /private/var/tmp, the per-user macOS temp dir (/private/var/folders/*/*/T) and the
 TMPDIR directory.  Third-party clones into temp are allowed, and a destination that cannot be

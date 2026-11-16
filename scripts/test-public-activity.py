@@ -234,7 +234,7 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn("prefers-color-scheme: dark", rendered)
         self.assertNotIn("text-decoration: none", rendered)
 
-    def test_main_copies_only_referenced_logo_basenames(self) -> None:
+    def test_build_output_only_referenced_logo_basenames(self) -> None:
         day = date(2026, 9, 26)
         pr = {
             "repo": "BotFleet",
@@ -312,7 +312,7 @@ class PublicActivityTests(unittest.TestCase):
         self.assertIn("overflow-wrap", rendered)
 
     def test_default_owner_is_the_org_and_never_the_retired_pages_host(self) -> None:
-        """A manual run with no FLEET_OWNER or SITE_BASE_URL must not emit jaywedgeworth22.github.io."""
+        """A manual run with no FLEET_OWNER or SITE_BASE_URL must not emit simple-with-us.github.io."""
         self.assertEqual(DEFAULT_FLEET_OWNER, "Simple-With-Us")
         day = date(2026, 9, 26)
         pr = {

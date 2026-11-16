@@ -50,7 +50,10 @@ def authenticated_env():
             except core.SecretsError:
                 raise EntryError(f"invalid scoped reader binding: {name}") from None
     if not any((env.get(name) or "").strip() for name in token_names) and not sys.stdin.isatty():
-        raise EntryError("a scoped service token is required for noninteractive commands")
+        accepted = ", ".join(token_names)
+        raise EntryError(
+            "a scoped service token is required for noninteractive commands: set " + accepted
+        )
     return env
 
 

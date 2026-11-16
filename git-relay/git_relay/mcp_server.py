@@ -194,6 +194,25 @@ TOOLS += [
             "required": ["repo", "thread_id"],
         },
     },
+    {
+        "name": "create_repo",
+        "description": (
+            "Create a repository as the caller's own GitHub App. Denied unless the "
+            "seat policy grants create_repo. Owners are Simple-With-Us and "
+            "jaywedgeworth22. Visibility defaults to private; public also needs "
+            "create_repo_public. An existing repository returns already_exists."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/name"},
+                "visibility": {"type": "string", "enum": ["private", "public"]},
+                "description": {"type": "string"},
+                "license_template": {"type": "string", "enum": ["apache-2.0"]},
+            },
+            "required": ["repo"],
+        },
+    },
 ]
 
 
@@ -382,6 +401,16 @@ def _validate_args(name: str, args: dict) -> str | None:
                     return (
                         f"inputs string values are capped at {MAX_DISPATCH_INPUT_VALUE} characters"
                     )
+    if name == "create_repo":
+        visibility = args.get("visibility")
+        if visibility is not None and visibility not in ("private", "public"):
+            return "visibility must be private or public"
+        license_template = args.get("license_template")
+        if license_template is not None and license_template != "apache-2.0":
+            return "license_template must be apache-2.0"
+        description = args.get("description")
+        if isinstance(description, str) and len(description) > 350:
+            return "description exceeds the 350 character bound"
     return None
 
 

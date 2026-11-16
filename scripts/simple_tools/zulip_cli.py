@@ -58,11 +58,18 @@ def _deliver_at(value: str) -> int:
 
 
 def add_parsers(
-    sub: Any, common: argparse.ArgumentParser, channel_default: str = Z.DEFAULT_CHANNEL
+    sub: Any,
+    common: argparse.ArgumentParser,
+    channel_default: str = Z.DEFAULT_CHANNEL,
+    *,
+    skip_verbs: frozenset[str] | None = None,
 ) -> None:
     cli = _cli()
+    reserved = skip_verbs or frozenset()
 
     def add(name: str, summary: str, parent: Any = sub) -> argparse.ArgumentParser:
+        if name in reserved:
+            return cli._NullParser()
         return parent.add_parser(name, parents=[common], help=summary, description=summary)
 
     def msg_id(p: argparse.ArgumentParser, help_text: str = "message id") -> None:

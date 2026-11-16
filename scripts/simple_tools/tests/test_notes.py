@@ -259,6 +259,13 @@ class FlagTests(unittest.TestCase):
             with self.subTest(bad), self.assertRaises(N.NotesError):
                 N.check_request_id(bad)
 
+    def test_note_ids_for_delete_are_exact_x_coredata_urls(self):
+        nid = "x-coredata://ABC/ICNote/p1"
+        self.assertEqual(N.check_note_id(nid), nid)
+        for bad in ("", "x-coredata://bad*id", "not-an-id", None):
+            with self.subTest(bad), self.assertRaises(N.NotesError):
+                N.check_note_id(bad)
+
     def test_text_fields_cover_the_title_the_body_and_the_text_flags(self):
         req = request(markdown="body", flags={"summary": "sum", "pr": "46", "notify": True})
         self.assertEqual(N.text_fields(req), {"title": TITLE, "markdown": "body", "summary": "sum", "pr": "46"})
@@ -293,6 +300,16 @@ class RequestTests(unittest.TestCase):
             {"v": 2, "action": "list", "request_id": RID, "identity": "CLAUDE", "query": "", "limit": 100},
         )
         self.assertEqual(request("list", query=" Plan ", limit=5)["query"], "Plan")
+        self.assertEqual(
+            N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/1"),
+            {
+                "v": 2,
+                "action": "delete",
+                "request_id": RID,
+                "identity": "CLAUDE",
+                "note_id": "x-coredata://stub/note/1",
+            },
+        )
 
     def test_make_request_refuses_a_field_the_action_does_not_use(self):
         for kwargs in (
@@ -341,7 +358,10 @@ class RequestTests(unittest.TestCase):
             ("old upload field", dict(good, markdown_url="/user_uploads/x")),
             ("version 1", dict(good, v=1)),
             ("no version", {k: v for k, v in good.items() if k != "v"}),
-            ("unknown action", dict(good, action="delete")),
+            (
+                "delete missing note_id",
+                {"v": 2, "action": "delete", "request_id": RID, "identity": "CLAUDE"},
+            ),
             ("pin with a body", dict(good, markdown="")),
             ("pin with a session", dict(good, session=SESSION)),
             ("read with flags", dict(request("read"), flags={})),
@@ -507,6 +527,34 @@ class DirectRunnerTests(unittest.TestCase):
     def test_fleet_rag_upsert_swallows_subprocess_errors(self):
         with mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
             N._fleet_rag_upsert(request(markdown="x" * 40), "note-id", self.ENV)
+
+    @mock.patch.object(N, "_fleet_rag_delete", return_value={"ok": True})
+    def test_delete_runs_script_and_calls_rag_delete(self, rag_delete):
+        run = FakeRun(stdout="deleted note id=x-coredata://stub/note/9\n")
+        req = N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/9")
+        result = self.run_direct(req, run)
+        self.assertTrue(result["apple_note_deleted"])
+        self.assertTrue(result["rag_deleted"])
+        self.assertNotIn("partial", result)
+        rag_delete.assert_called_once_with("x-coredata://stub/note/9", self.ENV)
+        self.assertEqual(run.calls[0]["argv"][1:3], ["--delete", "--note-id"])
+
+    @mock.patch.object(N, "_fleet_rag_delete", return_value={"ok": False, "error": "down"})
+    def test_delete_partial_when_rag_fails(self, rag_delete):
+        run = FakeRun(stdout="deleted note id=x-coredata://stub/note/9\n")
+        req = N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/9")
+        result = self.run_direct(req, run)
+        self.assertTrue(result["partial"])
+        self.assertTrue(result["apple_note_deleted"])
+        self.assertFalse(result["rag_deleted"])
+
+    @mock.patch.object(N, "_fleet_rag_delete", return_value={"ok": True})
+    def test_delete_retry_when_apple_note_already_gone(self, rag_delete):
+        run = FakeRun(code=N.EXIT_NOT_FOUND)
+        req = N.make_request("delete", "CLAUDE", request_id=RID, note_id="x-coredata://stub/note/9")
+        result = self.run_direct(req, run)
+        self.assertFalse(result["apple_note_deleted"])
+        self.assertTrue(result["rag_deleted"])
 
     def test_successful_write_triggers_fleet_rag_upsert(self):
         run = FakeRun()
