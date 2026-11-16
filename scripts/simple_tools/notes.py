@@ -733,13 +733,13 @@ _TEXT_FOOTER_RE = re.compile(r"(?:\n[ \t￼]*)*\n?" + _FOOTER_TEXT + r"[^\n]*\s*
 _SPACER_TAIL_RE = re.compile(r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)+\s*$", re.IGNORECASE)
 _STAMP_RE = re.compile(
     r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
-    r"\d{1,2}:\d{2}[ap]m(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
+    r"\d{1,2}:\d{2}(?:[ap]m|(?-i: [AP]M))(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
     re.IGNORECASE,
 )
 # Looser than _STAMP_RE:  HTML blocks are joined without spaces, so the stamp may be followed by more text.
 _STAMP_FRAGMENT_RE = re.compile(
     r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
-    r"\d{1,2}:\d{2}[ap]m",
+    r"\d{1,2}:\d{2}(?:[ap]m|(?-i: [AP]M))",
     re.IGNORECASE,
 )
 _SESSION_ROW_RE = re.compile(r"^Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\s+-\s+.{0,40})?$")
@@ -1259,8 +1259,32 @@ def _delete_result(
     return result
 
 
+def _cancel_note_outbox(note_id: str, env: Mapping[str, str]) -> str | None:
+    """Cancel any queued outbox entry for note_id, retrying briefly on lock contention."""
+    from fleet_rag import note_outbox, note_upsert
+
+    root = Path(str(env.get("HOME") or Path.home())) / ".local/state/fleet-rag-note-outbox"
+    doc_id = note_upsert.note_doc_id(note_id)
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            note_outbox.cancel(doc_id, root=root)
+            return None
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return "rag-outbox-cancellation-unavailable"
+            time.sleep(0.05)
+        except Exception:
+            return "rag-outbox-cancellation-unavailable"
+
+
 def _fleet_rag_delete(note_id: str, env: Mapping[str, str]) -> dict[str, Any]:
     """Best-effort Fleet RAG delete after the Apple Note is gone (AFC-728).  Returns the child result dict."""
+    cancel_error: str | None = None
+    try:
+        cancel_error = _cancel_note_outbox(note_id, env)
+    except Exception:
+        cancel_error = "rag-outbox-cancellation-unavailable"
     payload = json.dumps({"note_id": note_id}, ensure_ascii=False).encode("utf-8")
     try:
         proc = subprocess.run(
@@ -1283,35 +1307,86 @@ def _fleet_rag_delete(note_id: str, env: Mapping[str, str]) -> dict[str, Any]:
     if proc.returncode != 0:
         err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:200]
         return {"ok": False, "error": err or "rag delete child exited %d" % proc.returncode}
+    if cancel_error is not None:
+        return {"ok": False, "error": cancel_error}
     return {"ok": True}
 
 
-def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str, str]) -> None:
-    """Best-effort Fleet RAG upsert after a successful write (AFC-685).  Failures are ignored."""
+def _fleet_rag_upsert(request: Mapping[str, Any], note_id: str, env: Mapping[str, str]) -> dict:
+    """Commit delivery intent before attempting RAG; Notes and RAG outcomes stay separate."""
     if request.get("action") not in BODY_ACTIONS or not note_id:
-        return
-    payload = json.dumps(
-        {"request": dict(request), "note_id": note_id},
-        ensure_ascii=False,
-    ).encode("utf-8")
+        return {"state": "excluded", "reason": "not-a-body-write"}
     try:
-        subprocess.run(
+        from fleet_rag import note_outbox, note_upsert
+
+        queued = note_outbox.enqueue_id(note_upsert.note_doc_id(note_id))
+    except Exception:
+        return {"state": "failed", "reason": "durable-rag-queue-unavailable"}
+    try:
+        outcome = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "fleet_rag.note_upsert",
-                "--lock-timeout",
-                str(RAG_UPSERT_LOCK_TIMEOUT_S),
+                "--drain-outbox",
+                "--outbox-key",
+                queued["key"],
             ],
-            input=payload,
             capture_output=True,
             timeout=RAG_UPSERT_TIMEOUT_S,
             cwd=str(_SCRIPTS_ROOT),
             env=rag_subprocess_env(env),
             check=False,
         )
+        if outcome.returncode == 0:
+            receipt = json.loads(outcome.stdout)
+            if receipt.get("verified") == 1:
+                return {"state": "receiver-verified"}
+            if receipt.get("quarantined"):
+                return {"state": "failed", "reason": "rag-delivery-record-quarantined"}
+    except subprocess.TimeoutExpired:
+        return {"state": "queued", "reason": "rag-delivery-timeout", "exit_code": 124}
+    except FileNotFoundError:
+        return {"state": "queued", "reason": "rag-delivery-executable-missing", "exit_code": 127}
     except (OSError, subprocess.SubprocessError):
-        return
+        pass
+    except (ValueError, TypeError):
+        pass
+    return {"state": "queued", "reason": "receiver-verification-pending"}
+
+
+def retry_rag_outbox(env: Mapping[str, Any]) -> dict:
+    """One bounded retry in the existing Notes runner, with its existing credential route."""
+    try:
+        process = subprocess.run(
+            [sys.executable, "-m", "fleet_rag.note_upsert", "--drain-outbox", "--reconcile-coding"],
+            cwd=str(_SCRIPTS_ROOT),
+            env=rag_subprocess_env(env),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if process.returncode == 0:
+            record = json.loads(process.stdout)
+            summary = {
+                name: int(record.get(name, 0))
+                for name in ("verified", "pending", "superseded", "quarantined")
+            }
+            metadata = record.get("coding_metadata")
+            if isinstance(metadata, dict):
+                summary["coding_metadata"] = {
+                    name: metadata[name]
+                    for name in ("baseline_only", "observed", "changed", "queued", "failed")
+                    if name in metadata and type(metadata[name]) in (bool, int)
+                }
+            return summary
+    except subprocess.TimeoutExpired:
+        return {"failed": 1, "exit_code": 124, "reason": "timeout"}
+    except FileNotFoundError:
+        return {"failed": 1, "exit_code": 127, "reason": "executable-missing"}
+    except Exception:
+        pass
+    return {"failed": 1}
 
 
 def run_direct(
@@ -1441,7 +1516,9 @@ def run_direct(
         if note_id:
             result["note_id"] = note_id
             if action in BODY_ACTIONS:
-                _fleet_rag_upsert(request, note_id, env)
+                delivery = _fleet_rag_upsert(request, note_id, env)
+                if isinstance(delivery, dict):
+                    result["rag_delivery"] = delivery
         skipped = _pin_skipped(proc.stderr)
         if skipped:
             result["pin_skipped"] = skipped

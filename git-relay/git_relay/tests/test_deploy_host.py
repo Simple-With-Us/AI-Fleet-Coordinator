@@ -1,3 +1,4 @@
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,6 +62,129 @@ class LinuxHostTests(unittest.TestCase):
                 self.h.stop_for_recovery()
             resume.assert_called_once_with(expected)
             stop.assert_not_called()
+
+    def test_failed_unit_without_strays_counts_as_stopped(self):
+        # A crashed image (e.g. a new deployment that fails on import) leaves
+        # the unit failed with no main process: that is a stopped service,
+        # not "relay not active".  Regression: stop_for_recovery rejected
+        # this state, masking the original exception and blocking recovery.
+        shutil.rmtree(self.proc / "42")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertTrue(self.h.confirmed_stopped(None))
+            # Returns without demanding a live process to freeze or stop.
+            self.assertIsNone(self.h.stop_for_recovery())
+
+    def test_failed_unit_with_stray_process_refuses_recovery_stop(self):
+        # proc/42 from setUp carries the unit cgroup: it is a stray survivor
+        # of the crash and must keep recovery refused, named as such.
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertFalse(self.h.confirmed_stopped(None))
+            with self.assertRaises(TransactionError) as ctx:
+                self.h.stop_for_recovery()
+        self.assertEqual(str(ctx.exception), "failed unit retains live processes; guard retained")
+
+    def test_unreadable_extant_cgroup_fails_closed(self):
+        # An extant process whose cgroup cannot be read is not proof of no
+        # strays: the scan must refuse, keeping the guard retained.
+        (self.proc / "42" / "cgroup").unlink()
+        (self.proc / "42" / "cgroup").mkdir()  # extant but unreadable as a file
+        with self.assertRaises(TransactionError) as ctx:
+            self.h.stray_unit_processes()
+        self.assertIn("cannot prove no strays", str(ctx.exception))
+
+        # confirmed_stopped propagates the refusal instead of reporting stopped.
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with (
+            patch.object(self.h, "run_command", new=run),
+            self.assertRaises(TransactionError),
+        ):
+            self.h.confirmed_stopped(None)
+
+    def test_failed_before_auto_restart_is_never_stopped(self):
+        # systemd 259 leaves a crashed unit in failed/failed-before-auto-restart
+        # while the RestartUSec timer runs; recovery must not race the pending
+        # reactivation with a restore.
+        shutil.rmtree(self.proc / "42")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed-before-auto-restart\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertFalse(self.h.confirmed_stopped(None))
+            with self.assertRaises(TransactionError) as ctx:
+                self.h.stop_for_recovery()
+        self.assertEqual(
+            str(ctx.exception), "failed unit has a pending systemd action; guard retained"
+        )
+
+    def test_zombie_unit_process_is_not_a_stray(self):
+        (self.proc / "42" / "stat").write_text("42 (python) Z 1 0 0")
+
+        def run(args, **kw):
+            return SimpleNamespace(
+                returncode=0,
+                stdout="MainPID=0\nActiveState=failed\nSubState=failed\nWatchdogUSec=0\n",
+            )
+
+        with patch.object(self.h, "run_command", new=run):
+            self.assertTrue(self.h.confirmed_stopped(None))
+
+    def test_unreadable_stat_retains_stray_fail_closed(self):
+        (self.proc / "42" / "stat").unlink()
+        (self.proc / "42" / "stat").mkdir()
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+
+    def test_malformed_cgroup_line_fails_closed(self):
+        (self.proc / "42" / "cgroup").write_text("not-a-cgroup-line\n")
+        with self.assertRaises(TransactionError) as ctx:
+            self.h.stray_unit_processes()
+        self.assertIn("malformed cgroup line", str(ctx.exception))
+
+    def test_v1_root_and_colon_paths_parse(self):
+        # A v1 hierarchy root has an empty path; a path may contain a colon.
+        # Neither is malformed, and the colon path still matches the unit.
+        (self.proc / "42" / "cgroup").write_text(
+            "1:name=systemd:\n0::/system.slice/git-relay.service/with:colon\n"
+        )
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+        (self.proc / "42" / "cgroup").write_text("1:name=systemd:\n0::/user.slice\n")
+        self.h._stray_cache = None
+        self.assertEqual(self.h.stray_unit_processes(), [])
+
+    def test_subcgroup_descendant_counts_as_stray(self):
+        (self.proc / "42" / "cgroup").write_text("0::/system.slice/git-relay.service/spawned\n")
+        self.assertEqual(self.h.stray_unit_processes(), [42])
+
+    def test_stray_scan_ignores_other_units_and_vanishing_processes(self):
+        other = self.proc / "43"
+        other.mkdir()
+        (other / "cgroup").write_text("0::/system.slice/other.service\n")
+        gone = self.proc / "44"
+        gone.mkdir()
+        (gone / "cgroup").write_text("0::/system.slice/git-relay.service\n")
+        shutil.rmtree(gone)
+        self.assertEqual(self.h.stray_unit_processes(), [42])
 
     def test_hash_target_anchor(self):
         with self.assertRaises(TransactionError):
