@@ -79,8 +79,10 @@ MAX_LINK = 500
 #: The child's own output is scanned in memory and never kept:  a bounded tail of it, and
 #: only the typed code a documented signature maps to ever reaches a receipt.
 OUTPUT_SCAN_CAP = 8192
-#: How long the output reader is given to finish after the child is stopped.
-OUTPUT_JOIN_SECONDS = 1.0
+#: How long the output reader is given to finish after the child is gone.  The child has
+#: exited, so its stream is at its end and the reader finishes at once; the bound is there for
+#: the one case where something else still holds the pipe open.
+OUTPUT_JOIN_SECONDS = 5.0
 #: The limits an untrusted request is held to before any field of it is used:  an absolute
 #: byte cap on the request as it was parsed, how deep the value may nest, and how many nodes
 #: it may carry.  The raw body is capped one level up, by the CLI that reads it.
@@ -569,6 +571,10 @@ def deliver_local(
                 return WR.Delivery("unknown", "resume", code="resume-timeout")
             except Exception as exc:  # noqa: BLE001 - the child started, so its outcome is unknown
                 return WR.Delivery("unknown", "resume", code="resume-error-%s" % type(exc).__name__)
+            else:
+                # The child is gone, so its stream is at its end:  the reader drains what is
+                # left before the tail is read, so the last words are never missed.
+                reader.join(timeout=OUTPUT_JOIN_SECONDS)
             finally:
                 # Every path stops and reaps the child:  a turn that keeps running would hold
                 # the session lock this delivery already holds, and an interruption must not
