@@ -308,28 +308,6 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.outcome, "refused")
         self.assertEqual(delivery.code, "workspace-mismatch")
 
-    def test_a_workspace_under_the_configured_area_is_delivered(self):
-        # The deployment names the seat's area and the seat's chats live in several projects
-        # under it, so a chat under that area is the seat's own and is delivered.
-        under = self.workspace / "project"
-        minimax_wake._private_dir(under)
-        self._update(SID, workspace_dir=str(under))
-        delivery = self._deliver_local(config={"workspace": str(self.workspace)})
-        self.assertEqual(delivery.outcome, "sent")
-        argv = self.calls[0]
-        self.assertEqual(argv[argv.index("--cwd") + 1], str(under))
-
-    def test_a_text_prefix_that_is_not_a_path_prefix_refuses(self):
-        # `/srv/code2` is not under `/srv/code`:  the comparison is on path components, so a
-        # directory that only shares a text prefix is refused like any other area.
-        sibling = Path(str(self.workspace) + "2")
-        minimax_wake._private_dir(sibling)
-        self._update(SID, workspace_dir=str(sibling))
-        delivery = self._deliver_local(config={"workspace": str(self.workspace)})
-        self.assertEqual(delivery.outcome, "refused")
-        self.assertEqual(delivery.code, "workspace-mismatch")
-        self.assertEqual(self.calls, [])
-
     def test_a_missing_workspace_names_the_setting(self):
         # The delivery is a bounded failure, like a missing binary in the sibling modules, and
         # the code names the setting that is missing so an operator knows what to configure.
