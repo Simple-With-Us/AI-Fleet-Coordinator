@@ -157,6 +157,7 @@ class Base(unittest.TestCase):
         con.commit()
         con.close()
         self.calls: list[list[str]] = []
+        self.calls_kwargs: list[dict] = []
         self.children: list[FakeChild] = []
         fake_bin = self.home / "bin" / "zcode"
         fake_bin.parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +168,7 @@ class Base(unittest.TestCase):
     def _runner(self, exit_code: int = 0, output: bytes = b"", timeout: bool = False, child=None):
         def runner(argv, **kwargs):
             self.calls.append(list(argv))
+            self.calls_kwargs.append(dict(kwargs))
             made = child if child is not None else FakeChild(argv, exit_code, output, timeout)
             self.children.append(made)
             return made
@@ -503,6 +505,14 @@ class DeliverLocalTests(Base):
         self._deliver_local(timeout=True)
         self.assertTrue(self.children[0].killed)
         self.assertTrue(self.children[0].waited)
+
+    def test_the_child_is_started_in_its_own_process_group(self):
+        # The whole group is signalled when the turn ends, so a child that started children
+        # of its own leaves none behind.
+        self._deliver_local()
+        self.assertTrue(self.calls_kwargs)
+        for keywords in self.calls_kwargs:
+            self.assertTrue(keywords.get("start_new_session"))
 
     def test_a_child_that_cannot_be_stopped_does_not_hang_the_delivery(self):
         """A kill that does not take can never park the router on the session lock.

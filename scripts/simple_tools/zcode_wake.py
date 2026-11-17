@@ -46,12 +46,14 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import atexit
 import errno
 import fcntl
 import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -83,6 +85,8 @@ OUTPUT_SCAN_CAP = 8192
 #: exited, so its stream is at its end and the reader finishes at once; the bound is there for
 #: the one case where something else still holds the pipe open.
 OUTPUT_JOIN_SECONDS = 5.0
+#: How long the shutdown waits for one child to go away before it is killed outright.
+TERMINATE_WAIT_SECONDS = 5.0
 #: The limits an untrusted request is held to before any field of it is used:  an absolute
 #: byte cap on the request as it was parsed, how deep the value may nest, and how many nodes
 #: it may carry.  The raw body is capped one level up, by the CLI that reads it.
@@ -170,22 +174,66 @@ def _read_tail(stream: object, cap: int) -> tuple[bytearray, threading.Thread]:
     return buffer, thread
 
 
+#: Every child this module has started and not yet reaped, and the lock that guards them.
+#: The router is a long-running service, so a child that outlives its delivery would keep
+#: running behind a lock this delivery already holds, and a child that starts children of its
+#: own would leave them running too:  every child is started in its own process group, and
+#: the whole group is signalled.
+_CHILDREN: dict[int, Any] = {}
+_CHILDREN_LOCK = threading.Lock()
+#: Set when the service is going away:  a child registered after that is stopped at once.
+_SHUTDOWN = threading.Event()
+
+
+def _signal(child: Child, sig: int) -> None:
+    """Signal the child's whole process group, and the child itself as well.
+
+    The child was started in its own group, so the group signal reaches the children it
+    started too.  A child without a process group of its own is signalled on its own."""
+    pid = getattr(child, "pid", 0)
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.killpg(os.getpgid(pid), sig)
+        except (ProcessLookupError, OSError):
+            # The group is gone, or the child has no group:  the child itself is signalled.
+            pass
+    name = "terminate" if sig == signal.SIGTERM else "kill"
+    sender = getattr(child, name, None) or getattr(child, "kill", None)
+    if sender is None:
+        return
+    try:
+        sender()
+    except Exception:  # noqa: BLE001, S110 - the child never started, or it is already gone
+        pass
+
+
+def _register(child: Child) -> None:
+    """Keep the child, so a shutdown can stop it, and stop it at once if the shutdown began."""
+    with _CHILDREN_LOCK:
+        late = _SHUTDOWN.is_set()
+        if not late:
+            _CHILDREN[id(child)] = child
+    if late:
+        # A registration after the shutdown began never escapes the termination.
+        _signal(child, signal.SIGKILL)
+
+
+def _unregister(child: Child) -> None:
+    """The child is gone:  it is not the service's business any more."""
+    with _CHILDREN_LOCK:
+        _CHILDREN.pop(id(child), None)
+
+
 def _terminate(child: Child, timeout: float) -> None:
-    """Stop the child and reap it, and never raise:  the turn is over either way.
+    """Stop the child's whole group and reap it, and never raise:  the turn is over either way.
 
     Every wait here is bounded by the timeout the turn was given, and a child that does not
     go away after the first signal is killed outright, so a child that cannot be stopped can
     never park the router on the session lock forever.  A child that cannot be killed at all
     is left to the operating system:  the lock is released and the receipt is written, which
     is a better outcome than a delivery that never returns."""
-    for name in ("terminate", "kill"):
-        sender = getattr(child, name, None)
-        if sender is None:
-            continue
-        try:
-            sender()
-        except Exception:  # noqa: BLE001, S110 - the child never started, or it is already gone
-            pass
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        _signal(child, sig)
         try:
             child.wait(timeout=timeout)
             return
@@ -194,6 +242,19 @@ def _terminate(child: Child, timeout: float) -> None:
             continue
         except Exception:  # noqa: BLE001 - the child is gone, and nothing is left to reap
             return
+
+
+def _terminate_all() -> None:
+    """Stop every child this module started:  the service is going away."""
+    _SHUTDOWN.set()
+    with _CHILDREN_LOCK:
+        children = list(_CHILDREN.values())
+        _CHILDREN.clear()
+    for child in children:
+        _terminate(child, TERMINATE_WAIT_SECONDS)
+
+
+atexit.register(_terminate_all)
 
 
 def state_dir(env: Mapping[str, str]) -> Path:
@@ -567,7 +628,11 @@ def deliver_local(
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    # Its own process group, so the whole group can be signalled when the
+                    # turn ends:  a child that started children of its own leaves none behind.
+                    start_new_session=True,
                 )
+                _register(child)
             except OSError as exc:
                 # The turn never started:  the binary is missing or is not executable.
                 return WR.Delivery("failed", "resume", code="resume-%s" % type(exc).__name__)
@@ -594,6 +659,7 @@ def deliver_local(
                 # the session lock this delivery already holds, and an interruption must not
                 # leave it behind.
                 _terminate(child, timeout_seconds)
+                _unregister(child)
                 reader.join(timeout=OUTPUT_JOIN_SECONDS)
             output = bytes(tail)
 
