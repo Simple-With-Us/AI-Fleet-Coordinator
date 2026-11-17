@@ -367,6 +367,16 @@ Every seat gets a shell guard and a file guard (owner, Nov 6, 2026).  The file 
 - **Not covered:**  Grep and Glob, MCP file tools, and shell programs that read files (the shell guards cover their own patterns).  A later seat adds its own adapter, installer wiring, probes and Muster row on the same core.
 - Tests: `fleet_lanes.tests.test_file_guard` and `fleet_lanes.tests.test_install_tools.ClaudeFileGuardInstallTests`.
 
+### Z Code
+
+Z Code (seat `ZC`) runs the same two guards,  and the seat is declared in the hook command itself.
+
+- **Why the seat is in the command:**  Claude Code hands `AGENT_SEAT` to the hook process from its settings `env` block;  the Z Code runtime has no such block,  so a hook process would have no seat and the file guard would refuse every lane write.  The command carries it instead:  `env AGENT_SEAT=ZC <stable>/lane-guard-hook --format claude` for the shell group and  `env AGENT_SEAT=ZC <stable>/claude-file-guard-hook` for the file group.  A launcher's own seat still wins,  because the guard reads `AGENT_LAUNCH_SEAT` before `AGENT_SEAT`.
+- **Install:**  `apply zcode` (part of `all`) keeps the shell group and adds the file group,  matcher `Read|Write|Edit|MultiEdit|NotebookEdit|ApplyPatch` (`ZCODE_FILE_MATCHER`),  timeout 10 seconds;   a stale command of ours is corrected,   a shared group is reported.  `apply tools` never strips the seat,  because the command it writes is the command it verifies.
+- **Verify:**  `verify zcode` reads both groups back and runs the shell deny and allow probes plus the file probes (the same payloads `verify claude` sends),  so a file guard that stopped refusing a secret path fails.
+- **Not covered:**  Grep and Glob,  MCP file tools,  and shell programs that read files.  A Z Code session still needs `AGENT_SEAT` in its own environment for `lane new`,  which reads the seat from the caller and not from the hook.
+- Tests:  `fleet_lanes.tests.test_install_tools.ZcodeSeatTests`.
+
 ### Copilot CLI
 
 Copilot CLI reads hooks from JSON files under `~/.copilot/hooks/`.  The fleet's guard is a NEW file this tool owns, `~/.copilot/hooks/fleet-lane-guard.json` (version 1, one `hooks.PreToolUse` group, matcher `Bash`, one `type: command` hook running `<stable>/fleet-guard-hook --format claude` by absolute path, `timeoutSec` 5).  The PascalCase `PreToolUse` event gets Claude matcher semantics and reports the Claude tool name, which is exactly the payload the fleet hook already parses, so the deny is the Claude shape.
