@@ -1206,7 +1206,7 @@ class OneService(Settings):
             {
                 "AG": ("antigravity", "simple_tools.antigravity_wake", "router_platform", "deliver_request", uuid),
                 "CLAUDE": ("claude", "simple_tools.claude_wake", "make_platform", "_deliver_claude", uuid),
-                "CODEX": ("codex", "simple_tools.codex_wake", "router_platform", "deliver_request", uuid),
+                "CODEX": ("codex", "simple_tools.codex_wake", "make_platform", "deliver_request", uuid),
                 "MC": ("muse", "simple_tools.muse_wake", "router_platform", "deliver_request", uuid),
                 "ZC": ("zcode", "simple_tools.zcode_wake", "router_platform", "deliver_request",
                        r"^sess_[A-Za-z0-9._-]{1,123}$"),

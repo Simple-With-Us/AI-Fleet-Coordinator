@@ -1037,7 +1037,7 @@ class DaemonCheckTests(Case):
         # A seat the sample still routes through its inbox, so the http wake has no routine:
         # the seats the one router serves carry a routine in the sample already.
         answer, status = M.run_request(
-            self.request("apply", {"seat.CODEX.wake": "http", "seat.CODEX.budget": {"usd_per_day": 0.5}}),
+            self.request("apply", {"seat.KIMI.wake": "http", "seat.KIMI.budget": {"usd_per_day": 0.5}}),
             path=self.live,
         )
         self.assertEqual((status, answer["errorCode"]), (2, "check_failed"), answer)
