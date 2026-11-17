@@ -834,10 +834,6 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual("".join(preamble) + "".join("".join(b) for _, b in blocks), text)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SampleRoutingTests(unittest.TestCase):
     """The one rule for every seat:  a seat the router can serve wakes at the router, and a seat
     the router cannot serve does not.
@@ -883,3 +879,7 @@ class SampleRoutingTests(unittest.TestCase):
             if routine is None or routine.key_env != "WAKE_ROUTER_KEY":
                 continue
             self.assertTrue(self._installed(seat), "%s is routed at the router with no module" % seat)
+
+
+if __name__ == "__main__":
+    unittest.main()
