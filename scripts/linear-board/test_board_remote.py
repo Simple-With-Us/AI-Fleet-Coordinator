@@ -139,11 +139,13 @@ class Remote(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_a_content_part_of_the_wrong_shape_is_refused_before_it_is_read(self):
-        # The hosted's answer is untrusted:  a text part whose text is not a string, and a part
-        # that is not an object at all, are refused at the boundary and never read downstream.
+        # The hosted's answer is untrusted:  a text part whose text is not a string, a part of
+        # a type the board does not read, and a part that is not an object at all, are refused
+        # at the boundary and never read downstream.
         cases = (
             {"type": "text", "text": 7},
             {"type": "text"},
+            {"type": "image", "data": "AAAA"},
             "not a part",
         )
         for part in cases:
@@ -156,9 +158,9 @@ class Remote(unittest.TestCase):
                 self.assertIn("unexpected shape", err)
                 self.assertEqual(len(calls), 1)
 
-    def test_an_answer_with_a_part_the_board_does_not_read_is_still_read(self):
-        # The hosted may answer with an image beside the text:  the board reads the text and
-        # ignores the rest, so the answer is still a result.
+    def test_an_answer_with_a_part_the_board_does_not_read_is_refused(self):
+        # The board reads text parts and nothing else, so a part of another type is a shape it
+        # does not accept:  the answer is refused rather than half-read.
         body = json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -173,8 +175,8 @@ class Remote(unittest.TestCase):
             }
         ).encode()
         code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
-        self.assertEqual(code, 0)
-        self.assertIn("seat: ZC", out)
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
         self.assertEqual(len(calls), 1)
 
     def test_a_hosted_error_part_without_a_type_still_carries_its_code(self):
