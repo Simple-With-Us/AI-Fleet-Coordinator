@@ -1,6 +1,6 @@
 # Jay's Daily Coding-Related Activities
 
-_Generated 2026-11-17 03:19 CST · timezone America/Chicago_
+_Generated 2026-11-17 15:49 CST · timezone America/Chicago_
 
 Sources: merged PRs and issues opened/closed in verified public repositories.
 Agent names are stripped from titles; HTML site shows logos instead.
@@ -11,13 +11,23 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-17
 
-*3 PRs merged · 0 issues opened · 0 issues closed*
+*13 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** `MiniMax` [#2255](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2255): feat(wake): the — half of the wake router _(by jaywedgeworth22)_
+- **AFC** [#2270](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2270): fix: publish workflows through permission-aware Fleet Tools batch _(by jaywedgeworth22)_
 - **AFC** `MiniMax` [#2279](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2279): fix(fleet-lanes): declare the ZC seat in the Z Code guard hook commands _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2280](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2280): fix(letter): the — hook timeouts fit the runtime's cap _(by jaywedgeworth22)_
+- **AFC** `MiniMax` [#2281](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2281): Route every served seat through the one router _(by jaywedgeworth22)_
+- **AFC** [#2282](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2282): chore: net.dealdex 0.1.0 _(by jaywedgeworth22)_
+- **AFC** [#2286](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/2286): chore: record the fleet iOS versions in the manifest _(by jaywedgeworth22)_
 - **BF** [#2111](https://github.com/Simple-With-Us/BotFleet/pull/2111): Update non-major dependencies _(by renovate[bot])_
+- **BF** [#2112](https://github.com/Simple-With-Us/BotFleet/pull/2112): Update non-major dependencies _(by renovate[bot])_
+- **C** `Sentry` [#287](https://github.com/Simple-With-Us/Clutch/pull/287): Update dependency — to v9.34.0 _(by renovate[bot])_
+- **DD** [#603](https://github.com/Simple-With-Us/DealDex/pull/603): Update non-major dependencies _(by renovate[bot])_
+- **FL** [#218](https://github.com/Simple-With-Us/FleetLink/pull/218): deploy: run retired-secret cleanup in every secrets mode _(by jaywedgeworth22)_
+- **CC** [#527](https://github.com/Simple-With-Us/codecaps/pull/527): Update dependency getsentry/sentry-cocoa to from: "9.34.0" _(by renovate[bot])_
 
 ## 2026-11-16
 
@@ -1647,15 +1657,12 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-11-01
 
-*78 PRs merged · 0 issues opened · 0 issues closed*
+*75 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** [#1073](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1073): Mirror the handbook (Fleet-OPS 9af52633f91b) _(by jaywedgeworth22)_
-- **AFC** [#1219](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1219): chore: record com.socratictrade.ios 0.1.0 in the fleet iOS manifest _(by jaywedgeworth22)_
 - **AFC** [#1221](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1221): fix(git-relay): every current agent reaches both repo namespaces _(by jaywedgeworth22)_
-- **AFC** [#1222](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1222): needs_owner tests: scope the temp-file leak check to this run (AFC-519) _(by jaywedgeworth22)_
-- **AFC** [#1223](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1223): Keep the local Mac runner ban in AGENTS.md and lint it there _(by jaywedgeworth22)_
 - **AFC** [#1224](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1224): simple-chat edit keeps owner routing and accepts — to-owner (AFC-530) _(by jaywedgeworth22)_
 - **AFC** [#1226](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1226): Add The Token-Thrift Fleet Skill _(by jaywedgeworth22)_
 - **AFC** [#1227](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1227): listener: wake any registry chat a message tags, not only the newest rows (AFC-578) _(by jaywedgeworth22)_
@@ -1732,12 +1739,11 @@ Agent names are stripped from titles; HTML site shows logos instead.
 
 ## 2026-10-31
 
-*29 PRs merged · 0 issues opened · 0 issues closed*
+*28 PRs merged · 0 issues opened · 0 issues closed*
 
 ### Merged PRs
 
 - **AFC** [#1185](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1185): fix(operator): the daemon's own posts are tagged OPERATOR, not the seat's name _(by jaywedgeworth22)_
-- **AFC** [#1220](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1220): fix(recall): complete Linear replacement independent of retired registry _(by jaywedgeworth22)_
 - **BF** [#1428](https://github.com/Simple-With-Us/BotFleet/pull/1428): Add Native Saved Hosts And Servers Settings _(by jaywedgeworth22)_
 - **BF** [#1430](https://github.com/Simple-With-Us/BotFleet/pull/1430): Add Host Resource Reports, Storage Guards And Inventory _(by jaywedgeworth22)_
 - **BF** [#1435](https://github.com/Simple-With-Us/BotFleet/pull/1435): Compose The Native Headless Host With Durable Recovery _(by jaywedgeworth22)_

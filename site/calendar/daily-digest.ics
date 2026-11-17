@@ -11,15 +11,25 @@ REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261117
 DTEND;VALUE=DATE:20261118
-SUMMARY:Fleet: 3 merged · 0 opened · 0 closed
-DESCRIPTION:3 PRs merged · 0 issues opened · 0 issues closed\n\nMerged PR
- s:\n- [AI-Fleet-Coordinator#2255] (minimax) feat(wake): the — half of th
- e wake router\n- [AI-Fleet-Coordinator#2279] (minimax) fix(fleet-lanes): d
- eclare the ZC seat in the Z Code guard hook commands\n- [BotFleet#2111] Up
- date non-major dependencies
+SUMMARY:Fleet: 13 merged · 0 opened · 0 closed
+DESCRIPTION:13 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+ Rs:\n- [AI-Fleet-Coordinator#2255] (minimax) feat(wake): the — half of t
+ he wake router\n- [AI-Fleet-Coordinator#2270] fix: publish workflows throu
+ gh permission-aware Fleet Tools batch\n- [AI-Fleet-Coordinator#2279] (mini
+ max) fix(fleet-lanes): declare the ZC seat in the Z Code guard hook comman
+ ds\n- [AI-Fleet-Coordinator#2280] (minimax) fix(letter): the — hook time
+ outs fit the runtime's cap\n- [AI-Fleet-Coordinator#2281] (minimax) Route 
+ every served seat through the one router\n- [AI-Fleet-Coordinator#2282] ch
+ ore: net.dealdex 0.1.0\n- [AI-Fleet-Coordinator#2286] chore: record the fl
+ eet iOS versions in the manifest\n- [BotFleet#2111] Update non-major depen
+ dencies\n- [BotFleet#2112] Update non-major dependencies\n- [Clutch#287] (
+ sentry) Update dependency — to v9.34.0\n- [DealDex#603] Update non-major
+  dependencies\n- [FleetLink#218] deploy: run retired-secret cleanup in eve
+ ry secrets mode\n- [codecaps#527] Update dependency getsentry/sentry-cocoa
+  to from: "9.34.0"
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-17
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -27,7 +37,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
 SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
@@ -84,7 +94,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -145,7 +155,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -206,7 +216,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -264,7 +274,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -327,7 +337,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -395,7 +405,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -459,7 +469,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -521,7 +531,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -591,7 +601,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 125 merged · 0 opened · 0 closed
@@ -658,7 +668,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 92 merged · 0 opened · 0 closed
@@ -717,7 +727,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -777,7 +787,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 65 merged · 0 opened · 0 closed
@@ -836,7 +846,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 152 merged · 0 opened · 0 closed
@@ -898,7 +908,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 107 merged · 0 opened · 0 closed
@@ -958,22 +968,18 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261101
 DTEND;VALUE=DATE:20261102
-SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
-DESCRIPTION:78 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 75 merged · 0 opened · 0 closed
+DESCRIPTION:75 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#1073] Mirror the handbook (Fleet-OPS 9af52633
- f91b)\n- [AI-Fleet-Coordinator#1219] chore: record com.socratictrade.ios 0
- .1.0 in the fleet iOS manifest\n- [AI-Fleet-Coordinator#1221] fix(git-rela
- y): every current agent reaches both repo namespaces\n- [AI-Fleet-Coordina
- tor#1222] needs_owner tests: scope the temp-file leak check to this run (A
- FC-519)\n- [AI-Fleet-Coordinator#1223] Keep the local Mac runner ban in AG
- ENTS.md and lint it there\n- [AI-Fleet-Coordinator#1224] simple-chat edit 
- keeps owner routing and accepts — to-owner (AFC-530)\n- [AI-Fleet-Coordi
- nator#1226] Add The Token-Thrift Fleet Skill\n- [AI-Fleet-Coordinator#1227
- ] listener: wake any registry chat a message tags\, not only the newest ro
- ws (AFC-578)\n- [AI-Fleet-Coordinator#1228] (cursor) Slim The Always-On 
+ f91b)\n- [AI-Fleet-Coordinator#1221] fix(git-relay): every current agent r
+ eaches both repo namespaces\n- [AI-Fleet-Coordinator#1224] simple-chat edi
+ t keeps owner routing and accepts — to-owner (AFC-530)\n- [AI-Fleet-Coor
+ dinator#1226] Add The Token-Thrift Fleet Skill\n- [AI-Fleet-Coordinator#12
+ 27] listener: wake any registry chat a message tags\, not only the newest 
+ rows (AFC-578)\n- [AI-Fleet-Coordinator#1228] (cursor) Slim The Always-On 
  — Sentence-Gap Rule\n- [AI-Fleet-Coordinator#1229] host: keep Coolify/Pu
  shover tokens out of curl argv (fleet-health-recover)\n- [AI-Fleet-Coordin
  ator#1230] sentence gap: no gap where a sentence ends its line (AFC-510)\n
@@ -1010,7 +1016,10 @@ DESCRIPTION:78 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
   on hosted ships so the version manifest publishes\n- [BotFleet#1465] feat
  (ios): readable question cards with a typed answer\n- [BotFleet#1467] Wake
   A Classify Trigger Once Per PR State\n- [BotFleet#1469] routines: bound r
- un history fairly across routines (BF-2477)\n  … +38 more
+ un history fairly across routines (BF-2477)\n- [BotFleet#1470] Clarify ACP
+  engine and voice settings copy for non-developers\n- [BotFleet#1471] iOS:
+  preserve Latest model alias in picker and catalog display\n- [BotFleet#14
+ 72] ui: restore ACP engine in computer and VPS copy\n  … +35 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-01
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1018,41 +1027,39 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-31@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261031
 DTEND;VALUE=DATE:20261101
-SUMMARY:Fleet: 29 merged · 0 opened · 0 closed
-DESCRIPTION:29 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 28 merged · 0 opened · 0 closed
+DESCRIPTION:28 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#1185] fix(operator): the daemon's own posts a
- re tagged OPERATOR\, not the seat's name\n- [AI-Fleet-Coordinator#1220] fi
- x(recall): complete Linear replacement independent of retired registry\n- 
- [BotFleet#1428] Add Native Saved Hosts And Servers Settings\n- [BotFleet#1
- 430] Add Host Resource Reports\, Storage Guards And Inventory\n- [BotFleet
- #1435] Compose The Native Headless Host With Durable Recovery\n- [BotFleet
- #1436] Add Amp orb lifecycle files so fresh orbs start ready\n- [BotFleet#
- 1437] Plan BF-2444: unified conversation per bot\, browsing during work\, 
- context policy\n- [BotFleet#1438] Reuse the resource report's bracketed st
- orage observation\n- [BotFleet#1439] Update dependency posthog-js to v1.43
- 8.22\n- [BotFleet#1440] Update non-major dependencies\n- [BotFleet#1441] H
- ealth audit: validated port env\, visible resume failures\, tightened gate
- s\n- [BotFleet#1442] Update dependency postcss to v8.5.32\n- [BotFleet#144
- 3] Update dependency posthog-js to v1.438.24\n- [BotFleet#1444] fix(deploy
- ): resolve serving alias for production baseline\n- [BotFleet#1445] Update
-  pnpm to v12.16.0\n- [Congress.Trade#2910] Add Senate PTR Intake Route for
-  Mac eFD Fetcher Rows (CT-2442)\n- [Congress.Trade#2912] Force minimatch ^
- 11 via npm overrides to clear npm audit\n- [Congress.Trade#2913] Update no
- n-major dependencies\n- [Congress.Trade#2915] Update non-major dependencie
- s\n- [Congress.Trade#2916] Update non-major dependencies\n- [ContactLogo#2
- 81] chore(deps): update dependency @tanstack/react-query to v5.105.0\n- [C
- ontactLogo#282] chore(deps): update non-major dependencies\n- [ContactLogo
- #283] chore(deps): update dependency better-auth to v1.7.14\n- [FleetLink#
- 156] fix(worker): reject invalid requests before storage work (FL-76)\n- [
- FleetLink#157] feat(worker): creator-controlled team-only bot sharing\n- [
- Socratic-Trade#4971] fix(benchmark): Alpaca Paper vs-S&P parity via broker
-  equity history\n- [Socratic-Trade#4972] Update non-major dependencies\n- 
- [Usage-Monitor#1852] fix(deps): review minimatch security update (UM-1647)
- \n- [codecaps#344] fix(snapshot): finish queued writes without blocking qu
- it (CC-196)
+ re tagged OPERATOR\, not the seat's name\n- [BotFleet#1428] Add Native Sav
+ ed Hosts And Servers Settings\n- [BotFleet#1430] Add Host Resource Reports
+ \, Storage Guards And Inventory\n- [BotFleet#1435] Compose The Native Head
+ less Host With Durable Recovery\n- [BotFleet#1436] Add Amp orb lifecycle f
+ iles so fresh orbs start ready\n- [BotFleet#1437] Plan BF-2444: unified co
+ nversation per bot\, browsing during work\, context policy\n- [BotFleet#14
+ 38] Reuse the resource report's bracketed storage observation\n- [BotFleet
+ #1439] Update dependency posthog-js to v1.438.22\n- [BotFleet#1440] Update
+  non-major dependencies\n- [BotFleet#1441] Health audit: validated port en
+ v\, visible resume failures\, tightened gates\n- [BotFleet#1442] Update de
+ pendency postcss to v8.5.32\n- [BotFleet#1443] Update dependency posthog-j
+ s to v1.438.24\n- [BotFleet#1444] fix(deploy): resolve serving alias for p
+ roduction baseline\n- [BotFleet#1445] Update pnpm to v12.16.0\n- [Congress
+ .Trade#2910] Add Senate PTR Intake Route for Mac eFD Fetcher Rows (CT-2442
+ )\n- [Congress.Trade#2912] Force minimatch ^11 via npm overrides to clear 
+ npm audit\n- [Congress.Trade#2913] Update non-major dependencies\n- [Congr
+ ess.Trade#2915] Update non-major dependencies\n- [Congress.Trade#2916] Upd
+ ate non-major dependencies\n- [ContactLogo#281] chore(deps): update depend
+ ency @tanstack/react-query to v5.105.0\n- [ContactLogo#282] chore(deps): u
+ pdate non-major dependencies\n- [ContactLogo#283] chore(deps): update depe
+ ndency better-auth to v1.7.14\n- [FleetLink#156] fix(worker): reject inval
+ id requests before storage work (FL-76)\n- [FleetLink#157] feat(worker): c
+ reator-controlled team-only bot sharing\n- [Socratic-Trade#4971] fix(bench
+ mark): Alpaca Paper vs-S&P parity via broker equity history\n- [Socratic-T
+ rade#4972] Update non-major dependencies\n- [Usage-Monitor#1852] fix(deps)
+ : review minimatch security update (UM-1647)\n- [codecaps#344] fix(snapsho
+ t): finish queued writes without blocking quit (CC-196)
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-10-31
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1060,7 +1067,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-30@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261030
 DTEND;VALUE=DATE:20261031
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -1109,7 +1116,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-29@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261029
 DTEND;VALUE=DATE:20261030
 SUMMARY:Fleet: 108 merged · 0 opened · 0 closed
@@ -1172,7 +1179,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-28@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261028
 DTEND;VALUE=DATE:20261029
 SUMMARY:Fleet: 38 merged · 0 opened · 0 closed
@@ -1227,7 +1234,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-27@AI-Fleet-Coordinator
-DTSTAMP:20261117T091952Z
+DTSTAMP:20261117T214928Z
 DTSTART;VALUE=DATE:20261027
 DTEND;VALUE=DATE:20261028
 SUMMARY:Fleet: 60 merged · 0 opened · 0 closed
