@@ -180,15 +180,17 @@ creds = "env"                     # ZULIP_CLAUDE_EMAIL, ZULIP_CLAUDE_API_KEY
 wake = "http"
 routine = { url_env = "CLAUDE_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
-# CODEX has its platform module (simple_tools/codex_wake.py), so the one wake router can serve it
-# like every other seat with a module.  It keeps its inbox wake until that path is deployed and
-# verified live:  a seat moves to the router only after its own path has answered a real wake, and
-# the working path is never removed before the replacement has answered one.  The cutover is in
+# CODEX has its platform module (simple_tools/codex_wake.py), so the one wake router serves it
+# like every other seat with a module:  the router owns the capture, the target selection, the
+# durable queue and the receipt, and the seat's own path answers the wake.  The seat moved to
+# the router only after its own path had answered a real wake, and the working path was not
+# removed before the replacement had answered one.  The cutover is in
 # docs/protocols/codex-shared-router.md.
 [seat.CODEX]
 instance = "server"
 creds = "env"                     # ZULIP_CODEX_EMAIL, ZULIP_CODEX_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "CODEX_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.AG]
 instance = "server"
@@ -237,16 +239,17 @@ instance = "server"
 creds = "env"                     # ZULIP_OPENCODE_EMAIL, ZULIP_OPENCODE_API_KEY
 wake = "inbox"
 
-# ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md):  POST simple-tools-wake/1 with
-# Authorization: Bearer <ZC_ROUTINE_KEY> to ZC_ROUTINE_URL, the bridge's tailnet URL on this host.  The key is the
-# one in Fleet-OPS /zulip, read through the listener's secondary project read (infisical_env.py
-# LISTENER_READ_CODES);  the URL is in AFC prod /zulip.  Until both are set the wake is logged routine-unready and
-# dropped, and capture is unchanged.
+# ZC has its platform module (simple_tools/zcode_wake.py), so the one wake router serves it like
+# every other seat with a module:  the router owns the capture, the target selection, the durable
+# queue and the receipt, and the seat's own path answers the wake.  The seat moved to the router
+# only after its own path had answered a real wake.  The legacy bridge's own URL stays in AFC prod
+# /zulip under ZC_BRIDGE_ROUTINE_URL, so a rollback has a value to point at, and its own key stays
+# in Fleet-OPS /zulip.  The cutover is in docs/protocols/zcode-wakes.md.
 [seat.ZC]
 instance = "server"
 creds = "env"                     # ZULIP_ZC_EMAIL, ZULIP_ZC_API_KEY
 wake = "http"
-routine = { url_env = "ZC_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
+routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.KIMI]
 instance = "server"

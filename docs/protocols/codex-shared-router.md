@@ -117,14 +117,15 @@ facts, and the delivery reads them from there:  one file, one place the deployme
 them, and the same file the service reads.  The file is read once per change of that file,
 so a delivery attempt never costs a parse of the deployment's configuration.
 
-## The cutover, and what is not switched yet
+## The cutover
 
-The sample `scripts/simple_tools/server/listener.toml` still routes CODEX through its inbox.
-That is deliberate:  a seat moves to the router only after its own path is deployed and
-verified live, and the working path is never removed before the replacement has answered a
-real wake.
+The cutover was done in this order, and the sample
+`scripts/simple_tools/server/listener.toml` now routes CODEX at the one router with the one
+bearer the router checks.  A seat moves to the router only after its own path is deployed
+and verified live, and the working path is never removed before the replacement has answered
+a real wake.
 
-The cutover, when it is done, is these four steps, in this order.
+The steps, in this order.
 
 1.  Write the pinned profile and the pinned owner account into the local settings file, as
     above.
@@ -136,6 +137,17 @@ The cutover, when it is done, is these four steps, in this order.
 4.  Prove it end to end:  mention @CODEX in a test topic, and the router's receipt
     (`/receipt/CODEX/<wake id>`) shows the picked session and a delivered or an explicitly
     unsettled outcome.
+
+What the cutover proved, on the day it was done.  The router's release on the server
+carries `codex_wake.py`, `/health/CODEX` answers `healthy` with `delivery` on, and the seat
+is in `WAKE_ROUTER_DELIVERY_SEATS`.  A canary wake posted to the router's front with
+the router's own bearer was picked by the letter, and the delivery took the ssh route
+to the Mac (`route: ssh:codex-desktop`) and was answered by the Mac-side handler.  What the
+delivery proves next depends on the target:  a chat the store does not show as an
+interactive chat is refused with `not-interactive-chat` before anything is enqueued, and that
+refusal is the platform's own contract, not a routing failure.  A chat that the Codex
+Desktop app has loaded is the only target that can take the wake, so the delivery proof
+needs that app running with the chat open.
 
 ## The bounded JSON
 

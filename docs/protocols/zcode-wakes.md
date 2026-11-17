@@ -58,7 +58,7 @@ does not work never leaves the seat without a route.
     reads it, and the environment is read once at the container's start, so the container is
     restarted after the names are minted.  The seat's own binding is named here, so the
     operator knows what the cutover starts from:  the sample's `[seat.ZC]` block declares
-    `wake = "http"` with the bridge's routine, and the live file on the server still holds
+    `wake = "http"` with the router's routine, and the live file on the server still holds
     `wake = "inbox"`, which is the capture the seat has today.  Nothing in the live
     listener changes in this step.
 2.  Deploy the router release that carries `zcode_wake.py` to the server, and prove the seat
@@ -83,11 +83,11 @@ does not work never leaves the seat without a route.
     `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`
     are the bridge's own values and were never withdrawn, so the live `[seat.ZC]` block goes
     back to `wake = "http"` with `routine = { url_env = "ZC_BRIDGE_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    which is the legacy path the sample declares, and the container is restarted:  the
-    environment is read once at the start, so a reload alone would leave the routine unset and
-    the seat would not be woken at all.  The capture the seat has today comes back without
-    any of that:  `wake = "inbox"` and a reload alone put the seat back on the live file's
-    own binding.
+    which is the legacy path the sample declared before the cutover, and the container is
+    restarted:  the environment is read once at the start, so a reload alone would leave the
+    routine unset and the seat would not be woken at all.  The capture the seat has today
+    comes back without any of that:  `wake = "inbox"` and a reload alone put the seat back
+    on the live file's own binding.
 Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
 never run one session at the same time, and its dedupe ledger is replaced by the router's own
