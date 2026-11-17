@@ -172,10 +172,13 @@ wake = "inbox"
 # needed, is a signal from this listener to a process on the Mac (owner:  "the server's listener and router can
 # send a signal to a Mac based wake process if necessary for wake delivery").  Each reads ZULIP_<CODE>_EMAIL and
 # ZULIP_<CODE>_API_KEY.
+# The seats the one wake router serves:  their wake goes to the router's front,  and the one
+# bearer the router checks is WAKE_ROUTER_KEY (one name, one home),  not a seat's own key. 
 [seat.CLAUDE]
 instance = "server"
 creds = "env"                     # ZULIP_CLAUDE_EMAIL, ZULIP_CLAUDE_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "CLAUDE_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.CODEX]
 instance = "server"
@@ -185,7 +188,8 @@ wake = "inbox"
 [seat.AG]
 instance = "server"
 creds = "env"                     # ZULIP_AG_EMAIL, ZULIP_AG_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "AG_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.CURSOR]
 instance = "server"
@@ -198,7 +202,8 @@ wake = "inbox"
 instance = "server"
 enabled = true
 creds = "env"                     # ZULIP_GROK_EMAIL, ZULIP_GROK_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "GROK_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.CLUTCH]
 instance = "server"
@@ -213,12 +218,14 @@ wake = "inbox"
 [seat.MM]
 instance = "server"
 creds = "env"                     # ZULIP_MM_EMAIL, ZULIP_MM_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "MM_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.MC]
 instance = "server"
 creds = "env"                     # ZULIP_MC_EMAIL, ZULIP_MC_API_KEY
-wake = "inbox"
+wake = "http"
+routine = { url_env = "MC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 
 [seat.OPENCODE]
 instance = "server"

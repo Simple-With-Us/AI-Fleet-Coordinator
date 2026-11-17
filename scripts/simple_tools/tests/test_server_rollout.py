@@ -834,5 +834,46 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual("".join(preamble) + "".join("".join(b) for _, b in blocks), text)
 
 
+class SampleRoutingTests(unittest.TestCase):
+    """The one rule for every seat:  a seat the router can serve wakes at the router, and a seat
+    the router cannot serve does not.
+
+    The platform table is `simple_tools.wake_service.BUILDERS`, the one table on both hosts, and a
+    seat's platform module is the thing that decides whether the router can serve it.  The sample
+    routes a seat at the router when its routine's key is the one bearer the router checks
+    (`WAKE_ROUTER_KEY`);  a seat with no module must not be routed there, because the router
+    answers it `not-installed` and the wake is lost instead of queued.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.cfg = C.from_dict(tomllib.loads((SERVER_DIR / "listener.toml").read_text()))
+        from simple_tools import wake_service as SVC
+
+        self.builders = SVC.BUILDERS
+        self.served = SVC.installed_seats()
+
+    def _installed(self, seat: str) -> bool:
+        """Whether this seat's platform module is on this host, which is what the router serves."""
+        return seat in self.served
+
+    def test_every_seat_the_router_can_serve_wakes_at_the_router(self) -> None:
+        for seat, entry in sorted(self.builders.items()):
+            if not self._installed(seat):
+                continue
+            seat_cfg = self.cfg.seats.get(seat)
+            self.assertIsNotNone(seat_cfg, seat)
+            self.assertEqual(seat_cfg.wake, "http", seat)
+            self.assertIsNotNone(seat_cfg.routine, seat)
+            self.assertEqual(seat_cfg.routine.key_env, "WAKE_ROUTER_KEY", seat)
+
+    def test_no_seat_without_a_module_is_routed_at_the_router(self) -> None:
+        for seat, seat_cfg in sorted(self.cfg.seats.items()):
+            routine = getattr(seat_cfg, "routine", None)
+            if routine is None or routine.key_env != "WAKE_ROUTER_KEY":
+                continue
+            self.assertTrue(self._installed(seat), "%s is routed at the router with no module" % seat)
+
+
 if __name__ == "__main__":
     unittest.main()

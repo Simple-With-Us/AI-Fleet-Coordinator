@@ -32,6 +32,7 @@ from simple_tools import config as C
 from simple_tools import launchd
 from simple_tools import live as L
 from simple_tools import service_identity as S
+from simple_tools import wake_service as WS
 from simple_tools.tests.fake_routine import FakeRoutine
 from simple_tools.tests.harness import TWO_INSTANCE_PARTITION, write_rc
 from simple_tools.tests.listener_harness import ListenerHarness, SYNTHETIC_STREAM_ID
@@ -58,6 +59,9 @@ MAC_CLI_SEATS = [
     "CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC", "OPENCODE", "ZC", "KIMI", "AMP",
 ]
 MAC_CLI_DISABLED = ["AMP"]
+# The seats the one wake router serves:  the platform table (the one table on both hosts) says
+# which seats have a platform module here, and the router can serve only those.
+ROUTER_SEATS = WS.installed_seats()
 # A lone seat (ZC) naming the router's bearer in another role (OPS-1048):  its error and reason.
 LONE_BEARER_ERROR = (
     "environment variable WAKE_ROUTER_KEY is the wake router's bearer and may be named only as a "
@@ -1604,7 +1608,22 @@ class PartitionTests(ServerHarness):
         for seat in MAC_CLI_SEATS:
             seat_cfg = server.seats.get(seat) or server.disabled[seat]
             code = C.env_code(seat)
-            if seat == "ZC":
+            if seat in ROUTER_SEATS:
+                # The seats the one wake router serves (the platform table says which, and a seat
+                # with no module is not one of them) wake at the router's front, with the one
+                # bearer the router checks and the per-seat routine URL that names the front.
+                self.assertEqual(
+                    (seat_cfg.wake, seat_cfg.creds, seat_cfg.instance),
+                    ("http", "env", "server"),
+                    "%s wakes at the one router" % seat,
+                )
+                routine = seat_cfg.routine
+                self.assertEqual(
+                    (routine.url_env, routine.key_env, routine.auth, routine.header, routine.method),
+                    ("%s_ROUTINE_URL" % seat, C.ROUTER_BEARER_ENV, "bearer", "Authorization", "POST"),
+                    "%s names the router's front and the router's bearer" % seat,
+                )
+            elif seat == "ZC":
                 # ZC is woken through its wake bridge (docs/protocols/zcode-wakes.md), with the bridge's
                 # bearer, so it is the one Mac CLI seat with a routine.
                 self.assertEqual(

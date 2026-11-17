@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import os
 import re
 import signal
@@ -113,6 +114,25 @@ BUILDERS: dict[str, Builder] = {
     # A live Grok TUI session id is a UUID, so the pattern is UUID_SESSION.
     "GROK": Builder("grok-leader", "simple_tools.grok_wake", session_re=UUID_SESSION),
 }
+
+
+def installed_seats(builders: Mapping[str, Builder] | None = None) -> set[str]:
+    """The seats whose platform module is on this host, so the one router can serve them.
+
+    A module that is there but broken still counts:  the file is present, so the seat is served
+    and the router reports the error for it.  Only a module that is not there leaves the seat
+    unserved, and an unserved seat's wake is queued at its inbox instead of lost at the router.
+    The rule is here, beside the one platform table, so the sample routing and the router never
+    disagree about which seats the router serves."""
+    table = BUILDERS if builders is None else builders
+    served: set[str] = set()
+    for seat, builder in table.items():
+        try:
+            if importlib.util.find_spec(builder.module) is not None:
+                served.add(seat)
+        except (ImportError, ValueError):
+            continue
+    return served
 
 
 def by_platform(name: object) -> Builder | None:
