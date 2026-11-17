@@ -121,7 +121,7 @@ NOT_NARROWABLE = {"retry_backoff": RETRY_BACKOFF, "mac_ssh": MAC_SSH}
 #: The names the local file carries that are not settings:  facts about one host, or about one
 #: platform, which one Infisical value cannot hold.  A seat that does not have one of them
 #: ignores it.
-HOST_FACTS = ("local_host", "claude_bin", "workspace", "mcode_bin", "mcode_model")
+HOST_FACTS = ("local_host", "claude_bin", "workspace", "mcode_bin", "mcode_model", "zcode_bin")
 # The local file's one key that is not a setting:  seat tags, and it can only remove seats.
 LOCAL_SEATS = "delivery_seats"
 JOIN_SECONDS = 10  # longer than one fleet_knobs fetch can take
