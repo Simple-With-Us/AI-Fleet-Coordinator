@@ -1795,15 +1795,27 @@ def muse_owner_actions(paths: Paths) -> list:
     ]
 
 
-def hook_command(paths: Paths, fmt: str, seat: str = "") -> str:
-    """The exact string written into a platform config.
+def seat_prefix(seat: str) -> str:
+    """The `env` prefix that gives a hook process a seat.
 
     A platform whose runtime has no settings env block cannot hand the seat to the hook process the way
-    Claude Code does,  so the seat is declared in the hook command itself (Z Code).  The command is a shell
-    string there,  so the shell that runs it reads the `env` prefix,  and a launcher's own seat still wins,
-    because the guard reads AGENT_LAUNCH_SEAT before AGENT_SEAT."""
+    Claude Code does,  so the seat travels in the hook command itself (Z Code).  The command is a shell
+    string there,  so the shell that runs it reads the prefix.
+
+    The seat the session already declares wins:  a launcher's assignment,  then an ambient AGENT_SEAT,  then
+    the chat tag,  and only a session that declares none of them gets the platform default.  The prefix
+    never overrides a session's own seat,  so a Z Code session that runs for another seat stays that seat.
+    The guard reads AGENT_LAUNCH_SEAT before AGENT_SEAT,  so a launched session keeps its seat either way.
+    """
+    return (
+        'env AGENT_SEAT="${AGENT_LAUNCH_SEAT:-${AGENT_SEAT:-${AGENT_TAG:-' + seat + '}}}"'
+    )
+
+
+def hook_command(paths: Paths, fmt: str, seat: str = "") -> str:
+    """The exact string written into a platform config."""
     command = f"{shlex.quote(paths.hook_shim)} --format {fmt}"
-    return f"env AGENT_SEAT={seat} {command}" if seat else command
+    return f"{seat_prefix(seat)} {command}" if seat else command
 
 
 def render_minimax_hook_shim(*, volume: str | None = None) -> str:
@@ -5020,6 +5032,7 @@ def probe_claude_files(
             ("Read", "file_path", os.path.join(home, ".env"), True),
             ("Write", "file_path", integration, True),
             ("Edit", "file_path", secret, True),
+            ("ApplyPatch", "file_path", secret, True),
             ("MultiEdit", "file_path", secret, True),
             ("NotebookEdit", "notebook_path", secret + ".ipynb", True),
             ("Read", "file_path", integration, False),
@@ -5062,10 +5075,11 @@ def zcode_file_hook_command(paths: Paths, seat: str = "") -> str:
     """The exact string written into the Z Code file-guard group.
 
     It takes no --format:  the deny is Claude's,  which is the shape Z Code delivers.  The seat is in the
-    command,  because the Z Code runtime has no settings env block to put it in.
+    command,  because the Z Code runtime has no settings env block to put it in,  and it is a default the
+    session's own seat beats (see seat_prefix).
     """
     command = shlex.quote(paths.claude_file_shim)
-    return f"env AGENT_SEAT={seat} {command}" if seat else command
+    return f"{seat_prefix(seat)} {command}" if seat else command
 
 
 def locate_zcode_files(doc: dict) -> list[Entry]:
@@ -5089,9 +5103,11 @@ def locate_zcode_files(doc: dict) -> list[Entry]:
         raise ShapeError(f"'hooks.events.{plat.event}' is not a list")
     out: list[Entry] = []
     for gi, group in enumerate(groups):
-        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(group, dict):
+            raise ShapeError(f"'hooks.events.{plat.event}[{gi}]' is not an object")
+        inner = group.get("hooks")
         if not isinstance(inner, list):
-            continue
+            raise ShapeError(f"'hooks.events.{plat.event}[{gi}].hooks' is not a list")
         for hi, hook in enumerate(inner):
             if not (isinstance(hook, dict) and is_claude_file_hook(hook.get("command"))):
                 continue

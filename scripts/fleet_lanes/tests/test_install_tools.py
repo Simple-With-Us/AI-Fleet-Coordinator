@@ -7253,7 +7253,8 @@ class ZcodeSeatTests(World):
         self.assertEqual(len(shell), 1)
         command = shell[0]["hooks"][0]["command"]
         self.assertEqual(command, T.hook_command(self.paths, "claude", "ZC"))
-        self.assertTrue(command.startswith("env AGENT_SEAT=ZC "), command)
+        self.assertTrue(command.startswith(T.seat_prefix("ZC")), command)
+        self.assertIn("AGENT_TAG:-ZC", command)
 
     def test_the_file_guard_group_carries_the_seat(self) -> None:
         self.install(("zcode",))
@@ -7262,14 +7263,16 @@ class ZcodeSeatTests(World):
         self.assertEqual(groups[0]["matcher"], T.ZCODE_FILE_MATCHER)
         command = groups[0]["hooks"][0]["command"]
         self.assertEqual(command, T.zcode_file_hook_command(self.paths, "ZC"))
-        self.assertTrue(command.startswith("env AGENT_SEAT=ZC "), command)
+        self.assertTrue(command.startswith(T.seat_prefix("ZC")), command)
+        self.assertIn("AGENT_TAG:-ZC", command)
 
     def test_a_command_without_the_seat_is_updated_and_then_stable(self) -> None:
         self.install(("zcode",))
         doc = self.load("zcode")
+        prefix = T.seat_prefix("ZC")
         for group in doc["hooks"]["events"]["PreToolUse"]:
             for hook in group["hooks"]:
-                hook["command"] = hook["command"].replace("env AGENT_SEAT=ZC ", "")
+                hook["command"] = hook["command"].replace(prefix, "")
         write_json(self.config("zcode"), doc)
         plan = T.plan_platform(T.PLATFORMS["zcode"], self.paths)
         self.assertEqual(plan.action, "update")
@@ -7278,7 +7281,7 @@ class ZcodeSeatTests(World):
         for group in self.zcode_groups():
             for hook in group["hooks"]:
                 if T.is_ours(hook.get("command")) or T.is_claude_file_hook(hook.get("command")):
-                    self.assertIn("env AGENT_SEAT=ZC ", hook["command"])
+                    self.assertTrue(hook["command"].startswith(prefix), hook["command"])
         again = T.apply_platform(T.PLATFORMS["zcode"], self.paths, now=lambda: STAMP, shim_proven=True)
         self.assertEqual(again.status, "unchanged", again)
 
@@ -7312,6 +7315,27 @@ class ZcodeSeatTests(World):
                     hook["command"] = "/bin/true # claude-file-guard-hook"
         write_json(self.config("zcode"), doc)
         self.assertFails(self.verify("zcode"), "Read/probe-placeholder/deny")
+
+    def test_the_seat_in_the_command_is_a_default_the_session_beats(self) -> None:
+        """The prefix must not override a seat the session already declares (Kody on #2279)."""
+        prefix = T.seat_prefix("ZC")
+        cases = (
+            ({}, "ZC"),
+            ({"AGENT_SEAT": "CLAUDE"}, "CLAUDE"),
+            ({"AGENT_TAG": "CODEX"}, "CODEX"),
+            ({"AGENT_LAUNCH_SEAT": "GROK"}, "GROK"),
+            ({"AGENT_SEAT": "CLAUDE", "AGENT_TAG": "CODEX"}, "CLAUDE"),
+        )
+        for env, want in cases:
+            with self.subTest(env=env):
+                out = subprocess.run(
+                    ["/bin/sh", "-c", prefix + " sh -c 'printf %s \"$AGENT_SEAT\"'"],
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, **env},
+                    timeout=30,
+                )
+                self.assertEqual(out.stdout, want)
 
     def test_the_merge_never_touches_another_hook(self) -> None:
         doc = {
