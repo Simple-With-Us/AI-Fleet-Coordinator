@@ -2228,9 +2228,7 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
     )
 
 
-def mac_copy_revision(
-    runner: Callable = subprocess.run, tip: str | None = None
-) -> dict:
+def mac_copy_revision(runner: Callable = subprocess.run, tip: str | None = None) -> dict:
     """The revision the Mac's installed copies are judged against:  the managed runtime's own.
 
     The layout's runtime dict is not it.  On a Mac that is judged server-style that dict describes
