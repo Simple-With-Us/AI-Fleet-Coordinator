@@ -411,6 +411,10 @@ class PlatformSpec:
     title_sources              the start sources after which a hook-output title is applied
     locations                  the fleet locations the platform runs on (Grok and Antigravity: only "mac"); a hook
                                on any other takes no letter
+    call_timeout               for a platform whose runtime stops its hook sooner than the shared budget
+                               allows:  how long one registry call from that platform's hook may take, in
+                               seconds (0 for the shared one), so the row's chain of calls fits inside its
+                               own hook's timeout
     quiet_events               platform events whose hook output the platform does not take (Codex's SubagentStop has
                                no hookSpecificOutput): the hook still runs, and prints nothing for them
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
@@ -450,6 +454,7 @@ class PlatformSpec:
     launchers: tuple[str, ...] = ()
     title_sources: tuple[str, ...] = TITLE_SOURCES
     locations: tuple[str, ...] = LOCATIONS
+    call_timeout: int = 0
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
     session_env: tuple[str, ...] = ()
@@ -774,11 +779,13 @@ _NOT_REGISTERED_MARK = "is not registered on"
 
 #: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
 #: 20 seconds (HOOK_TIMEOUTS) and a register chains at most three calls (register, reopen,
-#: update), so one call gets 3:  the chain's worst case stays inside the tightest budget, and
-#: a healthy call to the listener answers in well under a second.  The binding budget is MiniMax Code's ten-second ceiling, whose runtime refuses a longer  hook timeout outright, so three calls of three seconds fit inside it with a second to spare.  An unsettled parent is
+#: update), so one call gets 4:  the chain's worst case stays inside the tightest budget, and
+#: a healthy call to the listener answers in well under a second.  A platform whose runtime stops its hook sooner than that budget allows declares its own deadline  (PlatformSpec.call_timeout), and no other platform's call is shortened by it.  An unsettled parent is
 #: registered first, at most once per RETRY_SECONDS (`_ensure_parent`).  The batch callers of
 #: registry_api (the operator-registry CLI) keep its longer default.
-_API_TIMEOUT = 3
+_API_TIMEOUT = 4
+#: The environment key that carries a platform's own deadline for one registry call.
+CALL_TIMEOUT_ENV = "SIMPLE_TOOLS_LETTER_CALL_TIMEOUT"
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
@@ -836,7 +843,17 @@ def with_registry_env(env: Mapping[str, str]) -> Mapping[str, str]:
 def _call_api(env: Mapping[str, str], op: str, params: Mapping[str, Any]) -> dict[str, Any]:
     from . import registry_api
 
-    return registry_api.call(env, op, params, timeout=_API_TIMEOUT)
+    return registry_api.call(env, op, params, timeout=_call_timeout(env))
+
+
+def _call_timeout(env: Mapping[str, str]) -> int:
+    """How long one registry call from this hook may take:  the platform's own deadline when it declares
+    one, else the shared one.  A platform whose runtime stops its hook sooner than the shared budget allows
+    needs the shorter deadline, and no other platform's call is shortened by it."""
+    raw = str(env.get(CALL_TIMEOUT_ENV) or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return _API_TIMEOUT
 
 
 def _api_error(answer: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -2876,6 +2893,11 @@ def _run_hook(
     transport: Transport | None,
     location_flag: str,
 ) -> int:
+    env = dict(env)
+    if spec.call_timeout:
+        # The platform's own deadline for one registry call, so the row's chain of calls fits inside its
+        # own hook's timeout without shortening anyone else's.
+        env[CALL_TIMEOUT_ENV] = str(spec.call_timeout)
     data = read_hook_input(stdin)
     event = canonical_event(spec, data)
     if not event or not in_scope(spec, env, data):

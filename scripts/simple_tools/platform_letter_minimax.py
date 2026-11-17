@@ -56,6 +56,10 @@ HOOK_TIMEOUTS = {"SessionStart": 10, "Stop": 10}
 #: The largest timeout this platform's runtime accepts for one command hook, in seconds:  the installer
 #: refuses to write a longer one and `--check` reports a longer installed one as not current.
 HOOK_TIMEOUT_CAP = 10
+#: How long one registry call from this platform's hook may take, in seconds:  the runtime's ten-second
+#: ceiling divided by the three calls a register makes, so the chain fits inside the hook's own timeout.
+#: Every other platform keeps the shared deadline, which is longer.
+CALL_TIMEOUT = 3
 CLOSE_REASONS: tuple[str, ...] = ()
 # The retired client's letter cache (`minimax_retired_note`):  the most of one file that is read, and the most
 # project scopes looked through for it.
@@ -228,6 +232,7 @@ SPEC = PL.PlatformSpec(
     session_env=("__MAVIS_RUNTIME_SESSION_ID",),
     retired_note=minimax_retired_note,
     retired_files=RETIRED_FILES,
+    call_timeout=CALL_TIMEOUT,
 )
 
 INSTALL = PL.JsonHookInstaller(
