@@ -77,8 +77,29 @@ class Registered(Settings):
         self.assertEqual(BY_NAME[WS.MAC_SSH].default, CW.DEFAULTS["mac_ssh"])
 
     def test_every_tunable_is_a_knob_or_a_named_host_fact(self) -> None:
+        from simple_tools import antigravity_wake as AGW
+        from simple_tools import grok_wake as GW
+        from simple_tools import minimax_wake as MW
+
         handled = {*WS.INT_KNOBS, *WS.HOST_FACTS, "delivery_enabled", "retry_backoff", "mac_ssh"}
-        self.assertEqual(set(CW.DEFAULTS), handled)
+        defaults: set[str] = set()
+        for module in (CW, AGW, GW, MW):
+            defaults |= set(module.DEFAULTS)
+        self.assertEqual(defaults, handled)
+
+    def test_a_platforms_own_facts_reach_the_delivery(self) -> None:
+        from simple_tools import minimax_wake as MW
+
+        self.local(
+            workspace="/opt/work",
+            mcode_bin="/opt/bin/mcode",
+            mcode_model="minimax/Another-Served-Model",
+        )
+        settings = WS.WakeSettings(MW.SEAT, MW.DEFAULTS, self.local_path)
+        settings.load()
+        self.assertEqual(settings["workspace"], "/opt/work")
+        self.assertEqual(settings["mcode_bin"], "/opt/bin/mcode")
+        self.assertEqual(settings["mcode_model"], "minimax/Another-Served-Model")
 
     def test_every_router_knob_and_only_those_live_in_its_own_folder(self) -> None:
         names = {*WS.INT_KNOBS.values(), WS.DELIVERY_ENABLED, WS.DELIVERY_SEATS}
@@ -740,7 +761,8 @@ class Wiring(Settings):
             served = SVC.build({"HOME": str(self.home)}, importer=importer)
         self.assertEqual(served.seats.not_installed, {"CODEX", "MC", "ZC"})
         self.assertEqual(
-            (served.seats.down, sorted(served.seats.routers)), ({}, ["AG", CW.SEAT, "GROK"])
+            (served.seats.down, sorted(served.seats.routers)),
+            ({}, ["AG", CW.SEAT, "GROK", "MM"]),
         )
         status, health = served.seats.health()
         self.assertEqual(status, 200)
@@ -781,7 +803,7 @@ class Wiring(Settings):
                 with mock.patch.object(CW, "state_dir", return_value=self.state):
                     served = SVC.build({"HOME": str(self.home)}, importer=importer)
                 self.assertEqual(served.seats.down, {"MC": reason})
-                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK"])
+                self.assertEqual(sorted(served.seats.routers), ["AG", CW.SEAT, "GROK", "MM"])
                 status, health = served.seats.health()
                 self.assertEqual(status, 503, "a module that is there and broken is a fault")
                 self.assertEqual(
@@ -793,7 +815,9 @@ class Wiring(Settings):
                 claude = served.seats.routers[CW.SEAT]
                 wake = WR.Wake(wake_id="w-%s" % reason, seat=CW.SEAT)
                 self.assertEqual(claude.accept(wake)[0], 202)
-                self.assertEqual([m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK"])
+                self.assertEqual(
+                    [m.seat for m in served.settings.members], ["AG", CW.SEAT, "GROK", "MM"]
+                )
 
     def test_a_non_prod_environment_stops_the_service(self) -> None:
         os.environ[source.ENV_NAMES[0]] = "dev"
@@ -1188,6 +1212,8 @@ class OneService(Settings):
                        r"^sess_[A-Za-z0-9._-]{1,123}$"),
                 "GROK": ("grok-leader", "simple_tools.grok_wake", "router_platform",
                          "deliver_request", uuid),
+                "MM": ("minimax", "simple_tools.minimax_wake", "router_platform",
+                       "deliver_request", r"^mvs_[0-9a-f]{32}$"),
             },
         )
 
