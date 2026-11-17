@@ -222,7 +222,7 @@ class GrokWake(unittest.TestCase):
         self.registry.side_effect = OSError("down")
         drive, answer = self.deliver()
         self.assertEqual(answer["delivery"],
-                         {"outcome": "failed", "route": "", "ack": "unknown", "code": "registry-unavailable", "note": ""})
+                         {"outcome": "busy", "route": "", "ack": "unknown", "code": "registry-unavailable", "note": ""})
         self.assertEqual(drive.calls, [])
 
     def test_a_registry_with_no_key_is_not_configured(self) -> None:

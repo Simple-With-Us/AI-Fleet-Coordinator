@@ -2216,14 +2216,17 @@ class Generations(Base):
                 self.assertEqual(len(self.delivered), 1)
                 saved = json.loads(self.pending().read_text(encoding="utf-8"))
                 self.assertNotIn("in_flight", saved)
-                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (1, 0))
+                # An outage spends no attempt, so the wake is waiting rather than failing.
+                self.assertEqual((saved["failures"], saved.get("repicks", 0)), (0, 0))
                 self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)
                 self.clock.now += 2000
                 self.drain(router)
                 self.assertEqual(len(self.delivered), 2)
                 self.assertEqual(self.done()["status"], "delivered")
 
-    def test_a_resolve_answer_that_is_not_a_mapping_is_bounded(self) -> None:
+    def test_a_resolve_answer_that_is_not_a_mapping_is_an_outage_and_spends_no_attempt(
+        self,
+    ) -> None:
         router = self.lettered(max_attempts=2)
         real = self.registry
 
@@ -2234,10 +2237,13 @@ class Generations(Base):
             for _ in range(6):
                 self.drain(router)
                 self.clock.now += 2000
+        # The check before delivery could not read the registry:  an outage.  It spent no
+        # attempt, so the wake is still waiting and nothing was delivered.
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertEqual(saved["failures"], 0)
         self.assertEqual(len(self.delivered), 1)
-        receipt = self.done()
-        self.assertEqual((receipt["status"], receipt["code"]), ("dead", "registry-unavailable"))
-        self.assertIs(receipt["delivered"], False)
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
+        self.assertIn(WR.REGISTRY_UNAVAILABLE, self.stderr.getvalue())
 
     def test_a_pick_on_an_answer_that_is_not_a_mapping_is_a_retry(self) -> None:
         for op_odd in ("resolve", "history"):
@@ -2384,7 +2390,8 @@ class Generations(Base):
         self.assertEqual(len(self.delivered), 1)
         saved = json.loads(self.pending().read_text(encoding="utf-8"))
         self.assertNotIn("in_flight", saved)
-        self.assertEqual(saved["failures"], 1)
+        # An outage spends no attempt, so the wake is waiting rather than failing.
+        self.assertEqual(saved["failures"], 0)
         self.assertEqual(saved["pick"]["target"]["session_id"], SID_A)
         self.registry.down = False
         self.clock.now += 2000
@@ -2392,16 +2399,23 @@ class Generations(Base):
         self.assertEqual(len(self.delivered), 2)
         self.assertEqual(self.done()["status"], "delivered")
 
-    def test_an_unreadable_registry_is_bounded(self) -> None:
+    def test_an_unreadable_registry_is_an_outage_and_spends_no_attempt(self) -> None:
         router = self.queued(max_attempts=2)
         self.registry.down = True
         for _ in range(6):
             self.drain(router)
             self.clock.now += 2000
+        # The outage spent no attempt, so the wake is waiting rather than dead.
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertEqual(saved["failures"], 0)
         self.assertEqual(len(self.delivered), 1)
-        receipt = self.done()
-        self.assertEqual((receipt["status"], receipt["code"]), ("dead", "registry-unavailable"))
-        self.assertEqual(receipt["picked_generation"], 3)
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
+        # The registry comes back and the wake is carried.
+        self.registry.down = False
+        self.clock.now += 2000
+        self.drain(router)
+        self.assertEqual(len(self.delivered), 2)
+        self.assertEqual(self.done()["status"], "delivered")
 
     def test_picking_again_follows_the_chain(self) -> None:
         router = self.queued()
@@ -2679,6 +2693,46 @@ class Retries(Base):
         router.accept(self.wake())
         self.run_all(router)
         self.assertEqual(self.done()["status"], "delivered")
+
+    def test_a_registry_outage_answer_spends_no_attempt(self) -> None:
+        """The answer a registry outage gets is not a failed delivery, so the wake's five
+        attempts are untouched and the wake waits for the registry to come back."""
+
+        def outage(target, wake):
+            self.delivered.append((target.session_id, wake.wake_id))
+            return WR.Delivery("busy", code=WR.REGISTRY_UNAVAILABLE)
+
+        router = self.router(deliver=outage, max_attempts=2, busy_retry_seconds=10)
+        router.accept(self.wake())
+        self.run_all(router, 12)
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertEqual(saved["failures"], 0)
+        self.assertEqual(len(self.delivered), 12)
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
+
+    def test_a_wake_waits_out_the_outage_and_is_delivered(self) -> None:
+        answers = [WR.Delivery("busy", code=WR.REGISTRY_UNAVAILABLE)] * 3
+
+        def deliver(target, wake):
+            self.delivered.append((target.session_id, wake.wake_id))
+            return answers.pop(0) if answers else WR.Delivery("completed")
+
+        router = self.router(deliver=deliver, max_attempts=2, busy_retry_seconds=10)
+        router.accept(self.wake())
+        self.run_all(router, 6)
+        receipt = self.done()
+        self.assertEqual(receipt["status"], "delivered")
+        self.assertEqual(receipt["attempts"], 4)
+
+    def test_a_pick_time_registry_outage_spends_no_attempt(self) -> None:
+        router = self.router(max_attempts=2)
+        self.registry.down = True
+        router.accept(self.wake())
+        self.run_all(router, 8)
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertEqual(saved["failures"], 0)
+        self.assertEqual(self.delivered, [])
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
 
     def test_unreachable_uses_no_attempt(self) -> None:
         self.results = [WR.Delivery("unreachable", code="ssh")] * 8
@@ -4816,7 +4870,7 @@ class Remote(RemoteBase):
         self.assertEqual(code, 0)
         self.assertEqual(
             (answer["delivery"]["outcome"], answer["delivery"]["code"]),
-            ("failed", "registry-unavailable"),
+            ("busy", "registry-unavailable"),
         )
         self.assertEqual(answer["wake_id"], self.w.wake_id)
         spy.assert_not_called()
@@ -4831,7 +4885,7 @@ class Remote(RemoteBase):
                     _, answer = self.run_main(self.envelope())
                 self.assertEqual(
                     (answer["delivery"]["outcome"], answer["delivery"]["code"]),
-                    ("failed", "registry-unavailable"),
+                    ("busy", "registry-unavailable"),
                 )
                 spy.assert_not_called()
 
@@ -4841,7 +4895,7 @@ class Remote(RemoteBase):
             mock.patch.object(CW, "deliver_local") as spy,
         ):
             _, answer = self.run_main(self.envelope())
-        self.assertEqual(answer["delivery"]["outcome"], "failed")
+        self.assertEqual(answer["delivery"]["outcome"], "busy")
         spy.assert_not_called()
 
     def test_settings_that_cannot_be_read_are_a_retry_and_no_delivery(self) -> None:
@@ -5283,6 +5337,14 @@ class RegistryNotConfigured(Base):
         self.assertEqual(WR.registry_trouble({"error": "x", "code": "timeout"}), "registry-unavailable")
         self.assertEqual(WR.registry_trouble(None), "registry-unavailable")
 
+    def test_the_shared_answer_is_busy_for_an_outage_and_failed_for_a_missing_key(self) -> None:
+        outage = WR.registry_delivery(WR.REGISTRY_UNAVAILABLE)
+        self.assertEqual((outage.outcome, outage.code), ("busy", WR.REGISTRY_UNAVAILABLE))
+        missing = WR.registry_delivery(WR.NOT_CONFIGURED)
+        self.assertEqual((missing.outcome, missing.code), ("failed", WR.NOT_CONFIGURED))
+        routed = WR.registry_delivery(WR.REGISTRY_UNAVAILABLE, route="codex-desktop")
+        self.assertEqual(routed.route, "codex-desktop")
+
     def test_health_says_so(self) -> None:
         router = self.router()
         router.env = {"HOME": self.tmp}
@@ -5401,11 +5463,12 @@ class OtherSeat(Base):
             router.accept(self.wake(letter="II"))
             self.drain(router)
         self.assertEqual([op for op, _ in self.registry.calls], ["resolve", "history"])
-        receipt = self.done()
-        self.assertEqual((receipt["status"], receipt["reason"]), ("dead", "registry-unavailable"))
-        self.assertEqual((receipt["letter_live"], receipt["letter_other_seat"]), (False, "ZC"))
-        log = (self.state / "wakes.jsonl").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(json.loads(log[-1]), receipt)
+        # The outage spent no attempt, so the wake is waiting and there is no receipt yet.
+        saved = json.loads(self.pending().read_text(encoding="utf-8"))
+        self.assertEqual(saved["failures"], 0)
+        self.assertFalse((self.state / "done" / "w-1.json").exists())
+        # The outage says so while the wake waits.
+        self.assertIn(WR.REGISTRY_UNAVAILABLE, self.stderr.getvalue())
         self.assertEqual(self.delivered, [])
         self.assertIsNone(router.other_seat_scan, "no history was read, so there is no count")
 

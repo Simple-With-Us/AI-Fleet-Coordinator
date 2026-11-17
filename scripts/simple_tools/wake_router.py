@@ -34,8 +34,10 @@ chat's registry `issues` (newest `seen_at` first) or, for a record with no `issu
 then the topic's words in a chat's title;  then recency.  A tie within a step goes to the most
 recent of the tied chats.  An optional decider (`Consult`, off by default) may choose before
 recency.  Nobody is asked to clarify and an ambiguous wake is never held:  only `no-live-session`
-and an unreadable registry do not deliver, and both are bounded retries, because a chat may register
-or the registry come back before `max_attempts` or `max_age_seconds` runs out.  The receiving chat
+and an unreadable registry do not deliver.  `no-live-session` is a bounded retry, because a chat
+may register before `max_attempts` runs out;  an unreadable registry is not counted against the
+wake's attempts at all, because the registry may come back long after `max_attempts` would have
+been spent, and it is bounded by `max_age_seconds` alone.  The receiving chat
 is always told how it was linked (`Wake.link_note`), and for recency that the router is not sure the
 wake is meant for it.
 
@@ -256,6 +258,10 @@ RELEASED = "target-released"
 UNREADABLE_ROW = "registry-row-unreadable"
 # The registry has no address or no key on this host:  a bounded retry, as an outage is.
 NOT_CONFIGURED = "registry-not-configured"
+# The registry could not be read at all:  an outage, and not a deployment fault.  Every platform
+# answers it the same way, and the router retries it without spending one of the wake's five
+# attempts, so an outage cannot kill a wake the registry would have carried.
+REGISTRY_UNAVAILABLE = "registry-unavailable"
 # A registered seat whose platform module is not on this host yet.
 NOT_INSTALLED = "not-installed"
 # A platform module with no handler of the name its table entry gives:  nothing ran.  It is one
@@ -1467,6 +1473,10 @@ class Router:
         if entry["pick"] is None:
             pick = self.pick(wake)
             if pick.retry:
+                if pick.reason == REGISTRY_UNAVAILABLE:
+                    # A registry that cannot be read is an outage, not a failed delivery.
+                    self._retry_outage(entry, pick.reason, pick)
+                    return
                 self._retry(entry, counted=True, code=pick.reason, pick=pick)
                 return
             entry["pick"] = asdict(pick)
@@ -1501,6 +1511,10 @@ class Router:
                 self._released(entry, pick, wake)
                 return
             if stale:
+                if stale == REGISTRY_UNAVAILABLE:
+                    # The check before delivery could not read the registry:  an outage.
+                    self._retry_outage(entry, stale, pick)
+                    return
                 self._retry(entry, counted=True, code=stale, pick=pick)
                 return
             entry["attempts"] += 1
@@ -1557,6 +1571,11 @@ class Router:
             self._cond.notify_all()
 
     def _settle(self, entry: dict[str, Any], pick: Pick, result: Delivery) -> None:
+        if result.code == REGISTRY_UNAVAILABLE:
+            # A registry that cannot be read is an outage, not a failed delivery, whichever
+            # platform answered it:  it spends none of the wake's attempts.
+            self._retry_outage(entry, result.code, pick)
+            return
         outcome = result.outcome if result.outcome in OUTCOMES else "failed"
         if outcome in ("sent", "completed"):
             # A hand-over with no proof is recorded as unknown (null), never as delivered.
@@ -1575,6 +1594,26 @@ class Router:
         else:
             self._retry(entry, counted=False, code=result.code or outcome, pick=pick, result=result)
 
+    def _retry_outage(self, entry: dict[str, Any], code: str, pick: Pick | None = None) -> None:
+        """Requeue a wake whose registry could not be read.
+
+        An outage is not a failed delivery:  it spends none of the wake's five attempts, so a
+        registry that is down for twenty minutes cannot kill a wake it would have carried.
+        The wait grows like a failed delivery's backoff, because an outage may last hours and
+        every try costs a call to a service that is down;  the wake's age still bounds it."""
+        self._log(code, entry["wake"]["wake_id"])
+        outages = int(entry.get("outages", 0)) + 1
+        entry["outages"] = outages
+        backoff = self.config["retry_backoff"]
+        self._retry(
+            entry,
+            counted=False,
+            code=code,
+            pick=pick,
+            result=registry_delivery(code),
+            wait=backoff[min(outages - 1, len(backoff) - 1)],
+        )
+
     def _retry(
         self,
         entry: dict[str, Any],
@@ -1583,7 +1622,13 @@ class Router:
         code: str,
         pick: Pick | None = None,
         result: Delivery | None = None,
+        wait: float | None = None,
     ) -> None:
+        """Requeue a wake.
+
+        `counted` says whether this try spends one of the wake's attempts:  a failed delivery
+        does, and a dependency that is merely unavailable does not.  `wait` is for the caller
+        that knows better than the defaults:  a counted retry uses the backoff."""
         now = self.clock()
         if counted:
             entry["failures"] += 1
@@ -1598,10 +1643,12 @@ class Router:
         if counted:
             backoff = self.config["retry_backoff"]
             wait = backoff[min(entry["failures"] - 1, len(backoff) - 1)]
-        elif result is not None and result.outcome == "busy":
-            wait = self.config["busy_retry_seconds"]
-        else:
-            wait = self.config["unreachable_retry_seconds"]
+        elif wait is None:
+            wait = (
+                self.config["busy_retry_seconds"]
+                if result is not None and result.outcome == "busy"
+                else self.config["unreachable_retry_seconds"]
+            )
         entry["next_at"] = now + wait
         entry.pop("in_flight", None)  # the outcome says this try did not run the wake
         # Saved while this worker still owns the entry:  once it is released another worker may
@@ -1738,7 +1785,20 @@ def registry_trouble(answer: object) -> str:
     `registry-unavailable`.  Either way nothing is delivered on it."""
     if isinstance(answer, Mapping) and answer.get("code") == "not_configured":
         return NOT_CONFIGURED
-    return "registry-unavailable"
+    return REGISTRY_UNAVAILABLE
+
+
+def registry_delivery(code: str, route: str = "") -> Delivery:
+    """The one answer every platform gives when the registry cannot be read.
+
+    An outage is `busy`:  nothing ran, nothing is the chat's fault, and the router retries the
+    wake without spending one of its five attempts, so an outage of twenty minutes does not
+    kill the wake.  A host with no registry address or key is a deployment fault rather than an
+    outage, so it is `failed` and the wake ends with the code that says so.  The outcome says
+    how the router treats the answer;  the code says what actually happened."""
+    if code == NOT_CONFIGURED:
+        return Delivery("failed", route, code=code)
+    return Delivery("busy", route, code=code)
 
 
 def _closed(row: Mapping[str, Any]) -> bool:

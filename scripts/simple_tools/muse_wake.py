@@ -29,11 +29,12 @@ for being live:  the turn has not run, and a later try can run it.
 
 The registry is asked again immediately before delivering, while the per-session lock is
 held, as the router did before sending.  A letter that no longer holds this session at this
-generation, or is closed, is `refused`.  A registry that cannot be read, and a live row that
-cannot be read as a well-formed Muse Code chat of this seat, are `failed` -- nothing has run,
-so a bounded retry is safe, and neither is proof that the letter was released.  `failed` is
-used only there and where the delivery command itself never started;  once a command may
-have run a turn, any failure is `refused` and final.
+generation, or is closed, is `refused`.  A registry that cannot be read is `busy`:  nothing
+has run, and the outage may outlast the wake's attempts, so the retry spends none of them.
+A live row that cannot be read as a well-formed Muse Code chat of this seat is `failed` --
+nothing has run, so a bounded retry is safe, and neither is proof that the letter was
+released.  `failed` is used only there and where the delivery command itself never started;
+once a command may have run a turn, any failure is `refused` and final.
 
 Host facts come from this host only:  the session store under this user's Muse data root
 and the `muse` binary on this host's PATH.  Delivery settings are the router's, passed to
@@ -247,13 +248,14 @@ def _resolve(env: Mapping[str, str], letter: str) -> Any:
 
 def _recheck(env: Mapping[str, str], target: WR.Target, resolve: Resolve) -> WR.Delivery | None:
     """Why this wake must not go to this chat after all, or None if it may.  Nothing has run
-    yet, so a registry that cannot be read is `failed` and is tried again."""
+    yet, so a registry that cannot be read is `busy` and is tried again without spending an
+    attempt."""
     try:
         answer = resolve(env, target.letter)
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.Delivery("failed", code="registry-unavailable")
+        return WR.registry_delivery(WR.REGISTRY_UNAVAILABLE)
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.Delivery("failed", code="registry-unavailable")
+        return WR.registry_delivery(WR.registry_trouble(answer))
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:  # a live row that is not a well-formed MC chat proves no release
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)

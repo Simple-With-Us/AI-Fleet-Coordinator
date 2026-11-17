@@ -6,7 +6,7 @@ Refs AFC-694 and AFC-305.  The shared server router owns capture, target select
 
 The delivery adapter reaches an existing, loaded Codex Desktop chat on the Mac.  A read-only Codex store supplies candidate UUID/cwd/archive metadata; the native transport independently checks that exact UUID and cwd, writable ownership, active history and loaded state before enqueue.  Engine-owned and subagent chats cannot receive a wake.  Delivery into Codex sessions hosted on the server is unsupported by this adapter.
 
-Unavailable native/store/receipt/workspace state is busy before send.  Archived, invalid or stale registry targets are refused before enqueue.  A possibly-enqueued send is terminal with an unknown result; it must never trigger an automatic replay.  The shared server queue remains responsible for bounded retries of proven pre-send unavailability.
+Unavailable native/store/receipt/workspace state is busy before send.  A registry that cannot be read is `busy` with the code `registry-unavailable`, and a host with no registry address or key is `failed` with `registry-not-configured`: the same answer every platform gives (AFC-809).  Archived, invalid or stale registry targets are refused before enqueue.  A possibly-enqueued send is terminal with an unknown result; it must never trigger an automatic replay.  The shared server queue remains responsible for bounded retries of proven pre-send unavailability.
 
 ## One-Shot Delivery Boundary
 

@@ -364,12 +364,12 @@ class CodexDelivery:
         try:
             current = self.registry_lookup(self.env, target.letter)
         except Exception:  # noqa: BLE001 - no enqueue without a readable identity check
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            return WR.registry_delivery(WR.REGISTRY_UNAVAILABLE, route="codex-desktop")
         if not isinstance(current, Mapping) or "error" in current:
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            return WR.registry_delivery(WR.registry_trouble(current), route="codex-desktop")
         found = current.get("found")
         if type(found) is not bool:
-            return WR.Delivery("busy", route="codex-desktop", code="registry-unavailable")
+            return WR.registry_delivery(WR.REGISTRY_UNAVAILABLE, route="codex-desktop")
         if not found or WR._closed(current):
             return WR.Delivery("refused", route="codex-desktop", code="target-released")
 

@@ -537,9 +537,9 @@ def _recheck(env: Mapping[str, str], target: WR.Target) -> WR.Delivery | None:
             timeout=WR.REGISTRY_TIMEOUT,
         )
     except Exception:  # noqa: BLE001 - no delivery without a readable answer
-        return WR.Delivery("failed", code="registry-unavailable")
+        return WR.registry_delivery(WR.REGISTRY_UNAVAILABLE)
     if not isinstance(answer, Mapping) or "error" in answer:
-        return WR.Delivery("failed", code=WR.registry_trouble(answer))
+        return WR.registry_delivery(WR.registry_trouble(answer))
     held = WR.holds(answer, target, SEAT, SESSION_RE)
     if held is None:
         return WR.Delivery("failed", code=WR.UNREADABLE_ROW)
