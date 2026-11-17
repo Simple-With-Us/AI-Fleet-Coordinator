@@ -139,14 +139,12 @@ class Remote(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_a_content_part_of_the_wrong_shape_is_refused_before_it_is_read(self):
-        # The hosted's answer is untrusted:  a part that names no type, a type that is not a
-        # string, a type the board does not read, or a text part whose text is not a string, is
-        # refused at the boundary and never read downstream.
+        # The hosted's answer is untrusted:  a text part whose text is not a string, and a part
+        # that is not an object at all, are refused at the boundary and never read downstream.
         cases = (
-            {"text": "{}"},
-            {"type": 7, "text": "{}"},
             {"type": "text", "text": 7},
-            {"type": "image", "data": "AAAA"},
+            {"type": "text"},
+            "not a part",
         )
         for part in cases:
             with self.subTest(part=part):
@@ -157,6 +155,27 @@ class Remote(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 self.assertIn("unexpected shape", err)
                 self.assertEqual(len(calls), 1)
+
+    def test_an_answer_with_a_part_the_board_does_not_read_is_still_read(self):
+        # The hosted may answer with an image beside the text:  the board reads the text and
+        # ignores the rest, so the answer is still a result.
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "structuredContent": {"seat": "ZC"},
+                    "content": [
+                        {"type": "text", "text": "the seat is ZC"},
+                        {"type": "image", "data": "AAAA"},
+                    ],
+                },
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertEqual(code, 0)
+        self.assertIn("seat: ZC", out)
+        self.assertEqual(len(calls), 1)
 
     def test_a_hosted_error_part_without_a_type_still_carries_its_code(self):
         # The hosted's own error may name no type on the part that carries the error text:  the
@@ -176,6 +195,19 @@ class Remote(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("identity_required", err)
         self.assertNotIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_error_part_with_a_text_of_the_wrong_type_is_refused(self):
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"isError": True, "content": [{"text": 7}]},
+            }
+        ).encode()
+        code, out, err, calls = self.run_cli(["list"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
         self.assertEqual(len(calls), 1)
 
     def test_a_content_collection_that_is_not_a_list_is_refused(self):

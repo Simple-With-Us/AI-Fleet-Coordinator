@@ -6307,10 +6307,10 @@ def _remote_content_ok(content) -> bool:
     """Whether a hosted content list is a list of parts this board can read.
 
     The hosted's answer is untrusted, and the board reads text parts and nothing else:  every
-    part must be an object whose `type` is `text` and whose `text` is a string.  A part of
-    another type, or a text part whose text is not a string, is a shape this board does not
-    accept, and it is refused here at the boundary, so no downstream code reads a field of a
-    shape it never checked."""
+    part must be an object, and a part that is a text part must carry a string text, because
+    that is the part the board puts in front of a reader.  A part of another type is one the
+    board does not read, so it is ignored rather than fatal:  the hosted may answer with an
+    image beside the text, and that answer is still readable."""
     if content is None:
         return True
     if not isinstance(content, list):
@@ -6318,7 +6318,7 @@ def _remote_content_ok(content) -> bool:
     for part in content:
         if not isinstance(part, dict):
             return False
-        if part.get("type") != "text" or not isinstance(part.get("text"), str):
+        if part.get("type") == "text" and not isinstance(part.get("text"), str):
             return False
     return True
 
@@ -6327,14 +6327,17 @@ def _remote_error_content_ok(content) -> bool:
     """Whether the hosted's error answer is a list of parts this board can read.
 
     The error object is read from the parts that carry text, and the hosted may name no type
-    on them, so the type is not required on this path:  a part that carries no string text is
-    still refused, so the error code is never read out of a shape that was not checked."""
+    on them, so a part with no text at all is one this board does not read:  only a part whose
+    text is of the wrong type is refused, so the error code is never read out of a shape that
+    was not checked."""
     if content is None:
         return True
     if not isinstance(content, list):
         return False
     for part in content:
-        if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+        if not isinstance(part, dict):
+            return False
+        if "text" in part and not isinstance(part.get("text"), str):
             return False
     return True
 
