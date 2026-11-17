@@ -23,7 +23,9 @@ any exit code other than 0 is final (`refused`), because the turn may have alrea
 timeout is `unknown`, because the turn may have run and nobody can tell;  exit 0 is `sent`
 only when the child's own output carries no documented failure signature, because the
 server's own log shows a failed turn exiting 0, and the receipt never records that hand-over
-as a confirmed delivery.
+as a confirmed delivery.  The signature is looked for in the tail of that output, the bounded
+tail the shared wake contract names, so a stale failure line the child carried on past never
+fails a turn that went on.
 
 The legacy standalone bridge (`~/.local/state/zc-wake`, OPS-1048's first delivery) contends
 on the same per-session lock file during the cutover, so the two paths can never run one
@@ -76,8 +78,9 @@ MAX_LINK = 500
 #: The child's own output is scanned in memory and never kept:  bounded windows over the
 #: whole output, and only the typed code a documented signature maps to ever reaches a receipt.
 OUTPUT_SCAN_CAP = 8192
-#: The limits an untrusted request is held to before it is parsed into fields:  the raw bytes
-#: on the wire, how deep the value may nest, and how many nodes it may carry.
+#: The limits an untrusted request is held to before any field of it is used:  an absolute
+#: byte cap on the request as it was parsed, how deep the value may nest, and how many nodes
+#: it may carry.  The raw body is capped one level up, by the CLI that reads it.
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_REQUEST_DEPTH = 16
 MAX_REQUEST_NODES = 1000
@@ -127,7 +130,9 @@ WAKE_TEXT = (
 )
 
 #: The child process handle.  The module keeps it, so every exit path stops and reaps the
-#: turn instead of leaving it running behind a lock this delivery already holds.
+#: turn instead of leaving it running behind a lock this delivery already holds.  The runner
+#: is a `Popen`-style callable:  it starts the child and hands back the handle, and the
+#: module waits on that handle with an explicit timeout, so no wait is ever unbounded.
 Child = Any
 Runner = Callable[..., Child]
 
@@ -410,7 +415,7 @@ def deliver_local(
     target: WR.Target | None = None,
     *,
     recheck_registry: bool = False,
-    runner: Runner = subprocess.run,
+    runner: Runner = subprocess.Popen,
 ) -> WR.Delivery:
     """Deliver one wake to a chat on this host under the per-session lock."""
     if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
@@ -556,25 +561,22 @@ def deliver_local(
 def _failure_signature(output: object) -> str:
     """The typed code for a documented failure in the child's own output, or "".
 
-    The raw output never leaves this function:  it is scanned in bounded, overlapping windows,
-    because a child's output can quote the prompt, the session or a token, and a receipt is a
-    durable record.  A signature anywhere in the output counts, not only one in its tail:  a
-    failure line that is followed by more output is still a failure.  No signature match is no
-    code:  the failure is never guessed."""
+    The raw output never leaves this function:  it is scanned in a bounded tail, the tail the
+    shared wake contract names, because a child's output can quote the prompt, the session or
+    a token, and a receipt is a durable record.  A failure line that the child carried on
+    past is stale by construction, so it is not read as a failure:  the turn went on after it,
+    and the router would run the same turn again.  No signature match is no code:  the failure
+    is never guessed."""
     if isinstance(output, bytes):
         text = output.decode("utf-8", "replace")
     elif isinstance(output, str):
         text = output
     else:
         return ""
-    overlap = max(len(needle) for needle, _ in FAILURE_SIGNATURES) - 1
-    tail = ""
-    for start in range(0, len(text), OUTPUT_SCAN_CAP):
-        window = tail + text[start : start + OUTPUT_SCAN_CAP]
-        for needle, code in FAILURE_SIGNATURES:
-            if needle in window:
-                return code
-        tail = window[-overlap:] if overlap else ""
+    window = text[-OUTPUT_SCAN_CAP:]
+    for needle, code in FAILURE_SIGNATURES:
+        if needle in window:
+            return code
     return ""
 
 
@@ -582,7 +584,7 @@ def make_deliver(
     env: Mapping[str, str],
     config: Mapping[str, Any],
     *,
-    runner: Runner = subprocess.run,
+    runner: Runner = subprocess.Popen,
 ) -> Callable[[WR.Target, WR.Wake], WR.Delivery]:
     """ZCode's `deliver`:  this host directly, the Mac over ssh, any other host refused."""
     local_host = str(config.get("local_host", "server"))
@@ -611,7 +613,7 @@ def router_platform(
     env: Mapping[str, str],
     config: Mapping[str, Any],
     *,
-    runner: Runner = subprocess.run,
+    runner: Runner = subprocess.Popen,
 ) -> WR.Platform:
     """Build the ZCode `Platform` for `wake_service.BUILDERS`."""
     return WR.Platform(
@@ -740,10 +742,11 @@ def _wake_from(data: Mapping[str, Any]) -> WR.Wake:
 
 
 def _request_too_large(request: object) -> bool:
-    """Whether the raw request is over the byte cap.
+    """Whether the parsed request is over the byte cap.
 
-    The byte cap is absolute, so a request that is enormous is refused before the parser and
-    the field checks ever see it."""
+    The cap is absolute and it is measured on the request as it was parsed, so a request that
+    is enormous is refused before any field of it is read.  The raw bytes on the wire are
+    capped by the transport that reads them, one level up."""
     try:
         raw = json.dumps(request, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
@@ -766,7 +769,7 @@ def deliver_request(
     request: Mapping[str, Any],
     *,
     env: Mapping[str, str],
-    runner: Runner = subprocess.run,
+    runner: Runner = subprocess.Popen,
 ) -> dict[str, Any]:
     """Mac-side one-delivery handler invoked by `simple-chat wake-deliver`."""
     if _request_too_large(request):

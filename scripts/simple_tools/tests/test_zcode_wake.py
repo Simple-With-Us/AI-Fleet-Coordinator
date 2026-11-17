@@ -108,9 +108,18 @@ class Base(unittest.TestCase):
         self.index = self.home / ".zcode" / "v2" / "tasks-index.sqlite"
         private_dir(self.index.parent)
         con = sqlite3.connect(self.index)
-        con.execute("CREATE TABLE tasks (task_id TEXT, task_status TEXT)")
+        # The real tasks index carries the workspace it knows a task under.  The fixture keeps
+        # that column and points it at a stale directory, so a test can show that the derived
+        # index never authorizes a delivery.
+        con.execute(
+            "CREATE TABLE tasks (workspace_key TEXT, workspace_path TEXT, task_id TEXT,"
+            " task_status TEXT)"
+        )
         for sid in (SID, SID_OTHER, SID_MAC):
-            con.execute("INSERT INTO tasks VALUES (?, ?)", (sid, "completed"))
+            con.execute(
+                "INSERT INTO tasks VALUES (?, ?, ?, ?)",
+                (str(self.tmp / "stale"), str(self.tmp / "stale"), sid, "completed"),
+            )
         con.commit()
         con.close()
         self.cli = self.home / ".zcode" / "cli" / "db" / "db.sqlite"
@@ -146,6 +155,15 @@ class Base(unittest.TestCase):
         con.execute("UPDATE session SET directory = ? WHERE id = ?", (directory, session_id))
         con.commit()
         con.close()
+
+    def _index_workspace(self, session_id: str) -> str:
+        """The workspace the derived tasks index records for one session."""
+        con = sqlite3.connect(self.index)
+        row = con.execute(
+            "SELECT workspace_path FROM tasks WHERE task_id = ?", (session_id,)
+        ).fetchone()
+        con.close()
+        return str(row[0]) if row else ""
 
     def _registry(self, rows):
         table = {r["native_session_id"]: r for r in rows}
@@ -289,11 +307,15 @@ class DeliverLocalTests(Base):
         self.assertEqual(delivery.code, "workspace-mismatch")
 
     def test_the_binding_is_the_session_own_row_and_not_the_derived_index(self):
-        # The tasks index is a derived view:  a stale row in it never authorizes a delivery,
-        # and the session's own reported directory is what the delivery is bound to.
+        # The tasks index is a derived view, and its row for this session names a stale
+        # workspace:  a stale row in it never authorizes a delivery, and the session's own
+        # reported directory is what the delivery is bound to.
         self._session_directory(SID, str(self.workspace))
         delivery = self._deliver_local(config={"workspace": str(self.workspace)})
         self.assertEqual(delivery.outcome, "sent")
+        self.assertNotEqual(self._index_workspace(SID), str(self.workspace))
+        argv = self.calls[0]
+        self.assertEqual(argv[argv.index("--cwd") + 1], str(self.workspace))
 
     def test_a_session_the_store_does_not_know_refuses(self):
         con = sqlite3.connect(self.cli)
@@ -412,9 +434,20 @@ class DeliverLocalTests(Base):
         delivery = self._deliver_local()
         self.assertEqual(delivery.outcome, "sent")
 
-    def test_the_private_store_directories_are_owner_only(self):
-        self.assertEqual(self.index.parent.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(self.cli.parent.stat().st_mode & 0o777, 0o700)
+    def test_the_private_dir_makes_every_level_it_creates_owner_only(self):
+        # The production helper, not the fixture:  the levels it creates are owner-only.
+        folder = self.tmp / "state" / "locks"
+        zcode_wake._private_dir(folder)
+        self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((self.tmp / "state").stat().st_mode & 0o777, 0o700)
+
+    def test_the_private_dir_refuses_a_symlinked_folder(self):
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir(mode=0o700)
+        link = self.tmp / "link"
+        os.symlink(str(elsewhere), str(link))
+        with self.assertRaises(OSError):
+            zcode_wake._private_dir(link)
 
     def test_an_exception_after_the_child_started_is_unknown(self):
         def runner(argv, **kwargs):
@@ -447,11 +480,19 @@ class DeliverLocalTests(Base):
         self.assertTrue(self.children[0].killed)
         self.assertTrue(self.children[0].waited)
 
-    def test_a_failure_signature_outside_the_output_tail_is_found(self):
-        output = FAILED_TURN + b"x" * (zcode_wake.OUTPUT_SCAN_CAP * 2)
+    def test_a_failure_signature_in_the_output_tail_is_found(self):
+        output = b"x" * 16 + FAILED_TURN
         delivery = self._deliver_local(exit_code=0, output=output)
         self.assertEqual(delivery.outcome, "failed")
         self.assertEqual(delivery.code, "model-auth-login-failed")
+
+    def test_a_stale_signature_outside_the_output_tail_is_not_a_failure(self):
+        # A failure line the child carried on past is stale:  the shared contract classifies a
+        # bounded tail, so a stale line never fails a turn that went on, and the router never
+        # runs that turn a second time.
+        output = FAILED_TURN + b"x" * (zcode_wake.OUTPUT_SCAN_CAP * 2)
+        delivery = self._deliver_local(exit_code=0, output=output)
+        self.assertEqual(delivery.outcome, "sent")
 
     def test_the_lock_folder_and_every_level_of_it_are_private(self):
         self._deliver_local()

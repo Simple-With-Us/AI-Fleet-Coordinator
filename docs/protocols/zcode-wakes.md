@@ -41,7 +41,9 @@ that is deliberate.  A seat moves to the router only after its own path is depl
 verified live, and until then it keeps the binding it has:  the working path is never removed
 before the replacement has answered a real wake.
 
-The cutover, when it is done, is these four steps, in this order.
+The cutover, when it is done, is these five steps, in this order.  The legacy bridge stays the
+seat's live path until the router's own front has answered a real wake, so a cutover that
+does not work never leaves the seat without a route.
 
 1.  Free the seat's own convention for the router.  A seat's `routine.url_env` is always
     `<SEAT>_ROUTINE_URL`, and the sample's partition check holds every seat that is routed at
@@ -56,20 +58,27 @@ The cutover, when it is done, is these four steps, in this order.
 2.  Deploy the router release that carries `zcode_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/ZC` answers `healthy`
     with `delivery` on, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
-3.  Change the live listener's `[seat.ZC]` block to
-    `wake = "http"` with
+3.  Prove the router's front and the router's own key with a real wake, while the live
+    listener still holds the legacy binding:  post one wake to
+    `https://<server tailnet host>:8795/wake/ZC` with the router's bearer, and read the
+    receipt (`/receipt/ZC/<wake id>`).  The receipt shows the picked session and a delivered
+    or an explicitly unsettled outcome.  Nothing in the live listener changes in this step, so
+    the bridge path is untouched and still works if the router's front does not.
+4.  Only then change the live listener's `[seat.ZC]` block to `wake = "http"` with
     `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
     The bearer is now the router's own key, so the key the bridge used is no longer accepted by
     the router, and the URL names the front.
-4.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt
-    (`/receipt/ZC/<wake id>`) shows the picked session and a delivered or an explicitly
-    unsettled outcome.
+5.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt shows the
+    picked session and a delivered or an explicitly unsettled outcome.  A front that
+    misbehaves here is one line back:  the legacy binding is still in place, with
+    `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`,
+    and the key the bridge used was never withdrawn.
 
-Only after step 4 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
+Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
 never run one session at the same time, and its dedupe ledger is replaced by the router's own
-receipts.  Until then it stays as it is, with `ZC_BRIDGE_ROUTINE_URL` and `ZC_ROUTINE_KEY` in
-Fleet-OPS `/zulip`.
+receipts.  Until then it stays as it is, with `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and
+`ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`.
 
 ## What the module guarantees
 
@@ -97,9 +106,12 @@ made explicit.
 - The turn never outlives its delivery.  The module keeps the child handle and stops and
   reaps it on every path, including a timeout and an interruption, so a turn can never keep
   running behind a session lock the delivery already holds.
-- The request is bounded before it is read.  The raw bytes on the wire, how deep the value may
-  nest and how many nodes it may carry are all capped, and a request over any of them is
-  refused before a field is used.
+- The request is bounded before it is used.  The transport caps the raw body before it is
+  parsed:  `simple-chat wake-deliver` reads at most 16 KiB of stdin and refuses anything
+  over it, so an over-long body never reaches the parser.  The handler here then bounds the
+  parsed request before any field of it is read:  an absolute byte cap on the request as it
+  was parsed, a depth bound and a node-count bound, and a request over any of them is
+  refused.
 
 ## What is built and tested (PR: OPS-1048)
 
