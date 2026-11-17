@@ -54,6 +54,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
@@ -78,6 +79,8 @@ MAX_LINK = 500
 #: The child's own output is scanned in memory and never kept:  a bounded tail of it, and
 #: only the typed code a documented signature maps to ever reaches a receipt.
 OUTPUT_SCAN_CAP = 8192
+#: How long the output reader is given to finish after the child is stopped.
+OUTPUT_JOIN_SECONDS = 1.0
 #: The limits an untrusted request is held to before any field of it is used:  an absolute
 #: byte cap on the request as it was parsed, how deep the value may nest, and how many nodes
 #: it may carry.  The raw body is capped one level up, by the CLI that reads it.
@@ -135,6 +138,34 @@ WAKE_TEXT = (
 #: module waits on that handle with an explicit timeout, so no wait is ever unbounded.
 Child = Any
 Runner = Callable[..., Child]
+
+
+def _read_tail(stream: object, cap: int) -> tuple[bytearray, threading.Thread]:
+    """The child's output as a bounded tail, read while the child runs.
+
+    The child can be chatty, so the stream is drained into a rolling buffer that never holds
+    more than the tail the classifier reads:  the whole output is never in memory, and a child
+    that loops cannot cost the router its memory.  The reader is a daemon thread, so an
+    interruption never leaves it holding the process."""
+    buffer = bytearray()
+
+    def reader() -> None:
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = stream.read(8192)  # type: ignore[attr-defined]
+                if not chunk:
+                    break
+                buffer.extend(chunk)
+                if len(buffer) > cap:
+                    del buffer[: len(buffer) - cap]
+        except (OSError, ValueError):
+            pass
+
+    thread = threading.Thread(target=reader, name="zcode-wake-output", daemon=True)
+    thread.start()
+    return buffer, thread
 
 
 def _terminate(child: Child) -> None:
@@ -527,8 +558,11 @@ def deliver_local(
             except Exception as exc:  # noqa: BLE001 - the child may have started
                 return WR.Delivery("unknown", "resume", code="resume-error-%s" % type(exc).__name__)
 
+            # The child's output is drained while it runs, into a rolling buffer that never
+            # holds more than the tail the classifier reads.
+            tail, reader = _read_tail(getattr(child, "stdout", None), OUTPUT_SCAN_CAP)
             try:
-                output = child.communicate(timeout=timeout_seconds)[0]
+                child.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 # The turn may have run:  nobody can tell, so it is not delivered and it is not
                 # retried either.
@@ -540,6 +574,8 @@ def deliver_local(
                 # the session lock this delivery already holds, and an interruption must not
                 # leave it behind.
                 _terminate(child)
+                reader.join(timeout=OUTPUT_JOIN_SECONDS)
+            output = bytes(tail)
 
             if getattr(child, "returncode", 0) == 0:
                 failure = _failure_signature(output)

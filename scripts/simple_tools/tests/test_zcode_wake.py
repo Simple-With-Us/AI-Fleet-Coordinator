@@ -8,6 +8,7 @@ by every test and every process, so one test's cleanup could fail another's asse
 
 from __future__ import annotations
 
+import io
 import os
 import sqlite3
 import subprocess
@@ -39,20 +40,23 @@ class FakeChild:
         self.error = None
         self.killed = False
         self.waited = False
+        self.raised = False
+        # The child's own stream, which the module drains while the child runs.
+        self.stdout = io.BytesIO(output)
 
-    def communicate(self, timeout=None):
-        if self.timeout:
-            raise subprocess.TimeoutExpired(self.argv, timeout or 900)
-        if self.error is not None:
+    def wait(self, timeout=None):
+        # The first wait is the one the module times:  it raises what the turn raised.
+        if self.error is not None and not self.raised:
+            self.raised = True
             raise self.error
-        return (self.output, None)
+        if self.timeout and not self.raised:
+            self.raised = True
+            raise subprocess.TimeoutExpired(self.argv, timeout or 900)
+        self.waited = True
+        return self.returncode
 
     def kill(self):
         self.killed = True
-
-    def wait(self):
-        self.waited = True
-        return self.returncode
 
 
 def private_dir(path) -> str:
@@ -647,17 +651,53 @@ class RouterPlatformTests(Base):
         self.assertEqual(delivery.outcome, "sent")
         self.assertIn(str(self.workspace), self.calls[0])
 
-    def test_the_two_routes_take_two_runners(self):
+    def test_the_two_routes_use_their_own_runner(self):
         # The local turn is started with a handle the module keeps, and the ssh call is a plain
-        # command that is waited for and read at once:  one runner cannot be both.
-        import inspect
+        # command that is waited for and read at once:  one runner cannot be both, and the
+        # local route must never be handed the ssh command.
+        local_calls = []
+        remote_calls = []
 
-        local = inspect.signature(zcode_wake.make_deliver).parameters
-        self.assertIs(local["runner"].default, subprocess.Popen)
-        self.assertIs(local["remote_runner"].default, subprocess.run)
-        remote = inspect.signature(zcode_wake.router_platform).parameters
-        self.assertIs(remote["runner"].default, subprocess.Popen)
-        self.assertIs(remote["remote_runner"].default, subprocess.run)
+        def local_runner(argv, **kwargs):
+            local_calls.append(list(argv))
+            child = FakeChild(argv, 0, b"", False)
+            self.children.append(child)
+            return child
+
+        def remote_runner(argv, **kwargs):
+            remote_calls.append(list(argv))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        platform = zcode_wake.router_platform(
+            self.env,
+            {
+                "workspace": str(self.workspace),
+                "local_host": "server",
+                "mac_ssh": "test@example.test",
+            },
+            runner=local_runner,
+            remote_runner=remote_runner,
+        )
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
+        ):
+            local = platform.deliver(
+                zcode_wake.WR.Target(session_id=SID, letter="BB", host="server", generation=3),
+                zcode_wake.WR.Wake(wake_id="w3-abcdef", message_id=1),
+            )
+        self.assertEqual(local.outcome, "sent")
+        self.assertTrue(local_calls)
+        self.assertFalse(remote_calls)
+        with patch.object(
+            zcode_wake.WR.registry_api, "call", side_effect=self._registry([_holding_row()])
+        ):
+            remote = platform.deliver(
+                zcode_wake.WR.Target(session_id=SID, letter="BB", host="mac", generation=3),
+                zcode_wake.WR.Wake(wake_id="w4-abcdef", message_id=1),
+            )
+        self.assertTrue(remote_calls)
+        self.assertEqual(len(local_calls), 1)
+        self.assertIn("ssh", remote_calls[0][0])
 
 
 if __name__ == "__main__":

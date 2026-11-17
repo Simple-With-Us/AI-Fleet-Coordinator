@@ -70,9 +70,10 @@ does not work never leaves the seat without a route.
     the router, and the URL names the front.
 5.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt shows the
     picked session and a delivered or an explicitly unsettled outcome.  A front that
-    misbehaves here is one line back:  the legacy binding is still in place, with
-    `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`,
-    and the key the bridge used was never withdrawn.
+    misbehaves here is a rollback, and the values a rollback needs are still in place:
+    `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`
+    are the bridge's own values and were never withdrawn, so pointing the live `[seat.ZC]`
+    block back at them and reloading the listener restores the legacy path.
 
 Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
