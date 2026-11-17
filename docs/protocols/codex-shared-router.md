@@ -75,10 +75,10 @@ The router on the server has no Codex Desktop, so a delivery that stayed there w
 every wake with a store it does not have.  The seat's platform therefore has two halves, and
 the platform table names both.
 
-- `router_platform` is the server's platform for seat CODEX.  A chat on the router's own host
-  goes to this module's own adapter, and a chat on the Mac goes over the one fixed ssh route
-  in `claude_wake.deliver_remote`, exactly as the other Mac-hosted platforms do.  Any other host
-  is refused.
+- `router_platform` is the server's platform for seat CODEX.  A chat on the Mac goes over the
+  one fixed ssh route in `claude_wake.deliver_remote`, exactly as the other Mac-hosted platforms
+  do.  A chat on the router's own host is refused, because that host has no Codex Desktop
+  either, and any other host is refused too.
 - `deliver_request` is the Mac-side handler that `simple-chat wake-deliver` dispatches to.  It
   re-checks the request, re-reads the store, and hands the wake to the native transport.
 
@@ -88,17 +88,27 @@ not have.
 
 ## The pinned owner
 
-The authority to enqueue a prompt into a Codex thread is granted to a target whose owner
-matches the one the deployment pins.  The registry's session row carries no owner column, so
-the authoritative owner of a Codex chat is the profile its thread lives in:  the Codex store
-this host reads.  The deployment names that profile in the Mac's own local settings file,
-`~/.local/state/codex-wake/config.json`:
+The authority to enqueue a prompt into a Codex thread is granted only when the target's owner
+is the owner the deployment pins, and that is a user-id comparison.  The registry's session row
+carries no owner column and the Codex store carries no account id, so the owner's id comes from
+the fleet's own identity source:  the installed `listener.toml`, where `daemon init` pins the
+realm's one human owner as `daemon.owner_user_id`.  The deployment pins the same id for this
+seat in the Mac's own local settings file, `~/.local/state/codex-wake/config.json`:
 
-    { "pinned_profile": "/Users/jay/.codex" }
+    { "pinned_profile": "/Users/jay/.codex", "pinned_owner_user_id": 1211974 }
 
-A delivery whose store is another profile is refused (`owner-mismatch`), and a delivery with
-no pin at all is refused (`no-pinned-owner`), both before anything is enqueued.  A refusal
-that comes before the enqueue is a `NEVER_RAN` code, so its receipt says `delivered: false`.
+A user id is private inventory, so none is committed:  the host writes the pin and the runtime
+reads it.  The delivery compares the two ids before anything is enqueued, and refuses:
+
+- `no-pinned-owner` when the deployment pins no owner id at all,
+- `owner-unreadable` when the installed config cannot be read or carries no owner id,
+- `owner-mismatch` when the pinned id and the fleet's owner id differ.
+
+The profile check still runs, and it is its own code:  the owner's id says whose chats may be
+woken, and the profile says which store this seat may read them from.  A thread in another
+profile is refused (`profile-mismatch`), and a delivery with no profile pin is refused
+(`no-pinned-owner`).  Every one of these refusals happens before the enqueue, so each one is a
+`NEVER_RAN` code and its receipt says `delivered: false`.
 
 ## The cutover, and what is not switched yet
 
@@ -109,7 +119,8 @@ real wake.
 
 The cutover, when it is done, is these four steps, in this order.
 
-1.  Write the pinned profile into the Mac's local settings file, as above.
+1.  Write the pinned profile and the pinned owner user id into the Mac's local settings
+    file, as above.
 2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
     `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.

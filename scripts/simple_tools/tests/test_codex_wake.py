@@ -14,6 +14,33 @@ from simple_tools import platform_letter_codex as PLC
 from simple_tools import wake_router as WR
 
 SID = "11111111-1111-4111-8111-111111111111"
+#: The fleet's owner user id, as the installed listener.toml pins it.
+OWNER_ID = 1211974
+#: Another id, so a pin that is not the fleet's owner is one the fixture can name.
+OTHER_OWNER_ID = 1212000
+
+
+def private_dir(path: str) -> str:
+    """A private directory, built one level at a time with owner-only permissions.
+
+    Every missing level is created explicitly, a symlinked level is refused, and nothing
+    outside the fixture's own home is ever followed."""
+    missing = []
+    probe = os.path.abspath(path)
+    while not os.path.exists(probe):
+        missing.append(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    if os.path.islink(path):
+        raise OSError("refusing a symlinked directory: %s" % path)
+    for level in reversed(missing):
+        if os.path.islink(level):
+            raise OSError("refusing a symlinked directory: %s" % level)
+        os.mkdir(level, mode=0o700)
+        os.chmod(level, 0o700)
+    return path
 
 
 @dataclass(frozen=True)
@@ -78,18 +105,26 @@ class CodexWakeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        os.mkdir(os.path.join(self.tmp.name, "workspace"))
+        os.mkdir(os.path.join(self.tmp.name, "workspace"), mode=0o700)
         # The Codex profile this seat owns, and the store the thread is read from.
         self.profile = os.path.join(self.tmp.name, ".codex")
-        os.mkdir(self.profile)
+        os.mkdir(self.profile, mode=0o700)
         self.store = os.path.join(self.profile, "state_5.sqlite")
         store_patch = patch.object(PLC, "store_file", return_value=self.store)
         store_patch.start()
         self.addCleanup(store_patch.stop)
-        # The Mac's own local settings file:  the profile this seat may wake.
+        # The Mac's own local settings file:  the profile and the owner this seat may wake.
         local = CW.state_dir({"HOME": self.tmp.name}) / "config.json"
-        local.parent.mkdir(parents=True, exist_ok=True)
-        local.write_text(json.dumps({"pinned_profile": self.profile}), encoding="utf-8")
+        private_dir(str(local.parent))
+        local.write_text(
+            json.dumps({"pinned_profile": self.profile, "pinned_owner_user_id": OWNER_ID}),
+            encoding="utf-8",
+        )
+        # The installed listener.toml, where the fleet pins its own owner id.
+        installed = os.path.join(self.tmp.name, ".simple-tools")
+        os.mkdir(installed, mode=0o700)
+        with open(os.path.join(installed, "listener.toml"), "w", encoding="utf-8") as fh:
+            fh.write("[daemon]\nowner_user_id = %d\n" % OWNER_ID)
         self.meta = {
             "id": SID,
             "cwd": os.path.join(self.tmp.name, "workspace"),
@@ -125,6 +160,7 @@ class CodexWakeTests(unittest.TestCase):
             hostname=lambda: "example.test",
             registry_lookup=registry,
             pinned_profile=self.profile,
+            pinned_owner_user_id=OWNER_ID,
         )
         self.target = TargetWithGeneration(
             SID, letter="BC", host="mac", title="untrusted title", thread_link="ignored", generation=7
@@ -479,7 +515,11 @@ class CodexWakeTests(unittest.TestCase):
     def test_factory_declares_codex_platform_and_canonical_target_pattern(self):
         platform = CW.make_platform(
             {"HOME": self.tmp.name},
-            {"local_host": "mac", "pinned_profile": self.profile},
+            {
+                "local_host": "mac",
+                "pinned_profile": self.profile,
+                "pinned_owner_user_id": OWNER_ID,
+            },
             transport=self.transport,
             metadata_lookup=lambda env, sid: self.meta,
             hostname=lambda: "example.test",
@@ -508,9 +548,43 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual((result.outcome, result.code), ("refused", "no-pinned-owner"))
         self.assertEqual(self.transport.calls, [])
 
+    def test_a_delivery_whose_owner_is_not_the_fleet_owner_is_refused(self):
+        adapter = CW.CodexDelivery(
+            self.transport,
+            {"HOME": self.tmp.name},
+            lambda env, sid: self.meta,
+            local_host="mac",
+            hostname=lambda: "example.test",
+            registry_lookup=lambda env, letter: self.registry_result,
+            pinned_profile=self.profile,
+            pinned_owner_user_id=OTHER_OWNER_ID,
+        )
+        with self.with_chat():
+            result = adapter(self.target, self.wake)
+        self.assertEqual((result.outcome, result.code), ("refused", "owner-mismatch"))
+        self.assertEqual(self.transport.calls, [])
+
+    def test_a_delivery_when_the_owner_cannot_be_read_is_refused(self):
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        adapter = CW.CodexDelivery(
+            self.transport,
+            {"HOME": elsewhere.name},
+            lambda env, sid: self.meta,
+            local_host="mac",
+            hostname=lambda: "example.test",
+            registry_lookup=lambda env, letter: self.registry_result,
+            pinned_profile=self.profile,
+            pinned_owner_user_id=OWNER_ID,
+        )
+        with self.with_chat():
+            result = adapter(self.target, self.wake)
+        self.assertEqual((result.outcome, result.code), ("refused", "owner-unreadable"))
+        self.assertEqual(self.transport.calls, [])
+
     def test_a_delivery_into_another_profile_is_refused(self):
         other = os.path.join(self.tmp.name, "other-codex")
-        os.mkdir(other)
+        os.mkdir(other, mode=0o700)
         adapter = CW.CodexDelivery(
             self.transport,
             {"HOME": self.tmp.name},
@@ -519,10 +593,11 @@ class CodexWakeTests(unittest.TestCase):
             hostname=lambda: "example.test",
             registry_lookup=lambda env, letter: self.registry_result,
             pinned_profile=other,
+            pinned_owner_user_id=OWNER_ID,
         )
         with self.with_chat():
             result = adapter(self.target, self.wake)
-        self.assertEqual((result.outcome, result.code), ("refused", "owner-mismatch"))
+        self.assertEqual((result.outcome, result.code), ("refused", "profile-mismatch"))
         self.assertEqual(self.transport.calls, [])
 
     def test_the_server_sends_a_mac_chat_over_ssh(self):
@@ -560,6 +635,19 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual((delivery.outcome, delivery.ack), ("sent", "confirmed"))
         self.assertTrue(any(argv[0] == "ssh" for argv in calls))
         self.assertEqual(self.transport.calls, [])  # the Mac-local adapter never ran
+
+    def test_the_router_refuses_a_chat_on_its_own_host(self):
+        platform = CW.router_platform(
+            {"HOME": self.tmp.name},
+            {"local_host": "server", "mac_ssh": "test@example.test"},
+            transport=self.transport,
+        )
+        target = TargetWithGeneration(SID, letter="BC", host="server", generation=7)
+        delivery = platform.deliver(target, self.wake)
+        self.assertEqual((delivery.outcome, delivery.code), ("refused", "no-codex-desktop"))
+        # The refusal is terminal, so the receipt settles instead of retrying forever.
+        self.assertIn("no-codex-desktop", CW.NEVER_RAN)
+        self.assertEqual(self.transport.calls, [])
 
     def test_the_server_refuses_a_host_it_cannot_reach(self):
         platform = CW.router_platform(
