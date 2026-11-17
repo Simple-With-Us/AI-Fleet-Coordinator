@@ -4513,8 +4513,17 @@ def install_json_hooks(
     over = {ev: t for ev, t in installer.events.items() if cap and t > cap}
     if over and not opts.remove and not opts.check:
         # A runtime that refuses this timeout never runs the hook, so the installer writes nothing at all.
-        return _emit(stdout, {"platform": platform, "path": path, "refused": "timeout_over_cap",
-                               "cap": cap, "timeouts": over}, 1)
+        return _emit(
+            stdout,
+            {
+                "platform": platform,
+                "path": path,
+                "refused": "timeout_over_cap",
+                "cap": cap,
+                "timeouts": over,
+            },
+            1,
+        )
     already = [
         installed_command(e, platform) for ev in installer.events for e in events.get(ev) or []
     ]
