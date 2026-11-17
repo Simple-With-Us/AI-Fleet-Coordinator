@@ -50,30 +50,39 @@ does not work never leaves the seat without a route.
     the router to that name, so the router's front for this seat is `ZC_ROUTINE_URL` and the
     legacy bridge moves to `ZC_BRIDGE_ROUTINE_URL`.  The bridge's URL value does not change,
     only the name it is read under:  mint `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` with the
-    bridge's URL, point the live `[seat.ZC]` block at it while the bridge is still the seat's
-    path, and mint `ZC_ROUTINE_URL` with the router's front URL,
+    bridge's URL, and mint `ZC_ROUTINE_URL` with the router's front URL,
     `https://<server tailnet host>:8795/wake/ZC`.  One name never serves the router's front and
     the bridge at the same time, and the seat keeps the one convention every other seat
-    follows.
+    follows.  The loader exports the bridge's name for every server seat
+    (`<SEAT>_BRIDGE_ROUTINE_URL`), so the container carries it once it runs the loader that
+    reads it, and the environment is read once at the container's start, so the container is
+    restarted after the names are minted.  Nothing in the live listener changes in this step:
+    the seat keeps `wake = "inbox"`, the capture path it holds today.
 2.  Deploy the router release that carries `zcode_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/ZC` answers `healthy`
     with `delivery` on, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
 3.  Prove the router's front and the router's own key with a real wake, while the live
-    listener still holds the legacy binding:  post one wake to
+    listener still holds the seat's own binding:  post one wake to
     `https://<server tailnet host>:8795/wake/ZC` with the router's bearer, and read the
     receipt (`/receipt/ZC/<wake id>`).  The receipt shows the picked session and a delivered
     or an explicitly unsettled outcome.  Nothing in the live listener changes in this step, so
-    the bridge path is untouched and still works if the router's front does not.
+    the seat's own capture path is untouched and the seat keeps receiving its messages if the
+    router's front does not.
 4.  Only then change the live listener's `[seat.ZC]` block to `wake = "http"` with
-    `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`.
-    The bearer is now the router's own key, so the key the bridge used is no longer accepted by
-    the router, and the URL names the front.
+    `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+    and restart the container:  the routine's URL comes from the environment, which is read
+    once at the container's start, so a reload alone would keep the old URL.  The bearer is
+    now the router's own key, so the key the bridge used is no longer accepted by the router,
+    and the URL names the front.
 5.  Prove it end to end:  mention @ZC in a test topic, and the router's receipt shows the
     picked session and a delivered or an explicitly unsettled outcome.  A front that
     misbehaves here is a rollback, and the values a rollback needs are still in place:
     `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`
     are the bridge's own values and were never withdrawn, so pointing the live `[seat.ZC]`
-    block back at them and reloading the listener restores the legacy path.
+    block back at them and restarting the container restores the legacy path:  the environment
+    is read once at the start, so a reload alone would leave the routine unset and the seat
+    would not be woken at all.  The seat's own capture is restored without any of that:
+    `wake = "inbox"` and a reload put the seat back exactly where it was before the cutover.
 
 Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can

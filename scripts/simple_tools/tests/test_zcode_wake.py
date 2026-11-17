@@ -59,6 +59,26 @@ class FakeChild:
         self.killed = True
 
 
+class StubbornChild(FakeChild):
+    """A child that does not go away:  the signal does nothing and the wait keeps timing out."""
+
+    def __init__(self, argv, returncode: int, output: bytes):
+        super().__init__(argv, returncode, output, False)
+        self.terminated = False
+        self.timeouts: list = []
+
+    def wait(self, timeout=None):
+        self.waited = True
+        self.timeouts.append(timeout)
+        raise subprocess.TimeoutExpired(self.argv, timeout or 900)
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+
 def private_dir(path) -> str:
     """A private directory, built one level at a time with owner-only permissions.
 
@@ -144,12 +164,12 @@ class Base(unittest.TestCase):
         fake_bin.chmod(0o755)
         self.env["ZCODE_BIN"] = str(fake_bin)
 
-    def _runner(self, exit_code: int = 0, output: bytes = b"", timeout: bool = False):
+    def _runner(self, exit_code: int = 0, output: bytes = b"", timeout: bool = False, child=None):
         def runner(argv, **kwargs):
             self.calls.append(list(argv))
-            child = FakeChild(argv, exit_code, output, timeout)
-            self.children.append(child)
-            return child
+            made = child if child is not None else FakeChild(argv, exit_code, output, timeout)
+            self.children.append(made)
+            return made
 
         return runner
 
@@ -182,7 +202,7 @@ class Base(unittest.TestCase):
         return call
 
     def _deliver_local(self, session_id=SID, wake=None, config=None, recheck=False,
-                       exit_code=0, registry_rows=None, output=b"", timeout=False):
+                       exit_code=0, registry_rows=None, output=b"", timeout=False, child=None):
         holding = _holding_row(session_id)
         rows = registry_rows or [holding]
         target = zcode_wake.WR.Target(
@@ -216,7 +236,7 @@ class Base(unittest.TestCase):
                 wake,
                 target=target if recheck else None,
                 recheck_registry=recheck,
-                runner=self._runner(exit_code, output, timeout),
+                runner=self._runner(exit_code, output, timeout, child),
             )
         return delivery
 
@@ -483,6 +503,24 @@ class DeliverLocalTests(Base):
         self._deliver_local(timeout=True)
         self.assertTrue(self.children[0].killed)
         self.assertTrue(self.children[0].waited)
+
+    def test_a_child_that_cannot_be_stopped_does_not_hang_the_delivery(self):
+        """A kill that does not take can never park the router on the session lock.
+
+        Every wait is bounded by the timeout the turn was given, and a child that does not go
+        away after the first signal is killed outright, so the delivery returns and the lock
+        is released.
+        """
+        child = StubbornChild(["zcode"], 0, b"")
+        delivery = self._deliver_local(child=child)
+        self.assertEqual(delivery.outcome, "unknown")
+        self.assertEqual(delivery.code, "resume-timeout")
+        self.assertTrue(child.terminated)
+        self.assertTrue(child.killed)
+        # No wait was ever unbounded:  every one of them carried the turn's timeout.
+        self.assertTrue(child.timeouts)
+        for value in child.timeouts:
+            self.assertIsNotNone(value)
 
     def test_a_failure_signature_in_the_output_tail_is_found(self):
         output = b"x" * 16 + FAILED_TURN

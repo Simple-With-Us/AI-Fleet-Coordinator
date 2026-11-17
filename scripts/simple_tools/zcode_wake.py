@@ -170,16 +170,30 @@ def _read_tail(stream: object, cap: int) -> tuple[bytearray, threading.Thread]:
     return buffer, thread
 
 
-def _terminate(child: Child) -> None:
-    """Stop the child and reap it, and never raise:  the turn is over either way."""
-    try:
-        child.kill()
-    except Exception:  # noqa: BLE001, S110 - the child never started, or it is already gone
-        pass
-    try:
-        child.wait()
-    except Exception:  # noqa: BLE001, S110 - the child is gone, and nothing is left to reap
-        pass
+def _terminate(child: Child, timeout: float) -> None:
+    """Stop the child and reap it, and never raise:  the turn is over either way.
+
+    Every wait here is bounded by the timeout the turn was given, and a child that does not
+    go away after the first signal is killed outright, so a child that cannot be stopped can
+    never park the router on the session lock forever.  A child that cannot be killed at all
+    is left to the operating system:  the lock is released and the receipt is written, which
+    is a better outcome than a delivery that never returns."""
+    for name in ("terminate", "kill"):
+        sender = getattr(child, name, None)
+        if sender is None:
+            continue
+        try:
+            sender()
+        except Exception:  # noqa: BLE001, S110 - the child never started, or it is already gone
+            pass
+        try:
+            child.wait(timeout=timeout)
+            return
+        except subprocess.TimeoutExpired:
+            # The signal did not take:  escalate to the next one.
+            continue
+        except Exception:  # noqa: BLE001 - the child is gone, and nothing is left to reap
+            return
 
 
 def state_dir(env: Mapping[str, str]) -> Path:
@@ -579,7 +593,7 @@ def deliver_local(
                 # Every path stops and reaps the child:  a turn that keeps running would hold
                 # the session lock this delivery already holds, and an interruption must not
                 # leave it behind.
-                _terminate(child)
+                _terminate(child, timeout_seconds)
                 reader.join(timeout=OUTPUT_JOIN_SECONDS)
             output = bytes(tail)
 
