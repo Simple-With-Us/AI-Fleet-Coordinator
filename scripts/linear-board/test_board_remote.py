@@ -138,6 +138,34 @@ class Remote(unittest.TestCase):
         self.assertIn("no structured result", err)
         self.assertEqual(len(calls), 1)
 
+    def test_a_content_part_of_the_wrong_shape_is_refused_before_it_is_read(self):
+        # The hosted's answer is untrusted:  a part that names no type, a type that is not a
+        # string, or a text part whose text is not a string, is refused at the boundary and
+        # never read downstream.
+        cases = (
+            {"text": "{}"},
+            {"type": 7, "text": "{}"},
+            {"type": "text", "text": 7},
+        )
+        for part in cases:
+            with self.subTest(part=part):
+                body = json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "result": {"content": [part]}}
+                ).encode()
+                code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+                self.assertNotEqual(code, 0)
+                self.assertIn("unexpected shape", err)
+                self.assertEqual(len(calls), 1)
+
+    def test_a_content_collection_that_is_not_a_list_is_refused(self):
+        body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "result": {"content": {"type": "text"}}}
+        ).encode()
+        code, out, err, calls = self.run_cli(["whoami"], (200, "application/json", body))
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected shape", err)
+        self.assertEqual(len(calls), 1)
+
     def test_a_tool_that_needs_a_summary_fails_fast_when_the_hosted_sends_none(self):
         # Only the fenced reads may answer with the text envelope alone:  whoami has to name the
         # seat and a write has to say what the hosted did, so a missing summary there is a failure
@@ -575,7 +603,7 @@ class NativeEcho(unittest.TestCase):
             unittest.mock.patch.object(board.subprocess, "run", return_value=fake),
         ):
             status, ctype, data = board._native_echo_post(b"{}", True)
-        result, error = board._remote_answer(ctype, data, "linear_comment", True)
+        result, _parts, error = board._remote_answer(ctype, data, "linear_comment", True)
         self.assertIsNone(result)
         self.assertIn("may or may not", error)
         self.assertNotIn("private transport details", error)
