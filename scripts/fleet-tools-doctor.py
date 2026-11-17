@@ -2229,20 +2229,20 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
 
 
 def mac_copy_revision(runner: Callable = subprocess.run, tip: str | None = None) -> dict:
-    """The revision the Mac's installed copies are judged against:  the managed runtime's own.
+    """The revision the Mac's installed copies are judged against.
 
-    The layout's runtime dict is not it.  On a Mac that is judged server-style that dict describes
-    a different checkout (the fleet-cli release), and a foreign revision either judges the copies
-    against the wrong commit or leaves the row a permanent WARN/unknown, so a stale copy stays
-    invisible.  The AFC tip is used when the managed runtime really holds it,  and the runtime's
-    own origin/main or HEAD otherwise.  A Mac with no managed runtime has neither,  and the rows
-    answer WARN/unknown, never current.
+    `tip` is the tip of refs/heads/main as it was read from GitHub in this run,  and None when it
+    was not read.  `head` is the managed runtime's own HEAD,  because that is the checkout the
+    copies are compared against:  the layout's runtime dict names a different checkout (the
+    fleet-cli release) on a Mac judged server-style,  and a foreign revision either judges the
+    copies against the wrong commit or leaves the row a permanent WARN/unknown.
+
+    A local origin/main ref is never a tip (the policy at the top of this file):  when the tip was
+    not read,  or the runtime does not hold it,  copy_reference falls back to the runtime HEAD and
+    the row answers WARN/unknown,  never current.
     """
     head = git_try(MAC_RUNTIME, "rev-parse", "HEAD", runner=runner)
-    local = git_try(MAC_RUNTIME, "rev-parse", "origin/main", runner=runner)
-    if tip and git_has_commit(MAC_RUNTIME, tip, runner=runner):
-        return {"tip": tip, "head": head or None}
-    return {"tip": local or None, "head": head or None}
+    return {"tip": tip or None, "head": head or None}
 
 
 def check_mac_copies(
