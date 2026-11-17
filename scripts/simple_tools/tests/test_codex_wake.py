@@ -581,12 +581,16 @@ class CodexWakeTests(unittest.TestCase):
 
         local = WS.local_config_path({"HOME": self.tmp.name})
         self.assertEqual(CW.local_pins({"HOME": self.tmp.name})[2], OWNER_ACCOUNT)
+        # The rewrite keeps the file's timestamp, so a reader that compares the timestamp
+        # would serve the old owner:  the content is what says.
+        stamp = local.stat().st_mtime_ns
         local.write_text(
             json.dumps(
                 {"pinned_profile": self.profile, "pinned_owner_account": OTHER_OWNER_ACCOUNT}
             ),
             encoding="utf-8",
         )
+        os.utime(local, ns=(stamp, stamp))
         self.assertEqual(CW.local_pins({"HOME": self.tmp.name})[2], OTHER_OWNER_ACCOUNT)
 
     def test_a_delivery_reads_the_pins_from_the_file_when_none_are_injected(self):
@@ -603,10 +607,30 @@ class CodexWakeTests(unittest.TestCase):
         self.assertEqual(result.outcome, "sent")
 
     def test_an_account_id_is_read_as_text_whatever_the_store_column_holds(self):
-        self.assertEqual(PLC._text(42), "42")
-        self.assertEqual(PLC._text(" user-1 "), "user-1")
-        self.assertEqual(PLC._text(None), "")
-        self.assertEqual(PLC._text(True), "")
+        self.assertEqual(PLC._as_text(42), "42")
+        self.assertEqual(PLC._as_text(" user-1 "), "user-1")
+        self.assertEqual(PLC._as_text(None), "")
+        self.assertEqual(PLC._as_text(True), "")
+
+    def test_the_store_row_carries_a_numeric_account_id_as_text(self):
+        import sqlite3
+
+        store = os.path.join(self.tmp.name, "state_5.sqlite")
+        con = sqlite3.connect(store)
+        con.execute(
+            "CREATE TABLE threads (id TEXT, source TEXT, originator TEXT, thread_source TEXT,"
+            " creator_user_id TEXT, title TEXT, name TEXT, first_user_message TEXT,"
+            " agent_nickname TEXT, agent_path TEXT)"
+        )
+        con.execute("INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+            SID, "desktop", "Codex Desktop", "user", 42, "t", None, "", None, None,
+        ))
+        con.commit()
+        con.close()
+        with patch.object(PLC, "store_file", return_value=store):
+            row = PLC.thread_row({"HOME": self.tmp.name}, SID)
+        self.assertIsNotNone(row)
+        self.assertEqual(row.creator_user_id, "42")
 
     def test_a_delivery_without_a_pinned_owner_is_refused(self):
         adapter = self._adapter(lambda env: ("ok", self.profile, ""))

@@ -183,27 +183,6 @@ def state_root(env: Mapping[str, str]) -> Path:
     return WS.state_root(env)
 
 
-def file_defaults() -> dict[str, Any]:
-    """Every name the shared local file may carry:  the union of the platform table's defaults.
-
-    The file is shared by every seat, so a seat's own facts are in it too:  the union is what
-    the reader is checked against, so one seat's key never refuses the file for the others."""
-    values: dict[str, Any] = {}
-    for seat, entry in sorted(BUILDERS.items()):
-        try:
-            module = importlib.import_module(entry.module)
-        except ImportError:
-            continue
-        defaults = getattr(module, "DEFAULTS", None)
-        if isinstance(defaults, Mapping):
-            values.update(defaults)
-    # A host fact whose platform is not on this host is still a name the shared file may
-    # carry, so it is known here:  one seat's key must never refuse the file for the others.
-    for name in WS.HOST_FACTS:
-        values.setdefault(name, "")
-    return values
-
-
 def default_state(env: Mapping[str, str], seat: str) -> Path:
     return state_root(env) / seat.lower()
 

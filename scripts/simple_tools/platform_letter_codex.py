@@ -184,7 +184,7 @@ def _s(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _text(value: object) -> str:
+def _as_text(value: object) -> str:
     """A value as text, whatever the store's column type is.
 
     The account id of a thread is a string in a current store and a number in an older one, so
@@ -251,7 +251,7 @@ def thread_row(env: Mapping[str, str], sid: str) -> Thread | None:
         source=source,
         originator=_s(data.get("originator")),
         thread_source=_s(data.get("thread_source")),
-        creator_user_id=_text(data.get("creator_user_id")),
+        creator_user_id=_as_text(data.get("creator_user_id")),
         title=_s(data.get("title")),
         name=PL.one_line(data.get("name")),
         first_message=_s(data.get("first_user_message")),

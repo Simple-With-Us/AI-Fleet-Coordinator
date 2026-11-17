@@ -671,16 +671,15 @@ def local_pins(env: Mapping[str, str]) -> tuple[str, str, str]:
     """(`ok`|`missing`|`unreadable`, the profile this seat may read, the owner account).
 
     The pins are host facts, so they live in the one local file the service reads,
-    `<state root>/config.json`, and this is the file the deployment writes them in.  The file
-    is read with the union of every seat's defaults, so another seat's key in it never
-    refuses it, and only this seat's two facts are taken from it.
+    `<state root>/config.json`, and this is the file the deployment writes them in.  Only this
+    seat's two facts are taken from it, so another seat's key in it is none of this seat's
+    business.
 
     A file that is not there is no pin (`missing`), and a file that cannot be read, or that
     carries a value of the wrong type, is `unreadable`, so a receipt says which one it was.
 
     The file is read once per change of that file:  a delivery attempt must not cost a parse
     of the deployment's configuration every time."""
-    from . import wake_service as SVC
     from . import wake_settings as WS
 
     path = WS.local_config_path(env)
@@ -697,17 +696,17 @@ def local_pins(env: Mapping[str, str]) -> tuple[str, str, str]:
     cached = _LOCAL_FACTS.get(str(path))
     if cached is not None and cached[0] == stamp:
         return "ok", cached[1]["profile"], cached[1]["owner_account"]
+    # The facts come from the bytes that were digested, so the digest and the pins always
+    # describe the same content, even when the file is rewritten between two reads.
     try:
-        local = WS.read_local(path, SVC.file_defaults())
-    except FileNotFoundError:
-        return "missing", "", ""
-    except (Exception, SystemExit):
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
         # A broken file is a configuration failure, not a missing pin:  the receipt says so.
         return "unreadable", "", ""
-    if not isinstance(local, Mapping):
+    if not isinstance(document, Mapping):
         return "unreadable", "", ""
-    profile = local.get("pinned_profile", "")
-    account = local.get("pinned_owner_account", "")
+    profile = document.get("pinned_profile", "")
+    account = document.get("pinned_owner_account", "")
     if not isinstance(profile, str) or not isinstance(account, str):
         return "unreadable", "", ""
     facts = {"profile": profile.strip(), "owner_account": account.strip()}
