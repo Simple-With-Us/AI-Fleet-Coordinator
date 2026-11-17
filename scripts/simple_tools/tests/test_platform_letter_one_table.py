@@ -161,17 +161,38 @@ class MiniMaxRow(Base):
             self.assertLessEqual(timeout, PM.HOOK_TIMEOUT_CAP, event)
         self.assertEqual(PM.INSTALL.timeout_cap, PM.HOOK_TIMEOUT_CAP)
         self.assertEqual(PM.INSTALL.events, PM.HOOK_TIMEOUTS)
-        # And the register chain fits inside the budget:  the chat's own calls, and one best-effort call for
-        # each ancestor generation, at the row's own deadlines.  Every other row keeps the shared deadline,
-        # which is longer, so no other platform's call is shortened by it.
+        # And the register chain fits inside the budget:  the chat's own calls, and the ancestor
+        # generations this row's own depth allows, at the row's own deadlines.  The ancestor count is the
+        # worst case (the register, the reopen and the title update), not the usual one call.
         self.assertLessEqual(
-            PL.PARENT_DEPTH * PL.PARENT_CALLS * PM.PARENT_CALL_TIMEOUT
+            PM.PARENT_DEPTH * PL.PARENT_CALLS * PM.PARENT_CALL_TIMEOUT
             + PL.CHAT_CALLS * PM.CALL_TIMEOUT,
             min(PM.HOOK_TIMEOUTS.values()),
         )
         self.assertLess(PM.CALL_TIMEOUT, PL._API_TIMEOUT)
         self.assertEqual(PM.SPEC.call_timeout, PM.CALL_TIMEOUT)
         self.assertEqual(PM.SPEC.parent_call_timeout, PM.PARENT_CALL_TIMEOUT)
+        # The depth is the row's own, and the rows that can carry the shared one keep it:  this row is
+        # smaller, not the table.
+        self.assertEqual(PM.SPEC.parent_depth, PM.PARENT_DEPTH)
+        self.assertEqual(PL.effective_parent_depth(PM.SPEC), PM.PARENT_DEPTH)
+        self.assertEqual(PL.effective_parent_depth(PC.SPEC), PL.PARENT_DEPTH)
+
+    def test_the_parent_walk_stops_at_the_row_own_depth(self) -> None:
+        # The runtime stops the hook at ten seconds, so this row registers one ancestor generation:  a
+        # sub-thread's parent is registered, and that parent's own parent is not.
+        self.add("m-0001", "Grandparent")
+        self.add("m-0002", "Parent", parent="m-0001")
+        self.add("m-0003", "Child", parent="m-0002")
+        self.run_hook(
+            PM.SPEC, {"hook_event_name": "SessionStart", "session_id": "m-0003", "source": "startup"}
+        )
+        self.assertTrue(self.note("MM", "m-0002").get("label"))
+        self.assertTrue(self.note("MM", "m-0003").get("label"))
+        self.assertFalse(
+            os.path.exists(os.path.join(self.state, "MM", "letters", "m-0001.json")),
+            "the grandparent is one generation too many for the row's budget",
+        )
 
     def test_kinds_parents_and_titles_come_from_the_store(self) -> None:
         self.add("m-0001", "Memory sync")

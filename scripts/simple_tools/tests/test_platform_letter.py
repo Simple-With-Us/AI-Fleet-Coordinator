@@ -2808,6 +2808,30 @@ class GoneReportTests(Base):
         with mock.patch.object(registry_api, "_open", capture):
             yield seen
 
+    def test_the_gone_report_honours_the_platforms_own_deadline(self) -> None:
+        # A row whose runtime stops its hook sooner declares its own deadline, and the gone report is one
+        # of that hook's calls:  it must not wait for the shared one.
+        spec = make_spec(
+            platform="faux",
+            source="faux-hook",
+            display="Faux",
+            gone_sessions=lambda env, sids: {"s-0001"},
+            call_timeout=2,
+        )
+        seen: list[int] = []
+        real = registry_api._open
+
+        def capture(request, timeout):
+            if request.full_url.endswith("/report-gone"):
+                seen.append(timeout)
+            return real(request, timeout)
+
+        self.start("s-0001", self.t0, spec=spec)  # the chat the adapter will name
+        self.start("s-0003", self.t0, spec=spec)
+        with mock.patch.object(registry_api, "_open", capture):
+            self.start("s-0004", self.t0 + self.window + 1, spec=spec)  # the report is due
+        self.assertEqual(seen, [2])
+
     def test_a_start_reports_this_hosts_gone_chats_in_one_call(self) -> None:
         with self.reports() as sent:
             for sid in ("s-0001", "s-0002", "s-0003"):

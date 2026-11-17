@@ -418,6 +418,9 @@ class PlatformSpec:
     parent_call_timeout        the deadline for one ancestor's best-effort registration (0 for the row's
                                own):  an ancestor that cannot be registered does not stop the chat's own
                                registration, so it must not eat the chat's budget
+    parent_depth              how many generations of ancestors this platform's hook registers ahead of
+                               a sub-thread:  0 for the shared depth (`PARENT_DEPTH`), and a smaller
+                               number for a platform whose hook budget cannot carry the shared one
     quiet_events               platform events whose hook output the platform does not take (Codex's SubagentStop has
                                no hookSpecificOutput): the hook still runs, and prints nothing for them
     chat_payload               from a native session id, the payload that chat's own start event would carry; it lets
@@ -459,6 +462,7 @@ class PlatformSpec:
     locations: tuple[str, ...] = LOCATIONS
     call_timeout: int = 0
     parent_call_timeout: int = 0
+    parent_depth: int = 0
     quiet_events: tuple[str, ...] = ()
     chat_payload: Callable[[str], Mapping[str, Any]] | None = None
     session_env: tuple[str, ...] = ()
@@ -782,19 +786,24 @@ _NOT_REGISTERED_MARK = "is not registered on"
 
 
 #: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
-#: 20 seconds (HOOK_TIMEOUTS) and a register chains at most three calls (register, reopen,
-#: update), so one call gets 4:  the chain's worst case stays inside the tightest budget, and
-#: a healthy call to the listener answers in well under a second.  Three seconds is the value that keeps a four-call chain (the parent, the chat, the reopen, the title)  inside the fifteen-second budgets the rows carry.  A platform whose runtime stops its hook sooner than that budget allows declares its own deadline  (PlatformSpec.call_timeout), and no other platform's call is shortened by it.  An unsettled parent is
-#: registered first, at most once per RETRY_SECONDS (`_ensure_parent`).  The batch callers of
+#: 20 seconds (HOOK_TIMEOUTS) and a chat's own registration chains at most three calls (register,
+#: reopen, update), so one call gets three seconds:  the chain's worst case stays inside the
+#: tightest budget, and a healthy call to the listener answers in well under a second.  A
+#: platform whose runtime stops its hook sooner than that budget allows declares its own deadline  (PlatformSpec.call_timeout), and no other platform's call is shortened by it.  An
+#: unsettled parent is registered first, at most once per RETRY_SECONDS (`_ensure_parent`), at the
+#: depth its own budget can carry (PlatformSpec.parent_depth).  The batch callers of
 #: registry_api (the operator-registry CLI) keep its longer default.
 _API_TIMEOUT = 3
 #: The calls one chat's own registration makes:  the register, the reopen that may follow it, and the
 #: title update that carries the lettered title.
 CHAT_CALLS = 3
-#: The calls one ancestor's best-effort registration makes:  its register.  A reopen follows only when the
-#: registry says that ancestor is closed, which is the path a call that failed already covers.  An ancestor
-#: that cannot be registered does not stop the chat's own registration.
-PARENT_CALLS = 1
+#: The calls one ancestor's best-effort registration makes:  its register, the reopen that may follow
+#: it when the registry says that ancestor is closed, and the title update that carries the lettered
+#: title.  An ancestor that was registered before and came back closed is exactly the ancestor this
+#: path registers,  so the reopen and the update are on it:  the count is the worst case, not the
+#: usual one.  A row whose hook budget cannot carry the worst case says so with its own parent
+#: depth (PlatformSpec.parent_depth).
+PARENT_CALLS = 3
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
@@ -1104,6 +1113,7 @@ def _report_gone_api(env: Mapping[str, str], args: Any, timeout: int = 0) -> dic
             "scope": SCOPE,
             "native_session_ids": ids,
         },
+        timeout=timeout,
     )
     if "error" in out:
         return dict(out)
@@ -2525,6 +2535,15 @@ def _settled(note: Mapping[str, Any]) -> bool:
     )
 
 
+def effective_parent_depth(spec: "PlatformSpec") -> int:
+    """How many generations of ancestors this platform's hook registers ahead of a sub-thread.
+
+    The shared depth is what every row gets, and a row whose hook budget cannot carry the shared one
+    declares its own (`PlatformSpec.parent_depth`):  a platform's runtime stops its hook, and a hook
+    stopped before it registers the chat leaves the chat without a letter."""
+    return spec.parent_depth or PARENT_DEPTH
+
+
 def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
     """Register a sub-thread's parent before the sub-thread, when the parent holds no live registration.
 
@@ -2535,7 +2554,7 @@ def _ensure_parent(chat: Chat, parent: str, depth: int = 0) -> None:
     model's reminder wait for its next prompt (`titled` is false and `announce` true).  A spec without `chat_payload`
     does nothing here, and nothing here ever stops the sub-thread's own registration."""
     spec = chat.spec
-    if spec.chat_payload is None or not parent or depth >= PARENT_DEPTH:
+    if spec.chat_payload is None or not parent or depth >= effective_parent_depth(spec):
         return
     try:
         sid = SI.check(parent, "the parent session id")
@@ -3619,7 +3638,7 @@ def _send_gone(
         "--gone=" + json.dumps(ids),
     ]
     try:
-        return _registry_side(argv, env, transport)
+        return _registry_side(argv, env, transport, spec.call_timeout)
     except Exception as exc:  # noqa: BLE001 - a report never blocks a chat
         return {"error": "the registry call failed (%s)" % type(exc).__name__}
 
