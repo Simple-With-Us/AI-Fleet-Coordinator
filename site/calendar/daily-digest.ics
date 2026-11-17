@@ -10,12 +10,28 @@ X-WR-TIMEZONE:America/Chicago
 REFRESH-INTERVAL;VALUE=DURATION:PT6H
 X-PUBLISHED-TTL:PT6H
 BEGIN:VEVENT
+UID:fleet-daily-2026-11-17@AI-Fleet-Coordinator
+DTSTAMP:20261117T091952Z
+DTSTART;VALUE=DATE:20261117
+DTEND;VALUE=DATE:20261118
+SUMMARY:Fleet: 3 merged · 0 opened · 0 closed
+DESCRIPTION:3 PRs merged · 0 issues opened · 0 issues closed\n\nMerged PR
+ s:\n- [AI-Fleet-Coordinator#2255] (minimax) feat(wake): the — half of th
+ e wake router\n- [AI-Fleet-Coordinator#2279] (minimax) fix(fleet-lanes): d
+ eclare the ZC seat in the Z Code guard hook commands\n- [BotFleet#2111] Up
+ date non-major dependencies
+URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-17
+CATEGORIES:fleet-daily,agent-activity
+STATUS:CONFIRMED
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VEVENT
 UID:fleet-daily-2026-11-16@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261116
 DTEND;VALUE=DATE:20261117
-SUMMARY:Fleet: 36 merged · 0 opened · 0 closed
-DESCRIPTION:36 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 46 merged · 0 opened · 0 closed
+DESCRIPTION:46 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#1781] (codex) Align Operator Wake Routing Doc
  umentation\n- [AI-Fleet-Coordinator#2025] fix(ci): arm the merge again wit
  hout — delete-branch when a queue refuses it\n- [AI-Fleet-Coordinator#21
@@ -33,29 +49,34 @@ DESCRIPTION:36 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  in operator_registry CLI (AFC-723)\n- [AI-Fleet-Coordinator#2263] (minimax
  ) fix(fanout): name a chat that an owner alert could not reach\n- [AI-Flee
  t-Coordinator#2269] The file guard accepts a session's chat tag as its sea
- t (OPS-1048)\n- [BotFleet#2103] (minimax) Broadcast an account-level cap t
- o the instance\n- [BotFleet#2105] (ag) 2464: Avoid per-row role JSON parse
-  and full-thread loads in /api/search\n- [BotFleet#2106] Update non-major 
- dependencies\n- [BotFleet#2107] Update dependency @assistant-ui/react to v
- 0.15.35\n- [Congress.Trade#3180] Update dependency typescript to v6\n- [Co
- ngress.Trade#3181] Update non-major dependencies\n- [Congress.Trade#3182] 
- Update non-major dependencies\n- [Congress.Trade#3184] Update non-major de
- pendencies\n- [Congress.Trade#3185] Regenerate app/deno.lock so Coolify ca
- n deploy main\n- [FleetLink#216] Docs: retire FLEET_ADMIN_SECRET in the fl
- eetlink skill\n- [FleetLink#217] Deploy: stop publishing the retired ADMIN
- _SECRET / FLEET_ADMIN_SECRET bindings\n- [HogHunter#365] Mac activity acti
- ons parity: Quit\, Force Quit\, Tame\, Restore Priority\, Sample For 3 Sec
- onds\n- [HogHunter#370] Use Central-time build start timestamps for every 
- build and rebuild\n- [HogHunter#371] Report partial Xcode dependency roots
-  for review only\n- [HogHunter#372] Cleaner: Stale Temp Repo Copies catego
- ry\n- [HogHunter#373] Server status: single publisher for the snapshot\, p
- er-section collection guards\n- [Socratic-Trade#5138] 4600: Alpaca paper p
- rices are generally 15-min delayed\n- [Socratic-Trade#5156] Keep .dark and
-  data-theme in lockstep (ST-4195)\n- [Socratic-Trade#5390] Update actions/
- checkout action to v7\n- [Socratic-Trade#5393] gitignore: ignore .dev.vars
-  (local secret file)\n- [Usage-Monitor#2020] docs: land and extend the "ne
- ver idle-watch a PR" rule\n- [Usage-Monitor#2071] Update non-major depende
- ncies\n- [Usage-Monitor#2073] Update non-major dependencies
+ t (OPS-1048)\n- [AI-Fleet-Coordinator#2272] health-recover: /api/live prob
+ e and strategy-run guard for socratic-app (ST-4635)\n- [AI-Fleet-Coordinat
+ or#2274] chore: net.dealdex 0.1.0\n- [AI-Fleet-Coordinator#2278] chore: re
+ cord the fleet iOS versions in the manifest\n- [BotFleet#2103] (minimax) B
+ roadcast an account-level cap to the instance\n- [BotFleet#2105] (ag) 2464
+ : Avoid per-row role JSON parse and full-thread loads in /api/search\n- [B
+ otFleet#2106] Update non-major dependencies\n- [BotFleet#2107] Update depe
+ ndency @assistant-ui/react to v0.15.35\n- [BotFleet#2108] Update non-major
+  dependencies\n- [BotFleet#2110] Update pnpm to v12.20.0\n- [Congress.Trad
+ e#3180] Update dependency typescript to v6\n- [Congress.Trade#3181] Update
+  non-major dependencies\n- [Congress.Trade#3182] Update non-major dependen
+ cies\n- [Congress.Trade#3184] Update non-major dependencies\n- [Congress.T
+ rade#3185] Regenerate app/deno.lock so Coolify can deploy main\n- [Congres
+ s.Trade#3187] Update non-major dependencies\n- [Congress.Trade#3188] Fetch
+ er: House And OGE Downloads Go Direct-First With Proxy Fallback\n- [Congre
+ ss.Trade#3189] ProxyFetch: Bound The Direct Attempt And Preserve Both Fail
+ ures\n- [Congress.Trade#3191] ProxyFetch: Bound The Proxy Fallback And Gua
+ rd The Body Test\n- [DealDex#601] Update non-major dependencies\n- [FleetL
+ ink#216] Docs: retire FLEET_ADMIN_SECRET in the fleetlink skill\n- [FleetL
+ ink#217] Deploy: stop publishing the retired ADMIN_SECRET / FLEET_ADMIN_SE
+ CRET bindings\n- [HogHunter#365] Mac activity actions parity: Quit\, Force
+  Quit\, Tame\, Restore Priority\, Sample For 3 Seconds\n- [HogHunter#370] 
+ Use Central-time build start timestamps for every build and rebuild\n- [Ho
+ gHunter#371] Report partial Xcode dependency roots for review only\n- [Hog
+ Hunter#372] Cleaner: Stale Temp Repo Copies category\n- [HogHunter#373] Se
+ rver status: single publisher for the snapshot\, per-section collection gu
+ ards\n- [Socratic-Trade#5138] 4600: Alpaca paper prices are generally 15-m
+ in delayed\n  … +6 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-11-16
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -63,7 +84,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-15@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261115
 DTEND;VALUE=DATE:20261116
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -124,7 +145,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-14@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261114
 DTEND;VALUE=DATE:20261115
 SUMMARY:Fleet: 42 merged · 0 opened · 0 closed
@@ -185,7 +206,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-13@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261113
 DTEND;VALUE=DATE:20261114
 SUMMARY:Fleet: 59 merged · 0 opened · 0 closed
@@ -243,7 +264,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-12@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261112
 DTEND;VALUE=DATE:20261113
 SUMMARY:Fleet: 169 merged · 0 opened · 0 closed
@@ -306,7 +327,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-11@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261111
 DTEND;VALUE=DATE:20261112
 SUMMARY:Fleet: 203 merged · 0 opened · 0 closed
@@ -374,7 +395,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-10@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261110
 DTEND;VALUE=DATE:20261111
 SUMMARY:Fleet: 117 merged · 0 opened · 0 closed
@@ -438,7 +459,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-09@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261109
 DTEND;VALUE=DATE:20261110
 SUMMARY:Fleet: 100 merged · 0 opened · 0 closed
@@ -500,7 +521,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-08@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261108
 DTEND;VALUE=DATE:20261109
 SUMMARY:Fleet: 97 merged · 0 opened · 0 closed
@@ -570,7 +591,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-07@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261107
 DTEND;VALUE=DATE:20261108
 SUMMARY:Fleet: 125 merged · 0 opened · 0 closed
@@ -637,7 +658,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-06@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261106
 DTEND;VALUE=DATE:20261107
 SUMMARY:Fleet: 92 merged · 0 opened · 0 closed
@@ -696,7 +717,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-05@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261105
 DTEND;VALUE=DATE:20261106
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -756,7 +777,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-04@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261104
 DTEND;VALUE=DATE:20261105
 SUMMARY:Fleet: 65 merged · 0 opened · 0 closed
@@ -815,7 +836,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-03@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261103
 DTEND;VALUE=DATE:20261104
 SUMMARY:Fleet: 152 merged · 0 opened · 0 closed
@@ -877,7 +898,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-02@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261102
 DTEND;VALUE=DATE:20261103
 SUMMARY:Fleet: 107 merged · 0 opened · 0 closed
@@ -937,7 +958,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-11-01@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261101
 DTEND;VALUE=DATE:20261102
 SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
@@ -997,48 +1018,41 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-31@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261031
 DTEND;VALUE=DATE:20261101
-SUMMARY:Fleet: 35 merged · 0 opened · 0 closed
-DESCRIPTION:35 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
+SUMMARY:Fleet: 29 merged · 0 opened · 0 closed
+DESCRIPTION:29 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  Rs:\n- [AI-Fleet-Coordinator#1185] fix(operator): the daemon's own posts a
- re tagged OPERATOR\, not the seat's name\n- [AI-Fleet-Coordinator#1191] Ac
- cept Legacy Local Owner Tokens During UTC Reader Rollout\n- [AI-Fleet-Coor
- dinator#1212] chore(alerts): qualify existing credentials for scoped autom
- atic release\n- [AI-Fleet-Coordinator#1214] Count Only Sentence-Gap Conver
- ters In The Mirror Converter Tests\n- [AI-Fleet-Coordinator#1215] fix(hold
- -guard): do not disarm PRs without active holds\n- [AI-Fleet-Coordinator#1
- 216] fix(git-relay): use actions_variables permission key\n- [AI-Fleet-Coo
- rdinator#1218] fix(git-tools): capture live168 catalog and exact read sche
- mas\n- [AI-Fleet-Coordinator#1220] fix(recall): complete Linear replacemen
- t independent of retired registry\n- [BotFleet#1428] Add Native Saved Host
- s And Servers Settings\n- [BotFleet#1430] Add Host Resource Reports\, Stor
- age Guards And Inventory\n- [BotFleet#1435] Compose The Native Headless Ho
- st With Durable Recovery\n- [BotFleet#1436] Add Amp orb lifecycle files so
-  fresh orbs start ready\n- [BotFleet#1437] Plan BF-2444: unified conversat
- ion per bot\, browsing during work\, context policy\n- [BotFleet#1438] Reu
- se the resource report's bracketed storage observation\n- [BotFleet#1439] 
- Update dependency posthog-js to v1.438.22\n- [BotFleet#1440] Update non-ma
- jor dependencies\n- [BotFleet#1441] Health audit: validated port env\, vis
- ible resume failures\, tightened gates\n- [BotFleet#1442] Update dependenc
- y postcss to v8.5.32\n- [BotFleet#1443] Update dependency posthog-js to v1
- .438.24\n- [BotFleet#1444] fix(deploy): resolve serving alias for producti
- on baseline\n- [BotFleet#1445] Update pnpm to v12.16.0\n- [Congress.Trade#
- 2910] Add Senate PTR Intake Route for Mac eFD Fetcher Rows (CT-2442)\n- [C
- ongress.Trade#2912] Force minimatch ^11 via npm overrides to clear npm aud
- it\n- [Congress.Trade#2913] Update non-major dependencies\n- [Congress.Tra
- de#2915] Update non-major dependencies\n- [Congress.Trade#2916] Update non
- -major dependencies\n- [ContactLogo#281] chore(deps): update dependency @t
- anstack/react-query to v5.105.0\n- [ContactLogo#282] chore(deps): update n
- on-major dependencies\n- [ContactLogo#283] chore(deps): update dependency 
- better-auth to v1.7.14\n- [FleetLink#156] fix(worker): reject invalid requ
- ests before storage work (FL-76)\n- [FleetLink#157] feat(worker): creator-
- controlled team-only bot sharing\n- [Socratic-Trade#4971] fix(benchmark): 
- Alpaca Paper vs-S&P parity via broker equity history\n- [Socratic-Trade#49
- 72] Update non-major dependencies\n- [Usage-Monitor#1852] fix(deps): revie
- w minimatch security update (UM-1647)\n- [codecaps#344] fix(snapshot): fin
- ish queued writes without blocking quit (CC-196)
+ re tagged OPERATOR\, not the seat's name\n- [AI-Fleet-Coordinator#1220] fi
+ x(recall): complete Linear replacement independent of retired registry\n- 
+ [BotFleet#1428] Add Native Saved Hosts And Servers Settings\n- [BotFleet#1
+ 430] Add Host Resource Reports\, Storage Guards And Inventory\n- [BotFleet
+ #1435] Compose The Native Headless Host With Durable Recovery\n- [BotFleet
+ #1436] Add Amp orb lifecycle files so fresh orbs start ready\n- [BotFleet#
+ 1437] Plan BF-2444: unified conversation per bot\, browsing during work\, 
+ context policy\n- [BotFleet#1438] Reuse the resource report's bracketed st
+ orage observation\n- [BotFleet#1439] Update dependency posthog-js to v1.43
+ 8.22\n- [BotFleet#1440] Update non-major dependencies\n- [BotFleet#1441] H
+ ealth audit: validated port env\, visible resume failures\, tightened gate
+ s\n- [BotFleet#1442] Update dependency postcss to v8.5.32\n- [BotFleet#144
+ 3] Update dependency posthog-js to v1.438.24\n- [BotFleet#1444] fix(deploy
+ ): resolve serving alias for production baseline\n- [BotFleet#1445] Update
+  pnpm to v12.16.0\n- [Congress.Trade#2910] Add Senate PTR Intake Route for
+  Mac eFD Fetcher Rows (CT-2442)\n- [Congress.Trade#2912] Force minimatch ^
+ 11 via npm overrides to clear npm audit\n- [Congress.Trade#2913] Update no
+ n-major dependencies\n- [Congress.Trade#2915] Update non-major dependencie
+ s\n- [Congress.Trade#2916] Update non-major dependencies\n- [ContactLogo#2
+ 81] chore(deps): update dependency @tanstack/react-query to v5.105.0\n- [C
+ ontactLogo#282] chore(deps): update non-major dependencies\n- [ContactLogo
+ #283] chore(deps): update dependency better-auth to v1.7.14\n- [FleetLink#
+ 156] fix(worker): reject invalid requests before storage work (FL-76)\n- [
+ FleetLink#157] feat(worker): creator-controlled team-only bot sharing\n- [
+ Socratic-Trade#4971] fix(benchmark): Alpaca Paper vs-S&P parity via broker
+  equity history\n- [Socratic-Trade#4972] Update non-major dependencies\n- 
+ [Usage-Monitor#1852] fix(deps): review minimatch security update (UM-1647)
+ \n- [codecaps#344] fix(snapshot): finish queued writes without blocking qu
+ it (CC-196)
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-10-31
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
@@ -1046,7 +1060,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-30@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261030
 DTEND;VALUE=DATE:20261031
 SUMMARY:Fleet: 69 merged · 0 opened · 0 closed
@@ -1095,7 +1109,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-29@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261029
 DTEND;VALUE=DATE:20261030
 SUMMARY:Fleet: 108 merged · 0 opened · 0 closed
@@ -1158,7 +1172,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-28@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261028
 DTEND;VALUE=DATE:20261029
 SUMMARY:Fleet: 38 merged · 0 opened · 0 closed
@@ -1213,7 +1227,7 @@ TRANSP:TRANSPARENT
 END:VEVENT
 BEGIN:VEVENT
 UID:fleet-daily-2026-10-27@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
+DTSTAMP:20261117T091952Z
 DTSTART;VALUE=DATE:20261027
 DTEND;VALUE=DATE:20261028
 SUMMARY:Fleet: 60 merged · 0 opened · 0 closed
@@ -1268,66 +1282,6 @@ DESCRIPTION:60 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
  With-Us#95] docs(agents): update coordination stanza to FLEET-PROTOCOL and
   simple-chat with ST-MCP\n  … +20 more
 URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-10-27
-CATEGORIES:fleet-daily,agent-activity
-STATUS:CONFIRMED
-TRANSP:TRANSPARENT
-END:VEVENT
-BEGIN:VEVENT
-UID:fleet-daily-2026-10-26@AI-Fleet-Coordinator
-DTSTAMP:20261116T225642Z
-DTSTART;VALUE=DATE:20261026
-DTEND;VALUE=DATE:20261027
-SUMMARY:Fleet: 78 merged · 0 opened · 0 closed
-DESCRIPTION:78 PRs merged · 0 issues opened · 0 issues closed\n\nMerged P
- Rs:\n- [AI-Fleet-Coordinator#980] fix(housekeeper): one owner-record schem
- a\, and a reused pid cannot pass for a live holder\n- [BotFleet#1338] feat
- (mac): Phase 3 native voice engine\, system integration\, and streaming tr
- anscript\n- [BotFleet#1342] 2515/BF-2486: Phase 6 decommission gates and t
- he native release pipeline\n- [BotFleet#1350] feat(control): multi-server 
- and shared VM lifecycle management in BotFleet Control\n- [BotFleet#1351] 
- chore(deps): update dependency electron to v44.9.3\n- [BotFleet#1352] fix(
- ios): read TestFlight installability at app level (Apple forbids the build
-  betaGroups GET)\n- [BotFleet#1354] chore(deps): update non-major dependen
- cies\n- [BotFleet#1356] build(versioning): align iOS project version recor
- d floor to 1.0.<commit_count> (BF-2567)\n- [BotFleet#1358] chore(deps): up
- date pnpm to v12.15.0\n- [BotFleet#1359] Isolate the macOS CUA tests from 
- real desktop input\n- [BotFleet#1360] fix(mac): land the Phase 3 review fi
- xes that #1338 merged without\n- [BotFleet#1361] feat(smoke): fail closed 
- on a named packaged runtime and label bundle checks (BF-1991)\n- [BotFleet
- #1362] feat(mac): gate the badge/menubar surface sync on a measured budget
- \n- [BotFleet#1363] feat(avatar): a one-file animated avatar format with d
- eclared frame ranges\n- [BotFleet#1364] fix(mac): never post desktop event
- s from a test runner\n- [BotFleet#1365] (sentry) chore(deps): update depen
- dency — to v9.31.0\n- [BotFleet#1366] feat(avatar): a bot that is speaki
- ng is drawn as speaking\n- [BotFleet#1367] fix(avatar-build): the size che
- ck refuses art that is not the declared size\n- [BotFleet#1368] feat(infra
- ): move BotFleet's Infisical consumers to scoped service tokens\n- [BotFle
- et#1369] ios-fleet: fixed marketing 0.1.0 with a dotted build\n- [BotFleet
- #1370] fix(avatar-build): scale the art down when that is simple\, and lea
- ve it alone when it is not\n- [Clutch#202] Prune old attachments on write\
- , and keep a thread's model to its own thread\n- [Clutch#211] Let the phon
- e answer a permission request in the thread\n- [Clutch#212] Show the engin
- e's plan in the thread\n- [Clutch#215] fix: prevent cross-session prune fr
- om deleting newly prepared attachments\n- [Clutch#216] Fix the macOS-only 
- museInstalled test\, and correct the stale pnpm gate in the docs\n- [Clutc
- h#217] (deepseek) Run the — hosted turns in the host\, and relay the hos
- t's approval requests\n- [Congress.Trade#2868] (grok-bot) feat(delivery): 
- CT_DELIVERY_MODE subscriber alert pause — deliver | hold | suppress\n- [
- Congress.Trade#2871] chore(deps): update non-major dependencies\n- [Congre
- ss.Trade#2872] chore(deps): update non-major dependencies\n- [Congress.Tra
- de#2874] chore(ios-fleet): move Congress.Trade to the 1.1 train (next ship
-  1.1.1)\n- [Congress.Trade#2875] fix(deps): update non-major dependencies\
- n- [Congress.Trade#2876] docs(ios-fleet): a train change ships by dispatch
- \, not by merge\n- [Congress.Trade#2877] chore(ios-fleet): move Congress.T
- rade back to the 1.0 train\n- [Congress.Trade#2878] chore(deps): update no
- n-major dependencies\n- [Congress.Trade#2881] ios-fleet: fixed marketing v
- ersion + three-digit build count (CT 1.1.0)\n- [Congress.Trade#2882] ios-f
- leet: dotted build in fixed-version mode (1.1.2 (1.1.2))\n- [ContactLogo#2
- 64] chore(deps): update dependency react-resizable-panels to v4.14.8\n- [C
- ontactLogo#265] fix(deploy): read CLI baseline SHA in Vercel catch-up gate
-  (CL-206)\n- [ContactLogo#266] chore(deps): update non-major dependencies\
- n  … +38 more
-URL:https://simple-with-us.github.io/AI-Fleet-Coordinator/#2026-10-26
 CATEGORIES:fleet-daily,agent-activity
 STATUS:CONFIRMED
 TRANSP:TRANSPARENT
