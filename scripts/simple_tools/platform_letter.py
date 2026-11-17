@@ -968,7 +968,9 @@ def _register_api(
             "title_display": OR.display_title(reopened["label"], title),
         }
     if title and out.get("outcome") in ("resumed", "reopened"):
-        updated = _call_api(env, "update", {**_api_identity(args, sid), "title": title}, timeout=timeout)
+        updated = _call_api(
+            env, "update", {**_api_identity(args, sid), "title": title}, timeout=timeout
+        )
         error = _api_error(updated)
         if error is not None:
             return error
@@ -1011,14 +1013,20 @@ def _on_record_api(
             # The rest of the row (its seat and title) from the letter's own live holder, when that is this record:
             # a caller that closes only what is its own (the fx sync) reads the seat here.
             row = _call_api(
-                env, "resolve", {"platform": args.platform, "letter": shown["label"]}, timeout=timeout
+                env,
+                "resolve",
+                {"platform": args.platform, "letter": shown["label"]},
+                timeout=timeout,
             )
             if "error" not in row and row.get("record_id") == shown["record_id"]:
                 shown.update({k: row[k] for k in ("seat", "title", "generation") if k in row})
         return shown
     if args.op == "close":
         out = _call_api(
-            env, "close", {**identity, "reason": "session ended", "source": args.source}, timeout=timeout
+            env,
+            "close",
+            {**identity, "reason": "session ended", "source": args.source},
+            timeout=timeout,
         )
         error = _api_error(out)
         if error is not None:
