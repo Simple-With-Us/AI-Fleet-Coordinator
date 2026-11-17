@@ -533,6 +533,11 @@ class GuardContext:
         self.home = home
         self.env = env
         self.registry = registry
+        # The registry is what says which repositories are fleet repositories.  When it could not be
+        # read, the guard holds the extras alone, so it can still say what the owner set says and
+        # cannot say which apps the fleet has.  A question the registry answers is then unknown, and
+        # an unknown answer is not a clearance (AFC-811).
+        self.registry_fallback = registry.source == "fallback"
         self.roots = roots
         self.tmpdir = tmpdir
         self.exceptions = exceptions
@@ -738,7 +743,8 @@ def make_context(
 
     `env` defaults to the process environment and is read for HOME, TMPDIR, FLEET_LAYOUT,
     FLEET_LANES_ROOT, FLEET_LANES_EXTERNAL_ROOT, FLEET_APPS_JSON, AGENT_SEAT and FLEET_LANE_GUARD.  A registry that cannot
-    be read falls back to the EXTRA_APPS rows; owner-based detection still works without it.
+    be read falls back to the EXTRA_APPS rows; owner-based detection still works without it, and the
+    questions the registry alone answers fail closed rather than being cleared (AFC-811).
     `case_insensitive` defaults to true on macOS.
     """
     env = dict(os.environ if env is None else env)
@@ -1024,6 +1030,16 @@ def _evaluate_isolation(payload: Mapping, ctx: GuardContext | None) -> Decision:
     if not any(
         app.integration_dir_name and ctx.fold(app.integration_dir_name) == ctx.fold(repo) for app in ctx.registry.apps
     ):
+        if ctx.registry_fallback:
+            # The registry could not be read, so this host cannot tell whether the repo is one of
+            # the fleet's, and that is a question the guard must not answer with a clearance:  a
+            # worktree in the integration tree is for the human, whoever owns the repo.
+            reason = (
+                f"Blocked: this host could not read the fleet registry, so it cannot tell whether {repo} is a "
+                f"fleet repository, and a worktree in the integration tree {cwd} is for the human.  "
+                f"Read the registry file (FLEET_APPS_JSON) so the guard can name the repo, and work in a lane."
+            )
+            return Decision(DENY, reason, RULE_ISOLATION, cwd, repo)
         return Decision(ALLOW, "", _OK_NOT_SHELL)
     if mode != P.MODE_BLOCK:
         return Decision(ALLOW, "", _OK_NOT_SHELL, detected="isolation",
