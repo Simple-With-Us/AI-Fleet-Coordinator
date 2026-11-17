@@ -96,6 +96,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import math
 import os
 import pkgutil
 import re
@@ -773,11 +774,11 @@ _NOT_REGISTERED_MARK = "is not registered on"
 
 #: How long one registry API call from a hook may take.  The hooks carry budgets of 15 to
 #: 20 seconds (HOOK_TIMEOUTS) and a register chains at most three calls (register, reopen,
-#: update), so one call gets 4:  the chain's worst case stays inside the tightest budget, and
-#: a healthy call to the listener answers in well under a second.  An unsettled parent is
+#: update), so one call gets 3:  the chain's worst case stays inside the tightest budget, and
+#: a healthy call to the listener answers in well under a second.  The binding budget is MiniMax Code's ten-second ceiling, whose runtime refuses a longer  hook timeout outright, so three calls of three seconds fit inside it with a second to spare.  An unsettled parent is
 #: registered first, at most once per RETRY_SECONDS (`_ensure_parent`).  The batch callers of
 #: registry_api (the operator-registry CLI) keep its longer default.
-_API_TIMEOUT = 4
+_API_TIMEOUT = 3
 REGISTRY_ENV_SUBPATH = os.path.join(".local", "bin", "operator-registry-env")
 
 
@@ -4277,18 +4278,18 @@ def _command_objects(node: Any, platform: str) -> list[dict[str, Any]]:
     return found
 
 
-def _entry_timeouts(node: Any, platform: str) -> list[int]:
-    """The timeouts, in seconds, of the hook entries that hold this platform's command."""
-    out: list[int] = []
+def _entry_timeouts(node: Any, platform: str) -> list[float]:
+    """The timeouts, in seconds, of the hook entries that hold this platform's command.  A timeout that is not whole seconds is rounded up, so an entry the runtime refuses is never  rounded down into the range it accepts."""
+    out: list[float] = []
     for obj in _command_objects(node, platform):
         value = obj.get("timeout")
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            value = obj.get("timeoutMs")
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            ms = obj.get("timeoutMs")
+            if isinstance(ms, bool) or not isinstance(ms, (int, float)):
                 continue
-            out.append(int(value // 1000))
+            out.append(float(math.ceil(ms / 1000)))
             continue
-        out.append(int(value))
+        out.append(float(value))
     return out
 
 
@@ -4510,7 +4511,7 @@ def install_json_hooks(
     platform = opts.platform
     cap = installer.timeout_cap
     over = {ev: t for ev, t in installer.events.items() if cap and t > cap}
-    if over and not opts.remove:
+    if over and not opts.remove and not opts.check:
         # A runtime that refuses this timeout never runs the hook, so the installer writes nothing at all.
         return _emit(stdout, {"platform": platform, "path": path, "refused": "timeout_over_cap",
                                "cap": cap, "timeouts": over}, 1)
@@ -4556,6 +4557,11 @@ def install_json_hooks(
             current[ev] = have[ev] and new == entries  # an install would change nothing
             if cap:
                 longer = [t for t in _entry_timeouts(entries, platform) if t > cap]
+                if timeout > cap:
+                    # The adapter's own timeout is one this platform's runtime refuses, so an install
+                    # would write an entry that never runs:  the entry is not current either, and the
+                    # answer names the timeout.
+                    longer = longer + [timeout]
                 if longer:
                     # Installed, and a timeout this platform's runtime refuses:  the entry never runs, so the
                     # hook is not current however close it is to the wanted one.

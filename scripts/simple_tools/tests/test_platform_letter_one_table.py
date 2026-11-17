@@ -161,6 +161,10 @@ class MiniMaxRow(Base):
             self.assertLessEqual(timeout, PM.HOOK_TIMEOUT_CAP, event)
         self.assertEqual(PM.INSTALL.timeout_cap, PM.HOOK_TIMEOUT_CAP)
         self.assertEqual(PM.INSTALL.events, PM.HOOK_TIMEOUTS)
+        # And the register chain fits inside the budget, the way the Claude and Codex rows assert
+        # theirs:  a register makes at most three registry calls, and the runtime stops the hook at its
+        # ceiling.
+        self.assertLess(3 * PL._API_TIMEOUT, min(PM.HOOK_TIMEOUTS.values()))
 
     def test_kinds_parents_and_titles_come_from_the_store(self) -> None:
         self.add("m-0001", "Memory sync")

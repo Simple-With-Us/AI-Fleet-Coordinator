@@ -47,7 +47,12 @@ EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Stop": "turn"}
 #: timeout from 1 to 10 seconds and refuses anything longer with HOOK_SCHEMA_INVALID, so an entry over 10
 #: is never run at all:  the hook file reads as installed and no letter note is written and no title is
 #: renamed.  The retired client's own entries used 10, 8 and 8, which is why they ran.
-HOOK_TIMEOUTS = {"SessionStart": 10, "Stop": 8}
+#:
+#: The budget is the runtime's whole ceiling, so the register chain has to fit inside it:  a register
+#: makes at most three registry calls (the parent, the chat, the title), and the shared call timeout is
+#: three seconds, so the chain's worst case is nine seconds and the hook finishes before the runtime
+#: stops it.
+HOOK_TIMEOUTS = {"SessionStart": 10, "Stop": 10}
 #: The largest timeout this platform's runtime accepts for one command hook, in seconds:  the installer
 #: refuses to write a longer one and `--check` reports a longer installed one as not current.
 HOOK_TIMEOUT_CAP = 10
