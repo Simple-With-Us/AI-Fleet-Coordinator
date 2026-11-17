@@ -121,14 +121,33 @@ so a delivery attempt never costs a parse of the deployment's configuration.
 
 The cutover was done in this order, and the sample
 `scripts/simple_tools/server/listener.toml` now routes CODEX at the one router with the one
-bearer the router checks.  A seat moves to the router only after its own path is deployed
-and verified live, and the working path is never removed before the replacement has answered
-a real wake.
+bearer the router checks.  A seat moves to the router only after the replacement has been
+reviewed, is live, and has been verified with a real wake, and the working legacy binding
+is kept until all three of those hold.
+
+The three gates, and what each of them answered on the day of the cutover.
+
+- Reviewed:  the platform module landed on main in pull request #2284 (squash commit
+  `e4cde609b`) after Kody's code review, and every finding on it was answered, fixed and
+  resolved before the merge.
+- Live:  the router's release on the server carries `codex_wake.py`, `/health/CODEX`
+  answers `healthy` with `delivery` on, and CODEX is in `WAKE_ROUTER_DELIVERY_SEATS`.
+- Verified with a real wake:  a canary wake posted to the router's front with the
+  router's own bearer was picked by its letter, and the seat's own path answered it over
+  the ssh route (`route: ssh:codex-desktop`).
+
+The legacy binding that the sample's change removed was the seat's inbox capture on the
+server, and it had delivered nothing:  the server's CODEX inbox holds no wake at all, so
+nothing that worked was removed with it.
 
 The steps, in this order.
 
 1.  Write the pinned profile and the pinned owner account into the local settings file, as
-    above.
+    above.  Before the live listener's block is changed, mint `CODEX_ROUTINE_URL` in
+    AFC prod `/zulip` with the value `https://<server tailnet host>:8795/wake/CODEX`, the
+    router's front for this seat, and restart the listener container so it reads the name:
+    the environment is read once at the container's start, so a reload alone would leave
+    the routine without its URL and every wake routine-unready.
 2.  Deploy the router release that carries `codex_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/CODEX` answers
     `healthy`, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.

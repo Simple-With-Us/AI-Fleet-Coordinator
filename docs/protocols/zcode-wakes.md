@@ -27,7 +27,7 @@ seat's normal wake routine.  Wakes the seat's budget holds back, and messages t
 no delivery ran, stay in the inbox;  nothing is lost by a bridge that is down, and a wake id is
 marked seen only after the POST is answered.
 
-## The one wake router, and the cutover that is still open
+## The one wake router, and the cutover
 
 The ZC seat now has a platform module (`scripts/simple_tools/zcode_wake.py`), so the one shared
 wake router (`wake_service`, `simple-chat wake-router serve`) serves it like every other seat
@@ -36,12 +36,13 @@ delivers over the one fixed route.  A chat on the Mac is reached over ssh throu
 `claude_wake.deliver_remote`, and the Mac's own `simple-chat wake-deliver` dispatches to
 `deliver_request` in the module.
 
-The sample `scripts/simple_tools/server/listener.toml` still routes ZC at its own bridge, and
-that is deliberate.  A seat moves to the router only after its own path is deployed and
-verified live, and until then it keeps the binding it has:  the working path is never removed
-before the replacement has answered a real wake.
+The sample `scripts/simple_tools/server/listener.toml` declares the seat's binding, and the live
+file is moved to the sample's block by `apply_live_config.py --apply` once the image carries
+it:  `wake = "http"` with `routine = { url_env = "ZC_ROUTINE_URL", key_env = "WAKE_ROUTER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
+the one bearer the router checks.  The container is restarted with it, because the
+environment is read once at the container's start.
 
-The cutover, when it is done, is these five steps, in this order.  The legacy bridge stays the
+The cutover was done in these five steps, in this order.  The legacy bridge stays the
 seat's live path until the router's own front has answered a real wake, so a cutover that
 does not work never leaves the seat without a route.
 
@@ -57,10 +58,9 @@ does not work never leaves the seat without a route.
     (`<SEAT>_BRIDGE_ROUTINE_URL`), so the container carries it once it runs the loader that
     reads it, and the environment is read once at the container's start, so the container is
     restarted after the names are minted.  The seat's own binding is named here, so the
-    operator knows what the cutover starts from:  the sample's `[seat.ZC]` block declares
-    `wake = "http"` with the router's routine, and the live file on the server still holds
-    `wake = "inbox"`, which is the capture the seat has today.  Nothing in the live
-    listener changes in this step.
+    operator knows what the cutover started from:  the live file on the server held
+    `wake = "inbox"`, which was the capture the seat had, and nothing in the live listener
+    changes in this step.
 2.  Deploy the router release that carries `zcode_wake.py` to the server, and prove the seat
     answers there:  `curl -s https://<server tailnet host>:8795/health/ZC` answers `healthy`
     with `delivery` on, and the seat is in `WAKE_ROUTER_DELIVERY_SEATS`.
@@ -83,11 +83,11 @@ does not work never leaves the seat without a route.
     `ZC_BRIDGE_ROUTINE_URL` in AFC prod `/zulip` and `ZC_ROUTINE_KEY` in Fleet-OPS `/zulip`
     are the bridge's own values and were never withdrawn, so the live `[seat.ZC]` block goes
     back to `wake = "http"` with `routine = { url_env = "ZC_BRIDGE_ROUTINE_URL", key_env = "ZC_ROUTINE_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }`,
-    which is the legacy path the sample declared before the cutover, and the container is
-    restarted:  the environment is read once at the start, so a reload alone would leave the
-    routine unset and the seat would not be woken at all.  The capture the seat has today
-    comes back without any of that:  `wake = "inbox"` and a reload alone put the seat back
-    on the live file's own binding.
+    which is the bridge's own legacy path, and the container is restarted:  the environment is
+    read once at the start, so a reload alone would leave the routine unset and the seat
+    would not be woken at all.  The capture the seat had before the cutover comes
+    back without any of that:  `wake = "inbox"` and a reload alone put the seat back on the
+    live file's own binding.
 Only after step 5 does the legacy bridge (`scripts/zc-wake-bridge`, the unit
 `zc-wake-bridge.service`) retire:  it holds the same per-session lock, so the two paths can
 never run one session at the same time, and its dedupe ledger is replaced by the router's own
